@@ -48,7 +48,7 @@ FAIL-LOUD ORDER (zero side effects before every gate)
     ``formulation_sha256`` over its own {books, formulation, freshness, gates} block.
     A mismatch raises with ZERO side effects: not one connection is opened.
  2. connect + pin ``search_path`` to public + advisory lock 900_218.
- 3. READ-ONLY catalog verification of the two v04 tables. ``run()`` never applies
+3. READ-ONLY catalog verification of the three v04 tables. ``run()`` never applies
     schema — the operator does (``schemas/open_macro_v04_*.sql``).
  4. read the inputs, each series by EXPLICIT FRED id. A required series that is
     absent or empty raises NAMING THE SERIES.
@@ -141,6 +141,7 @@ WEIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
 CHAIN_TABLE = "open_macro_v03_decision_chain"
 DECISIONS_TABLE = "open_macro_v04_decisions"
 ALLOCATIONS_TABLE = "open_macro_v04_allocations"
+CAPTURES_TABLE = "open_macro_v04_decision_input_captures"
 
 # The window the signed configuration was measured on opens here. Earlier months are
 # computed (the state machine needs the run-up) but never published.
@@ -356,6 +357,17 @@ EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
         "invalidated_reason": ("text", None, "YES", None),
         "created_at": ("timestamp with time zone", None, "NO", "now()"),
         "updated_at": ("timestamp with time zone", None, "NO", "now()"),
+    },
+    CAPTURES_TABLE: {
+        "as_of": ("date", None, "NO", None),
+        "series_id": ("text", None, "NO", None),
+        "series_digest_sha256": ("character", 64, "NO", None),
+        "row_count": ("integer", None, "NO", None),
+        "min_obs_date": ("date", None, "NO", None),
+        "max_obs_date": ("date", None, "NO", None),
+        "producer_run_id": ("text", None, "NO", None),
+        "global_input_digest_sha256": ("character", 64, "NO", None),
+        "captured_at": ("timestamp with time zone", None, "NO", "now()"),
     },
 }
 
@@ -729,6 +741,51 @@ ALLOCATION_UPSERT_SQL = _upsert_sql(ALLOCATIONS_TABLE, _ALLOCATION_COLUMNS,
 EXISTING_BASIS_SQL = (
     f"SELECT as_of, decision_basis FROM {DECISIONS_TABLE} WHERE as_of >= %(start)s")
 
+CAPTURE_INSERT_SQL = (
+    f"INSERT INTO {CAPTURES_TABLE} (as_of, series_id, series_digest_sha256, row_count, "
+    "min_obs_date, max_obs_date, producer_run_id, global_input_digest_sha256) VALUES "
+    "(%(as_of)s, %(series_id)s, %(series_digest_sha256)s, %(row_count)s, "
+    "%(min_obs_date)s, %(max_obs_date)s, %(producer_run_id)s, "
+    "%(global_input_digest_sha256)s) ON CONFLICT (as_of, series_id) DO NOTHING "
+    "RETURNING series_digest_sha256, row_count, min_obs_date, max_obs_date, "
+    "producer_run_id, global_input_digest_sha256")
+CAPTURE_READ_SQL = (
+    f"SELECT series_digest_sha256, row_count, min_obs_date, max_obs_date, "
+    f"producer_run_id, global_input_digest_sha256 FROM {CAPTURES_TABLE} "
+    "WHERE as_of = %(as_of)s AND series_id = %(series_id)s")
+CAPTURE_COUNT_SQL = (
+    f"SELECT count(*) FROM {CAPTURES_TABLE} WHERE as_of = %(as_of)s")
+
+
+def build_input_captures(series: dict[str, pd.Series], decision_rows: list[dict[str, Any]],
+                         *, global_digest: str, run_id: str) -> list[dict[str, Any]]:
+    """Capture the exact direct series read for each newly published live decision."""
+    captures: list[dict[str, Any]] = []
+    for decision in decision_rows:
+        if decision["decision_basis"] != BASIS_LIVE:
+            continue
+        horizon = pd.Timestamp(decision["as_of"])
+        for series_id in REQUIRED_SERIES:
+            bounded = series[series_id].loc[series[series_id].index <= horizon]
+            if bounded.empty:
+                raise OpenMacroV04Error(
+                    f"cannot capture empty live input {series_id} through {decision['as_of']}")
+            dates = [pd.Timestamp(date).date() for date in bounded.index]
+            captures.append({
+                "as_of": decision["as_of"],
+                "series_id": series_id,
+                "series_digest_sha256": _digest([
+                    f"{date:%Y-%m-%d}|{float(value):.17g}"
+                    for date, value in bounded.items()
+                ]),
+                "row_count": len(bounded),
+                "min_obs_date": min(dates),
+                "max_obs_date": max(dates),
+                "producer_run_id": run_id,
+                "global_input_digest_sha256": global_digest,
+            })
+    return captures
+
 
 def _exact_numeric(value: Any) -> Any:
     """Python float -> ``decimal.Decimal(repr(value))`` for EXACT NUMERIC persistence.
@@ -749,7 +806,8 @@ def _exact_numeric_params(params: dict[str, Any]) -> dict[str, Any]:
 
 def publish(conn, decision_rows: list[dict[str, Any]],
             allocation_rows: list[dict[str, Any]],
-            latest_as_of: _dt.date) -> dict[str, int]:
+            latest_as_of: _dt.date,
+            capture_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Upsert every month's decision + allocation in ONE transaction.
 
     An invalidated row is SKIPPED, not resurrected, and the skip is counted and
@@ -757,25 +815,51 @@ def publish(conn, decision_rows: list[dict[str, Any]],
     decision is a real outage, while a single killed historical month must not wedge
     the monthly publisher forever."""
     skipped: set = set()
-    with conn.cursor() as cur:
-        for row in decision_rows:
-            cur.execute(DECISION_UPSERT_SQL, _exact_numeric_params(row))
-            if cur.rowcount == 0:
-                skipped.add(row["as_of"])
-                if row["as_of"] == latest_as_of:
+    capture_rows = capture_rows or []
+    try:
+        with conn.cursor() as cur:
+            for row in decision_rows:
+                cur.execute(DECISION_UPSERT_SQL, _exact_numeric_params(row))
+                if cur.rowcount == 0:
+                    skipped.add(row["as_of"])
+                    if row["as_of"] == latest_as_of:
+                        raise OpenMacroV04Error(
+                            f"decision upsert for the CURRENT month {latest_as_of} did "
+                            "not apply: the row is invalidated. A re-run cannot resurrect "
+                            "it; resolve the invalidation explicitly")
+            for row in allocation_rows:
+                if row["as_of"] in skipped:
+                    continue    # the FK parent was skipped; the pair stays consistent
+                cur.execute(ALLOCATION_UPSERT_SQL, _exact_numeric_params(row))
+                if cur.rowcount == 0 and row["as_of"] == latest_as_of:
                     raise OpenMacroV04Error(
-                        f"decision upsert for the CURRENT month {latest_as_of} did "
-                        "not apply: the row is invalidated. A re-run cannot resurrect "
-                        "it; resolve the invalidation explicitly")
-        for row in allocation_rows:
-            if row["as_of"] in skipped:
-                continue    # the FK parent was skipped; the pair stays consistent
-            cur.execute(ALLOCATION_UPSERT_SQL, _exact_numeric_params(row))
-            if cur.rowcount == 0 and row["as_of"] == latest_as_of:
-                raise OpenMacroV04Error(
-                    f"allocation upsert for the CURRENT month {latest_as_of} did not "
-                    "apply: the row is invalidated")
-    conn.commit()
+                        f"allocation upsert for the CURRENT month {latest_as_of} did not "
+                        "apply: the row is invalidated")
+            for row in capture_rows:
+                if row["as_of"] in skipped:
+                    continue
+                cur.execute(CAPTURE_INSERT_SQL, row)
+                stored = cur.fetchone()
+                expected = tuple(row[column] for column in (
+                    "series_digest_sha256", "row_count", "min_obs_date", "max_obs_date",
+                    "producer_run_id", "global_input_digest_sha256",
+                ))
+                if stored is None:
+                    cur.execute(CAPTURE_READ_SQL, row)
+                    stored = cur.fetchone()
+                if stored != expected:
+                    raise OpenMacroV04Error(
+                        f"immutable input capture conflict for {row['as_of']} "
+                        f"{row['series_id']}")
+            for as_of in {row["as_of"] for row in capture_rows} - skipped:
+                cur.execute(CAPTURE_COUNT_SQL, {"as_of": as_of})
+                if cur.fetchone() != (len(REQUIRED_SERIES),):
+                    raise OpenMacroV04Error(
+                        f"live decision {as_of} does not have exactly four input captures")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return {"n_applied": len(decision_rows) - len(skipped),
             "n_skipped_invalidated": len(skipped),
             "skipped_as_of": sorted(d.isoformat() for d in skipped)}
@@ -962,9 +1046,12 @@ def run(dsn: str, *, as_of: str | None = None,
                 ledger, confidence, latest, existing,
                 digest=digest, formulation_sha256=formulation_sha256,
                 commit=commit, run_id=run_id, prices=prices)
+            capture_rows = build_input_captures(
+                series, decision_rows, global_digest=digest, run_id=run_id)
 
             # Gate 7 — publish (atomic).
-            published = publish(conn, decision_rows, allocation_rows, latest)
+            published = publish(
+                conn, decision_rows, allocation_rows, latest, capture_rows=capture_rows)
 
             # Gate 9 — post-write verification.
             post_write_verify(conn, published["n_applied"], latest,
@@ -1107,7 +1194,7 @@ if __name__ == "__main__":
 __all__ = ["run", "main", "OpenMacroV04Error", "verify_formulation_freeze",
            "check_universe_coverage",
            "verify_schema", "build_worker_ledger", "build_rows", "decision_validity",
-           "fiscal_boundary", "input_digest", "ledger_csv", "publish",
+           "fiscal_boundary", "input_digest", "build_input_captures", "ledger_csv", "publish",
            "post_write_verify", "quadrant_confidence_in_force", "resolve_as_of",
            "last_complete_month_end", "valid_until", "EXPECTED_COLUMNS",
            "BOOK_TICKERS", "FORMULA_MODULES"]

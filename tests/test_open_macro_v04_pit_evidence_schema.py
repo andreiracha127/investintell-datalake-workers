@@ -12,6 +12,11 @@ import subprocess
 
 
 SCHEMA = Path(__file__).resolve().parents[1] / "schemas" / "open_macro_v04_pit_evidence.sql"
+CAPTURE_SCHEMA = (
+    Path(__file__).resolve().parents[1]
+    / "schemas"
+    / "open_macro_v04_decision_input_captures.sql"
+)
 
 PRIVATE_COLUMNS = {
     "decision_month",
@@ -158,7 +163,7 @@ def test_public_relations_cannot_expose_private_values_or_point_in_time_lineage(
         assert forbidden not in public_sql
 
 
-def test_schema_makes_lineage_append_only_and_finalizes_exactly_thirteen_fixed_items() -> None:
+def test_schema_makes_lineage_append_only_and_finalizes_source_specific_catalogs() -> None:
     assert SCHEMA.is_file(), "the PIT evidence schema must be installed with the worker"
     sql = SCHEMA.read_text(encoding="utf-8")
 
@@ -177,7 +182,9 @@ def test_schema_makes_lineage_append_only_and_finalizes_exactly_thirteen_fixed_i
     )
     assert "RAISE EXCEPTION 'published evidence snapshots are append-only'" in sql
     assert "header_status" not in sql
-    assert "item_count <> 13" in sql
+    assert "requires the exact chain catalog" in sql
+    assert "requires the exact proxy catalog" in sql
+    assert "taxonomy_source IN ('proxy', 'proxy_missing')" in sql
     assert "taxonomy_count <> 1" in sql
     assert "derived_coverage" in sql
     assert "NEW.coverage_state <> derived_coverage" in sql
@@ -185,7 +192,8 @@ def test_schema_makes_lineage_append_only_and_finalizes_exactly_thirteen_fixed_i
     assert "DEFERRABLE INITIALLY DEFERRED" in sql
     for key in (
         "INDPRO", "PCEC96", "PAYEMS", "ACOGNO", "CPILFESL", "PPIFIS", "AHETPI",
-        "MICH", "SPY", "MTSDS133FMS", "GDP", "SUBLPDCILSLGNQ", "M2SL",
+        "MICH", "CFNAI", "CPIAUCSL", "SPY", "MTSDS133FMS", "GDP",
+        "SUBLPDCILSLGNQ", "M2SL",
     ):
         assert f"'{key}'" in sql
     for label in (
@@ -197,6 +205,8 @@ def test_schema_makes_lineage_append_only_and_finalizes_exactly_thirteen_fixed_i
         "Producer Price Index: Final Demand Intermediate Services",
         "Average Hourly Earnings",
         "University of Michigan Inflation Expectations",
+        "Chicago Fed National Activity Index",
+        "Consumer Price Index",
         "Cycle Market Leg",
         "Federal Surplus or Deficit",
         "Nominal GDP",
@@ -222,9 +232,23 @@ def test_public_status_vocabularies_match_the_light_evidence_contract() -> None:
         "evidence_state IN ('observed', 'carried', 'missing', 'invalid')",
         "freshness_state IN ('current', 'stale', 'unknown')",
         "pit_state IN ('verified', 'unverified', 'unavailable')",
+        "role IN ('regime_input', 'proxy_input', 'allocation_guard')",
     ):
         assert vocabulary in public_sql
     assert "building" not in public_sql
+
+
+def test_schema_reapplication_widens_existing_catalog_constraints() -> None:
+    sql = SCHEMA.read_text(encoding="utf-8")
+
+    for constraint in (
+        "open_macro_v04_pit_evidence_series_key_check",
+        "open_macro_v04_evidence_items_series_key_check",
+        "open_macro_v04_evidence_items_role_check",
+        "open_macro_v04_evidence_items_catalog_coherence",
+    ):
+        assert f"DROP CONSTRAINT IF EXISTS {constraint}" in sql
+        assert f"ADD CONSTRAINT {constraint}" in sql
 
 
 def test_schema_limits_public_evidence_to_runtime_and_private_lineage_to_worker_writer() -> None:
@@ -305,3 +329,27 @@ def test_producer_relation_acl_changes_are_guarded_for_worker_writer_reapply() -
         "GRANT SELECT ON TABLE open_macro_v04_allocations TO worker_writer",
     ):
         assert f"EXECUTE '{statement}'" in sql
+
+
+def test_producer_capture_schema_is_append_only_and_private() -> None:
+    sql = CAPTURE_SCHEMA.read_text(encoding="utf-8")
+    body = _table_body(sql, "open_macro_v04_decision_input_captures")
+    assert _declared_columns(body) == {
+        "as_of", "series_id", "series_digest_sha256", "row_count", "min_obs_date",
+        "max_obs_date", "producer_run_id", "global_input_digest_sha256", "captured_at",
+    }
+    assert "PRIMARY KEY (as_of, series_id)" in body
+    assert "'MTSDS133FMS', 'GDP', 'SUBLPDCILSLGNQ', 'M2SL'" in body
+    assert "series_digest_sha256 ~ '^[0-9a-f]{64}$'" in body
+    assert "BEFORE UPDATE OR DELETE ON open_macro_v04_decision_input_captures" in sql
+    assert "REVOKE ALL ON TABLE open_macro_v04_decision_input_captures FROM PUBLIC" in sql
+    assert "GRANT SELECT, INSERT ON TABLE open_macro_v04_decision_input_captures" in sql
+    assert "REVOKE ALL ON TABLE open_macro_v04_decision_input_captures FROM app_runtime" in sql
+    assert "REVOKE ALL ON TABLE open_macro_v04_decision_input_captures FROM app_analytics_ro" in sql
+
+
+def test_evidence_schema_preserves_shared_producer_write_and_uses_capture_read_only() -> None:
+    sql = SCHEMA.read_text(encoding="utf-8")
+    assert "GRANT SELECT ON TABLE open_macro_v04_decision_input_captures TO worker_writer" in sql
+    assert "GRANT SELECT, INSERT ON TABLE open_macro_v04_decision_input_captures" not in sql
+    assert "REVOKE ALL ON TABLE open_macro_v04_decision_input_captures FROM worker_writer" not in sql

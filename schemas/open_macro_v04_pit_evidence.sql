@@ -1,8 +1,10 @@
 -- Open Macro v04 point-in-time evidence.
 --
 -- Numeric observations and timing/lineage are private.  The public relations
--- deliberately expose only a fixed, categorical 13-item evidence surface plus
--- the categorical taxonomy projection consumed by Light.
+-- deliberately expose only a closed, source-specific categorical evidence surface
+-- plus the categorical taxonomy projection consumed by Light.
+-- Apply open_macro_v04_decision_input_captures.sql first; the ACL block below
+-- intentionally fails closed when its producer-owned proof relation is absent.
 
 CREATE TABLE IF NOT EXISTS open_macro_v04_pit_evidence (
     decision_month             char(7)     NOT NULL CHECK (decision_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
@@ -12,7 +14,8 @@ CREATE TABLE IF NOT EXISTS open_macro_v04_pit_evidence (
     decision_basis             text        NOT NULL CHECK (decision_basis IN ('live', 'bootstrap_replay')),
     series_key                 text        NOT NULL CHECK (series_key IN (
         'INDPRO', 'PCEC96', 'PAYEMS', 'ACOGNO', 'CPILFESL', 'PPIFIS', 'AHETPI',
-        'MICH', 'SPY', 'MTSDS133FMS', 'GDP', 'SUBLPDCILSLGNQ', 'M2SL'
+        'MICH', 'CFNAI', 'CPIAUCSL', 'SPY', 'MTSDS133FMS', 'GDP',
+        'SUBLPDCILSLGNQ', 'M2SL'
     )),
     value                      numeric,
     unit                       text        CHECK (unit IS NULL OR unit <> ''),
@@ -69,10 +72,11 @@ CREATE TABLE IF NOT EXISTS open_macro_v04_evidence_items (
     group_role         text    NOT NULL CHECK (group_role IN ('regime_inputs', 'allocation_evidence')),
     series_key         text    NOT NULL CHECK (series_key IN (
         'INDPRO', 'PCEC96', 'PAYEMS', 'ACOGNO', 'CPILFESL', 'PPIFIS', 'AHETPI',
-        'MICH', 'SPY', 'MTSDS133FMS', 'GDP', 'SUBLPDCILSLGNQ', 'M2SL'
+        'MICH', 'CFNAI', 'CPIAUCSL', 'SPY', 'MTSDS133FMS', 'GDP',
+        'SUBLPDCILSLGNQ', 'M2SL'
     )),
     series_label       text    NOT NULL CHECK (series_label <> ''),
-    role               text    NOT NULL CHECK (role IN ('regime_input', 'allocation_guard')),
+    role               text    NOT NULL CHECK (role IN ('regime_input', 'proxy_input', 'allocation_guard')),
     display_state      text    NOT NULL CHECK (display_state IN ('ready', 'limited', 'unavailable')),
     availability_state text    NOT NULL CHECK (availability_state IN ('available', 'not_available', 'unknown')),
     evidence_state     text    NOT NULL CHECK (evidence_state IN ('observed', 'carried', 'missing', 'invalid')),
@@ -107,6 +111,12 @@ CREATE TABLE IF NOT EXISTS open_macro_v04_evidence_items (
         OR (series_key = 'MICH' AND series_label = 'University of Michigan Inflation Expectations'
             AND group_key = 'inflation' AND group_label = 'Inflation'
             AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'CFNAI' AND series_label = 'Chicago Fed National Activity Index'
+            AND group_key = 'growth' AND group_label = 'Growth'
+            AND group_role = 'regime_inputs' AND role = 'proxy_input')
+        OR (series_key = 'CPIAUCSL' AND series_label = 'Consumer Price Index'
+            AND group_key = 'inflation' AND group_label = 'Inflation'
+            AND group_role = 'regime_inputs' AND role = 'proxy_input')
         OR (series_key = 'SPY' AND series_label = 'Cycle Market Leg'
             AND group_key = 'market' AND group_label = 'Market'
             AND group_role = 'regime_inputs' AND role = 'regime_input')
@@ -124,6 +134,80 @@ CREATE TABLE IF NOT EXISTS open_macro_v04_evidence_items (
             AND group_role = 'allocation_evidence' AND role = 'allocation_guard')
     )
 );
+
+-- CREATE TABLE IF NOT EXISTS does not update constraints on an already bootstrapped
+-- worker schema. Keep the source-specific catalog widening explicitly rerunnable.
+ALTER TABLE open_macro_v04_pit_evidence
+    DROP CONSTRAINT IF EXISTS open_macro_v04_pit_evidence_series_key_check;
+ALTER TABLE open_macro_v04_pit_evidence
+    ADD CONSTRAINT open_macro_v04_pit_evidence_series_key_check CHECK (series_key IN (
+        'INDPRO', 'PCEC96', 'PAYEMS', 'ACOGNO', 'CPILFESL', 'PPIFIS', 'AHETPI',
+        'MICH', 'CFNAI', 'CPIAUCSL', 'SPY', 'MTSDS133FMS', 'GDP',
+        'SUBLPDCILSLGNQ', 'M2SL'
+    ));
+ALTER TABLE open_macro_v04_evidence_items
+    DROP CONSTRAINT IF EXISTS open_macro_v04_evidence_items_series_key_check;
+ALTER TABLE open_macro_v04_evidence_items
+    ADD CONSTRAINT open_macro_v04_evidence_items_series_key_check CHECK (series_key IN (
+        'INDPRO', 'PCEC96', 'PAYEMS', 'ACOGNO', 'CPILFESL', 'PPIFIS', 'AHETPI',
+        'MICH', 'CFNAI', 'CPIAUCSL', 'SPY', 'MTSDS133FMS', 'GDP',
+        'SUBLPDCILSLGNQ', 'M2SL'
+    ));
+ALTER TABLE open_macro_v04_evidence_items
+    DROP CONSTRAINT IF EXISTS open_macro_v04_evidence_items_role_check;
+ALTER TABLE open_macro_v04_evidence_items
+    ADD CONSTRAINT open_macro_v04_evidence_items_role_check
+    CHECK (role IN ('regime_input', 'proxy_input', 'allocation_guard'));
+ALTER TABLE open_macro_v04_evidence_items
+    DROP CONSTRAINT IF EXISTS open_macro_v04_evidence_items_catalog_coherence;
+ALTER TABLE open_macro_v04_evidence_items
+    ADD CONSTRAINT open_macro_v04_evidence_items_catalog_coherence CHECK (
+        (series_key = 'INDPRO' AND series_label = 'Industrial Production'
+            AND group_key = 'growth' AND group_label = 'Growth'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'PCEC96' AND series_label = 'Real Personal Consumption Expenditures'
+            AND group_key = 'growth' AND group_label = 'Growth'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'PAYEMS' AND series_label = 'Total Nonfarm Payrolls'
+            AND group_key = 'growth' AND group_label = 'Growth'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'ACOGNO' AND series_label = 'Manufacturers’ New Orders for Consumer Goods'
+            AND group_key = 'growth' AND group_label = 'Growth'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'CPILFESL' AND series_label = 'Core Consumer Price Index'
+            AND group_key = 'inflation' AND group_label = 'Inflation'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'PPIFIS' AND series_label = 'Producer Price Index: Final Demand Intermediate Services'
+            AND group_key = 'inflation' AND group_label = 'Inflation'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'AHETPI' AND series_label = 'Average Hourly Earnings'
+            AND group_key = 'inflation' AND group_label = 'Inflation'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'MICH' AND series_label = 'University of Michigan Inflation Expectations'
+            AND group_key = 'inflation' AND group_label = 'Inflation'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'CFNAI' AND series_label = 'Chicago Fed National Activity Index'
+            AND group_key = 'growth' AND group_label = 'Growth'
+            AND group_role = 'regime_inputs' AND role = 'proxy_input')
+        OR (series_key = 'CPIAUCSL' AND series_label = 'Consumer Price Index'
+            AND group_key = 'inflation' AND group_label = 'Inflation'
+            AND group_role = 'regime_inputs' AND role = 'proxy_input')
+        OR (series_key = 'SPY' AND series_label = 'Cycle Market Leg'
+            AND group_key = 'market' AND group_label = 'Market'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'MTSDS133FMS' AND series_label = 'Federal Surplus or Deficit'
+            AND group_key = 'fiscal_liquidity' AND group_label = 'Fiscal and liquidity'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'GDP' AND series_label = 'Nominal GDP'
+            AND group_key = 'fiscal_liquidity' AND group_label = 'Fiscal and liquidity'
+            AND group_role = 'regime_inputs' AND role = 'regime_input')
+        OR (series_key = 'SUBLPDCILSLGNQ' AND series_label = 'Bank Lending Standards'
+            AND group_key = 'allocation_guard' AND group_label = 'Allocation guard'
+            AND group_role = 'allocation_evidence' AND role = 'allocation_guard')
+        OR (series_key = 'M2SL' AND series_label = 'M2 Money Stock'
+            AND group_key = 'allocation_guard' AND group_label = 'Allocation guard'
+            AND group_role = 'allocation_evidence' AND role = 'allocation_guard')
+    );
 
 -- This is the only worker-owned taxonomy projection Light may read.  It is
 -- intentionally categorical: there are no scores, weights, timestamps, IDs,
@@ -193,21 +277,32 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    item_count integer;
+    item_keys text[];
     taxonomy_count integer;
+    taxonomy_source text;
     derived_coverage text;
 BEGIN
-    SELECT count(*) INTO item_count
-    FROM open_macro_v04_evidence_items
-    WHERE decision_month = NEW.decision_month;
-    IF item_count <> 13 THEN
-        RAISE EXCEPTION 'evidence snapshot % requires exactly 13 fixed catalog items', NEW.decision_month;
-    END IF;
-    SELECT count(*) INTO taxonomy_count
+    SELECT count(*), min(quadrant_source) INTO taxonomy_count, taxonomy_source
     FROM open_macro_v04_categorical_taxonomy
     WHERE decision_month = NEW.decision_month;
     IF taxonomy_count <> 1 THEN
         RAISE EXCEPTION 'evidence snapshot % requires exactly one categorical taxonomy row', NEW.decision_month;
+    END IF;
+    SELECT array_agg(series_key ORDER BY series_key) INTO item_keys
+    FROM open_macro_v04_evidence_items
+    WHERE decision_month = NEW.decision_month;
+    IF taxonomy_source IN ('proxy', 'proxy_missing') THEN
+        IF item_keys IS DISTINCT FROM ARRAY[
+            'CFNAI', 'CPIAUCSL', 'GDP', 'M2SL', 'MTSDS133FMS', 'SPY',
+            'SUBLPDCILSLGNQ'
+        ]::text[] THEN
+            RAISE EXCEPTION 'evidence snapshot % requires the exact proxy catalog', NEW.decision_month;
+        END IF;
+    ELSIF item_keys IS DISTINCT FROM ARRAY[
+        'ACOGNO', 'AHETPI', 'CPILFESL', 'GDP', 'INDPRO', 'M2SL', 'MICH',
+        'MTSDS133FMS', 'PAYEMS', 'PCEC96', 'PPIFIS', 'SPY', 'SUBLPDCILSLGNQ'
+    ]::text[] THEN
+        RAISE EXCEPTION 'evidence snapshot % requires the exact chain catalog', NEW.decision_month;
     END IF;
     SELECT CASE
         WHEN bool_and(display_state = 'ready'
@@ -297,7 +392,8 @@ BEGIN
         FROM pg_class
         WHERE oid IN (
             'public.open_macro_v04_decisions'::regclass,
-            'public.open_macro_v04_allocations'::regclass
+            'public.open_macro_v04_allocations'::regclass,
+            'public.open_macro_v04_decision_input_captures'::regclass
         )
           AND relowner <> (SELECT oid FROM pg_roles WHERE rolname = current_user)
     ) INTO can_manage_producer_acl;
@@ -307,7 +403,8 @@ BEGIN
         FROM pg_roles AS application_role
         CROSS JOIN (VALUES
             ('public.open_macro_v04_decisions'::text),
-            ('public.open_macro_v04_allocations'::text)
+            ('public.open_macro_v04_allocations'::text),
+            ('public.open_macro_v04_decision_input_captures'::text)
         ) AS producer_relation(name)
         WHERE application_role.rolname IN ('app_runtime', 'app_analytics_ro')
           AND (
@@ -325,6 +422,7 @@ BEGIN
     IF can_manage_producer_acl THEN
         EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_decisions FROM PUBLIC';
         EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_allocations FROM PUBLIC';
+        EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_decision_input_captures FROM PUBLIC';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'worker_writer') THEN
         IF can_manage_producer_acl THEN
@@ -332,6 +430,9 @@ BEGIN
             EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_allocations FROM worker_writer';
             EXECUTE 'GRANT SELECT ON TABLE open_macro_v04_decisions TO worker_writer';
             EXECUTE 'GRANT SELECT ON TABLE open_macro_v04_allocations TO worker_writer';
+            -- Producer and evidence services currently share worker_writer. Preserve
+            -- the producer's INSERT grant while the evidence code only performs SELECT.
+            EXECUTE 'GRANT SELECT ON TABLE open_macro_v04_decision_input_captures TO worker_writer';
         END IF;
         EXECUTE 'GRANT SELECT, INSERT ON TABLE open_macro_v04_pit_evidence TO worker_writer';
         EXECUTE 'GRANT SELECT, INSERT ON TABLE open_macro_v04_evidence_snapshots TO worker_writer';
@@ -360,6 +461,7 @@ BEGIN
         IF can_manage_producer_acl THEN
             EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_decisions FROM app_runtime';
             EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_allocations FROM app_runtime';
+            EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_decision_input_captures FROM app_runtime';
         END IF;
         EXECUTE 'REVOKE ALL ON FUNCTION open_macro_v04_pit_evidence_reject_mutation() FROM app_runtime';
         EXECUTE 'REVOKE ALL ON FUNCTION open_macro_v04_evidence_snapshots_insert_guard() FROM app_runtime';
@@ -379,6 +481,7 @@ BEGIN
         IF can_manage_producer_acl THEN
             EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_decisions FROM app_analytics_ro';
             EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_allocations FROM app_analytics_ro';
+            EXECUTE 'REVOKE ALL ON TABLE open_macro_v04_decision_input_captures FROM app_analytics_ro';
         END IF;
         EXECUTE 'REVOKE ALL ON FUNCTION open_macro_v04_pit_evidence_reject_mutation() FROM app_analytics_ro';
         EXECUTE 'REVOKE ALL ON FUNCTION open_macro_v04_evidence_snapshots_insert_guard() FROM app_analytics_ro';

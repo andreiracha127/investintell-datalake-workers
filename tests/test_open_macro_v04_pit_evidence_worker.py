@@ -16,6 +16,7 @@ SEED_IDS = (
     "INDPRO", "PCEC96", "PAYEMS", "ACOGNO", "CPILFESL", "PPIFIS", "AHETPI", "MICH",
 )
 MIRROR_IDS = ("MTSDS133FMS", "GDP", "SUBLPDCILSLGNQ", "M2SL")
+PROXY_IDS = ("CFNAI", "CPIAUCSL")
 FRED_IDS = (*SEED_IDS, *MIRROR_IDS)
 PUBLIC_KEYS = {
     "group_key", "group_label", "group_role", "series_key", "series_label", "role",
@@ -76,16 +77,55 @@ def _complete_mirrors() -> list[dict]:
     return [_mirror(series_id, value=float(index + 10)) for index, series_id in enumerate(MIRROR_IDS)]
 
 
+def _proxy_mirrors(*, missing: str | None = None) -> list[dict]:
+    rows = _complete_mirrors()
+    for offset in range(1, 27):
+        month_end = evidence._month_end_shift(DECISION_MONTH, -offset)
+        if missing != "CFNAI":
+            rows.append({
+                **_mirror("CFNAI", value=float(offset)),
+                "obs_date": month_end.isoformat(),
+            })
+        if missing != "CPIAUCSL":
+            rows.append({
+                **_mirror("CPIAUCSL", value=100.0 + offset),
+                "obs_date": month_end.isoformat(),
+            })
+    return rows
+
+
+def _captures(mirrors: list[dict]) -> list[dict]:
+    by_series = {series_id: [row for row in mirrors if row["series_id"] == series_id]
+                 for series_id in MIRROR_IDS}
+    return [
+        {
+            "series_id": series_id,
+            "series_digest_sha256": evidence._producer_series_digest(rows),
+            "row_count": len(rows),
+            "min_obs_date": min(row["obs_date"] for row in rows),
+            "max_obs_date": max(row["obs_date"] for row in rows),
+            "producer_run_id": "open-macro-v04-test",
+            "global_input_digest_sha256": "a" * 64,
+            "captured_at": "2026-03-03T12:00:00+00:00",
+        }
+        for series_id, rows in by_series.items()
+        if rows
+    ]
+
+
 def _materialization(*, vintages: list[dict] | None = None,
                      spy_rows: list[dict] | None = None,
                      mirrors: list[dict] | None = None,
-                     decision: dict | None = None):
+                      decision: dict | None = None,
+                      captures: list[dict] | None = None):
+    selected_mirrors = _complete_mirrors() if mirrors is None else mirrors
     return evidence.build_materialization(
         decision or _decision(),
         vintages=_complete_vintages() if vintages is None else vintages,
         spy_rows=[{"ticker": "SPY", "date": "2026-02-27", "adj_close": 500.0}]
         if spy_rows is None else spy_rows,
-        mirror_rows=_complete_mirrors() if mirrors is None else mirrors,
+        mirror_rows=selected_mirrors,
+        captures=_captures(selected_mirrors) if captures is None else captures,
     )
 
 
@@ -286,6 +326,57 @@ def test_public_items_have_the_fixed_catalogue_order_and_no_private_lineage_fiel
     assert materialization.private_decision["carry_age"] == 2
 
 
+def test_proxy_decision_publishes_only_its_seven_truthful_inputs() -> None:
+    decision = {
+        **_decision(quadrant_source="proxy"),
+        "decision_basis": "bootstrap_replay",
+    }
+    materialization = _materialization(
+        decision=decision,
+        mirrors=_proxy_mirrors(),
+        captures=[],
+    )
+
+    assert [item["series_key"] for item in materialization.public_items] == [
+        "CFNAI", "CPIAUCSL", "SPY", "MTSDS133FMS", "GDP",
+        "SUBLPDCILSLGNQ", "M2SL",
+    ]
+    assert not set(SEED_IDS) & {
+        item["series_key"] for item in materialization.public_items
+    }
+    for series_key in PROXY_IDS:
+        item = _item(materialization, series_key)
+        assert item["role"] == "proxy_input"
+        assert item["availability_state"] == "available"
+        assert item["pit_state"] == "unverified"
+        assert set(item) == PUBLIC_KEYS
+        assert materialization.private_lineage[series_key]["selected_value"] is not None
+    assert len(evidence._private_records(materialization)) == 7
+
+
+@pytest.mark.parametrize("missing", PROXY_IDS)
+def test_proxy_missing_identifies_the_unusable_transformed_arm(missing: str) -> None:
+    decision = {
+        **_decision(quadrant_source="proxy_missing"),
+        "quadrant": None,
+        "decision_basis": "bootstrap_replay",
+    }
+    materialization = _materialization(
+        decision=decision,
+        mirrors=_proxy_mirrors(missing=missing),
+        captures=[],
+    )
+
+    assert _item(materialization, missing)["availability_state"] == "not_available"
+    assert "selected_value" not in materialization.private_lineage[missing]
+    assert "selected_observation_period" not in materialization.private_lineage[missing]
+    companion = next(series_id for series_id in PROXY_IDS if series_id != missing)
+    assert _item(materialization, companion)["availability_state"] == "available"
+    assert {item["series_key"] for item in materialization.public_items} == {
+        *PROXY_IDS, "SPY", *MIRROR_IDS,
+    }
+
+
 @pytest.mark.parametrize(
     "chain_seed",
     [
@@ -334,7 +425,34 @@ def test_spy_market_leg_is_pinned_to_the_chain_seed_not_the_later_v04_month() ->
     )
 
     assert materialization.private_lineage["SPY"]["selected_date"] == "2026-01-30"
+    assert materialization.private_lineage["SPY"]["decision_cutoff"] == (
+        "2026-01-31T00:00:00+00:00"
+    )
     assert materialization.private_lineage["SPY"]["selected_value"] == 490.0
+    spy_record = next(
+        record for record in evidence._private_records(materialization)
+        if record["series_key"] == "SPY"
+    )
+    assert spy_record["cutoff_at"] == dt.datetime(
+        2026, 1, 31, tzinfo=dt.timezone.utc
+    )
+
+
+def test_missing_spy_retains_the_chain_cutoff() -> None:
+    materialization = _materialization(spy_rows=[])
+
+    assert materialization.private_lineage["SPY"] == {
+        "source_kind": "eod_prices",
+        "pit_state": "unavailable",
+        "decision_cutoff": "2026-02-28T00:00:00+00:00",
+    }
+    spy_record = next(
+        record for record in evidence._private_records(materialization)
+        if record["series_key"] == "SPY"
+    )
+    assert spy_record["cutoff_at"] == dt.datetime(
+        2026, 2, 28, tzinfo=dt.timezone.utc
+    )
 
 
 def test_spy_market_leg_ignores_later_non_spy_certified_market_rows() -> None:
@@ -423,6 +541,15 @@ class _InputConn:
                 ))
                 for row in _complete_mirrors()
             ]
+        if sql is evidence.CAPTURE_SQL:
+            return [
+                tuple(row[key] for key in (
+                    "series_id", "series_digest_sha256", "row_count", "min_obs_date",
+                    "max_obs_date", "producer_run_id", "global_input_digest_sha256",
+                    "captured_at",
+                ))
+                for row in _captures(_complete_mirrors())
+            ]
         if sql in {
             evidence.MIRROR_SQL,
             evidence.SPY_SQL,
@@ -473,7 +600,8 @@ def test_acquired_connection_reads_certified_chain_inputs_and_private_carry_link
         evidence.VINTAGE_SQL,
         evidence.MIRROR_SQL,
     ]
-    assert len(conn.calls) == 4
+    assert conn.calls[4][0] is evidence.CAPTURE_SQL
+    assert len(conn.calls) == 5
     assert materialization.private_decision["carry_seed_fingerprint"] == pack_sha
     assert materialization.private_lineage["SPY"]["selected_date"] == "2025-12-30"
 
@@ -741,6 +869,7 @@ def test_v04_fred_arms_compare_vintages_only_within_the_producer_horizon(
         vintages=vintages,
         spy_rows=[{"ticker": "SPY", "date": "2026-02-27", "adj_close": 500.0}],
         mirror_rows=mirrors,
+        captures=_captures(mirrors),
         chain_seed=chain_seed,
     )
     assert _item(verified, "GDP")["pit_state"] == "verified"
@@ -753,6 +882,8 @@ def test_v04_fred_arms_compare_vintages_only_within_the_producer_horizon(
         vintages=vintages,
         spy_rows=[{"ticker": "SPY", "date": "2026-02-27", "adj_close": 500.0}],
         mirror_rows=mirrors,
+        captures=_captures([_mirror(series_id, value=float(FRED_IDS.index(series_id) + 1))
+                            for series_id in MIRROR_IDS]),
         chain_seed=chain_seed,
     )
     assert _item(mismatch, "GDP")["pit_state"] == "unverified"
@@ -777,6 +908,79 @@ def test_mirror_match_rejects_missing_or_extra_rows_inside_the_producer_horizon(
     assert evidence._mirror_matches_vintages(mirror, [first, second]) is True
     assert evidence._mirror_matches_vintages(mirror, [first]) is False
     assert evidence._mirror_matches_vintages(mirror, [first, extra, second]) is False
+
+
+def test_live_direct_inputs_require_matching_immutable_captures() -> None:
+    mirrors = _complete_mirrors()
+    vintages = _complete_vintages() + [
+        _vintage(series_id, value=float(index + 10))
+        for index, series_id in enumerate(MIRROR_IDS)
+    ]
+
+    missing = _materialization(vintages=vintages, mirrors=mirrors, captures=[])
+    assert all(_item(missing, key)["pit_state"] == "unverified" for key in MIRROR_IDS)
+
+    mismatched = _captures(mirrors)
+    mismatched[0] = {**mismatched[0], "series_digest_sha256": "f" * 64}
+    materialization = _materialization(
+        vintages=vintages, mirrors=mirrors, captures=mismatched)
+    assert _item(materialization, MIRROR_IDS[0])["pit_state"] == "unverified"
+
+    inconsistent_identity = _captures(mirrors)
+    inconsistent_identity[0] = {
+        **inconsistent_identity[0],
+        "global_input_digest_sha256": "b" * 64,
+    }
+    materialization = _materialization(
+        vintages=vintages, mirrors=mirrors, captures=inconsistent_identity
+    )
+    assert all(
+        _item(materialization, key)["pit_state"] == "unverified"
+        for key in MIRROR_IDS
+    )
+
+
+def test_immutable_capture_survives_later_mutable_decision_digest_rewrite() -> None:
+    mirrors = _complete_mirrors()
+    vintages = _complete_vintages() + [
+        _vintage(series_id, value=float(index + 10))
+        for index, series_id in enumerate(MIRROR_IDS)
+    ]
+    decision = {**_decision(), "input_digest_sha256": "b" * 64}
+
+    materialization = _materialization(
+        decision=decision,
+        vintages=vintages,
+        mirrors=mirrors,
+        captures=_captures(mirrors),
+    )
+
+    assert all(
+        _item(materialization, key)["pit_state"] == "verified"
+        for key in MIRROR_IDS
+    )
+    assert {
+        materialization.private_lineage[key]["producer_capture"][
+            "global_input_digest_sha256"
+        ]
+        for key in MIRROR_IDS
+    } == {"a" * 64}
+    assert all(_item(materialization, key)["pit_state"] == "verified"
+               for key in MIRROR_IDS[1:])
+
+    bad_horizon = _captures(mirrors)
+    bad_horizon[0] = {**bad_horizon[0], "row_count": 2}
+    materialization = _materialization(
+        vintages=vintages, mirrors=mirrors, captures=bad_horizon
+    )
+    assert _item(materialization, MIRROR_IDS[0])["pit_state"] == "unverified"
+
+
+def test_bootstrap_direct_inputs_cannot_be_verified_even_with_matching_capture() -> None:
+    decision = {**_decision(), "decision_basis": "bootstrap_replay"}
+    materialization = _materialization(decision=decision)
+    assert all(_item(materialization, key)["pit_state"] == "unverified"
+               for key in MIRROR_IDS)
 
 
 def test_carried_chain_uses_its_seed_cutoff_while_v04_uses_decision_creation_time() -> None:
@@ -808,6 +1012,7 @@ def test_carried_chain_uses_its_seed_cutoff_while_v04_uses_decision_creation_tim
         vintages=vintages,
         spy_rows=[{"ticker": "SPY", "date": "2026-01-30", "adj_close": 490.0}],
         mirror_rows=[_mirror(series_id, value=1.0) for series_id in MIRROR_IDS],
+        captures=_captures([_mirror(series_id, value=1.0) for series_id in MIRROR_IDS]),
         chain_seed=chain_seed,
     )
 

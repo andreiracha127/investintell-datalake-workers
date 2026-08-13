@@ -116,9 +116,11 @@ CREATE TABLE IF NOT EXISTS open_macro_v04_decisions (
         CHECK (decision_basis IN ('bootstrap_replay', 'live')),
 
     -- ── provenance ──────────────────────────────────────────────────────────
-    -- sha256 over the canonical `date|%.17g` serialization of every input series
-    -- plus the decision chain and the SPY month-end frame (the fixture manifest's
-    -- own recipe), combined in a fixed order.
+    -- Run-wide audit provenance: sha256 over the canonical `date|%.17g`
+    -- serialization of every input series plus the decision chain and the SPY
+    -- month-end frame (the fixture manifest's own recipe), combined in a fixed
+    -- order. Later runs rewrite it; immutable per-decision direct-input identity is
+    -- stored in open_macro_v04_decision_input_captures instead.
     input_digest_sha256  CHAR(64)      NOT NULL,
     -- the frozen formulation this row was computed under: the canonical sha256 of
     -- the {books, formulation, freshness, gates} block of the formulation freeze.

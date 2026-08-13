@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import pathlib
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from src.db import (
 )
 
 
-EVIDENCE_CATALOG: tuple[tuple[str, str, str, str, str, str], ...] = (
+CHAIN_INPUT_CATALOG: tuple[tuple[str, str, str, str, str, str], ...] = (
     ("growth", "Growth", "regime_inputs", "INDPRO", "Industrial Production", "regime_input"),
     ("growth", "Growth", "regime_inputs", "PCEC96", "Real Personal Consumption Expenditures", "regime_input"),
     ("growth", "Growth", "regime_inputs", "PAYEMS", "Total Nonfarm Payrolls", "regime_input"),
@@ -32,15 +33,25 @@ EVIDENCE_CATALOG: tuple[tuple[str, str, str, str, str, str], ...] = (
     ("inflation", "Inflation", "regime_inputs", "PPIFIS", "Producer Price Index: Final Demand Intermediate Services", "regime_input"),
     ("inflation", "Inflation", "regime_inputs", "AHETPI", "Average Hourly Earnings", "regime_input"),
     ("inflation", "Inflation", "regime_inputs", "MICH", "University of Michigan Inflation Expectations", "regime_input"),
+)
+PROXY_INPUT_CATALOG: tuple[tuple[str, str, str, str, str, str], ...] = (
+    ("growth", "Growth", "regime_inputs", "CFNAI", "Chicago Fed National Activity Index", "proxy_input"),
+    ("inflation", "Inflation", "regime_inputs", "CPIAUCSL", "Consumer Price Index", "proxy_input"),
+)
+SHARED_INPUT_CATALOG: tuple[tuple[str, str, str, str, str, str], ...] = (
     ("market", "Market", "regime_inputs", "SPY", "Cycle Market Leg", "regime_input"),
     ("fiscal_liquidity", "Fiscal and liquidity", "regime_inputs", "MTSDS133FMS", "Federal Surplus or Deficit", "regime_input"),
     ("fiscal_liquidity", "Fiscal and liquidity", "regime_inputs", "GDP", "Nominal GDP", "regime_input"),
     ("allocation_guard", "Allocation guard", "allocation_evidence", "SUBLPDCILSLGNQ", "Bank Lending Standards", "allocation_guard"),
     ("allocation_guard", "Allocation guard", "allocation_evidence", "M2SL", "M2 Money Stock", "allocation_guard"),
 )
-CHAIN_SERIES_IDS = tuple(entry[3] for entry in EVIDENCE_CATALOG[:8])
+EVIDENCE_CATALOG = (*CHAIN_INPUT_CATALOG, *SHARED_INPUT_CATALOG)
+PROXY_EVIDENCE_CATALOG = (*PROXY_INPUT_CATALOG, *SHARED_INPUT_CATALOG)
+CHAIN_SERIES_IDS = tuple(entry[3] for entry in CHAIN_INPUT_CATALOG)
+PROXY_SERIES_IDS = tuple(entry[3] for entry in PROXY_INPUT_CATALOG)
 V04_SERIES_IDS = ("MTSDS133FMS", "GDP", "SUBLPDCILSLGNQ", "M2SL")
 FRED_SERIES_IDS = (*CHAIN_SERIES_IDS, *V04_SERIES_IDS)
+MIRROR_SERIES_IDS = (*PROXY_SERIES_IDS, *V04_SERIES_IDS)
 ITEM_COLUMNS = (
     "group_key", "group_label", "group_role", "series_key", "series_label", "role",
     "display_state", "availability_state", "evidence_state", "freshness_state", "pit_state",
@@ -78,6 +89,12 @@ MIRROR_SQL = (
     "SELECT series_id, obs_date, value, source, created_at, updated_at FROM macro_data "
     "WHERE series_id = ANY(%(series_ids)s) AND obs_date <= %(decision_as_of)s "
     "ORDER BY series_id, obs_date"
+)
+CAPTURE_SQL = (
+    "SELECT series_id, series_digest_sha256, row_count, min_obs_date, max_obs_date, "
+    "producer_run_id, global_input_digest_sha256, captured_at "
+    "FROM open_macro_v04_decision_input_captures WHERE as_of = %(decision_as_of)s "
+    "AND series_id = ANY(%(series_ids)s) ORDER BY series_id"
 )
 EXISTING_SNAPSHOT_SQL = (
     "SELECT publication_status, coverage_state FROM open_macro_v04_evidence_snapshots "
@@ -290,6 +307,70 @@ def _mirror_matches_vintages(
     return mirror == vintages
 
 
+def _producer_series_digest(rows: Iterable[Mapping[str, Any]]) -> str:
+    lines = [
+        f"{_as_date(row['obs_date']):%Y-%m-%d}|{float(row['value']):.17g}"
+        for row in sorted(rows, key=lambda row: _as_date(row["obs_date"]))
+    ]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def _month_end_shift(value: dt.date, months: int) -> dt.date:
+    month_index = value.year * 12 + value.month - 1 + months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    following_month = dt.date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    return following_month - dt.timedelta(days=1)
+
+
+def _proxy_arm_availability(
+    mirror_rows: Iterable[Mapping[str, Any]], as_of: dt.date
+) -> dict[str, bool]:
+    """Recompute whether each replay-only proxy arm has a usable transformed value."""
+    from harness.phase0q import v4_replay
+
+    monthly: dict[str, dict[dt.date, float]] = {
+        series_id: {} for series_id in PROXY_SERIES_IDS
+    }
+    for row in sorted(mirror_rows, key=lambda candidate: _as_date(candidate["obs_date"])):
+        series_id = str(row["series_id"])
+        if series_id in monthly:
+            monthly[series_id][
+                _month_end_shift(_as_date(row["obs_date"]), 0)
+            ] = float(row["value"])
+    lag = v4_replay.PROXY_LAG_MONTHS
+    moving_average = v4_replay.PROXY_MA_MONTHS
+    acceleration = v4_replay.CPI_ACCELERATION_MONTHS
+    growth_months = [
+        _month_end_shift(as_of, offset)
+        for offset in range(-(lag + moving_average - 1), -lag + 1)
+    ]
+    inflation_months = [
+        _month_end_shift(as_of, -lag - acceleration * multiple)
+        for multiple in (2, 1, 0)
+    ]
+    growth_values = [monthly["CFNAI"].get(month) for month in growth_months]
+    inflation_values = [monthly["CPIAUCSL"].get(month) for month in inflation_months]
+    growth = math.nan
+    if all(value is not None for value in growth_values):
+        growth = (
+            sum(value for value in growth_values if value is not None)
+            / float(moving_average)
+        )
+    inflation_acceleration = math.nan
+    if all(value is not None for value in inflation_values):
+        present_values = [value for value in inflation_values if value is not None]
+        old, middle, recent = present_values
+        if old != 0.0 and middle != 0.0:
+            recent_yoy = 100.0 * (recent / middle - 1.0)
+            prior_yoy = 100.0 * (middle / old - 1.0)
+            inflation_acceleration = recent_yoy - prior_yoy
+    return {
+        "CFNAI": math.isfinite(growth),
+        "CPIAUCSL": math.isfinite(inflation_acceleration),
+    }
+
+
 def _available_item(entry: tuple[str, str, str, str, str, str], *, pit_state: str) -> dict[str, str]:
     group_key, group_label, group_role, series_key, series_label, role = entry
     return {
@@ -409,6 +490,7 @@ def build_materialization(
     vintages: Iterable[Mapping[str, Any]],
     spy_rows: Iterable[Mapping[str, Any]],
     mirror_rows: Iterable[Mapping[str, Any]],
+    captures: Iterable[Mapping[str, Any]] = (),
     chain_seed: Mapping[str, Any] | None = None,
     chain_seed_verified: bool = True,
 ) -> EvidenceMaterialization:
@@ -435,6 +517,12 @@ def build_materialization(
     seed_as_of = _as_date(chain_seed["as_of"]) if chain_seed is not None else as_of
     chain_cutoff = decision_cutoff(seed_as_of)
     month = as_of.strftime("%Y-%m")
+    quadrant_source = str(decision.get("quadrant_source"))
+    active_catalog = (
+        PROXY_EVIDENCE_CATALOG
+        if quadrant_source in {"proxy", "proxy_missing"}
+        else EVIDENCE_CATALOG
+    )
     by_fred: dict[str, list[Mapping[str, Any]]] = {
         series_id: [] for series_id in FRED_SERIES_IDS
     }
@@ -443,12 +531,31 @@ def build_materialization(
         if series_id in by_fred:
             by_fred[series_id].append(row)
     by_mirror: dict[str, list[Mapping[str, Any]]] = {
-        series_id: [] for series_id in V04_SERIES_IDS
+        series_id: [] for series_id in MIRROR_SERIES_IDS
     }
     for row in mirror_rows:
         series_id = str(row["series_id"])
         if series_id in by_mirror and _as_date(row["obs_date"]) <= as_of:
             by_mirror[series_id].append(row)
+    proxy_arm_available = _proxy_arm_availability(
+        (row for rows in by_mirror.values() for row in rows), as_of
+    )
+    by_capture = {
+        str(row["series_id"]): row
+        for row in captures
+        if str(row["series_id"]) in V04_SERIES_IDS
+    }
+    capture_identities = {
+        (
+            str(row["producer_run_id"]),
+            str(row["global_input_digest_sha256"]).strip(),
+            _iso_utc(row["captured_at"]),
+        )
+        for row in by_capture.values()
+    }
+    captures_complete = (
+        set(by_capture) == set(V04_SERIES_IDS) and len(capture_identities) == 1
+    )
     spy = _latest(
         (
             row
@@ -460,7 +567,7 @@ def build_materialization(
 
     items: list[dict[str, str]] = []
     lineage: dict[str, dict[str, Any]] = {}
-    for entry in EVIDENCE_CATALOG:
+    for entry in active_catalog:
         series_id = entry[3]
         if series_id in CHAIN_SERIES_IDS:
             selected_rows = _selected_vintage_rows(by_fred[series_id], chain_cutoff, as_of)
@@ -495,7 +602,11 @@ def build_materialization(
         elif series_id == "SPY":
             if spy is None:
                 items.append(_unavailable_item(entry))
-                lineage[series_id] = {"source_kind": "eod_prices", "pit_state": "unavailable"}
+                lineage[series_id] = {
+                    "source_kind": "eod_prices",
+                    "pit_state": "unavailable",
+                    "decision_cutoff": chain_cutoff.isoformat(),
+                }
             else:
                 item = _available_item(entry, pit_state="unverified")
                 if chain_is_carried:
@@ -505,14 +616,46 @@ def build_materialization(
                 lineage[series_id] = {
                     "source_kind": "eod_prices",
                     "pit_state": "unverified",
+                    "decision_cutoff": chain_cutoff.isoformat(),
                     "selected_date": _as_date(spy["date"]).isoformat(),
                     "selected_value": float(spy["adj_close"]),
                 }
+        elif series_id in PROXY_SERIES_IDS:
+            proxy_rows = by_mirror[series_id]
+            proxy_input_horizon = _month_end_shift(as_of, -1)
+            contributing_rows = [
+                row for row in proxy_rows
+                if _as_date(row["obs_date"]) <= proxy_input_horizon
+            ]
+            selected = _latest(contributing_rows, "obs_date")
+            arm_available = proxy_arm_available[series_id]
+            items.append(
+                _available_item(entry, pit_state="unverified")
+                if arm_available
+                else _unavailable_item(entry)
+            )
+            lineage[series_id] = {
+                "source_kind": "macro_data_bootstrap_proxy",
+                "pit_state": "unverified" if arm_available else "unavailable",
+                "decision_cutoff": v04_cutoff.isoformat(),
+            }
+            if arm_available and selected is not None:
+                lineage[series_id].update({
+                    "source_set_fingerprint": _producer_series_digest(
+                        contributing_rows
+                    ),
+                    "selected_observation_period": _as_date(
+                        selected["obs_date"]
+                    ).isoformat(),
+                    "selected_value": float(selected["value"]),
+                    "source": str(selected.get("source") or "macro_data"),
+                })
         else:
             selected_rows = _selected_vintage_rows(by_fred[series_id], v04_cutoff, as_of)
             selected = selected_rows[-1] if selected_rows else None
             mirror_for_series = by_mirror[series_id]
             mirror_latest = _latest(mirror_for_series, "obs_date")
+            capture = by_capture.get(series_id)
             if selected is None and mirror_latest is None:
                 items.append(_unavailable_item(entry))
                 lineage[series_id] = {
@@ -524,7 +667,16 @@ def build_materialization(
                 proven = (
                     selected is not None
                     and decision.get("decision_basis") == "live"
+                    and captures_complete
+                    and capture is not None
                     and _mirror_matches_vintages(mirror_for_series, selected_rows)
+                    and _producer_series_digest(mirror_for_series)
+                    == str(capture["series_digest_sha256"]).strip()
+                    and len(mirror_for_series) == int(capture["row_count"])
+                    and _as_date(mirror_for_series[0]["obs_date"])
+                    == _as_date(capture["min_obs_date"])
+                    and _as_date(mirror_for_series[-1]["obs_date"])
+                    == _as_date(capture["max_obs_date"])
                 )
                 pit_state = "verified" if proven else "unverified"
                 item = _available_item(entry, pit_state=pit_state)
@@ -547,6 +699,24 @@ def build_materialization(
                     ).isoformat(),
                     "selected_value": float(source_row["value"]),
                 }
+                if capture is not None:
+                    lineage[series_id]["producer_capture"] = {
+                        "series_digest_sha256": str(
+                            capture["series_digest_sha256"]
+                        ).strip(),
+                        "row_count": int(capture["row_count"]),
+                        "min_obs_date": _as_date(
+                            capture["min_obs_date"]
+                        ).isoformat(),
+                        "max_obs_date": _as_date(
+                            capture["max_obs_date"]
+                        ).isoformat(),
+                        "producer_run_id": str(capture["producer_run_id"]),
+                        "global_input_digest_sha256": str(
+                            capture["global_input_digest_sha256"]
+                        ).strip(),
+                        "captured_at": _iso_utc(capture["captured_at"]),
+                    }
                 if selected_rows:
                     if selected is None:
                         raise AssertionError("selected vintage rows require a selected row")
@@ -679,7 +849,7 @@ def materialize_from_connection(conn, decision_as_of: dt.date) -> EvidenceMateri
     with conn.cursor() as cur:
         cur.execute(
             MIRROR_SQL,
-            {"series_ids": list(V04_SERIES_IDS), "decision_as_of": decision_as_of},
+            {"series_ids": list(MIRROR_SERIES_IDS), "decision_as_of": decision_as_of},
         )
         mirror_rows = [
             _record(
@@ -688,11 +858,28 @@ def materialize_from_connection(conn, decision_as_of: dt.date) -> EvidenceMateri
             )
             for row in cur.fetchall()
         ]
+    with conn.cursor() as cur:
+        cur.execute(
+            CAPTURE_SQL,
+            {"series_ids": list(V04_SERIES_IDS), "decision_as_of": decision_as_of},
+        )
+        captures = [
+            _record(
+                row,
+                (
+                    "series_id", "series_digest_sha256", "row_count", "min_obs_date",
+                    "max_obs_date", "producer_run_id", "global_input_digest_sha256",
+                    "captured_at",
+                ),
+            )
+            for row in cur.fetchall()
+        ]
     return build_materialization(
         decision,
         vintages=[*chain_vintages, *v04_vintages],
         spy_rows=spy_rows,
         mirror_rows=mirror_rows,
+        captures=captures,
         chain_seed=chain_seed,
         chain_seed_verified=(
             chain_seed is not None
