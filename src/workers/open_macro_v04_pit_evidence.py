@@ -66,6 +66,7 @@ VINTAGE_SQL = (
     "revision_number, source, source_spec_version "
     "FROM macro_observation_vintage WHERE series_id = ANY(%(series_ids)s) "
     "AND available_at <= %(decision_cutoff)s "
+    "AND observation_period <= %(decision_as_of)s "
     "ORDER BY series_id, observation_period, available_at DESC, vintage_date DESC, "
     "revision_number DESC"
 )
@@ -121,6 +122,13 @@ EXISTING_PRIVATE_SQL = (
     "SELECT " + ", ".join(PRIVATE_COMPARE_COLUMNS) + " "
     "FROM open_macro_v04_pit_evidence WHERE decision_month = %(decision_month)s "
     "ORDER BY series_key"
+)
+EVIDENCE_RELATION_PRESENCE_SQL = (
+    "SELECT "
+    "to_regclass('public.open_macro_v04_pit_evidence'), "
+    "to_regclass('public.open_macro_v04_evidence_snapshots'), "
+    "to_regclass('public.open_macro_v04_evidence_items'), "
+    "to_regclass('public.open_macro_v04_categorical_taxonomy')"
 )
 INSERT_PRIVATE_SQL = (
     "INSERT INTO open_macro_v04_pit_evidence "
@@ -216,15 +224,17 @@ def _latest(rows: Iterable[Mapping[str, Any]], date_key: str) -> Mapping[str, An
 
 
 def _selected_vintage_rows(
-    rows: Iterable[Mapping[str, Any]], cutoff: dt.datetime
+    rows: Iterable[Mapping[str, Any]], cutoff: dt.datetime, observation_horizon: dt.date
 ) -> tuple[Mapping[str, Any], ...]:
-    """One latest-known vintage per observation period, ordered oldest first."""
+    """One latest-known vintage through the decision horizon, ordered oldest first."""
     selected: dict[dt.date, Mapping[str, Any]] = {}
     for row in rows:
         available_at = _as_utc(row["available_at"])
         if available_at > cutoff:
             continue
         period = _as_date(row["observation_period"])
+        if period > observation_horizon:
+            continue
         current = selected.get(period)
         candidate_key = (
             available_at,
@@ -422,7 +432,11 @@ def build_materialization(
         if series_id in by_mirror and _as_date(row["obs_date"]) <= as_of:
             by_mirror[series_id].append(row)
     spy = _latest(
-        (row for row in spy_rows if _as_date(row["date"]) <= seed_as_of),
+        (
+            row
+            for row in spy_rows
+            if row["ticker"] == "SPY" and _as_date(row["date"]) <= seed_as_of
+        ),
         "date",
     )
 
@@ -431,7 +445,7 @@ def build_materialization(
     for entry in EVIDENCE_CATALOG:
         series_id = entry[3]
         if series_id in CHAIN_SERIES_IDS:
-            selected_rows = _selected_vintage_rows(by_fred[series_id], chain_cutoff)
+            selected_rows = _selected_vintage_rows(by_fred[series_id], chain_cutoff, as_of)
             selected = selected_rows[-1] if selected_rows else None
             if selected is None:
                 items.append(_unavailable_item(entry))
@@ -472,7 +486,7 @@ def build_materialization(
                     "selected_value": float(spy["adj_close"]),
                 }
         else:
-            selected_rows = _selected_vintage_rows(by_fred[series_id], v04_cutoff)
+            selected_rows = _selected_vintage_rows(by_fred[series_id], v04_cutoff, as_of)
             selected = selected_rows[-1] if selected_rows else None
             mirror_for_series = by_mirror[series_id]
             mirror_latest = _latest(mirror_for_series, "obs_date")
@@ -587,7 +601,14 @@ def _certified_chain_inputs(
     macro_rows, eod_rows, macro_boundary, eod_boundary = (
         open_macro_v03_chain.load_pack_inputs()
     )
-    macro_rows.extend(open_macro_v03_chain.read_macro_delta(conn, macro_boundary))
+    chain_source = {
+        "source": str(macro_rows[0]["source"]),
+        "source_spec_version": str(macro_rows[0]["source_spec_version"]),
+    }
+    macro_rows.extend(
+        {**chain_source, **row}
+        for row in open_macro_v03_chain.read_macro_delta(conn, macro_boundary)
+    )
     eod_rows.extend(open_macro_v03_chain.read_eod_delta(conn, eod_boundary))
     return macro_rows, eod_rows, str(pack_identity["input_pack_sha256"])
 
@@ -634,7 +655,11 @@ def materialize_from_connection(conn, decision_as_of: dt.date) -> EvidenceMateri
     with conn.cursor() as cur:
         cur.execute(
             VINTAGE_SQL,
-            {"series_ids": list(V04_SERIES_IDS), "decision_cutoff": v04_cutoff},
+            {
+                "series_ids": list(V04_SERIES_IDS),
+                "decision_cutoff": v04_cutoff,
+                "decision_as_of": decision_as_of,
+            },
         )
         v04_vintages = [
             _record(
@@ -794,6 +819,69 @@ def _ordered_private(
     )
 
 
+def _publication_outcome(
+    conn,
+    materialization: EvidenceMaterialization,
+) -> tuple[str, str | None, tuple[dict[str, Any], ...]]:
+    """Classify a materialization without mutating its immutable destination."""
+    params = {"decision_month": materialization.decision_month}
+    private_records = _private_records(materialization)
+    with conn.cursor() as cur:
+        cur.execute(EVIDENCE_RELATION_PRESENCE_SQL)
+        relation_presence = cur.fetchone()
+        if relation_presence is None or len(relation_presence) != 4:
+            return "conflict", "evidence relation-presence check is incomplete", private_records
+        if not any(relation_presence):
+            return "would_publish", None, private_records
+        if not all(relation_presence):
+            return "conflict", "evidence relations are only partially bootstrapped", private_records
+        cur.execute(EXISTING_SNAPSHOT_SQL, params)
+        existing_header = cur.fetchone()
+        cur.execute(EXISTING_ITEMS_SQL, params)
+        existing_items = cur.fetchall()
+        cur.execute(EXISTING_TAXONOMY_SQL, params)
+        existing_taxonomy = cur.fetchone()
+        cur.execute(EXISTING_PRIVATE_SQL, params)
+        existing_private = cur.fetchall()
+    if existing_header is not None or existing_items or existing_taxonomy is not None or existing_private:
+        expected_header = (
+            materialization.header["publication_status"],
+            materialization.header["coverage_state"],
+        )
+        if existing_header is None or tuple(existing_header) != expected_header or (
+            _ordered_items(materialization.public_items) != tuple(sorted(tuple(row) for row in existing_items))
+        ):
+            return (
+                "conflict",
+                f"evidence snapshot {materialization.decision_month} diverges from existing public rows",
+                private_records,
+            )
+        if existing_taxonomy is None or tuple(existing_taxonomy) != tuple(
+            materialization.public_taxonomy[column] for column in CATEGORICAL_COLUMNS
+        ):
+            return (
+                "conflict",
+                f"evidence snapshot {materialization.decision_month} diverges from existing taxonomy row",
+                private_records,
+            )
+        if _ordered_private(private_records) != tuple(
+            sorted(tuple(row) for row in existing_private)
+        ):
+            return (
+                "conflict",
+                f"evidence snapshot {materialization.decision_month} private lineage diverges",
+                private_records,
+            )
+        return "no_op", None, private_records
+    return "would_publish", None, private_records
+
+
+def publication_outcome(conn, materialization: EvidenceMaterialization) -> str:
+    """Return whether a read-only materialization can write, no-op, or conflicts."""
+    outcome, _reason, _private_records = _publication_outcome(conn, materialization)
+    return outcome
+
+
 def publish(conn, materialization: EvidenceMaterialization) -> str:
     """Atomically insert a header and its 13 public status items.
 
@@ -801,40 +889,11 @@ def publish(conn, materialization: EvidenceMaterialization) -> str:
     fails closed rather than rewriting historical evidence.
     """
     params = {"decision_month": materialization.decision_month}
-    private_records = _private_records(materialization)
     with conn.transaction():
-        with conn.cursor() as cur:
-            cur.execute(EXISTING_SNAPSHOT_SQL, params)
-            existing_header = cur.fetchone()
-            cur.execute(EXISTING_ITEMS_SQL, params)
-            existing_items = cur.fetchall()
-            cur.execute(EXISTING_TAXONOMY_SQL, params)
-            existing_taxonomy = cur.fetchone()
-            cur.execute(EXISTING_PRIVATE_SQL, params)
-            existing_private = cur.fetchall()
-        if existing_header is not None or existing_items or existing_taxonomy is not None or existing_private:
-            expected_header = (
-                materialization.header["publication_status"],
-                materialization.header["coverage_state"],
-            )
-            if existing_header is None or tuple(existing_header) != expected_header or (
-                _ordered_items(materialization.public_items) != tuple(sorted(tuple(row) for row in existing_items))
-            ):
-                raise EvidenceConflictError(
-                    f"evidence snapshot {materialization.decision_month} diverges from existing public rows"
-                )
-            if existing_taxonomy is None or tuple(existing_taxonomy) != tuple(
-                materialization.public_taxonomy[column] for column in CATEGORICAL_COLUMNS
-            ):
-                raise EvidenceConflictError(
-                    f"evidence snapshot {materialization.decision_month} diverges from existing taxonomy row"
-                )
-            if _ordered_private(private_records) != tuple(
-                sorted(tuple(row) for row in existing_private)
-            ):
-                raise EvidenceConflictError(
-                    f"evidence snapshot {materialization.decision_month} private lineage diverges"
-                )
+        outcome, reason, private_records = _publication_outcome(conn, materialization)
+        if outcome == "conflict":
+            raise EvidenceConflictError(str(reason))
+        if outcome == "no_op":
             return "no_op"
         with conn.cursor() as cur:
             cur.executemany(INSERT_PRIVATE_SQL, private_records)
@@ -852,9 +911,13 @@ def run(dsn: str, *, calc_date: str | None = None) -> dict[str, Any]:
     if os.getenv("OPEN_MACRO_V04_PIT_EVIDENCE_ENABLED", "").strip() != "1":
         return {"status": "disabled"}
     if calc_date is None:
+        from zoneinfo import ZoneInfo
+
         from src.workers.open_macro_v04 import last_complete_month_end
 
-        decision_as_of = last_complete_month_end(dt.datetime.now(dt.timezone.utc).date())
+        decision_as_of = last_complete_month_end(
+            dt.datetime.now(ZoneInfo("America/New_York")).date()
+        )
     else:
         decision_as_of = dt.date.fromisoformat(calc_date)
     conn = connect(dsn)
@@ -862,8 +925,8 @@ def run(dsn: str, *, calc_date: str | None = None) -> dict[str, Any]:
         with advisory_lock(conn, LOCK_OPEN_MACRO_V04_PIT_EVIDENCE) as acquired:
             if not acquired:
                 return {"status": "lock_busy"}
-            ensure_schema(conn)
             pin_search_path(conn)
+            ensure_schema(conn)
             begin_consistent_read(conn)
             materialization = materialize_from_connection(conn, decision_as_of)
             status = publish(conn, materialization)

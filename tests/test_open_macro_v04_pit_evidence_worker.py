@@ -190,6 +190,62 @@ def test_revision_becomes_selectable_at_its_later_month_end_cutoff() -> None:
     assert materialization.private_lineage["INDPRO"]["selected_vintage_date"] == "2026-03-01"
 
 
+def test_live_chain_delta_inherits_the_certified_macro_source_contract(monkeypatch) -> None:
+    """The v03 delta shape is enriched before the v04 lineage builder reads it."""
+    from src.workers import open_macro_v03_chain
+
+    certified = [_vintage("INDPRO")]
+    delta = {
+        "series_id": "INDPRO",
+        "observation_period": "2026-02-01",
+        "vintage_date": "2026-03-01",
+        "value": 10.0,
+        "available_at": "2026-03-01T00:00:00+00:00",
+        "revision_number": 1,
+    }
+    monkeypatch.setattr(open_macro_v03_chain, "verify_pack", lambda: {"input_pack_sha256": "b" * 64})
+    monkeypatch.setattr(
+        open_macro_v03_chain,
+        "load_pack_inputs",
+        lambda: (certified, [], dt.datetime(2026, 2, 1, tzinfo=dt.timezone.utc), dt.date(2026, 1, 31)),
+    )
+    monkeypatch.setattr(open_macro_v03_chain, "read_macro_delta", lambda conn, boundary: [delta])
+    monkeypatch.setattr(open_macro_v03_chain, "read_eod_delta", lambda conn, boundary: [])
+
+    macro_rows, _eod_rows, _pack_sha = evidence._certified_chain_inputs(object())
+
+    assert macro_rows[-1] | {"source": "alfred", "source_spec_version": "macro_quadrant_us_v1.0"} == macro_rows[-1]
+
+
+def test_v04_vintages_discard_periods_after_a_historical_decision_horizon() -> None:
+    """A delayed materialization must not attach future observations to its decision."""
+    decision = {
+        **_decision(),
+        "as_of": dt.date(2024, 2, 29),
+        "updated_at": "2026-03-03T12:00:00+00:00",
+    }
+    historical_gdp = {
+        **_vintage("GDP", available_at="2024-02-15T00:00:00+00:00", value=11.0),
+        "observation_period": "2024-01-01",
+    }
+    future_gdp = {
+        **_vintage("GDP", available_at="2025-01-15T00:00:00+00:00", value=99.0),
+        "observation_period": "2024-03-01",
+    }
+    mirrors = _complete_mirrors()
+    mirrors[1]["obs_date"] = "2024-01-01"
+
+    materialization = _materialization(
+        decision=decision,
+        vintages=[*_complete_vintages(), historical_gdp, future_gdp],
+        mirrors=mirrors,
+    )
+
+    assert materialization.private_lineage["GDP"]["selected_observation_period"] == "2024-01-01"
+    assert materialization.private_lineage["GDP"]["selected_value"] == 11.0
+    assert _item(materialization, "GDP")["evidence_state"] == "observed"
+
+
 def test_missing_vintage_is_unavailable_while_non_vintage_sources_are_unverified() -> None:
     """The materializer must never promote a current mirror or dated price to PIT proof."""
     vintages = [row for row in _complete_vintages() if row["series_id"] != "MICH"]
@@ -238,6 +294,19 @@ def test_spy_market_leg_is_pinned_to_the_chain_seed_not_the_later_v04_month() ->
 
     assert materialization.private_lineage["SPY"]["selected_date"] == "2026-01-30"
     assert materialization.private_lineage["SPY"]["selected_value"] == 490.0
+
+
+def test_spy_market_leg_ignores_later_non_spy_certified_market_rows() -> None:
+    """The certified EOD pack contains several market tickers, not one shared series."""
+    materialization = _materialization(
+        spy_rows=[
+            {"ticker": "SPY", "date": "2026-02-27", "adj_close": 500.0},
+            {"ticker": "DBC", "date": "2026-02-28", "adj_close": 999.0},
+        ]
+    )
+
+    assert materialization.private_lineage["SPY"]["selected_date"] == "2026-02-27"
+    assert materialization.private_lineage["SPY"]["selected_value"] == 500.0
 
 
 class _InputCursor:
@@ -450,13 +519,19 @@ class _Transaction:
 
 
 class _Conn:
-    def __init__(self, *, fail_item_insert: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_item_insert: bool = False,
+        relation_presence: tuple[object | None, ...] | None = None,
+    ) -> None:
         self.snapshots: dict[str, dict] = {}
         self.items: dict[str, list[dict]] = {}
         self.taxonomies: dict[str, dict] = {}
         self.private_rows: dict[str, list[dict]] = {}
         self.calls: list[tuple] = []
         self.fail_item_insert = fail_item_insert
+        self.relation_presence = relation_presence or ("present",) * 4
 
     def cursor(self):
         return _Cursor(self)
@@ -465,6 +540,8 @@ class _Conn:
         return _Transaction(self)
 
     def respond(self, sql: str, params: dict) -> list[tuple]:
+        if "to_regclass" in sql:
+            return [self.relation_presence]
         if sql is evidence.EXISTING_SNAPSHOT_SQL:
             row = self.snapshots.get(params["decision_month"])
             return [] if row is None else [(row["publication_status"], row["coverage_state"])]
@@ -503,10 +580,29 @@ def test_exact_replay_is_a_no_op() -> None:
     calls_after_first = len(conn.calls)
     assert evidence.publish(conn, materialization) == "no_op"
 
-    assert len(conn.calls) == calls_after_first + 4
+    assert len(conn.calls) == calls_after_first + 5
     assert len(conn.snapshots) == 1
     assert len(conn.items["2026-02"]) == 13
     assert conn.taxonomies["2026-02"] == materialization.public_taxonomy
+
+
+def test_publication_outcome_handles_unbootstrapped_and_partial_evidence_relations() -> None:
+    """A dry-run may plan a first publish, but never treats partial DDL as writable."""
+    materialization = _materialization()
+    absent = _Conn(relation_presence=(None, None, None, None))
+    partial = _Conn(relation_presence=("present", None, None, None))
+
+    assert evidence.publication_outcome(absent, materialization) == "would_publish"
+    assert evidence.publication_outcome(partial, materialization) == "conflict"
+    assert not any(
+        sql in {
+            evidence.INSERT_PRIVATE_SQL,
+            evidence.INSERT_ITEM_SQL,
+            evidence.INSERT_TAXONOMY_SQL,
+            evidence.INSERT_SNAPSHOT_SQL,
+        }
+        for sql, _params in [*absent.calls, *partial.calls]
+    )
 
 
 def test_private_replay_comparison_canonicalizes_postgres_numeric_values() -> None:
@@ -713,6 +809,51 @@ def test_worker_run_uses_an_independent_lock_and_never_logs_private_values(monke
     assert conn.commits == 1
 
 
+def test_worker_default_month_uses_the_producer_new_york_date(monkeypatch) -> None:
+    """Just after UTC midnight, the producer is still on the prior New York date."""
+    import contextlib
+    import importlib
+    import types
+
+    monkeypatch.setenv("OPEN_MACRO_V04_PIT_EVIDENCE_ENABLED", "1")
+    importlib.import_module("src.workers.open_macro_v04")
+    instant = dt.datetime(2026, 3, 1, 0, 30, tzinfo=dt.timezone.utc)
+
+    class _FrozenDateTime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+
+    @contextlib.contextmanager
+    def _acquired(conn, lock_id):
+        yield True
+
+    captured: dict[str, dt.date] = {}
+    conn = types.SimpleNamespace(commit=lambda: None, close=lambda: None)
+    materialization = types.SimpleNamespace(
+        decision_month="2026-01",
+        header={"coverage_state": "partial"},
+        public_items=tuple(range(13)),
+    )
+    monkeypatch.setattr(evidence.dt, "datetime", _FrozenDateTime)
+    monkeypatch.setattr(evidence, "connect", lambda dsn: conn)
+    monkeypatch.setattr(evidence, "advisory_lock", _acquired)
+    monkeypatch.setattr(evidence, "ensure_schema", lambda conn: None)
+    monkeypatch.setattr(evidence, "pin_search_path", lambda conn: None)
+    monkeypatch.setattr(evidence, "begin_consistent_read", lambda conn: None)
+    monkeypatch.setattr(
+        evidence,
+        "materialize_from_connection",
+        lambda conn, decision_as_of: captured.setdefault("decision_as_of", decision_as_of)
+        and materialization,
+    )
+    monkeypatch.setattr(evidence, "publish", lambda conn, materialization: "published")
+
+    evidence.run("postgresql://example")
+
+    assert captured["decision_as_of"] == dt.date(2026, 1, 31)
+
+
 def test_worker_holds_its_lock_before_schema_bootstrap(monkeypatch) -> None:
     import contextlib
 
@@ -754,7 +895,7 @@ def test_worker_holds_its_lock_before_schema_bootstrap(monkeypatch) -> None:
 
     evidence.run("postgresql://example", calc_date="2026-02-28")
 
-    assert events[:6] == ["lock", "schema", "commit", "path", "commit", "snapshot"]
+    assert events[:6] == ["lock", "path", "commit", "schema", "commit", "snapshot"]
 
 
 def test_worker_materializer_is_disabled_without_explicit_evidence_enable(monkeypatch) -> None:
@@ -863,6 +1004,11 @@ def test_dry_run_backfill_builds_without_publishing_and_apply_is_explicit(monkey
     )
     monkeypatch.setattr(
         backfill.evidence,
+        "publication_outcome",
+        lambda actual_conn, materialization: "would_publish",
+    )
+    monkeypatch.setattr(
+        backfill.evidence,
         "publish",
         lambda actual_conn, materialization: (
             published.append(materialization.decision_month) or "published"
@@ -881,6 +1027,8 @@ def test_dry_run_backfill_builds_without_publishing_and_apply_is_explicit(monkey
         "partial": 2,
         "unavailable": 0,
         "would_publish": 2,
+        "no_op": 0,
+        "conflict": 0,
     }
     assert published == []
     assert conn.commits == 0
@@ -905,6 +1053,59 @@ def test_dry_run_backfill_builds_without_publishing_and_apply_is_explicit(monkey
     assert schema_calls == [conn]
     assert snapshot_calls == [conn, conn, conn]
     assert events[3:5] == ["path", "lock"]
+
+
+def test_dry_run_backfill_classifies_immutable_conflicts_without_writing(monkeypatch) -> None:
+    """Planning must expose a divergent immutable month before an apply can reach it."""
+    import contextlib
+    from scripts import backfill_open_macro_v04_pit_evidence as backfill
+
+    class _DryRunConn(_Conn):
+        def close(self) -> None:
+            pass
+
+    conn = _DryRunConn()
+    evidence.publish(conn, _materialization())
+    calls_before_dry_run = len(conn.calls)
+    divergent = _materialization()
+    divergent.private_lineage["INDPRO"]["selected_value"] = 12345.0
+
+    @contextlib.contextmanager
+    def _acquired(actual_conn, lock_id):
+        yield True
+
+    monkeypatch.setattr(backfill, "connect", lambda dsn: conn)
+    monkeypatch.setattr(backfill.evidence, "pin_search_path", lambda actual_conn: None)
+    monkeypatch.setattr(backfill.evidence, "begin_consistent_read", lambda actual_conn: None)
+    monkeypatch.setattr(backfill.evidence, "advisory_lock", _acquired)
+    monkeypatch.setattr(
+        backfill,
+        "decision_months",
+        lambda actual_conn, start, end: [dt.date(2026, 2, 28)],
+    )
+    monkeypatch.setattr(
+        backfill.evidence,
+        "materialize_from_connection",
+        lambda actual_conn, month: divergent,
+    )
+
+    result = backfill.run(
+        "postgresql://example",
+        start=dt.date(2026, 2, 28),
+        end=dt.date(2026, 2, 28),
+    )
+
+    assert result == {
+        "mode": "dry_run",
+        "decisions": 1,
+        "complete": 0,
+        "partial": 1,
+        "unavailable": 0,
+        "would_publish": 0,
+        "no_op": 0,
+        "conflict": 1,
+    }
+    assert len(conn.calls) == calls_before_dry_run + 5
 
 
 def test_backfill_uses_the_same_advisory_lock_as_the_runtime_worker(monkeypatch) -> None:

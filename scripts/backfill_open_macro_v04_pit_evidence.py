@@ -67,8 +67,9 @@ def run(
                 # output month receive their own post-bootstrap PIT snapshot.
                 conn.commit()
             coverage = {"complete": 0, "partial": 0, "unavailable": 0}
+            outcomes = {"would_publish": 0, "no_op": 0, "conflict": 0}
             published = 0
-            for index, month in enumerate(months):
+            for month in months:
                 if apply:
                     evidence.begin_consistent_read(conn)
                 materialization = evidence.materialize_from_connection(conn, month)
@@ -77,6 +78,8 @@ def run(
                     result = evidence.publish(conn, materialization)
                     conn.commit()
                     published += int(result == "published")
+                else:
+                    outcomes[evidence.publication_outcome(conn, materialization)] += 1
             summary: dict[str, Any] = {
                 "mode": "apply" if apply else "dry_run",
                 "decisions": len(months),
@@ -85,7 +88,7 @@ def run(
             if apply:
                 summary["published"] = published
             else:
-                summary["would_publish"] = len(months)
+                summary.update(outcomes)
             return summary
     finally:
         conn.close()
