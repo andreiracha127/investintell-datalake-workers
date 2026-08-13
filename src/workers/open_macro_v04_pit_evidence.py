@@ -49,7 +49,7 @@ ITEM_COLUMNS = (
 DECISION_SQL = (
     "SELECT as_of, fiscal_state, fiscal_boundary, guard_level, guard_coverage, quadrant, "
     "quadrant_source, carry_age, decision_validity, decision_basis, "
-    "input_digest_sha256, run_id, updated_at "
+    "input_digest_sha256, created_at "
     "FROM open_macro_v04_decisions WHERE as_of = %(decision_as_of)s "
     "AND valid_status = 'valid' AND publish_state = 'published'"
 )
@@ -98,9 +98,9 @@ EXISTING_TAXONOMY_SQL = (
     "SELECT " + ", ".join(CATEGORICAL_COLUMNS) + " "
     "FROM open_macro_v04_categorical_taxonomy WHERE decision_month = %(decision_month)s"
 )
-PRIVATE_COMPARE_COLUMNS = (
+PRIVATE_INSERT_COLUMNS = (
     "decision_as_of",
-    "decision_run_id",
+    "decision_created_at",
     "decision_input_digest_sha256",
     "decision_basis",
     "series_key",
@@ -116,7 +116,13 @@ PRIVATE_COMPARE_COLUMNS = (
     "cutoff_at",
     "carry_seed_decision_month",
     "carry_seed_fingerprint",
-    "materialization_run_id",
+)
+PRIVATE_COMPARE_COLUMNS = tuple(
+    # The producer rewrites its full-horizon digest on later runs. Preserve the
+    # first-publish value for audit, but never let it fork immutable month evidence.
+    column
+    for column in PRIVATE_INSERT_COLUMNS
+    if column != "decision_input_digest_sha256"
 )
 EXISTING_PRIVATE_SQL = (
     "SELECT " + ", ".join(PRIVATE_COMPARE_COLUMNS) + " "
@@ -132,9 +138,9 @@ EVIDENCE_RELATION_PRESENCE_SQL = (
 )
 INSERT_PRIVATE_SQL = (
     "INSERT INTO open_macro_v04_pit_evidence "
-    "(decision_month, " + ", ".join(PRIVATE_COMPARE_COLUMNS) + ") VALUES "
+    "(decision_month, " + ", ".join(PRIVATE_INSERT_COLUMNS) + ") VALUES "
     "(%(decision_month)s, "
-    + ", ".join(f"%({column})s" for column in PRIVATE_COMPARE_COLUMNS)
+    + ", ".join(f"%({column})s" for column in PRIVATE_INSERT_COLUMNS)
     + ")"
 )
 INSERT_SNAPSHOT_SQL = (
@@ -273,11 +279,15 @@ def _mirror_matches_vintages(
         (_as_date(row["obs_date"]), float(row["value"]))
         for row in sorted(mirror_rows, key=lambda row: _as_date(row["obs_date"]))
     ]
+    if not mirror:
+        return False
+    producer_horizon_start = mirror[0][0]
     vintages = [
         (_as_date(row["observation_period"]), float(row["value"]))
         for row in vintage_rows
+        if _as_date(row["observation_period"]) >= producer_horizon_start
     ]
-    return bool(mirror) and mirror == vintages
+    return mirror == vintages
 
 
 def _available_item(entry: tuple[str, str, str, str, str, str], *, pit_state: str) -> dict[str, str]:
@@ -401,7 +411,6 @@ def build_materialization(
     mirror_rows: Iterable[Mapping[str, Any]],
     chain_seed: Mapping[str, Any] | None = None,
     chain_seed_verified: bool = True,
-    input_digest_matches: bool = False,
 ) -> EvidenceMaterialization:
     """Build one closed public catalogue and its private PIT lineage.
 
@@ -409,11 +418,20 @@ def build_materialization(
     the cutoff for vintage rows so a caller cannot accidentally surface later data.
     """
     as_of = _as_date(decision["as_of"])
-    v04_cutoff = (
-        _as_utc(decision["updated_at"])
-        if decision.get("updated_at") is not None
-        else dt.datetime.combine(as_of, dt.time.max, tzinfo=dt.timezone.utc)
-    )
+    v04_cutoff = _as_utc(decision["created_at"])
+    chain_is_carried = decision.get("quadrant_source") == "chain_carry"
+    if chain_is_carried:
+        carry_seed_fingerprint = str(
+            chain_seed.get("pack_sha256") if chain_seed is not None else ""
+        ).strip()
+        if (
+            chain_seed is None
+            or chain_seed.get("status") != "valid"
+            or chain_seed.get("basis") != "certified_chain"
+            or len(carry_seed_fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in carry_seed_fingerprint)
+        ):
+            raise ValueError("chain_carry requires valid certified seed provenance")
     seed_as_of = _as_date(chain_seed["as_of"]) if chain_seed is not None else as_of
     chain_cutoff = decision_cutoff(seed_as_of)
     month = as_of.strftime("%Y-%m")
@@ -457,8 +475,9 @@ def build_materialization(
             else:
                 pit_state = "verified" if chain_seed_verified else "unverified"
                 item = _available_item(entry, pit_state=pit_state)
-                if decision.get("quadrant_source") == "chain_carry":
+                if chain_is_carried:
                     item["evidence_state"] = "carried"
+                    item["freshness_state"] = "stale"
                 items.append(item)
                 lineage[series_id] = {
                     "source_kind": "certified_chain_vintage",
@@ -478,7 +497,11 @@ def build_materialization(
                 items.append(_unavailable_item(entry))
                 lineage[series_id] = {"source_kind": "eod_prices", "pit_state": "unavailable"}
             else:
-                items.append(_available_item(entry, pit_state="unverified"))
+                item = _available_item(entry, pit_state="unverified")
+                if chain_is_carried:
+                    item["evidence_state"] = "carried"
+                    item["freshness_state"] = "stale"
+                items.append(item)
                 lineage[series_id] = {
                     "source_kind": "eod_prices",
                     "pit_state": "unverified",
@@ -501,7 +524,6 @@ def build_materialization(
                 proven = (
                     selected is not None
                     and decision.get("decision_basis") == "live"
-                    and input_digest_matches
                     and _mirror_matches_vintages(mirror_for_series, selected_rows)
                 )
                 pit_state = "verified" if proven else "unverified"
@@ -548,7 +570,7 @@ def build_materialization(
             "carry_age": decision.get("carry_age"),
             "decision_validity": decision.get("decision_validity"),
             "decision_basis": decision.get("decision_basis"),
-            "decision_run_id": decision.get("run_id"),
+            "decision_created_at": v04_cutoff.isoformat(),
             "decision_input_digest_sha256": decision.get("input_digest_sha256"),
             "decision_cutoff": v04_cutoff.isoformat(),
             "carry_seed_as_of": seed_as_of.isoformat(),
@@ -565,30 +587,6 @@ def _record(row: Any, columns: tuple[str, ...]) -> dict[str, Any]:
     if isinstance(row, Mapping):
         return dict(row)
     return dict(zip(columns, row, strict=True))
-
-
-def _input_digest_matches(conn, decision: Mapping[str, Any], decision_as_of: dt.date) -> bool:
-    """Recompute the exact v04 input digest over the same DB horizon."""
-    from src.workers import open_macro_v04
-
-    series = {
-        series_id: open_macro_v04.read_macro_series(
-            conn, series_id, decision_as_of, required=True
-        )
-        for series_id in open_macro_v04.REQUIRED_SERIES
-    }
-    series.update(
-        {
-            series_id: open_macro_v04.read_macro_series(
-                conn, series_id, decision_as_of, required=False
-            )
-            for series_id in open_macro_v04.PROXY_SERIES
-        }
-    )
-    _, price_rows = open_macro_v04.read_price_frame(conn, decision_as_of)
-    _, _, chain_rows = open_macro_v04.read_chain(conn, decision_as_of)
-    digest, _ = open_macro_v04.input_digest(series, chain_rows, price_rows)
-    return digest == str(decision.get("input_digest_sha256", "")).strip()
 
 
 def _certified_chain_inputs(
@@ -634,8 +632,7 @@ def materialize_from_connection(conn, decision_as_of: dt.date) -> EvidenceMateri
             "decision_validity",
             "decision_basis",
             "input_digest_sha256",
-            "run_id",
-            "updated_at",
+            "created_at",
         ),
     )
     carry_age = int(decision.get("carry_age") or 0)
@@ -651,7 +648,7 @@ def materialize_from_connection(conn, decision_as_of: dt.date) -> EvidenceMateri
         else None
     )
     chain_vintages, spy_rows, certified_pack_sha256 = _certified_chain_inputs(conn)
-    v04_cutoff = _as_utc(decision["updated_at"])
+    v04_cutoff = _as_utc(decision["created_at"])
     with conn.cursor() as cur:
         cur.execute(
             VINTAGE_SQL,
@@ -704,7 +701,6 @@ def materialize_from_connection(conn, decision_as_of: dt.date) -> EvidenceMateri
             and str(chain_seed.get("pack_sha256", "")).strip()
             == certified_pack_sha256
         ),
-        input_digest_matches=_input_digest_matches(conn, decision, decision_as_of),
     )
 
 
@@ -717,13 +713,14 @@ def _private_records(
 ) -> tuple[dict[str, Any], ...]:
     decision = materialization.private_decision
     records: list[dict[str, Any]] = []
-    decision_run_id = str(decision.get("decision_run_id") or "").strip()
-    if not decision_run_id:
-        raise ValueError("decision run_id is required for private PIT lineage")
+    if decision.get("decision_created_at") is None:
+        raise ValueError("decision created_at is required for private PIT lineage")
+    decision_created_at = _as_utc(decision["decision_created_at"])
     input_digest = str(decision.get("decision_input_digest_sha256") or "").strip()
-    if len(input_digest) != 64 or any(character not in "0123456789abcdef" for character in input_digest):
+    if len(input_digest) != 64 or any(
+        character not in "0123456789abcdef" for character in input_digest
+    ):
         raise ValueError("decision input digest must be a lowercase sha256")
-    run_id = f"{decision_run_id}:pit-evidence"
     for item in materialization.public_items:
         series_key = item["series_key"]
         lineage = materialization.private_lineage[series_key]
@@ -734,8 +731,7 @@ def _private_records(
         fingerprint_payload = {
             "decision_month": materialization.decision_month,
             "series_key": series_key,
-            "decision_run_id": decision.get("decision_run_id"),
-            "decision_input_digest_sha256": decision.get("decision_input_digest_sha256"),
+            "decision_created_at": decision_created_at.isoformat(),
             "lineage": lineage,
         }
         fingerprint = hashlib.sha256(
@@ -747,7 +743,7 @@ def _private_records(
             {
                 "decision_month": materialization.decision_month,
                 "decision_as_of": _as_date(decision["as_of"]),
-                "decision_run_id": decision_run_id,
+                "decision_created_at": decision_created_at,
                 "decision_input_digest_sha256": input_digest,
                 "decision_basis": str(decision.get("decision_basis") or "bootstrap_replay"),
                 "series_key": series_key,
@@ -791,7 +787,6 @@ def _private_records(
                     if item["evidence_state"] == "carried"
                     else None
                 ),
-                "materialization_run_id": run_id,
             }
         )
     return tuple(records)
@@ -804,7 +799,6 @@ def _ordered_private(
         if column == "value" and value is not None:
             return Decimal(str(value))
         if isinstance(value, str) and column in {
-            "decision_input_digest_sha256",
             "fingerprint",
             "carry_seed_fingerprint",
         }:

@@ -37,6 +37,7 @@ def _decision(*, quadrant_source: str = "chain_fresh", carry_age: int = 0) -> di
         "decision_validity": validity,
         "decision_basis": "live",
         "input_digest_sha256": "a" * 64,
+        "created_at": "2026-03-03T12:00:00+00:00",
         "run_id": "open-macro-v04-test",
         "updated_at": "2026-03-03T12:00:00+00:00",
     }
@@ -263,7 +264,18 @@ def test_missing_vintage_is_unavailable_while_non_vintage_sources_are_unverified
 
 def test_public_items_have_the_fixed_catalogue_order_and_no_private_lineage_fields() -> None:
     """A public payload cannot leak values, vintages, timestamps, or decision internals."""
-    materialization = _materialization(decision=_decision(quadrant_source="chain_carry", carry_age=2))
+    materialization = evidence.build_materialization(
+        _decision(quadrant_source="chain_carry", carry_age=2),
+        vintages=_complete_vintages(),
+        spy_rows=[{"ticker": "SPY", "date": "2025-12-30", "adj_close": 490.0}],
+        mirror_rows=_complete_mirrors(),
+        chain_seed={
+            "as_of": dt.date(2025, 12, 31),
+            "status": "valid",
+            "basis": "certified_chain",
+            "pack_sha256": "b" * 64,
+        },
+    )
 
     assert [item["series_key"] for item in materialization.public_items] == [
         "INDPRO", "PCEC96", "PAYEMS", "ACOGNO", "CPILFESL", "PPIFIS", "AHETPI", "MICH",
@@ -272,6 +284,35 @@ def test_public_items_have_the_fixed_catalogue_order_and_no_private_lineage_fiel
     assert all(set(item) == PUBLIC_KEYS for item in materialization.public_items)
     assert materialization.private_decision["quadrant_source"] == "chain_carry"
     assert materialization.private_decision["carry_age"] == 2
+
+
+@pytest.mark.parametrize(
+    "chain_seed",
+    [
+        None,
+        {
+            "as_of": dt.date(2026, 1, 31),
+            "status": "invalid",
+            "basis": "certified_chain",
+            "pack_sha256": "b" * 64,
+        },
+        {
+            "as_of": dt.date(2026, 1, 31),
+            "status": "valid",
+            "basis": "certified_chain",
+            "pack_sha256": "not-a-sha256",
+        },
+    ],
+)
+def test_carried_chain_requires_valid_certified_seed_provenance(chain_seed) -> None:
+    with pytest.raises(ValueError, match="valid certified seed provenance"):
+        evidence.build_materialization(
+            _decision(quadrant_source="chain_carry", carry_age=1),
+            vintages=_complete_vintages(),
+            spy_rows=[{"ticker": "SPY", "date": "2026-01-30", "adj_close": 490.0}],
+            mirror_rows=_complete_mirrors(),
+            chain_seed=chain_seed,
+        )
 
 
 def test_spy_market_leg_is_pinned_to_the_chain_seed_not_the_later_v04_month() -> None:
@@ -352,7 +393,6 @@ class _InputConn:
                 "carried",
                 "live",
                 "a" * 64,
-                "open-macro-v04-test",
                 dt.datetime(2026, 3, 3, 12, tzinfo=dt.timezone.utc),
             )]
         if sql is evidence.CHAIN_SEED_SQL:
@@ -364,10 +404,9 @@ class _InputConn:
                 dt.datetime(2026, 1, 31, tzinfo=dt.timezone.utc),
             )]
         if sql is evidence.VINTAGE_SQL:
-            assert params["decision_cutoff"] in {
-                dt.datetime(2025, 12, 31, tzinfo=dt.timezone.utc),
-                dt.datetime(2026, 3, 3, 12, tzinfo=dt.timezone.utc),
-            }
+            assert params["decision_cutoff"] == dt.datetime(
+                2026, 3, 3, 12, tzinfo=dt.timezone.utc
+            )
             return [
                 tuple(row[key] for key in (
                     "series_id", "observation_period", "vintage_date", "value", "available_at",
@@ -434,13 +473,7 @@ def test_acquired_connection_reads_certified_chain_inputs_and_private_carry_link
         evidence.VINTAGE_SQL,
         evidence.MIRROR_SQL,
     ]
-    assert len(conn.calls[4:]) == 8
-    assert sum("SELECT obs_date, value FROM macro_data" in sql for sql, _ in conn.calls[4:]) == 6
-    assert sum("SELECT ticker, date, adj_close FROM eod_prices" in sql for sql, _ in conn.calls[4:]) == 1
-    assert sum(
-        "SELECT as_of, quadrant, status, candidate_confidence" in sql
-        for sql, _ in conn.calls[4:]
-    ) == 1
+    assert len(conn.calls) == 4
     assert materialization.private_decision["carry_seed_fingerprint"] == pack_sha
     assert materialization.private_lineage["SPY"]["selected_date"] == "2025-12-30"
 
@@ -572,17 +605,47 @@ class _Conn:
 
 
 def test_exact_replay_is_a_no_op() -> None:
-    """Replaying the same evidence must not duplicate or rewrite its snapshot."""
+    """A later producer digest cannot fork already-published immutable evidence."""
     conn = _Conn()
-    materialization = _materialization()
+    vintages = [
+        _vintage(series_id, value=float(index + 1))
+        for index, series_id in enumerate(FRED_IDS)
+    ]
+    mirrors = [
+        _mirror(series_id, value=float(FRED_IDS.index(series_id) + 1))
+        for series_id in MIRROR_IDS
+    ]
+    materialization = _materialization(vintages=vintages, mirrors=mirrors)
+    replayed = _materialization(decision={
+        **_decision(),
+        "input_digest_sha256": "b" * 64,
+        "run_id": "open-macro-v04-later-run",
+        "updated_at": "2026-03-04T12:00:00+00:00",
+    }, vintages=vintages, mirrors=mirrors)
+
+    first_records = evidence._private_records(materialization)
+    replay_records = evidence._private_records(replayed)
+    assert all(_item(materialization, key)["pit_state"] == "verified" for key in MIRROR_IDS)
+    assert all(_item(replayed, key)["pit_state"] == "verified" for key in MIRROR_IDS)
+    assert [record["fingerprint"] for record in first_records] == [
+        record["fingerprint"] for record in replay_records
+    ]
+    assert evidence._ordered_private(first_records) == evidence._ordered_private(replay_records)
+    assert {record["decision_input_digest_sha256"] for record in first_records} == {"a" * 64}
+    assert {record["decision_input_digest_sha256"] for record in replay_records} == {"b" * 64}
 
     assert evidence.publish(conn, materialization) == "published"
     calls_after_first = len(conn.calls)
-    assert evidence.publish(conn, materialization) == "no_op"
+    assert evidence.publish(conn, replayed) == "no_op"
 
     assert len(conn.calls) == calls_after_first + 5
     assert len(conn.snapshots) == 1
     assert len(conn.items["2026-02"]) == 13
+    assert len(conn.private_rows["2026-02"]) == 13
+    assert {
+        record["decision_input_digest_sha256"]
+        for record in conn.private_rows["2026-02"]
+    } == {"a" * 64}
     assert conn.taxonomies["2026-02"] == materialization.public_taxonomy
 
 
@@ -642,9 +705,9 @@ def test_item_write_failure_rolls_back_the_header_and_all_items() -> None:
     assert conn.items == {}
 
 
-def test_v04_fred_arms_are_verified_only_when_exact_vintages_match_the_published_input(
+def test_v04_fred_arms_compare_vintages_only_within_the_producer_horizon(
 ) -> None:
-    """A revised mirror is not PIT proof, even when its observation date is old."""
+    """Older ALFRED history is harmless, but every stored mirror row must match."""
     decision = {
         **_decision(),
         "decision_basis": "live",
@@ -654,6 +717,15 @@ def test_v04_fred_arms_are_verified_only_when_exact_vintages_match_the_published
     }
     vintages = [_vintage(series_id, value=float(index + 1))
                 for index, series_id in enumerate(FRED_IDS)]
+    vintages.append({
+        **_vintage(
+            "GDP",
+            available_at="2000-02-01T00:00:00+00:00",
+            vintage_date="2000-02-01",
+            value=5.0,
+        ),
+        "observation_period": "2000-01-01",
+    })
     mirrors = [_mirror(series_id, value=float(FRED_IDS.index(series_id) + 1))
                for series_id in MIRROR_IDS]
     chain_seed = {
@@ -670,9 +742,9 @@ def test_v04_fred_arms_are_verified_only_when_exact_vintages_match_the_published
         spy_rows=[{"ticker": "SPY", "date": "2026-02-27", "adj_close": 500.0}],
         mirror_rows=mirrors,
         chain_seed=chain_seed,
-        input_digest_matches=True,
     )
     assert _item(verified, "GDP")["pit_state"] == "verified"
+    assert _item(verified, "GDP")["evidence_state"] == "observed"
     assert verified.private_lineage["GDP"]["selected_value"] == 10.0
 
     mirrors[1]["value"] = 999.0
@@ -682,12 +754,32 @@ def test_v04_fred_arms_are_verified_only_when_exact_vintages_match_the_published
         spy_rows=[{"ticker": "SPY", "date": "2026-02-27", "adj_close": 500.0}],
         mirror_rows=mirrors,
         chain_seed=chain_seed,
-        input_digest_matches=True,
     )
     assert _item(mismatch, "GDP")["pit_state"] == "unverified"
+    assert _item(mismatch, "GDP")["evidence_state"] == "invalid"
 
 
-def test_carried_chain_uses_its_seed_cutoff_while_v04_uses_recorded_update_time() -> None:
+def test_mirror_match_rejects_missing_or_extra_rows_inside_the_producer_horizon() -> None:
+    mirror = [
+        _mirror("GDP", value=1.0),
+        {**_mirror("GDP", value=2.0), "obs_date": "2026-02-01"},
+    ]
+    first = _vintage("GDP", value=1.0)
+    second = {
+        **_vintage("GDP", value=2.0),
+        "observation_period": "2026-02-01",
+    }
+    extra = {
+        **_vintage("GDP", value=1.5),
+        "observation_period": "2026-01-15",
+    }
+
+    assert evidence._mirror_matches_vintages(mirror, [first, second]) is True
+    assert evidence._mirror_matches_vintages(mirror, [first]) is False
+    assert evidence._mirror_matches_vintages(mirror, [first, extra, second]) is False
+
+
+def test_carried_chain_uses_its_seed_cutoff_while_v04_uses_decision_creation_time() -> None:
     """The two producer legs keep their distinct private cutoffs and no timing leaks."""
     decision = {
         **_decision(quadrant_source="chain_carry", carry_age=1),
@@ -717,13 +809,28 @@ def test_carried_chain_uses_its_seed_cutoff_while_v04_uses_recorded_update_time(
         spy_rows=[{"ticker": "SPY", "date": "2026-01-30", "adj_close": 490.0}],
         mirror_rows=[_mirror(series_id, value=1.0) for series_id in MIRROR_IDS],
         chain_seed=chain_seed,
-        input_digest_matches=True,
     )
 
     assert materialization.private_decision["decision_cutoff"] == "2026-03-03T12:00:00+00:00"
     assert materialization.private_decision["carry_seed_as_of"] == "2026-01-31"
     assert materialization.private_decision["carry_seed_cutoff"] == "2026-01-31T00:00:00+00:00"
-    assert _item(materialization, "INDPRO")["evidence_state"] == "carried"
+    for series_key in (*SEED_IDS, "SPY"):
+        item = _item(materialization, series_key)
+        assert item["evidence_state"] == "carried"
+        assert item["freshness_state"] == "stale"
+    for series_key in MIRROR_IDS:
+        item = _item(materialization, series_key)
+        assert item["evidence_state"] == "observed"
+        assert item["freshness_state"] == "current"
+    private_records = {
+        record["series_key"]: record for record in evidence._private_records(materialization)
+    }
+    for series_key in (*SEED_IDS, "SPY"):
+        assert private_records[series_key]["carry_seed_decision_month"] == "2026-01"
+        assert private_records[series_key]["carry_seed_fingerprint"] == "b" * 64
+    for series_key in MIRROR_IDS:
+        assert private_records[series_key]["carry_seed_decision_month"] is None
+        assert private_records[series_key]["carry_seed_fingerprint"] is None
     for item in materialization.public_items:
         assert not any("cutoff" in key or "seed" in key for key in item)
 
@@ -1139,17 +1246,18 @@ def test_backfill_uses_the_same_advisory_lock_as_the_runtime_worker(monkeypatch)
 
 
 def test_private_publication_refuses_missing_decision_identity() -> None:
-    """Private lineage never substitutes sentinel IDs or digests for a real decision."""
+    """Private lineage never substitutes sentinel provenance for a real decision."""
     materialization = _materialization()
-    materialization.private_decision["decision_run_id"] = None
+    materialization.private_decision["decision_created_at"] = None
 
-    with pytest.raises(ValueError, match="decision run_id"):
+    with pytest.raises(ValueError, match="decision created_at"):
         evidence.publish(_Conn(), materialization)
 
 
-def test_private_publication_refuses_missing_input_digest() -> None:
+@pytest.mark.parametrize("digest", [None, "A" * 64, "a" * 63, "g" * 64])
+def test_private_publication_refuses_invalid_input_digest(digest: str | None) -> None:
     materialization = _materialization()
-    materialization.private_decision["decision_input_digest_sha256"] = None
+    materialization.private_decision["decision_input_digest_sha256"] = digest
 
     with pytest.raises(ValueError, match="input digest"):
         evidence.publish(_Conn(), materialization)

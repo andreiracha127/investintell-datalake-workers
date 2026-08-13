@@ -7,7 +7,7 @@
 CREATE TABLE IF NOT EXISTS open_macro_v04_pit_evidence (
     decision_month             char(7)     NOT NULL CHECK (decision_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
     decision_as_of             date        NOT NULL,
-    decision_run_id            text        NOT NULL CHECK (decision_run_id <> ''),
+    decision_created_at        timestamptz NOT NULL,
     decision_input_digest_sha256 char(64)  NOT NULL CHECK (decision_input_digest_sha256 ~ '^[0-9a-f]{64}$'),
     decision_basis             text        NOT NULL CHECK (decision_basis IN ('live', 'bootstrap_replay')),
     series_key                 text        NOT NULL CHECK (series_key IN (
@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS open_macro_v04_pit_evidence (
     cutoff_at                  timestamptz NOT NULL,
     carry_seed_decision_month  char(7)     CHECK (carry_seed_decision_month IS NULL OR carry_seed_decision_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
     carry_seed_fingerprint     char(64)    CHECK (carry_seed_fingerprint IS NULL OR carry_seed_fingerprint ~ '^[0-9a-f]{64}$'),
-    materialization_run_id     text        NOT NULL CHECK (materialization_run_id <> ''),
     materialized_at            timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT open_macro_v04_pit_evidence_pkey PRIMARY KEY
         (decision_month, series_key),

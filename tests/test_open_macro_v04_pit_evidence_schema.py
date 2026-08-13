@@ -16,7 +16,7 @@ SCHEMA = Path(__file__).resolve().parents[1] / "schemas" / "open_macro_v04_pit_e
 PRIVATE_COLUMNS = {
     "decision_month",
     "decision_as_of",
-    "decision_run_id",
+    "decision_created_at",
     "decision_input_digest_sha256",
     "decision_basis",
     "series_key",
@@ -32,7 +32,6 @@ PRIVATE_COLUMNS = {
     "cutoff_at",
     "carry_seed_decision_month",
     "carry_seed_fingerprint",
-    "materialization_run_id",
     "materialized_at",
 }
 
@@ -148,8 +147,8 @@ def test_public_relations_cannot_expose_private_values_or_point_in_time_lineage(
         "fingerprint",
         "cutoff_at",
         "carry_seed",
-        "materialization_run_id",
         "materialized_at",
+        "created_at",
         "run_id",
         "digest",
         "hash",
