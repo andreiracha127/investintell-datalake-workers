@@ -781,3 +781,74 @@ REVOKE ALL ON TABLE bond_panel_current_snapshot_v1 FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_current_rv_signal_v1 FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_current_returns_v1 FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_current_rating_pit_v1 FROM PUBLIC;
+
+-- ── Materialized mirrors of the served surface (2026-08-14) ─────────────────
+-- The Light app's builder used to read the four current_* views live, and a
+-- cold solve measured 186s of SQL in production: the base-table PKs lead with
+-- publication_id, so a month-range read walks the whole index (~4.4 GB for the
+-- snapshot leg alone) while the ancestry CTE itself costs 82ms. These *_mat
+-- mirrors hold the SAME contract rows (minus jsonb provenance: payload,
+-- source_lineage, flags), month-keyed; the identical history read answers in
+-- seconds (24.9s total, measured).
+--
+-- Discipline:
+--   * They are DERIVED, refreshed right after every pointer move — by the
+--     stage-6 panel worker (refresh_current_matviews) and by the generated
+--     backfill finalize SQL. A stale mirror (refresh failed) serves the
+--     PREVIOUS published month to the app, typed, never an error.
+--   * They are deliberately NOT a same-name swap of the views: producers keep
+--     reading the live views (parent anchors, parity), and CREATE OR REPLACE
+--     VIEW above would fail with "is not a view" against a same-name matview,
+--     breaking this file's idempotent install.
+--   * UNIQUE (month, cusip_id) is required by REFRESH CONCURRENTLY and doubles
+--     as the app's month-range index.
+--   * The app_runtime SELECT grant is applied operationally in production
+--     (matviews inherit nothing), like the grants on the views themselves.
+CREATE MATERIALIZED VIEW IF NOT EXISTS bond_panel_current_snapshot_v1_mat AS
+SELECT publication_id, month, cusip_id, issuer_id, issuer_identity_state,
+       ff17num, eligibility_state, eligibility_reason, currency, asset_class,
+       amount_outstanding_k, maturity_date, maturity_years, coupon_pct, price,
+       price_source, db_type, ytm, ytm_basis, mod_dur, mod_dur_source,
+       spread_final, spread_final_bps, spread_definition, spread_source,
+       rating_bucket, rating_state, traded_days, trade_count, dollar_volume,
+       rel_bid_ask_bps, quoted_days, terms_source, distribution_rule,
+       reference_cusip9, distribution_decision_id
+FROM bond_panel_current_snapshot_v1;
+CREATE UNIQUE INDEX IF NOT EXISTS bond_panel_current_snapshot_v1_mat_uq
+    ON bond_panel_current_snapshot_v1_mat (month, cusip_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS bond_panel_current_rv_signal_v1_mat AS
+SELECT publication_id, month, cusip_id, issuer_id, ff17num, eligibility_state,
+       eligibility_reason, price, amount_outstanding_k, maturity_years,
+       traded_days, trade_count, dollar_volume, rel_bid_ask_bps, quoted_days,
+       ytm, ytm_basis, mod_dur, mod_dur_source, spread_final_bps,
+       spread_definition, residual_bps, rv_signal, price_source,
+       distribution_rule, reference_cusip9, distribution_decision_id
+FROM bond_panel_current_rv_signal_v1;
+CREATE UNIQUE INDEX IF NOT EXISTS bond_panel_current_rv_signal_v1_mat_uq
+    ON bond_panel_current_rv_signal_v1_mat (month, cusip_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS bond_panel_current_returns_v1_mat AS
+SELECT publication_id, month, cusip_id, total_return, price_return,
+       carry_return, exit_basis, exit_reason, suspect, distribution_rule,
+       reference_cusip9, distribution_decision_id
+FROM bond_panel_current_returns_v1;
+CREATE UNIQUE INDEX IF NOT EXISTS bond_panel_current_returns_v1_mat_uq
+    ON bond_panel_current_returns_v1_mat (month, cusip_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS bond_panel_current_rating_pit_v1_mat AS
+SELECT publication_id, month, cusip_id, rating_bucket, rating_as_of_month,
+       rating_state, rating_reason, rating_staleness_months, distribution_rule,
+       reference_cusip9, distribution_decision_id
+FROM bond_panel_current_rating_pit_v1;
+CREATE UNIQUE INDEX IF NOT EXISTS bond_panel_current_rating_pit_v1_mat_uq
+    ON bond_panel_current_rating_pit_v1_mat (month, cusip_id);
+
+ALTER MATERIALIZED VIEW bond_panel_current_snapshot_v1_mat OWNER TO worker_writer;
+ALTER MATERIALIZED VIEW bond_panel_current_rv_signal_v1_mat OWNER TO worker_writer;
+ALTER MATERIALIZED VIEW bond_panel_current_returns_v1_mat OWNER TO worker_writer;
+ALTER MATERIALIZED VIEW bond_panel_current_rating_pit_v1_mat OWNER TO worker_writer;
+REVOKE ALL ON TABLE bond_panel_current_snapshot_v1_mat FROM PUBLIC;
+REVOKE ALL ON TABLE bond_panel_current_rv_signal_v1_mat FROM PUBLIC;
+REVOKE ALL ON TABLE bond_panel_current_returns_v1_mat FROM PUBLIC;
+REVOKE ALL ON TABLE bond_panel_current_rating_pit_v1_mat FROM PUBLIC;

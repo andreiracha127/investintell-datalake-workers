@@ -17,7 +17,11 @@ from typing import Any
 import pandas as pd
 
 from src.bonds.panel_config import config_hash
-from src.bonds.panel_materializer import MaterializationError, materialize_panel
+from src.bonds.panel_materializer import (
+    MaterializationError,
+    materialize_panel,
+    refresh_current_matviews,
+)
 from src.bonds.panel_resolvers import (
     build_db_monthly_panel,
     build_snapshots,
@@ -737,6 +741,16 @@ def _failure(reason: str, *, elapsed: float, input_reasons: list[str] | None = N
     }
 
 
+def _refresh_served_mirrors(dsn: str | None) -> str:
+    """Refresh the *_mat mirrors post-publish; typed outcome, never a raise."""
+    try:
+        with connect(resolve_dsn(dsn), autocommit=True) as refresh_conn:
+            refresh_current_matviews(refresh_conn)
+    except Exception as exc:  # a stale mirror is a state, not a crash
+        return f"failed:{type(exc).__name__}"
+    return "refreshed"
+
+
 def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, object]:
     """Publish the DB-only closed/open panel delta, or return a typed refusal."""
     started = time.monotonic()
@@ -887,8 +901,15 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
             return _failure("panel_failed", elapsed=time.monotonic() - started, input_reasons=[f"panel_rebuild:{type(exc).__name__}:{exc}"])
         except Exception as exc:
             return _failure("panel_publish_failed", elapsed=time.monotonic() - started, input_reasons=[f"materializer:{type(exc).__name__}"])
+    # The pointer moved and its transaction committed (the connection above is
+    # closed). Refresh the *_mat mirrors the Light app reads on a SEPARATE
+    # autocommit connection — CONCURRENTLY refuses transaction blocks. Failure
+    # is non-fatal by design: the publish stands, the app keeps serving the
+    # previous month (typed), and the state below says so instead of hiding it.
+    matview_refresh = _refresh_served_mirrors(dsn)
     return {
         "state": "published",
+        "matview_refresh": matview_refresh,
         "aborted": False,
         "publication_id": result.publication_id,
         "parent_publication_id": result.parent_publication_id,

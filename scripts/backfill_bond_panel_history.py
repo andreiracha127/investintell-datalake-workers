@@ -1056,6 +1056,17 @@ UPDATE bond_panel_publications SET publication_status='validated', validated_at=
 {repair_cas}{pointer_statement}
 COMMIT;
 SELECT jsonb_build_object('publication_id',{_sql_string(plan.publication_id)},'phase','validated_and_pointed','config_hash',{_sql_string(plan.config_hash)},'source_sha256',{_sql_string(hashes)}::jsonb,'counts',{_sql_string(json.dumps(plan.counts, sort_keys=True))}::jsonb,'historical_return_coverage_through',{_sql_string(plan.returns_last_month)}) AS backfill_evidence;
+-- Pointer moved: refresh the *_mat mirrors the Light app reads. Deliberately
+-- AFTER the COMMIT and the evidence row (CONCURRENTLY refuses transaction
+-- blocks, and a refresh failure must not mask a finalized backfill). Snapshot
+-- last: the app's solvability probe needs all legs of a month, so out-of-order
+-- mirrors can only under-report the newest month, never serve a partial one.
+SET ROLE worker_writer;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_rv_signal_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_returns_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_rating_pit_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_snapshot_v1_mat;
+RESET ROLE;
 """
 
 

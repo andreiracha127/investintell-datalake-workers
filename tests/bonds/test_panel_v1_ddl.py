@@ -19,6 +19,79 @@ def test_panel_ddl_has_six_worker_owned_relations_and_fail_closed_controls() -> 
     assert "failure_reason" in sql
 
 
+def test_panel_ddl_materialized_mirrors_are_worker_owned_and_refreshable() -> None:
+    """The *_mat mirrors: idempotent, unique-indexed (CONCURRENTLY), no jsonb.
+
+    They are additive relations beside the views, never a same-name swap —
+    CREATE OR REPLACE VIEW against a same-name matview errors with "is not a
+    view" and would break this file's rerunnable install.
+    """
+    sql = Path("schemas/bond_panel_v1.sql").read_text(encoding="utf-8")
+    for matview in (
+        "bond_panel_current_snapshot_v1_mat",
+        "bond_panel_current_rv_signal_v1_mat",
+        "bond_panel_current_returns_v1_mat",
+        "bond_panel_current_rating_pit_v1_mat",
+    ):
+        assert f"CREATE MATERIALIZED VIEW IF NOT EXISTS {matview}" in sql
+        assert f"CREATE UNIQUE INDEX IF NOT EXISTS {matview}_uq" in sql
+        assert f"ON {matview} (month, cusip_id)" in sql
+        assert f"ALTER MATERIALIZED VIEW {matview} OWNER TO worker_writer" in sql
+        assert f"REVOKE ALL ON TABLE {matview} FROM PUBLIC" in sql
+    # Espelhos derivam das VIEWS (contrato), nunca das tabelas base — senão a
+    # dedup por ancestry/depth seria re-implementada e divergiria.
+    mat_section = sql.split("CREATE MATERIALIZED VIEW IF NOT EXISTS", 1)[1]
+    for base_table in ("bond_panel_snapshot", "bond_panel_rv_signal", "bond_panel_returns", "bond_panel_rating_pit"):
+        assert f"FROM {base_table}\n" not in mat_section
+    # Proveniência jsonb fica fora dos espelhos (payload/source_lineage/flags).
+    for heavy in ("payload", "source_lineage", "flags"):
+        assert heavy not in mat_section
+
+
+def test_panel_worker_refreshes_mirrors_after_pointer_move_snapshot_last() -> None:
+    from src.bonds.panel_materializer import CURRENT_MATVIEWS, refresh_current_matviews
+
+    # Snapshot por último: espelhos fora de ordem só podem SUB-reportar o mês
+    # novo (o probe de solvabilidade exige as três pernas), nunca servir um mês
+    # com perna faltando.
+    assert CURRENT_MATVIEWS[-1] == "bond_panel_current_snapshot_v1_mat"
+    assert len(CURRENT_MATVIEWS) == 4
+
+    executed: list[str] = []
+
+    class _Cursor:
+        def __enter__(self) -> "_Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, statement: str) -> None:
+            executed.append(statement)
+
+    class _Conn:
+        def cursor(self) -> _Cursor:
+            return _Cursor()
+
+    refresh_current_matviews(_Conn())
+    assert executed == [
+        f"REFRESH MATERIALIZED VIEW CONCURRENTLY {name}" for name in CURRENT_MATVIEWS
+    ]
+
+
+def test_backfill_finalize_sql_refreshes_mirrors_after_commit() -> None:
+    source = Path("scripts/backfill_bond_panel_history.py").read_text(encoding="utf-8")
+    commit_at = source.index("COMMIT;")
+    for matview in (
+        "bond_panel_current_snapshot_v1_mat",
+        "bond_panel_current_rv_signal_v1_mat",
+        "bond_panel_current_returns_v1_mat",
+        "bond_panel_current_rating_pit_v1_mat",
+    ):
+        refresh_at = source.index(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {matview}")
+        assert refresh_at > commit_at
+
+
 def test_panel_ddl_is_rerunnable_and_enforces_lifecycle_and_ancestry() -> None:
     sql = Path("schemas/bond_panel_v1.sql").read_text(encoding="utf-8")
     assert "DROP TRIGGER IF EXISTS" in sql
