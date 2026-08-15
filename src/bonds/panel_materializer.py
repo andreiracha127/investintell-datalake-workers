@@ -238,6 +238,34 @@ def install_schema(conn: Any) -> None:
         cur.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
+# The *_mat mirrors the Light app reads (see the matview section of the DDL).
+# Refresh order is deliberate: snapshot LAST. The app's month-solvability probe
+# requires all three legs of a month, so mirrors refreshed out of order can
+# only UNDER-report the newest month (probe walks back one month, typed) —
+# never serve a month with a missing leg.
+CURRENT_MATVIEWS: tuple[str, ...] = (
+    "bond_panel_current_rv_signal_v1_mat",
+    "bond_panel_current_returns_v1_mat",
+    "bond_panel_current_rating_pit_v1_mat",
+    "bond_panel_current_snapshot_v1_mat",
+)
+
+
+def refresh_current_matviews(conn: Any) -> None:
+    """Refresh the served mirrors after a pointer move.
+
+    ``conn`` MUST be in autocommit: REFRESH MATERIALIZED VIEW CONCURRENTLY
+    refuses to run inside a transaction block, which is also why this is never
+    called on the materialization connection (its reads leave an implicit
+    transaction open). CONCURRENTLY keeps the app reading the previous rows
+    for the minutes a refresh takes instead of blocking on a lock; the full
+    pass measured ~10 minutes serial in production (2026-08-14).
+    """
+    with conn.cursor() as cur:
+        for matview in CURRENT_MATVIEWS:
+            cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {matview}")
+
+
 def _assert_parent(store: InMemoryPublicationStore, parent_publication_id: str | None) -> None:
     if parent_publication_id is None:
         return
