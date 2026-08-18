@@ -654,8 +654,11 @@ def test_the_window_starts_at_each_bond_s_own_watermark() -> None:
     stats = bond_live_daily._load_candles(conn, client, UNIVERSE, TODAY)
 
     (_, from_ts, to_ts) = client.candle_calls[0]
-    # The watermark day itself is re-read (a revised close must not be frozen).
-    assert from_ts == live_daily.to_epoch(DAY)
+    # The request opens the day BEFORE the watermark, which is what makes the
+    # watermark day itself re-readable (a revised close must not be frozen): the
+    # provider's ``from`` is EXCLUSIVE, measured 2026-08-18 against the live API.
+    # See ``live_daily.fetch_window`` for the payloads.
+    assert from_ts == live_daily.to_epoch(DAY - _dt.timedelta(days=1))
     assert to_ts == live_daily.to_epoch(TODAY)
     assert stats["with_data"] == 1 and stats["last_day"] == TODAY.isoformat()
     assert conn.commits >= 1
@@ -2454,3 +2457,19 @@ def test_retention_keeps_the_app_pinned_publication() -> None:
     assert "bond_serving_app_current_pointer" in bond_serving._KEEP_APP_PINNED
     assert "LIMIT 2" in bond_serving._KEEP_TWO_MOST_RECENT
     assert "LIMIT %s" in bond_serving._PRUNE_BATCH_SQL, "the delete must be batched"
+
+
+def test_the_run_reports_wall_clock_per_stage(monkeypatch) -> None:
+    """Every stage that ran must be able to say what it cost.
+
+    Until 2026-08-18 the run published counters for six stages and a wall clock
+    for one (the tick sweep). A 2h46 production run whose single measured stage
+    accounted for 70 minutes left the other 97 unattributed, which is the first
+    thing any tuning needs and the one thing the report could not answer.
+    """
+    universe = [_bond(f"91282800{i}") for i in range(3)]
+    out = _drive_run(monkeypatch, conn=FakeConn({Q_UNIVERSE: universe}))
+
+    timings = out["timings_seconds"]
+    assert {"candles", "curve", "ticks"} <= set(timings), timings
+    assert all(isinstance(v, float) and v >= 0.0 for v in timings.values()), timings

@@ -226,3 +226,90 @@ def test_tick_client_preserves_empty_and_malformed_response_state(
     assert client.ticks("US912828XX10", "2026-08-06")[
         "__finnhub_payload_state"
     ] == state
+
+
+# --------------------------------------------------------------------------- #
+# Pacing: spend the provider's budget, do not sit on it
+# --------------------------------------------------------------------------- #
+#
+# The sweep is one bond at a time, so wall clock is (latency + pace) per call.
+# The old pacing slept a FIXED amount AFTER each response, which charged the
+# latency twice over: measured 2026-08-18 in production, 10.208 tick calls took
+# 4180s = 0.41s each, against a provider ceiling of 300/min (X-Ratelimit-Limit,
+# read from the live API the same day; the constant in this module assumed 190).
+# Pacing from the START of the previous request instead makes the latency count
+# TOWARDS the interval rather than on top of it.
+class _Clock:
+    """Monotonic fake: every read advances by ``latency`` once armed."""
+
+    def __init__(self, latency: float) -> None:
+        self.now = 1000.0
+        self.latency = latency
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _paced_client(latency: float, headers: dict | None = None):
+    clock = _Clock(latency)
+    slept: list[float] = []
+
+    def opener(_url, _timeout):
+        clock.advance(latency)  # the request itself takes time
+        return _Response(b'{"s":"ok"}', headers or {})
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock.advance(seconds)
+
+    client = _finnhub.FinnhubClient(
+        "k", opener=opener, sleep=sleep, clock=clock, base_sleep_s=0.15
+    )
+    return client, slept, clock
+
+
+def test_latency_counts_towards_the_pace_instead_of_being_charged_on_top() -> None:
+    """A call slower than the target interval must not sleep at all."""
+    headers = {"X-Ratelimit-Limit": "300", "X-Ratelimit-Remaining": "250"}
+    client, slept, _ = _paced_client(latency=0.5, headers=headers)
+
+    client.daily_candles("US0000000000", 0, 1)
+    client.daily_candles("US0000000000", 0, 1)
+
+    assert [s for s in slept if s > 0] == [], (
+        "a 0.5s call already exceeds the 300/min interval; sleeping after it "
+        "burns budget the provider was willing to give"
+    )
+
+
+def test_the_pace_follows_the_limit_the_provider_reports() -> None:
+    """A fast call sleeps only the remainder of the reported interval."""
+    headers = {"X-Ratelimit-Limit": "300", "X-Ratelimit-Remaining": "250"}
+    client, slept, _ = _paced_client(latency=0.05, headers=headers)
+
+    client.daily_candles("US0000000000", 0, 1)
+    client.daily_candles("US0000000000", 0, 1)
+
+    paced = [s for s in slept if s > 0]
+    assert paced, "a call faster than the interval must still be paced"
+    # 300/min under the safety margin -> interval strictly between the raw
+    # 0.2s and the old fixed 0.15s+latency posture.
+    assert all(0.0 < s <= 0.3 for s in paced), paced
+
+
+def test_a_nearly_drained_budget_still_sleeps_to_the_reset() -> None:
+    """The existing guard must survive the pacing change."""
+    headers = {
+        "X-Ratelimit-Limit": "300",
+        "X-Ratelimit-Remaining": "1",
+        "X-Ratelimit-Reset": "1030",
+    }
+    client, slept, _ = _paced_client(latency=0.01, headers=headers)
+
+    client.daily_candles("US0000000000", 0, 1)
+
+    assert client.throttle_sleeps == 1
+    assert max(slept) >= 20.0, slept

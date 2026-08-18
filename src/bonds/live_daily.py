@@ -532,10 +532,25 @@ def fetch_window(
 
     ``to`` is ``today`` (the provider clips to what it has; asking past the tape
     costs nothing and means a run started before the tape lands still catches up
-    tomorrow). ``from`` is the watermark day ITSELF, not the day after it: the
-    watermark day is re-read every run so a source that later revises the
-    session it first printed is picked up instead of frozen at that first print.
-    Re-reading is free because the conflict rule replaces a same-source row.
+    tomorrow). ``from`` is the day BEFORE the watermark, because the provider's
+    ``from`` is EXCLUSIVE -- measured 2026-08-18 against the live API with the
+    same ``to`` and only ``from`` varied, for a bond whose last point is
+    2026-08-17::
+
+        from=2026-08-17 -> {"s":"no_data"}
+        from=2026-08-01 -> {"s":"ok", ... t[-1]=2026-08-17}
+
+    This function assumed an INCLUSIVE ``from`` until then, and the assumption
+    cost a production lane: as soon as it caught up, every window it asked for
+    opened on the one day the provider refuses to return, so all ~10k bonds came
+    back empty. ``candles_failed`` -- whose premise is that a re-read of an
+    ALREADY-LOADED day must come back, so an empty one is a fault -- then fired
+    on a lane that was merely up to date, aborted the run, and left the panel
+    deferred. Opening a day earlier restores both properties at once: the
+    watermark day is re-read (a source that later revises the session it first
+    printed is picked up instead of frozen at that first print), and an empty
+    response proves a fault again. Re-reading is free because the conflict rule
+    replaces a same-source row.
 
     A cold table (no watermark) asks for ``cold_start_days`` -- deliberately a
     small window, not the full history: bulk history is a load, not a daily job,
@@ -552,7 +567,9 @@ def fetch_window(
     if watermark is None:
         start = today - _dt.timedelta(days=cold_start_days)
     else:
-        start = watermark  # inclusive re-read of the watermark day itself
+        # One day BEFORE the watermark: the provider's ``from`` is exclusive, so
+        # this is what makes the watermark day itself re-readable.
+        start = watermark - _dt.timedelta(days=1)
     if start > today:
         start = today
     return start, today

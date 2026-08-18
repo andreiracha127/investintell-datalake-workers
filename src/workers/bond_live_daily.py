@@ -689,6 +689,34 @@ def _curve_watermarks(conn: psycopg.Connection) -> dict[str, _dt.date]:
 
 
 # --------------------------------------------------------------------------- #
+# Stage timing
+# --------------------------------------------------------------------------- #
+class _Stopwatch:
+    """Wall clock per stage, reported alongside the counts.
+
+    The run publishes rich counters per lane but, until 2026-08-18, a wall clock
+    for exactly ONE of them (the tick sweep's ``elapsed_seconds``). A 2h46 run
+    whose only measured stage accounts for 70 minutes leaves the other 97 to
+    guesswork, and the first question any tuning asks is which stage to attack.
+    Monotonic, so a clock step during a run cannot produce a negative stage.
+    """
+
+    def __init__(self) -> None:
+        self.seconds: dict[str, float] = {}
+
+    def run(self, name: str, thunk: Any) -> Any:
+        started = time.monotonic()
+        try:
+            return thunk()
+        finally:
+            # ``finally``: a stage that raised still spent the time, and the
+            # handler that turns the exception into a typed state runs after
+            # this. Losing the measurement of the slow path would hide exactly
+            # the runs worth measuring.
+            self.seconds[name] = round(time.monotonic() - started, 3)
+
+
+# --------------------------------------------------------------------------- #
 # Stage 1: candles
 # --------------------------------------------------------------------------- #
 def _load_candles(
@@ -1258,6 +1286,7 @@ def run(
     mapping_snapshot_id = (os.getenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID") or "").strip()
     resolved = resolve_dsn(dsn)
 
+    stopwatch = _Stopwatch()
     with connect(resolved) as conn, advisory_lock(conn, LOCK_BOND_LIVE_DAILY) as acquired:
         if not acquired:
             # Something else holds this worker's lock, so this run does nothing
@@ -1312,17 +1341,21 @@ def run(
             ticks = {"swept": 0, "aborted": True, "transient_failures": 0, "state": provider_error}
         else:
             try:
-                candles = _load_candles(conn, client, universe, today)
+                candles = stopwatch.run(
+                    "candles", lambda: _load_candles(conn, client, universe, today)
+                )
             except FinnhubConfigError as exc:
                 provider_error, provider_detail = "provider_rejected", str(exc)
                 candles = {"aborted": True, "resumed": 0, "with_data": 0, "state": provider_error}
             try:
-                curve = _load_curve(conn, client, today)
+                curve = stopwatch.run("curve", lambda: _load_curve(conn, client, today))
             except FinnhubConfigError as exc:
                 provider_error, provider_detail = "provider_rejected", str(exc)
                 curve = {"tenors": 0, "skipped_tenors": [], "state": provider_error}
             try:
-                ticks = _load_ticks(conn, client, universe, today)
+                ticks = stopwatch.run(
+                    "ticks", lambda: _load_ticks(conn, client, universe, today)
+                )
             except FinnhubConfigError as exc:
                 provider_error, provider_detail = "provider_rejected", str(exc)
                 ticks = {"swept": 0, "aborted": True, "transient_failures": 0, "state": provider_error}
@@ -1352,8 +1385,8 @@ def run(
         # else in the fleet ever takes LOCK_BOND_LIVE_DAILY, so there is no cycle
         # to close.
         conn.commit()
-        matview = _refresh_curated(resolved)
-        republish = _republish(resolved)
+        matview = stopwatch.run("matview", lambda: _refresh_curated(resolved))
+        republish = stopwatch.run("republish", lambda: _republish(resolved))
         swept = len(universe)
         sweep_incomplete = swept < universe_total
         historical_calc_date = today < execution_date
@@ -1408,7 +1441,9 @@ def run(
                 "reason": "historical_calc_date",
             }
         else:
-            panel = _publish_panel(resolved, as_of=today)
+            panel = stopwatch.run(
+                "panel", lambda: _publish_panel(resolved, as_of=today)
+            )
 
     # THE VERDICT. Every stage above has already RUN -- this is computed at the
     # end and never used to skip work -- and each clause below is a way the day
@@ -1538,4 +1573,5 @@ def run(
         "republish": republish,
         "panel": panel,
         "provider": client.stats() if client is not None else {"state": provider_error, "detail": provider_detail},
+        "timings_seconds": stopwatch.seconds,
     }

@@ -59,8 +59,27 @@ MAX_RETRIES = 6
 BACKOFF_BASE_S = 2.0
 BACKOFF_CAP_S = 120.0
 DEFAULT_TIMEOUT_S = 45.0
-#: ~190 CUSIPs/min sustained, which is what the measured budget supports.
+#: Floor between requests when the provider has not told us its limit yet.
+#: Kept as the historical value so a lane that never sees a rate header (the
+#: tick endpoint serves none) behaves exactly as it always did until a header
+#: from another endpoint teaches the client the real budget.
 DEFAULT_BASE_SLEEP_S = 0.15
+
+#: Fraction of the provider's reported limit this client will actually spend.
+#: Not 1.0: the reset window is a boundary we cannot see the inside of, and the
+#: tick lane runs blind (no rate headers), so it inherits whatever pace the
+#: header-bearing lanes learned. 0.85 of 300/min = 255/min.
+RATE_SAFETY_MARGIN = 0.85
+
+#: Pacing is measured from the START of the previous request, not from the end
+#: of it. The distinction is the whole point: a sweep is one bond at a time, so
+#: wall clock is (latency + pace) per call, and sleeping a fixed amount AFTER
+#: each response charges the provider's latency on top of an interval that
+#: already accounts for it. Measured 2026-08-18 in production: 10.208 tick calls
+#: took 4180s -- 0.41s each, i.e. 146/min -- against a ceiling of 300/min read
+#: from X-Ratelimit-Limit on the live API the same day. The old constant above
+#: assumed 190/min, which was never the budget; the gap was latency being paid
+#: twice. Anchoring the interval at the request start hands that gap back.
 
 #: Consecutive transient exhaustions after which a sweep gives up rather than
 #: spending its whole window on a provider that is down. The run then reports
@@ -115,6 +134,10 @@ class FinnhubClient:
         self._opener = opener
         self._sleep = sleep
         self._clock = clock
+        #: Learned from X-Ratelimit-Limit; None until an endpoint reports one.
+        self._limit_per_min: int | None = None
+        #: Clock reading when the last request was ISSUED (not when it landed).
+        self._last_request_at: float | None = None
         self.http_calls = 0
         self.retries = 0
         self.throttle_sleeps = 0
@@ -278,6 +301,7 @@ class FinnhubClient:
             # neither how many attempts are made nor how an error is classified.
             retries_left = attempt < MAX_RETRIES
             try:
+                self._last_request_at = self._clock()
                 response = self._open(url)
                 # A call whose body then dies still burned quota.
                 self.http_calls += 1
@@ -327,16 +351,54 @@ class FinnhubClient:
         raise FinnhubTransientError(f"retries exhausted for {endpoint}: {last_error}")
 
     def _respect_rate_headers(self, headers: Any) -> None:
-        """Base pacing sleep; sleep to the reset instant when nearly drained."""
+        """Sleep to the reset when nearly drained; otherwise pace the interval.
+
+        The near-drained guard is unchanged and comes first: a budget about to
+        run out is a hard stop, not a pace. Everything else is spacing, and it
+        is measured from when the LAST REQUEST WAS ISSUED, so a slow response
+        has already paid part (or all) of the interval by the time we get here.
+        """
         remaining, reset = self._rate_headers(headers)
+        limit = self._limit_header(headers)
+        if limit:
+            self._limit_per_min = limit
         if remaining is not None and remaining <= 2 and reset:
             wait = max(0.0, reset - self._clock()) + 1.0
             if wait > 0:
                 self.throttle_sleeps += 1
                 self._sleep(min(wait, BACKOFF_CAP_S))
                 return
-        if self._base_sleep_s:
-            self._sleep(self._base_sleep_s)
+        self._pace()
+
+    def _target_interval_s(self) -> float:
+        """Seconds between request STARTS: the provider's budget, or the floor."""
+        if self._limit_per_min and self._limit_per_min > 0:
+            return 60.0 / (self._limit_per_min * RATE_SAFETY_MARGIN)
+        return self._base_sleep_s
+
+    def _pace(self) -> None:
+        """Sleep only the part of the interval the request did not already use."""
+        interval = self._target_interval_s()
+        if interval <= 0:
+            return
+        started = self._last_request_at
+        if started is None:
+            self._sleep(interval)
+            return
+        elapsed = self._clock() - started
+        remaining = interval - elapsed
+        if remaining > 0:
+            self._sleep(remaining)
+
+    @staticmethod
+    def _limit_header(headers: Any) -> int | None:
+        getter = getattr(headers, "get", None)
+        if not callable(getter):
+            return None
+        try:
+            return int(getter("X-Ratelimit-Limit"))
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _rate_headers(headers: Any) -> tuple[int | None, int]:

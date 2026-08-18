@@ -401,9 +401,39 @@ def test_absent_volume_stays_absent() -> None:
 # Window + cohort arithmetic
 # --------------------------------------------------------------------------- #
 def test_the_window_re_reads_the_watermark_day() -> None:
-    """A revised close must be picked up, not frozen at its first print."""
+    """A revised close must be picked up, not frozen at its first print.
+
+    The window opens the day BEFORE the watermark because the provider's
+    ``from`` is EXCLUSIVE. Measured 2026-08-18 against the live API, same ``to``,
+    only ``from`` varied, for a bond whose last point is 2026-08-17:
+
+        from=2026-08-17 -> {"s":"no_data"}
+        from=2026-08-01 -> {"s":"ok", ... t[-1]=2026-08-17}
+
+    An inclusive ``from`` was the standing assumption, and it made the watermark
+    day unreachable: once the lane caught up, every window it asked for started
+    on the one day the provider would never return, so EVERY bond came back
+    empty. That is what dressed a caught-up lane as ``candles_failed`` -- whose
+    own premise is that a re-read of an already-loaded day must come back -- and
+    aborted the run, leaving the panel deferred. Opening one day earlier puts the
+    watermark day back INSIDE the window, so the re-read works and the failure
+    signal means what it says again.
+    """
     start, end = live_daily.fetch_window(_dt.date(2026, 8, 5), _dt.date(2026, 8, 7))
-    assert (start, end) == (_dt.date(2026, 8, 5), _dt.date(2026, 8, 7))
+    assert (start, end) == (_dt.date(2026, 8, 4), _dt.date(2026, 8, 7))
+
+
+def test_a_caught_up_lane_still_asks_for_a_day_the_provider_can_answer() -> None:
+    """The regression that produced the incident, pinned as its own case.
+
+    Watermark == today is the caught-up state a healthy daily lane sits in for
+    most of every day. The window must still open before it, or the request is
+    the empty one by construction.
+    """
+    today = _dt.date(2026, 8, 17)
+    start, end = live_daily.fetch_window(today, today)
+    assert start < today, "a caught-up lane would ask the provider for nothing"
+    assert end == today
 
 
 def test_a_cold_table_asks_for_a_small_window_not_the_whole_history() -> None:
