@@ -137,6 +137,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -689,6 +690,69 @@ def _curve_watermarks(conn: psycopg.Connection) -> dict[str, _dt.date]:
 
 
 # --------------------------------------------------------------------------- #
+# Concurrent prefetch
+# --------------------------------------------------------------------------- #
+#: How many provider requests may be IN FLIGHT at once on the two ~10k lanes.
+#: This is not the rate -- the client's slot reservation still meters emission
+#: to the provider's own reported budget, and raising this number does not buy
+#: a single extra call per minute. What it buys is the right to WAIT on several
+#: responses at once: sequentially, wall clock is (latency + interval) per bond,
+#: so a 0.26s latency capped the sweep at ~230/min against a 300/min budget no
+#: matter how the pacing was tuned. Four is enough to cover that gap with room
+#: to spare; more would only deepen the queue behind an unchanged meter.
+DEFAULT_MAX_IN_FLIGHT = 4
+
+#: Units fetched before any of them is judged. The sweep decides in ORIGINAL
+#: order (the breaker counts CONSECUTIVE failures), so a block is the amount of
+#: work an abort can throw away -- reported as ``discarded_in_flight`` rather
+#: than quietly dropped.
+PREFETCH_BLOCK = DEFAULT_MAX_IN_FLIGHT * 4
+
+
+def _max_in_flight() -> int:
+    raw = (os.getenv("BOND_LIVE_MAX_IN_FLIGHT") or "").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_IN_FLIGHT
+    # 0 or negative is read as "sequential", never as "unbounded": the one way
+    # this knob could hurt is by being misread into an unmetered fan-out.
+    return value if value >= 1 else 1
+
+
+def _prefetch(items: Sequence[Any], fetch: Any, *, max_in_flight: int) -> list[tuple[Any, Any]]:
+    """``[(item, result_or_exception)]`` in the ORDER GIVEN, fetched in parallel.
+
+    Two properties the sweep depends on:
+
+    * **Order.** Fetching may finish in any order; deciding may not. The abort
+      breaker counts CONSECUTIVE failures, and its whole argument (25 x 126s of
+      backoff proves an outage) only holds if "consecutive" means what the
+      universe order says it means.
+    * **Exceptions travel as values.** A raising unit must arrive at the
+      decision point like any other result, or one dead bond would discard the
+      rows its healthy neighbours in the same block already paid for.
+    """
+    if max_in_flight <= 1:
+        return [(item, _capture(fetch, item)) for item in items]
+    with ThreadPoolExecutor(max_workers=max_in_flight) as pool:
+        return list(zip(items, pool.map(lambda item: _capture(fetch, item), items)))
+
+
+def _capture(fetch: Any, item: Any) -> Any:
+    """Run ``fetch``; hand back the exception instead of raising it.
+
+    ``FinnhubConfigError`` is captured too: it is the operator-fault stop, and
+    it must halt the sweep from the DECISION loop, in order, rather than tear
+    down a pool mid-block and lose the results either side of it.
+    """
+    try:
+        return fetch(item)
+    except Exception as exc:  # noqa: BLE001 - re-raised in order by the caller
+        return exc
+
+
+# --------------------------------------------------------------------------- #
 # Stage timing
 # --------------------------------------------------------------------------- #
 class _Stopwatch:
@@ -724,6 +788,7 @@ def _load_candles(
 ) -> dict[str, Any]:
     watermarks = _watermarks(conn, [row[0] for row in universe])
     swept = fetched = upserted = no_data = failed = resumed = 0
+    discarded_in_flight = 0
     consecutive = 0
     aborted = False
     pending = 0
@@ -771,57 +836,84 @@ def _load_candles(
             conn.commit()
             pending = 0
 
-    for cusip9, isin, coupon_rate, maturity_date in universe:
-        swept += 1
-        watermark = watermarks.get(str(cusip9))
-        # A window that RE-OPENS on a day this lane already loaded is the only
-        # kind whose emptiness proves something: the provider served that exact
-        # day once, so an empty response for it is a fault, never a quiet market.
-        # Counted here, at the one place the window is decided, because the
-        # verdict cannot reconstruct it (see ``candles_failed`` in ``run``).
-        # A cold-start bond and a bond whose watermark is already PAST ``today``
-        # (the inverted window a replay creates, clamped by ``fetch_window``)
-        # are both excluded: they get a window nobody has evidence about.
-        if watermark is not None and watermark <= today:
-            resumed += 1
-        start, end = live_daily.fetch_window(
+    def _window(bond: tuple[Any, ...]) -> tuple[_dt.date, _dt.date]:
+        watermark = watermarks.get(str(bond[0]))
+        return live_daily.fetch_window(
             watermark, today, cold_start_days=cold_start_days
         )
-        try:
-            payload = client.daily_candles(
-                str(isin), live_daily.to_epoch(start), live_daily.to_epoch(end)
-            )
-            consecutive = 0
-        except FinnhubTransientError:
-            failed += 1
-            consecutive += 1
-            stamp(str(cusip9))
-            if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                # The provider is down, not the data missing. Stop rather
-                # than spend the window proving it; the watermark resumes
-                # tomorrow.
-                aborted = True
-                break
-            continue
-        fold = live_daily.candle_rows(
-            str(cusip9), payload, not_before=start, not_after=end,
-            coupon_pct=_as_float(coupon_rate), maturity_date=maturity_date,
+
+    # Same shape as the tick sweep: requests overlap, decisions do not. The
+    # window is per bond and is computed BEFORE the fetch, so it stays a pure
+    # function of the watermark -- nothing about it depends on what came back.
+    in_flight = _max_in_flight()
+    for block_start in range(0, len(universe), PREFETCH_BLOCK):
+        if aborted:
+            break
+        block = universe[block_start:block_start + PREFETCH_BLOCK]
+        fetched_block = _prefetch(
+            block,
+            lambda bond: client.daily_candles(
+                str(bond[1]), *(live_daily.to_epoch(d) for d in _window(bond))
+            ),
+            max_in_flight=in_flight,
         )
-        dropped_after_window += fold.dropped_after_window
-        rows = fold.rows
-        if not rows:
-            no_data += 1
+        for index, (bond, payload) in enumerate(fetched_block):
+            cusip9, isin, coupon_rate, maturity_date = bond
+            swept += 1
+            watermark = watermarks.get(str(cusip9))
+            # A window that RE-OPENS on a day this lane already loaded is the
+            # only kind whose emptiness proves something: the provider served
+            # that exact day once, so an empty response for it is a fault, never
+            # a quiet market. Counted here because the verdict cannot
+            # reconstruct it (see ``candles_failed`` in ``run``). A cold-start
+            # bond and a bond whose watermark is already PAST ``today`` (the
+            # inverted window a replay creates, clamped by ``fetch_window``) are
+            # both excluded: they get a window nobody has evidence about.
+            if watermark is not None and watermark <= today:
+                resumed += 1
+            start, end = _window(bond)
+            if isinstance(payload, FinnhubConfigError):
+                discarded_in_flight += len(fetched_block) - index - 1
+                raise payload
+            if isinstance(payload, FinnhubTransientError):
+                failed += 1
+                consecutive += 1
+                stamp(str(cusip9))
+                if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                    # The provider is down, not the data missing. Stop rather
+                    # than spend the window proving it; the watermark resumes
+                    # tomorrow. The rest of this block was already fetched and
+                    # is reported as discarded rather than dropped in silence.
+                    discarded_in_flight += len(fetched_block) - index - 1
+                    aborted = True
+                    break
+                continue
+            consecutive = 0
+            fold = live_daily.candle_rows(
+                str(cusip9), payload, not_before=start, not_after=end,
+                coupon_pct=_as_float(coupon_rate), maturity_date=maturity_date,
+            )
+            dropped_after_window += fold.dropped_after_window
+            rows = fold.rows
+            if not rows:
+                no_data += 1
+                stamp(str(cusip9))
+                continue
+            fetched += 1
+            # Single-threaded writer, as in the tick sweep: the block's fetches
+            # have all landed by the time anything touches the connection.
+            with conn.cursor() as cur:
+                for row in rows:
+                    cur.execute(_OBSERVATION_UPSERT, row.as_tuple())
+                    upserted += cur.rowcount
+                    pending += 1
+                    first_day = (
+                        row.day if first_day is None or row.day < first_day else first_day
+                    )
+                    last_day = (
+                        row.day if last_day is None or row.day > last_day else last_day
+                    )
             stamp(str(cusip9))
-            continue
-        fetched += 1
-        with conn.cursor() as cur:
-            for row in rows:
-                cur.execute(_OBSERVATION_UPSERT, row.as_tuple())
-                upserted += cur.rowcount
-                pending += 1
-                first_day = row.day if first_day is None or row.day < first_day else first_day
-                last_day = row.day if last_day is None or row.day > last_day else last_day
-        stamp(str(cusip9))
     conn.commit()
     return {
         "swept": swept, "with_data": fetched, "rows_upserted": upserted,
@@ -844,6 +936,8 @@ def _load_candles(
         # held, and dropping the day would turn a defended anomaly into an
         # outage.
         "dropped_after_window": dropped_after_window,
+        "discarded_in_flight": discarded_in_flight,
+        "max_in_flight": in_flight,
         "aborted": aborted,
     }
 
@@ -1031,57 +1125,85 @@ def _load_ticks(
     transient_failures = 0
     consecutive = 0
     aborted = False
-    for cusip9 in cohort:
-        isin = isin_by_cusip.get(cusip9)
-        if not isin:
-            continue
-        swept += 1
-        api_calls += 1
-        try:
-            ticks = client.ticks(isin, day.isoformat())
-        except FinnhubTransientError:
-            failed += 1
-            transient_failures += 1
-            failure_reasons["transient_error"] = failure_reasons.get("transient_error", 0) + 1
-            consecutive += 1
-            if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                # The SAME breaker as the candle sweep, on the same constant and
-                # for the same reason: by the time this raises, the client has
-                # already spent its whole retry ladder (measured 2026-08-07:
-                # 126s of backoff per exhausted logical request, plus the
-                # connect/read timeouts on top). Unbraked, an outage walks the
-                # entire default 500-bond cohort to prove what the first 25
-                # calls already established: ~17.5h of backoff alone, taken out
-                # of a morning that has to reach the 11:00 publication window.
-                aborted = True
-                break
-            continue
-        outcome = _tick_payload_outcome(ticks)
-        if outcome in {"api_empty", "api_error", "malformed_payload"}:
-            failed += 1
-            failure_reasons[outcome] = failure_reasons.get(outcome, 0) + 1
-            consecutive += 1
-            if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                aborted = True
-                break
-            continue
-        successes += 1
-        consecutive = 0
-        if outcome == "valid_zero_trades":
-            no_trades += 1
-            no_trade_reasons[outcome] = no_trade_reasons.get(outcome, 0) + 1
-            continue
-        aggregate = live_daily.aggregate_ticks(cusip9, day, ticks)
-        if aggregate is None:
-            no_trades += 1
-            no_trade_reasons["no_usable_trades"] = no_trade_reasons.get("no_usable_trades", 0) + 1
-            continue
-        traded += 1
-        with conn.cursor() as cur:
-            cur.execute(_TICK_UPSERT, aggregate.as_tuple())
-            upserted += cur.rowcount
-        if traded % COMMIT_EVERY == 0:
-            conn.commit()
+    discarded_in_flight = 0
+    # Fetched in blocks and judged in order: the requests overlap, the decisions
+    # do not. See ``_prefetch``; the client still meters emission to the
+    # provider's own budget, so this widens the pipe, not the tap.
+    in_flight = _max_in_flight()
+    addressable = [c for c in cohort if isin_by_cusip.get(c)]
+    for block_start in range(0, len(addressable), PREFETCH_BLOCK):
+        if aborted:
+            break
+        block = addressable[block_start:block_start + PREFETCH_BLOCK]
+        fetched = _prefetch(
+            block,
+            lambda c: client.ticks(isin_by_cusip[c], day.isoformat()),
+            max_in_flight=in_flight,
+        )
+        api_calls += len(fetched)
+        for index, (cusip9, ticks) in enumerate(fetched):
+            swept += 1
+            if isinstance(ticks, FinnhubConfigError):
+                # Operator fault: raised HERE, in order, so the sweep stops with
+                # the same typed state the sequential path produced.
+                discarded_in_flight += len(fetched) - index - 1
+                raise ticks
+            if isinstance(ticks, FinnhubTransientError):
+                failed += 1
+                transient_failures += 1
+                failure_reasons["transient_error"] = (
+                    failure_reasons.get("transient_error", 0) + 1
+                )
+                consecutive += 1
+                if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                    # The SAME breaker as the candle sweep, on the same constant
+                    # and for the same reason: by the time this raises, the
+                    # client has already spent its whole retry ladder (measured
+                    # 2026-08-07: 126s of backoff per exhausted logical request,
+                    # plus the connect/read timeouts on top). Unbraked, an
+                    # outage walks the entire default 500-bond cohort to prove
+                    # what the first 25 calls already established: ~17.5h of
+                    # backoff alone, taken out of a morning that has to reach
+                    # the 11:00 publication window.
+                    #
+                    # Under prefetch the rest of THIS block was already fetched
+                    # and is now thrown away: reported, because a discarded call
+                    # that shows up nowhere reads exactly like a call never made.
+                    discarded_in_flight += len(fetched) - index - 1
+                    aborted = True
+                    break
+                continue
+            outcome = _tick_payload_outcome(ticks)
+            if outcome in {"api_empty", "api_error", "malformed_payload"}:
+                failed += 1
+                failure_reasons[outcome] = failure_reasons.get(outcome, 0) + 1
+                consecutive += 1
+                if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                    discarded_in_flight += len(fetched) - index - 1
+                    aborted = True
+                    break
+                continue
+            successes += 1
+            consecutive = 0
+            if outcome == "valid_zero_trades":
+                no_trades += 1
+                no_trade_reasons[outcome] = no_trade_reasons.get(outcome, 0) + 1
+                continue
+            aggregate = live_daily.aggregate_ticks(cusip9, day, ticks)
+            if aggregate is None:
+                no_trades += 1
+                no_trade_reasons["no_usable_trades"] = (
+                    no_trade_reasons.get("no_usable_trades", 0) + 1
+                )
+                continue
+            traded += 1
+            # The connection stays single-threaded: only this loop writes, and
+            # it runs after the block's fetches have all landed.
+            with conn.cursor() as cur:
+                cur.execute(_TICK_UPSERT, aggregate.as_tuple())
+                upserted += cur.rowcount
+            if traded % COMMIT_EVERY == 0:
+                conn.commit()
     conn.commit()
     return {
         # Keep the existing counters while making both the work and the scope
@@ -1092,6 +1214,8 @@ def _load_ticks(
         "attempted_cusips": swept, "api_calls": api_calls,
         "successes": successes, "no_trades": no_trades, "failures": failed,
         "failure_reasons": failure_reasons, "no_trade_reasons": no_trade_reasons,
+        "discarded_in_flight": discarded_in_flight,
+        "max_in_flight": in_flight,
         "elapsed_seconds": time.monotonic() - started,
         **scope,
         # Reported next to the counts, exactly as the candle sweep does it,

@@ -313,3 +313,84 @@ def test_a_nearly_drained_budget_still_sleeps_to_the_reset() -> None:
 
     assert client.throttle_sleeps == 1
     assert max(slept) >= 20.0, slept
+
+
+# --------------------------------------------------------------------------- #
+# Slot reservation: one emission schedule shared by every caller
+# --------------------------------------------------------------------------- #
+#
+# Pacing "since the last request" (the 2026-08-18 posture) only holds while ONE
+# caller is in flight. With N threads sweeping, every one of them reads the same
+# "last request" and computes the same remaining interval, so they all wake and
+# emit together -- a burst of N against a per-minute budget. Reserving a SLOT
+# under a lock instead makes the emission schedule the shared thing: each caller
+# takes the next instant and leaves the one after it for whoever comes next.
+# These cases drive the reservation arithmetic directly, without threads: the
+# logic is synchronous under the lock, and a fake clock plus real threads is a
+# flaky test, not a stronger one.
+def _slot_client(limit: int | None = 300):
+    clock = _Clock(0.0)
+    client = _finnhub.FinnhubClient(
+        "k",
+        opener=lambda _u, _t: _Response(b'{"s":"ok"}'),
+        sleep=lambda _s: None,
+        clock=clock,
+        base_sleep_s=0.15,
+    )
+    if limit is not None:
+        client._limit_per_min = limit
+    return client, clock
+
+
+def test_each_reservation_leaves_the_next_instant_for_the_next_caller() -> None:
+    client, _ = _slot_client(limit=300)
+    interval = client._target_interval_s()
+
+    waits = [client._reserve_slot() for _ in range(4)]
+
+    # The first caller emits at once; each subsequent one waits a further
+    # interval, because the clock never moved -- four callers "in flight".
+    assert waits[0] == 0.0
+    for i in range(1, 4):
+        assert abs(waits[i] - i * interval) < 1e-9, waits
+
+
+def test_a_caller_that_arrives_late_does_not_wait_for_a_slot_already_past() -> None:
+    client, clock = _slot_client(limit=300)
+    client._reserve_slot()
+
+    clock.advance(60.0)  # the sweep did other work; the slot is long gone
+
+    assert client._reserve_slot() == 0.0
+
+
+def test_one_caller_at_a_time_keeps_the_previous_interval_exactly() -> None:
+    """Concurrency 1 must be indistinguishable from the sequential pacing.
+
+    The lanes that are NOT parallel (curve, profile) go through this same
+    client, so the reservation must degenerate to the old behaviour rather than
+    change their timing as a side effect.
+    """
+    client, clock = _slot_client(limit=300)
+    interval = client._target_interval_s()
+
+    for _ in range(5):
+        assert client._reserve_slot() == 0.0
+        clock.advance(interval)  # the call itself consumed exactly the interval
+
+
+def test_a_drained_budget_pushes_the_schedule_for_every_caller_not_just_one() -> None:
+    """The near-drained guard must stop EMISSION, not only the thread that saw it.
+
+    With N in flight, the caller that reads ``remaining=1`` sleeping alone leaves
+    the other N-1 free to emit into a budget that is already gone. Holding the
+    shared schedule to the reset instant is what makes the guard mean anything
+    under concurrency.
+    """
+    client, clock = _slot_client(limit=300)
+    reset_at = clock() + 30.0
+
+    client._hold_until(reset_at)
+
+    wait = client._reserve_slot()
+    assert abs(wait - 30.0) < 1e-9, wait

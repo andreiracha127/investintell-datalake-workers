@@ -2473,3 +2473,89 @@ def test_the_run_reports_wall_clock_per_stage(monkeypatch) -> None:
     timings = out["timings_seconds"]
     assert {"candles", "curve", "ticks"} <= set(timings), timings
     assert all(isinstance(v, float) and v >= 0.0 for v in timings.values()), timings
+
+
+# --------------------------------------------------------------------------- #
+# Concurrent prefetch
+# --------------------------------------------------------------------------- #
+def test_prefetch_returns_results_in_the_order_it_was_given() -> None:
+    """Order is the contract: the breaker counts CONSECUTIVE failures.
+
+    The sweep may fetch in any order it likes, but it must decide in the
+    original one, or "25 consecutive failures" stops meaning what the abort
+    argument says it means.
+    """
+    items = list(range(20))
+
+    out = bond_live_daily._prefetch(items, lambda i: i * 2, max_in_flight=8)
+
+    assert [item for item, _ in out] == items
+    assert [value for _, value in out] == [i * 2 for i in items]
+
+
+def test_prefetch_hands_back_the_exception_instead_of_raising_it() -> None:
+    """A failed unit must arrive at the decision point like any other result.
+
+    Raising out of the fetch would abort the whole block, including units that
+    succeeded and whose rows the sweep is entitled to keep.
+    """
+    def fetch(i: int) -> int:
+        if i == 2:
+            raise _finnhub.FinnhubTransientError("boom")
+        return i
+
+    out = bond_live_daily._prefetch([0, 1, 2, 3], fetch, max_in_flight=4)
+
+    assert [item for item, _ in out] == [0, 1, 2, 3]
+    assert isinstance(out[2][1], _finnhub.FinnhubTransientError)
+    assert out[3][1] == 3
+
+
+def test_a_breaker_trip_reports_the_calls_it_paid_for_and_threw_away() -> None:
+    """In-flight work discarded by an abort is counted, never silently dropped.
+
+    A block is fetched before it is judged, so a breaker trip mid-block leaves
+    calls that spent provider quota and produced nothing. Reporting zero for
+    them would read exactly like they were never made -- the silent-truncation
+    shape this repo refuses everywhere else. The breaker itself is unchanged:
+    it still stops on CONSECUTIVE failures counted in the original order.
+    """
+    universe, activity = _tick_cohort(60)
+    conn = FakeConn({Q_ACTIVITY: activity})
+
+    stats = bond_live_daily._load_ticks(conn, _NoTape(), universe, TODAY)
+
+    assert stats["aborted"] is True
+    assert stats["swept"] == _finnhub.MAX_CONSECUTIVE_FAILURES
+    # Every call the provider was asked for is either judged or reported as
+    # discarded; the two must add up to what the sweep actually spent.
+    assert stats["swept"] + stats["discarded_in_flight"] == stats["api_calls"]
+
+
+def test_prefetch_order_survives_completion_out_of_order() -> None:
+    """Real threads, deliberately finishing backwards.
+
+    The ordering guarantee must come from the prefetch, not from the fetches
+    happening to be uniform. Here the FIRST item is the slowest, so anything
+    that yielded on completion would hand it back last -- and the breaker would
+    then count "consecutive" over an order the universe never had.
+    """
+    import time as _t
+
+    def fetch(i: int) -> int:
+        _t.sleep((8 - i) * 0.01)
+        return i
+
+    out = bond_live_daily._prefetch(list(range(8)), fetch, max_in_flight=8)
+
+    assert [item for item, _ in out] == list(range(8))
+    assert [value for _, value in out] == list(range(8))
+
+
+def test_in_flight_is_never_read_as_unbounded(monkeypatch) -> None:
+    """A misread knob must fall back to sequential, never to an unmetered fan-out."""
+    for raw in ("0", "-4", "", "abundant"):
+        monkeypatch.setenv("BOND_LIVE_MAX_IN_FLIGHT", raw)
+        assert bond_live_daily._max_in_flight() >= 1
+    monkeypatch.setenv("BOND_LIVE_MAX_IN_FLIGHT", "6")
+    assert bond_live_daily._max_in_flight() == 6

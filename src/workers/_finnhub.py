@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -136,8 +137,12 @@ class FinnhubClient:
         self._clock = clock
         #: Learned from X-Ratelimit-Limit; None until an endpoint reports one.
         self._limit_per_min: int | None = None
-        #: Clock reading when the last request was ISSUED (not when it landed).
-        self._last_request_at: float | None = None
+        #: The shared emission schedule: the next instant a request may be
+        #: ISSUED. Callers reserve a slot and leave the following one for
+        #: whoever comes next, so N in flight spend the budget at the same rate
+        #: one caller would -- they just stop waiting on each other's latency.
+        self._next_slot_at: float | None = None
+        self._slot_lock = threading.Lock()
         self.http_calls = 0
         self.retries = 0
         self.throttle_sleeps = 0
@@ -301,7 +306,9 @@ class FinnhubClient:
             # neither how many attempts are made nor how an error is classified.
             retries_left = attempt < MAX_RETRIES
             try:
-                self._last_request_at = self._clock()
+                wait = self._reserve_slot()
+                if wait > 0:
+                    self._sleep(wait)
                 response = self._open(url)
                 # A call whose body then dies still burned quota.
                 self.http_calls += 1
@@ -365,10 +372,11 @@ class FinnhubClient:
         if remaining is not None and remaining <= 2 and reset:
             wait = max(0.0, reset - self._clock()) + 1.0
             if wait > 0:
+                # Hold the SHARED schedule first, so callers already in flight
+                # queue behind the reset too, then pay the wait on this thread.
+                self._hold_until(reset + 1.0)
                 self.throttle_sleeps += 1
                 self._sleep(min(wait, BACKOFF_CAP_S))
-                return
-        self._pace()
 
     def _target_interval_s(self) -> float:
         """Seconds between request STARTS: the provider's budget, or the floor."""
@@ -376,19 +384,34 @@ class FinnhubClient:
             return 60.0 / (self._limit_per_min * RATE_SAFETY_MARGIN)
         return self._base_sleep_s
 
-    def _pace(self) -> None:
-        """Sleep only the part of the interval the request did not already use."""
+    def _reserve_slot(self) -> float:
+        """Claim the next emission instant; return the wait it implies.
+
+        Reserving BEFORE the request (rather than sleeping after the response)
+        is what lets the provider's latency count towards the interval instead
+        of being charged on top of it, and it is also what makes concurrency
+        safe: the schedule -- not "when did I last call" -- is the shared state,
+        so two callers can never claim the same instant. With one caller in
+        flight this degenerates exactly to the sequential interval, which is
+        what keeps the un-parallelised lanes (curve, profile) unchanged.
+        """
         interval = self._target_interval_s()
-        if interval <= 0:
-            return
-        started = self._last_request_at
-        if started is None:
-            self._sleep(interval)
-            return
-        elapsed = self._clock() - started
-        remaining = interval - elapsed
-        if remaining > 0:
-            self._sleep(remaining)
+        with self._slot_lock:
+            now = self._clock()
+            slot = now if self._next_slot_at is None else max(now, self._next_slot_at)
+            self._next_slot_at = slot + interval
+        return max(0.0, slot - now)
+
+    def _hold_until(self, instant: float) -> None:
+        """Push the shared schedule out to ``instant`` (never pull it in).
+
+        The near-drained guard uses this so a budget that is spent stops EVERY
+        caller, not just the one that happened to read the header. A thread
+        sleeping alone while the others emit is a guard in name only.
+        """
+        with self._slot_lock:
+            if self._next_slot_at is None or instant > self._next_slot_at:
+                self._next_slot_at = instant
 
     @staticmethod
     def _limit_header(headers: Any) -> int | None:
