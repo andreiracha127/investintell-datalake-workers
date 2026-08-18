@@ -22,17 +22,37 @@ from src.workers import nport_fixed_income_serving as worker
 ROOT = Path(__file__).resolve().parents[1]
 DSN = "host=127.0.0.1 port=65431 dbname=postgres user=postgres"
 
-
 def test_worker_is_dispatchable_by_name() -> None:
     """``python -m src.run nport_fixed_income_serving`` must resolve."""
     module = importlib.import_module("src.workers.nport_fixed_income_serving")
     assert callable(module.run)
 
 
+def test_builder_uses_one_scoped_supplemental_source_adapter() -> None:
+    builder = (
+        ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features_builder.sql"
+    ).read_text(encoding="utf-8")
+    build_function = builder[builder.index("CREATE OR REPLACE FUNCTION build_nport_fixed_income_features"):]
+    assert "supplemental_source_kind text" in builder
+    assert "nport_fixed_income_fund_info_source_v2(" in builder
+    assert "nport_fixed_income_rate_risk_source_v2(" in builder
+    assert "RETURN QUERY SELECT * FROM nport_fixed_income_fund_info_source_v2" in builder
+    assert "RETURN QUERY SELECT * FROM nport_fixed_income_rate_risk_source_v2" in builder
+    assert "FROM nport_fund_reported_info_raw" not in build_function
+    assert "JOIN nport_interest_rate_risk_raw" not in build_function
+    # Existing local/offline callers retain an explicit DERA wrapper; the
+    # production worker calls the three-argument implementation.
+    assert "supplemental_source_kind text DEFAULT 'dera_raw'" in builder
+    assert "bond_price_observation" not in builder.lower()
+
+
 def _identity(revision="abc1234", source="62ba191f-5dcf-4e69-b863-3e343db010c2",
-              as_of=date(2026, 7, 24), contract="sha256:aa", builder="bb") -> str:
+              as_of=date(2026, 7, 24), contract="sha256:aa", builder="bb",
+              source_kind="dera_raw", source_hash="sha256:raw") -> str:
     return worker._publication_id(
-        revision, source, as_of, contract_digest=contract, builder_sha256=builder
+        revision, source, as_of, contract_digest=contract, builder_sha256=builder,
+        supplemental_source_kind=source_kind,
+        supplemental_source_hash=source_hash,
     )
 
 
@@ -56,6 +76,92 @@ def test_publication_identity_does_not_depend_on_the_revision_env_var() -> None:
     unknown = _identity(revision="unknown")
     assert unknown != _identity(revision="unknown", contract="sha256:cc")
     assert unknown != _identity(revision="unknown", builder="dd")
+
+
+def test_publication_identity_is_bound_to_the_supplemental_evidence() -> None:
+    baseline = _identity()
+    assert baseline != _identity(source_kind="sec_api")
+    assert baseline != _identity(source_hash="sha256:different")
+
+
+def test_secapi_approval_hash_is_bound_to_publication_run_and_extractor() -> None:
+    baseline = worker._secapi_source_hash("publication-a", "run-a", "ordered-evidence")
+    assert baseline != worker._secapi_source_hash("publication-b", "run-a", "ordered-evidence")
+    assert baseline != worker._secapi_source_hash("publication-a", "run-b", "ordered-evidence")
+
+
+def test_secapi_approval_hash_is_bound_to_v2_parser_resolver_and_all_evidence() -> None:
+    baseline = worker._secapi_source_hash(
+        "publication-a", "run-a", "v1:A1:recovery:fund:rate|v2:A2:manifest:fund:rate"
+    )
+    assert baseline != worker._secapi_source_hash(
+        "publication-a", "run-a", "v1:A1:recovery:fund:rate|v2:A2:changed:fund:rate"
+    )
+    source = Path(worker.__file__).read_text(encoding="utf-8")
+    assert "nport_fixed_income_secapi_fallback_scope_ready_v2" in source
+    assert "nport-secapi-fixed-income/v2" in source
+    assert "secapi-query-render/v1" in source
+    for evidence_hash in (
+        "form_nport_response_sha256",
+        "query_response_sha256",
+        "render_raw_sha256",
+        "compact_payload_sha256",
+        "projection_sha256",
+    ):
+        assert evidence_hash in source
+
+
+def test_serving_installs_fallback_overlay_before_the_builder() -> None:
+    source = Path(worker.__file__).read_text(encoding="utf-8")
+    fallback_install = source.index("_SECAPI_FALLBACK_SCHEMA.read_text")
+    builder_install = source.index("materializer.install_builder(cur)")
+    assert fallback_install < builder_install
+
+
+def test_supplemental_source_never_mixes_partial_legacy_evidence() -> None:
+    ready = {
+        "ready": True,
+        "source_hash": "sha256:sidecar",
+        "expected_count": 10,
+    }
+    assert worker._choose_supplemental_source(
+        {
+            "nport_fund_reported_info_raw": True,
+            "nport_interest_rate_risk_raw": True,
+        },
+        ready,
+    ) == {"kind": "dera_raw", "source_hash": "sha256:legacy-raw"}
+    assert worker._choose_supplemental_source(
+        {
+            "nport_fund_reported_info_raw": False,
+            "nport_interest_rate_risk_raw": False,
+        },
+        ready,
+    ) == {"kind": "sec_api", "source_hash": "sha256:sidecar"}
+
+    for partial in (
+        {
+            "nport_fund_reported_info_raw": True,
+            "nport_interest_rate_risk_raw": False,
+        },
+        {
+            "nport_fund_reported_info_raw": False,
+            "nport_interest_rate_risk_raw": True,
+        },
+    ):
+        with pytest.raises(RuntimeError, match="partial legacy raw evidence"):
+            worker._choose_supplemental_source(partial, ready)
+
+
+def test_supplemental_source_fails_closed_when_no_complete_source_exists() -> None:
+    with pytest.raises(RuntimeError, match="no complete supplemental source"):
+        worker._choose_supplemental_source(
+            {
+                "nport_fund_reported_info_raw": False,
+                "nport_interest_rate_risk_raw": False,
+            },
+            {"ready": False, "source_hash": None, "expected_count": 10},
+        )
 
 
 def test_code_revision_ladder_prefers_explicit_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,8 +226,17 @@ def _seed(cur) -> tuple[str, str, str, str]:
         """CREATE TABLE nport_raw_rows(
         raw_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         ingestion_run_id uuid NOT NULL, source_file_id uuid NOT NULL, source_row_number bigint NOT NULL,
-        source_table text NOT NULL, accession_number text, holding_id text, typed_projection jsonb NOT NULL,
+        source_sha256 char(64) NOT NULL, source_table text NOT NULL, accession_number text,
+        holding_id text, typed_projection jsonb NOT NULL,
         UNIQUE(source_file_id,source_row_number))"""
+    )
+    cur.execute(
+        """CREATE TABLE nport_holdings_snapshot_identity_v1(
+        publication_id uuid NOT NULL,
+        accession_number text NOT NULL,
+        holding_id text NOT NULL,
+        report_date date NOT NULL,
+        PRIMARY KEY(publication_id,accession_number,holding_id))"""
     )
     for relation, source_table in (
         ("nport_interest_rate_risk_raw", "INTEREST_RATE_RISK.tsv"),
@@ -154,9 +269,10 @@ def _seed(cur) -> tuple[str, str, str, str]:
 def _raw(cur, run_id, source_table, accession, projection, *, holding_id=None):
     cur.execute(
         """INSERT INTO nport_raw_rows
-        (ingestion_run_id,source_file_id,source_row_number,source_table,accession_number,holding_id,typed_projection)
-        VALUES(%s,%s,2,%s,%s,%s,%s::jsonb)""",
-        (run_id, uuid4(), source_table, accession, holding_id, projection),
+        (ingestion_run_id,source_file_id,source_row_number,source_sha256,source_table,
+         accession_number,holding_id,typed_projection)
+        VALUES(%s,%s,2,%s,%s,%s,%s,%s::jsonb)""",
+        (run_id, uuid4(), "a" * 64, source_table, accession, holding_id, projection),
     )
 
 
@@ -181,6 +297,12 @@ def _seed_reported_evidence(cur, run_id, accession="A1") -> None:
 
 
 def _holding(cur, publication_id, run_id, holding_id, series_id, report_date, market_value, projection):
+    cur.execute(
+        """INSERT INTO nport_holdings_snapshot_identity_v1
+        (publication_id,accession_number,holding_id,report_date)
+        VALUES(%s,'A1',%s,%s)""",
+        (publication_id, holding_id, report_date),
+    )
     cur.execute(
         """INSERT INTO sec_nport_instrument_class_bridge
         (publication_id,accession_number,holding_id,instrument_id,series_id,class_id,valid_from,resolution_state)
@@ -350,6 +472,132 @@ def test_run_refuses_to_build_when_the_pinned_raw_evidence_was_pruned(
             assert cur.fetchone() == (0,)
         finally:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, _package_id, holdings_id = _seed(cur)
+        evidence_run_id = str(uuid4())
+        try:
+            _holding(
+                cur, holdings_id, run_id, "C1", "SER1", "2026-01-31", 100,
+                '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"COUPON_TYPE":"fixed",'
+                '"ANNUALIZED_RATE":"5.0","MATURITY_DATE":"2026-12-31"}}',
+            )
+            cur.execute("SELECT sec_validate_derived_publication(%s)", (holdings_id,))
+            cur.execute(
+                "SELECT sec_set_current_derived_publication('sec_nport_holdings_v2',%s)",
+                (holdings_id,),
+            )
+            cur.execute(
+                (ROOT / "schemas" / "nport_fixed_income_secapi_sidecars_v1.sql").read_text(
+                    encoding="utf-8"
+                )
+            )
+            cur.execute(
+                (ROOT / "schemas" / "nport_fixed_income_secapi_fallback_v2.sql").read_text(
+                    encoding="utf-8"
+                )
+            )
+            monkeypatch.setenv("NPORT_FI_SECAPI_SOURCE_RUN_ID", evidence_run_id)
+            document_id = str(uuid4())
+            payload_hash = "b" * 64
+            response_hash = "c" * 64
+            cur.execute(
+                """INSERT INTO nport_fixed_income_secapi_recovery_v1
+                (source_holdings_publication_id,source_run_id,accession_number,
+                 source_document_id,source_row_number,extractor_version,status,attempt_count,
+                 payload_sha256,provider_response_sha256)
+                    VALUES(%s,%s,'A1',%s,0,%s,'success',1,%s,%s)""",
+                    (
+                        holdings_id,
+                        evidence_run_id,
+                        document_id,
+                        worker.secapi_parser.EXTRACTOR_VERSION,
+                        payload_hash,
+                        response_hash,
+                    ),
+            )
+            cur.execute(
+                """INSERT INTO nport_fixed_income_secapi_fund_info_v1
+                (source_holdings_publication_id,source_run_id,accession_number,
+                 source_document_id,source_row_number,extractor_version,payload_sha256,projection_sha256,
+                 compact_payload,presence_map,cur_metric_state,cur_metric_count,
+                 net_assets,credit_spread_3mon_invest,credit_spread_3mon_noninvest)
+                VALUES(%s,%s,'A1',%s,0,%s,%s,%s,'{}','{}','present',1,200,3,-4)""",
+                (
+                    holdings_id,
+                    evidence_run_id,
+                    document_id,
+                    worker.secapi_parser.EXTRACTOR_VERSION,
+                    payload_hash,
+                    payload_hash,
+                ),
+            )
+            cur.execute(
+                """INSERT INTO nport_fixed_income_secapi_rate_risk_v1
+                (source_holdings_publication_id,source_run_id,accession_number,
+                 source_document_id,source_row_number,provider_ordinal,provider_rate_risk_id,
+                 extractor_version,currency_code,payload_sha256,projection_sha256,compact_payload,presence_map,
+                 dv01_3mon,dv100_3mon)
+                VALUES(%s,%s,'A1',%s,0,0,'risk-1',%s,'USD',%s,%s,'{}','{}',-12,-120)""",
+                (
+                    holdings_id,
+                    evidence_run_id,
+                    document_id,
+                    worker.secapi_parser.EXTRACTOR_VERSION,
+                    payload_hash,
+                    payload_hash,
+                ),
+            )
+
+            readiness = worker._secapi_scope_state(conn, holdings_id, evidence_run_id)
+            refused = _run_in_schema(DSN, schema)
+            assert refused["state"] == "no_source"
+            assert refused["reason"] == "secapi_activation_not_approved"
+
+            monkeypatch.setenv(
+                "NPORT_FI_SECAPI_APPROVED_SOURCE_HASH", readiness["source_hash"]
+            )
+            result = _run_in_schema(DSN, schema)
+
+            assert result["state"] == "published"
+            assert result["supplemental_source_kind"] == "sec_api"
+            assert result["counts"]["nport_fixed_income_key_rate_sensitivities_v2"] > 0
+            cur.execute(
+                "SELECT source_run_id::text FROM sec_derived_publications "
+                "WHERE publication_id=%s",
+                (result["publication_id"],),
+            )
+            assert cur.fetchone() == (run_id,)
+            cur.execute(
+                "SELECT DISTINCT source_run_id::text "
+                "FROM nport_fixed_income_key_rate_sensitivities_v2 "
+                "WHERE publication_id=%s",
+                (result["publication_id"],),
+            )
+            assert cur.fetchall() == [(run_id,)]
+            cur.execute(
+                "SELECT manifest->'identity'->>'supplemental_source_kind' "
+                "FROM nport_fixed_income_publication_manifests WHERE publication_id=%s",
+                (result["publication_id"],),
+            )
+            assert cur.fetchone() == ("sec_api",)
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_serving_locks_upstream_pointer_before_its_own_product() -> None:
+    source = Path(worker.__file__).read_text(encoding="utf-8")
+    transaction = source[source.index("with conn.transaction():") :]
+    source_lock = transaction.index("(SOURCE_PRODUCT,)")
+    product_lock = transaction.index("(PRODUCT,)")
+    source_recheck = transaction.index("if _current_source(conn)")
+    assert source_lock < product_lock < source_recheck
 
 
 def test_an_already_published_identity_is_still_repaired_after_the_raw_is_pruned() -> None:

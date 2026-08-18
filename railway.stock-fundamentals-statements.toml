@@ -1,0 +1,12 @@
+# Recurring one-shot config for the incremental stock-fundamentals materializer.
+# Attach this file only to its dedicated Railway service.  The service sets
+# WORKER=stock_fundamentals_statements and DATABASE_URL. It runs after ingestion
+# and before the 07:30 snapshot refresh; restartPolicy=never prevents looping.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"
+cronSchedule = "0 7 * * *"

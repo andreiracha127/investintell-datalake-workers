@@ -7,8 +7,6 @@ require the UNIQUE indexes versioned in the Light DDLs.
 """
 from __future__ import annotations
 
-import os
-
 from src import sec_effective_matviews
 from src.db import LOCK_MATVIEW_REFRESH, advisory_lock, connect
 from src.workers import market_overview_snapshot
@@ -44,8 +42,8 @@ _APP_BOOTSTRAP_MVS = [
     "fund_reveal_13f_holdings_mv",
 ]
 _DATALAKE_MVS = [
-    "stock_institutional_holders_mv",
-    "stock_fund_holders_mv",
+    # The two stock-holder MVs were retired with their API surface in July.
+    # Keep only the canonical reverse lookup that remains deployed.
     "holding_reverse_lookup_mv",
 ]
 # The SEC "effective" selection caches are refreshed CONDITIONALLY, next to the
@@ -89,8 +87,14 @@ def _refresh_bootstrap_mvs(dsn: str, mvs: list[str]) -> list[str]:
 
 
 def run(dsn: str, *, datalake_dsn: str | None = None) -> dict:
-    if datalake_dsn is None:
-        datalake_dsn = os.getenv("DATALAKE_DB_URL")
+    """Refresh every read model in the canonical Railway database.
+
+    ``datalake_dsn`` remains an explicit compatibility/testing override while
+    the old split-database deployment is retired.  In production all objects
+    live beside the app in the database selected by ``DATABASE_URL``; absence
+    of the legacy ``DATALAKE_DB_URL`` must therefore never skip half the job.
+    """
+    target_dsn = datalake_dsn or dsn
     # Lock só serializa este worker contra si mesmo; CONCURRENTLY precisa de
     # autocommit, então cada REFRESH roda em conexão autocommit própria.
     with connect(dsn) as guard:
@@ -104,9 +108,9 @@ def run(dsn: str, *, datalake_dsn: str | None = None) -> dict:
                 raise RuntimeError("market overview snapshot did not publish")
             refreshed_datalake: list[str] = []
             effective_matviews: list[dict] = []
-            if datalake_dsn:
-                refreshed_datalake = _refresh_all(datalake_dsn, _DATALAKE_MVS)
-                effective_matviews = sec_effective_matviews.refresh_stale(datalake_dsn)
+            if _DATALAKE_MVS:
+                refreshed_datalake = _refresh_all(target_dsn, _DATALAKE_MVS)
+                effective_matviews = sec_effective_matviews.refresh_stale(target_dsn)
             return {
                 "refreshed": refreshed,
                 "market_overview_snapshot": snapshot_stats,
