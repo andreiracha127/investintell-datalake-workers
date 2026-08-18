@@ -46,13 +46,18 @@ def main() -> None:
             "|macro_ingestion"
             "|macro_vintage|treasury_ingestion|benchmark_ingest|instrument_ingestion"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
+            "|sec_13f_publication_chain"
             "|sec_company_tickers_mf|nport_cusip_enrichment"
             "|nport_ingestion|ncen_ingestion|rr1_ingestion"
+            "|nport_fixed_income_secapi_recovery"
+            "|nport_fixed_income_secapi_fallback"
+            "|nport_v2_publication_chain"
             "|rr1_derived_profiles|sec_regulatory_serving"
             "|screener_metrics|fund_factors|fund_institutional_reveal"
             "|fund_peer_groups"
             "|matview_refresh|stock_daily_returns"
-            "|active_share_metrics|momentum_metrics|open_macro_v03"
+            "|stock_fundamentals_statements"
+            "|active_share_metrics|momentum_metrics|analytics_refresh_chain|open_macro_v03"
             "|open_macro_v03_chain"
             "|open_macro_v04"
             "|open_macro_v04_pit_evidence"
@@ -119,7 +124,11 @@ def main() -> None:
     # run was truncated, which is exactly how the 2026-08-02 Tiingo starvation went
     # unnoticed for five days. Emit the stats first (operators need the progress),
     # then fail, so the truncation is visible as a failure and not just a log line.
-    if stats.get("aborted"):
+    if stats.get("aborted") or stats.get("state") in {"failed", "conflict", "blocked"} or (
+        worker == "nport_fixed_income_secapi_fallback" and stats.get("state") == "partial"
+    ) or (
+        worker == "nport_fixed_income_secapi_fallback" and stats.get("state") == "locked"
+    ):
         sys.exit(1)
 
 

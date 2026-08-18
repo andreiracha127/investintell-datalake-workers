@@ -1,0 +1,10 @@
+# Explicit one-shot config for an operator-triggered canary. Unlike the parked
+# recurring-service config, this file has no cron schedule, so one deploy runs
+# the materializer once and restartPolicy=never prevents a restart loop.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"

@@ -317,3 +317,24 @@ LOCK_BOND_LIVE_DAILY = 900_353
 # operator-gated evidence lane, not a publication stage.  900_354 is the next
 # free documented ingestion lock after the daily bond worker.
 LOCK_BOND_DISTRIBUTION_REGISTRY_BACKFILL = 900_354
+# --- publication chains -------------------------------------------------------
+# 900_353 and 900_354 were ALREADY taken above (bond live daily / distribution
+# registry) while this lane lived on an unmerged branch, so the chain below ran
+# in production holding the SAME id as bond_live_daily. Measured 2026-08-18:
+# bond-live-daily runs 07:33->09:39 UTC and analytics-refresh-chain fires at
+# 09:00, so the chain took `lock_busy`, exited 0 and Railway painted it green
+# while fund_risk_metrics stayed frozen at 2026-08-07 for eleven days. Allocate
+# a NEW id here by grepping this whole file — never by counting from the last
+# id you happen to see in your branch.
+# Explicit risk -> momentum -> catalogue publication chain.  It coordinates
+# existing workers (which retain their own locks) and must not share a lock with
+# either child: the chain holds this outer lock while invoking both of them.
+LOCK_ANALYTICS_REFRESH_CHAIN = 900_357
+# SEC 13F publication and dependent read-model/CAGG refresh chain.
+LOCK_SEC_13F_PUBLICATION_CHAIN = 900_358
+# Incremental SEC XBRL statement materializer (routine changed-filing path).
+LOCK_STOCK_FUNDAMENTALS_STATEMENTS = 900_355
+# Post-publication N-PORT V2 identity + fixed-income coupling.  This outer lock
+# serializes the refresh/probe/downstream handoff without sharing either child's
+# lock, so a retry observes a complete prior stage or reruns it idempotently.
+LOCK_NPORT_V2_PUBLICATION_CHAIN = 900_356

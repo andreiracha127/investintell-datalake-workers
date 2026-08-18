@@ -1,0 +1,17 @@
+# Bounded, recovery-only SEC API N-PORT sidecar worker.
+#
+# Attach this file only to its dedicated Railway service.  Set WORKER to
+# nport_fixed_income_secapi_recovery plus DATABASE_URL, SEC_API_IO_KEY,
+# NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID, NPORT_SECAPI_SOURCE_RUN_ID,
+# NPORT_SECAPI_MAX_ACCESSIONS, NPORT_SECAPI_MAX_API_CALLS and the explicitly
+# approved NPORT_SECAPI_REQUEST_INTERVAL_SECONDS in Railway.
+# No cron is configured: an operator deploy executes one explicitly-budgeted
+# batch.  restartPolicy=never prevents accidental looping; this is a one-shot
+# job and intentionally exposes no HTTP endpoint.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"
