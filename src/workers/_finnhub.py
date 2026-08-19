@@ -399,12 +399,12 @@ class FinnhubClient:
         limit = self._limit_header(headers)
         if limit:
             self._limit_per_min = limit
-        if remaining is not None and remaining <= self._guard_margin() and reset:
+        if self._hold_if_drained(remaining, reset):
+            # The schedule is already held at this point -- the decision and the
+            # block were one act -- so this thread only has its own wait left to
+            # pay. Callers in flight queue behind the same barrier.
             wait = max(0.0, reset - self._clock()) + 1.0
             if wait > 0:
-                # Hold the SHARED schedule first, so callers already in flight
-                # queue behind the reset too, then pay the wait on this thread.
-                self._hold_until(reset + 1.0)
                 self.throttle_sleeps += 1
                 self._sleep(min(wait, BACKOFF_CAP_S))
 
@@ -418,6 +418,28 @@ class FinnhubClient:
         """How much budget must remain before the guard stops authorising."""
         with self._slot_lock:
             return GUARD_BASE_MARGIN + self._in_flight
+
+    def _hold_if_drained(self, remaining: int | None, reset: int) -> bool:
+        """Decide AND block in one critical section; report whether it blocked.
+
+        Reading the margin, releasing the lock, and only then holding leaves an
+        interval in which other callers take slots the margin just computed
+        never accounted for -- the transition into the blocked state would be
+        announced after the fact rather than made. Evaluating against the live
+        count and applying the hold before the lock is released is what makes
+        "we are drained" and "nobody else is authorised" the same instant.
+        """
+        if remaining is None or not reset:
+            return False
+        instant = reset + 1.0
+        with self._slot_lock:
+            if remaining > GUARD_BASE_MARGIN + self._in_flight:
+                return False
+            if self._next_slot_at is None or instant > self._next_slot_at:
+                self._next_slot_at = instant
+            if instant > self._barrier_at:
+                self._barrier_at = instant
+            return True
 
     def _leave_flight(self) -> None:
         with self._slot_lock:

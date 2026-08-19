@@ -609,3 +609,40 @@ def test_the_authorisation_is_released_on_every_exit_path() -> None:
     with pytest.raises(_finnhub.FinnhubTransientError):
         broken.daily_candles("US0", 0, 1)
     assert broken._guard_margin() == _finnhub.GUARD_BASE_MARGIN
+
+
+def test_the_drained_decision_and_the_hold_are_one_critical_section() -> None:
+    """Evaluate and block under the SAME lock, or the margin is stale on arrival.
+
+    Reading the margin, releasing the lock, then holding leaves an interval in
+    which other callers take slots the just-computed margin never accounted
+    for. The decision has to be made with the live count and applied before the
+    lock is released, so no authorisation can slip between the two.
+
+    Observable consequence: the threshold moves with what is in flight -- the
+    same ``remaining`` that is fine for an idle client trips the guard for a
+    busy one.
+    """
+    def _client():
+        c = _finnhub.FinnhubClient(
+            "k", opener=lambda _u, _t: _Response(b'{"s":"ok"}'),
+            sleep=lambda _s: None, clock=_Clock(0.0), base_sleep_s=0.0,
+        )
+        c._limit_per_min = 300
+        return c
+
+    idle = _client()
+    assert idle._hold_if_drained(4, int(idle._clock()) + 10) is False, (
+        "an idle client has room for 4 more"
+    )
+    assert idle._barrier_at == 0.0
+
+    busy = _client()
+    for _ in range(3):
+        busy._reserve_slot()  # three authorisations outstanding
+    reset = int(busy._clock()) + 10
+
+    assert busy._hold_if_drained(4, reset) is True, (
+        "with three in flight, 4 remaining cannot cover them plus the margin"
+    )
+    assert busy._barrier_at >= reset, "decided to hold but did not hold"
