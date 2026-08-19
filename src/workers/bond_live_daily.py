@@ -709,6 +709,20 @@ DEFAULT_MAX_IN_FLIGHT = 4
 PREFETCH_BLOCK = DEFAULT_MAX_IN_FLIGHT * 4
 
 
+def _block_size(in_flight: int) -> int:
+    """How many units to fetch before judging any of them.
+
+    ONE when the operator asked for sequential. That knob exists to be the
+    conservative setting, and a block would betray it: nothing is ever in
+    flight at concurrency 1, so a block would only delay the breaker past the
+    point an outage was already proven -- paying for a block's worth of
+    exhausted retry ladders (126s each) to learn what the first 25 established.
+    The safe fallback has to be safe on the failure path, which is the only
+    path anybody chooses it for.
+    """
+    return PREFETCH_BLOCK if in_flight > 1 else 1
+
+
 def _max_in_flight() -> int:
     raw = (os.getenv("BOND_LIVE_MAX_IN_FLIGHT") or "").strip()
     try:
@@ -846,10 +860,11 @@ def _load_candles(
     # window is per bond and is computed BEFORE the fetch, so it stays a pure
     # function of the watermark -- nothing about it depends on what came back.
     in_flight = _max_in_flight()
-    for block_start in range(0, len(universe), PREFETCH_BLOCK):
+    block_size = _block_size(in_flight)
+    for block_start in range(0, len(universe), block_size):
         if aborted:
             break
-        block = universe[block_start:block_start + PREFETCH_BLOCK]
+        block = universe[block_start:block_start + block_size]
         fetched_block = _prefetch(
             block,
             lambda bond: client.daily_candles(
@@ -1130,11 +1145,12 @@ def _load_ticks(
     # do not. See ``_prefetch``; the client still meters emission to the
     # provider's own budget, so this widens the pipe, not the tap.
     in_flight = _max_in_flight()
+    block_size = _block_size(in_flight)
     addressable = [c for c in cohort if isin_by_cusip.get(c)]
-    for block_start in range(0, len(addressable), PREFETCH_BLOCK):
+    for block_start in range(0, len(addressable), block_size):
         if aborted:
             break
-        block = addressable[block_start:block_start + PREFETCH_BLOCK]
+        block = addressable[block_start:block_start + block_size]
         fetched = _prefetch(
             block,
             lambda c: client.ticks(isin_by_cusip[c], day.isoformat()),

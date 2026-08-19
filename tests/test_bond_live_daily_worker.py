@@ -909,7 +909,15 @@ def test_the_default_tick_scope_attempts_every_eligible_resolved_cusip() -> None
 
     stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
 
-    assert [isin for isin, _ in client.tick_calls] == [row[1] for row in universe]
+    # SCOPE, not order: this pins that an unset cap attempts the whole resolved
+    # universe. Requests now overlap, so the order they are ISSUED in belongs to
+    # the pool and is not a property worth asserting -- the order that carries
+    # meaning is the order they are JUDGED in (the breaker counts CONSECUTIVE
+    # failures), and that is pinned directly on ``_prefetch``, including a case
+    # where the fetches deliberately finish backwards.
+    assert sorted(isin for isin, _ in client.tick_calls) == sorted(
+        row[1] for row in universe
+    )
     assert stats["scope"] == "full_universe"
     assert stats["configured_top_n"] is None
     assert stats["degraded"] is False
@@ -2559,3 +2567,31 @@ def test_in_flight_is_never_read_as_unbounded(monkeypatch) -> None:
         assert bond_live_daily._max_in_flight() >= 1
     monkeypatch.setenv("BOND_LIVE_MAX_IN_FLIGHT", "6")
     assert bond_live_daily._max_in_flight() == 6
+
+
+def test_sequential_mode_judges_each_unit_before_paying_for_the_next() -> None:
+    """``BOND_LIVE_MAX_IN_FLIGHT=1`` is the safe fallback; it must BE safe.
+
+    Draining a whole prefetch block before judging any of it would keep the
+    breaker from tripping until the block ended: in a sustained outage the
+    sweep would pay for a block's worth of exhausted retry ladders past the
+    point the first 25 already proved the provider is down -- the exact
+    overspend the breaker exists to stop, reintroduced by the fallback meant to
+    be conservative. At concurrency 1 nothing is ever in flight, so nothing can
+    be discarded either.
+    """
+    universe, activity = _tick_cohort(60)
+    conn = FakeConn({Q_ACTIVITY: activity})
+    client = _NoTape()
+
+    os.environ["BOND_LIVE_MAX_IN_FLIGHT"] = "1"
+    try:
+        stats = bond_live_daily._load_ticks(conn, client, universe, TODAY)
+    finally:
+        os.environ.pop("BOND_LIVE_MAX_IN_FLIGHT", None)
+
+    assert stats["aborted"] is True
+    assert stats["api_calls"] == _finnhub.MAX_CONSECUTIVE_FAILURES, (
+        "sequential mode paid for calls past the breaker"
+    )
+    assert stats["discarded_in_flight"] == 0

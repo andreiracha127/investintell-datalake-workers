@@ -394,3 +394,218 @@ def test_a_drained_budget_pushes_the_schedule_for_every_caller_not_just_one() ->
 
     wait = client._reserve_slot()
     assert abs(wait - 30.0) < 1e-9, wait
+
+
+def test_a_hold_placed_while_a_caller_sleeps_still_binds_it() -> None:
+    """A slot reserved BEFORE the budget ran out must not outrun the reset.
+
+    Under concurrency the reservation and the emission are separated by a sleep,
+    and the near-drained guard fires in between: another caller reads
+    ``X-Ratelimit-Remaining <= 2`` and holds the schedule while this one is
+    already sleeping on a wait computed when the budget still looked fine.
+    Treating that first wait as final lets exactly the callers that were in
+    flight at the boundary emit into a spent budget -- 429s at the one moment
+    the guard exists to prevent. So the wait is re-checked against the shared
+    hold after sleeping, not before.
+    """
+    clock = _Clock(0.0)
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock.advance(seconds)
+        if len(slept) == 1:
+            # The guard fires on ANOTHER caller's response while we sleep.
+            client._hold_until(clock() + 25.0)
+
+    client = _finnhub.FinnhubClient(
+        "k",
+        opener=lambda _u, _t: _Response(b'{"s":"ok"}'),
+        sleep=sleep,
+        clock=clock,
+        base_sleep_s=0.15,
+    )
+    client._limit_per_min = 300
+    client._reserve_slot()  # somebody else already took the first slot
+
+    client._await_slot()
+
+    assert len(slept) >= 2, slept
+    assert slept[-1] >= 20.0, (
+        "the caller woke into a held schedule and emitted anyway"
+    )
+
+
+def test_a_caller_released_by_a_reset_re_paces_instead_of_stampeding() -> None:
+    """Waking from a hold must claim a NEW slot, not emit at the barrier.
+
+    The barrier is one shared instant, so every caller parked on it wakes at
+    exactly the same time. Emitting straight after the wait would turn the
+    reset -- the moment the budget is most fragile -- into a burst of N
+    simultaneous requests, which is the same 429 the guard just spent a minute
+    avoiding. Re-reserving on the way out spaces the resumption at the normal
+    interval: the schedule must therefore be pushed PAST the barrier by the
+    caller that was released.
+    """
+    clock = _Clock(0.0)
+    slept: list[float] = []
+    # Relative to the clock's own origin: an absolute literal would land in the
+    # past and the hold would silently do nothing.
+    barrier_at = clock() + 25.0
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock.advance(seconds)
+        if len(slept) == 1:
+            client._hold_until(barrier_at)
+
+    client = _finnhub.FinnhubClient(
+        "k",
+        opener=lambda _u, _t: _Response(b'{"s":"ok"}'),
+        sleep=sleep,
+        clock=clock,
+        base_sleep_s=0.15,
+    )
+    client._limit_per_min = 300
+    client._reserve_slot()
+
+    client._await_slot()
+
+    assert clock() >= barrier_at, "released before the reset"
+    assert client._next_slot_at > barrier_at, (
+        "the released caller left the schedule sitting on the barrier, so the "
+        "next one emits simultaneously with it"
+    )
+
+
+def test_a_reservation_made_under_a_hold_already_clears_it() -> None:
+    """The barrier belongs INSIDE the reservation, not beside it.
+
+    Checking the hold next to the reservation leaves a path where a caller
+    computes a wait, the hold lands, and the caller still emits: the check and
+    the claim are two steps, and a reset can arrive between them. Folding the
+    barrier into the slot arithmetic removes the window by construction -- any
+    slot handed out while a hold stands is already at or after the reset, so
+    there is no ordering left to get wrong.
+    """
+    client, clock = _slot_client(limit=300)
+    client._hold_until(clock() + 40.0)
+
+    wait = client._reserve_slot()
+
+    assert wait >= 40.0, (
+        "a slot was handed out inside the hold window; the caller would emit "
+        "into a budget the guard already declared spent"
+    )
+
+
+def test_no_caller_ever_emits_before_the_standing_hold() -> None:
+    """The invariant, stated once: on return, the clock is past every hold.
+
+    Written as a property rather than a scenario because the ways to violate it
+    are all shaped alike -- an early-exit branch that trusts a barrier it
+    already waited out, a hold that lands between the last check and the
+    emission. Here two resets arrive back to back, each during the sleep the
+    previous one caused, which is precisely the sequence a shortcut on "I have
+    waited for this barrier before" lets through.
+    """
+    clock = _Clock(0.0)
+    slept: list[float] = []
+    holds: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock.advance(seconds)
+        if len(slept) <= 2:  # a second reset arrives while we wait out the first
+            instant = clock() + 30.0
+            holds.append(instant)
+            client._hold_until(instant)
+
+    client = _finnhub.FinnhubClient(
+        "k",
+        opener=lambda _u, _t: _Response(b'{"s":"ok"}'),
+        sleep=sleep,
+        clock=clock,
+        base_sleep_s=0.15,
+    )
+    client._limit_per_min = 300
+    client._reserve_slot()
+
+    client._await_slot()
+
+    assert clock() >= max(holds), (
+        f"emitted at {clock()} with a hold standing until {max(holds)}"
+    )
+
+
+def test_the_guard_reserves_headroom_for_the_callers_already_authorised() -> None:
+    """Fire early enough that every in-flight caller still fits in the budget.
+
+    A slot is an AUTHORISATION, and authorisations are handed out before the
+    request leaves. Between the two there is no lock -- there cannot be, the
+    call is network I/O and holding a lock across it would serialise the very
+    concurrency this exists for -- so a hold can always land after a caller was
+    cleared. Chasing atomicity there is the wrong fix. The right one is to stop
+    handing out authorisations while the budget can still absorb the ones
+    outstanding: the guard's margin grows with the number in flight, so when it
+    fires, every caller already cleared has quota left to spend. The window
+    stops mattering instead of being closed.
+    """
+    clock = _Clock(0.0)
+    client = _finnhub.FinnhubClient(
+        "k",
+        opener=lambda _u, _t: _Response(b'{"s":"ok"}'),
+        sleep=lambda _s: None,
+        clock=clock,
+        base_sleep_s=0.0,
+    )
+    client._limit_per_min = 300
+
+    assert client._guard_margin() == _finnhub.GUARD_BASE_MARGIN
+
+    # Authorising IS counting: the slot and the tally are handed out under the
+    # same lock. Counting afterwards would leave a gap in which another thread
+    # computes the margin without seeing this caller -- the exact undercount the
+    # margin exists to prevent.
+    client._reserve_slot()
+    client._reserve_slot()
+    client._reserve_slot()
+
+    assert client._guard_margin() == _finnhub.GUARD_BASE_MARGIN + 3, (
+        "three callers are cleared to emit; the guard must fire while the "
+        "budget can still pay for all three"
+    )
+
+    client._leave_flight()
+    assert client._guard_margin() == _finnhub.GUARD_BASE_MARGIN + 2
+
+
+def test_the_authorisation_is_released_on_every_exit_path() -> None:
+    """A leaked in-flight count throttles a healthy client into uselessness.
+
+    The margin grows with what is outstanding, so an authorisation that is
+    never given back raises the guard's trigger permanently: the client would
+    fire the near-drained hold earlier and earlier against a budget that was
+    never actually short. Success, typed HTTP error and dead socket all have to
+    give it back.
+    """
+    ok = _finnhub.FinnhubClient(
+        "k", opener=lambda _u, _t: _Response(b'{"s":"ok"}'),
+        sleep=lambda _s: None, base_sleep_s=0.0,
+    )
+    ok.daily_candles("US0", 0, 1)
+    assert ok._guard_margin() == _finnhub.GUARD_BASE_MARGIN
+
+    dead = _finnhub.FinnhubClient(
+        "k", opener=_always_503, sleep=lambda _s: None, base_sleep_s=0.0
+    )
+    with pytest.raises(_finnhub.FinnhubTransientError):
+        dead.daily_candles("US0", 0, 1)
+    assert dead._guard_margin() == _finnhub.GUARD_BASE_MARGIN
+
+    broken = _finnhub.FinnhubClient(
+        "k", opener=_always_dead, sleep=lambda _s: None, base_sleep_s=0.0
+    )
+    with pytest.raises(_finnhub.FinnhubTransientError):
+        broken.daily_candles("US0", 0, 1)
+    assert broken._guard_margin() == _finnhub.GUARD_BASE_MARGIN
