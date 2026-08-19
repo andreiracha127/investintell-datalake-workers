@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -70,6 +71,18 @@ DEFAULT_BASE_SLEEP_S = 0.15
 #: tick lane runs blind (no rate headers), so it inherits whatever pace the
 #: header-bearing lanes learned. 0.85 of 300/min = 255/min.
 RATE_SAFETY_MARGIN = 0.85
+
+#: Requests the guard keeps in reserve on top of whatever is in flight. A slot
+#: is an AUTHORISATION to emit, and between authorising and emitting there is no
+#: lock -- there cannot be one, the call is network I/O and holding a lock across
+#: it would serialise the concurrency this design exists for. So a hold can
+#: always land after a caller was cleared, and no amount of re-checking closes
+#: that window. What closes the RISK is refusing to authorise while the budget
+#: can still absorb everyone outstanding: the guard fires at
+#: ``GUARD_BASE_MARGIN + in flight``, so when it does, every already-cleared
+#: caller still has quota to spend. The window stops mattering rather than being
+#: (impossibly) closed.
+GUARD_BASE_MARGIN = 2
 
 #: Pacing is measured from the START of the previous request, not from the end
 #: of it. The distinction is the whole point: a sweep is one bond at a time, so
@@ -136,8 +149,20 @@ class FinnhubClient:
         self._clock = clock
         #: Learned from X-Ratelimit-Limit; None until an endpoint reports one.
         self._limit_per_min: int | None = None
-        #: Clock reading when the last request was ISSUED (not when it landed).
-        self._last_request_at: float | None = None
+        #: The shared emission schedule: the next instant a request may be
+        #: ISSUED. Callers reserve a slot and leave the following one for
+        #: whoever comes next, so N in flight spend the budget at the same rate
+        #: one caller would -- they just stop waiting on each other's latency.
+        self._next_slot_at: float | None = None
+        #: A hard floor on emission, set by the near-drained guard. Separate
+        #: from the schedule because a caller that reserved its slot BEFORE the
+        #: budget ran out is already sleeping on a wait computed while things
+        #: looked fine: moving the schedule alone would not reach it, and it
+        #: would wake into a spent budget. Re-checked after every sleep.
+        self._barrier_at: float = 0.0
+        #: Callers cleared to emit but not yet done. See ``GUARD_BASE_MARGIN``.
+        self._in_flight: int = 0
+        self._slot_lock = threading.Lock()
         self.http_calls = 0
         self.retries = 0
         self.throttle_sleeps = 0
@@ -300,8 +325,13 @@ class FinnhubClient:
             # MAX_CONSECUTIVE_FAILURES before an outage is reported. It changes
             # neither how many attempts are made nor how an error is classified.
             retries_left = attempt < MAX_RETRIES
+            in_flight = False
             try:
-                self._last_request_at = self._clock()
+                # Returns holding ONE authorisation, already counted; it
+                # covers this request even if a reset lands while it is on the
+                # wire, and the ``finally`` below hands it back.
+                self._await_slot()
+                in_flight = True
                 response = self._open(url)
                 # A call whose body then dies still burned quota.
                 self.http_calls += 1
@@ -337,6 +367,13 @@ class FinnhubClient:
                     self._sleep(min(delay, BACKOFF_CAP_S))
                 delay *= 2
                 continue
+            finally:
+                # Every exit from the attempt releases the authorisation --
+                # success, typed HTTP error, dead socket. A leak here would
+                # inflate the guard's margin permanently and make it fire ever
+                # earlier, throttling a healthy client into uselessness.
+                if in_flight:
+                    self._leave_flight()
 
             self._respect_rate_headers(headers)
             try:
@@ -362,13 +399,14 @@ class FinnhubClient:
         limit = self._limit_header(headers)
         if limit:
             self._limit_per_min = limit
-        if remaining is not None and remaining <= 2 and reset:
+        if self._hold_if_drained(remaining, reset):
+            # The schedule is already held at this point -- the decision and the
+            # block were one act -- so this thread only has its own wait left to
+            # pay. Callers in flight queue behind the same barrier.
             wait = max(0.0, reset - self._clock()) + 1.0
             if wait > 0:
                 self.throttle_sleeps += 1
                 self._sleep(min(wait, BACKOFF_CAP_S))
-                return
-        self._pace()
 
     def _target_interval_s(self) -> float:
         """Seconds between request STARTS: the provider's budget, or the floor."""
@@ -376,19 +414,116 @@ class FinnhubClient:
             return 60.0 / (self._limit_per_min * RATE_SAFETY_MARGIN)
         return self._base_sleep_s
 
-    def _pace(self) -> None:
-        """Sleep only the part of the interval the request did not already use."""
+    def _guard_margin(self) -> int:
+        """How much budget must remain before the guard stops authorising."""
+        with self._slot_lock:
+            return GUARD_BASE_MARGIN + self._in_flight
+
+    def _hold_if_drained(self, remaining: int | None, reset: int) -> bool:
+        """Decide AND block in one critical section; report whether it blocked.
+
+        Reading the margin, releasing the lock, and only then holding leaves an
+        interval in which other callers take slots the margin just computed
+        never accounted for -- the transition into the blocked state would be
+        announced after the fact rather than made. Evaluating against the live
+        count and applying the hold before the lock is released is what makes
+        "we are drained" and "nobody else is authorised" the same instant.
+        """
+        if remaining is None or not reset:
+            return False
+        instant = reset + 1.0
+        with self._slot_lock:
+            if remaining > GUARD_BASE_MARGIN + self._in_flight:
+                return False
+            if self._next_slot_at is None or instant > self._next_slot_at:
+                self._next_slot_at = instant
+            if instant > self._barrier_at:
+                self._barrier_at = instant
+            return True
+
+    def _leave_flight(self) -> None:
+        with self._slot_lock:
+            if self._in_flight > 0:
+                self._in_flight -= 1
+
+    def _reserve_slot(self) -> float:
+        """Claim the next emission instant; return the wait it implies.
+
+        Reserving BEFORE the request (rather than sleeping after the response)
+        is what lets the provider's latency count towards the interval instead
+        of being charged on top of it, and it is also what makes concurrency
+        safe: the schedule -- not "when did I last call" -- is the shared state,
+        so two callers can never claim the same instant. With one caller in
+        flight this degenerates exactly to the sequential interval, which is
+        what keeps the un-parallelised lanes (curve, profile) unchanged.
+        """
         interval = self._target_interval_s()
-        if interval <= 0:
-            return
-        started = self._last_request_at
-        if started is None:
-            self._sleep(interval)
-            return
-        elapsed = self._clock() - started
-        remaining = interval - elapsed
-        if remaining > 0:
-            self._sleep(remaining)
+        with self._slot_lock:
+            now = self._clock()
+            # The standing hold is part of the arithmetic, not a check beside
+            # it. A separate check is two steps -- decide, then claim -- and a
+            # reset arriving between them hands out a slot inside the very
+            # window the guard declared spent. Folded in here, no slot can ever
+            # predate the barrier, whatever order the callers arrive in.
+            floor = max(now, self._barrier_at)
+            slot = floor if self._next_slot_at is None else max(floor, self._next_slot_at)
+            self._next_slot_at = slot + interval
+            # Authorising IS counting, under the SAME lock. Tallying afterwards
+            # leaves a gap in which another thread computes the guard's margin
+            # without seeing this caller -- an undercount of exactly the thing
+            # the margin exists to cover. The caller gives it back via
+            # ``_leave_flight`` when it emits, fails, or abandons the slot.
+            self._in_flight += 1
+        return max(0.0, slot - now)
+
+    def _hold_until(self, instant: float) -> None:
+        """Push the shared schedule out to ``instant`` (never pull it in).
+
+        The near-drained guard uses this so a budget that is spent stops EVERY
+        caller, not just the one that happened to read the header. A thread
+        sleeping alone while the others emit is a guard in name only.
+        """
+        with self._slot_lock:
+            if self._next_slot_at is None or instant > self._next_slot_at:
+                self._next_slot_at = instant
+            if instant > self._barrier_at:
+                self._barrier_at = instant
+
+    def _await_slot(self) -> None:
+        """Wait for this caller's slot, and for any hold placed while it waited.
+
+        The re-check is the whole point: reservation and emission are separated
+        by a sleep, and the near-drained guard fires in between often enough to
+        matter -- it fires exactly when several callers are in flight against a
+        budget about to run out. Each iteration requires a STRICTLY later
+        barrier than the one already waited out, so a schedule under constant
+        holds still converges instead of spinning.
+        """
+        while True:
+            # Re-reserved on every pass, and that is the point: the barrier is
+            # ONE shared instant, so everyone parked on it wakes together. A
+            # caller that emitted straight after the wait would turn the reset
+            # -- the moment the budget is most fragile -- into a burst of N
+            # simultaneous requests, which is the very 429 the hold just spent a
+            # minute avoiding. Claiming a fresh slot on the way out spaces the
+            # resumption at the normal interval instead.
+            wait = self._reserve_slot()
+            if wait > 0:
+                self._sleep(wait)
+            with self._slot_lock:
+                barrier = self._barrier_at
+            if self._clock() >= barrier:
+                return
+            # A hold landed while this caller slept: give the authorisation back
+            # before trying again, or the abandoned slot would inflate the
+            # margin for as long as the sweep runs.
+            self._leave_flight()
+            # A hold landed while this caller slept. Loop rather than emit: the
+            # reservation above already accounts for the barrier, so the next
+            # pass waits it out and comes back paced. There is deliberately NO
+            # "I have waited for this barrier before" shortcut -- that would
+            # trust the clock to be monotonic, and the default one is
+            # ``time.time``, which an NTP step can walk backwards.
 
     @staticmethod
     def _limit_header(headers: Any) -> int | None:

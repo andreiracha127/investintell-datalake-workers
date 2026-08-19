@@ -909,7 +909,15 @@ def test_the_default_tick_scope_attempts_every_eligible_resolved_cusip() -> None
 
     stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
 
-    assert [isin for isin, _ in client.tick_calls] == [row[1] for row in universe]
+    # SCOPE, not order: this pins that an unset cap attempts the whole resolved
+    # universe. Requests now overlap, so the order they are ISSUED in belongs to
+    # the pool and is not a property worth asserting -- the order that carries
+    # meaning is the order they are JUDGED in (the breaker counts CONSECUTIVE
+    # failures), and that is pinned directly on ``_prefetch``, including a case
+    # where the fetches deliberately finish backwards.
+    assert sorted(isin for isin, _ in client.tick_calls) == sorted(
+        row[1] for row in universe
+    )
     assert stats["scope"] == "full_universe"
     assert stats["configured_top_n"] is None
     assert stats["degraded"] is False
@@ -1005,10 +1013,17 @@ def test_one_bad_tick_call_among_good_ones_is_not_an_outage() -> None:
     universe, activity = _tick_cohort(60)
     conn = FakeConn({Q_ACTIVITY: activity})
 
+    # Failure is a property of the BOND, not of call order. Keying it on
+    # ``len(tick_calls)`` made the fixture depend on the order requests are
+    # ISSUED in, which the prefetch pool owns and deliberately does not promise;
+    # the sweep only promises the order results are JUDGED in. That fixture
+    # passed locally and failed in CI on scheduling alone.
+    doomed = {row[1] for i, row in enumerate(universe) if i % 2 == 0}
+
     class _Flaky(FakeClient):
         def ticks(self, isin, day, **kwargs):
             self.tick_calls.append((isin, day))
-            if len(self.tick_calls) % 2:
+            if isin in doomed:
                 raise _finnhub.FinnhubTransientError("down")
             return {"t": [1], "p": [99.0], "si": [1], "v": [10]}
 
@@ -1034,10 +1049,17 @@ def test_an_outage_that_cut_the_tape_short_fails_a_run_whose_calls_mostly_worked
     universe, activity = _tick_cohort(60)
     conn = FakeConn({Q_UNIVERSE: universe, Q_ACTIVITY: activity})
 
+    # The outage belongs to the BONDS past the tenth, not to the eleventh call:
+    # with requests overlapping, "the eleventh call" is whichever the pool got
+    # to first, and the fixture would decide a different story on every run.
+    # What the case is about -- ten bonds' tape landed, then the provider went
+    # away -- is unchanged.
+    healthy = {row[1] for row in universe[:10]}
+
     class _OutageAfter(FakeClient):
         def ticks(self, isin, day, **kwargs):
             self.tick_calls.append((isin, day))
-            if len(self.tick_calls) > 10:
+            if isin not in healthy:
                 raise _finnhub.FinnhubTransientError("down")
             return {"t": [1], "p": [99.0], "si": [1], "v": [10]}
 
@@ -2473,3 +2495,117 @@ def test_the_run_reports_wall_clock_per_stage(monkeypatch) -> None:
     timings = out["timings_seconds"]
     assert {"candles", "curve", "ticks"} <= set(timings), timings
     assert all(isinstance(v, float) and v >= 0.0 for v in timings.values()), timings
+
+
+# --------------------------------------------------------------------------- #
+# Concurrent prefetch
+# --------------------------------------------------------------------------- #
+def test_prefetch_returns_results_in_the_order_it_was_given() -> None:
+    """Order is the contract: the breaker counts CONSECUTIVE failures.
+
+    The sweep may fetch in any order it likes, but it must decide in the
+    original one, or "25 consecutive failures" stops meaning what the abort
+    argument says it means.
+    """
+    items = list(range(20))
+
+    out = bond_live_daily._prefetch(items, lambda i: i * 2, max_in_flight=8)
+
+    assert [item for item, _ in out] == items
+    assert [value for _, value in out] == [i * 2 for i in items]
+
+
+def test_prefetch_hands_back_the_exception_instead_of_raising_it() -> None:
+    """A failed unit must arrive at the decision point like any other result.
+
+    Raising out of the fetch would abort the whole block, including units that
+    succeeded and whose rows the sweep is entitled to keep.
+    """
+    def fetch(i: int) -> int:
+        if i == 2:
+            raise _finnhub.FinnhubTransientError("boom")
+        return i
+
+    out = bond_live_daily._prefetch([0, 1, 2, 3], fetch, max_in_flight=4)
+
+    assert [item for item, _ in out] == [0, 1, 2, 3]
+    assert isinstance(out[2][1], _finnhub.FinnhubTransientError)
+    assert out[3][1] == 3
+
+
+def test_a_breaker_trip_reports_the_calls_it_paid_for_and_threw_away() -> None:
+    """In-flight work discarded by an abort is counted, never silently dropped.
+
+    A block is fetched before it is judged, so a breaker trip mid-block leaves
+    calls that spent provider quota and produced nothing. Reporting zero for
+    them would read exactly like they were never made -- the silent-truncation
+    shape this repo refuses everywhere else. The breaker itself is unchanged:
+    it still stops on CONSECUTIVE failures counted in the original order.
+    """
+    universe, activity = _tick_cohort(60)
+    conn = FakeConn({Q_ACTIVITY: activity})
+
+    stats = bond_live_daily._load_ticks(conn, _NoTape(), universe, TODAY)
+
+    assert stats["aborted"] is True
+    assert stats["swept"] == _finnhub.MAX_CONSECUTIVE_FAILURES
+    # Every call the provider was asked for is either judged or reported as
+    # discarded; the two must add up to what the sweep actually spent.
+    assert stats["swept"] + stats["discarded_in_flight"] == stats["api_calls"]
+
+
+def test_prefetch_order_survives_completion_out_of_order() -> None:
+    """Real threads, deliberately finishing backwards.
+
+    The ordering guarantee must come from the prefetch, not from the fetches
+    happening to be uniform. Here the FIRST item is the slowest, so anything
+    that yielded on completion would hand it back last -- and the breaker would
+    then count "consecutive" over an order the universe never had.
+    """
+    import time as _t
+
+    def fetch(i: int) -> int:
+        _t.sleep((8 - i) * 0.01)
+        return i
+
+    out = bond_live_daily._prefetch(list(range(8)), fetch, max_in_flight=8)
+
+    assert [item for item, _ in out] == list(range(8))
+    assert [value for _, value in out] == list(range(8))
+
+
+def test_in_flight_is_never_read_as_unbounded(monkeypatch) -> None:
+    """A misread knob must fall back to sequential, never to an unmetered fan-out."""
+    for raw in ("0", "-4", "", "abundant"):
+        monkeypatch.setenv("BOND_LIVE_MAX_IN_FLIGHT", raw)
+        assert bond_live_daily._max_in_flight() >= 1
+    monkeypatch.setenv("BOND_LIVE_MAX_IN_FLIGHT", "6")
+    assert bond_live_daily._max_in_flight() == 6
+
+
+def test_sequential_mode_judges_each_unit_before_paying_for_the_next() -> None:
+    """``BOND_LIVE_MAX_IN_FLIGHT=1`` is the safe fallback; it must BE safe.
+
+    Draining a whole prefetch block before judging any of it would keep the
+    breaker from tripping until the block ended: in a sustained outage the
+    sweep would pay for a block's worth of exhausted retry ladders past the
+    point the first 25 already proved the provider is down -- the exact
+    overspend the breaker exists to stop, reintroduced by the fallback meant to
+    be conservative. At concurrency 1 nothing is ever in flight, so nothing can
+    be discarded either.
+    """
+    universe, activity = _tick_cohort(60)
+    conn = FakeConn({Q_ACTIVITY: activity})
+    client = _NoTape()
+
+    os.environ["BOND_LIVE_MAX_IN_FLIGHT"] = "1"
+    try:
+        stats = bond_live_daily._load_ticks(conn, client, universe, TODAY)
+    finally:
+        os.environ.pop("BOND_LIVE_MAX_IN_FLIGHT", None)
+
+    assert stats["aborted"] is True
+    assert stats["api_calls"] == _finnhub.MAX_CONSECUTIVE_FAILURES, (
+        "sequential mode paid for calls past the breaker"
+    )
+    assert stats["discarded_in_flight"] == 0
