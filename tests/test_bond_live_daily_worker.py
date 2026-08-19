@@ -1013,10 +1013,17 @@ def test_one_bad_tick_call_among_good_ones_is_not_an_outage() -> None:
     universe, activity = _tick_cohort(60)
     conn = FakeConn({Q_ACTIVITY: activity})
 
+    # Failure is a property of the BOND, not of call order. Keying it on
+    # ``len(tick_calls)`` made the fixture depend on the order requests are
+    # ISSUED in, which the prefetch pool owns and deliberately does not promise;
+    # the sweep only promises the order results are JUDGED in. That fixture
+    # passed locally and failed in CI on scheduling alone.
+    doomed = {row[1] for i, row in enumerate(universe) if i % 2 == 0}
+
     class _Flaky(FakeClient):
         def ticks(self, isin, day, **kwargs):
             self.tick_calls.append((isin, day))
-            if len(self.tick_calls) % 2:
+            if isin in doomed:
                 raise _finnhub.FinnhubTransientError("down")
             return {"t": [1], "p": [99.0], "si": [1], "v": [10]}
 
@@ -1042,10 +1049,17 @@ def test_an_outage_that_cut_the_tape_short_fails_a_run_whose_calls_mostly_worked
     universe, activity = _tick_cohort(60)
     conn = FakeConn({Q_UNIVERSE: universe, Q_ACTIVITY: activity})
 
+    # The outage belongs to the BONDS past the tenth, not to the eleventh call:
+    # with requests overlapping, "the eleventh call" is whichever the pool got
+    # to first, and the fixture would decide a different story on every run.
+    # What the case is about -- ten bonds' tape landed, then the provider went
+    # away -- is unchanged.
+    healthy = {row[1] for row in universe[:10]}
+
     class _OutageAfter(FakeClient):
         def ticks(self, isin, day, **kwargs):
             self.tick_calls.append((isin, day))
-            if len(self.tick_calls) > 10:
+            if isin not in healthy:
                 raise _finnhub.FinnhubTransientError("down")
             return {"t": [1], "p": [99.0], "si": [1], "v": [10]}
 
