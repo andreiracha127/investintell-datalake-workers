@@ -43,6 +43,16 @@ BUILDER_SQL_PATH = ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features
 # Historical alias: the resource used to live under ``sql/local_only`` and was
 # reachable only from the offline route.  Same bytes, same sha256 pin.
 LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
+#: The oracle's own default for the offline route, which has no supplemental
+#: source. Named here so the builder call can pass it EXPLICITLY: a database
+#: upgraded from an earlier release still carries the original two-argument
+#: ``build_nport_fixed_income_features(uuid,date)`` overload -- verified
+#: present in production 2026-08-19 -- and a two-argument call binds to that
+#: exact-arity match, silently running the old raw-only builder instead of
+#: the SEC-API-aware one. Naming the arguments settles which overload runs
+#: WITHOUT editing the governed oracle SQL, whose sha256 is pinned and whose
+#: every change is an owner re-approval.
+LOCAL_SUPPLEMENTAL_SOURCE_KIND = "dera_raw"
 # Re-approved 2026-07-31 (second): the two per-position repo/securities-lending
 # surfaces and their coverage family are gone. Owner decision -- the figures are
 # excessively technical for the product, and the one dossier panel that read
@@ -925,8 +935,16 @@ def compute_local(
                     connection,
                     config.client_watchdog_seconds,
                     lambda: cursor.execute(
-                        "SELECT build_nport_fixed_income_features(%s,%s)",
-                        (identity.target_publication_id, identity.as_of_date),
+                        "SELECT build_nport_fixed_income_features(%s,%s,%s,%s)",
+                        (
+                            identity.target_publication_id,
+                            identity.as_of_date,
+                            # The function's OWN defaults, passed explicitly so
+                            # the call names a single overload. Behaviour is
+                            # unchanged by construction.
+                            LOCAL_SUPPLEMENTAL_SOURCE_KIND,
+                            None,
+                        ),
                     ),
                 )
                 columns, keys, output_meta, files = (

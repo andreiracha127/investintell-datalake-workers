@@ -134,8 +134,16 @@ def _fund_info_from_render_xml(document: str | bytes) -> tuple[str, Mapping[str,
                 break
     except ET.ParseError as exc:
         raise PayloadError("Render API XML is malformed") from exc
-    if submission_type != "NPORT-P":
+    # An AMENDMENT is a valid N-PORT filing, and the JSON path already treats it
+    # as one (``_validate_exact_record`` normalises ``NPORT-P/A`` to the
+    # canonical ``NPORT-P``). Rejecting it here made the two paths disagree on
+    # what counts as the same form -- and this is the RECOVERY path, taken
+    # exactly for the accessions the Form endpoint has nothing for, so every
+    # amended filing that reached it was recorded as a fallback failure. A scope
+    # whose remaining gaps were all amendments could then never become ready.
+    if submission_type not in {"NPORT-P", "NPORT-P/A"}:
         raise AccessionMismatchError("Render API form type mismatch")
+    submission_type = "NPORT-P"
     if fund_info is None:
         raise PayloadError("Render API XML has no fundInfo")
     return submission_type, fund_info
