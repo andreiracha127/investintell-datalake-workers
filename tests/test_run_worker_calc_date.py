@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import sys
 
 import pytest
 
@@ -167,3 +168,59 @@ def test_the_workers_this_variable_exists_for_accept_calc_date(worker):
     this test says why before an operator finds out from a failed cron."""
     mod = importlib.import_module(f"src.workers.{worker}")
     assert "calc_date" in inspect.signature(mod.run).parameters
+
+
+# --------------------------------------------------------------------------- #
+# The CLI dispatcher (src/run.py)
+# --------------------------------------------------------------------------- #
+def test_the_cli_only_passes_options_the_worker_actually_takes(monkeypatch) -> None:
+    """``python -m src.run <worker>`` must work for every worker.
+
+    The CLI passed ``calc_date``/``limit`` unconditionally while
+    ``run_worker.py`` (the production dispatcher) filtered them by signature.
+    Workers whose ``run()`` takes neither -- 22 of them, measured 2026-08-19 --
+    therefore raised TypeError before doing any work, reachable only through the
+    entry point an operator uses by hand. The two dispatchers must agree on how a
+    worker is called.
+    """
+    from src import run as cli
+
+    seen: dict = {}
+
+    class _Mod:
+        @staticmethod
+        def run(dsn, *, rebuild: bool = False):
+            seen["dsn"] = dsn
+            seen["rebuild"] = rebuild
+            return {"ok": True}
+
+    monkeypatch.setattr(cli.importlib, "import_module", lambda _name: _Mod)
+    monkeypatch.setattr(cli, "resolve_dsn", lambda: "postgres://x")
+    monkeypatch.setattr(sys, "argv", ["run", "stock_fundamentals_statements"])
+
+    cli.main()
+
+    assert seen == {"dsn": "postgres://x", "rebuild": False}
+
+
+def test_the_cli_still_forwards_options_a_worker_declares(monkeypatch) -> None:
+    """Filtering must not become "never pass anything"."""
+    from src import run as cli
+
+    seen: dict = {}
+
+    class _Mod:
+        @staticmethod
+        def run(dsn, *, calc_date=None, limit=None):
+            seen.update(dsn=dsn, calc_date=calc_date, limit=limit)
+            return {}
+
+    monkeypatch.setattr(cli.importlib, "import_module", lambda _name: _Mod)
+    monkeypatch.setattr(cli, "resolve_dsn", lambda: "postgres://x")
+    monkeypatch.setattr(
+        sys, "argv", ["run", "risk_metrics", "--calc-date", "2026-08-19", "--limit", "5"]
+    )
+
+    cli.main()
+
+    assert seen == {"dsn": "postgres://x", "calc_date": "2026-08-19", "limit": 5}

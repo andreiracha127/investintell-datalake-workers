@@ -221,3 +221,28 @@ def test_lookthrough_schema_refuses_in_place_populated_conversion() -> None:
     assert "migrate_data" not in schema
     assert schema.count("refusing to convert populated") == 2
     assert schema.count("bounded backfill, and cutover") == 2
+
+
+def test_a_validated_but_unpromoted_downstream_is_not_a_published_chain(monkeypatch) -> None:
+    """``already_validated`` means the pointer never moved.
+
+    In the downstream worker's own vocabulary that state says the fixed-income
+    publication exists and passed validation but is NOT current --
+    ``already_published`` is the current case. Accepting it let this chain
+    report success after a crash between validation and pointer promotion,
+    while the app went on reading the previous, or a missing, publication. The
+    chain certifies that the downstream product is CURRENT; a publication
+    nobody points at does not meet that.
+    """
+    _wire(monkeypatch)
+
+    result = chain.run(
+        "db", current_publication=lambda _conn: ("publication-1", "run-1"),
+        identity_refresher=lambda _dsn: {"refreshed": True, "bootstrap": False},
+        identity_probe=lambda _dsn: _fresh(),
+        downstream_runner=lambda *_a, **_k: {"state": "already_validated"},
+    )
+
+    assert result["published"] is False
+    assert result["aborted"] is True
+    assert result["blocked_dependency"] == "fixed_income_serving_not_published"

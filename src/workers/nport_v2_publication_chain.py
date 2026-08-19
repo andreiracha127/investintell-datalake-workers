@@ -21,7 +21,15 @@ from src.workers import nport_fixed_income_serving, nport_holdings_identity_fres
 
 SOURCE_PRODUCT = "sec_nport_holdings_v2"
 IDENTITY_MATVIEW = "nport_holdings_snapshot_identity_v1"
-_DOWNSTREAM_SUCCESS_STATES = frozenset({"published", "already_published", "already_validated"})
+# ``already_validated`` is NOT success here. In the downstream worker's own
+# vocabulary it means the fixed-income publication exists and passed validation
+# but is NOT the current pointer -- ``already_published`` is the current case.
+# Accepting it let this chain report published=True after a crash between
+# validation and pointer promotion, while the app kept reading the previous (or
+# a missing) fixed-income publication. The chain's whole job is to certify that
+# the downstream product is CURRENT, so it may only accept the two states that
+# say so.
+_DOWNSTREAM_SUCCESS_STATES = frozenset({"published", "already_published"})
 
 
 def _current_v2_publication(conn: Any) -> tuple[str, str] | None:

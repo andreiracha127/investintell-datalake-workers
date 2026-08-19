@@ -797,3 +797,47 @@ def test_worker_accepts_an_injected_clock_before_any_io():
             max_api_calls=2,
             clock=lambda: 0.0,
         )
+
+
+def test_render_fallback_accepts_an_amended_nport():
+    """An amendment is a valid N-PORT, and the JSON path already says so.
+
+    ``_validate_exact_record`` normalises ``NPORT-P/A`` to the canonical
+    ``NPORT-P``; the Render XML parser rejected it outright. The fallback exists
+    precisely for the accessions the Form endpoint returns nothing for, so every
+    amended filing that took this path was recorded as a fallback FAILURE -- and
+    a scope whose gaps are all amendments could never become ready, on filings
+    that were valid the whole time.
+    """
+    accession = "0000123456-26-000001"
+    url = (
+        "https://www.sec.gov/Archives/edgar/data/123456/"
+        "000012345626000001/xslFormNPORT-P_X01/primary_doc.xml"
+    )
+    xml = (
+        '<edgarSubmission><headerData><submissionType>NPORT-P/A</submissionType>'
+        "</headerData><formData><fundInfo><totAssets>1.0</totAssets></fundInfo>"
+        "</formData></edgarSubmission>"
+    )
+
+    class FormClient:
+        def get_data(self, _payload):
+            return {"filings": []}
+
+    class QueryClient:
+        def get_filings(self, _payload):
+            return {"filings": [{
+                "accessionNo": accession,
+                "formType": "NPORT-P/A",
+                "linkToFilingDetails": url,
+            }]}
+
+    class RenderClient:
+        def get_file(self, _url):
+            return xml
+
+    record = secapi.fetch_exact_filing(
+        secapi.ExactNportClient(FormClient(), QueryClient(), RenderClient()), accession
+    )
+
+    assert record["formType"] == "NPORT-P", "the amendment must be canonicalised"
