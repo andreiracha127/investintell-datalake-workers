@@ -32,12 +32,20 @@ CALENDAR_URL = f"{BASE_URL}/monetarypolicy/fomccalendars.htm"
 PARSER_VERSION = "fomc_sep_html_v2"
 BACKFILL_START_YEAR = 2012
 MAX_HTML_BYTES = 5_000_000
+HTTP_TOTAL_TIMEOUT_SECONDS = 45.0
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "fomc_sep_ingestion.sql"
 _RELEASE_PATH = re.compile(r"/monetarypolicy/fomcprojtabl(\d{8})[.]htm")
 _DECEMBER_2012_RELEASE_PATH = "/monetarypolicy/files/FOMC20121212SEPcompilation.htm"
 _MARCH_2022_RELEASE_PATH = "/monetarypolicy/fomcprojtable20220316.htm"
 _DASH_TRANSLATION = str.maketrans(
-    {"\u2010": "-", "\u2011": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-"}
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+        "\u2044": "/",
+    }
 )
 _RATE_RANGE = re.compile(r"^(-?\d+(?:[.]\d+)?)\s*-\s*(-?\d+(?:[.]\d+)?)$")
 _RATE_POINT = re.compile(r"^-?\d+(?:[.]\d+)?$")
@@ -650,12 +658,21 @@ def _get_official_html(client: httpx.Client, url: str) -> bytes:
                                     "Federal Reserve HTML Content-Length is invalid: "
                                     f"{current_url}"
                                 ) from exc
+                            if length < 0:
+                                raise SepIngestionError(
+                                    f"Federal Reserve HTML size is invalid: {current_url}"
+                                )
                             if length > MAX_HTML_BYTES:
                                 raise SepIngestionError(
                                     f"Federal Reserve HTML is too large: {current_url}"
                                 )
+                        deadline = time.monotonic() + HTTP_TOTAL_TIMEOUT_SECONDS
                         content = bytearray()
                         for chunk in response.iter_bytes():
+                            if time.monotonic() > deadline:
+                                raise SepIngestionError(
+                                    f"Federal Reserve HTML request exceeded total timeout: {current_url}"
+                                )
                             if len(content) + len(chunk) > MAX_HTML_BYTES:
                                 raise SepIngestionError(
                                     f"Federal Reserve HTML is too large: {current_url}"

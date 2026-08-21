@@ -205,6 +205,11 @@ def test_source_hash_is_over_exact_bytes() -> None:
             "rate by 1/2 percentage point to 4-3/4 to 5 percent.",
             (Decimal("4.750"), Decimal("5.000"), Decimal("4.875")),
         ),
+        (
+            "The Committee maintained the target range for the federal funds rate "
+            "at 0 to 1⁄4 percent.",
+            (Decimal("0.000"), Decimal("0.250"), Decimal("0.125")),
+        ),
     ],
 )
 def test_policy_statement_parser_preserves_official_target_range(
@@ -475,6 +480,45 @@ def test_declared_oversized_html_is_rejected_before_streaming_the_body() -> None
         with pytest.raises(sep.SepIngestionError, match="too large"):
             sep._get_official_html(client, url)
     assert stream.read_count == 0
+
+
+def test_negative_content_length_is_rejected_before_streaming_the_body() -> None:
+    url = "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm"
+    stream = _TrackingStream([b"<html></html>"])
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html", "content-length": "-1"},
+            stream=stream,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(sep.SepIngestionError, match="size is invalid"):
+            sep._get_official_html(client, url)
+    assert stream.read_count == 0
+
+
+def test_html_stream_has_a_total_read_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm"
+    stream = _TrackingStream([b"<html>", b"must not be read"])
+    timestamps = iter([0.0, 1.0])
+    monkeypatch.setattr(sep, "HTTP_TOTAL_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(sep.time, "monotonic", lambda: next(timestamps))
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            stream=stream,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(sep.SepIngestionError, match="exceeded total timeout"):
+            sep._get_official_html(client, url)
+    assert stream.read_count == 1
 
 
 def test_html_stream_is_capped_while_reading(
@@ -759,8 +803,11 @@ def test_ddl_preserves_the_parser_identity_migration() -> None:
     assert f"ADD CONSTRAINT {new_key} UNIQUE" in ddl
     assert legacy_drop in ddl
     assert ddl.index(f"ADD CONSTRAINT {new_key}") < ddl.index(legacy_drop)
-    assert "legacy_constraint" not in ddl
-    assert "DROP CONSTRAINT %I" not in ddl
+    assert "legacy_three_column_constraint text;" in ddl
+    assert "DROP CONSTRAINT %I" in ddl
+    assert ddl.index(f"ADD CONSTRAINT {new_key}") < ddl.index(
+        "DROP CONSTRAINT %I"
+    )
 
 
 def test_pointer_guard_does_not_declare_reserved_current_date() -> None:
@@ -1476,6 +1523,22 @@ def test_postgres_v1_migration_and_pointer_invariants() -> None:
                 "SELECT count(*) FROM fomc_sep_releases WHERE release_id = %s",
                 (legacy_release_id,),
             ).fetchone()[0] == 1
+
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases DROP CONSTRAINT "
+                "fomc_sep_releases_provenance_observation_key"
+            )
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases ADD CONSTRAINT "
+                "fomc_sep_releases_release_date_source_sha256_policy_source_sha256_key "
+                "UNIQUE (release_date, source_sha256, policy_source_sha256)"
+            )
+            conn.execute(ddl)
+            assert conn.execute(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'fomc_sep_releases'::regclass "
+                "AND contype = 'u' ORDER BY conname"
+            ).fetchall() == [("fomc_sep_releases_provenance_observation_key",)]
 
             release_date = dt.date(2012, 12, 12)
             generic_url = (

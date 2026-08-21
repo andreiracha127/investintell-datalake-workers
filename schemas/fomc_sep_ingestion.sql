@@ -97,9 +97,12 @@ BEGIN
         DROP CONSTRAINT IF EXISTS fomc_sep_releases_policy_source_url_check;
 END $$;
 
--- Earlier deployments use the named four-column identity. Add the complete
--- provenance identity first, then remove only that known legacy constraint.
+-- Earlier deployments use either the named four-column identity or the
+-- original three-column identity. Add the complete provenance identity first,
+-- then remove only those legacy shapes.
 DO $$
+DECLARE
+    legacy_three_column_constraint text;
 BEGIN
     IF NOT EXISTS (
         SELECT 1
@@ -120,6 +123,36 @@ BEGIN
 
     ALTER TABLE fomc_sep_releases
         DROP CONSTRAINT IF EXISTS fomc_sep_releases_observation_key;
+
+    SELECT conname INTO legacy_three_column_constraint
+    FROM pg_constraint
+    WHERE conrelid = 'fomc_sep_releases'::regclass
+      AND contype = 'u'
+      AND conkey = ARRAY[
+          (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid = 'fomc_sep_releases'::regclass
+                AND attname = 'release_date'
+          ),
+          (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid = 'fomc_sep_releases'::regclass
+                AND attname = 'source_sha256'
+          ),
+          (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid = 'fomc_sep_releases'::regclass
+                AND attname = 'policy_source_sha256'
+          )
+      ]::smallint[]
+    LIMIT 1;
+
+    IF legacy_three_column_constraint IS NOT NULL THEN
+        EXECUTE format(
+            'ALTER TABLE fomc_sep_releases DROP CONSTRAINT %I',
+            legacy_three_column_constraint
+        );
+    END IF;
 END $$;
 
 CREATE TABLE IF NOT EXISTS fomc_sep_rate_distributions (
