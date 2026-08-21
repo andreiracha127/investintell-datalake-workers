@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -615,7 +615,19 @@ def parse_release(
     )
 
 
-def _get_official_html(client: httpx.Client, url: str) -> bytes:
+@overload
+def _get_official_html(client: httpx.Client, url: str) -> bytes: ...
+
+
+@overload
+def _get_official_html(
+    client: httpx.Client, url: str, *, return_url: Literal[True]
+) -> tuple[bytes, str]: ...
+
+
+def _get_official_html(
+    client: httpx.Client, url: str, *, return_url: bool = False
+) -> bytes | tuple[bytes, str]:
     if url == CALENDAR_URL:
         source_kind = "calendar"
     else:
@@ -682,7 +694,8 @@ def _get_official_html(client: httpx.Client, url: str) -> bytes:
                             raise SepIngestionError(
                                 f"Federal Reserve HTML is empty: {current_url}"
                             )
-                        return bytes(content)
+                        body = bytes(content)
+                        return (body, current_url) if return_url else body
                     if response.status_code in {301, 302, 307, 308} and not redirected:
                         location = response.headers.get("location")
                         if location is None:
@@ -927,7 +940,9 @@ def run(
                 for url in urls:
                     content = _get_official_html(client, url)
                     statement_url = policy_statement_url(_release_date(url))
-                    statement = _get_official_html(client, statement_url)
+                    statement, statement_url = _get_official_html(
+                        client, statement_url, return_url=True
+                    )
                     fetched += 1
                     digest = source_sha256(content)
                     statement_digest = source_sha256(statement)

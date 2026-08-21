@@ -8,6 +8,7 @@ import hashlib
 import os
 import uuid
 from collections.abc import Iterator
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -22,6 +23,14 @@ FIXTURES = Path("tests/fixtures/fomc_sep")
 
 def _fixture(name: str) -> bytes:
     return (FIXTURES / name).read_bytes()
+
+
+def _with_resolved_url(fetch):
+    def wrapped(client, url, *, return_url=False):
+        content = fetch(client, url)
+        return (content, url) if return_url else content
+
+    return wrapped
 
 
 def _by_horizon(artifact: sep.ReleaseArtifact) -> dict[str, int]:
@@ -313,6 +322,31 @@ def test_policy_fetch_follows_only_the_same_date_legacy_migration_redirect() -> 
     ) as client:
         assert sep._get_official_html(client, legacy) == b"<html>statement</html>"
     assert requested == [legacy, current]
+
+
+def test_policy_fetch_can_return_the_resolved_canonical_url() -> None:
+    legacy = "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm"
+    current = (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "monetary20120125a.htm"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == legacy:
+            return httpx.Response(302, headers={"location": current})
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html>statement</html>",
+        )
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=False
+    ) as client:
+        assert sep._get_official_html(client, legacy, return_url=True) == (
+            b"<html>statement</html>",
+            current,
+        )
 
 
 def test_policy_fetch_redirect_gets_a_fresh_target_retry_budget(
@@ -772,26 +806,26 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
     )
 
 
-def test_ddl_migrates_named_v1_route_checks_only_after_v2_validation() -> None:
+def test_ddl_migrates_legacy_route_checks_only_after_v2_validation() -> None:
     ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
-    source_v2 = "fomc_sep_releases_source_url_release_date_v2_check"
-    policy_v2 = "fomc_sep_releases_policy_source_url_release_date_v2_check"
+    legacy_checks = {
+        "fomc_sep_releases_source_url_release_date_v2_check": (
+            "fomc_sep_releases_source_url_official_routes_check",
+            "fomc_sep_releases_source_url_check",
+        ),
+        "fomc_sep_releases_policy_source_url_release_date_v2_check": (
+            "fomc_sep_releases_policy_source_url_official_routes_check",
+            "fomc_sep_releases_policy_source_url_check",
+        ),
+    }
 
-    for constraint in (source_v2, policy_v2):
-        assert f"ADD CONSTRAINT {constraint}" in ddl
-        assert f"VALIDATE CONSTRAINT {constraint}" in ddl
-        assert ddl.index(f"VALIDATE CONSTRAINT {constraint}") < ddl.index(
-            "DROP CONSTRAINT IF EXISTS ",
-            ddl.index(f"VALIDATE CONSTRAINT {constraint}"),
-        )
-    assert (
-        "DROP CONSTRAINT IF EXISTS "
-        "fomc_sep_releases_source_url_official_routes_check" in ddl
-    )
-    assert (
-        "DROP CONSTRAINT IF EXISTS "
-        "fomc_sep_releases_policy_source_url_official_routes_check" in ddl
-    )
+    for v2_constraint, old_constraints in legacy_checks.items():
+        assert f"ADD CONSTRAINT {v2_constraint}" in ddl
+        validation = ddl.index(f"VALIDATE CONSTRAINT {v2_constraint}")
+        for old_constraint in old_constraints:
+            drop = f"DROP CONSTRAINT IF EXISTS {old_constraint}"
+            assert drop in ddl
+            assert validation < ddl.index(drop, validation)
 
 
 def test_ddl_preserves_the_parser_identity_migration() -> None:
@@ -1018,7 +1052,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     monkeypatch.setattr(sep, "advisory_lock", acquired)
     monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
     monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: urls)
-    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+    monkeypatch.setattr(sep, "_get_official_html", _with_resolved_url(fake_get))
     monkeypatch.setattr(sep, "_publish_artifacts", publish)
 
     first = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
@@ -1177,7 +1211,7 @@ def test_bounded_run_selects_and_publishes_exact_december_2012_route_when_generi
     monkeypatch.setattr(sep, "advisory_lock", acquired)
     monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
     monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: [compilation_url])
-    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+    monkeypatch.setattr(sep, "_get_official_html", _with_resolved_url(fake_get))
     monkeypatch.setattr(sep, "_publish_artifacts", publish)
 
     result = sep.run("postgresql://unused", calc_date="2012-12-12", limit=1)
@@ -1186,6 +1220,104 @@ def test_bounded_run_selects_and_publishes_exact_december_2012_route_when_generi
     assert result["releases"] == 1
     assert result["unchanged"] == 0
     assert [artifact.source_url for artifact in published] == [compilation_url]
+
+
+def test_run_persists_resolved_policy_redirect_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_url = (
+        "https://www.federalreserve.gov/monetarypolicy/"
+        "fomcprojtabl20120913.htm"
+    )
+    legacy_policy_url = (
+        "https://www.federalreserve.gov/newsevents/press/monetary/"
+        "20120913a.htm"
+    )
+    current_policy_url = (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "monetary20120913a.htm"
+    )
+    release_content = _fixture("quarter_point.html")
+    policy_content = (
+        b"<html><body>The Committee decided to keep the target range "
+        b"for the federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+    conn = _FakeConnection()
+    published: list[sep.ReleaseArtifact] = []
+    requested: list[str] = []
+
+    @contextlib.contextmanager
+    def acquired(_conn: object, _lock: int):
+        yield True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requested.append(url)
+        if url == release_url:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                content=release_content,
+            )
+        if url == legacy_policy_url:
+            return httpx.Response(302, headers={"location": current_policy_url})
+        assert url == current_policy_url
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=policy_content,
+        )
+
+    client_class = httpx.Client
+
+    def client_factory(**kwargs: object) -> httpx.Client:
+        return client_class(
+            transport=httpx.MockTransport(handler),
+            headers=kwargs.get("headers"),
+            follow_redirects=False,
+        )
+
+    def publish(
+        fake_conn: _FakeConnection, artifacts: list[sep.ReleaseArtifact]
+    ) -> tuple[int, int]:
+        published.extend(artifacts)
+        for artifact in artifacts:
+            assert artifact.policy_source_url == current_policy_url
+            fake_conn.known[
+                (
+                    artifact.release_date,
+                    artifact.source_url,
+                    artifact.source_sha256,
+                    artifact.policy_source_url,
+                    artifact.policy_source_sha256 or "",
+                    artifact.parser_version,
+                )
+            ] = artifact.release_id
+            fake_conn.release_dates[artifact.release_id] = artifact.release_date
+        return len(artifacts), sum(len(item.distributions) for item in artifacts)
+
+    monkeypatch.setattr(sep, "connect", lambda _dsn: conn)
+    monkeypatch.setattr(sep, "advisory_lock", acquired)
+    monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
+    monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: [release_url])
+    monkeypatch.setattr(sep.httpx, "Client", client_factory)
+    monkeypatch.setattr(sep, "_publish_artifacts", publish)
+
+    first = sep.run("postgresql://unused", calc_date="2012-12-31")
+    second = sep.run("postgresql://unused", calc_date="2012-12-31")
+
+    assert first["releases"] == 1
+    assert second["unchanged"] == 1
+    assert second["releases"] == 0
+    assert [artifact.policy_source_url for artifact in published] == [current_policy_url]
+    assert requested == [
+        release_url,
+        legacy_policy_url,
+        current_policy_url,
+        release_url,
+        legacy_policy_url,
+        current_policy_url,
+    ]
 
 
 def test_reverted_latest_release_repoints_to_existing_observation(
@@ -1237,7 +1369,7 @@ def test_reverted_latest_release_repoints_to_existing_observation(
     monkeypatch.setattr(sep, "advisory_lock", acquired)
     monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
     monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: [release_url])
-    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+    monkeypatch.setattr(sep, "_get_official_html", _with_resolved_url(fake_get))
 
     result = sep.run("postgresql://unused", calc_date="2012-12-31")
 
@@ -1294,7 +1426,7 @@ def test_matching_older_polled_release_does_not_regress_pointer(
     monkeypatch.setattr(sep, "advisory_lock", acquired)
     monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
     monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: [older_url])
-    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+    monkeypatch.setattr(sep, "_get_official_html", _with_resolved_url(fake_get))
 
     result = sep.run("postgresql://unused", calc_date="2012-12-31")
 
@@ -1335,7 +1467,7 @@ def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch:
         "https://www.federalreserve.gov/monetarypolicy/fomchistorical2012.htm"
     ])
     monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: [])
-    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+    monkeypatch.setattr(sep, "_get_official_html", _with_resolved_url(fake_get))
     monkeypatch.setattr(sep, "_publish_artifacts", fail_mid_publish)
 
     with pytest.raises(RuntimeError, match="child insert failed"):
@@ -1425,7 +1557,7 @@ def test_lock_busy_performs_no_schema_or_network_work(monkeypatch: pytest.Monkey
 @pytest.mark.skipif(
     not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL unavailable"
 )
-def test_postgres_v1_migration_and_pointer_invariants() -> None:
+def test_postgres_legacy_migration_and_pointer_invariants() -> None:
     import psycopg
     from psycopg import sql
 
@@ -1471,7 +1603,7 @@ def test_postgres_v1_migration_and_pointer_invariants() -> None:
                     "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120125.htm",
                     "e" * 64,
                     sep.PARSER_VERSION,
-                    "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm",
+                    "https://www.federalreserve.gov/newsevents/pressreleases/monetary20120125a.htm",
                     "f" * 64,
                     now,
                     now,
@@ -1480,6 +1612,12 @@ def test_postgres_v1_migration_and_pointer_invariants() -> None:
             conn.execute(
                 "ALTER TABLE fomc_sep_releases DROP CONSTRAINT "
                 "fomc_sep_releases_source_url_release_date_v2_check"
+            )
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases ADD CONSTRAINT "
+                "fomc_sep_releases_source_url_check CHECK ("
+                "source_url ~ '^https://www[.]federalreserve[.]gov/monetarypolicy/"
+                "fomcprojtabl[0-9]{8}[.]htm$')"
             )
             conn.execute(
                 "ALTER TABLE fomc_sep_releases ADD CONSTRAINT "
@@ -1493,10 +1631,30 @@ def test_postgres_v1_migration_and_pointer_invariants() -> None:
             )
             conn.execute(
                 "ALTER TABLE fomc_sep_releases ADD CONSTRAINT "
+                "fomc_sep_releases_policy_source_url_check CHECK ("
+                "policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/"
+                "pressreleases/monetary[0-9]{8}a[.]htm$')"
+            )
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases ADD CONSTRAINT "
                 "fomc_sep_releases_policy_source_url_official_routes_check CHECK ("
                 "policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/"
                 "(press/monetary/[0-9]{8}a[.]htm|pressreleases/monetary[0-9]{8}a[.]htm)$')"
             )
+            legacy_route_checks = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT conname FROM pg_constraint "
+                    "WHERE conrelid = 'fomc_sep_releases'::regclass "
+                    "AND conname LIKE '%source_url%check'"
+                ).fetchall()
+            }
+            assert legacy_route_checks == {
+                "fomc_sep_releases_source_url_check",
+                "fomc_sep_releases_source_url_official_routes_check",
+                "fomc_sep_releases_policy_source_url_check",
+                "fomc_sep_releases_policy_source_url_official_routes_check",
+            }
 
             conn.execute(ddl)
             conn.execute(ddl)
@@ -1702,6 +1860,76 @@ def test_postgres_v1_migration_and_pointer_invariants() -> None:
             assert conn.execute(
                 "SELECT release_id FROM fomc_sep_current_pointer WHERE singleton"
             ).fetchone()[0] == complete_id
+        finally:
+            conn.execute("SET search_path TO public")
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+@pytest.mark.skipif(
+    not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL unavailable"
+)
+def test_postgres_failed_pointer_promotion_rolls_back_publication() -> None:
+    import psycopg
+    from psycopg import sql
+
+    schema = f"test_fomc_sep_rollback_{uuid.uuid4().hex}"
+    ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
+    release_url = (
+        "https://www.federalreserve.gov/monetarypolicy/"
+        "fomcprojtabl20120913.htm"
+    )
+    policy_url = (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "monetary20120913a.htm"
+    )
+    policy_content = (
+        b"<html><body>The Committee decided to keep the target range "
+        b"for the federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+    complete = sep.parse_release(
+        _fixture("quarter_point.html"),
+        release_url,
+        policy_content=policy_content,
+        policy_url=policy_url,
+    )
+    incomplete = replace(
+        complete,
+        distributions=tuple(
+            row
+            for row in complete.distributions
+            if row.projection_horizon != "longer_run"
+        ),
+    )
+    assert len({row.projection_horizon for row in incomplete.distributions}) == 3
+
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        try:
+            conn.execute(ddl)
+            conn.commit()
+
+            def publish_like_run() -> None:
+                try:
+                    sep._publish_artifacts(conn, [incomplete])
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+
+            with pytest.raises(
+                psycopg.errors.RaiseException,
+                match="current SEP release requires a complete normalized distribution",
+            ):
+                publish_like_run()
+
+            assert conn.execute("SELECT count(*) FROM fomc_sep_releases").fetchone()[0] == 0
+            assert conn.execute(
+                "SELECT count(*) FROM fomc_sep_rate_distributions"
+            ).fetchone()[0] == 0
+            assert conn.execute(
+                "SELECT count(*) FROM fomc_sep_current_pointer"
+            ).fetchone()[0] == 0
         finally:
             conn.execute("SET search_path TO public")
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
