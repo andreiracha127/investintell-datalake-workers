@@ -652,7 +652,18 @@ def run(
                     if not urls:
                         raise SepIngestionError("official Federal Reserve indexes exposed no SEP releases")
                     if limit is not None:
-                        urls = urls[-limit:]
+                        known_dates = {release_date for release_date, _, _ in known}
+                        unseen_urls = [
+                            url for url in urls if _release_date(url) not in known_dates
+                        ][-limit:]
+                        remaining = limit - len(unseen_urls)
+                        selected = set(unseen_urls)
+                        polling_urls = (
+                            [url for url in urls if url not in selected][-remaining:]
+                            if remaining
+                            else []
+                        )
+                        urls = sorted([*unseen_urls, *polling_urls], key=_release_date)
                     artifacts: list[ReleaseArtifact] = []
                     fetched = 0
                     unchanged = 0

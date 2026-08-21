@@ -190,12 +190,15 @@ class _FakeCursor:
         self.conn.sql.append(sql)
 
     def fetchall(self) -> list[tuple[dt.date, str, str]]:
-        return []
+        return list(self.conn.known)
 
 
 class _FakeConnection:
-    def __init__(self) -> None:
+    def __init__(
+        self, known: set[tuple[dt.date, str, str]] | None = None
+    ) -> None:
         self.sql: list[str] = []
+        self.known = known or set()
         self.pointer = "prior-release"
         self.commits = 0
         self.rollbacks = 0
@@ -215,6 +218,91 @@ class _FakeConnection:
     def rollback(self) -> None:
         self.rollbacks += 1
         self.pointer = "prior-release"
+
+
+def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    urls = [
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120125.htm",
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120620.htm",
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120913.htm",
+    ]
+    release_content = _fixture("quarter_point.html")
+    policy_content = (
+        b"<html><body>The Committee decided to keep the target range "
+        b"for the federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+    conn = _FakeConnection(
+        {
+            (
+                dt.date(2012, 9, 13),
+                sep.source_sha256(release_content),
+                sep.source_sha256(policy_content),
+            )
+        }
+    )
+    latest_content = [release_content]
+    fetched_release_urls: list[str] = []
+    published_dates: list[list[dt.date]] = []
+
+    @contextlib.contextmanager
+    def acquired(_conn: object, _lock: int):
+        yield True
+
+    def fake_get(_client: object, url: str) -> bytes:
+        if "/pressreleases/" in url:
+            return policy_content
+        fetched_release_urls.append(url)
+        if url == urls[-1]:
+            return latest_content[0]
+        return release_content
+
+    def publish(
+        fake_conn: _FakeConnection, artifacts: list[sep.ReleaseArtifact]
+    ) -> tuple[int, int]:
+        published_dates.append([artifact.release_date for artifact in artifacts])
+        for artifact in artifacts:
+            assert artifact.policy_source_sha256 is not None
+            fake_conn.known.add(
+                (
+                    artifact.release_date,
+                    artifact.source_sha256,
+                    artifact.policy_source_sha256,
+                )
+            )
+        return len(artifacts), sum(len(item.distributions) for item in artifacts)
+
+    monkeypatch.setattr(sep, "connect", lambda _dsn: conn)
+    monkeypatch.setattr(sep, "advisory_lock", acquired)
+    monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
+    monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: urls)
+    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+    monkeypatch.setattr(sep, "_publish_artifacts", publish)
+
+    first = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
+    assert fetched_release_urls == [urls[1]]
+    assert first["fetched"] == 1
+    assert first["releases"] == 1
+    assert first["unchanged"] == 0
+    assert published_dates == [[dt.date(2012, 6, 20)]]
+
+    fetched_release_urls.clear()
+    second = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
+    assert fetched_release_urls == [urls[0]]
+    assert second["fetched"] == 1
+    assert second["releases"] == 1
+    assert second["unchanged"] == 0
+    assert published_dates[-1] == [dt.date(2012, 1, 25)]
+
+    fetched_release_urls.clear()
+    latest_content[0] += b"\n"
+    third = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
+    assert fetched_release_urls == [urls[2]]
+    assert third["fetched"] == 1
+    assert third["releases"] == 1
+    assert third["unchanged"] == 0
+    assert published_dates[-1] == [dt.date(2012, 9, 13)]
 
 
 def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch: pytest.MonkeyPatch) -> None:
