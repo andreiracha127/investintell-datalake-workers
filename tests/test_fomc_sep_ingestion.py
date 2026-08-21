@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import uuid
 from decimal import Decimal
 from pathlib import Path
 
@@ -363,18 +364,41 @@ class _FakeCursor:
 
     def execute(self, sql: str, params: object = None) -> None:
         self.conn.sql.append(sql)
+        if "INSERT INTO fomc_sep_current_pointer" in sql:
+            assert isinstance(params, tuple)
+            release_id = params[0]
+            release_date = self.conn.release_dates[release_id]
+            if release_date >= self.conn.release_dates[self.conn.pointer]:
+                self.conn.pointer = release_id
 
-    def fetchall(self) -> list[tuple[dt.date, str, str, str]]:
-        return list(self.conn.known)
+    def fetchall(self) -> list[tuple[uuid.UUID, dt.date, str, str, str]]:
+        return [
+            (release_id, release_date, source_hash, policy_hash, parser_version)
+            for (
+                release_date,
+                source_hash,
+                policy_hash,
+                parser_version,
+            ), release_id
+            in self.conn.known.items()
+        ]
 
 
 class _FakeConnection:
     def __init__(
-        self, known: set[tuple[dt.date, str, str, str]] | None = None
+        self,
+        known: dict[tuple[dt.date, str, str, str], uuid.UUID] | None = None,
+        *,
+        pointer: uuid.UUID | None = None,
     ) -> None:
         self.sql: list[str] = []
-        self.known = known or set()
-        self.pointer = "prior-release"
+        self.known = known or {}
+        self.pointer = pointer or uuid.uuid4()
+        self.prior_pointer = self.pointer
+        self.release_dates = {
+            release_id: key[0] for key, release_id in self.known.items()
+        }
+        self.release_dates.setdefault(self.pointer, dt.date.min)
         self.commits = 0
         self.rollbacks = 0
 
@@ -392,7 +416,7 @@ class _FakeConnection:
 
     def rollback(self) -> None:
         self.rollbacks += 1
-        self.pointer = "prior-release"
+        self.pointer = self.prior_pointer
 
 
 def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
@@ -408,6 +432,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
         b"<html><body>The Committee decided to keep the target range "
         b"for the federal funds rate at 0 to 1/4 percent.</body></html>"
     )
+    known_release_id = uuid.uuid4()
     conn = _FakeConnection(
         {
             (
@@ -415,7 +440,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
                 sep.source_sha256(release_content),
                 sep.source_sha256(policy_content),
                 sep.PARSER_VERSION,
-            )
+            ): known_release_id
         }
     )
     latest_content = [release_content]
@@ -444,14 +469,15 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
         published_ids.append([artifact.release_id for artifact in artifacts])
         for artifact in artifacts:
             assert artifact.policy_source_sha256 is not None
-            fake_conn.known.add(
+            fake_conn.known[
                 (
                     artifact.release_date,
                     artifact.source_sha256,
                     artifact.policy_source_sha256,
                     artifact.parser_version,
                 )
-            )
+            ] = artifact.release_id
+            fake_conn.release_dates[artifact.release_id] = artifact.release_date
         return len(artifacts), sum(len(item.distributions) for item in artifacts)
 
     monkeypatch.setattr(sep, "connect", lambda _dsn: conn)
@@ -563,6 +589,114 @@ def test_bounded_polling_spends_the_strict_cap_on_unseen_dates_first() -> None:
     assert len(selected) == 2
 
 
+def test_reverted_latest_release_repoints_to_existing_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_url = (
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120913.htm"
+    )
+    policy_content = (
+        b"<html><body>The Committee decided to keep the target range "
+        b"for the federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+    release_a = _fixture("quarter_point.html")
+    release_b = release_a + b"\n"
+    release_a_id = uuid.uuid4()
+    release_b_id = uuid.uuid4()
+    release_date = dt.date(2012, 9, 13)
+    policy_hash = sep.source_sha256(policy_content)
+    conn = _FakeConnection(
+        {
+            (
+                release_date,
+                sep.source_sha256(release_a),
+                policy_hash,
+                sep.PARSER_VERSION,
+            ): release_a_id,
+            (
+                release_date,
+                sep.source_sha256(release_b),
+                policy_hash,
+                sep.PARSER_VERSION,
+            ): release_b_id,
+        },
+        pointer=release_b_id,
+    )
+
+    @contextlib.contextmanager
+    def acquired(_conn: object, _lock: int):
+        yield True
+
+    def fake_get(_client: object, url: str) -> bytes:
+        return policy_content if "/newsevents/" in url else release_a
+
+    monkeypatch.setattr(sep, "connect", lambda _dsn: conn)
+    monkeypatch.setattr(sep, "advisory_lock", acquired)
+    monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
+    monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: [release_url])
+    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+
+    result = sep.run("postgresql://unused", calc_date="2012-12-31")
+
+    assert result["unchanged"] == 1
+    assert result["releases"] == 0
+    assert conn.pointer == release_a_id
+    assert len(conn.known) == 2
+
+
+def test_matching_older_polled_release_does_not_regress_pointer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    older_url = (
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120620.htm"
+    )
+    policy_content = (
+        b"<html><body>The Committee decided to keep the target range "
+        b"for the federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+    release_content = _fixture("quarter_point.html")
+    older_id = uuid.uuid4()
+    current_id = uuid.uuid4()
+    policy_hash = sep.source_sha256(policy_content)
+    conn = _FakeConnection(
+        {
+            (
+                dt.date(2012, 6, 20),
+                sep.source_sha256(release_content),
+                policy_hash,
+                sep.PARSER_VERSION,
+            ): older_id,
+            (
+                dt.date(2012, 9, 13),
+                sep.source_sha256(release_content + b"\n"),
+                policy_hash,
+                sep.PARSER_VERSION,
+            ): current_id,
+        },
+        pointer=current_id,
+    )
+
+    @contextlib.contextmanager
+    def acquired(_conn: object, _lock: int):
+        yield True
+
+    def fake_get(_client: object, url: str) -> bytes:
+        return policy_content if "/newsevents/" in url else release_content
+
+    monkeypatch.setattr(sep, "connect", lambda _dsn: conn)
+    monkeypatch.setattr(sep, "advisory_lock", acquired)
+    monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
+    monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: [older_url])
+    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+
+    result = sep.run("postgresql://unused", calc_date="2012-12-31")
+
+    assert result["unchanged"] == 1
+    assert result["releases"] == 0
+    assert conn.pointer == current_id
+    assert len(conn.known) == 2
+
+
 def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _FakeConnection()
 
@@ -599,7 +733,7 @@ def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch:
 
     with pytest.raises(RuntimeError, match="child insert failed"):
         sep.run("postgresql://unused", calc_date="2012-12-31")
-    assert conn.pointer == "prior-release"
+    assert conn.pointer == conn.prior_pointer
     assert conn.rollbacks == 1
     assert conn.commits == 0
 

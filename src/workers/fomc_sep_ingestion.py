@@ -599,14 +599,22 @@ def _historical_release_urls(as_of: dt.date) -> list[str]:
     ]
 
 
-def _known_release_hashes(conn: Any) -> set[tuple[dt.date, str, str, str]]:
+def _known_release_hashes(
+    conn: Any,
+) -> dict[tuple[dt.date, str, str, str], uuid.UUID]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT release_date, source_sha256, policy_source_sha256, parser_version "
+            "SELECT release_id, release_date, source_sha256, "
+            "policy_source_sha256, parser_version "
             "FROM fomc_sep_releases"
         )
         return {
-            (row[0], str(row[1]).strip(), str(row[2]).strip(), str(row[3]))
+            (
+                row[1],
+                str(row[2]).strip(),
+                str(row[3]).strip(),
+                str(row[4]),
+            ): row[0]
             for row in cur.fetchall()
         }
 
@@ -630,6 +638,22 @@ def _bounded_release_urls(
         ).days % len(polling_urls)
         polling_urls = (polling_urls[offset:] + polling_urls[:offset])[:remaining]
     return sorted([*unseen_urls, *polling_urls], key=_release_date)
+
+
+def _repoint_current_release(conn: Any, release_id: uuid.UUID) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO fomc_sep_current_pointer(singleton, release_id)
+            VALUES (true, %s)
+            ON CONFLICT (singleton) DO UPDATE SET release_id=EXCLUDED.release_id
+            WHERE (SELECT release_date FROM fomc_sep_releases WHERE release_id=EXCLUDED.release_id)
+                  >=
+                  (SELECT release_date FROM fomc_sep_releases
+                   WHERE release_id=fomc_sep_current_pointer.release_id)
+            """,
+            (release_id,),
+        )
 
 
 def _publish_artifacts(conn: Any, artifacts: list[ReleaseArtifact]) -> tuple[int, int]:
@@ -698,18 +722,7 @@ def _publish_artifacts(conn: Any, artifacts: list[ReleaseArtifact]) -> tuple[int
                 ],
             )
             distribution_count += max(cur.rowcount, 0)
-            cur.execute(
-                """
-                INSERT INTO fomc_sep_current_pointer(singleton, release_id)
-                VALUES (true, %s)
-                ON CONFLICT (singleton) DO UPDATE SET release_id=EXCLUDED.release_id
-                WHERE (SELECT release_date FROM fomc_sep_releases WHERE release_id=EXCLUDED.release_id)
-                      >=
-                      (SELECT release_date FROM fomc_sep_releases
-                       WHERE release_id=fomc_sep_current_pointer.release_id)
-                """,
-                (artifact.release_id,),
-            )
+            _repoint_current_release(conn, artifact.release_id)
     return release_count, distribution_count
 
 
@@ -762,13 +775,17 @@ def run(
                         fetched += 1
                         digest = source_sha256(content)
                         statement_digest = source_sha256(statement)
-                        if (
-                            _release_date(url),
-                            digest,
-                            statement_digest,
-                            PARSER_VERSION,
-                        ) in known:
+                        known_release_id = known.get(
+                            (
+                                _release_date(url),
+                                digest,
+                                statement_digest,
+                                PARSER_VERSION,
+                            )
+                        )
+                        if known_release_id is not None:
                             unchanged += 1
+                            _repoint_current_release(conn, known_release_id)
                             continue
                         artifacts.append(
                             parse_release(
