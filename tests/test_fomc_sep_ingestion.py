@@ -100,6 +100,11 @@ def test_source_hash_is_over_exact_bytes() -> None:
             "funds rate at 4-1/4 to 4-1/2 percent.",
             (Decimal("4.250"), Decimal("4.500"), Decimal("4.375")),
         ),
+        (
+            "The Committee reaffirmed its expectation that the current target "
+            "range for the federal funds rate of 0 to 1/4 percent will be appropriate.",
+            (Decimal("0.000"), Decimal("0.250"), Decimal("0.125")),
+        ),
     ],
 )
 def test_policy_statement_parser_preserves_official_target_range(

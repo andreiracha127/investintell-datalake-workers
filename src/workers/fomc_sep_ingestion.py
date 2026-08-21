@@ -46,7 +46,7 @@ _CURRENT_POLICY_PATH = re.compile(
 # the first SEP after the Federal Reserve's spring 2017 website migration.
 _POLICY_ROUTE_CUTOVER = dt.date(2017, 6, 14)
 _POLICY_RANGE = re.compile(
-    r"target range for the federal funds rate (?:at|to) "
+    r"target range for the federal funds rate (?:at|of|to) "
     r"(?P<low>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) to "
     r"(?P<high>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) percent",
     re.IGNORECASE,
