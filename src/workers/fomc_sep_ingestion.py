@@ -425,13 +425,23 @@ def _parse_point_table(table: HtmlTable) -> tuple[list[DistributionRow], set[Dec
     )
     if header_index is None:
         raise SepIngestionError("point-bin SEP table is missing its rate header")
-    horizons = [_horizon(value) for value in _expand(table.rows[header_index][1:])]
+    header_values = _expand(table.rows[header_index][1:])
+    horizons = [_horizon(value) for value in header_values]
+    data_start = header_index + 1
     if not horizons or any(value is None for value in horizons):
-        raise SepIngestionError("point-bin SEP projection horizons are invalid")
+        if data_start >= len(table.rows):
+            raise SepIngestionError("point-bin SEP projection horizons are invalid")
+        header_values = _expand(table.rows[data_start])
+        if len(header_values) != len(horizons):
+            raise SepIngestionError("point-bin SEP horizon headers do not align")
+        horizons = [_horizon(value) for value in header_values]
+        data_start += 1
+        if not horizons or any(value is None for value in horizons):
+            raise SepIngestionError("point-bin SEP projection horizons are invalid")
 
     rows: list[DistributionRow] = []
     rates: set[Decimal] = set()
-    for raw_row in table.rows[header_index + 1 :]:
+    for raw_row in table.rows[data_start:]:
         if not raw_row or not _RATE_POINT.fullmatch(raw_row[0].text.strip()):
             continue
         rate = Decimal(raw_row[0].text.strip())

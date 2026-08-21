@@ -29,7 +29,7 @@ def _by_horizon(artifact: sep.ReleaseArtifact) -> dict[str, int]:
     return totals
 
 
-def test_quarter_point_fixture_is_normalized() -> None:
+def test_official_two_row_quarter_point_header_is_normalized() -> None:
     artifact = sep.parse_release(
         _fixture("quarter_point.html"),
         "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120913.htm",
