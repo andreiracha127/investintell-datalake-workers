@@ -338,3 +338,8 @@ LOCK_STOCK_FUNDAMENTALS_STATEMENTS = 900_355
 # serializes the refresh/probe/downstream handoff without sharing either child's
 # lock, so a retry observes a complete prior stage or reruns it idempotently.
 LOCK_NPORT_V2_PUBLICATION_CHAIN = 900_356
+# Official Federal Reserve SEP HTML ingestion. The worker owns immutable release
+# observations plus their normalized rate-bin children; it does not share a
+# publication surface with any SEC or market-data lane. 900_359 is the next free
+# documented ingestion lock after the publication chains above.
+LOCK_FOMC_SEP_INGESTION = 900_359
