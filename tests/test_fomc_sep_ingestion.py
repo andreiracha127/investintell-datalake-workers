@@ -115,6 +115,11 @@ def test_source_hash_is_over_exact_bytes() -> None:
             "rate to 1-1/4 to 1‑1/2 percent.",
             (Decimal("1.250"), Decimal("1.500"), Decimal("1.375")),
         ),
+        (
+            "The Committee decided to lower the target range for the federal funds "
+            "rate by 1/2 percentage point to 4-3/4 to 5 percent.",
+            (Decimal("4.750"), Decimal("5.000"), Decimal("4.875")),
+        ),
     ],
 )
 def test_policy_statement_parser_preserves_official_target_range(
