@@ -583,7 +583,11 @@ def parse_release(
     )
     release_id = uuid.uuid5(
         _NAMESPACE,
-        f"{source_url}|{digest}|{policy_digest or 'policy-unavailable'}|{PARSER_VERSION}",
+        (
+            f"{release_date.isoformat()}|{source_url}|{digest}|"
+            f"{policy_url or 'policy-url-unavailable'}|"
+            f"{policy_digest or 'policy-unavailable'}|{PARSER_VERSION}"
+        ),
     )
     return ReleaseArtifact(
         release_id=release_id,
@@ -717,11 +721,11 @@ def _historical_release_urls(as_of: dt.date) -> list[str]:
 
 def _known_release_hashes(
     conn: Any,
-) -> dict[tuple[dt.date, str, str, str, str], uuid.UUID]:
+) -> dict[tuple[dt.date, str, str, str, str, str], uuid.UUID]:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT release_id, release_date, source_url, source_sha256, "
-            "policy_source_sha256, parser_version "
+            "policy_source_url, policy_source_sha256, parser_version "
             "FROM fomc_sep_releases"
         )
         return {
@@ -729,8 +733,9 @@ def _known_release_hashes(
                 row[1],
                 str(row[2]),
                 str(row[3]).strip(),
-                str(row[4]).strip(),
-                str(row[5]),
+                str(row[4]),
+                str(row[5]).strip(),
+                str(row[6]),
             ): row[0]
             for row in cur.fetchall()
         }
@@ -795,7 +800,10 @@ def _publish_artifacts(conn: Any, artifacts: list[ReleaseArtifact]) -> tuple[int
                     policy_rate_upper_pct, policy_rate_midpoint_pct,
                     observed_at, fetched_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (release_date, source_sha256, policy_source_sha256, parser_version)
+                ON CONFLICT (
+                    release_date, source_url, source_sha256,
+                    policy_source_url, policy_source_sha256, parser_version
+                )
                 DO NOTHING
                 """,
                 (
@@ -890,7 +898,7 @@ def run(
                 if limit is not None:
                     known_routes = {
                         source_url
-                        for _, source_url, _, _, parser_version in known
+                        for _, source_url, _, _, _, parser_version in known
                         if parser_version == PARSER_VERSION
                     }
                     urls = _bounded_release_urls(urls, known_routes, as_of, limit)
@@ -911,6 +919,7 @@ def run(
                             _release_date(url),
                             url,
                             digest,
+                            statement_url,
                             statement_digest,
                             PARSER_VERSION,
                         )

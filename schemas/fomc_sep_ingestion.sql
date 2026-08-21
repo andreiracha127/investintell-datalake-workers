@@ -1,7 +1,8 @@
 -- Official Federal Reserve Summary of Economic Projections (SEP).
 --
--- Each exact HTML byte stream and parser version is an immutable release
--- observation. Corrected source bytes or parser logic therefore create a new
+-- Each exact canonical source route, HTML byte stream, policy route, policy
+-- byte stream, release date, and parser version is an immutable observation.
+-- Corrected provenance, source bytes, or parser logic therefore creates a new
 -- row; neither the original release nor its normalized distribution is
 -- overwritten.
 CREATE TABLE IF NOT EXISTS fomc_sep_releases (
@@ -35,8 +36,9 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     observed_at      timestamptz NOT NULL,
     fetched_at       timestamptz NOT NULL,
     created_at       timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT fomc_sep_releases_observation_key UNIQUE (
-        release_date, source_sha256, policy_source_sha256, parser_version
+    CONSTRAINT fomc_sep_releases_provenance_observation_key UNIQUE (
+        release_date, source_url, source_sha256,
+        policy_source_url, policy_source_sha256, parser_version
     ),
     CHECK (policy_rate_lower_pct <= policy_rate_upper_pct),
     CHECK (policy_rate_midpoint_pct = (policy_rate_lower_pct + policy_rate_upper_pct) / 2)
@@ -95,56 +97,29 @@ BEGIN
         DROP CONSTRAINT IF EXISTS fomc_sep_releases_policy_source_url_check;
 END $$;
 
--- PR deployments may already have the original three-column unique constraint.
--- Add the versioned identity first, then remove only that exact legacy shape.
+-- Earlier deployments use the named four-column identity. Add the complete
+-- provenance identity first, then remove only that known legacy constraint.
 DO $$
-DECLARE
-    legacy_constraint text;
 BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conrelid = 'fomc_sep_releases'::regclass
-          AND conname = 'fomc_sep_releases_observation_key'
+          AND conname = 'fomc_sep_releases_provenance_observation_key'
     ) THEN
         ALTER TABLE fomc_sep_releases
-            ADD CONSTRAINT fomc_sep_releases_observation_key UNIQUE (
+            ADD CONSTRAINT fomc_sep_releases_provenance_observation_key UNIQUE (
                 release_date,
+                source_url,
                 source_sha256,
+                policy_source_url,
                 policy_source_sha256,
                 parser_version
             );
     END IF;
 
-    SELECT conname INTO legacy_constraint
-    FROM pg_constraint
-    WHERE conrelid = 'fomc_sep_releases'::regclass
-      AND contype = 'u'
-      AND conkey = ARRAY[
-          (
-              SELECT attnum FROM pg_attribute
-              WHERE attrelid = 'fomc_sep_releases'::regclass
-                AND attname = 'release_date'
-          ),
-          (
-              SELECT attnum FROM pg_attribute
-              WHERE attrelid = 'fomc_sep_releases'::regclass
-                AND attname = 'source_sha256'
-          ),
-          (
-              SELECT attnum FROM pg_attribute
-              WHERE attrelid = 'fomc_sep_releases'::regclass
-                AND attname = 'policy_source_sha256'
-          )
-      ]::smallint[]
-    LIMIT 1;
-
-    IF legacy_constraint IS NOT NULL THEN
-        EXECUTE format(
-            'ALTER TABLE fomc_sep_releases DROP CONSTRAINT %I',
-            legacy_constraint
-        );
-    END IF;
+    ALTER TABLE fomc_sep_releases
+        DROP CONSTRAINT IF EXISTS fomc_sep_releases_observation_key;
 END $$;
 
 CREATE TABLE IF NOT EXISTS fomc_sep_rate_distributions (

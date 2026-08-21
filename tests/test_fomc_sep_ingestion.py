@@ -638,6 +638,65 @@ def test_parser_fails_closed_without_policy_distribution() -> None:
         )
 
 
+def test_release_identity_includes_both_canonical_provenance_routes() -> None:
+    release_date = dt.date(2012, 12, 12)
+    generic_url = (
+        "https://www.federalreserve.gov/monetarypolicy/"
+        "fomcprojtabl20121212.htm"
+    )
+    compilation_url = (
+        "https://www.federalreserve.gov/monetarypolicy/files/"
+        "FOMC20121212SEPcompilation.htm"
+    )
+    legacy_policy_url = (
+        "https://www.federalreserve.gov/newsevents/press/monetary/"
+        "20121212a.htm"
+    )
+    current_policy_url = (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "monetary20121212a.htm"
+    )
+    release_content = _fixture("december_2012_range_bins.html")
+    policy_content = (
+        b"<html><body>The Committee decided to keep the target range for the "
+        b"federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+
+    generic = sep.parse_release(
+        release_content,
+        generic_url,
+        policy_content=policy_content,
+        policy_url=legacy_policy_url,
+    )
+    corrected_release_route = sep.parse_release(
+        release_content,
+        compilation_url,
+        policy_content=policy_content,
+        policy_url=legacy_policy_url,
+    )
+    corrected_policy_route = sep.parse_release(
+        release_content,
+        compilation_url,
+        policy_content=policy_content,
+        policy_url=current_policy_url,
+    )
+
+    assert generic.release_date == corrected_release_route.release_date == release_date
+    assert generic.source_sha256 == corrected_release_route.source_sha256
+    assert (
+        generic.policy_source_sha256
+        == corrected_release_route.policy_source_sha256
+        == corrected_policy_route.policy_source_sha256
+    )
+    assert len(
+        {
+            generic.release_id,
+            corrected_release_route.release_id,
+            corrected_policy_route.release_id,
+        }
+    ) == 3
+
+
 def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
     ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
     for token in (
@@ -661,9 +720,12 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
         "horizon_count < 4",
     ):
         assert token in ddl
-    assert "CONSTRAINT fomc_sep_releases_observation_key UNIQUE" in ddl
-    assert "legacy_constraint" in ddl
-    assert "DROP CONSTRAINT %I" in ddl
+    assert (
+        "CONSTRAINT fomc_sep_releases_provenance_observation_key UNIQUE" in ddl
+    )
+    assert (
+        "DROP CONSTRAINT IF EXISTS fomc_sep_releases_observation_key" in ddl
+    )
 
 
 def test_ddl_migrates_named_v1_route_checks_only_after_v2_validation() -> None:
@@ -690,11 +752,15 @@ def test_ddl_migrates_named_v1_route_checks_only_after_v2_validation() -> None:
 
 def test_ddl_preserves_the_parser_identity_migration() -> None:
     ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
+    new_key = "fomc_sep_releases_provenance_observation_key"
+    legacy_drop = "DROP CONSTRAINT IF EXISTS fomc_sep_releases_observation_key"
 
-    assert "CONSTRAINT fomc_sep_releases_observation_key UNIQUE" in ddl
-    assert "ADD CONSTRAINT fomc_sep_releases_observation_key UNIQUE" in ddl
-    assert "legacy_constraint text;" in ddl
-    assert "DROP CONSTRAINT %I" in ddl
+    assert f"CONSTRAINT {new_key} UNIQUE" in ddl
+    assert f"ADD CONSTRAINT {new_key} UNIQUE" in ddl
+    assert legacy_drop in ddl
+    assert ddl.index(f"ADD CONSTRAINT {new_key}") < ddl.index(legacy_drop)
+    assert "legacy_constraint" not in ddl
+    assert "DROP CONSTRAINT %I" not in ddl
 
 
 def test_pointer_guard_does_not_declare_reserved_current_date() -> None:
@@ -719,7 +785,8 @@ def test_worker_has_no_sec_api_runtime_dependency() -> None:
     assert "sec-api.io" not in source
     assert "httpx.Client" in source
     assert (
-        "ON CONFLICT (release_date, source_sha256, policy_source_sha256, parser_version)"
+        "release_date, source_url, source_sha256,"
+        "\n                    policy_source_url, policy_source_sha256, parser_version"
         in source
     )
     assert "ON CONFLICT (release_id, projection_horizon, rate_bin_low, rate_bin_high)" in source
@@ -750,23 +817,24 @@ class _FakeCursor:
             if release_date >= self.conn.release_dates[self.conn.pointer]:
                 self.conn.pointer = release_id
 
-    def fetchall(self) -> list[tuple[uuid.UUID, dt.date, str, str, str, str]]:
+    def fetchall(
+        self,
+    ) -> list[tuple[uuid.UUID, dt.date, str, str, str, str, str]]:
         return [
             (
                 release_id,
                 release_date,
-                self.conn.source_urls.get(
-                    release_id,
-                    f"https://www.federalreserve.gov/monetarypolicy/"
-                    f"fomcprojtabl{release_date:%Y%m%d}.htm",
-                ),
+                source_url,
                 source_hash,
+                policy_url,
                 policy_hash,
                 parser_version,
             )
             for (
                 release_date,
+                source_url,
                 source_hash,
+                policy_url,
                 policy_hash,
                 parser_version,
             ), release_id
@@ -777,15 +845,13 @@ class _FakeCursor:
 class _FakeConnection:
     def __init__(
         self,
-        known: dict[tuple[dt.date, str, str, str], uuid.UUID] | None = None,
+        known: dict[tuple[dt.date, str, str, str, str, str], uuid.UUID] | None = None,
         *,
-        source_urls: dict[uuid.UUID, str] | None = None,
         pointer: uuid.UUID | None = None,
         fail_execute: bool = False,
     ) -> None:
         self.sql: list[str] = []
         self.known = known or {}
-        self.source_urls = source_urls or {}
         self.pointer = pointer or uuid.uuid4()
         self.prior_pointer = self.pointer
         self.release_dates = {
@@ -853,7 +919,9 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
         {
             (
                 dt.date(2012, 9, 13),
+                urls[-1],
                 sep.source_sha256(release_content),
+                sep.policy_statement_url(dt.date(2012, 9, 13)),
                 sep.source_sha256(policy_content),
                 sep.PARSER_VERSION,
             ): known_release_id
@@ -884,11 +952,14 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
         published_dates.append([artifact.release_date for artifact in artifacts])
         published_ids.append([artifact.release_id for artifact in artifacts])
         for artifact in artifacts:
+            assert artifact.policy_source_url is not None
             assert artifact.policy_source_sha256 is not None
             fake_conn.known[
                 (
                     artifact.release_date,
+                    artifact.source_url,
                     artifact.source_sha256,
+                    artifact.policy_source_url,
                     artifact.policy_source_sha256,
                     artifact.parser_version,
                 )
@@ -930,7 +1001,9 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     latest_content[0] += b"\n"
     latest_identity = (
         dt.date(2012, 9, 13),
+        urls[-1],
         sep.source_sha256(latest_content[0]),
+        sep.policy_statement_url(dt.date(2012, 9, 13)),
         sep.source_sha256(policy_content),
     )
     legacy_v1_release_id = uuid.uuid4()
@@ -955,7 +1028,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     assert same_parser["unchanged"] == 1
     assert same_parser["releases"] == 0
     assert len(published_ids[-1]) == 0
-    assert {row[3] for row in conn.known if row[:3] == latest_identity} == {
+    assert {row[5] for row in conn.known if row[:5] == latest_identity} == {
         "fomc_sep_html_v1",
         "fomc_sep_html_v2",
     }
@@ -1027,12 +1100,13 @@ def test_bounded_run_selects_and_publishes_exact_december_2012_route_when_generi
         {
             (
                 dt.date(2012, 12, 12),
+                generic_url,
                 sep.source_sha256(known_content),
+                policy_url,
                 policy_hash,
                 sep.PARSER_VERSION,
             ): known_id
         },
-        source_urls={known_id: generic_url},
     )
     published: list[sep.ReleaseArtifact] = []
     fetched: list[str] = []
@@ -1087,13 +1161,17 @@ def test_reverted_latest_release_repoints_to_existing_observation(
         {
             (
                 release_date,
+                release_url,
                 sep.source_sha256(release_a),
+                sep.policy_statement_url(release_date),
                 policy_hash,
                 sep.PARSER_VERSION,
             ): release_a_id,
             (
                 release_date,
+                release_url,
                 sep.source_sha256(release_b),
+                sep.policy_statement_url(release_date),
                 policy_hash,
                 sep.PARSER_VERSION,
             ): release_b_id,
@@ -1140,13 +1218,17 @@ def test_matching_older_polled_release_does_not_regress_pointer(
         {
             (
                 dt.date(2012, 6, 20),
+                older_url,
                 sep.source_sha256(release_content),
+                sep.policy_statement_url(dt.date(2012, 6, 20)),
                 policy_hash,
                 sep.PARSER_VERSION,
             ): older_id,
             (
                 dt.date(2012, 9, 13),
+                "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120913.htm",
                 sep.source_sha256(release_content + b"\n"),
+                sep.policy_statement_url(dt.date(2012, 9, 13)),
                 policy_hash,
                 sep.PARSER_VERSION,
             ): current_id,
@@ -1326,6 +1408,30 @@ def test_postgres_v1_migration_and_pointer_invariants() -> None:
             conn.execute(ddl)
             conn.execute(
                 "ALTER TABLE fomc_sep_releases DROP CONSTRAINT "
+                "fomc_sep_releases_provenance_observation_key"
+            )
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases ADD CONSTRAINT "
+                "fomc_sep_releases_observation_key UNIQUE ("
+                "release_date, source_sha256, policy_source_sha256, parser_version)"
+            )
+            legacy_release_id = uuid.uuid4()
+            conn.execute(
+                release_sql,
+                (
+                    legacy_release_id,
+                    dt.date(2012, 1, 25),
+                    "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120125.htm",
+                    "e" * 64,
+                    sep.PARSER_VERSION,
+                    "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm",
+                    "f" * 64,
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases DROP CONSTRAINT "
                 "fomc_sep_releases_source_url_release_date_v2_check"
             )
             conn.execute(
@@ -1358,6 +1464,78 @@ def test_postgres_v1_migration_and_pointer_invariants() -> None:
                 "fomc_sep_releases_policy_source_url_release_date_v2_check": True,
                 "fomc_sep_releases_source_url_release_date_v2_check": True,
             }
+            observation_keys = conn.execute(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'fomc_sep_releases'::regclass "
+                "AND conname LIKE 'fomc_sep_releases%observation_key'"
+            ).fetchall()
+            assert observation_keys == [
+                ("fomc_sep_releases_provenance_observation_key",)
+            ]
+            assert conn.execute(
+                "SELECT count(*) FROM fomc_sep_releases WHERE release_id = %s",
+                (legacy_release_id,),
+            ).fetchone()[0] == 1
+
+            release_date = dt.date(2012, 12, 12)
+            generic_url = (
+                "https://www.federalreserve.gov/monetarypolicy/"
+                "fomcprojtabl20121212.htm"
+            )
+            compilation_url = (
+                "https://www.federalreserve.gov/monetarypolicy/files/"
+                "FOMC20121212SEPcompilation.htm"
+            )
+            legacy_policy_url = (
+                "https://www.federalreserve.gov/newsevents/press/monetary/"
+                "20121212a.htm"
+            )
+            current_policy_url = (
+                "https://www.federalreserve.gov/newsevents/pressreleases/"
+                "monetary20121212a.htm"
+            )
+            release_content = _fixture("december_2012_range_bins.html")
+            policy_content = (
+                b"<html><body>The Committee decided to keep the target range for the "
+                b"federal funds rate at 0 to 1/4 percent.</body></html>"
+            )
+            route_artifacts = [
+                sep.parse_release(
+                    release_content,
+                    generic_url,
+                    policy_content=policy_content,
+                    policy_url=legacy_policy_url,
+                ),
+                sep.parse_release(
+                    release_content,
+                    compilation_url,
+                    policy_content=policy_content,
+                    policy_url=legacy_policy_url,
+                ),
+                sep.parse_release(
+                    release_content,
+                    compilation_url,
+                    policy_content=policy_content,
+                    policy_url=current_policy_url,
+                ),
+            ]
+            assert len({artifact.release_id for artifact in route_artifacts}) == 3
+            for artifact in route_artifacts:
+                assert sep._publish_artifacts(conn, [artifact])[0] == 1
+                assert conn.execute(
+                    "SELECT release_id FROM fomc_sep_current_pointer WHERE singleton"
+                ).fetchone()[0] == artifact.release_id
+            assert conn.execute(
+                "SELECT count(*) FROM fomc_sep_releases "
+                "WHERE release_date = %s AND source_sha256 = %s "
+                "AND policy_source_sha256 = %s AND parser_version = %s",
+                (
+                    release_date,
+                    route_artifacts[0].source_sha256,
+                    route_artifacts[0].policy_source_sha256,
+                    sep.PARSER_VERSION,
+                ),
+            ).fetchone()[0] == 3
 
             special_ids = []
             for release_date, source_url, policy_url, marker in (
@@ -1425,7 +1603,7 @@ def test_postgres_v1_migration_and_pointer_invariants() -> None:
                 (complete_id, "longer_run", Decimal("2.500"), Decimal("2.500"), 19),
             )
             conn.execute(
-                "INSERT INTO fomc_sep_current_pointer(singleton, release_id) VALUES (true, %s)",
+                "UPDATE fomc_sep_current_pointer SET release_id = %s WHERE singleton",
                 (complete_id,),
             )
 
