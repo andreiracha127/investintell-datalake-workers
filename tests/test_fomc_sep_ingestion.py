@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import httpx
 
 from src import db
 from src.workers import fomc_sep_ingestion as sep
@@ -92,6 +93,103 @@ def test_policy_statement_parser_preserves_official_target_range(
     ) == expected
 
 
+def test_policy_statement_url_uses_the_official_route_for_each_era() -> None:
+    assert sep.policy_statement_url(dt.date(2012, 1, 25)) == (
+        "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm"
+    )
+    assert sep.policy_statement_url(dt.date(2017, 3, 15)) == (
+        "https://www.federalreserve.gov/newsevents/press/monetary/20170315a.htm"
+    )
+    assert sep.policy_statement_url(dt.date(2017, 6, 14)) == (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "monetary20170614a.htm"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm",
+        "https://www.federalreserve.gov/newsevents/pressreleases/monetary20250618a.htm",
+    ],
+)
+def test_policy_statement_parser_accepts_both_official_route_shapes(url: str) -> None:
+    content = (
+        b"<html><body>The Committee decided to keep the target range for the "
+        b"federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+    assert sep.parse_policy_rate(content, url) == (
+        Decimal("0.000"),
+        Decimal("0.250"),
+        Decimal("0.125"),
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm",
+        "https://www.federalreserve.gov.evil.test/newsevents/press/monetary/20120125a.htm",
+        "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm?download=1",
+        "https://www.federalreserve.gov/newsevents/pressreleases/monetary20250618a.htm#article",
+        "https://www.federalreserve.gov/newsevents/press/monetary20120125a.htm",
+        "https://www.federalreserve.gov/newsevents/pressreleases/monetary20250618a1.htm",
+    ],
+)
+def test_policy_statement_allowlist_fails_closed(url: str) -> None:
+    with pytest.raises(sep.SepIngestionError, match="not a canonical"):
+        sep.parse_policy_rate(b"<html></html>", url)
+
+
+def test_policy_fetch_follows_only_the_same_date_legacy_migration_redirect() -> None:
+    legacy = "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm"
+    current = (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "monetary20120125a.htm"
+    )
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if str(request.url) == legacy:
+            return httpx.Response(
+                302,
+                headers={"location": current.replace("https://", "http://")},
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html>statement</html>",
+        )
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=False
+    ) as client:
+        assert sep._get_official_html(client, legacy) == b"<html>statement</html>"
+    assert requested == [legacy, current]
+
+
+def test_policy_fetch_rejects_a_redirect_to_another_release_date() -> None:
+    legacy = "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={
+                "location": (
+                    "https://www.federalreserve.gov/newsevents/pressreleases/"
+                    "monetary20120126a.htm"
+                )
+            },
+        )
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=False
+    ) as client:
+        with pytest.raises(sep.SepIngestionError, match="refusing non-canonical"):
+            sep._get_official_html(client, legacy)
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -157,6 +255,8 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
         "CREATE OR REPLACE VIEW fomc_sep_current_distribution",
     ):
         assert token in ddl
+    assert "press/monetary/[0-9]{8}a[.]htm" in ddl
+    assert "pressreleases/monetary[0-9]{8}a[.]htm" in ddl
 
 
 def test_lock_and_dispatcher_registration_are_present() -> None:
@@ -244,6 +344,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     )
     latest_content = [release_content]
     fetched_release_urls: list[str] = []
+    fetched_policy_urls: list[str] = []
     published_dates: list[list[dt.date]] = []
 
     @contextlib.contextmanager
@@ -251,7 +352,8 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
         yield True
 
     def fake_get(_client: object, url: str) -> bytes:
-        if "/pressreleases/" in url:
+        if "/newsevents/" in url:
+            fetched_policy_urls.append(url)
             return policy_content
         fetched_release_urls.append(url)
         if url == urls[-1]:
@@ -286,16 +388,24 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     assert first["releases"] == 1
     assert first["unchanged"] == 0
     assert published_dates == [[dt.date(2012, 6, 20)]]
+    assert fetched_policy_urls == [
+        "https://www.federalreserve.gov/newsevents/press/monetary/20120620a.htm"
+    ]
 
     fetched_release_urls.clear()
+    fetched_policy_urls.clear()
     second = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
     assert fetched_release_urls == [urls[0]]
     assert second["fetched"] == 1
     assert second["releases"] == 1
     assert second["unchanged"] == 0
     assert published_dates[-1] == [dt.date(2012, 1, 25)]
+    assert fetched_policy_urls == [
+        "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm"
+    ]
 
     fetched_release_urls.clear()
+    fetched_policy_urls.clear()
     latest_content[0] += b"\n"
     third = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
     assert fetched_release_urls == [urls[2]]
@@ -303,6 +413,9 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     assert third["releases"] == 1
     assert third["unchanged"] == 0
     assert published_dates[-1] == [dt.date(2012, 9, 13)]
+    assert fetched_policy_urls == [
+        "https://www.federalreserve.gov/newsevents/press/monetary/20120913a.htm"
+    ]
 
 
 def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -318,7 +431,7 @@ def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch:
     def fake_get(_client: object, url: str) -> bytes:
         if "historical" in url:
             return index
-        if "/pressreleases/" in url:
+        if "/newsevents/" in url:
             return (
                 b"<html><body>The Committee decided to keep the target range "
                 b"for the federal funds rate at 0 to 1/4 percent.</body></html>"

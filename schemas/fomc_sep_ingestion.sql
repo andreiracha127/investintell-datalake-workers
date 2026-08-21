@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
         source_format IN ('quarter_point', 'eighth_point', 'range_bins')
     ),
     policy_source_url text NOT NULL CHECK (
-        policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/pressreleases/monetary[0-9]{8}a[.]htm$'
+        policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/(press/monetary/[0-9]{8}a[.]htm|pressreleases/monetary[0-9]{8}a[.]htm)$'
     ),
     policy_source_sha256 char(64) NOT NULL CHECK (policy_source_sha256 ~ '^[0-9a-f]{64}$'),
     policy_rate_lower_pct numeric(6,3) NOT NULL,

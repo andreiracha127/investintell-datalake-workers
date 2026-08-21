@@ -37,6 +37,13 @@ _RELEASE_PATH = re.compile(r"/monetarypolicy/fomcprojtabl(\d{8})[.]htm")
 _RATE_RANGE = re.compile(r"^(-?\d+(?:[.]\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:[.]\d+)?)$")
 _RATE_POINT = re.compile(r"^-?\d+(?:[.]\d+)?$")
 _COUNT = re.compile(r"^\d+$")
+_LEGACY_POLICY_PATH = re.compile(r"/newsevents/press/monetary/\d{8}a[.]htm")
+_CURRENT_POLICY_PATH = re.compile(
+    r"/newsevents/pressreleases/monetary\d{8}a[.]htm"
+)
+# The March 2017 SEP statement was published on the legacy route; June 2017 was
+# the first SEP after the Federal Reserve's spring 2017 website migration.
+_POLICY_ROUTE_CUTOVER = dt.date(2017, 6, 14)
 _POLICY_RANGE = re.compile(
     r"target range for the federal funds rate (?:at|to) "
     r"(?P<low>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) to "
@@ -173,10 +180,62 @@ def source_sha256(content: bytes) -> str:
 
 
 def policy_statement_url(release_date: dt.date) -> str:
+    if release_date < _POLICY_ROUTE_CUTOVER:
+        return (
+            f"{BASE_URL}/newsevents/press/monetary/"
+            f"{release_date:%Y%m%d}a.htm"
+        )
     return (
         f"{BASE_URL}/newsevents/pressreleases/"
         f"monetary{release_date:%Y%m%d}a.htm"
     )
+
+
+def canonical_policy_statement_url(source_url: str) -> str:
+    """Return one of the two exact official statement URL shapes or fail closed."""
+    parsed = urlsplit(source_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise SepIngestionError(
+            f"not a canonical FOMC statement URL: {source_url}"
+        ) from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "www.federalreserve.gov"
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not (
+            _LEGACY_POLICY_PATH.fullmatch(parsed.path)
+            or _CURRENT_POLICY_PATH.fullmatch(parsed.path)
+        )
+    ):
+        raise SepIngestionError(f"not a canonical FOMC statement URL: {source_url}")
+    return f"{BASE_URL}{parsed.path}"
+
+
+def _canonical_policy_redirect(source_url: str, location: str) -> str:
+    source = urlsplit(canonical_policy_statement_url(source_url))
+    candidate = urlsplit(urljoin(source_url, location))
+    if candidate.scheme == "http" and candidate.hostname == "www.federalreserve.gov":
+        candidate = candidate._replace(scheme="https")
+    target = urlsplit(canonical_policy_statement_url(candidate.geturl()))
+    source_date = re.search(r"(\d{8})a[.]htm$", source.path)
+    target_date = re.search(r"(\d{8})a[.]htm$", target.path)
+    if (
+        not _LEGACY_POLICY_PATH.fullmatch(source.path)
+        or not _CURRENT_POLICY_PATH.fullmatch(target.path)
+        or source_date is None
+        or target_date is None
+        or source_date.group(1) != target_date.group(1)
+    ):
+        raise SepIngestionError(
+            f"refusing non-canonical Federal Reserve redirect: {source_url}"
+        )
+    return target.geturl()
 
 
 def _mixed_number(value: str) -> Decimal:
@@ -193,15 +252,7 @@ def _mixed_number(value: str) -> Decimal:
 def parse_policy_rate(
     content: bytes, source_url: str
 ) -> tuple[Decimal, Decimal, Decimal]:
-    parsed = urlsplit(source_url)
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname != "www.federalreserve.gov"
-        or not re.fullmatch(
-            r"/newsevents/pressreleases/monetary\d{8}a[.]htm", parsed.path
-        )
-    ):
-        raise SepIngestionError(f"not a canonical FOMC statement URL: {source_url}")
+    source_url = canonical_policy_statement_url(source_url)
     text = _parse_page(content, source_url).page_text
     match = _POLICY_RANGE.search(text.replace("\u2013", "-").replace("\u2014", "-"))
     if match is None:
@@ -491,12 +542,16 @@ def _get_official_html(client: httpx.Client, url: str) -> bytes:
     if parsed.scheme != "https" or parsed.hostname != "www.federalreserve.gov":
         raise SepIngestionError(f"refusing non-Federal-Reserve source: {url}")
     last_status: int | None = None
+    current_url = url
+    redirected = False
     for attempt in range(3):
         try:
-            response = client.get(url)
+            response = client.get(current_url)
         except httpx.HTTPError as exc:
             if attempt == 2:
-                raise SepIngestionError(f"Federal Reserve request failed: {url}") from exc
+                raise SepIngestionError(
+                    f"Federal Reserve request failed: {current_url}"
+                ) from exc
             time.sleep(2**attempt)
             continue
         last_status = response.status_code
@@ -506,12 +561,27 @@ def _get_official_html(client: httpx.Client, url: str) -> bytes:
                 raise SepIngestionError(f"Federal Reserve source is not HTML: {url}")
             content = response.content
             if not content or len(content) > MAX_HTML_BYTES:
-                raise SepIngestionError(f"Federal Reserve HTML size is invalid: {url}")
+                raise SepIngestionError(
+                    f"Federal Reserve HTML size is invalid: {current_url}"
+                )
             return content
+        if response.status_code in {301, 302, 307, 308} and not redirected:
+            location = response.headers.get("location")
+            if location is None:
+                raise SepIngestionError(
+                    f"Federal Reserve redirect omitted its target: {current_url}"
+                )
+            current_url = _canonical_policy_redirect(current_url, location)
+            redirected = True
+            continue
         if response.status_code not in {429, 500, 502, 503, 504}:
-            raise SepIngestionError(f"Federal Reserve request returned {response.status_code}: {url}")
+            raise SepIngestionError(
+                f"Federal Reserve request returned {response.status_code}: {current_url}"
+            )
         time.sleep(2**attempt)
-    raise SepIngestionError(f"Federal Reserve request exhausted retries ({last_status}): {url}")
+    raise SepIngestionError(
+        f"Federal Reserve request exhausted retries ({last_status}): {current_url}"
+    )
 
 
 def _index_urls(as_of: dt.date) -> list[str]:
