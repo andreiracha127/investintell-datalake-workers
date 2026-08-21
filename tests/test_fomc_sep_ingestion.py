@@ -6,6 +6,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 
@@ -27,6 +28,16 @@ def _by_horizon(artifact: sep.ReleaseArtifact) -> dict[str, int]:
     for row in artifact.distributions:
         totals[row.projection_horizon] = totals.get(row.projection_horizon, 0) + row.participant_count
     return totals
+
+class _TrackingStream(httpx.SyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.read_count = 0
+
+    def __iter__(self) -> Iterator[bytes]:
+        for chunk in self.chunks:
+            self.read_count += 1
+            yield chunk
 
 
 def test_official_two_row_quarter_point_header_is_normalized() -> None:
@@ -292,6 +303,111 @@ def test_policy_fetch_rejects_a_redirect_to_another_release_date() -> None:
 @pytest.mark.parametrize(
     "url",
     [
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm",
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtable20220316.htm",
+        sep.CALENDAR_URL,
+    ],
+)
+def test_official_html_fetches_release_exceptions_and_calendar(url: str) -> None:
+    content = b"<html>official</html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == url
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=content,
+        )
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=False
+    ) as client:
+        assert sep._get_official_html(client, url) == content
+
+
+@pytest.mark.parametrize(
+    ("url", "error"),
+    [
+        (
+            "https://www.federalreserve.gov/monetarypolicy/"
+            "fomcprojtable20220316.htm",
+            "SEP release redirect",
+        ),
+        (sep.CALENDAR_URL, "calendar redirect"),
+    ],
+)
+def test_release_and_calendar_redirects_never_use_policy_validation(
+    url: str, error: str
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": url})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=False
+    ) as client:
+        with pytest.raises(sep.SepIngestionError, match=error):
+            sep._get_official_html(client, url)
+
+
+def test_non_html_is_rejected_before_streaming_the_body() -> None:
+    url = "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm"
+    stream = _TrackingStream([b"not html"])
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/pdf"},
+            stream=stream,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(sep.SepIngestionError, match="not HTML"):
+            sep._get_official_html(client, url)
+    assert stream.read_count == 0
+
+
+def test_declared_oversized_html_is_rejected_before_streaming_the_body() -> None:
+    url = "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm"
+    stream = _TrackingStream([b"<html></html>"])
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "text/html",
+                "content-length": str(sep.MAX_HTML_BYTES + 1),
+            },
+            stream=stream,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(sep.SepIngestionError, match="too large"):
+            sep._get_official_html(client, url)
+    assert stream.read_count == 0
+
+
+def test_html_stream_is_capped_while_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm"
+    stream = _TrackingStream([b"123", b"456", b"must not be read"])
+    monkeypatch.setattr(sep, "MAX_HTML_BYTES", 5)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            stream=stream,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(sep.SepIngestionError, match="too large"):
+            sep._get_official_html(client, url)
+    assert stream.read_count == 2
+
+@pytest.mark.parametrize(
+    "url",
+    [
         "https://sec-api.io/monetarypolicy/fomcprojtabl20231213.htm",
         "https://www.federalreserve.gov.evil.test/monetarypolicy/fomcprojtabl20231213.htm",
         "http://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm",
@@ -343,6 +459,48 @@ def test_discovery_keeps_only_official_projection_links() -> None:
         "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120913.htm"
     ]
 
+
+def test_march_2022_table_url_is_canonical_and_date_bearing() -> None:
+    url = (
+        "https://www.federalreserve.gov/monetarypolicy/"
+        "fomcprojtable20220316.htm"
+    )
+    assert sep.canonical_release_url(url) == url
+    assert sep._release_date(url) == dt.date(2022, 3, 16)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtable20220315.htm",
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtable20220317.htm",
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtable20220316.html",
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtable20220316.htm?x=1",
+        "https://www.federalreserve.gov/monetarypolicy/files/fomcprojtable20220316.htm",
+    ],
+)
+def test_march_2022_table_route_rejects_malformed_variants(url: str) -> None:
+    with pytest.raises(sep.SepIngestionError, match="refusing"):
+        sep.canonical_release_url(url)
+
+
+def test_calendar_discovery_accepts_only_the_exact_march_2022_table_route() -> None:
+    exact = (
+        "https://www.federalreserve.gov/monetarypolicy/"
+        "fomcprojtable20220316.htm"
+    )
+    index = f"""
+        <html><body>
+        <a href="{exact}">March projection materials</a>
+        <a href="/monetarypolicy/fomcprojtable20220315.htm">Wrong date</a>
+        <a href="/monetarypolicy/fomcprojtable20220317.htm">Wrong date</a>
+        <a href="/monetarypolicy/fomcprojtable20220316.html">Wrong suffix</a>
+        </body></html>
+    """.encode()
+
+    assert sep.discover_release_urls(
+        [(sep.CALENDAR_URL, index)], dt.date(2022, 3, 16)
+    ) == [exact]
 
 def test_historical_backfill_urls_are_official_and_start_in_2012() -> None:
     urls = sep._historical_release_urls(dt.date(2020, 12, 31))

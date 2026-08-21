@@ -35,6 +35,7 @@ MAX_HTML_BYTES = 5_000_000
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "fomc_sep_ingestion.sql"
 _RELEASE_PATH = re.compile(r"/monetarypolicy/fomcprojtabl(\d{8})[.]htm")
 _DECEMBER_2012_RELEASE_PATH = "/monetarypolicy/files/FOMC20121212SEPcompilation.htm"
+_MARCH_2022_RELEASE_PATH = "/monetarypolicy/fomcprojtable20220316.htm"
 _RATE_RANGE = re.compile(r"^(-?\d+(?:[.]\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:[.]\d+)?)$")
 _RATE_POINT = re.compile(r"^-?\d+(?:[.]\d+)?$")
 _COUNT = re.compile(r"^\d+$")
@@ -282,6 +283,8 @@ def _release_date(source_url: str) -> dt.date:
     path = urlsplit(source_url).path
     if path == _DECEMBER_2012_RELEASE_PATH:
         return dt.date(2012, 12, 12)
+    if path == _MARCH_2022_RELEASE_PATH:
+        return dt.date(2022, 3, 16)
     match = _RELEASE_PATH.fullmatch(path)
     if not match:
         raise SepIngestionError(f"not a canonical SEP release URL: {source_url}")
@@ -301,7 +304,10 @@ def canonical_release_url(href: str) -> str:
         or parsed.query
         or parsed.fragment
         or (
-            parsed.path != _DECEMBER_2012_RELEASE_PATH
+            parsed.path not in {
+                _DECEMBER_2012_RELEASE_PATH,
+                _MARCH_2022_RELEASE_PATH,
+            }
             and not _RELEASE_PATH.fullmatch(parsed.path)
         )
     ):
@@ -336,7 +342,8 @@ def discover_release_urls(index_pages: list[tuple[str, bytes]], as_of: dt.date) 
         for href in parser.links:
             if "fomcprojtabl" not in href.lower():
                 continue
-            if not _RELEASE_PATH.fullmatch(urlsplit(urljoin(BASE_URL, href)).path):
+            path = urlsplit(urljoin(BASE_URL, href)).path
+            if path != _MARCH_2022_RELEASE_PATH and not _RELEASE_PATH.fullmatch(path):
                 continue
             url = canonical_release_url(href)
             release_date = _release_date(url)
@@ -566,16 +573,87 @@ def parse_release(
 
 
 def _get_official_html(client: httpx.Client, url: str) -> bytes:
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname != "www.federalreserve.gov":
-        raise SepIngestionError(f"refusing non-Federal-Reserve source: {url}")
+    if url == CALENDAR_URL:
+        source_kind = "calendar"
+    else:
+        try:
+            is_release = canonical_release_url(url) == url
+        except SepIngestionError:
+            is_release = False
+        if is_release:
+            source_kind = "release"
+        else:
+            try:
+                is_policy = canonical_policy_statement_url(url) == url
+            except SepIngestionError:
+                is_policy = False
+            if not is_policy:
+                raise SepIngestionError(
+                    f"refusing non-canonical Federal Reserve HTML source: {url}"
+                )
+            source_kind = "policy"
     current_url = url
     redirected = False
     while True:
         last_status: int | None = None
         for attempt in range(3):
             try:
-                response = client.get(current_url)
+                with client.stream("GET", current_url) as response:
+                    last_status = response.status_code
+                    if response.status_code == 200:
+                        content_type = response.headers.get("content-type", "").lower()
+                        if "text/html" not in content_type:
+                            raise SepIngestionError(
+                                f"Federal Reserve source is not HTML: {current_url}"
+                            )
+                        declared_length = response.headers.get("content-length")
+                        if declared_length is not None:
+                            try:
+                                length = int(declared_length)
+                            except ValueError as exc:
+                                raise SepIngestionError(
+                                    "Federal Reserve HTML Content-Length is invalid: "
+                                    f"{current_url}"
+                                ) from exc
+                            if length > MAX_HTML_BYTES:
+                                raise SepIngestionError(
+                                    f"Federal Reserve HTML is too large: {current_url}"
+                                )
+                        content = bytearray()
+                        for chunk in response.iter_bytes():
+                            if len(content) + len(chunk) > MAX_HTML_BYTES:
+                                raise SepIngestionError(
+                                    f"Federal Reserve HTML is too large: {current_url}"
+                                )
+                            content.extend(chunk)
+                        if not content:
+                            raise SepIngestionError(
+                                f"Federal Reserve HTML is empty: {current_url}"
+                            )
+                        return bytes(content)
+                    if response.status_code in {301, 302, 307, 308} and not redirected:
+                        location = response.headers.get("location")
+                        if location is None:
+                            raise SepIngestionError(
+                                f"Federal Reserve redirect omitted its target: {current_url}"
+                            )
+                        if source_kind == "release":
+                            raise SepIngestionError(
+                                "Federal Reserve SEP release redirect is not allowed: "
+                                f"{current_url}"
+                            )
+                        if source_kind == "calendar":
+                            raise SepIngestionError(
+                                f"Federal Reserve calendar redirect is not allowed: {current_url}"
+                            )
+                        current_url = _canonical_policy_redirect(current_url, location)
+                        redirected = True
+                        break
+                    if response.status_code not in {429, 500, 502, 503, 504}:
+                        raise SepIngestionError(
+                            "Federal Reserve request returned "
+                            f"{response.status_code}: {current_url}"
+                        )
             except httpx.HTTPError as exc:
                 if attempt == 2:
                     raise SepIngestionError(
@@ -583,30 +661,6 @@ def _get_official_html(client: httpx.Client, url: str) -> bytes:
                     ) from exc
                 time.sleep(2**attempt)
                 continue
-            last_status = response.status_code
-            if response.status_code == 200:
-                content_type = response.headers.get("content-type", "").lower()
-                if "text/html" not in content_type:
-                    raise SepIngestionError(f"Federal Reserve source is not HTML: {url}")
-                content = response.content
-                if not content or len(content) > MAX_HTML_BYTES:
-                    raise SepIngestionError(
-                        f"Federal Reserve HTML size is invalid: {current_url}"
-                    )
-                return content
-            if response.status_code in {301, 302, 307, 308} and not redirected:
-                location = response.headers.get("location")
-                if location is None:
-                    raise SepIngestionError(
-                        f"Federal Reserve redirect omitted its target: {current_url}"
-                    )
-                current_url = _canonical_policy_redirect(current_url, location)
-                redirected = True
-                break
-            if response.status_code not in {429, 500, 502, 503, 504}:
-                raise SepIngestionError(
-                    f"Federal Reserve request returned {response.status_code}: {current_url}"
-                )
             time.sleep(2**attempt)
         else:
             raise SepIngestionError(
