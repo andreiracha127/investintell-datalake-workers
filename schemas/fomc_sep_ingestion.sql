@@ -74,7 +74,7 @@ CREATE OR REPLACE FUNCTION fomc_sep_current_pointer_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     target_date date;
-    current_date date;
+    prior_release_date date;
     horizon_count integer;
 BEGIN
     IF TG_OP = 'DELETE' THEN
@@ -88,9 +88,9 @@ BEGIN
         RAISE EXCEPTION 'current SEP release requires a complete normalized distribution';
     END IF;
     IF TG_OP = 'UPDATE' THEN
-        SELECT release_date INTO current_date
+        SELECT release_date INTO prior_release_date
         FROM fomc_sep_releases WHERE release_id = OLD.release_id;
-        IF target_date < current_date THEN
+        IF target_date < prior_release_date THEN
             RAISE EXCEPTION 'current SEP release date cannot regress';
         END IF;
     END IF;

@@ -259,6 +259,14 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
     assert "pressreleases/monetary[0-9]{8}a[.]htm" in ddl
 
 
+def test_pointer_guard_does_not_declare_reserved_current_date() -> None:
+    ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
+    guard = ddl.split("fomc_sep_current_pointer_guard()", 1)[1].split("$$;", 1)[0]
+
+    assert "current_date date;" not in guard
+    assert "prior_release_date date;" in guard
+
+
 def test_lock_and_dispatcher_registration_are_present() -> None:
     assert db.LOCK_FOMC_SEP_INGESTION == 900_359
     ids = [value for name, value in vars(db).items() if name.startswith("LOCK_")]
