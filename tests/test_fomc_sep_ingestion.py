@@ -318,10 +318,9 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
         assert token in ddl
     assert "press/monetary/[0-9]{8}a[.]htm" in ddl
     assert "pressreleases/monetary[0-9]{8}a[.]htm" in ddl
-    assert (
-        "UNIQUE (release_date, source_sha256, policy_source_sha256, parser_version)"
-        in ddl
-    )
+    assert "CONSTRAINT fomc_sep_releases_observation_key UNIQUE" in ddl
+    assert "legacy_constraint" in ddl
+    assert "DROP CONSTRAINT %I" in ddl
 
 
 def test_pointer_guard_does_not_declare_reserved_current_date() -> None:

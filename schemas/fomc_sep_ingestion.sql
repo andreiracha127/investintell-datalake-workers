@@ -25,10 +25,64 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     observed_at      timestamptz NOT NULL,
     fetched_at       timestamptz NOT NULL,
     created_at       timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (release_date, source_sha256, policy_source_sha256, parser_version),
+    CONSTRAINT fomc_sep_releases_observation_key UNIQUE (
+        release_date, source_sha256, policy_source_sha256, parser_version
+    ),
     CHECK (policy_rate_lower_pct <= policy_rate_upper_pct),
     CHECK (policy_rate_midpoint_pct = (policy_rate_lower_pct + policy_rate_upper_pct) / 2)
 );
+
+-- PR deployments may already have the original three-column unique constraint.
+-- Add the versioned identity first, then remove only that exact legacy shape.
+DO $$
+DECLARE
+    legacy_constraint text;
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'fomc_sep_releases'::regclass
+          AND conname = 'fomc_sep_releases_observation_key'
+    ) THEN
+        ALTER TABLE fomc_sep_releases
+            ADD CONSTRAINT fomc_sep_releases_observation_key UNIQUE (
+                release_date,
+                source_sha256,
+                policy_source_sha256,
+                parser_version
+            );
+    END IF;
+
+    SELECT conname INTO legacy_constraint
+    FROM pg_constraint
+    WHERE conrelid = 'fomc_sep_releases'::regclass
+      AND contype = 'u'
+      AND conkey = ARRAY[
+          (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid = 'fomc_sep_releases'::regclass
+                AND attname = 'release_date'
+          ),
+          (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid = 'fomc_sep_releases'::regclass
+                AND attname = 'source_sha256'
+          ),
+          (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid = 'fomc_sep_releases'::regclass
+                AND attname = 'policy_source_sha256'
+          )
+      ]::smallint[]
+    LIMIT 1;
+
+    IF legacy_constraint IS NOT NULL THEN
+        EXECUTE format(
+            'ALTER TABLE fomc_sep_releases DROP CONSTRAINT %I',
+            legacy_constraint
+        );
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS fomc_sep_rate_distributions (
     release_id        uuid NOT NULL REFERENCES fomc_sep_releases(release_id) ON DELETE RESTRICT,
