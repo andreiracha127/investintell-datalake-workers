@@ -57,7 +57,7 @@ _NAMESPACE = uuid.UUID("3ab0f348-9661-5cee-8b36-d79e66c21025")
 # pinned from the verified official URL identifiers through 2020; the current
 # calendar discovers every release from 2021 onward.
 _HISTORICAL_RELEASE_DATES = (
-    "20120125", "20120425", "20120620", "20120913",
+    "20120125", "20120425", "20120620", "20120913", "20121212",
     "20130320", "20130619", "20130918", "20131218",
     "20140319", "20140618", "20140917", "20141217",
     "20150318", "20150617", "20150917", "20151216",

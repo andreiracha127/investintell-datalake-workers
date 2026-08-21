@@ -286,8 +286,24 @@ def test_historical_backfill_urls_are_official_and_start_in_2012() -> None:
     urls = sep._historical_release_urls(dt.date(2020, 12, 31))
     assert urls[0].endswith("fomcprojtabl20120125.htm")
     assert urls[-1].endswith("fomcprojtabl20201216.htm")
-    assert len(urls) == 35
+    assert len(urls) == 36
     assert all(sep.canonical_release_url(url) == url for url in urls)
+
+
+@pytest.mark.parametrize(
+    ("as_of", "included"),
+    [
+        (dt.date(2012, 12, 11), False),
+        (dt.date(2012, 12, 12), True),
+        (dt.date(2012, 12, 13), True),
+    ],
+)
+def test_historical_backfill_includes_december_2012_sep_from_release_date(
+    as_of: dt.date,
+    included: bool,
+) -> None:
+    url = "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20121212.htm"
+    assert (url in sep._historical_release_urls(as_of)) is included
 
 
 def test_parser_fails_closed_without_policy_distribution() -> None:
