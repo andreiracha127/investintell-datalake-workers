@@ -542,47 +542,49 @@ def _get_official_html(client: httpx.Client, url: str) -> bytes:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or parsed.hostname != "www.federalreserve.gov":
         raise SepIngestionError(f"refusing non-Federal-Reserve source: {url}")
-    last_status: int | None = None
     current_url = url
     redirected = False
-    for attempt in range(3):
-        try:
-            response = client.get(current_url)
-        except httpx.HTTPError as exc:
-            if attempt == 2:
+    while True:
+        last_status: int | None = None
+        for attempt in range(3):
+            try:
+                response = client.get(current_url)
+            except httpx.HTTPError as exc:
+                if attempt == 2:
+                    raise SepIngestionError(
+                        f"Federal Reserve request failed: {current_url}"
+                    ) from exc
+                time.sleep(2**attempt)
+                continue
+            last_status = response.status_code
+            if response.status_code == 200:
+                content_type = response.headers.get("content-type", "").lower()
+                if "text/html" not in content_type:
+                    raise SepIngestionError(f"Federal Reserve source is not HTML: {url}")
+                content = response.content
+                if not content or len(content) > MAX_HTML_BYTES:
+                    raise SepIngestionError(
+                        f"Federal Reserve HTML size is invalid: {current_url}"
+                    )
+                return content
+            if response.status_code in {301, 302, 307, 308} and not redirected:
+                location = response.headers.get("location")
+                if location is None:
+                    raise SepIngestionError(
+                        f"Federal Reserve redirect omitted its target: {current_url}"
+                    )
+                current_url = _canonical_policy_redirect(current_url, location)
+                redirected = True
+                break
+            if response.status_code not in {429, 500, 502, 503, 504}:
                 raise SepIngestionError(
-                    f"Federal Reserve request failed: {current_url}"
-                ) from exc
+                    f"Federal Reserve request returned {response.status_code}: {current_url}"
+                )
             time.sleep(2**attempt)
-            continue
-        last_status = response.status_code
-        if response.status_code == 200:
-            content_type = response.headers.get("content-type", "").lower()
-            if "text/html" not in content_type:
-                raise SepIngestionError(f"Federal Reserve source is not HTML: {url}")
-            content = response.content
-            if not content or len(content) > MAX_HTML_BYTES:
-                raise SepIngestionError(
-                    f"Federal Reserve HTML size is invalid: {current_url}"
-                )
-            return content
-        if response.status_code in {301, 302, 307, 308} and not redirected:
-            location = response.headers.get("location")
-            if location is None:
-                raise SepIngestionError(
-                    f"Federal Reserve redirect omitted its target: {current_url}"
-                )
-            current_url = _canonical_policy_redirect(current_url, location)
-            redirected = True
-            continue
-        if response.status_code not in {429, 500, 502, 503, 504}:
+        else:
             raise SepIngestionError(
-                f"Federal Reserve request returned {response.status_code}: {current_url}"
+                f"Federal Reserve request exhausted retries ({last_status}): {current_url}"
             )
-        time.sleep(2**attempt)
-    raise SepIngestionError(
-        f"Federal Reserve request exhausted retries ({last_status}): {current_url}"
-    )
 
 
 def _index_urls(as_of: dt.date) -> list[str]:

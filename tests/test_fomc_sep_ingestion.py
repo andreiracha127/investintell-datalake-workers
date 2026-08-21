@@ -169,6 +169,66 @@ def test_policy_fetch_follows_only_the_same_date_legacy_migration_redirect() -> 
     assert requested == [legacy, current]
 
 
+def test_policy_fetch_redirect_gets_a_fresh_target_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm"
+    current = (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "monetary20120125a.htm"
+    )
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if str(request.url) == legacy and requested.count(legacy) < 3:
+            return httpx.Response(503)
+        if str(request.url) == legacy:
+            return httpx.Response(302, headers={"location": current})
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html>statement</html>",
+        )
+
+    monkeypatch.setattr(sep.time, "sleep", lambda _seconds: None)
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=False
+    ) as client:
+        assert sep._get_official_html(client, legacy) == b"<html>statement</html>"
+    assert requested == [legacy, legacy, legacy, current]
+
+
+def test_policy_fetch_retries_target_without_following_another_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm"
+    current = (
+        "https://www.federalreserve.gov/newsevents/pressreleases/"
+        "monetary20120125a.htm"
+    )
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if str(request.url) == legacy:
+            return httpx.Response(302, headers={"location": current})
+        if requested.count(current) < 3:
+            return httpx.Response(503)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html>statement</html>",
+        )
+
+    monkeypatch.setattr(sep.time, "sleep", lambda _seconds: None)
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=False
+    ) as client:
+        assert sep._get_official_html(client, legacy) == b"<html>statement</html>"
+    assert requested == [legacy, current, current, current]
+
+
 def test_policy_fetch_rejects_a_redirect_to_another_release_date() -> None:
     legacy = "https://www.federalreserve.gov/newsevents/press/monetary/20120125a.htm"
 
