@@ -51,6 +51,12 @@ _POLICY_RANGE = re.compile(
     r"(?P<high>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) percent",
     re.IGNORECASE,
 )
+_POLICY_RANGE_PREFIXED = re.compile(
+    r"(?:current )?(?P<low>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) to "
+    r"(?P<high>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) percent "
+    r"target range for the federal funds rate",
+    re.IGNORECASE,
+)
 _NAMESPACE = uuid.UUID("3ab0f348-9661-5cee-8b36-d79e66c21025")
 
 # The Federal Reserve historical-year indexes no longer link these accessible
@@ -255,7 +261,10 @@ def parse_policy_rate(
 ) -> tuple[Decimal, Decimal, Decimal]:
     source_url = canonical_policy_statement_url(source_url)
     text = _parse_page(content, source_url).page_text
-    match = _POLICY_RANGE.search(text.replace("\u2013", "-").replace("\u2014", "-"))
+    normalized = text.translate(
+        str.maketrans({"\u2010": "-", "\u2011": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
+    )
+    match = _POLICY_RANGE.search(normalized) or _POLICY_RANGE_PREFIXED.search(normalized)
     if match is None:
         raise SepIngestionError(
             f"FOMC statement carries no target federal-funds range: {source_url}"
