@@ -744,58 +744,75 @@ def run(
             try:
                 with conn.cursor() as cur:
                     cur.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+            try:
                 known = _known_release_hashes(conn)
-                headers = {
-                    "Accept": "text/html,application/xhtml+xml",
-                    "User-Agent": "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)",
-                }
-                with httpx.Client(timeout=45.0, headers=headers, follow_redirects=False) as client:
-                    index_pages = [(url, _get_official_html(client, url)) for url in _index_urls(as_of)]
-                    urls = sorted(
-                        set(discover_release_urls(index_pages, as_of))
-                        | set(_historical_release_urls(as_of)),
-                        key=_release_date,
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+            headers = {
+                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)",
+            }
+            with httpx.Client(timeout=45.0, headers=headers, follow_redirects=False) as client:
+                index_pages = [(url, _get_official_html(client, url)) for url in _index_urls(as_of)]
+                urls = sorted(
+                    set(discover_release_urls(index_pages, as_of))
+                    | set(_historical_release_urls(as_of)),
+                    key=_release_date,
+                )
+                if not urls:
+                    raise SepIngestionError("official Federal Reserve indexes exposed no SEP releases")
+                if limit is not None:
+                    known_dates = {
+                        release_date
+                        for release_date, _, _, parser_version in known
+                        if parser_version == PARSER_VERSION
+                    }
+                    urls = _bounded_release_urls(urls, known_dates, as_of, limit)
+
+                artifacts: list[ReleaseArtifact] = []
+                repoint_release_ids: list[uuid.UUID] = []
+                fetched = 0
+                unchanged = 0
+                for url in urls:
+                    content = _get_official_html(client, url)
+                    statement_url = policy_statement_url(_release_date(url))
+                    statement = _get_official_html(client, statement_url)
+                    fetched += 1
+                    digest = source_sha256(content)
+                    statement_digest = source_sha256(statement)
+                    known_release_id = known.get(
+                        (
+                            _release_date(url),
+                            digest,
+                            statement_digest,
+                            PARSER_VERSION,
+                        )
                     )
-                    if not urls:
-                        raise SepIngestionError("official Federal Reserve indexes exposed no SEP releases")
-                    if limit is not None:
-                        known_dates = {
-                            release_date
-                            for release_date, _, _, parser_version in known
-                            if parser_version == PARSER_VERSION
-                        }
-                        urls = _bounded_release_urls(urls, known_dates, as_of, limit)
-                    artifacts: list[ReleaseArtifact] = []
-                    fetched = 0
-                    unchanged = 0
-                    for url in urls:
-                        content = _get_official_html(client, url)
-                        statement_url = policy_statement_url(_release_date(url))
-                        statement = _get_official_html(client, statement_url)
-                        fetched += 1
-                        digest = source_sha256(content)
-                        statement_digest = source_sha256(statement)
-                        known_release_id = known.get(
-                            (
-                                _release_date(url),
-                                digest,
-                                statement_digest,
-                                PARSER_VERSION,
-                            )
+                    if known_release_id is not None:
+                        unchanged += 1
+                        repoint_release_ids.append(known_release_id)
+                        continue
+                    artifacts.append(
+                        parse_release(
+                            content,
+                            url,
+                            policy_content=statement,
+                            policy_url=statement_url,
                         )
-                        if known_release_id is not None:
-                            unchanged += 1
-                            _repoint_current_release(conn, known_release_id)
-                            continue
-                        artifacts.append(
-                            parse_release(
-                                content,
-                                url,
-                                policy_content=statement,
-                                policy_url=statement_url,
-                            )
-                        )
+                    )
+
+            try:
                 releases, distributions = _publish_artifacts(conn, artifacts)
+                for release_id in repoint_release_ids:
+                    _repoint_current_release(conn, release_id)
                 conn.commit()
             except Exception:
                 conn.rollback()

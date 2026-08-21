@@ -364,6 +364,12 @@ class _FakeCursor:
 
     def execute(self, sql: str, params: object = None) -> None:
         self.conn.sql.append(sql)
+        if sql.startswith("SELECT release_id"):
+            self.conn.events.append("known")
+        elif "CREATE TABLE IF NOT EXISTS fomc_sep_releases" in sql:
+            self.conn.events.append("ddl")
+        if self.conn.fail_execute:
+            raise RuntimeError("schema install failed")
         if "INSERT INTO fomc_sep_current_pointer" in sql:
             assert isinstance(params, tuple)
             release_id = params[0]
@@ -390,6 +396,7 @@ class _FakeConnection:
         known: dict[tuple[dt.date, str, str, str], uuid.UUID] | None = None,
         *,
         pointer: uuid.UUID | None = None,
+        fail_execute: bool = False,
     ) -> None:
         self.sql: list[str] = []
         self.known = known or {}
@@ -401,6 +408,8 @@ class _FakeConnection:
         self.release_dates.setdefault(self.pointer, dt.date.min)
         self.commits = 0
         self.rollbacks = 0
+        self.fail_execute = fail_execute
+        self.events: list[str] = []
 
     def __enter__(self) -> "_FakeConnection":
         return self
@@ -413,9 +422,11 @@ class _FakeConnection:
 
     def commit(self) -> None:
         self.commits += 1
+        self.events.append("commit")
 
     def rollback(self) -> None:
         self.rollbacks += 1
+        self.events.append("rollback")
         self.pointer = self.prior_pointer
 
 
@@ -735,7 +746,70 @@ def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch:
         sep.run("postgresql://unused", calc_date="2012-12-31")
     assert conn.pointer == conn.prior_pointer
     assert conn.rollbacks == 1
+    assert conn.commits == 2
+
+
+def test_schema_failure_rolls_back_before_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _FakeConnection(fail_execute=True)
+
+    @contextlib.contextmanager
+    def acquired(_conn: object, _lock: int):
+        yield True
+
+    monkeypatch.setattr(sep, "connect", lambda _dsn: conn)
+    monkeypatch.setattr(sep, "advisory_lock", acquired)
+    monkeypatch.setattr(
+        sep,
+        "_get_official_html",
+        lambda *_args: pytest.fail("network I/O must not run after DDL failure"),
+    )
+
+    with pytest.raises(RuntimeError, match="schema install failed"):
+        sep.run("postgresql://unused", calc_date="2012-12-31")
+    assert conn.events == ["ddl", "rollback"]
     assert conn.commits == 0
+    assert conn.rollbacks == 1
+
+
+def test_ddl_is_committed_before_network_while_session_lock_is_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConnection()
+    lock_held = False
+    publication_called = False
+
+    @contextlib.contextmanager
+    def acquired(_conn: object, _lock: int):
+        nonlocal lock_held
+        lock_held = True
+        try:
+            yield True
+        finally:
+            lock_held = False
+
+    def fail_network(_client: object, _url: str) -> bytes:
+        assert lock_held
+        assert conn.events == ["ddl", "commit", "known", "commit"]
+        conn.events.append("network")
+        raise RuntimeError("network failed")
+
+    def publish(_conn: object, _artifacts: object) -> tuple[int, int]:
+        nonlocal publication_called
+        publication_called = True
+        return 0, 0
+
+    monkeypatch.setattr(sep, "connect", lambda _dsn: conn)
+    monkeypatch.setattr(sep, "advisory_lock", acquired)
+    monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [sep.CALENDAR_URL])
+    monkeypatch.setattr(sep, "_get_official_html", fail_network)
+    monkeypatch.setattr(sep, "_publish_artifacts", publish)
+
+    with pytest.raises(RuntimeError, match="network failed"):
+        sep.run("postgresql://unused", calc_date="2012-12-31")
+    assert conn.events == ["ddl", "commit", "known", "commit", "network"]
+    assert not lock_held
+    assert not publication_called
+    assert conn.pointer == conn.prior_pointer
 
 
 def test_lock_busy_performs_no_schema_or_network_work(monkeypatch: pytest.MonkeyPatch) -> None:
