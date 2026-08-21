@@ -67,6 +67,7 @@ jobs:
           src/workers/bond_serving.py
           src/workers/bond_source_qualify.py
           src/workers/daily_publication_chain.py
+          src/workers/fomc_sep_ingestion.py
           src/workers/fund_peer_groups.py
           src/workers/mixed_quant_publication.py
           src/workers/ncen_ingestion.py
@@ -133,6 +134,7 @@ jobs:
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
             tests/test_finnhub_client.py
+            tests/test_fomc_sep_ingestion.py
             tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
@@ -240,6 +242,7 @@ jobs:
           src/workers/bond_serving.py
           src/workers/bond_source_qualify.py
           src/workers/daily_publication_chain.py
+          src/workers/fomc_sep_ingestion.py
           src/workers/fund_peer_groups.py
           src/workers/mixed_quant_publication.py
           src/workers/ncen_ingestion.py
@@ -316,6 +319,7 @@ jobs:
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
             tests/test_finnhub_client.py
+            tests/test_fomc_sep_ingestion.py
             tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
@@ -338,6 +342,7 @@ jobs:
             tests/test_sec_source_manifests.py
           )
           db_tests=(
+            tests/test_fomc_sep_ingestion.py
             tests/test_fixed_income_local_materializer.py
             tests/test_fixed_income_publication_closure.py
             tests/test_fund_regulatory_serving_composition.py

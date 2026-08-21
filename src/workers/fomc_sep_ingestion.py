@@ -226,6 +226,14 @@ def canonical_policy_statement_url(source_url: str) -> str:
     return f"{BASE_URL}{parsed.path}"
 
 
+def _policy_release_date(source_url: str) -> dt.date:
+    path = urlsplit(canonical_policy_statement_url(source_url)).path
+    match = re.search(r"(\d{8})a[.]htm$", path)
+    if match is None:
+        raise SepIngestionError(f"not a canonical FOMC statement URL: {source_url}")
+    return dt.datetime.strptime(match.group(1), "%Y%m%d").date()
+
+
 def _canonical_policy_redirect(source_url: str, location: str) -> str:
     source = urlsplit(canonical_policy_statement_url(source_url))
     candidate = urlsplit(urljoin(source_url, location))
@@ -349,7 +357,7 @@ def discover_release_urls(index_pages: list[tuple[str, bytes]], as_of: dt.date) 
             release_date = _release_date(url)
             if dt.date(BACKFILL_START_YEAR, 1, 1) <= release_date <= as_of:
                 urls.add(url)
-    return sorted(urls, key=_release_date)
+    return sorted(urls, key=lambda url: (_release_date(url), url))
 
 
 def _expand(cells: tuple[Cell, ...]) -> list[str]:
@@ -507,6 +515,12 @@ def parse_release(
     """Parse one exact official HTML response into an immutable release artifact."""
     source_url = canonical_release_url(source_url)
     release_date = _release_date(source_url)
+    if policy_url is not None:
+        policy_url = canonical_policy_statement_url(policy_url)
+        if _policy_release_date(policy_url) != release_date:
+            raise SepIngestionError(
+                "FOMC policy statement date does not match SEP release date"
+            )
     parser = _parse_page(content, source_url)
     page_text = parser.page_text
     lower_text = page_text.lower()
@@ -686,30 +700,29 @@ def _historical_release_urls(as_of: dt.date) -> list[str]:
 
 def _known_release_hashes(
     conn: Any,
-) -> dict[tuple[dt.date, str, str, str], uuid.UUID]:
+) -> dict[tuple[dt.date, str, str, str, str], uuid.UUID]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT release_id, release_date, source_sha256, "
+            "SELECT release_id, release_date, source_url, source_sha256, "
             "policy_source_sha256, parser_version "
             "FROM fomc_sep_releases"
         )
         return {
             (
                 row[1],
-                str(row[2]).strip(),
+                str(row[2]),
                 str(row[3]).strip(),
-                str(row[4]),
+                str(row[4]).strip(),
+                str(row[5]),
             ): row[0]
             for row in cur.fetchall()
         }
 
 
 def _bounded_release_urls(
-    urls: list[str], known_dates: set[dt.date], as_of: dt.date, limit: int
+    urls: list[str], known_routes: set[str], as_of: dt.date, limit: int
 ) -> list[str]:
-    unseen_urls = [url for url in urls if _release_date(url) not in known_dates][
-        -limit:
-    ]
+    unseen_urls = [url for url in urls if url not in known_routes][-limit:]
     remaining = limit - len(unseen_urls)
     if not remaining:
         return unseen_urls
@@ -722,7 +735,7 @@ def _bounded_release_urls(
             as_of - dt.date(BACKFILL_START_YEAR, 1, 1)
         ).days % len(polling_urls)
         polling_urls = (polling_urls[offset:] + polling_urls[:offset])[:remaining]
-    return sorted([*unseen_urls, *polling_urls], key=_release_date)
+    return sorted([*unseen_urls, *polling_urls], key=lambda url: (_release_date(url), url))
 
 
 def _repoint_current_release(conn: Any, release_id: uuid.UUID) -> None:
@@ -853,17 +866,17 @@ def run(
                 urls = sorted(
                     set(discover_release_urls(index_pages, as_of))
                     | set(_historical_release_urls(as_of)),
-                    key=_release_date,
+                    key=lambda url: (_release_date(url), url),
                 )
                 if not urls:
                     raise SepIngestionError("official Federal Reserve indexes exposed no SEP releases")
                 if limit is not None:
-                    known_dates = {
-                        release_date
-                        for release_date, _, _, parser_version in known
+                    known_routes = {
+                        source_url
+                        for _, source_url, _, _, parser_version in known
                         if parser_version == PARSER_VERSION
                     }
-                    urls = _bounded_release_urls(urls, known_dates, as_of, limit)
+                    urls = _bounded_release_urls(urls, known_routes, as_of, limit)
 
                 artifacts: list[ReleaseArtifact] = []
                 repoint_release_ids: list[uuid.UUID] = []
@@ -879,6 +892,7 @@ def run(
                     known_release_id = known.get(
                         (
                             _release_date(url),
+                            url,
                             digest,
                             statement_digest,
                             PARSER_VERSION,

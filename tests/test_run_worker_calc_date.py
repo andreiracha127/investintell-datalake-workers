@@ -159,6 +159,19 @@ def test_an_aborted_dated_run_still_exits_nonzero(monkeypatch, capsys):
     assert "aborted" in out
 
 
+def test_lock_busy_status_is_reported_then_exits_nonzero(monkeypatch, capsys):
+    """A lock collision completed no work, so the platform must not paint it green."""
+    stats = {"status": "lock_busy", "releases": 0, "distributions": 0}
+    code, out, calls = _run_main(monkeypatch, capsys, stats=stats)
+
+    assert code == 1
+    assert calls == [
+        {"dsn": "postgresql://stub", "calc_date": _DEFAULT, "limit": _DEFAULT}
+    ]
+    assert '"status": "lock_busy"' in out
+    assert '"releases": 0' in out
+
+
 @pytest.mark.parametrize(
     "worker", ["nport_lookthrough", "characteristics", "active_share_metrics"]
 )

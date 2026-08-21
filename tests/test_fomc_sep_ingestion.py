@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import os
 import uuid
 from collections.abc import Iterator
 from decimal import Decimal
@@ -173,6 +174,23 @@ def test_policy_statement_parser_accepts_both_official_route_shapes(url: str) ->
         Decimal("0.250"),
         Decimal("0.125"),
     )
+
+
+def test_parse_release_rejects_policy_source_from_another_release_date() -> None:
+    policy = (
+        b"<html><body>The Committee decided to keep the target range for the "
+        b"federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+    with pytest.raises(sep.SepIngestionError, match="does not match SEP release date"):
+        sep.parse_release(
+            _fixture("quarter_point.html"),
+            "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20120913.htm",
+            policy_content=policy,
+            policy_url=(
+                "https://www.federalreserve.gov/newsevents/press/monetary/"
+                "20120914a.htm"
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -428,6 +446,15 @@ def test_december_2012_compilation_url_is_canonical_and_date_bearing() -> None:
     assert sep._release_date(url) == dt.date(2012, 12, 12)
 
 
+def test_march_2022_exact_projection_route_is_canonical_and_date_bearing() -> None:
+    url = (
+        "https://www.federalreserve.gov/monetarypolicy/"
+        "fomcprojtable20220316.htm"
+    )
+    assert sep.canonical_release_url(url) == url
+    assert sep._release_date(url) == dt.date(2022, 3, 16)
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -553,31 +580,38 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
         "current SEP release requires a complete normalized distribution",
         "CREATE OR REPLACE VIEW fomc_sep_current_release",
         "CREATE OR REPLACE VIEW fomc_sep_current_distribution",
-        "files/FOMC20121212SEPcompilation[.]htm",
-        "fomc_sep_releases_source_url_official_routes_check",
+        "FOMC20121212SEPcompilation.htm",
+        "fomcprojtable20220316.htm",
+        "fomc_sep_releases_source_url_release_date_v2_check",
+        "fomc_sep_releases_policy_source_url_release_date_v2_check",
+        "horizon_total BETWEEN 1 AND 25",
+        "horizon_count < 4",
     ):
         assert token in ddl
-    assert "press/monetary/[0-9]{8}a[.]htm" in ddl
-    assert "pressreleases/monetary[0-9]{8}a[.]htm" in ddl
     assert "CONSTRAINT fomc_sep_releases_observation_key UNIQUE" in ddl
     assert "legacy_constraint" in ddl
     assert "DROP CONSTRAINT %I" in ddl
-    assert "DROP CONSTRAINT fomc_sep_releases_source_url_check" in ddl
 
 
-def test_ddl_migrates_the_exact_legacy_policy_url_check() -> None:
+def test_ddl_migrates_named_v1_route_checks_only_after_v2_validation() -> None:
     ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
-    broadened_check = "fomc_sep_releases_policy_source_url_official_routes_check"
+    source_v2 = "fomc_sep_releases_source_url_release_date_v2_check"
+    policy_v2 = "fomc_sep_releases_policy_source_url_release_date_v2_check"
 
-    assert f"CONSTRAINT {broadened_check} CHECK" in ddl
-    assert f"ADD CONSTRAINT {broadened_check}" in ddl
-    assert ") NOT VALID;" in ddl
-    assert f"VALIDATE CONSTRAINT {broadened_check}" in ddl
-    assert "conname = 'fomc_sep_releases_policy_source_url_check'" in ddl
-    assert "attname = 'policy_source_url'" in ddl
-    assert "pg_get_expr(conbin, conrelid)" in ddl
+    for constraint in (source_v2, policy_v2):
+        assert f"ADD CONSTRAINT {constraint}" in ddl
+        assert f"VALIDATE CONSTRAINT {constraint}" in ddl
+        assert ddl.index(f"VALIDATE CONSTRAINT {constraint}") < ddl.index(
+            "DROP CONSTRAINT IF EXISTS ",
+            ddl.index(f"VALIDATE CONSTRAINT {constraint}"),
+        )
     assert (
-        "DROP CONSTRAINT fomc_sep_releases_policy_source_url_check" in ddl
+        "DROP CONSTRAINT IF EXISTS "
+        "fomc_sep_releases_source_url_official_routes_check" in ddl
+    )
+    assert (
+        "DROP CONSTRAINT IF EXISTS "
+        "fomc_sep_releases_policy_source_url_official_routes_check" in ddl
     )
 
 
@@ -643,9 +677,20 @@ class _FakeCursor:
             if release_date >= self.conn.release_dates[self.conn.pointer]:
                 self.conn.pointer = release_id
 
-    def fetchall(self) -> list[tuple[uuid.UUID, dt.date, str, str, str]]:
+    def fetchall(self) -> list[tuple[uuid.UUID, dt.date, str, str, str, str]]:
         return [
-            (release_id, release_date, source_hash, policy_hash, parser_version)
+            (
+                release_id,
+                release_date,
+                self.conn.source_urls.get(
+                    release_id,
+                    f"https://www.federalreserve.gov/monetarypolicy/"
+                    f"fomcprojtabl{release_date:%Y%m%d}.htm",
+                ),
+                source_hash,
+                policy_hash,
+                parser_version,
+            )
             for (
                 release_date,
                 source_hash,
@@ -661,11 +706,13 @@ class _FakeConnection:
         self,
         known: dict[tuple[dt.date, str, str, str], uuid.UUID] | None = None,
         *,
+        source_urls: dict[uuid.UUID, str] | None = None,
         pointer: uuid.UUID | None = None,
         fail_execute: bool = False,
     ) -> None:
         self.sql: list[str] = []
         self.known = known or {}
+        self.source_urls = source_urls or {}
         self.pointer = pointer or uuid.uuid4()
         self.prior_pointer = self.pointer
         self.release_dates = {
@@ -851,11 +898,11 @@ def test_bounded_polling_rotates_without_starvation_and_is_replay_deterministic(
         f"https://www.federalreserve.gov/monetarypolicy/fomcprojtabl2012{month:02d}01.htm"
         for month in range(1, 6)
     ]
-    known_dates = {sep._release_date(url) for url in urls}
+    known_routes = set(urls)
     selected_by_day = [
         sep._bounded_release_urls(
             urls,
-            known_dates,
+            known_routes,
             dt.date(2012, 1, 1) + dt.timedelta(days=day),
             2,
         )
@@ -866,23 +913,89 @@ def test_bounded_polling_rotates_without_starvation_and_is_replay_deterministic(
     assert set().union(*(set(selected) for selected in selected_by_day)) == set(urls)
     assert urls[-1] in selected_by_day[3]
     assert selected_by_day[2] == sep._bounded_release_urls(
-        urls, known_dates, dt.date(2012, 1, 3), 2
+        urls, known_routes, dt.date(2012, 1, 3), 2
     )
 
 
-def test_bounded_polling_spends_the_strict_cap_on_unseen_dates_first() -> None:
+def test_bounded_polling_spends_the_strict_cap_on_unseen_routes_first() -> None:
     urls = [
         f"https://www.federalreserve.gov/monetarypolicy/fomcprojtabl2012{month:02d}01.htm"
         for month in range(1, 6)
     ]
-    known_dates = {sep._release_date(url) for url in urls[:2]}
+    known_routes = set(urls[:2])
 
     selected = sep._bounded_release_urls(
-        urls, known_dates, dt.date(2012, 2, 1), 2
+        urls, known_routes, dt.date(2012, 2, 1), 2
     )
 
     assert selected == urls[-2:]
     assert len(selected) == 2
+
+
+def test_bounded_run_selects_and_publishes_exact_december_2012_route_when_generic_is_known(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generic_url = (
+        "https://www.federalreserve.gov/monetarypolicy/"
+        "fomcprojtabl20121212.htm"
+    )
+    compilation_url = (
+        "https://www.federalreserve.gov/monetarypolicy/files/"
+        "FOMC20121212SEPcompilation.htm"
+    )
+    policy_url = (
+        "https://www.federalreserve.gov/newsevents/press/monetary/"
+        "20121212a.htm"
+    )
+    policy_content = (
+        b"<html><body>The Committee decided to keep the target range for the "
+        b"federal funds rate at 0 to 1/4 percent.</body></html>"
+    )
+    known_id = uuid.uuid4()
+    known_content = _fixture("quarter_point.html")
+    policy_hash = sep.source_sha256(policy_content)
+    conn = _FakeConnection(
+        {
+            (
+                dt.date(2012, 12, 12),
+                sep.source_sha256(known_content),
+                policy_hash,
+                sep.PARSER_VERSION,
+            ): known_id
+        },
+        source_urls={known_id: generic_url},
+    )
+    published: list[sep.ReleaseArtifact] = []
+    fetched: list[str] = []
+
+    @contextlib.contextmanager
+    def acquired(_conn: object, _lock: int):
+        yield True
+
+    def fake_get(_client: object, url: str) -> bytes:
+        fetched.append(url)
+        if url == policy_url:
+            return policy_content
+        assert url == compilation_url
+        return _fixture("december_2012_range_bins.html")
+
+    def publish(_conn: object, artifacts: list[sep.ReleaseArtifact]) -> tuple[int, int]:
+        published.extend(artifacts)
+        return len(artifacts), sum(len(item.distributions) for item in artifacts)
+
+    monkeypatch.setattr(sep, "connect", lambda _dsn: conn)
+    monkeypatch.setattr(sep, "advisory_lock", acquired)
+    monkeypatch.setattr(sep, "_index_urls", lambda _as_of: [])
+    monkeypatch.setattr(sep, "_historical_release_urls", lambda _as_of: [compilation_url])
+    monkeypatch.setattr(sep, "_get_official_html", fake_get)
+    monkeypatch.setattr(sep, "_publish_artifacts", publish)
+
+    result = sep.run("postgresql://unused", calc_date="2012-12-12", limit=1)
+
+    assert fetched == [compilation_url, policy_url]
+    assert result["releases"] == 1
+    assert result["unchanged"] == 0
+    assert [artifact.source_url for artifact in published] == [compilation_url]
 
 
 def test_reverted_latest_release_repoints_to_existing_observation(
@@ -1109,3 +1222,188 @@ def test_lock_busy_performs_no_schema_or_network_work(monkeypatch: pytest.Monkey
     result = sep.run("postgresql://unused", calc_date="2023-12-31")
     assert result == {"status": "lock_busy", "releases": 0, "distributions": 0}
     assert conn.sql == []
+
+
+@pytest.mark.skipif(
+    not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL unavailable"
+)
+def test_postgres_v1_migration_and_pointer_invariants() -> None:
+    import psycopg
+    from psycopg import sql
+
+    schema = f"test_fomc_sep_{uuid.uuid4().hex}"
+    ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
+    now = dt.datetime(2026, 8, 21, tzinfo=dt.timezone.utc)
+    release_sql = """
+        INSERT INTO fomc_sep_releases(
+            release_id, release_date, source_url, source_sha256, parser_version,
+            source_format, policy_source_url, policy_source_sha256,
+            policy_rate_lower_pct, policy_rate_upper_pct, policy_rate_midpoint_pct,
+            observed_at, fetched_at
+        ) VALUES (%s, %s, %s, %s, %s, 'range_bins', %s, %s,
+                  0.000, 0.250, 0.125, %s, %s)
+    """
+    distribution_sql = """
+        INSERT INTO fomc_sep_rate_distributions(
+            release_id, projection_horizon, rate_bin_low,
+            rate_bin_high, bin_kind, participant_count
+        ) VALUES (%s, %s, %s, %s, 'point', %s)
+    """
+
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        try:
+            conn.execute(ddl)
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases DROP CONSTRAINT "
+                "fomc_sep_releases_source_url_release_date_v2_check"
+            )
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases ADD CONSTRAINT "
+                "fomc_sep_releases_source_url_official_routes_check CHECK ("
+                "source_url ~ '^https://www[.]federalreserve[.]gov/monetarypolicy/"
+                "(fomcprojtabl[0-9]{8}[.]htm|files/FOMC20121212SEPcompilation[.]htm)$')"
+            )
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases DROP CONSTRAINT "
+                "fomc_sep_releases_policy_source_url_release_date_v2_check"
+            )
+            conn.execute(
+                "ALTER TABLE fomc_sep_releases ADD CONSTRAINT "
+                "fomc_sep_releases_policy_source_url_official_routes_check CHECK ("
+                "policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/"
+                "(press/monetary/[0-9]{8}a[.]htm|pressreleases/monetary[0-9]{8}a[.]htm)$')"
+            )
+
+            conn.execute(ddl)
+            conn.execute(ddl)
+            constraints = dict(
+                conn.execute(
+                    "SELECT conname, convalidated FROM pg_constraint "
+                    "WHERE conrelid = 'fomc_sep_releases'::regclass "
+                    "AND conname LIKE '%source_url%check'"
+                ).fetchall()
+            )
+            assert constraints == {
+                "fomc_sep_releases_policy_source_url_release_date_v2_check": True,
+                "fomc_sep_releases_source_url_release_date_v2_check": True,
+            }
+
+            special_ids = []
+            for release_date, source_url, policy_url, marker in (
+                (
+                    dt.date(2012, 12, 12),
+                    "https://www.federalreserve.gov/monetarypolicy/files/FOMC20121212SEPcompilation.htm",
+                    "https://www.federalreserve.gov/newsevents/press/monetary/20121212a.htm",
+                    "3",
+                ),
+                (
+                    dt.date(2022, 3, 16),
+                    "https://www.federalreserve.gov/monetarypolicy/fomcprojtable20220316.htm",
+                    "https://www.federalreserve.gov/newsevents/pressreleases/monetary20220316a.htm",
+                    "4",
+                ),
+            ):
+                release_id = uuid.uuid4()
+                special_ids.append(release_id)
+                conn.execute(
+                    release_sql,
+                    (
+                        release_id, release_date, source_url, marker * 64,
+                        sep.PARSER_VERSION, policy_url, chr(ord(marker) + 4) * 64,
+                        now, now,
+                    ),
+                )
+
+            with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+                conn.execute(
+                    release_sql,
+                    (
+                        uuid.uuid4(), dt.date(2021, 3, 17),
+                        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20210318.htm",
+                        "a" * 64, sep.PARSER_VERSION,
+                        "https://www.federalreserve.gov/newsevents/pressreleases/monetary20210317a.htm",
+                        "b" * 64, now, now,
+                    ),
+                )
+            with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+                conn.execute(
+                    release_sql,
+                    (
+                        uuid.uuid4(), dt.date(2021, 6, 16),
+                        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20210616.htm",
+                        "c" * 64, sep.PARSER_VERSION,
+                        "https://www.federalreserve.gov/newsevents/pressreleases/monetary20210617a.htm",
+                        "d" * 64, now, now,
+                    ),
+                )
+
+            complete_id = special_ids[1]
+            for horizon in ("2022", "2023", "2024"):
+                conn.execute(
+                    distribution_sql,
+                    (complete_id, horizon, Decimal("0.375"), Decimal("0.375"), 19),
+                )
+            with pytest.raises(psycopg.errors.RaiseException), conn.transaction():
+                conn.execute(
+                    "INSERT INTO fomc_sep_current_pointer(singleton, release_id) "
+                    "VALUES (true, %s)",
+                    (complete_id,),
+                )
+            conn.execute(
+                distribution_sql,
+                (complete_id, "longer_run", Decimal("2.500"), Decimal("2.500"), 19),
+            )
+            conn.execute(
+                "INSERT INTO fomc_sep_current_pointer(singleton, release_id) VALUES (true, %s)",
+                (complete_id,),
+            )
+
+            invalid_total_id = uuid.uuid4()
+            conn.execute(
+                release_sql,
+                (
+                    invalid_total_id, dt.date(2025, 9, 17),
+                    "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20250917.htm",
+                    "0" * 64, sep.PARSER_VERSION,
+                    "https://www.federalreserve.gov/newsevents/pressreleases/monetary20250917a.htm",
+                    "9" * 64, now, now,
+                ),
+            )
+            for horizon in ("2026", "2027", "longer_run"):
+                conn.execute(
+                    distribution_sql,
+                    (invalid_total_id, horizon, Decimal("4.375"), Decimal("4.375"), 19),
+                )
+            conn.execute(
+                distribution_sql,
+                (invalid_total_id, "2025", Decimal("4.250"), Decimal("4.250"), 20),
+            )
+            conn.execute(
+                distribution_sql,
+                (invalid_total_id, "2025", Decimal("4.500"), Decimal("4.500"), 10),
+            )
+            with pytest.raises(psycopg.errors.RaiseException), conn.transaction():
+                conn.execute(
+                    "UPDATE fomc_sep_current_pointer SET release_id = %s WHERE singleton",
+                    (invalid_total_id,),
+                )
+            assert conn.execute(
+                "SELECT release_id FROM fomc_sep_current_pointer WHERE singleton"
+            ).fetchone()[0] == complete_id
+        finally:
+            conn.execute("SET search_path TO public")
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def test_equal_date_routes_have_a_deterministic_secondary_order() -> None:
+    routes = [
+        "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20121212.htm",
+        "https://www.federalreserve.gov/monetarypolicy/files/FOMC20121212SEPcompilation.htm",
+    ]
+    selected = sep._bounded_release_urls(
+        list(reversed(routes)), set(), dt.date(2012, 12, 12), 2
+    )
+    assert selected == sorted(routes)
+    assert len(selected) == 2

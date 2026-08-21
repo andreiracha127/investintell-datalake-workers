@@ -125,7 +125,9 @@ def main() -> None:
     # run was truncated, which is exactly how the 2026-08-02 Tiingo starvation went
     # unnoticed for five days. Emit the stats first (operators need the progress),
     # then fail, so the truncation is visible as a failure and not just a log line.
-    if stats.get("aborted") or stats.get("state") in {"failed", "conflict", "blocked"} or (
+    if stats.get("aborted") or stats.get("status") == "lock_busy" or stats.get("state") in {
+        "failed", "conflict", "blocked"
+    } or (
         worker == "nport_fixed_income_secapi_fallback" and stats.get("state") == "partial"
     ) or (
         worker == "nport_fixed_income_secapi_fallback" and stats.get("state") == "locked"
