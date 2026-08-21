@@ -733,6 +733,9 @@ def run(
     limit: int | None = None,
 ) -> dict[str, Any]:
     """Backfill from 2012 and poll official SEP pages idempotently."""
+    if limit is not None and limit < 1:
+        raise SepIngestionError("limit must be at least 1")
+
     as_of = dt.date.fromisoformat(calc_date) if calc_date else dt.date.today()
     if as_of < dt.date(BACKFILL_START_YEAR, 1, 1):
         raise SepIngestionError("calc_date predates the supported 2012 SEP history")

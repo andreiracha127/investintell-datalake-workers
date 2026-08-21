@@ -470,6 +470,25 @@ class _FakeConnection:
         self.pointer = self.prior_pointer
 
 
+@pytest.mark.parametrize("limit", [0, -1])
+def test_invalid_limit_fails_before_connection_or_network(
+    monkeypatch: pytest.MonkeyPatch, limit: int
+) -> None:
+    monkeypatch.setattr(
+        sep,
+        "connect",
+        lambda *_args: pytest.fail("database connection must not open"),
+    )
+    monkeypatch.setattr(
+        sep,
+        "_get_official_html",
+        lambda *_args: pytest.fail("network I/O must not run"),
+    )
+
+    with pytest.raises(sep.SepIngestionError, match="limit must be at least 1"):
+        sep.run("postgresql://unused", limit=limit)
+
+
 def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
