@@ -1,8 +1,9 @@
 -- Official Federal Reserve Summary of Economic Projections (SEP).
 --
--- Each exact HTML byte stream is an immutable release observation. A corrected
--- Federal Reserve page therefore creates a new row with a new source_sha256;
--- neither the original release nor its normalized distribution is overwritten.
+-- Each exact HTML byte stream and parser version is an immutable release
+-- observation. Corrected source bytes or parser logic therefore create a new
+-- row; neither the original release nor its normalized distribution is
+-- overwritten.
 CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     release_id       uuid PRIMARY KEY,
     release_date     date NOT NULL CHECK (release_date >= DATE '2012-01-01'),
@@ -24,7 +25,7 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     observed_at      timestamptz NOT NULL,
     fetched_at       timestamptz NOT NULL,
     created_at       timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (release_date, source_sha256, policy_source_sha256),
+    UNIQUE (release_date, source_sha256, policy_source_sha256, parser_version),
     CHECK (policy_rate_lower_pct <= policy_rate_upper_pct),
     CHECK (policy_rate_midpoint_pct = (policy_rate_lower_pct + policy_rate_upper_pct) / 2)
 );

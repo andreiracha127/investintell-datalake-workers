@@ -257,6 +257,10 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
         assert token in ddl
     assert "press/monetary/[0-9]{8}a[.]htm" in ddl
     assert "pressreleases/monetary[0-9]{8}a[.]htm" in ddl
+    assert (
+        "UNIQUE (release_date, source_sha256, policy_source_sha256, parser_version)"
+        in ddl
+    )
 
 
 def test_pointer_guard_does_not_declare_reserved_current_date() -> None:
@@ -280,7 +284,10 @@ def test_worker_has_no_sec_api_runtime_dependency() -> None:
     assert "SEC_API_IO_KEY" not in source
     assert "sec-api.io" not in source
     assert "httpx.Client" in source
-    assert "ON CONFLICT (release_date, source_sha256, policy_source_sha256)" in source
+    assert (
+        "ON CONFLICT (release_date, source_sha256, policy_source_sha256, parser_version)"
+        in source
+    )
     assert "ON CONFLICT (release_id, projection_horizon, rate_bin_low, rate_bin_high)" in source
 
 
@@ -297,13 +304,13 @@ class _FakeCursor:
     def execute(self, sql: str, params: object = None) -> None:
         self.conn.sql.append(sql)
 
-    def fetchall(self) -> list[tuple[dt.date, str, str]]:
+    def fetchall(self) -> list[tuple[dt.date, str, str, str]]:
         return list(self.conn.known)
 
 
 class _FakeConnection:
     def __init__(
-        self, known: set[tuple[dt.date, str, str]] | None = None
+        self, known: set[tuple[dt.date, str, str, str]] | None = None
     ) -> None:
         self.sql: list[str] = []
         self.known = known or set()
@@ -347,6 +354,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
                 dt.date(2012, 9, 13),
                 sep.source_sha256(release_content),
                 sep.source_sha256(policy_content),
+                sep.PARSER_VERSION,
             )
         }
     )
@@ -354,6 +362,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     fetched_release_urls: list[str] = []
     fetched_policy_urls: list[str] = []
     published_dates: list[list[dt.date]] = []
+    published_ids: list[list[object]] = []
 
     @contextlib.contextmanager
     def acquired(_conn: object, _lock: int):
@@ -372,6 +381,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
         fake_conn: _FakeConnection, artifacts: list[sep.ReleaseArtifact]
     ) -> tuple[int, int]:
         published_dates.append([artifact.release_date for artifact in artifacts])
+        published_ids.append([artifact.release_id for artifact in artifacts])
         for artifact in artifacts:
             assert artifact.policy_source_sha256 is not None
             fake_conn.known.add(
@@ -379,6 +389,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
                     artifact.release_date,
                     artifact.source_sha256,
                     artifact.policy_source_sha256,
+                    artifact.parser_version,
                 )
             )
         return len(artifacts), sum(len(item.distributions) for item in artifacts)
@@ -424,6 +435,33 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     assert fetched_policy_urls == [
         "https://www.federalreserve.gov/newsevents/press/monetary/20120913a.htm"
     ]
+
+    parser_v1_release_id = published_ids[-1][0]
+    fetched_release_urls.clear()
+    fetched_policy_urls.clear()
+    same_parser = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
+    assert fetched_release_urls == [urls[2]]
+    assert same_parser["unchanged"] == 1
+    assert same_parser["releases"] == 0
+    assert len(published_ids[-1]) == 0
+
+    monkeypatch.setattr(sep, "PARSER_VERSION", "fomc_sep_html_v2")
+    fetched_release_urls.clear()
+    fetched_policy_urls.clear()
+    new_parser = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
+    assert fetched_release_urls == [urls[2]]
+    assert new_parser["unchanged"] == 0
+    assert new_parser["releases"] == 1
+    assert published_ids[-1][0] != parser_v1_release_id
+    latest_identity = (
+        dt.date(2012, 9, 13),
+        sep.source_sha256(latest_content[0]),
+        sep.source_sha256(policy_content),
+    )
+    assert {row[3] for row in conn.known if row[:3] == latest_identity} == {
+        "fomc_sep_html_v1",
+        "fomc_sep_html_v2",
+    }
 
 
 def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch: pytest.MonkeyPatch) -> None:

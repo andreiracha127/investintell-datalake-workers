@@ -517,7 +517,8 @@ def parse_release(
         else (None, None, None)
     )
     release_id = uuid.uuid5(
-        _NAMESPACE, f"{source_url}|{digest}|{policy_digest or 'policy-unavailable'}"
+        _NAMESPACE,
+        f"{source_url}|{digest}|{policy_digest or 'policy-unavailable'}|{PARSER_VERSION}",
     )
     return ReleaseArtifact(
         release_id=release_id,
@@ -596,14 +597,14 @@ def _historical_release_urls(as_of: dt.date) -> list[str]:
     ]
 
 
-def _known_release_hashes(conn: Any) -> set[tuple[dt.date, str, str]]:
+def _known_release_hashes(conn: Any) -> set[tuple[dt.date, str, str, str]]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT release_date, source_sha256, policy_source_sha256 "
+            "SELECT release_date, source_sha256, policy_source_sha256, parser_version "
             "FROM fomc_sep_releases"
         )
         return {
-            (row[0], str(row[1]).strip(), str(row[2]).strip())
+            (row[0], str(row[1]).strip(), str(row[2]).strip(), str(row[3]))
             for row in cur.fetchall()
         }
 
@@ -632,7 +633,7 @@ def _publish_artifacts(conn: Any, artifacts: list[ReleaseArtifact]) -> tuple[int
                     policy_rate_upper_pct, policy_rate_midpoint_pct,
                     observed_at, fetched_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (release_date, source_sha256, policy_source_sha256)
+                ON CONFLICT (release_date, source_sha256, policy_source_sha256, parser_version)
                 DO NOTHING
                 """,
                 (
@@ -722,7 +723,11 @@ def run(
                     if not urls:
                         raise SepIngestionError("official Federal Reserve indexes exposed no SEP releases")
                     if limit is not None:
-                        known_dates = {release_date for release_date, _, _ in known}
+                        known_dates = {
+                            release_date
+                            for release_date, _, _, parser_version in known
+                            if parser_version == PARSER_VERSION
+                        }
                         unseen_urls = [
                             url for url in urls if _release_date(url) not in known_dates
                         ][-limit:]
@@ -744,7 +749,12 @@ def run(
                         fetched += 1
                         digest = source_sha256(content)
                         statement_digest = source_sha256(statement)
-                        if (_release_date(url), digest, statement_digest) in known:
+                        if (
+                            _release_date(url),
+                            digest,
+                            statement_digest,
+                            PARSER_VERSION,
+                        ) in known:
                             unchanged += 1
                             continue
                         artifacts.append(
