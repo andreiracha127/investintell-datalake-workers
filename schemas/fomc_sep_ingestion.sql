@@ -7,8 +7,9 @@
 CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     release_id       uuid PRIMARY KEY,
     release_date     date NOT NULL CHECK (release_date >= DATE '2012-01-01'),
-    source_url       text NOT NULL CHECK (
-        source_url ~ '^https://www[.]federalreserve[.]gov/monetarypolicy/fomcprojtabl[0-9]{8}[.]htm$'
+    source_url       text NOT NULL,
+    CONSTRAINT fomc_sep_releases_source_url_official_routes_check CHECK (
+        source_url ~ '^https://www[.]federalreserve[.]gov/monetarypolicy/(fomcprojtabl[0-9]{8}[.]htm|files/FOMC20121212SEPcompilation[.]htm)$'
     ),
     source_sha256    char(64) NOT NULL CHECK (source_sha256 ~ '^[0-9a-f]{64}$'),
     parser_version   text NOT NULL CHECK (parser_version <> ''),
@@ -32,6 +33,47 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     CHECK (policy_rate_lower_pct <= policy_rate_upper_pct),
     CHECK (policy_rate_midpoint_pct = (policy_rate_lower_pct + policy_rate_upper_pct) / 2)
 );
+
+-- Installations created before the December 2012 compilation route was
+-- supported retain the original generic-only source URL check.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'fomc_sep_releases'::regclass
+          AND conname = 'fomc_sep_releases_source_url_official_routes_check'
+    ) THEN
+        ALTER TABLE fomc_sep_releases
+            ADD CONSTRAINT fomc_sep_releases_source_url_official_routes_check
+            CHECK (
+                source_url ~ '^https://www[.]federalreserve[.]gov/monetarypolicy/(fomcprojtabl[0-9]{8}[.]htm|files/FOMC20121212SEPcompilation[.]htm)$'
+            ) NOT VALID;
+    END IF;
+
+    ALTER TABLE fomc_sep_releases
+        VALIDATE CONSTRAINT fomc_sep_releases_source_url_official_routes_check;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'fomc_sep_releases'::regclass
+          AND conname = 'fomc_sep_releases_source_url_check'
+          AND contype = 'c'
+          AND conkey = ARRAY[
+              (
+                  SELECT attnum FROM pg_attribute
+                  WHERE attrelid = 'fomc_sep_releases'::regclass
+                    AND attname = 'source_url'
+              )
+          ]::smallint[]
+          AND pg_get_expr(conbin, conrelid) =
+              '(source_url ~ ''^https://www[.]federalreserve[.]gov/monetarypolicy/fomcprojtabl[0-9]{8}[.]htm$''::text)'
+    ) THEN
+        ALTER TABLE fomc_sep_releases
+            DROP CONSTRAINT fomc_sep_releases_source_url_check;
+    END IF;
+END $$;
 
 -- Installations created before legacy routes were supported retain the original
 -- inline CHECK because CREATE TABLE IF NOT EXISTS does not replace constraints.

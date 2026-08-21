@@ -34,6 +34,7 @@ BACKFILL_START_YEAR = 2012
 MAX_HTML_BYTES = 5_000_000
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "fomc_sep_ingestion.sql"
 _RELEASE_PATH = re.compile(r"/monetarypolicy/fomcprojtabl(\d{8})[.]htm")
+_DECEMBER_2012_RELEASE_PATH = "/monetarypolicy/files/FOMC20121212SEPcompilation.htm"
 _RATE_RANGE = re.compile(r"^(-?\d+(?:[.]\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:[.]\d+)?)$")
 _RATE_POINT = re.compile(r"^-?\d+(?:[.]\d+)?$")
 _COUNT = re.compile(r"^\d+$")
@@ -268,7 +269,10 @@ def parse_policy_rate(
 
 
 def _release_date(source_url: str) -> dt.date:
-    match = _RELEASE_PATH.fullmatch(urlsplit(source_url).path)
+    path = urlsplit(source_url).path
+    if path == _DECEMBER_2012_RELEASE_PATH:
+        return dt.date(2012, 12, 12)
+    match = _RELEASE_PATH.fullmatch(path)
     if not match:
         raise SepIngestionError(f"not a canonical SEP release URL: {source_url}")
     return dt.datetime.strptime(match.group(1), "%Y%m%d").date()
@@ -286,7 +290,10 @@ def canonical_release_url(href: str) -> str:
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
-        or not _RELEASE_PATH.fullmatch(parsed.path)
+        or (
+            parsed.path != _DECEMBER_2012_RELEASE_PATH
+            and not _RELEASE_PATH.fullmatch(parsed.path)
+        )
     ):
         raise SepIngestionError(f"refusing non-Federal-Reserve SEP URL: {candidate}")
     canonical = f"{BASE_URL}{parsed.path}"
@@ -603,7 +610,11 @@ def _index_urls(as_of: dt.date) -> list[str]:
 
 def _historical_release_urls(as_of: dt.date) -> list[str]:
     return [
-        f"{BASE_URL}/monetarypolicy/fomcprojtabl{value}.htm"
+        (
+            f"{BASE_URL}{_DECEMBER_2012_RELEASE_PATH}"
+            if value == "20121212"
+            else f"{BASE_URL}/monetarypolicy/fomcprojtabl{value}.htm"
+        )
         for value in _HISTORICAL_RELEASE_DATES
         if dt.datetime.strptime(value, "%Y%m%d").date() <= as_of
     ]

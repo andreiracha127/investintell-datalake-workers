@@ -61,6 +61,24 @@ def test_range_bin_fixture_selects_only_current_release_columns() -> None:
     assert all(row.rate_bin_low < row.rate_bin_high for row in artifact.distributions)
 
 
+def test_december_2012_compilation_range_bins_are_normalized() -> None:
+    artifact = sep.parse_release(
+        _fixture("december_2012_range_bins.html"),
+        "https://www.federalreserve.gov/monetarypolicy/files/"
+        "FOMC20121212SEPcompilation.htm",
+    )
+    assert artifact.source_format == "range_bins"
+    assert artifact.release_date == dt.date(2012, 12, 12)
+    assert _by_horizon(artifact) == {
+        "2012": 19,
+        "2013": 19,
+        "2014": 19,
+        "2015": 19,
+        "longer_run": 19,
+    }
+    assert all(row.bin_kind == "range" for row in artifact.distributions)
+
+
 def test_source_hash_is_over_exact_bytes() -> None:
     lf = b"<html>\n<body>SEP</body>\n</html>\n"
     crlf = lf.replace(b"\n", b"\r\n")
@@ -265,6 +283,30 @@ def test_source_allowlist_fails_closed(url: str) -> None:
         sep.canonical_release_url(url)
 
 
+def test_december_2012_compilation_url_is_canonical_and_date_bearing() -> None:
+    url = (
+        "https://www.federalreserve.gov/monetarypolicy/files/"
+        "FOMC20121212SEPcompilation.htm"
+    )
+    assert sep.canonical_release_url(url) == url
+    assert sep._release_date(url) == dt.date(2012, 12, 12)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.federalreserve.gov/monetarypolicy/files/FOMC20121211SEPcompilation.htm",
+        "https://www.federalreserve.gov/monetarypolicy/files/fomc20121212SEPcompilation.htm",
+        "https://www.federalreserve.gov/monetarypolicy/FOMC20121212SEPcompilation.htm",
+        "https://www.federalreserve.gov/monetarypolicy/files/FOMC20121212SEPcompilation.html",
+        "https://www.federalreserve.gov/monetarypolicy/files/FOMC20121212SEPcompilation.htm?download=1",
+    ],
+)
+def test_december_2012_compilation_route_rejects_malformed_variants(url: str) -> None:
+    with pytest.raises(sep.SepIngestionError, match="refusing"):
+        sep.canonical_release_url(url)
+
+
 def test_discovery_keeps_only_official_projection_links() -> None:
     index = b"""
         <html><body>
@@ -302,7 +344,10 @@ def test_historical_backfill_includes_december_2012_sep_from_release_date(
     as_of: dt.date,
     included: bool,
 ) -> None:
-    url = "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20121212.htm"
+    url = (
+        "https://www.federalreserve.gov/monetarypolicy/files/"
+        "FOMC20121212SEPcompilation.htm"
+    )
     assert (url in sep._historical_release_urls(as_of)) is included
 
 
@@ -330,6 +375,8 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
         "current SEP release requires a complete normalized distribution",
         "CREATE OR REPLACE VIEW fomc_sep_current_release",
         "CREATE OR REPLACE VIEW fomc_sep_current_distribution",
+        "files/FOMC20121212SEPcompilation[.]htm",
+        "fomc_sep_releases_source_url_official_routes_check",
     ):
         assert token in ddl
     assert "press/monetary/[0-9]{8}a[.]htm" in ddl
@@ -337,6 +384,7 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
     assert "CONSTRAINT fomc_sep_releases_observation_key UNIQUE" in ddl
     assert "legacy_constraint" in ddl
     assert "DROP CONSTRAINT %I" in ddl
+    assert "DROP CONSTRAINT fomc_sep_releases_source_url_check" in ddl
 
 
 def test_ddl_migrates_the_exact_legacy_policy_url_check() -> None:
