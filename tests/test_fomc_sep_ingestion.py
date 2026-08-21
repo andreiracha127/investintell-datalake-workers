@@ -30,6 +30,19 @@ def _by_horizon(artifact: sep.ReleaseArtifact) -> dict[str, int]:
         totals[row.projection_horizon] = totals.get(row.projection_horizon, 0) + row.participant_count
     return totals
 
+
+def _distribution_count(
+    artifact: sep.ReleaseArtifact, horizon: str, low: str, high: str
+) -> int | None:
+    for row in artifact.distributions:
+        if (
+            row.projection_horizon == horizon
+            and row.rate_bin_low == Decimal(low)
+            and row.rate_bin_high == Decimal(high)
+        ):
+            return row.participant_count
+    return None
+
 class _TrackingStream(httpx.SyncByteStream):
     def __init__(self, chunks: list[bytes]) -> None:
         self.chunks = chunks
@@ -71,6 +84,9 @@ def test_range_bin_fixture_selects_only_current_release_columns() -> None:
     assert _by_horizon(artifact) == {"2023": 20, "2024": 17, "longer_run": 14}
     assert all(row.bin_kind == "range" for row in artifact.distributions)
     assert all(row.rate_bin_low < row.rate_bin_high for row in artifact.distributions)
+    assert _distribution_count(artifact, "2023", "5.13", "5.37") == 1  # September: 4
+    assert _distribution_count(artifact, "2024", "4.38", "4.62") == 4  # September: 2
+    assert _distribution_count(artifact, "longer_run", "2.38", "2.62") == 11  # September: 12
 
 
 def test_december_2012_compilation_range_bins_are_normalized() -> None:
@@ -89,6 +105,63 @@ def test_december_2012_compilation_range_bins_are_normalized() -> None:
         "longer_run": 19,
     }
     assert all(row.bin_kind == "range" for row in artifact.distributions)
+    assert _distribution_count(artifact, "2012", "0", "0.37") == 19  # September: 18
+    assert _distribution_count(artifact, "2013", "0.38", "0.62") == 1  # September: 2
+    assert _distribution_count(artifact, "2014", "0.38", "0.62") == 1  # September: 0
+    assert _distribution_count(artifact, "2015", "0.38", "0.62") == 5  # September: 2
+    assert _distribution_count(artifact, "longer_run", "3.63", "3.87") == 3  # September: 2
+
+
+@pytest.mark.parametrize("dash", ["-", "\u2010", "\u2011", "\u2013", "\u2014", "\u2212"])
+def test_standalone_dash_count_placeholders_are_zero(dash: str) -> None:
+    assert sep._parse_count(f" {dash} ") == 0
+    assert sep._horizon(f"Longer{dash}Run") == "longer_run"
+
+
+@pytest.mark.parametrize("value", ["1-2", "1\u20142", "word", "--", "1.5"])
+def test_malformed_participant_counts_are_rejected(value: str) -> None:
+    content = _fixture("range_bins.html").replace(
+        b"<td>19</td>", f"<td>{value}</td>".encode(), 1
+    )
+    with pytest.raises(sep.SepIngestionError, match="invalid SEP participant count"):
+        sep.parse_release(
+            content,
+            "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm",
+        )
+
+
+@pytest.mark.parametrize("extra_cell", [False, True], ids=["short", "long"])
+def test_recognized_distribution_rows_must_match_header_width(extra_cell: bool) -> None:
+    original = (
+        b"<tr><td>5.38 - 5.62</td><td>7</td><td>19</td><td></td>"
+        b"<td>2</td><td></td><td>1</td></tr>"
+    )
+    replacement = (
+        original.replace(b"<td></td><td>1</td></tr>", b"<td></td></tr>")
+        if not extra_cell
+        else original.replace(b"</tr>", b"<td></td></tr>")
+    )
+    content = _fixture("range_bins.html").replace(original, replacement, 1)
+    with pytest.raises(
+        sep.SepIngestionError,
+        match=r"distribution row has \d+ cells; expected 6",
+    ):
+        sep.parse_release(
+            content,
+            "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm",
+        )
+
+
+@pytest.mark.parametrize("invalid_range", ["2.38 - 2.38", "2.62 - 2.38"])
+def test_invalid_range_bins_are_rejected(invalid_range: str) -> None:
+    content = _fixture("range_bins.html").replace(
+        b"2.38 - 2.62", invalid_range.encode(), 1
+    )
+    with pytest.raises(sep.SepIngestionError, match="invalid SEP range bin"):
+        sep.parse_release(
+            content,
+            "https://www.federalreserve.gov/monetarypolicy/fomcprojtabl20231213.htm",
+        )
 
 
 def test_source_hash_is_over_exact_bytes() -> None:
@@ -855,6 +928,15 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     fetched_release_urls.clear()
     fetched_policy_urls.clear()
     latest_content[0] += b"\n"
+    latest_identity = (
+        dt.date(2012, 9, 13),
+        sep.source_sha256(latest_content[0]),
+        sep.source_sha256(policy_content),
+    )
+    legacy_v1_release_id = uuid.uuid4()
+    conn.known[(*latest_identity, "fomc_sep_html_v1")] = legacy_v1_release_id
+    conn.release_dates[legacy_v1_release_id] = latest_identity[0]
+
     third = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
     assert fetched_release_urls == [urls[2]]
     assert third["fetched"] == 1
@@ -865,7 +947,7 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
         "https://www.federalreserve.gov/newsevents/press/monetary/20120913a.htm"
     ]
 
-    parser_v1_release_id = published_ids[-1][0]
+    parser_v2_release_id = published_ids[-1][0]
     fetched_release_urls.clear()
     fetched_policy_urls.clear()
     same_parser = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
@@ -873,24 +955,11 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     assert same_parser["unchanged"] == 1
     assert same_parser["releases"] == 0
     assert len(published_ids[-1]) == 0
-
-    monkeypatch.setattr(sep, "PARSER_VERSION", "fomc_sep_html_v2")
-    fetched_release_urls.clear()
-    fetched_policy_urls.clear()
-    new_parser = sep.run("postgresql://unused", calc_date="2012-12-31", limit=1)
-    assert fetched_release_urls == [urls[2]]
-    assert new_parser["unchanged"] == 0
-    assert new_parser["releases"] == 1
-    assert published_ids[-1][0] != parser_v1_release_id
-    latest_identity = (
-        dt.date(2012, 9, 13),
-        sep.source_sha256(latest_content[0]),
-        sep.source_sha256(policy_content),
-    )
     assert {row[3] for row in conn.known if row[:3] == latest_identity} == {
         "fomc_sep_html_v1",
         "fomc_sep_html_v2",
     }
+    assert parser_v2_release_id != legacy_v1_release_id
 
 
 def test_bounded_polling_rotates_without_starvation_and_is_replay_deterministic() -> None:

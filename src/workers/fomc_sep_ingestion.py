@@ -29,14 +29,17 @@ from src.db import LOCK_FOMC_SEP_INGESTION, advisory_lock, connect
 
 BASE_URL = "https://www.federalreserve.gov"
 CALENDAR_URL = f"{BASE_URL}/monetarypolicy/fomccalendars.htm"
-PARSER_VERSION = "fomc_sep_html_v1"
+PARSER_VERSION = "fomc_sep_html_v2"
 BACKFILL_START_YEAR = 2012
 MAX_HTML_BYTES = 5_000_000
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "fomc_sep_ingestion.sql"
 _RELEASE_PATH = re.compile(r"/monetarypolicy/fomcprojtabl(\d{8})[.]htm")
 _DECEMBER_2012_RELEASE_PATH = "/monetarypolicy/files/FOMC20121212SEPcompilation.htm"
 _MARCH_2022_RELEASE_PATH = "/monetarypolicy/fomcprojtable20220316.htm"
-_RATE_RANGE = re.compile(r"^(-?\d+(?:[.]\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:[.]\d+)?)$")
+_DASH_TRANSLATION = str.maketrans(
+    {"\u2010": "-", "\u2011": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-"}
+)
+_RATE_RANGE = re.compile(r"^(-?\d+(?:[.]\d+)?)\s*-\s*(-?\d+(?:[.]\d+)?)$")
 _RATE_POINT = re.compile(r"^-?\d+(?:[.]\d+)?$")
 _COUNT = re.compile(r"^\d+$")
 _LEGACY_POLICY_PATH = re.compile(r"/newsevents/press/monetary/\d{8}a[.]htm")
@@ -123,6 +126,10 @@ class ReleaseArtifact:
 
 def _clean_text(parts: list[str]) -> str:
     return " ".join("".join(parts).replace("\xa0", " ").split())
+
+
+def _normalize_dashes(value: str) -> str:
+    return value.translate(_DASH_TRANSLATION)
 
 
 class _PageParser(HTMLParser):
@@ -271,9 +278,7 @@ def parse_policy_rate(
 ) -> tuple[Decimal, Decimal, Decimal]:
     source_url = canonical_policy_statement_url(source_url)
     text = _parse_page(content, source_url).page_text
-    normalized = text.translate(
-        str.maketrans({"\u2010": "-", "\u2011": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
-    )
+    normalized = _normalize_dashes(text)
     match = _POLICY_RANGE.search(normalized) or _POLICY_RANGE_PREFIXED.search(normalized)
     if match is None:
         raise SepIngestionError(
@@ -368,7 +373,7 @@ def _expand(cells: tuple[Cell, ...]) -> list[str]:
 
 
 def _horizon(value: str) -> str | None:
-    normalized = value.strip().lower().replace("-", " ")
+    normalized = _normalize_dashes(value).strip().lower().replace("-", " ")
     if normalized in {"longer run", "long run"}:
         return "longer_run"
     match = re.search(r"\b(20\d{2})\b", normalized)
@@ -376,8 +381,8 @@ def _horizon(value: str) -> str | None:
 
 
 def _parse_count(value: str) -> int:
-    normalized = value.strip().replace("\u2014", "").replace("-", "")
-    if not normalized:
+    normalized = _normalize_dashes(value).strip()
+    if normalized in {"", "-"}:
         return 0
     if not _COUNT.fullmatch(normalized):
         raise SepIngestionError(f"invalid SEP participant count: {value!r}")
@@ -386,9 +391,11 @@ def _parse_count(value: str) -> int:
 
 def _aligned_values(cells: tuple[Cell, ...], width: int) -> list[str]:
     values = _expand(cells)
-    if len(values) > width:
-        raise SepIngestionError("SEP distribution row has more cells than its header")
-    return values + [""] * (width - len(values))
+    if len(values) != width:
+        raise SepIngestionError(
+            f"SEP distribution row has {len(values)} cells; expected {width}"
+        )
+    return values
 
 
 def _parse_range_table(table: HtmlTable, release_date: dt.date) -> list[DistributionRow]:
@@ -413,10 +420,13 @@ def _parse_range_table(table: HtmlTable, release_date: dt.date) -> list[Distribu
     for raw_row in table.rows[header_index + 2 :]:
         if not raw_row:
             continue
-        match = _RATE_RANGE.fullmatch(raw_row[0].text.strip())
+        range_text = _normalize_dashes(raw_row[0].text).strip()
+        match = _RATE_RANGE.fullmatch(range_text)
         if not match:
             continue
         low, high = Decimal(match.group(1)), Decimal(match.group(2))
+        if low >= high:
+            raise SepIngestionError(f"invalid SEP range bin: {raw_row[0].text!r}")
         values = _aligned_values(raw_row[1:], len(years))
         for index in selected:
             horizon = _horizon(years[index])
@@ -474,9 +484,12 @@ def _parse_point_table(table: HtmlTable) -> tuple[list[DistributionRow], set[Dec
     rows: list[DistributionRow] = []
     rates: set[Decimal] = set()
     for raw_row in table.rows[data_start:]:
-        if not raw_row or not _RATE_POINT.fullmatch(raw_row[0].text.strip()):
+        if not raw_row:
             continue
-        rate = Decimal(raw_row[0].text.strip())
+        rate_text = _normalize_dashes(raw_row[0].text).strip()
+        if not _RATE_POINT.fullmatch(rate_text):
+            continue
+        rate = Decimal(rate_text)
         rates.add(rate)
         values = _aligned_values(raw_row[1:], len(horizons))
         for index, horizon in enumerate(horizons):
@@ -492,6 +505,10 @@ def _validate_distribution(rows: list[DistributionRow]) -> tuple[DistributionRow
     keys: set[tuple[str, Decimal, Decimal]] = set()
     totals: dict[str, int] = {}
     for row in rows:
+        if row.bin_kind == "range" and row.rate_bin_low >= row.rate_bin_high:
+            raise SepIngestionError("SEP range bins require low < high")
+        if row.bin_kind == "point" and row.rate_bin_low != row.rate_bin_high:
+            raise SepIngestionError("SEP point bins require low == high")
         key = (row.projection_horizon, row.rate_bin_low, row.rate_bin_high)
         if key in keys:
             raise SepIngestionError(f"duplicate SEP distribution bin: {key}")
