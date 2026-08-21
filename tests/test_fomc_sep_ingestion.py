@@ -323,6 +323,31 @@ def test_ddl_is_append_only_normalized_and_pointer_guarded() -> None:
     assert "DROP CONSTRAINT %I" in ddl
 
 
+def test_ddl_migrates_the_exact_legacy_policy_url_check() -> None:
+    ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
+    broadened_check = "fomc_sep_releases_policy_source_url_official_routes_check"
+
+    assert f"CONSTRAINT {broadened_check} CHECK" in ddl
+    assert f"ADD CONSTRAINT {broadened_check}" in ddl
+    assert ") NOT VALID;" in ddl
+    assert f"VALIDATE CONSTRAINT {broadened_check}" in ddl
+    assert "conname = 'fomc_sep_releases_policy_source_url_check'" in ddl
+    assert "attname = 'policy_source_url'" in ddl
+    assert "pg_get_expr(conbin, conrelid)" in ddl
+    assert (
+        "DROP CONSTRAINT fomc_sep_releases_policy_source_url_check" in ddl
+    )
+
+
+def test_ddl_preserves_the_parser_identity_migration() -> None:
+    ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
+
+    assert "CONSTRAINT fomc_sep_releases_observation_key UNIQUE" in ddl
+    assert "ADD CONSTRAINT fomc_sep_releases_observation_key UNIQUE" in ddl
+    assert "legacy_constraint text;" in ddl
+    assert "DROP CONSTRAINT %I" in ddl
+
+
 def test_pointer_guard_does_not_declare_reserved_current_date() -> None:
     ddl = Path("schemas/fomc_sep_ingestion.sql").read_text(encoding="utf-8")
     guard = ddl.split("fomc_sep_current_pointer_guard()", 1)[1].split("$$;", 1)[0]

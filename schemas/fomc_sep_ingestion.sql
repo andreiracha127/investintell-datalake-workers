@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     source_format    text NOT NULL CHECK (
         source_format IN ('quarter_point', 'eighth_point', 'range_bins')
     ),
-    policy_source_url text NOT NULL CHECK (
+    policy_source_url text NOT NULL,
+    CONSTRAINT fomc_sep_releases_policy_source_url_official_routes_check CHECK (
         policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/(press/monetary/[0-9]{8}a[.]htm|pressreleases/monetary[0-9]{8}a[.]htm)$'
     ),
     policy_source_sha256 char(64) NOT NULL CHECK (policy_source_sha256 ~ '^[0-9a-f]{64}$'),
@@ -31,6 +32,48 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     CHECK (policy_rate_lower_pct <= policy_rate_upper_pct),
     CHECK (policy_rate_midpoint_pct = (policy_rate_lower_pct + policy_rate_upper_pct) / 2)
 );
+
+-- Installations created before legacy routes were supported retain the original
+-- inline CHECK because CREATE TABLE IF NOT EXISTS does not replace constraints.
+-- Add and validate the broader rule before removing only that exact old check.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'fomc_sep_releases'::regclass
+          AND conname = 'fomc_sep_releases_policy_source_url_official_routes_check'
+    ) THEN
+        ALTER TABLE fomc_sep_releases
+            ADD CONSTRAINT fomc_sep_releases_policy_source_url_official_routes_check
+            CHECK (
+                policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/(press/monetary/[0-9]{8}a[.]htm|pressreleases/monetary[0-9]{8}a[.]htm)$'
+            ) NOT VALID;
+    END IF;
+
+    ALTER TABLE fomc_sep_releases
+        VALIDATE CONSTRAINT fomc_sep_releases_policy_source_url_official_routes_check;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'fomc_sep_releases'::regclass
+          AND conname = 'fomc_sep_releases_policy_source_url_check'
+          AND contype = 'c'
+          AND conkey = ARRAY[
+              (
+                  SELECT attnum FROM pg_attribute
+                  WHERE attrelid = 'fomc_sep_releases'::regclass
+                    AND attname = 'policy_source_url'
+              )
+          ]::smallint[]
+          AND pg_get_expr(conbin, conrelid) =
+              '(policy_source_url ~ ''^https://www[.]federalreserve[.]gov/newsevents/pressreleases/monetary[0-9]{8}a[.]htm$''::text)'
+    ) THEN
+        ALTER TABLE fomc_sep_releases
+            DROP CONSTRAINT fomc_sep_releases_policy_source_url_check;
+    END IF;
+END $$;
 
 -- PR deployments may already have the original three-column unique constraint.
 -- Add the versioned identity first, then remove only that exact legacy shape.
