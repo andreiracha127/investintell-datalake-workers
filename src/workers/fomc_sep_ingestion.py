@@ -611,6 +611,27 @@ def _known_release_hashes(conn: Any) -> set[tuple[dt.date, str, str, str]]:
         }
 
 
+def _bounded_release_urls(
+    urls: list[str], known_dates: set[dt.date], as_of: dt.date, limit: int
+) -> list[str]:
+    unseen_urls = [url for url in urls if _release_date(url) not in known_dates][
+        -limit:
+    ]
+    remaining = limit - len(unseen_urls)
+    if not remaining:
+        return unseen_urls
+
+    selected = set(unseen_urls)
+    polling_urls = [url for url in urls if url not in selected]
+    if polling_urls:
+        # Daily runs advance the ring; an identical calc_date replay is stable.
+        offset = (
+            as_of - dt.date(BACKFILL_START_YEAR, 1, 1)
+        ).days % len(polling_urls)
+        polling_urls = (polling_urls[offset:] + polling_urls[:offset])[:remaining]
+    return sorted([*unseen_urls, *polling_urls], key=_release_date)
+
+
 def _publish_artifacts(conn: Any, artifacts: list[ReleaseArtifact]) -> tuple[int, int]:
     release_count = 0
     distribution_count = 0
@@ -730,17 +751,7 @@ def run(
                             for release_date, _, _, parser_version in known
                             if parser_version == PARSER_VERSION
                         }
-                        unseen_urls = [
-                            url for url in urls if _release_date(url) not in known_dates
-                        ][-limit:]
-                        remaining = limit - len(unseen_urls)
-                        selected = set(unseen_urls)
-                        polling_urls = (
-                            [url for url in urls if url not in selected][-remaining:]
-                            if remaining
-                            else []
-                        )
-                        urls = sorted([*unseen_urls, *polling_urls], key=_release_date)
+                        urls = _bounded_release_urls(urls, known_dates, as_of, limit)
                     artifacts: list[ReleaseArtifact] = []
                     fetched = 0
                     unchanged = 0

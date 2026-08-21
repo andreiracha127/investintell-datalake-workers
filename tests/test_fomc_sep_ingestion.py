@@ -524,6 +524,45 @@ def test_bounded_runs_advance_unseen_then_poll_latest_after_catch_up(
     }
 
 
+def test_bounded_polling_rotates_without_starvation_and_is_replay_deterministic() -> None:
+    urls = [
+        f"https://www.federalreserve.gov/monetarypolicy/fomcprojtabl2012{month:02d}01.htm"
+        for month in range(1, 6)
+    ]
+    known_dates = {sep._release_date(url) for url in urls}
+    selected_by_day = [
+        sep._bounded_release_urls(
+            urls,
+            known_dates,
+            dt.date(2012, 1, 1) + dt.timedelta(days=day),
+            2,
+        )
+        for day in range(len(urls))
+    ]
+
+    assert all(len(selected) == 2 for selected in selected_by_day)
+    assert set().union(*(set(selected) for selected in selected_by_day)) == set(urls)
+    assert urls[-1] in selected_by_day[3]
+    assert selected_by_day[2] == sep._bounded_release_urls(
+        urls, known_dates, dt.date(2012, 1, 3), 2
+    )
+
+
+def test_bounded_polling_spends_the_strict_cap_on_unseen_dates_first() -> None:
+    urls = [
+        f"https://www.federalreserve.gov/monetarypolicy/fomcprojtabl2012{month:02d}01.htm"
+        for month in range(1, 6)
+    ]
+    known_dates = {sep._release_date(url) for url in urls[:2]}
+
+    selected = sep._bounded_release_urls(
+        urls, known_dates, dt.date(2012, 2, 1), 2
+    )
+
+    assert selected == urls[-2:]
+    assert len(selected) == 2
+
+
 def test_partial_publication_rolls_back_and_preserves_prior_pointer(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _FakeConnection()
 
