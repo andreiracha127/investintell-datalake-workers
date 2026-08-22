@@ -1,14 +1,21 @@
 -- Official Federal Reserve Summary of Economic Projections (SEP).
 --
--- Each exact HTML byte stream and parser version is an immutable release
--- observation. Corrected source bytes or parser logic therefore create a new
+-- Each exact canonical source route, HTML byte stream, policy route, policy
+-- byte stream, release date, and parser version is an immutable observation.
+-- Corrected provenance, source bytes, or parser logic therefore creates a new
 -- row; neither the original release nor its normalized distribution is
 -- overwritten.
 CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     release_id       uuid PRIMARY KEY,
     release_date     date NOT NULL CHECK (release_date >= DATE '2012-01-01'),
-    source_url       text NOT NULL CHECK (
-        source_url ~ '^https://www[.]federalreserve[.]gov/monetarypolicy/fomcprojtabl[0-9]{8}[.]htm$'
+    source_url       text NOT NULL,
+    CONSTRAINT fomc_sep_releases_source_url_release_date_v2_check CHECK (
+        source_url = 'https://www.federalreserve.gov/monetarypolicy/fomcprojtabl'
+            || to_char(release_date, 'YYYYMMDD') || '.htm'
+        OR (release_date = DATE '2012-12-12' AND source_url =
+            'https://www.federalreserve.gov/monetarypolicy/files/FOMC20121212SEPcompilation.htm')
+        OR (release_date = DATE '2022-03-16' AND source_url =
+            'https://www.federalreserve.gov/monetarypolicy/fomcprojtable20220316.htm')
     ),
     source_sha256    char(64) NOT NULL CHECK (source_sha256 ~ '^[0-9a-f]{64}$'),
     parser_version   text NOT NULL CHECK (parser_version <> ''),
@@ -16,8 +23,11 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
         source_format IN ('quarter_point', 'eighth_point', 'range_bins')
     ),
     policy_source_url text NOT NULL,
-    CONSTRAINT fomc_sep_releases_policy_source_url_official_routes_check CHECK (
-        policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/(press/monetary/[0-9]{8}a[.]htm|pressreleases/monetary[0-9]{8}a[.]htm)$'
+    CONSTRAINT fomc_sep_releases_policy_source_url_release_date_v2_check CHECK (
+        policy_source_url = 'https://www.federalreserve.gov/newsevents/press/monetary/'
+            || to_char(release_date, 'YYYYMMDD') || 'a.htm'
+        OR policy_source_url = 'https://www.federalreserve.gov/newsevents/pressreleases/monetary'
+            || to_char(release_date, 'YYYYMMDD') || 'a.htm'
     ),
     policy_source_sha256 char(64) NOT NULL CHECK (policy_source_sha256 ~ '^[0-9a-f]{64}$'),
     policy_rate_lower_pct numeric(6,3) NOT NULL,
@@ -26,77 +36,95 @@ CREATE TABLE IF NOT EXISTS fomc_sep_releases (
     observed_at      timestamptz NOT NULL,
     fetched_at       timestamptz NOT NULL,
     created_at       timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT fomc_sep_releases_observation_key UNIQUE (
-        release_date, source_sha256, policy_source_sha256, parser_version
+    CONSTRAINT fomc_sep_releases_provenance_observation_key UNIQUE (
+        release_date, source_url, source_sha256,
+        policy_source_url, policy_source_sha256, parser_version
     ),
     CHECK (policy_rate_lower_pct <= policy_rate_upper_pct),
     CHECK (policy_rate_midpoint_pct = (policy_rate_lower_pct + policy_rate_upper_pct) / 2)
 );
 
--- Installations created before legacy routes were supported retain the original
--- inline CHECK because CREATE TABLE IF NOT EXISTS does not replace constraints.
--- Add and validate the broader rule before removing only that exact old check.
+-- Add the date-bearing v2 route checks before removing deployed v1 checks.
+-- NOT VALID keeps the migration additive until every existing row is verified;
+-- only then are the older, weaker route-only constraints removed.
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
+        SELECT 1 FROM pg_constraint
         WHERE conrelid = 'fomc_sep_releases'::regclass
-          AND conname = 'fomc_sep_releases_policy_source_url_official_routes_check'
+          AND conname = 'fomc_sep_releases_source_url_release_date_v2_check'
     ) THEN
         ALTER TABLE fomc_sep_releases
-            ADD CONSTRAINT fomc_sep_releases_policy_source_url_official_routes_check
+            ADD CONSTRAINT fomc_sep_releases_source_url_release_date_v2_check
             CHECK (
-                policy_source_url ~ '^https://www[.]federalreserve[.]gov/newsevents/(press/monetary/[0-9]{8}a[.]htm|pressreleases/monetary[0-9]{8}a[.]htm)$'
+                source_url = 'https://www.federalreserve.gov/monetarypolicy/fomcprojtabl'
+                    || to_char(release_date, 'YYYYMMDD') || '.htm'
+                OR (release_date = DATE '2012-12-12' AND source_url =
+                    'https://www.federalreserve.gov/monetarypolicy/files/FOMC20121212SEPcompilation.htm')
+                OR (release_date = DATE '2022-03-16' AND source_url =
+                    'https://www.federalreserve.gov/monetarypolicy/fomcprojtable20220316.htm')
             ) NOT VALID;
     END IF;
-
     ALTER TABLE fomc_sep_releases
-        VALIDATE CONSTRAINT fomc_sep_releases_policy_source_url_official_routes_check;
-
-    IF EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conrelid = 'fomc_sep_releases'::regclass
-          AND conname = 'fomc_sep_releases_policy_source_url_check'
-          AND contype = 'c'
-          AND conkey = ARRAY[
-              (
-                  SELECT attnum FROM pg_attribute
-                  WHERE attrelid = 'fomc_sep_releases'::regclass
-                    AND attname = 'policy_source_url'
-              )
-          ]::smallint[]
-          AND pg_get_expr(conbin, conrelid) =
-              '(policy_source_url ~ ''^https://www[.]federalreserve[.]gov/newsevents/pressreleases/monetary[0-9]{8}a[.]htm$''::text)'
-    ) THEN
-        ALTER TABLE fomc_sep_releases
-            DROP CONSTRAINT fomc_sep_releases_policy_source_url_check;
-    END IF;
+        VALIDATE CONSTRAINT fomc_sep_releases_source_url_release_date_v2_check;
+    ALTER TABLE fomc_sep_releases
+        DROP CONSTRAINT IF EXISTS fomc_sep_releases_source_url_official_routes_check;
+    ALTER TABLE fomc_sep_releases
+        DROP CONSTRAINT IF EXISTS fomc_sep_releases_source_url_check;
 END $$;
 
--- PR deployments may already have the original three-column unique constraint.
--- Add the versioned identity first, then remove only that exact legacy shape.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'fomc_sep_releases'::regclass
+          AND conname = 'fomc_sep_releases_policy_source_url_release_date_v2_check'
+    ) THEN
+        ALTER TABLE fomc_sep_releases
+            ADD CONSTRAINT fomc_sep_releases_policy_source_url_release_date_v2_check
+            CHECK (
+                policy_source_url = 'https://www.federalreserve.gov/newsevents/press/monetary/'
+                    || to_char(release_date, 'YYYYMMDD') || 'a.htm'
+                OR policy_source_url = 'https://www.federalreserve.gov/newsevents/pressreleases/monetary'
+                    || to_char(release_date, 'YYYYMMDD') || 'a.htm'
+            ) NOT VALID;
+    END IF;
+    ALTER TABLE fomc_sep_releases
+        VALIDATE CONSTRAINT fomc_sep_releases_policy_source_url_release_date_v2_check;
+    ALTER TABLE fomc_sep_releases
+        DROP CONSTRAINT IF EXISTS fomc_sep_releases_policy_source_url_official_routes_check;
+    ALTER TABLE fomc_sep_releases
+        DROP CONSTRAINT IF EXISTS fomc_sep_releases_policy_source_url_check;
+END $$;
+
+-- Earlier deployments use either the named four-column identity or the
+-- original three-column identity. Add the complete provenance identity first,
+-- then remove only those legacy shapes.
 DO $$
 DECLARE
-    legacy_constraint text;
+    legacy_three_column_constraint text;
 BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conrelid = 'fomc_sep_releases'::regclass
-          AND conname = 'fomc_sep_releases_observation_key'
+          AND conname = 'fomc_sep_releases_provenance_observation_key'
     ) THEN
         ALTER TABLE fomc_sep_releases
-            ADD CONSTRAINT fomc_sep_releases_observation_key UNIQUE (
+            ADD CONSTRAINT fomc_sep_releases_provenance_observation_key UNIQUE (
                 release_date,
+                source_url,
                 source_sha256,
+                policy_source_url,
                 policy_source_sha256,
                 parser_version
             );
     END IF;
 
-    SELECT conname INTO legacy_constraint
+    ALTER TABLE fomc_sep_releases
+        DROP CONSTRAINT IF EXISTS fomc_sep_releases_observation_key;
+
+    SELECT conname INTO legacy_three_column_constraint
     FROM pg_constraint
     WHERE conrelid = 'fomc_sep_releases'::regclass
       AND contype = 'u'
@@ -119,10 +147,10 @@ BEGIN
       ]::smallint[]
     LIMIT 1;
 
-    IF legacy_constraint IS NOT NULL THEN
+    IF legacy_three_column_constraint IS NOT NULL THEN
         EXECUTE format(
             'ALTER TABLE fomc_sep_releases DROP CONSTRAINT %I',
-            legacy_constraint
+            legacy_three_column_constraint
         );
     END IF;
 END $$;
@@ -174,15 +202,24 @@ DECLARE
     target_date date;
     prior_release_date date;
     horizon_count integer;
+    horizon_totals_valid boolean;
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'fomc_sep_current_pointer cannot be deleted';
     END IF;
     SELECT release_date INTO target_date
     FROM fomc_sep_releases WHERE release_id = NEW.release_id;
-    SELECT count(DISTINCT projection_horizon) INTO horizon_count
-    FROM fomc_sep_rate_distributions WHERE release_id = NEW.release_id;
-    IF target_date IS NULL OR horizon_count < 2 THEN
+    SELECT count(*), bool_and(horizon_total BETWEEN 1 AND 25)
+    INTO horizon_count, horizon_totals_valid
+    FROM (
+        SELECT projection_horizon, sum(participant_count) AS horizon_total
+        FROM fomc_sep_rate_distributions
+        WHERE release_id = NEW.release_id
+        GROUP BY projection_horizon
+    ) totals;
+    -- Production held 57 releases with 4-5 horizons on 2026-08-21;
+    -- four is therefore the strongest floor supported by the actual corpus.
+    IF target_date IS NULL OR horizon_count < 4 OR NOT coalesce(horizon_totals_valid, false) THEN
         RAISE EXCEPTION 'current SEP release requires a complete normalized distribution';
     END IF;
     IF TG_OP = 'UPDATE' THEN

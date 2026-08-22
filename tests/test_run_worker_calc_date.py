@@ -159,6 +159,19 @@ def test_an_aborted_dated_run_still_exits_nonzero(monkeypatch, capsys):
     assert "aborted" in out
 
 
+def test_lock_busy_status_is_reported_then_exits_nonzero(monkeypatch, capsys):
+    """A lock collision completed no work, so the platform must not paint it green."""
+    stats = {"status": "lock_busy", "releases": 0, "distributions": 0}
+    code, out, calls = _run_main(monkeypatch, capsys, stats=stats)
+
+    assert code == 1
+    assert calls == [
+        {"dsn": "postgresql://stub", "calc_date": _DEFAULT, "limit": _DEFAULT}
+    ]
+    assert '"status": "lock_busy"' in out
+    assert '"releases": 0' in out
+
+
 @pytest.mark.parametrize(
     "worker", ["nport_lookthrough", "characteristics", "active_share_metrics"]
 )
@@ -224,3 +237,25 @@ def test_the_cli_still_forwards_options_a_worker_declares(monkeypatch) -> None:
     cli.main()
 
     assert seen == {"dsn": "postgres://x", "calc_date": "2026-08-19", "limit": 5}
+
+
+def test_the_cli_reports_lock_busy_then_exits_nonzero(monkeypatch, capsys) -> None:
+    from src import run as cli
+
+    class _Mod:
+        @staticmethod
+        def run(dsn):
+            assert dsn == "postgres://x"
+            return {"status": "lock_busy", "releases": 0, "distributions": 0}
+
+    monkeypatch.setattr(cli.importlib, "import_module", lambda _name: _Mod)
+    monkeypatch.setattr(cli, "resolve_dsn", lambda: "postgres://x")
+    monkeypatch.setattr(sys, "argv", ["run", "fomc_sep_ingestion"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    output = capsys.readouterr().out
+    assert '"status": "lock_busy"' in output
+    assert '"releases": 0' in output

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -29,12 +29,25 @@ from src.db import LOCK_FOMC_SEP_INGESTION, advisory_lock, connect
 
 BASE_URL = "https://www.federalreserve.gov"
 CALENDAR_URL = f"{BASE_URL}/monetarypolicy/fomccalendars.htm"
-PARSER_VERSION = "fomc_sep_html_v1"
+PARSER_VERSION = "fomc_sep_html_v2"
 BACKFILL_START_YEAR = 2012
 MAX_HTML_BYTES = 5_000_000
+HTTP_TOTAL_TIMEOUT_SECONDS = 45.0
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "fomc_sep_ingestion.sql"
 _RELEASE_PATH = re.compile(r"/monetarypolicy/fomcprojtabl(\d{8})[.]htm")
-_RATE_RANGE = re.compile(r"^(-?\d+(?:[.]\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:[.]\d+)?)$")
+_DECEMBER_2012_RELEASE_PATH = "/monetarypolicy/files/FOMC20121212SEPcompilation.htm"
+_MARCH_2022_RELEASE_PATH = "/monetarypolicy/fomcprojtable20220316.htm"
+_DASH_TRANSLATION = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+        "\u2044": "/",
+    }
+)
+_RATE_RANGE = re.compile(r"^(-?\d+(?:[.]\d+)?)\s*-\s*(-?\d+(?:[.]\d+)?)$")
 _RATE_POINT = re.compile(r"^-?\d+(?:[.]\d+)?$")
 _COUNT = re.compile(r"^\d+$")
 _LEGACY_POLICY_PATH = re.compile(r"/newsevents/press/monetary/\d{8}a[.]htm")
@@ -45,9 +58,16 @@ _CURRENT_POLICY_PATH = re.compile(
 # the first SEP after the Federal Reserve's spring 2017 website migration.
 _POLICY_ROUTE_CUTOVER = dt.date(2017, 6, 14)
 _POLICY_RANGE = re.compile(
-    r"target range for the federal funds rate (?:at|to) "
+    r"target range for the federal funds rate (?:at|of|to|by "
+    r"\d+(?:-\d+/\d+|/\d+|[.]\d+)? percentage point to) "
     r"(?P<low>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) to "
     r"(?P<high>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) percent",
+    re.IGNORECASE,
+)
+_POLICY_RANGE_PREFIXED = re.compile(
+    r"(?:current )?(?P<low>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) to "
+    r"(?P<high>\d+(?:-\d+/\d+|/\d+|[.]\d+)?) percent "
+    r"target range for the federal funds rate",
     re.IGNORECASE,
 )
 _NAMESPACE = uuid.UUID("3ab0f348-9661-5cee-8b36-d79e66c21025")
@@ -114,6 +134,10 @@ class ReleaseArtifact:
 
 def _clean_text(parts: list[str]) -> str:
     return " ".join("".join(parts).replace("\xa0", " ").split())
+
+
+def _normalize_dashes(value: str) -> str:
+    return value.translate(_DASH_TRANSLATION)
 
 
 class _PageParser(HTMLParser):
@@ -217,6 +241,14 @@ def canonical_policy_statement_url(source_url: str) -> str:
     return f"{BASE_URL}{parsed.path}"
 
 
+def _policy_release_date(source_url: str) -> dt.date:
+    path = urlsplit(canonical_policy_statement_url(source_url)).path
+    match = re.search(r"(\d{8})a[.]htm$", path)
+    if match is None:
+        raise SepIngestionError(f"not a canonical FOMC statement URL: {source_url}")
+    return dt.datetime.strptime(match.group(1), "%Y%m%d").date()
+
+
 def _canonical_policy_redirect(source_url: str, location: str) -> str:
     source = urlsplit(canonical_policy_statement_url(source_url))
     candidate = urlsplit(urljoin(source_url, location))
@@ -254,7 +286,8 @@ def parse_policy_rate(
 ) -> tuple[Decimal, Decimal, Decimal]:
     source_url = canonical_policy_statement_url(source_url)
     text = _parse_page(content, source_url).page_text
-    match = _POLICY_RANGE.search(text.replace("\u2013", "-").replace("\u2014", "-"))
+    normalized = _normalize_dashes(text)
+    match = _POLICY_RANGE.search(normalized) or _POLICY_RANGE_PREFIXED.search(normalized)
     if match is None:
         raise SepIngestionError(
             f"FOMC statement carries no target federal-funds range: {source_url}"
@@ -268,7 +301,12 @@ def parse_policy_rate(
 
 
 def _release_date(source_url: str) -> dt.date:
-    match = _RELEASE_PATH.fullmatch(urlsplit(source_url).path)
+    path = urlsplit(source_url).path
+    if path == _DECEMBER_2012_RELEASE_PATH:
+        return dt.date(2012, 12, 12)
+    if path == _MARCH_2022_RELEASE_PATH:
+        return dt.date(2022, 3, 16)
+    match = _RELEASE_PATH.fullmatch(path)
     if not match:
         raise SepIngestionError(f"not a canonical SEP release URL: {source_url}")
     return dt.datetime.strptime(match.group(1), "%Y%m%d").date()
@@ -286,7 +324,13 @@ def canonical_release_url(href: str) -> str:
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
-        or not _RELEASE_PATH.fullmatch(parsed.path)
+        or (
+            parsed.path not in {
+                _DECEMBER_2012_RELEASE_PATH,
+                _MARCH_2022_RELEASE_PATH,
+            }
+            and not _RELEASE_PATH.fullmatch(parsed.path)
+        )
     ):
         raise SepIngestionError(f"refusing non-Federal-Reserve SEP URL: {candidate}")
     canonical = f"{BASE_URL}{parsed.path}"
@@ -319,13 +363,14 @@ def discover_release_urls(index_pages: list[tuple[str, bytes]], as_of: dt.date) 
         for href in parser.links:
             if "fomcprojtabl" not in href.lower():
                 continue
-            if not _RELEASE_PATH.fullmatch(urlsplit(urljoin(BASE_URL, href)).path):
+            path = urlsplit(urljoin(BASE_URL, href)).path
+            if path != _MARCH_2022_RELEASE_PATH and not _RELEASE_PATH.fullmatch(path):
                 continue
             url = canonical_release_url(href)
             release_date = _release_date(url)
             if dt.date(BACKFILL_START_YEAR, 1, 1) <= release_date <= as_of:
                 urls.add(url)
-    return sorted(urls, key=_release_date)
+    return sorted(urls, key=lambda url: (_release_date(url), url))
 
 
 def _expand(cells: tuple[Cell, ...]) -> list[str]:
@@ -336,7 +381,7 @@ def _expand(cells: tuple[Cell, ...]) -> list[str]:
 
 
 def _horizon(value: str) -> str | None:
-    normalized = value.strip().lower().replace("-", " ")
+    normalized = _normalize_dashes(value).strip().lower().replace("-", " ")
     if normalized in {"longer run", "long run"}:
         return "longer_run"
     match = re.search(r"\b(20\d{2})\b", normalized)
@@ -344,8 +389,8 @@ def _horizon(value: str) -> str | None:
 
 
 def _parse_count(value: str) -> int:
-    normalized = value.strip().replace("\u2014", "").replace("-", "")
-    if not normalized:
+    normalized = _normalize_dashes(value).strip()
+    if normalized in {"", "-"}:
         return 0
     if not _COUNT.fullmatch(normalized):
         raise SepIngestionError(f"invalid SEP participant count: {value!r}")
@@ -354,9 +399,11 @@ def _parse_count(value: str) -> int:
 
 def _aligned_values(cells: tuple[Cell, ...], width: int) -> list[str]:
     values = _expand(cells)
-    if len(values) > width:
-        raise SepIngestionError("SEP distribution row has more cells than its header")
-    return values + [""] * (width - len(values))
+    if len(values) != width:
+        raise SepIngestionError(
+            f"SEP distribution row has {len(values)} cells; expected {width}"
+        )
+    return values
 
 
 def _parse_range_table(table: HtmlTable, release_date: dt.date) -> list[DistributionRow]:
@@ -381,10 +428,13 @@ def _parse_range_table(table: HtmlTable, release_date: dt.date) -> list[Distribu
     for raw_row in table.rows[header_index + 2 :]:
         if not raw_row:
             continue
-        match = _RATE_RANGE.fullmatch(raw_row[0].text.strip())
+        range_text = _normalize_dashes(raw_row[0].text).strip()
+        match = _RATE_RANGE.fullmatch(range_text)
         if not match:
             continue
         low, high = Decimal(match.group(1)), Decimal(match.group(2))
+        if low >= high:
+            raise SepIngestionError(f"invalid SEP range bin: {raw_row[0].text!r}")
         values = _aligned_values(raw_row[1:], len(years))
         for index in selected:
             horizon = _horizon(years[index])
@@ -442,9 +492,12 @@ def _parse_point_table(table: HtmlTable) -> tuple[list[DistributionRow], set[Dec
     rows: list[DistributionRow] = []
     rates: set[Decimal] = set()
     for raw_row in table.rows[data_start:]:
-        if not raw_row or not _RATE_POINT.fullmatch(raw_row[0].text.strip()):
+        if not raw_row:
             continue
-        rate = Decimal(raw_row[0].text.strip())
+        rate_text = _normalize_dashes(raw_row[0].text).strip()
+        if not _RATE_POINT.fullmatch(rate_text):
+            continue
+        rate = Decimal(rate_text)
         rates.add(rate)
         values = _aligned_values(raw_row[1:], len(horizons))
         for index, horizon in enumerate(horizons):
@@ -460,6 +513,10 @@ def _validate_distribution(rows: list[DistributionRow]) -> tuple[DistributionRow
     keys: set[tuple[str, Decimal, Decimal]] = set()
     totals: dict[str, int] = {}
     for row in rows:
+        if row.bin_kind == "range" and row.rate_bin_low >= row.rate_bin_high:
+            raise SepIngestionError("SEP range bins require low < high")
+        if row.bin_kind == "point" and row.rate_bin_low != row.rate_bin_high:
+            raise SepIngestionError("SEP point bins require low == high")
         key = (row.projection_horizon, row.rate_bin_low, row.rate_bin_high)
         if key in keys:
             raise SepIngestionError(f"duplicate SEP distribution bin: {key}")
@@ -483,6 +540,12 @@ def parse_release(
     """Parse one exact official HTML response into an immutable release artifact."""
     source_url = canonical_release_url(source_url)
     release_date = _release_date(source_url)
+    if policy_url is not None:
+        policy_url = canonical_policy_statement_url(policy_url)
+        if _policy_release_date(policy_url) != release_date:
+            raise SepIngestionError(
+                "FOMC policy statement date does not match SEP release date"
+            )
     parser = _parse_page(content, source_url)
     page_text = parser.page_text
     lower_text = page_text.lower()
@@ -528,7 +591,11 @@ def parse_release(
     )
     release_id = uuid.uuid5(
         _NAMESPACE,
-        f"{source_url}|{digest}|{policy_digest or 'policy-unavailable'}|{PARSER_VERSION}",
+        (
+            f"{release_date.isoformat()}|{source_url}|{digest}|"
+            f"{policy_url or 'policy-url-unavailable'}|"
+            f"{policy_digest or 'policy-unavailable'}|{PARSER_VERSION}"
+        ),
     )
     return ReleaseArtifact(
         release_id=release_id,
@@ -548,17 +615,110 @@ def parse_release(
     )
 
 
-def _get_official_html(client: httpx.Client, url: str) -> bytes:
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname != "www.federalreserve.gov":
-        raise SepIngestionError(f"refusing non-Federal-Reserve source: {url}")
+@overload
+def _get_official_html(client: httpx.Client, url: str) -> bytes: ...
+
+
+@overload
+def _get_official_html(
+    client: httpx.Client, url: str, *, return_url: Literal[True]
+) -> tuple[bytes, str]: ...
+
+
+def _get_official_html(
+    client: httpx.Client, url: str, *, return_url: bool = False
+) -> bytes | tuple[bytes, str]:
+    if url == CALENDAR_URL:
+        source_kind = "calendar"
+    else:
+        try:
+            is_release = canonical_release_url(url) == url
+        except SepIngestionError:
+            is_release = False
+        if is_release:
+            source_kind = "release"
+        else:
+            try:
+                is_policy = canonical_policy_statement_url(url) == url
+            except SepIngestionError:
+                is_policy = False
+            if not is_policy:
+                raise SepIngestionError(
+                    f"refusing non-canonical Federal Reserve HTML source: {url}"
+                )
+            source_kind = "policy"
     current_url = url
     redirected = False
     while True:
         last_status: int | None = None
         for attempt in range(3):
             try:
-                response = client.get(current_url)
+                with client.stream("GET", current_url) as response:
+                    last_status = response.status_code
+                    if response.status_code == 200:
+                        content_type = response.headers.get("content-type", "").lower()
+                        if "text/html" not in content_type:
+                            raise SepIngestionError(
+                                f"Federal Reserve source is not HTML: {current_url}"
+                            )
+                        declared_length = response.headers.get("content-length")
+                        if declared_length is not None:
+                            try:
+                                length = int(declared_length)
+                            except ValueError as exc:
+                                raise SepIngestionError(
+                                    "Federal Reserve HTML Content-Length is invalid: "
+                                    f"{current_url}"
+                                ) from exc
+                            if length < 0:
+                                raise SepIngestionError(
+                                    f"Federal Reserve HTML size is invalid: {current_url}"
+                                )
+                            if length > MAX_HTML_BYTES:
+                                raise SepIngestionError(
+                                    f"Federal Reserve HTML is too large: {current_url}"
+                                )
+                        deadline = time.monotonic() + HTTP_TOTAL_TIMEOUT_SECONDS
+                        content = bytearray()
+                        for chunk in response.iter_bytes():
+                            if time.monotonic() > deadline:
+                                raise SepIngestionError(
+                                    f"Federal Reserve HTML request exceeded total timeout: {current_url}"
+                                )
+                            if len(content) + len(chunk) > MAX_HTML_BYTES:
+                                raise SepIngestionError(
+                                    f"Federal Reserve HTML is too large: {current_url}"
+                                )
+                            content.extend(chunk)
+                        if not content:
+                            raise SepIngestionError(
+                                f"Federal Reserve HTML is empty: {current_url}"
+                            )
+                        body = bytes(content)
+                        return (body, current_url) if return_url else body
+                    if response.status_code in {301, 302, 307, 308} and not redirected:
+                        location = response.headers.get("location")
+                        if location is None:
+                            raise SepIngestionError(
+                                f"Federal Reserve redirect omitted its target: {current_url}"
+                            )
+                        if source_kind == "release":
+                            raise SepIngestionError(
+                                "Federal Reserve SEP release redirect is not allowed: "
+                                f"{current_url}"
+                            )
+                        if source_kind == "calendar":
+                            raise SepIngestionError(
+                                f"Federal Reserve calendar redirect is not allowed: {current_url}"
+                            )
+                        current_url = _canonical_policy_redirect(current_url, location)
+                        redirected = True
+                        break
+                    if response.status_code not in {429, 500, 502, 503, 504}:
+                        raise SepIngestionError(
+                            "Federal Reserve request returned "
+                            f"{response.status_code}: {current_url}"
+                        )
             except httpx.HTTPError as exc:
                 if attempt == 2:
                     raise SepIngestionError(
@@ -566,30 +726,6 @@ def _get_official_html(client: httpx.Client, url: str) -> bytes:
                     ) from exc
                 time.sleep(2**attempt)
                 continue
-            last_status = response.status_code
-            if response.status_code == 200:
-                content_type = response.headers.get("content-type", "").lower()
-                if "text/html" not in content_type:
-                    raise SepIngestionError(f"Federal Reserve source is not HTML: {url}")
-                content = response.content
-                if not content or len(content) > MAX_HTML_BYTES:
-                    raise SepIngestionError(
-                        f"Federal Reserve HTML size is invalid: {current_url}"
-                    )
-                return content
-            if response.status_code in {301, 302, 307, 308} and not redirected:
-                location = response.headers.get("location")
-                if location is None:
-                    raise SepIngestionError(
-                        f"Federal Reserve redirect omitted its target: {current_url}"
-                    )
-                current_url = _canonical_policy_redirect(current_url, location)
-                redirected = True
-                break
-            if response.status_code not in {429, 500, 502, 503, 504}:
-                raise SepIngestionError(
-                    f"Federal Reserve request returned {response.status_code}: {current_url}"
-                )
             time.sleep(2**attempt)
         else:
             raise SepIngestionError(
@@ -603,7 +739,11 @@ def _index_urls(as_of: dt.date) -> list[str]:
 
 def _historical_release_urls(as_of: dt.date) -> list[str]:
     return [
-        f"{BASE_URL}/monetarypolicy/fomcprojtabl{value}.htm"
+        (
+            f"{BASE_URL}{_DECEMBER_2012_RELEASE_PATH}"
+            if value == "20121212"
+            else f"{BASE_URL}/monetarypolicy/fomcprojtabl{value}.htm"
+        )
         for value in _HISTORICAL_RELEASE_DATES
         if dt.datetime.strptime(value, "%Y%m%d").date() <= as_of
     ]
@@ -611,30 +751,30 @@ def _historical_release_urls(as_of: dt.date) -> list[str]:
 
 def _known_release_hashes(
     conn: Any,
-) -> dict[tuple[dt.date, str, str, str], uuid.UUID]:
+) -> dict[tuple[dt.date, str, str, str, str, str], uuid.UUID]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT release_id, release_date, source_sha256, "
-            "policy_source_sha256, parser_version "
+            "SELECT release_id, release_date, source_url, source_sha256, "
+            "policy_source_url, policy_source_sha256, parser_version "
             "FROM fomc_sep_releases"
         )
         return {
             (
                 row[1],
-                str(row[2]).strip(),
+                str(row[2]),
                 str(row[3]).strip(),
                 str(row[4]),
+                str(row[5]).strip(),
+                str(row[6]),
             ): row[0]
             for row in cur.fetchall()
         }
 
 
 def _bounded_release_urls(
-    urls: list[str], known_dates: set[dt.date], as_of: dt.date, limit: int
+    urls: list[str], known_routes: set[str], as_of: dt.date, limit: int
 ) -> list[str]:
-    unseen_urls = [url for url in urls if _release_date(url) not in known_dates][
-        -limit:
-    ]
+    unseen_urls = [url for url in urls if url not in known_routes][-limit:]
     remaining = limit - len(unseen_urls)
     if not remaining:
         return unseen_urls
@@ -647,7 +787,7 @@ def _bounded_release_urls(
             as_of - dt.date(BACKFILL_START_YEAR, 1, 1)
         ).days % len(polling_urls)
         polling_urls = (polling_urls[offset:] + polling_urls[:offset])[:remaining]
-    return sorted([*unseen_urls, *polling_urls], key=_release_date)
+    return sorted([*unseen_urls, *polling_urls], key=lambda url: (_release_date(url), url))
 
 
 def _repoint_current_release(conn: Any, release_id: uuid.UUID) -> None:
@@ -690,7 +830,10 @@ def _publish_artifacts(conn: Any, artifacts: list[ReleaseArtifact]) -> tuple[int
                     policy_rate_upper_pct, policy_rate_midpoint_pct,
                     observed_at, fetched_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (release_date, source_sha256, policy_source_sha256, parser_version)
+                ON CONFLICT (
+                    release_date, source_url, source_sha256,
+                    policy_source_url, policy_source_sha256, parser_version
+                )
                 DO NOTHING
                 """,
                 (
@@ -778,17 +921,17 @@ def run(
                 urls = sorted(
                     set(discover_release_urls(index_pages, as_of))
                     | set(_historical_release_urls(as_of)),
-                    key=_release_date,
+                    key=lambda url: (_release_date(url), url),
                 )
                 if not urls:
                     raise SepIngestionError("official Federal Reserve indexes exposed no SEP releases")
                 if limit is not None:
-                    known_dates = {
-                        release_date
-                        for release_date, _, _, parser_version in known
+                    known_routes = {
+                        source_url
+                        for _, source_url, _, _, _, parser_version in known
                         if parser_version == PARSER_VERSION
                     }
-                    urls = _bounded_release_urls(urls, known_dates, as_of, limit)
+                    urls = _bounded_release_urls(urls, known_routes, as_of, limit)
 
                 artifacts: list[ReleaseArtifact] = []
                 repoint_release_ids: list[uuid.UUID] = []
@@ -797,14 +940,18 @@ def run(
                 for url in urls:
                     content = _get_official_html(client, url)
                     statement_url = policy_statement_url(_release_date(url))
-                    statement = _get_official_html(client, statement_url)
+                    statement, statement_url = _get_official_html(
+                        client, statement_url, return_url=True
+                    )
                     fetched += 1
                     digest = source_sha256(content)
                     statement_digest = source_sha256(statement)
                     known_release_id = known.get(
                         (
                             _release_date(url),
+                            url,
                             digest,
+                            statement_url,
                             statement_digest,
                             PARSER_VERSION,
                         )

@@ -43,8 +43,10 @@ def main() -> None:
     for name, value in options.items():
         if value is not None and name not in accepted:
             sys.exit(f"worker {args.worker!r} does not take --{name.replace('_', '-')}")
-    stats = mod.run(resolve_dsn(), **kwargs)
-    print(json.dumps({"worker": args.worker, **(stats or {})}, default=str))
+    stats = mod.run(resolve_dsn(), **kwargs) or {}
+    print(json.dumps({"worker": args.worker, **stats}, default=str), flush=True)
+    if stats.get("status") == "lock_busy":
+        sys.exit(1)
 
 
 if __name__ == "__main__":
