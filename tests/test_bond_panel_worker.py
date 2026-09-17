@@ -132,6 +132,8 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
                 "rating_reason": ["static_backfill"],
                 "source_sha256": ["a" * 64],
             })
+        if sql.startswith("SELECT max(rating_as_of_month)"):
+            return pd.DataFrame({"max_as_of_month": [date(2026, 7, 1)]})
         return pd.DataFrame()
 
     def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
@@ -291,6 +293,64 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
     assert lineage["distribution_mapping_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["distribution_mapping_closed_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
+    assert lineage["rating_feed_watermark"] == "2026-07-31T23:59:59Z"
+
+
+@pytest.mark.parametrize(
+    ("max_as_of_month", "expected"),
+    (
+        (date(2026, 7, 1), "2026-07-31T23:59:59Z"),
+        (date(2026, 7, 15), "2026-07-31T23:59:59Z"),
+        (date(2024, 2, 1), "2024-02-29T23:59:59Z"),
+        (date(2026, 8, 31), "2026-08-31T23:59:59Z"),
+        (None, None),
+        (pd.NaT, None),
+    ),
+)
+def test_rating_feed_coverage_watermark_projects_month_to_utc_month_end(
+    max_as_of_month, expected
+) -> None:
+    assert bond_panel._rating_feed_coverage_watermark(max_as_of_month) == expected
+
+
+@pytest.mark.parametrize(
+    "frontier_frame",
+    (
+        pd.DataFrame(),
+        pd.DataFrame({"max_as_of_month": [None]}),
+    ),
+    ids=("empty_relation", "single_null_row"),
+)
+def test_db_loader_omits_rating_feed_watermark_when_frontier_is_absent(
+    monkeypatch, frontier_frame
+) -> None:
+    def frame(_conn, sql, params=()):
+        if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+            return pd.DataFrame({"reference_cusip9": ["REFERENCE1"]})
+        if sql.startswith("SELECT DISTINCT source_sha256"):
+            return pd.DataFrame({"source_sha256": ["a" * 64]})
+        if sql.startswith("SELECT max(rating_as_of_month)"):
+            return frontier_frame
+        return pd.DataFrame()
+
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+    monkeypatch.setattr(
+        bond_panel,
+        "resolve_reg_s_cusip_map_from_db",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            resolutions={}, reason_by_reference={"REFERENCE1": "no_supported_reg_s_cusip"}
+        ),
+    )
+
+    _inputs, lineage = bond_panel._load_inputs(
+        object(),
+        pd.Timestamp("2026-07-01"),
+        pd.Timestamp("2026-08-01"),
+        date(2026, 8, 8),
+        mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+    )
+
+    assert "rating_feed_watermark" not in lineage
 
 
 def test_db_loader_allows_legacy_144a_amount_for_same_reference_reg_s_only(monkeypatch) -> None:

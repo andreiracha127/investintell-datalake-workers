@@ -109,6 +109,30 @@ def _previous_month(value: date) -> date:
     return (value.replace(day=1) - pd.Timedelta(days=1)).replace(day=1)
 
 
+def _rating_feed_coverage_watermark(max_as_of_month: object) -> str | None:
+    """UTC month-end coverage frontier of the newest ingested rating month.
+
+    ``rating_as_of_month`` is month-start by CHECK constraint, so the frontier
+    is the LAST day of that month, never the load clock (loaded_at) and never
+    a per-security action clock — the contract forbids substituting either.
+    In production this never receives ``None``: an empty ``bond_rating_static``
+    raises ``ValueError`` earlier (the single-sha guard), and because
+    ``rating_as_of_month`` is NOT NULL, ``max()`` over a non-empty table is
+    never NULL. The ``None`` return is a defensive path (exercised by mock)
+    that still refuses to fabricate coverage when a frontier is absent — fail
+    closed.
+    """
+    if max_as_of_month is None or pd.isna(max_as_of_month):
+        return None
+    month_end = (pd.Timestamp(max_as_of_month) + pd.offsets.MonthEnd(0)).normalize()
+    return (
+        month_end.replace(hour=23, minute=59, second=59, microsecond=0)
+        .tz_localize("UTC")
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def _frame(conn: Any, sql: str, params: tuple[object, ...] = ()) -> pd.DataFrame:
     """Read one relation into a named frame without any local-file fallback."""
     with conn.cursor() as cur:
@@ -418,6 +442,10 @@ def _load_inputs(
     rating_hashes = rating_sources["source_sha256"].dropna().astype(str).unique().tolist()
     if len(rating_hashes) != 1:
         raise ValueError("bond_rating_static must contain exactly one source_sha256")
+    rating_frontier = _frame(
+        conn,
+        "SELECT max(rating_as_of_month) AS max_as_of_month FROM bond_rating_static",
+    )
     inputs["static_rating_mapping"] = _frame(
             conn,
             mapping_cte
@@ -440,6 +468,13 @@ def _load_inputs(
             f"bond_reference_terms+bond_panel_snapshot:{structural_publication_id}:{structural_month.isoformat()}"
         )
     lineage["static_rating_mapping"] = f"bond_rating_static:{rating_hashes[0]}"
+    frontier_series = rating_frontier.get("max_as_of_month")
+    max_as_of_month = (
+        frontier_series.iloc[0] if frontier_series is not None and not frontier_series.empty else None
+    )
+    rating_feed_watermark = _rating_feed_coverage_watermark(max_as_of_month)
+    if rating_feed_watermark is not None:
+        lineage["rating_feed_watermark"] = rating_feed_watermark
     lineage["distribution_rule"] = "rule_144a_and_reg_s"
     lineage["distribution_mapping_snapshot_id"] = mapping_snapshot_id
     lineage["distribution_mapping_count"] = str(mapping_counts["open"])
