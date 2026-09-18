@@ -136,6 +136,29 @@
 #                           publication_id — run verde re-servindo payload velho.
 #                           É pino de UMA republicação deliberada e sai depois
 #                           (foi o que produção pagou em 2026-08-07).
+#   bond_market_implied_rating -> SEM SERVIÇO E SEM CRON por padrão. O produto
+#                           bond_market_implied_rating_v1 roda como estágio 7
+#                           do bond_live_daily, depois do painel e do refresh
+#                           das matviews, sob o lock diário -- não criar agenda
+#                           fixa nem serviço para ele agora. Um serviço próprio,
+#                           apenas para backfill/replay, é passo OPERACIONAL
+#                           posterior: WORKER=bond_market_implied_rating, sem
+#                           cron (disparo manual) ou com cron FORA da janela do
+#                           bond_live_daily, pois os dois publicam a mesma
+#                           cadeia; o CAS do pointer recusa predecessor
+#                           defasado de qualquer forma. O DDL NÃO é aplicado
+#                           por este arquivo: schemas/bond_market_implied_rating_v1.sql
+#                           é aplicado pelo OPERADOR (o worker só o reaplica de
+#                           forma idempotente na própria conexão). Env:
+#                           BOND_IMPLIED_RATING_FORCE_REPUBLISH=1 força rebuild
+#                           fora da virada de mês; sem ele o estágio é um
+#                           curto-circuito por (policy_digest, mês fechado).
+#                           ALERTA pré-Fase-3: o estágio é verdict-neutral no
+#                           dia, então monitorar `implied_rating.state` no JSON
+#                           do bond-live-daily E os WARNINGs de
+#                           bond_market_implied_rating_v1 (anchor_drift,
+#                           publish_failed, no_market_level_observation) no log
+#                           do serviço bond-live-daily.
 #   fund_peer_groups     -> TRIMESTRAL. Publica UMA âncora (o último trimestre
 #                           FECHADO) em fund_peer_groups_v1, atômico: DELETE da
 #                           âncora + INSERT. Cron sugerido:
