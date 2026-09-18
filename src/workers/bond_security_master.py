@@ -21,18 +21,35 @@ from src.bonds import security_master
 from src.db import LOCK_BOND_SECURITY_MASTER, advisory_lock, connect, resolve_dsn
 
 
+# Build stamps a deploy may inject (the container image carries no ``.git``).
+# Shared VERBATIM with the sibling publication workers (``bond_metrics``,
+# ``bond_price_observations``, ``bond_serving``) so one deploy cannot hand two
+# products two different ideas of which code built them. ``RAILWAY_GIT_COMMIT_SHA``
+# is the rung that makes a deployed rebuild change identity with NO operator
+# action. The historical ladder here (``CODE_REVISION`` only, then git) resolved
+# to "unknown" in production: the daily chain kept re-pointing to a pre-withholding
+# master build (v1, 2026-07-23 14:42Z) and the serving refresh kept failing its
+# fund-exposure identity guard on the cross-identity ISIN aliases that build
+# carries -- measured on production 2026-09-17/18.
+_REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
+
+
 def _code_revision() -> str:
-    configured = os.getenv("CODE_REVISION")
-    if configured:
-        return configured
+    for var in _REVISION_ENV_VARS:
+        value = os.getenv(var)
+        if value:
+            return value.strip()
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=5, check=False,
         )
-        return out.stdout.strip() or "unknown"
+        stamped = out.stdout.strip()
+        if stamped:
+            return stamped
     except Exception:
-        return "unknown"
+        pass
+    return "unknown"
 
 
 def _current_nport_source(conn: Any) -> tuple[Any, Any, Any] | None:
