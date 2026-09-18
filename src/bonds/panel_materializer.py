@@ -136,9 +136,19 @@ def _validate_input(facts: dict[str, list[dict[str, object]]], source_lineage: d
 def _partition(
     *, facts: dict[str, list[dict[str, object]]], parent: dict[str, Any] | None,
     first_month: date | None, last_closed_month: date | None, open_month: date | None,
-    inferred_first: date, inferred_last: date,
+    inferred_first: date, inferred_last: date, rebase_in_place: bool = False,
 ) -> tuple[date, date, date | None]:
+    """Resolve the month partition; a same-window republish is opt-in only.
+
+    A same-window republish is a child publication that re-covers the parent's
+    EXACT ``(first_month, last_closed_month, open_month)`` window with rebuilt
+    facts; lineage stays parent->child, the pointer CAS still requires the
+    parent to be the current pointer, and this path is reachable ONLY through
+    the explicit ``rebase_in_place`` flag.
+    """
     if parent is None:
+        if rebase_in_place:
+            raise MaterializationError("rebase requires a parent publication", reason_code="panel_gate_failed")
         first, last = first_month or inferred_first, last_closed_month or inferred_last
         if open_month is not None or first != inferred_first or last != inferred_last:
             raise MaterializationError("month partition invalid for base publication", reason_code="panel_gate_failed")
@@ -162,14 +172,22 @@ def _partition(
     next_parent_month = _next_month(parent["last_closed_month"])
     if parent_open_month is not None and parent_open_month != next_parent_month:
         raise MaterializationError("month partition violates parent/open ordering", reason_code="panel_gate_failed")
-    expected_closed_month = parent_open_month or next_parent_month
-    expected_open_month = _next_month(expected_closed_month)
-    if (
-        first_month != parent["first_month"]
-        or last_closed_month != expected_closed_month
-        or open_month != expected_open_month
-    ):
-        raise MaterializationError("month partition violates parent/open ordering", reason_code="panel_gate_failed")
+    if rebase_in_place:
+        if (
+            first_month != parent["first_month"]
+            or last_closed_month != parent["last_closed_month"]
+            or open_month != parent["open_month"]
+        ):
+            raise MaterializationError("rebase month partition must equal the parent window", reason_code="panel_gate_failed")
+    else:
+        expected_closed_month = parent_open_month or next_parent_month
+        expected_open_month = _next_month(expected_closed_month)
+        if (
+            first_month != parent["first_month"]
+            or last_closed_month != expected_closed_month
+            or open_month != expected_open_month
+        ):
+            raise MaterializationError("month partition violates parent/open ordering", reason_code="panel_gate_failed")
     allowed = {last_closed_month, open_month}
     if any(_month(row["month"]) not in allowed for surface in SURFACES for row in facts[surface]):
         raise MaterializationError("delta facts violate month partition", reason_code="panel_gate_failed")
@@ -279,7 +297,7 @@ def _assert_parent(store: InMemoryPublicationStore, parent_publication_id: str |
             raise MaterializationError("parent logical surface is empty")
 
 
-def _materialize_memory(store: InMemoryPublicationStore, *, as_of: date, code_revision: str, facts: dict[str, list[dict[str, object]]], source_lineage: dict[str, str], parent_publication_id: str | None, first_month: date | None, last_closed_month: date | None, open_month: date | None) -> MaterializationResult:
+def _materialize_memory(store: InMemoryPublicationStore, *, as_of: date, code_revision: str, facts: dict[str, list[dict[str, object]]], source_lineage: dict[str, str], parent_publication_id: str | None, first_month: date | None, last_closed_month: date | None, open_month: date | None, rebase_in_place: bool = False) -> MaterializationResult:
     counts, inferred_first, inferred_last = _validate_input(facts, source_lineage)
     parent = store.publications.get(parent_publication_id) if parent_publication_id else None
     _assert_parent(store, parent_publication_id)
@@ -290,7 +308,7 @@ def _materialize_memory(store: InMemoryPublicationStore, *, as_of: date, code_re
             and source_lineage.get("distribution_rule") == "rule_144a_and_reg_s"
         ):
             raise MaterializationError("parent config or month regression", reason_code="panel_gate_failed")
-    first_month, last_closed_month, open_month = _partition(facts=facts, parent=parent, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month, inferred_first=inferred_first, inferred_last=inferred_last)
+    first_month, last_closed_month, open_month = _partition(facts=facts, parent=parent, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month, inferred_first=inferred_first, inferred_last=inferred_last, rebase_in_place=rebase_in_place)
     fingerprint = _fingerprint(as_of, code_revision, facts, source_lineage, parent_publication_id)
     publication_id = publication_id_for(as_of, code_revision, fingerprint)
     existing = store.publications.get(publication_id)
@@ -399,7 +417,7 @@ def _promote_pointer(cur: Any, publication_id: str, parent_publication_id: str |
         )
 
 
-def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: dict[str, list[dict[str, object]]], source_lineage: dict[str, str], parent_publication_id: str | None, first_month: date | None, last_closed_month: date | None, open_month: date | None) -> MaterializationResult:
+def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: dict[str, list[dict[str, object]]], source_lineage: dict[str, str], parent_publication_id: str | None, first_month: date | None, last_closed_month: date | None, open_month: date | None, rebase_in_place: bool = False) -> MaterializationResult:
     counts, inferred_first, inferred_last = _validate_input(facts, source_lineage)
     fingerprint = _fingerprint(as_of, code_revision, facts, source_lineage, parent_publication_id)
     publication_id = publication_id_for(as_of, code_revision, fingerprint)
@@ -430,6 +448,7 @@ def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: 
                     and config_hash() == "1863d3d5fa3a0edf"
                     and source_lineage.get("distribution_rule") == "rule_144a_and_reg_s"
                 )
+                # A same-window rebase passes this equality month-regression check by design.
                 if (
                     parent_hash != config_hash()
                     and not is_legacy_to_dual
@@ -437,7 +456,7 @@ def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: 
                 ):
                     raise MaterializationError("parent config or month regression", reason_code="panel_gate_failed")
                 parent = {"status": parent[0], "first_month": parent[1], "last_closed_month": parent[2], "open_month": parent[3], "config_hash": parent_hash}
-            first_month, last_closed_month, open_month = _partition(facts=facts, parent=parent, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month, inferred_first=inferred_first, inferred_last=inferred_last)
+            first_month, last_closed_month, open_month = _partition(facts=facts, parent=parent, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month, inferred_first=inferred_first, inferred_last=inferred_last, rebase_in_place=rebase_in_place)
             evidence = {"config_hash": config_hash(), "row_counts": counts, "first_month": first_month.isoformat(), "last_closed_month": last_closed_month.isoformat()}
             if parent is not None and parent["config_hash"] != config_hash():
                 evidence["config_transition"] = {
@@ -460,10 +479,18 @@ def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: 
     return MaterializationResult(publication_id, fingerprint, "validated", counts, parent_publication_id)
 
 
-def materialize_panel(store: Any, *, as_of: date, code_revision: str, facts: dict[str, list[dict[str, object]]], source_lineage: dict[str, str], parent_publication_id: str | None = None, first_month: date | None = None, last_closed_month: date | None = None, open_month: date | None = None) -> MaterializationResult:
+def materialize_panel(store: Any, *, as_of: date, code_revision: str, facts: dict[str, list[dict[str, object]]], source_lineage: dict[str, str], parent_publication_id: str | None = None, first_month: date | None = None, last_closed_month: date | None = None, open_month: date | None = None, rebase_in_place: bool = False) -> MaterializationResult:
+    """Materialize one publication; a same-window republish is opt-in only.
+
+    ``rebase_in_place`` admits a child publication that re-covers the parent's
+    EXACT ``(first_month, last_closed_month, open_month)`` window with rebuilt
+    facts; lineage stays parent->child, the pointer CAS still requires the
+    parent to be the current pointer, and the path is reachable ONLY through
+    this explicit flag.
+    """
     if isinstance(store, InMemoryPublicationStore):
-        return _materialize_memory(store, as_of=as_of, code_revision=code_revision, facts=facts, source_lineage=source_lineage, parent_publication_id=parent_publication_id, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month)
-    return _materialize_postgres(store, as_of=as_of, code_revision=code_revision, facts=facts, source_lineage=source_lineage, parent_publication_id=parent_publication_id, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month)
+        return _materialize_memory(store, as_of=as_of, code_revision=code_revision, facts=facts, source_lineage=source_lineage, parent_publication_id=parent_publication_id, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month, rebase_in_place=rebase_in_place)
+    return _materialize_postgres(store, as_of=as_of, code_revision=code_revision, facts=facts, source_lineage=source_lineage, parent_publication_id=parent_publication_id, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month, rebase_in_place=rebase_in_place)
 
 
 def materialize(conn: Any, **kwargs: Any) -> MaterializationResult:
