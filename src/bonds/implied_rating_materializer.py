@@ -12,7 +12,9 @@ Two disciplines are added on top of the ledger, both fail-closed:
   * the build is idempotent by identity: ``uuid5(product | policy_digest |
     code_revision | input_fingerprint)`` mints the same publication for the same
     inputs + policy + code and a NEW one for anything else, so a replay
-    re-points instead of rebuilding and a changed policy can never reuse an old
+    re-points instead of rebuilding -- after re-verifying the stored pin field
+    by field, so a divergent payload under a reused identity refuses with
+    ``deterministic_rerun_mismatch``. A changed policy can never reuse an old
     build. The builds table's ``UNIQUE (policy_digest, input_fingerprint,
     code_revision)`` enforces the same statement in the database.
   * the pointer move is compare-and-set: the caller passes the pointer it read
@@ -54,6 +56,7 @@ ROW_COLUMNS: tuple[str, ...] = (
     "cusip_id",
     "implied_bucket",
     "spread_norm_log",
+    "neutralized_score",
     "market_level_l",
     "witnessed",
     "carry_months",
@@ -175,6 +178,7 @@ def publication_row_tuples(
             "cusip_id": str(record["cusip_id"]),
             "implied_bucket": str(record["implied_bucket"]),
             "spread_norm_log": _nullable(record["spread_norm_log"]),
+            "neutralized_score": _nullable(record["neutralized_score"]),
             "market_level_l": _nullable(record["market_level_l"]),
             "witnessed": bool(record["witnessed"]),
             "carry_months": int(record["carry_months"]),
@@ -319,7 +323,30 @@ _INSERT_BUILD_SQL = (
     f"INSERT INTO {PRODUCT}_builds ({', '.join(BUILD_COLUMNS)}) VALUES "
     f"({', '.join(['%s'] * len(BUILD_COLUMNS))}) ON CONFLICT (publication_id) DO NOTHING"
 )
+_PINNED_BUILD_SQL = (
+    f"SELECT input_fingerprint, policy_digest, code_revision, row_count, "
+    f"rows_digest, l_anchor FROM {PRODUCT}_builds WHERE publication_id = %s"
+)
 _ROW_CHUNK = 50_000
+
+
+def _pinned_build_matches(pinned: Any, publication: ImpliedRatingPublication) -> bool:
+    """The stored pin equals the incoming publication field by field.
+
+    Shared by the fresh-write read-back and the reuse path so both compare the
+    same six fields the InMemory store compares; a reuse that skipped them
+    could promote an identity whose stored payload is not the one this call
+    would have written.
+    """
+    return (
+        pinned is not None
+        and str(pinned[0]) == publication.input_fingerprint
+        and str(pinned[1]) == publication.policy_digest
+        and str(pinned[2]) == publication.code_revision
+        and int(pinned[3]) == publication.row_count
+        and str(pinned[4]) == publication.rows_digest
+        and float(pinned[5]) == publication.l_anchor
+    )
 
 
 def current_pinned_anchor(conn: psycopg.Connection) -> float | None:
@@ -367,6 +394,26 @@ def _materialize_postgres(
             )
         elif existing[0] != "validated":
             raise BondError("publication_not_writable", {"lifecycle": existing[0]})
+        if reused:
+            # Parity with the InMemory store: a validated identity must carry
+            # exactly the payload this call would have written. Identity alone
+            # is not proof -- a divergent publication reusing the uuid, or a
+            # corrupted pin, must refuse rather than be promoted.
+            pinned = cur.execute(
+                _PINNED_BUILD_SQL, (publication.publication_id,)
+            ).fetchone()
+            stored_rows = cur.execute(
+                f"SELECT count(*) FROM {PRODUCT} WHERE publication_id = %s",
+                (publication.publication_id,),
+            ).fetchone()[0]
+            if (
+                not _pinned_build_matches(pinned, publication)
+                or int(stored_rows) != publication.row_count
+            ):
+                raise BondError(
+                    "deterministic_rerun_mismatch",
+                    {"publication_id": publication.publication_id},
+                )
         if not reused:
             cur.execute(_INSERT_BUILD_SQL, (
                 publication.publication_id,
@@ -386,19 +433,9 @@ def _materialize_postgres(
                 publication.d_candidate_count,
             ))
             pinned = cur.execute(
-                f"SELECT input_fingerprint, policy_digest, code_revision, row_count, "
-                f"rows_digest, l_anchor FROM {PRODUCT}_builds WHERE publication_id = %s",
-                (publication.publication_id,),
+                _PINNED_BUILD_SQL, (publication.publication_id,)
             ).fetchone()
-            if (
-                pinned is None
-                or str(pinned[0]) != publication.input_fingerprint
-                or str(pinned[1]) != publication.policy_digest
-                or str(pinned[2]) != publication.code_revision
-                or int(pinned[3]) != publication.row_count
-                or str(pinned[4]) != publication.rows_digest
-                or float(pinned[5]) != publication.l_anchor
-            ):
+            if not _pinned_build_matches(pinned, publication):
                 raise BondError("build_pin_mismatch", {"publication_id": publication.publication_id})
             written = cur.execute(
                 f"SELECT count(*) FROM {PRODUCT} WHERE publication_id = %s",

@@ -18,8 +18,10 @@ materializer test lives in ``tests/test_bond_market_implied_rating_materializer_
 """
 from __future__ import annotations
 
+import logging
 import math
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -106,6 +108,7 @@ def assert_ddl_invariants(rows: pd.DataFrame) -> None:
         if record["implied_bucket"] in ir.RATED_BUCKETS:
             assert bool(record["witnessed"]) == (int(record["carry_months"]) == 0)
         assert pd.isna(record["spread_norm_log"]) == (not bool(record["witnessed"]))
+        assert pd.isna(record["neutralized_score"]) == (not bool(record["witnessed"]))
 
 
 # --------------------------------------------------------------------------- #
@@ -122,6 +125,7 @@ def test_policy_matches_the_declared_round() -> None:
     assert ir.POLICY["carry_forward_k"] == "3"
     assert ir.POLICY["default"] == {
         "p_d": "50", "s_d_bps": "2000", "p_hard": "35",
+        "hard_price_confirmation": "standalone_immediate",
         "h_d": "3", "p_cure": "80", "n_cure": "3",
     }
     assert ir.POLICY["calibration"]["lambda_floor"] == "20"
@@ -144,6 +148,19 @@ def test_policy_digest_is_canonical_and_stable() -> None:
     assert ir.POLICY_DIGEST == recomputed
     assert len(ir.POLICY_DIGEST) == 64
     assert set(ir.POLICY_DIGEST) <= set("0123456789abcdef")
+    # The declaration freezes the digest BEFORE the round runs: the document and
+    # the code must not drift apart, and the pre-owner-decision digest must be
+    # gone (it pinned hard-price confirmations to an active episode).
+    declaration = (
+        Path(__file__).resolve().parents[1]
+        / "docs" / "calibration" / "bond_market_implied_rating_round_declaration.md"
+    ).read_text(encoding="utf-8")
+    assert ir.POLICY_DIGEST in declaration
+    # The pre-owner-decision digest survives only as a tombstone, never as the
+    # declared identity.
+    superseded = "a23fd5115cd66abf54986b5189724d1f9497c3f8594c7ecf35855c5ca256983b"
+    assert declaration.count(superseded) == 1
+    assert "pre-decision evidence" in declaration
 
 
 def test_bucket_cuts_are_the_logs_of_the_declared_bps_cuts() -> None:
@@ -256,6 +273,40 @@ def test_policy_anchor_pin_is_checked_against_the_closed_history(monkeypatch) ->
     )
     with pytest.raises(ValueError, match="new calibration round"):
         ir.market_anchor(level)
+
+
+def test_spread_norm_log_is_s_and_neutralized_score_is_the_market_adjustment() -> None:
+    """Both layers are published; only x drives the state machine.
+
+    Two bonds rise 20 % a month while the test bond stays flat, so the median
+    intersection delta is positive: L climbs away from its window median and
+    x = s - beta*(L - anchor) differs from s on every observed month.
+    """
+    months = MONTHS[:8]
+    ratios = [1.2 ** position for position in range(len(months))]
+    frame = pd.DataFrame(
+        bond_rows("R1", [200.0 * ratio for ratio in ratios], months=months)
+        + bond_rows("R2", [250.0 * ratio for ratio in ratios], months=months)
+        + bond_rows("X", [300.0] * len(months), months=months)
+    )
+    rows = slice_of(build(frame, months=months), "X")
+    anchor = ir.market_anchor_for_snapshot(frame, last_closed_month=months[-1])
+    source = frame.loc[frame["cusip_id"].eq("X")].sort_values("month")
+    expected_s = ir.normalized_spread(frame)
+    assert rows["spread_norm_log"].to_numpy() == pytest.approx(
+        expected_s.loc[source.index].to_numpy()
+    )
+    recomputed_x = rows["spread_norm_log"] - 0.6 * (rows["market_level_l"] - anchor)
+    assert rows["neutralized_score"].to_numpy() == pytest.approx(recomputed_x.to_numpy())
+    assert (rows["spread_norm_log"] != rows["neutralized_score"]).all()
+    assert rows["market_level_l"].nunique() > 1
+    first = rows.iloc[0]
+    # L(month 0) == 0 < anchor, so the neutralized score is ABOVE s, and the
+    # first bucket is read off x (B), not off s (BB).
+    assert first["neutralized_score"] > first["spread_norm_log"]
+    assert ir.bucket_for_score(first["spread_norm_log"]) == "BB"
+    assert first["implied_bucket"] == "B"
+    assert first["implied_bucket"] == ir.bucket_for_score(first["neutralized_score"])
 
 
 # --------------------------------------------------------------------------- #
@@ -441,15 +492,76 @@ def test_candidate_that_lapses_never_becomes_a_default() -> None:
     assert rows["d_event_month"].isna().all()
 
 
-def test_a_deep_price_without_the_spread_condition_never_defaults() -> None:
+def test_standalone_hard_price_confirms_without_a_candidate() -> None:
+    """Owner decision (2026-09-18): price <= 35 is a standalone immediate D.
+
+    No dual-distress month, no candidate, spread far below 2000 -- the hard
+    price alone confirms in its own month and dates the event there.
+    """
     months = MONTHS[:4]
     frame = pd.DataFrame(market_fillers(months=months) + bond_rows(
-        "X", [300.0, 400.0, 500.0, 600.0], months=months,
-        prices=[95.0, 30.0, 30.0, 30.0],
+        "X", [300.0, 400.0, 450.0, 500.0], months=months,
+        prices=[95.0, 30.0, 35.0, 34.0],
+    ))
+    rows = slice_of(build(frame, months=months), "X")
+    assert not rows["d_candidate"].any(), "the dual condition never fired"
+    assert rows["implied_bucket"].tolist() == ["BB", "D", "D", "D"]
+    assert rows["d_confirmed"].tolist() == [False, True, True, True]
+    assert rows["d_event_month"].iloc[1] == date(2025, 2, 1)
+    # Absorbing: the later hard prints do not re-date the episode.
+    assert rows["d_event_month"].iloc[3] == date(2025, 2, 1)
+    assert rows["recovery_observed"].iloc[1] == pytest.approx(30.0)
+    assert_ddl_invariants(rows)
+
+
+def test_standalone_hard_price_requires_the_price_cut() -> None:
+    months = MONTHS[:4]
+    frame = pd.DataFrame(market_fillers(months=months) + bond_rows(
+        "X", [300.0, 400.0, 450.0, 500.0], months=months,
+        prices=[95.0, 36.0, 36.0, 36.0],
     ))
     rows = slice_of(build(frame, months=months), "X")
     assert not rows["d_confirmed"].any()
     assert not rows["d_candidate"].any()
+
+
+def test_standalone_hard_confirmation_is_point_in_time() -> None:
+    months = MONTHS[:7]
+    frame = pd.DataFrame(bond_rows(
+        "X", [300.0, 350.0, 400.0, 2500.0, 2600.0, 2600.0, 2600.0],
+        months=months,
+        prices=[95.0, 30.0, 40.0, 44.0, 44.0, 46.0, 48.0],
+    ))
+    anchor = ir.market_anchor_for_snapshot(frame, last_closed_month=months[-1])
+    full = ir.build_publication_rows(frame, last_closed_month=months[-1], l_anchor=anchor)
+    truncated = ir.build_publication_rows(frame, last_closed_month=months[3], l_anchor=anchor)
+    for column in ("implied_bucket", "spell_id", "d_confirmed", "d_event_month"):
+        pd.testing.assert_series_equal(
+            full.loc[full["month"].le(months[3]), column].reset_index(drop=True),
+            truncated[column].reset_index(drop=True),
+            check_names=False,
+            check_dtype=False,
+        )
+    assert (
+        full.loc[full["d_confirmed"], "d_event_month"] == date(2025, 2, 1)
+    ).all()
+    assert_ddl_invariants(truncated)
+
+
+def test_standalone_hard_default_is_absorbing_and_cures() -> None:
+    months = MONTHS[:7]
+    frame = pd.DataFrame(market_fillers(months=months) + bond_rows(
+        "X", [300.0] * 7, months=months,
+        prices=[95.0, 30.0, 30.0, 82.0, 84.0, 86.0, 88.0],
+    ))
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["implied_bucket"].tolist() == ["BB", "D", "D", "D", "D", "BB", "BB"]
+    assert rows["d_confirmed"].tolist() == [False, True, True, True, True, False, False]
+    # The cure completes after three consecutive prices >= 80 (months 3-5) and
+    # opens a NEW spell with the raw bucket.
+    assert rows["spell_id"].iloc[5] == rows["spell_id"].iloc[0] + 1
+    assert rows["d_event_month"].iloc[4] == date(2025, 2, 1)
+    assert_ddl_invariants(rows)
 
 
 def test_default_is_absorbing_and_a_cure_opens_a_new_spell() -> None:
@@ -742,6 +854,7 @@ def test_row_tuples_null_the_pandas_missing_values() -> None:
     }
     unwitnessed = by_column["implied_bucket"].index("NOT_RATED")
     assert by_column["spread_norm_log"][unwitnessed] is None
+    assert by_column["neutralized_score"][unwitnessed] is None
     assert by_column["d_event_month"][unwitnessed] is None
     assert by_column["recovery_observed"][unwitnessed] is None
     assert all(isinstance(value, bool) for value in by_column["witnessed"])
@@ -880,7 +993,7 @@ def test_worker_publishes_and_reports_the_identity(monkeypatch) -> None:
     )
 
 
-def test_worker_refuses_an_anchor_drift(monkeypatch) -> None:
+def test_worker_refuses_an_anchor_drift(monkeypatch, caplog) -> None:
     frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
     _patch_worker(
         monkeypatch,
@@ -891,9 +1004,58 @@ def test_worker_refuses_an_anchor_drift(monkeypatch) -> None:
         snapshot=frame,
         anchor=123.456,
     )
-    result = worker.run("postgresql://example")
+    with caplog.at_level(logging.WARNING, logger="src.workers.bond_market_implied_rating"):
+        result = worker.run("postgresql://example")
     assert result["state"] == "gate_failed"
     assert result["input_reasons"] == ["anchor_drift"]
+    # Pre-Phase-3 the daily stage is verdict-neutral: the warning is the alert.
+    assert any(
+        record.levelno == logging.WARNING and "anchor_drift" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_worker_warns_when_the_publication_fails(monkeypatch, caplog) -> None:
+    frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
+    _patch_worker(
+        monkeypatch,
+        panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
+               "last_closed_month": MONTHS[-1].date(), "open_month": None},
+        pointer=None,
+        current=None,
+        snapshot=frame,
+    )
+
+    def boom(_conn, _publication, _rows, *, expected_pointer):
+        raise BondError("build_pin_mismatch", {"publication_id": "x"})
+
+    monkeypatch.setattr(worker, "materialize", boom)
+    with caplog.at_level(logging.WARNING, logger="src.workers.bond_market_implied_rating"):
+        result = worker.run("postgresql://example")
+    assert result["reason"] == "implied_rating_publish_failed"
+    assert result["input_reasons"] == ["build_pin_mismatch"]
+    assert any(
+        record.levelno == logging.WARNING and "publish_failed" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_worker_refuses_a_snapshot_without_a_market_level_observation(monkeypatch) -> None:
+    """No witnessed spread in the frozen window -> typed refusal, no anchor."""
+    frame = pd.DataFrame(
+        bond_rows("A", [100.0] * 3, months=MONTHS[:3], trade_count=1)
+    )
+    _patch_worker(
+        monkeypatch,
+        panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
+               "last_closed_month": MONTHS[2].date(), "open_month": None},
+        pointer=None,
+        current=None,
+        snapshot=frame,
+    )
+    result = worker.run("postgresql://example")
+    assert result["state"] == "gate_failed"
+    assert result["input_reasons"] == ["no_market_level_observation"]
 
 
 def test_worker_types_a_pointer_move_as_a_gate_failure(monkeypatch) -> None:
@@ -969,7 +1131,7 @@ def test_the_planner_reports_the_identity_without_writing(monkeypatch) -> None:
     )
 
 
-def test_the_planner_surfaces_a_drifted_anchor(monkeypatch) -> None:
+def test_the_planner_surfaces_a_drifted_anchor(monkeypatch, caplog) -> None:
     frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
     _patch_worker(
         monkeypatch,
@@ -981,11 +1143,16 @@ def test_the_planner_surfaces_a_drifted_anchor(monkeypatch) -> None:
         anchor=123.456,
     )
     monkeypatch.setattr(worker, "materialize", lambda *args, **kwargs: pytest.fail("plan wrote"))
-    result = worker.plan("postgresql://example")
+    with caplog.at_level(logging.WARNING, logger="src.workers.bond_market_implied_rating"):
+        result = worker.plan("postgresql://example")
     assert result["state"] == "anchor_drift"
     assert result["anchor_drift"] is True
     assert result["pinned_l_anchor"] == 123.456
     assert result["pinned_l_anchor"] != result["l_anchor"]
+    assert any(
+        record.levelno == logging.WARNING and "anchor drift" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_a_ledger_that_does_not_exist_yet_reads_as_absent(monkeypatch) -> None:

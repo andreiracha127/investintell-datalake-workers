@@ -29,6 +29,12 @@ The service is exercised by the daily hook in ``bond_live_daily`` (after the
 panel publishes and its matviews refresh). This module does not create the
 service and does not apply the DDL anywhere but its own connection: an operator
 runbook owns production operations.
+
+OBSERVABILITY. Before Phase 3 the daily hook reports this stage verdict-neutrally,
+so every typed refusal (``anchor_drift``, ``publish_failed``, ``no_market_level_observation``,
+...) is logged at WARNING level and carried in the day JSON: pre-Phase-3 alerting
+must match on ``bond_market_implied_rating_v1`` warnings or on
+``implied_rating.state``.
 """
 from __future__ import annotations
 
@@ -148,6 +154,14 @@ def _already_current(
 def _failure(
     reason: str, *, elapsed: float, input_reasons: list[str] | None = None, **extra: Any
 ) -> dict[str, Any]:
+    # Every typed refusal is WARNING-visible: before Phase 3 the daily hook
+    # reports this stage verdict-neutrally, so the alerting surface is the log
+    # line (and the day JSON), not a red run.
+    LOGGER.warning(
+        "bond_market_implied_rating_v1 %s: %s",
+        reason,
+        ", ".join(input_reasons) if input_reasons else "no input reason",
+    )
     return {
         "state": reason.removeprefix("implied_rating_"),
         "reason": reason,
@@ -198,9 +212,27 @@ def _build_payload(
             panel_publication_id=parent["publication_id"],
         )}
     input_fingerprint = policy.snapshot_fingerprint(snapshot)
-    l_anchor = policy.market_anchor_for_snapshot(
-        snapshot, last_closed_month=last_closed_month
-    )
+    try:
+        l_anchor = policy.market_anchor_for_snapshot(
+            snapshot, last_closed_month=last_closed_month
+        )
+    except policy.AnchorWindowEmpty:
+        # No witnessed spread inside the frozen calibration window: there is no
+        # honest anchor to pin, so the build refuses with its own typed reason
+        # instead of fabricating one or falling over as an unnamed ValueError.
+        return {"failure": _failure(
+            "implied_rating_gate_failed",
+            elapsed=time.monotonic() - started,
+            input_reasons=["no_market_level_observation"],
+            panel_publication_id=parent["publication_id"],
+        )}
+    except policy.AnchorNotReproduced:
+        return {"failure": _failure(
+            "implied_rating_gate_failed",
+            elapsed=time.monotonic() - started,
+            input_reasons=["anchor_not_reproduced"],
+            panel_publication_id=parent["publication_id"],
+        )}
     rows = policy.build_publication_rows(
         snapshot, last_closed_month=last_closed_month, l_anchor=l_anchor
     )
@@ -318,6 +350,13 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 previous_anchor is not None
                 and previous_anchor != prepared["l_anchor"]
             )
+            if drift:
+                LOGGER.warning(
+                    "bond_market_implied_rating_v1 anchor drift in plan: pinned=%s "
+                    "resolved=%s; a publication under this anchor is refused",
+                    previous_anchor,
+                    prepared["l_anchor"],
+                )
             return {
                 "state": "anchor_drift" if drift else "planned",
                 "aborted": False,

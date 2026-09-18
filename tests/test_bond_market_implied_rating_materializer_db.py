@@ -9,6 +9,7 @@ and the compare-and-set pointer.
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import replace
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -231,9 +232,10 @@ def test_implied_rating_publication_against_postgres() -> None:
             with pytest.raises(psycopg.Error), conn.transaction():
                 conn.execute(
                     "INSERT INTO bond_market_implied_rating_v1 "
-                    "(publication_id, month, cusip_id, implied_bucket, witnessed, carry_months, "
-                    "spell_id, d_candidate, d_confirmed, censoring, policy_version, policy_digest) "
-                    "VALUES (%s, %s, 'X', 'AAA', true, 0, 1, false, false, 'none', %s, %s)",
+                    "(publication_id, month, cusip_id, implied_bucket, neutralized_score, "
+                    "witnessed, carry_months, spell_id, d_candidate, d_confirmed, censoring, "
+                    "policy_version, policy_digest) "
+                    "VALUES (%s, %s, 'X', 'AAA', 3.0, true, 0, 1, false, false, 'none', %s, %s)",
                     (
                         publication.publication_id, MONTHS[0].date(),
                         policy.POLICY_VERSION, policy.POLICY_DIGEST,
@@ -265,11 +267,103 @@ def test_implied_rating_publication_against_postgres() -> None:
             with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
                 conn.execute(
                     "INSERT INTO bond_market_implied_rating_v1 "
-                    "(publication_id, month, cusip_id, implied_bucket, witnessed, carry_months, "
-                    "spell_id, d_candidate, d_confirmed, censoring, policy_version, policy_digest) "
-                    "VALUES (%s, %s, 'X', 'D', true, 0, 1, true, false, 'none', %s, %s)",
+                    "(publication_id, month, cusip_id, implied_bucket, neutralized_score, "
+                    "witnessed, carry_months, spell_id, d_candidate, d_confirmed, censoring, "
+                    "policy_version, policy_digest) "
+                    "VALUES (%s, %s, 'X', 'D', 3.0, true, 0, 1, true, false, 'none', %s, %s)",
                     (prepared_id, MONTHS[0].date(), policy.POLICY_VERSION, policy.POLICY_DIGEST),
                 )
+        finally:
+            conn.execute("SET search_path TO public")
+            conn.execute(
+                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
+            )
+
+
+@pytest.mark.skipif(
+    not os.getenv("SEC_TEST_DATABASE_URL"),
+    reason="SEC_TEST_DATABASE_URL unavailable",
+)
+def test_divergent_rerun_under_the_same_identity_is_refused() -> None:
+    """Postgres reuse parity with the InMemory store.
+
+    A validated identity is re-verified field by field on every replay, so a
+    publication that reuses the uuid but carries a divergent payload fails with
+    ``deterministic_rerun_mismatch`` instead of being silently promoted; the
+    honest replay still reuses and re-points.
+    """
+    import psycopg
+    from psycopg import sql
+
+    schema = f"test_bond_implied_rerun_{uuid4().hex}"
+    run_id, package_id, panel_id = uuid4(), uuid4(), uuid4()
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        conn.execute(
+            sql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO worker_writer").format(
+                sql.Identifier(schema)
+            )
+        )
+        conn.execute(
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema))
+        )
+        try:
+            conn.execute(
+                "CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, "
+                "raw_validated_at timestamptz)"
+            )
+            conn.execute(
+                "CREATE TABLE sec_source_packages(package_id uuid PRIMARY KEY, "
+                "run_id uuid NOT NULL)"
+            )
+            conn.execute(
+                "CREATE VIEW sec_validated_raw_runs AS SELECT run_id, raw_validated_at "
+                "FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL"
+            )
+            conn.execute("CREATE TABLE bond_panel_publications(publication_id uuid PRIMARY KEY)")
+            conn.execute("INSERT INTO sec_ingestion_runs VALUES(%s, now())", (run_id,))
+            conn.execute("INSERT INTO sec_source_packages VALUES(%s, %s)", (package_id, run_id))
+            conn.execute("INSERT INTO bond_panel_publications VALUES(%s)", (panel_id,))
+
+            install_schema(conn)
+            conn.execute(
+                sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO worker_writer").format(
+                    sql.Identifier(schema)
+                )
+            )
+
+            frame = _snapshot()
+            publication = _publication(frame, panel_publication_id=str(panel_id))
+            payload = publication_row_tuples(
+                publication,
+                policy.build_publication_rows(frame, last_closed_month=MONTHS[-1]),
+            )
+            materialize(conn, publication, payload, expected_pointer=None)
+
+            # Same uuid (it is derived from these very fields), divergent stored
+            # payload -> the replay must refuse, not promote.
+            divergent = replace(publication, rows_digest="0" * 64)
+            with pytest.raises(BondError) as error:
+                materialize(
+                    conn, divergent, payload,
+                    expected_pointer=publication.publication_id,
+                )
+            assert error.value.code == "deterministic_rerun_mismatch"
+            assert str(conn.execute(
+                "SELECT publication_id FROM sec_derived_current_pointers "
+                "WHERE product = 'bond_market_implied_rating_v1'"
+            ).fetchone()[0]) == publication.publication_id
+            assert conn.execute(
+                "SELECT count(*) FROM bond_market_implied_rating_v1 WHERE publication_id=%s",
+                (publication.publication_id,),
+            ).fetchone()[0] == publication.row_count
+
+            # The honest replay still reuses and re-points (idempotency kept).
+            again = materialize(
+                conn, publication, payload,
+                expected_pointer=publication.publication_id,
+            )
+            assert again.reused
         finally:
             conn.execute("SET search_path TO public")
             conn.execute(

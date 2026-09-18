@@ -74,7 +74,13 @@ CREATE TABLE IF NOT EXISTS bond_market_implied_rating_v1 (
     cusip_id text NOT NULL CHECK (btrim(cusip_id) <> ''),
     implied_bucket text NOT NULL CHECK (implied_bucket IN
         ('AAA','AA','A','BBB','BB','B','CCC','D','WITHDRAWN','NOT_RATED')),
+    -- The two score layers, both NULL exactly when unwitnessed:
+    --   spread_norm_log  = s = log(winsor(spread)) - b*(log(mod_dur) - log(d_ref))
+    --   neutralized_score = x = s - beta*(L_t - L_anchor), what the state
+    --                       machine consumes. Publishing both lets an audit
+    --                       recompute either one from market_level_l + anchor.
     spread_norm_log double precision,
+    neutralized_score double precision,
     market_level_l double precision,
     witnessed boolean NOT NULL,
     carry_months integer NOT NULL CHECK (carry_months >= 0),
@@ -93,9 +99,45 @@ CREATE TABLE IF NOT EXISTS bond_market_implied_rating_v1 (
     CHECK ((implied_bucket = 'D') = d_confirmed),
     -- A RATED row is witnessed or carried; the terminal buckets are their own.
     CHECK (witnessed = (carry_months = 0) OR implied_bucket IN ('WITHDRAWN','NOT_RATED','D')),
-    -- A witnessed month always carries a computable score, NULL otherwise.
-    CHECK ((spread_norm_log IS NULL) = (NOT witnessed))
+    -- A witnessed month always carries both computable scores, NULL otherwise.
+    CHECK ((spread_norm_log IS NULL) = (NOT witnessed)),
+    CHECK ((neutralized_score IS NULL) = (NOT witnessed))
 );
+
+-- ---------------------------------------------------------------------------
+-- Score-layer migration (2026-09-18): `neutralized_score` was added after the
+-- first cut of this DDL. CREATE TABLE IF NOT EXISTS never revisits an existing
+-- table, so this block is what reaches a table created before the change; the
+-- column and its CHECK are added by name and the block is idempotent.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    column_was_missing boolean;
+BEGIN
+    IF to_regclass('bond_market_implied_rating_v1') IS NULL THEN
+        RETURN;
+    END IF;
+    SELECT NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'bond_market_implied_rating_v1'
+          AND column_name = 'neutralized_score'
+    ) INTO column_was_missing;
+    ALTER TABLE bond_market_implied_rating_v1
+        ADD COLUMN IF NOT EXISTS neutralized_score double precision;
+    -- The named CHECK is only needed by a table created before this change:
+    -- a freshly created table already carries the inline CHECK above, and
+    -- adding the named one too would duplicate it.
+    IF column_was_missing AND NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'bond_market_implied_rating_v1'::regclass
+          AND conname = 'bond_market_implied_rating_v1_neutralized_witnessed'
+    ) THEN
+        ALTER TABLE bond_market_implied_rating_v1
+            ADD CONSTRAINT bond_market_implied_rating_v1_neutralized_witnessed
+            CHECK ((neutralized_score IS NULL) = (NOT witnessed));
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS bond_market_implied_rating_v1_pub_month_idx
     ON bond_market_implied_rating_v1 (publication_id, month);

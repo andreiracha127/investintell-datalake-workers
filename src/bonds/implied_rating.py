@@ -4,9 +4,10 @@ This module is PURE (pandas/numpy only, no database, no repo imports). It turns
 the served bond-panel snapshot grid into the monthly state series the
 ``bond_market_implied_rating_v1`` product publishes:
 
-    witnessed month -> normalized spread score -> chained market level L_t
+    witnessed month -> normalized spread s -> chained market level L_t
+    -> neutralized score x = s - beta*(L_t - L_anchor)
     -> bucket thresholds with hysteresis -> carry-forward -> spells
-    -> D candidate / confirmation -> cure
+    -> D candidate / confirmation / standalone hard trigger -> cure
 
 The policy below is the DECLARED round policy of
 ``docs/calibration/bond_market_implied_rating_round_declaration.md``. Every
@@ -26,23 +27,33 @@ Local readings of the declared policy, recorded because the plan fixes the
 numbers but leaves these mechanisms open:
 
   * ``witness_mask`` also requires the score inputs (``spread_final_bps``,
-    ``mod_dur``): the published row CHECK is ``(spread_norm_log IS NULL) =
-    (NOT witnessed)``, so a "witnessed" month without a computable score cannot
-    be published as such. It is carried instead.
+    ``mod_dur``): the published row CHECKs are
+    ``(spread_norm_log IS NULL) = (NOT witnessed)`` and
+    ``(neutralized_score IS NULL) = (NOT witnessed)``, so a "witnessed" month
+    without a computable score cannot be published as such. It is carried
+    instead.
+  * Both score layers are published: ``spread_norm_log`` is the normalized
+    spread ``s`` and ``neutralized_score`` is ``x = s - beta*(L - L_anchor)``.
+    The state machine consumes ``x``; the audit can independently recompute
+    either from the other plus ``market_level_l``, ``beta`` and the anchor.
   * Hysteresis: a move to the raw target bucket is confirmed when the score is
     past the TARGET bucket's own boundary by ``delta_log``, or when the target
     was observed in a second witnessed month within ``h_months`` of the current
     one (carried months are not observations). Otherwise the bucket does not
     move.
-  * A candidate episode stays active for ``h_d`` months; the hard price trigger
-    (``price <= p_hard``) only ACCELERATES a confirmation inside an active
-    episode. A deep price without the dual distress condition never creates a
-    default on its own -- the conservative side of the declared false-D gate.
+  * A candidate episode stays active for ``h_d`` months and confirms at the
+    first witnessed month inside that window repeating the dual condition.
+    ``price <= p_hard`` is a STANDALONE immediate confirmation (owner decision,
+    2026-09-18, encoded as ``hard_price_confirmation='standalone_immediate'``):
+    a witnessed month below the hard price confirms D in that same month even
+    with ``spread < s_d_bps`` and no candidate, and the event is dated at that
+    month.
   * ``d_candidate`` is the dual distress condition (``price <= p_d`` and
     ``spread >= s_d_bps``) at a witnessed month, regardless of the spell state.
-    It is a point-in-time observation flag: the months between candidate and
-    confirmation keep it, and the app's pending censoring
-    (``d_candidate AND NOT d_confirmed``) reads exactly that.
+    It is a PER-MONTH observation flag, not propagated through intermediate
+    months: a month that recovered simply does not carry it, and the app's
+    pending censoring (``d_candidate AND NOT d_confirmed``) reads exactly the
+    months that satisfy it.
   * The timeline is calendar-dense per CUSIP: months between two observed grid
     months, and up to ``k`` months after the last one, are published as
     unwitnessed carry rows while the spell is alive, so the app's adjacent-pair
@@ -121,6 +132,11 @@ POLICY: MappingProxyType = MappingProxyType({
         "p_d": "50",
         "s_d_bps": "2000",
         "p_hard": "35",
+        # Owner decision (2026-09-18): a witnessed month with price <= p_hard
+        # confirms D in that same month, with or without an active/recent
+        # dual-distress candidate and with or without the spread condition.
+        # The mode is canonical policy: changing it changes POLICY_DIGEST.
+        "hard_price_confirmation": "standalone_immediate",
         "h_d": "3",
         "p_cure": "80",
         "n_cure": "3",
@@ -140,6 +156,7 @@ PUBLICATION_COLUMNS: tuple[str, ...] = (
     "cusip_id",
     "implied_bucket",
     "spread_norm_log",
+    "neutralized_score",
     "market_level_l",
     "witnessed",
     "carry_months",
@@ -285,6 +302,19 @@ def market_level(spread_norm: pd.DataFrame) -> pd.Series:
     return (level + delta.cumsum()).astype("float64")
 
 
+class AnchorWindowEmpty(ValueError):
+    """The frozen calibration window carries no market-level observation.
+
+    Typed separately from the generic ``ValueError`` so the worker can refuse
+    with ``no_market_level_observation`` instead of guessing an anchor from a
+    history that has none.
+    """
+
+
+class AnchorNotReproduced(ValueError):
+    """The policy's frozen anchor is not reproduced by the closed history."""
+
+
 def market_anchor(
     level: pd.Series,
     *,
@@ -303,7 +333,7 @@ def market_anchor(
     start = pd.Timestamp(end - pd.DateOffset(months=count - 1)).normalize()
     window = level.loc[(level.index >= start) & (level.index <= end)]
     if window.empty:
-        raise ValueError(
+        raise AnchorWindowEmpty(
             f"calibration window {start.date().isoformat()}..{end.date().isoformat()} "
             "has no market-level observation"
         )
@@ -313,7 +343,7 @@ def market_anchor(
         # The policy froze a value; the closed history no longer reproduces it
         # (a forced panel republish rewrote window months). Publishing under the
         # drifted anchor would silently rewrite every historical bucket.
-        raise ValueError(
+        raise AnchorNotReproduced(
             f"policy l_anchor {float(pinned)!r} is not reproduced by the closed "
             f"history ({resolved!r}); a new calibration round is required"
         )
@@ -330,14 +360,21 @@ def default_events(observations: pd.DataFrame) -> pd.DataFrame:
     ``witnessed``, ``price``, ``spread_final_bps``), sorted by month. A month
     is a candidate when ``price <= p_d`` and ``spread >= s_d_bps``. The episode
     stays active for ``h_d`` months; it confirms at the first witnessed month
-    inside that window that repeats the dual condition or prints
-    ``price <= p_hard``. Outside the window it expires, and a later condition
-    month opens a new candidate.
+    inside that window that repeats the dual condition.
+
+    ``price <= p_hard`` is a STANDALONE immediate confirmation (owner decision,
+    2026-09-18; ``hard_price_confirmation='standalone_immediate'``): a witnessed
+    month below the hard price confirms in that same month even with
+    ``spread < s_d_bps`` and no candidate, and the event is dated there. Any
+    other declared mode refuses loudly -- the policy mapping is canonical.
 
     Returns one row per episode: ``candidate_month``, ``confirmation_month``
     (``NaT`` when never confirmed) and ``immediate`` (confirmation in the
     candidate month itself).
     """
+    mode = str(POLICY["default"]["hard_price_confirmation"])
+    if mode != "standalone_immediate":  # pragma: no cover - frozen policy
+        raise ValueError(f"unsupported hard_price_confirmation mode: {mode!r}")
     p_d = _policy_float("default", "p_d")
     s_d = _policy_float("default", "s_d_bps")
     p_hard = _policy_float("default", "p_hard")
@@ -357,33 +394,25 @@ def default_events(observations: pd.DataFrame) -> pd.DataFrame:
             continue
         condition = bool(price[index] <= p_d and spread[index] >= s_d)
         hard = bool(price[index] <= p_hard)
+        if hard:
+            # Standalone: the hard month IS the event, active episode or not.
+            episodes.append({
+                "candidate_month": month,
+                "confirmation_month": month,
+                "immediate": True,
+            })
+            candidate = None
+            continue
         if condition:
             if candidate is None or index - candidate > h_d:
                 candidate = index
-            if candidate == index:
-                if hard:
-                    episodes.append({
-                        "candidate_month": month,
-                        "confirmation_month": month,
-                        "immediate": True,
-                    })
-                    candidate = None
-            elif index - candidate <= h_d:
+            if candidate != index and index - candidate <= h_d:
                 episodes.append({
                     "candidate_month": months[candidate],
                     "confirmation_month": month,
                     "immediate": False,
                 })
                 candidate = None
-            else:  # pragma: no cover - guarded by the reset above
-                candidate = index
-        elif hard and candidate is not None and index - candidate <= h_d:
-            episodes.append({
-                "candidate_month": months[candidate],
-                "confirmation_month": month,
-                "immediate": False,
-            })
-            candidate = None
         elif candidate is not None and index - candidate > h_d:
             candidate = None
     if candidate is not None:
@@ -496,8 +525,9 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
     """Run one CUSIP's calendar-dense timeline through the declared machine.
 
     ``timeline`` is sorted by month and carries ``in_grid``, ``witnessed``,
-    ``spread_norm_log``, ``price``, ``score``, ``market_level_l`` and
-    ``maturity_date``.
+    ``spread_norm_log`` (the normalized spread ``s``), ``neutralized_score``
+    (``x = s - beta*(L - L_anchor)``, what this machine consumes), ``price``,
+    ``market_level_l`` and ``maturity_date``.
     """
     in_grid = timeline["in_grid"].to_numpy(dtype=bool)
     witnessed = timeline["witnessed"].to_numpy(dtype=bool)
@@ -505,7 +535,12 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
     spread = pd.to_numeric(
         timeline["spread_final_bps"], errors="coerce"
     ).to_numpy(dtype="float64")
-    score = pd.to_numeric(timeline["score"], errors="coerce").to_numpy(dtype="float64")
+    score = pd.to_numeric(
+        timeline["neutralized_score"], errors="coerce"
+    ).to_numpy(dtype="float64")
+    spread_norm = pd.to_numeric(
+        timeline["spread_norm_log"], errors="coerce"
+    ).to_numpy(dtype="float64")
     level = pd.to_numeric(
         timeline["market_level_l"], errors="coerce"
     ).to_numpy(dtype="float64")
@@ -559,9 +594,10 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
             "cusip_id": cusip,
             "market_level_l": level_at(index),
         }
-        # The dual distress condition is a point-in-time observation flag: it is
-        # published on every witnessed month that satisfies it (plan D2: the
-        # app reads `d_candidate AND NOT d_confirmed` for pending censoring).
+        # The dual distress condition is a point-in-time PER-MONTH flag: it is
+        # published exactly on the witnessed months that satisfy it and is not
+        # propagated through recovered intermediate months (plan D2: the app
+        # reads `d_candidate AND NOT d_confirmed` for pending censoring).
         condition_now = bool(
             witnessed[index] and price[index] <= p_d and spread[index] >= s_d
         )
@@ -583,7 +619,8 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
                     rows.append({
                         **base,
                         "implied_bucket": "D",
-                        "spread_norm_log": float(score[index]),
+                        "spread_norm_log": float(spread_norm[index]),
+                        "neutralized_score": float(score[index]),
                         "witnessed": True,
                         "carry_months": 0,
                         "spell_id": state.spell_id,
@@ -609,7 +646,8 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
                     rows.append({
                         **base,
                         "implied_bucket": state.bucket,
-                        "spread_norm_log": float(score[index]),
+                        "spread_norm_log": float(spread_norm[index]),
+                        "neutralized_score": float(score[index]),
                         "witnessed": True,
                         "carry_months": 0,
                         "spell_id": state.spell_id,
@@ -634,7 +672,8 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
                     rows.append({
                         **base,
                         "implied_bucket": state.bucket,
-                        "spread_norm_log": float(score[index]),
+                        "spread_norm_log": float(spread_norm[index]),
+                        "neutralized_score": float(score[index]),
                         "witnessed": True,
                         "carry_months": 0,
                         "spell_id": state.spell_id,
@@ -648,7 +687,8 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
                     rows.append({
                         **base,
                         "implied_bucket": "D",
-                        "spread_norm_log": float(score[index]),
+                        "spread_norm_log": float(spread_norm[index]),
+                        "neutralized_score": float(score[index]),
                         "witnessed": True,
                         "carry_months": 0,
                         "spell_id": state.spell_id,
@@ -670,6 +710,7 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
                     **base,
                     "implied_bucket": "NOT_RATED",
                     "spread_norm_log": None,
+                    "neutralized_score": None,
                     "witnessed": False,
                     "carry_months": 0,
                     "spell_id": spell_seq + 1,
@@ -737,6 +778,7 @@ def _carry_row(
         "cusip_id": cusip,
         "implied_bucket": bucket,
         "spread_norm_log": None,
+        "neutralized_score": None,
         "market_level_l": level,
         "witnessed": False,
         "carry_months": carry,
@@ -807,7 +849,11 @@ def build_publication_rows(
     ``snapshot`` is the served panel snapshot grid with the columns the policy
     consumes: ``cusip_id, month, price, spread_final_bps, mod_dur, trade_count,
     dollar_volume, maturity_date``. All candidates are admitted -- panel
-    eligibility is not a witness condition. ``l_anchor`` overrides the frozen
+    eligibility is not a witness condition. ``spread_norm_log`` publishes the
+    normalized spread ``s`` and ``neutralized_score`` publishes
+    ``x = s - beta*(L - L_anchor)``, which is what the state machine consumes;
+    an audit can recompute either from the published ``market_level_l`` and the
+    build's pinned anchor. ``l_anchor`` overrides the frozen
     calibration-window resolution for the calibration notebook (and for the
     worker, which resolves it first so it can pin and guard it); when omitted
     the policy resolves it from the closed history.
@@ -828,7 +874,7 @@ def build_publication_rows(
     for cusip, group in frame.groupby("cusip_id", sort=True):
         timeline = _calendar_timeline(group, end=end)
         timeline["market_level_l"] = level.reindex(timeline["month"]).to_numpy()
-        timeline["score"] = (
+        timeline["neutralized_score"] = (
             timeline["spread_norm_log"].to_numpy(dtype="float64")
             - beta
             * (timeline["market_level_l"].to_numpy(dtype="float64") - resolved_anchor)

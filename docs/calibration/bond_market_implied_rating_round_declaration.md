@@ -50,22 +50,25 @@ control). Nothing in this round selects or tunes a threshold.
   month. No delta publication; the pointer flip is the only "delta".
 - Policy version: `bond_market_implied_rating_policy_v1`.
 - **`POLICY_DIGEST` at declaration:**
-  `a23fd5115cd66abf54986b5189724d1f9497c3f8594c7ecf35855c5ca256983b`
+  `28f70b9bd8f617fedf6104deb86cd518d43307e88b3bbd1fcf53aa1fae869a3b`
   (canonical sha256 over the version + the parameter mapping; every published
   row and every build carries it; it participates in the publication identity
   `uuid5(product | policy_version | policy_digest | code_revision |
-  input_fingerprint)`).
+  input_fingerprint)`). Superseded digest
+  `a23fd5115cd66abf54986b5189724d1f9497c3f8594c7ecf35855c5ca256983b`
+  (hard-price confirmations before the owner decision below) is dead: any
+  publication carrying it is pre-decision evidence and must not be consumed.
 
 | Block | Frozen parameters |
 | --- | --- |
 | `witness` | `n_min=3` prints, `v_min_usd=250000`, `price ∈ [1, 200]`, `mod_dur ≥ 0.5`; a witnessed month must also carry computable `spread_final_bps` and `mod_dur` |
 | `spread` | winsor `[5, 5000]` bps, `d_ref=5`, duration slope `b=0.2`: `s = log(winsor(spread)) − b·(log(mod_dur) − log d_ref)` |
-| `market_level` | chained `L_t = L_{t−1} + median_{W_t ∩ W_{t−1}}(s_t − s_{t−1})`; neutralization `x = s − β·(L_t − L_anchor)` with `β=0.6`; anchor = **median of `L` over the calibration window** `[2023-09, 2026-08]` (`window_end_month=2026-08-01`, `window_months=36`) |
+| `market_level` | chained `L_t = L_{t−1} + median_{W_t ∩ W_{t−1}}(s_t − s_{t−1})`; neutralization `x = s − β·(L_t − L_anchor)` with `β=0.6`; anchor = **median of `L` over the calibration window** `[2023-09, 2026-08]` (`window_end_month=2026-08-01`, `window_months=36`). Both layers are published: `spread_norm_log = s`, `neutralized_score = x`; the state machine consumes `x`, and an audit can recompute either from `market_level_l`, `β` and the pinned anchor |
 | `cuts_bps` | `60, 85, 125, 220, 380, 700` applied in log space (AAA..CCC) |
 | `hysteresis` | `δ_log=0.10` **or** 2 observations of the target side within `h=3` months; carried months are not observations |
 | `carry_forward_k` | `3` carried months after the last witness, then `WITHDRAWN` (absorbing within the spell) |
 | `source_exit` | spell closes at the last witness when `maturity_date − month ≤ 1` or `price ≥ 97` |
-| `default` | candidate: `price ≤ 50 ∧ spread ≥ 2000` bps at a witnessed month; confirmation: second observation within `h_D=3` **or** `price ≤ 35` (immediate); absorbing `D`; cure: `price ≥ 80` for `n_cure=3` consecutive witnessed months → new spell |
+| `default` | candidate: `price ≤ 50 ∧ spread ≥ 2000` bps at a witnessed month; confirmation: second observation within `h_D=3`; **`hard_price_confirmation="standalone_immediate"` (owner decision, 2026-09-18): `price ≤ 35` confirms `D` in that same month, standalone — no active/recent candidate and no spread condition required, `d_event_month` = that month**; absorbing `D`; cure: `price ≥ 80` for `n_cure=3` consecutive witnessed months → new spell |
 | `calibration` | `t_c=36`, `holdout=24`, `lambda_floor=20`, `m_max=0.05`, `phi_max=0.25` |
 | buckets | `AAA, AA, A, BBB, BB, B, CCC, D, WITHDRAWN, NOT_RATED` |
 
@@ -92,6 +95,19 @@ covered by its unit tests):
 - **Revision ladder (verbatim from the fleet):** `CODE_REVISION`, `GIT_SHA`,
   `SOURCE_COMMIT`, `RAILWAY_GIT_COMMIT_SHA`, then git; an unresolvable revision
   refuses to publish instead of stamping `unknown`.
+- **`d_candidate` is per-month.** It is published exactly on the witnessed months
+  whose `price ≤ 50 ∧ spread ≥ 2000`, regardless of spell state; it is NOT
+  propagated through recovered intermediate months, and the app's pending
+  censoring reads the month it needs directly.
+- **Typed refusals and pre-Phase-3 observability.** A snapshot whose frozen
+  anchor window has no witnessed spread refuses with
+  `no_market_level_observation` (never a fabricated anchor); a re-resolution
+  that no longer reproduces the pinned/frozen anchor refuses with
+  `anchor_not_reproduced` / `anchor_drift`. Every typed refusal
+  (`anchor_drift`, `publish_failed`, …) is emitted at WARNING level by the
+  worker, so before Phase 3 the alerting surface is the daily JSON
+  (`implied_rating.state`) plus those `bond_market_implied_rating_v1` warnings;
+  the daily verdict stays neutral by plan.
 
 ## 3. Data split (frozen)
 
