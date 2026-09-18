@@ -987,6 +987,86 @@ def test_panel_same_month_rerun_is_current_without_reloading_inputs(monkeypatch)
     }
 
 
+def _stub_publishable_panel(monkeypatch, parent: dict[str, object]) -> list[dict[str, object]]:
+    closed = pd.Timestamp("2026-07-01")
+    open_month = pd.Timestamp("2026-08-01")
+    panel = pd.DataFrame(
+        {
+            "cusip_id": ["AAA", "AAA"],
+            "month": [closed, open_month],
+            "pr": [99.0, 100.0],
+            "ytm": [0.05, 0.05],
+            "bond_maturity": [5.0, 5.0],
+            "issuer_id": ["issuer-1", "issuer-1"],
+            "ff17num": [1, 1],
+            "currency": ["USD", "USD"],
+            "asset_class": ["corporate", "corporate"],
+            "amt_outstanding_k": [500_000, 500_000],
+            "traded_days": [10, 5],
+            "trade_count": [10, 5],
+            "dollar_volume": [1000.0, 500.0],
+            "quoted_days": [1, 1],
+            "rel_bid_ask_bps": [10.0, 10.0],
+            "coupon_pct": [5.0, 5.0],
+            "maturity_date": [pd.Timestamp("2031-01-01"), pd.Timestamp("2031-01-01")],
+            "spread_final": [0.01, 0.01],
+            "spread_final_bps": [100.0, 100.0],
+            "spread_definition": ["ytm_minus_interpolated_dgs"] * 2,
+            "rating_bucket": ["BBB", "A"],
+            "rating_as_of_month": [pd.NaT, pd.NaT],
+            "rating_state": ["static_current", "static_carry_forward"],
+            "rating_reason": ["static_present", "static_present"],
+            "rating_staleness_months": [pd.NA, pd.NA],
+            "reason_code": ["live_tick_median_valid_bps", None],
+        }
+    )
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(bond_panel, "_required_relations", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_missing_columns", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_current_parent", lambda _conn: parent)
+    monkeypatch.setattr(bond_panel, "connect", lambda _dsn: contextlib.nullcontext(object()))
+    monkeypatch.setenv("CODE_REVISION", "test")
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", REG_S_SNAPSHOT_ID)
+    monkeypatch.setattr(
+        bond_panel,
+        "_load_inputs",
+        lambda _conn, _closed, _open, _as_of, **_kwargs: ({
+            "static_rating_mapping": pd.DataFrame(),
+        }, {
+            "distribution_mapping_count": "1",
+            "distribution_rule_144a_count": "1",
+            "distribution_execution_count": "2",
+            "distribution_mapping_omission:no_supported_reg_s_cusip": "1",
+        }),
+    )
+    monkeypatch.setattr(bond_panel, "build_db_monthly_panel", lambda **_kwargs: panel.copy())
+
+    def snapshots(frame, ratings_pit=None):
+        included = frame.iloc[[0]].merge(ratings_pit, on=["cusip_id", "month"], how="left").assign(eligibility_state="included", eligibility_reason="eligible")
+        excluded = frame.iloc[[1]].assign(eligibility_state="excluded", eligibility_reason="missing_terms")
+        return included, excluded
+
+    monkeypatch.setattr(bond_panel, "build_snapshots", snapshots)
+    monkeypatch.setattr(bond_panel, "_parent_return_anchor", lambda _conn, _closed: pd.DataFrame())
+    monkeypatch.setattr(bond_panel, "monthly_returns", lambda _panel, terminal_exits=None: pd.DataFrame({"cusip_id": ["AAA"], "month": [closed], "total_return": [0.01], "exit_basis": ["observed"], "exit_reason": [None], "price_return": [0.01], "carry_return": [0.0], "suspect": [False]}))
+    monkeypatch.setattr(bond_panel, "fit_all_months", lambda frame, *, as_of: (pd.DataFrame({"cusip_id": ["AAA"], "month": [closed], "rv_signal": [1.0]}), pd.DataFrame()))
+
+    def materialize(_conn, **kwargs):
+        captured.append(kwargs)
+        return MaterializationResult(
+            "republished",
+            "fingerprint",
+            "validated",
+            {name: len(rows) for name, rows in kwargs["facts"].items()},
+            str(kwargs["parent_publication_id"]),
+        )
+
+    monkeypatch.setattr(bond_panel, "materialize_panel", materialize)
+    monkeypatch.setattr(bond_panel, "_refresh_served_mirrors", lambda _dsn: "")
+    return captured
+
+
 def test_panel_force_republish_env_bypasses_same_month_short_circuit(monkeypatch, caplog) -> None:
     parent = {
         "publication_id": "current-reg-s",
@@ -998,28 +1078,42 @@ def test_panel_force_republish_env_bypasses_same_month_short_circuit(monkeypatch
         "returns_max_month": date(2026, 7, 1),
         "source_lineage": REG_S_LINEAGE,
     }
-    monkeypatch.setattr(bond_panel, "_required_relations", lambda _conn: [])
-    monkeypatch.setattr(bond_panel, "_missing_columns", lambda _conn: [])
-    monkeypatch.setattr(bond_panel, "_current_parent", lambda _conn: parent)
-    monkeypatch.setattr(bond_panel, "connect", lambda _dsn: contextlib.nullcontext(object()))
-    loaded: list[str] = []
-
-    def _load_inputs(*_args, **_kwargs):
-        loaded.append("loaded")
-        return {"resolved_issuer_sector": pd.DataFrame()}, {}
-
-    monkeypatch.setattr(bond_panel, "_load_inputs", _load_inputs)
-    monkeypatch.setenv("CODE_REVISION", "revision-123")
-    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", REG_S_SNAPSHOT_ID)
+    captured = _stub_publishable_panel(monkeypatch, parent)
     monkeypatch.setenv("BOND_PANEL_FORCE_REPUBLISH", "1")
 
     with caplog.at_level(logging.WARNING, logger=bond_panel.__name__):
         outcome = bond_panel.run("postgresql://example", as_of=date(2026, 8, 9))
 
-    assert loaded == ["loaded"]
-    assert outcome["reason"] != "panel_month_already_current"
-    assert outcome["input_relation_reasons"] == ["relation_empty:resolved_issuer_sector"]
-    assert "operator-forced republication" in caplog.text
+    assert len(captured) == 1
+    assert captured[0]["rebase_in_place"] is True
+    assert captured[0]["parent_publication_id"] == parent["publication_id"]
+    assert captured[0]["last_closed_month"] == parent["last_closed_month"]
+    assert captured[0]["open_month"] == parent["open_month"]
+    assert outcome["state"] == "published"
+    assert "operator-forced" in caplog.text
+
+
+def test_panel_force_republish_env_stays_a_forward_delta_when_the_parent_is_not_current(monkeypatch) -> None:
+    parent = {
+        "publication_id": "prior-reg-s",
+        "parent_publication_id": "base-reg-s",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 6, 1),
+        "open_month": date(2026, 7, 1),
+        "snapshot_max_month": date(2026, 7, 1),
+        "returns_max_month": date(2026, 6, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    captured = _stub_publishable_panel(monkeypatch, parent)
+    monkeypatch.setenv("BOND_PANEL_FORCE_REPUBLISH", "1")
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 8, 9))
+
+    assert len(captured) == 1
+    assert captured[0]["rebase_in_place"] is False
+    assert captured[0]["last_closed_month"] == date(2026, 7, 1)
+    assert captured[0]["open_month"] == date(2026, 8, 1)
+    assert outcome["state"] == "published"
 
 
 def test_panel_classifies_registry_resolution_failures_as_mapping_gates(monkeypatch) -> None:

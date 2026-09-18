@@ -801,11 +801,14 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
     Operator override: a truthy ``BOND_PANEL_FORCE_REPUBLISH`` (``1``/``true``,
     case-insensitive) bypasses the same-month short-circuit, so a panel whose
     ``(last_closed_month, open_month)`` already match the parent is rebuilt and
-    republished with a fresh ``publication_id`` (``as_of`` changes) instead of
-    returning ``panel_month_already_current``. This exists to reload a
-    publication materialized by an older producer. Risks: the open month's
-    facts can move because it is rebuilt against today's surfaces, and the
-    materializer's pointer CAS still refuses an otherwise invalid republication.
+    republished instead of returning ``panel_month_already_current``. This
+    exists to reload a publication materialized by an older producer. The
+    materializer admits the same-window republish ONLY through the explicit
+    ``rebase_in_place`` primitive; the pointer CAS still refuses a stale
+    parent, and every upstream gate (config hash, parent integrity,
+    distribution mapping snapshot) still runs before the bypass. Risk: the
+    open month's facts can move because they are rebuilt against today's
+    surfaces.
     """
     started = time.monotonic()
     if config_hash() != PANEL_CONFIG_HASH:
@@ -863,8 +866,9 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
         force_republish = _force_republish_requested()
         if already_current and force_republish:
             LOGGER.warning(
-                "BOND_PANEL_FORCE_REPUBLISH: operator-forced republication of the %s/%s bond panel; "
-                "bypassing parent publication %s and rebuilding the open-month facts",
+                "BOND_PANEL_FORCE_REPUBLISH: operator-forced same-window republish of the %s/%s bond panel; "
+                "rebuilding the closed/open month facts as a child of parent publication %s "
+                "(pointer CAS still enforced)",
                 closed_month.date().isoformat(),
                 open_month.date().isoformat(),
                 parent["publication_id"],
@@ -952,6 +956,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 first_month=parent["first_month"],
                 last_closed_month=closed_month.date(),
                 open_month=open_month.date(),
+                rebase_in_place=already_current and force_republish,
             )
         except DistributionSeriesError as exc:
             return _failure(

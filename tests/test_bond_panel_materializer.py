@@ -318,3 +318,178 @@ def test_delta_rejects_a_parent_with_a_skipped_open_month() -> None:
 
     with pytest.raises(MaterializationError, match="month partition"):
         materialize_panel(store, as_of=date(2024, 4, 15), code_revision="child", facts=child_facts, source_lineage={"panel": "child"}, parent_publication_id=base.publication_id, first_month=date(2024, 1, 1), last_closed_month=date(2024, 3, 1), open_month=date(2024, 4, 1))
+
+
+def _delta_facts(closed: str, open_month: str) -> dict[str, list[dict[str, object]]]:
+    facts = _facts(closed)
+    opened = _facts(open_month)
+    facts["snapshot"] += opened["snapshot"]
+    facts["rating_pit"] += opened["rating_pit"]
+    return facts
+
+
+def _base_and_child(store: InMemoryPublicationStore):
+    base = materialize_panel(store, as_of=date(2024, 1, 31), code_revision="base", facts=_facts(), source_lineage={"panel": "base"})
+    child = materialize_panel(
+        store,
+        as_of=date(2024, 3, 15),
+        code_revision="delta",
+        facts=_delta_facts("2024-02-01", "2024-03-01"),
+        source_lineage={"panel": "delta"},
+        parent_publication_id=base.publication_id,
+        first_month=date(2024, 1, 1),
+        last_closed_month=date(2024, 2, 1),
+        open_month=date(2024, 3, 1),
+    )
+    return base, child
+
+
+def test_rebase_in_place_republishes_the_same_window() -> None:
+    store = InMemoryPublicationStore()
+    _base, child = _base_and_child(store)
+    rebase_facts = _delta_facts("2024-02-01", "2024-03-01")
+    rebase_facts["snapshot"][0]["price"] = 99.5
+
+    rebased = materialize_panel(
+        store,
+        as_of=date(2024, 3, 31),
+        code_revision="rebase",
+        facts=rebase_facts,
+        source_lineage={"panel": "rebase"},
+        parent_publication_id=child.publication_id,
+        first_month=date(2024, 1, 1),
+        last_closed_month=date(2024, 2, 1),
+        open_month=date(2024, 3, 1),
+        rebase_in_place=True,
+    )
+
+    assert rebased.status == "validated"
+    assert rebased.publication_id != child.publication_id
+    assert store.pointer == rebased.publication_id
+    assert store.publications[rebased.publication_id]["parent_publication_id"] == child.publication_id
+    rows = store.logical_rows(rebased.publication_id, "snapshot")
+    changed = next(row for row in rows if row["month"] == "2024-02-01" and row["cusip_id"] == "AAA")
+    assert changed["price"] == 99.5
+
+
+def test_rebase_in_place_rejects_a_window_that_differs_from_parent() -> None:
+    store = InMemoryPublicationStore()
+    _base, child = _base_and_child(store)
+
+    with pytest.raises(MaterializationError, match="rebase month partition must equal the parent window"):
+        materialize_panel(
+            store,
+            as_of=date(2024, 4, 15),
+            code_revision="rebase",
+            facts=_delta_facts("2024-03-01", "2024-04-01"),
+            source_lineage={"panel": "rebase"},
+            parent_publication_id=child.publication_id,
+            first_month=date(2024, 1, 1),
+            last_closed_month=date(2024, 3, 1),
+            open_month=date(2024, 4, 1),
+            rebase_in_place=True,
+        )
+
+    assert store.pointer == child.publication_id
+
+
+def test_rebase_in_place_requires_a_parent() -> None:
+    store = InMemoryPublicationStore()
+
+    with pytest.raises(MaterializationError, match="rebase requires a parent publication"):
+        materialize_panel(
+            store,
+            as_of=date(2024, 1, 31),
+            code_revision="rebase",
+            facts=_facts(),
+            source_lineage={"panel": "rebase"},
+            rebase_in_place=True,
+        )
+
+    assert store.pointer is None
+
+
+def test_forward_delta_is_unchanged_without_the_flag() -> None:
+    store = InMemoryPublicationStore()
+    _base, child = _base_and_child(store)
+
+    with pytest.raises(MaterializationError, match="month partition violates parent/open ordering"):
+        materialize_panel(
+            store,
+            as_of=date(2024, 3, 31),
+            code_revision="rebase",
+            facts=_delta_facts("2024-02-01", "2024-03-01"),
+            source_lineage={"panel": "rebase"},
+            parent_publication_id=child.publication_id,
+            first_month=date(2024, 1, 1),
+            last_closed_month=date(2024, 2, 1),
+            open_month=date(2024, 3, 1),
+        )
+
+    assert store.pointer == child.publication_id
+
+
+def test_rebase_in_place_exact_rerun_reuses_the_publication_identity() -> None:
+    store = InMemoryPublicationStore()
+    _base, child = _base_and_child(store)
+    rebase_facts = _delta_facts("2024-02-01", "2024-03-01")
+    rebase_facts["snapshot"][0]["price"] = 99.5
+    kwargs = {
+        "as_of": date(2024, 3, 31),
+        "code_revision": "rebase",
+        "facts": rebase_facts,
+        "source_lineage": {"panel": "rebase"},
+        "parent_publication_id": child.publication_id,
+        "first_month": date(2024, 1, 1),
+        "last_closed_month": date(2024, 2, 1),
+        "open_month": date(2024, 3, 1),
+        "rebase_in_place": True,
+    }
+    first = materialize_panel(store, **kwargs)
+    store.pointer = child.publication_id
+    again = materialize_panel(store, **kwargs)
+
+    assert first.publication_id == again.publication_id
+    assert first.status == "validated"
+    assert store.pointer == first.publication_id
+
+
+def test_rebase_in_place_does_not_move_a_pointer_advanced_after_validation() -> None:
+    store = InMemoryPublicationStore()
+    _base, child = _base_and_child(store)
+    store.pointer = None
+    sibling = materialize_panel(
+        store,
+        as_of=date(2024, 5, 31),
+        code_revision="sibling",
+        facts=_facts("2024-05-01"),
+        source_lineage={"panel": "sibling"},
+    )
+    store.pointer = child.publication_id
+    rebase_facts = _delta_facts("2024-02-01", "2024-03-01")
+    rebase_facts["snapshot"][0]["price"] = 99.5
+
+    class AdvancePointerAfterValidation(list[str]):
+        def append(self, event: str) -> None:
+            super().append(event)
+            if event == "validated":
+                store.pointer = sibling.publication_id
+
+    store.events = AdvancePointerAfterValidation()
+
+    with pytest.raises(MaterializationError, match="no longer current"):
+        materialize_panel(
+            store,
+            as_of=date(2024, 3, 31),
+            code_revision="rebase",
+            facts=rebase_facts,
+            source_lineage={"panel": "rebase"},
+            parent_publication_id=child.publication_id,
+            first_month=date(2024, 1, 1),
+            last_closed_month=date(2024, 2, 1),
+            open_month=date(2024, 3, 1),
+            rebase_in_place=True,
+        )
+
+    assert store.pointer == sibling.publication_id
+    assert [publication["status"] for publication in store.publications.values()].count("failed") == 1
