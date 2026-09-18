@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
@@ -984,6 +985,41 @@ def test_panel_same_month_rerun_is_current_without_reloading_inputs(monkeypatch)
         "open_month": "2026-08-01",
         "distribution_mapping_snapshot_id": REG_S_SNAPSHOT_ID,
     }
+
+
+def test_panel_force_republish_env_bypasses_same_month_short_circuit(monkeypatch, caplog) -> None:
+    parent = {
+        "publication_id": "current-reg-s",
+        "parent_publication_id": "base-reg-s",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 7, 1),
+        "open_month": date(2026, 8, 1),
+        "snapshot_max_month": date(2026, 8, 1),
+        "returns_max_month": date(2026, 7, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    monkeypatch.setattr(bond_panel, "_required_relations", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_missing_columns", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_current_parent", lambda _conn: parent)
+    monkeypatch.setattr(bond_panel, "connect", lambda _dsn: contextlib.nullcontext(object()))
+    loaded: list[str] = []
+
+    def _load_inputs(*_args, **_kwargs):
+        loaded.append("loaded")
+        return {"resolved_issuer_sector": pd.DataFrame()}, {}
+
+    monkeypatch.setattr(bond_panel, "_load_inputs", _load_inputs)
+    monkeypatch.setenv("CODE_REVISION", "revision-123")
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", REG_S_SNAPSHOT_ID)
+    monkeypatch.setenv("BOND_PANEL_FORCE_REPUBLISH", "1")
+
+    with caplog.at_level(logging.WARNING, logger=bond_panel.__name__):
+        outcome = bond_panel.run("postgresql://example", as_of=date(2026, 8, 9))
+
+    assert loaded == ["loaded"]
+    assert outcome["reason"] != "panel_month_already_current"
+    assert outcome["input_relation_reasons"] == ["relation_empty:resolved_issuer_sector"]
+    assert "operator-forced republication" in caplog.text
 
 
 def test_panel_classifies_registry_resolution_failures_as_mapping_gates(monkeypatch) -> None:

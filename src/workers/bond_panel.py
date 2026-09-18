@@ -7,6 +7,7 @@ database surfaces, pins the two permitted months, and classifies failures.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 import json
@@ -35,6 +36,8 @@ from src.bonds.distribution_series import (
     resolve_reg_s_cusip_map_from_db,
 )
 from src.db import connect, resolve_dsn
+
+LOGGER = logging.getLogger(__name__)
 
 PANEL_CONFIG_HASH = "1863d3d5fa3a0edf"
 LEGACY_PANEL_CONFIG_HASH = "0c0d78a866bc1090"
@@ -524,6 +527,12 @@ def _initial_stage6_authorized(parent: dict[str, Any], revision: str) -> bool:
     return bool(authorization) and authorization == revision
 
 
+def _force_republish_requested() -> bool:
+    """Operator escape hatch: bypass the same-month short-circuit when asked explicitly."""
+    value = (os.getenv("BOND_PANEL_FORCE_REPUBLISH") or "").strip().lower()
+    return value in {"1", "true"}
+
+
 def _parent_distribution_reasons(
     parent: dict[str, Any], mapping_snapshot_id: str
 ) -> list[str]:
@@ -787,7 +796,17 @@ def _refresh_served_mirrors(dsn: str | None) -> str:
 
 
 def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, object]:
-    """Publish the DB-only closed/open panel delta, or return a typed refusal."""
+    """Publish the DB-only closed/open panel delta, or return a typed refusal.
+
+    Operator override: a truthy ``BOND_PANEL_FORCE_REPUBLISH`` (``1``/``true``,
+    case-insensitive) bypasses the same-month short-circuit, so a panel whose
+    ``(last_closed_month, open_month)`` already match the parent is rebuilt and
+    republished with a fresh ``publication_id`` (``as_of`` changes) instead of
+    returning ``panel_month_already_current``. This exists to reload a
+    publication materialized by an older producer. Risks: the open month's
+    facts can move because it is rebuilt against today's surfaces, and the
+    materializer's pointer CAS still refuses an otherwise invalid republication.
+    """
     started = time.monotonic()
     if config_hash() != PANEL_CONFIG_HASH:
         return _failure("panel_gate_failed", elapsed=time.monotonic() - started, input_reasons=["config_hash_mismatch"])
@@ -836,11 +855,21 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 elapsed=time.monotonic() - started,
                 input_reasons=distribution_reasons,
             )
-        if (
+        already_current = (
             parent.get("config_hash") in (None, PANEL_CONFIG_HASH)
             and parent.get("last_closed_month") == closed_month.date()
             and parent.get("open_month") == open_month.date()
-        ):
+        )
+        force_republish = _force_republish_requested()
+        if already_current and force_republish:
+            LOGGER.warning(
+                "BOND_PANEL_FORCE_REPUBLISH: operator-forced republication of the %s/%s bond panel; "
+                "bypassing parent publication %s and rebuilding the open-month facts",
+                closed_month.date().isoformat(),
+                open_month.date().isoformat(),
+                parent["publication_id"],
+            )
+        if already_current and not force_republish:
             return {
                 "state": "current",
                 "aborted": False,
