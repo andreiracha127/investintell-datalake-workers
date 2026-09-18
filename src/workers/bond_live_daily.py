@@ -1379,6 +1379,22 @@ def _publish_panel(dsn: str, *, as_of: _dt.date) -> dict[str, Any]:
         return {"state": "publish_failed", "aborted": True, "error": type(exc).__name__}
 
 
+def _publish_implied_rating(dsn: str) -> dict[str, Any]:
+    """Run the market-implied rating rebuild after the panel refresh.
+
+    The worker owns its transaction, identity and pointer; this stage only
+    gives it the post-panel slot. A failure is a typed stage result -- it must
+    not suppress the day's verdict, and the product is a full rebuild whose
+    next successful pass recovers it (idempotent by construction).
+    """
+    try:
+        from src.workers import bond_market_implied_rating
+
+        return bond_market_implied_rating.run(dsn)
+    except Exception as exc:
+        return {"state": "publish_failed", "aborted": True, "error": type(exc).__name__}
+
+
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -1585,6 +1601,30 @@ def run(
                 "panel", lambda: _publish_panel(resolved, as_of=today)
             )
 
+        # Stage 7: market-implied rating. The product is a full rebuild over the
+        # panel snapshot, so it runs only when that snapshot really moved in
+        # this run -- a panel that refused, deferred or failed leaves the stage
+        # typed and deferred, never silently skipped. It stays inside the daily
+        # lock for the same reason stages 4-6 do: the snapshot it derives from
+        # must not be replaced under it by an overlapping run. The stage is
+        # REPORTED and verdict-neutral: the product's own pointer is its truth,
+        # and the next successful pass rebuilds it from scratch anyway.
+        if (
+            str(panel.get("state")) in {"published", "current"}
+            and matview.get("state") == "refreshed"
+        ):
+            implied_rating = stopwatch.run(
+                "implied_rating", lambda: _publish_implied_rating(resolved)
+            )
+        else:
+            implied_rating = {
+                "state": "deferred",
+                "aborted": False,
+                "reason": "panel_not_published",
+                "panel_state": str(panel.get("state")),
+                "matview_state": matview.get("state"),
+            }
+
     # THE VERDICT. Every stage above has already RUN -- this is computed at the
     # end and never used to skip work -- and each clause below is a way the day
     # is not the day, which ``run_worker`` turns into a non-zero exit through the
@@ -1712,6 +1752,7 @@ def run(
         "matview": matview,
         "republish": republish,
         "panel": panel,
+        "implied_rating": implied_rating,
         "provider": client.stats() if client is not None else {"state": provider_error, "detail": provider_detail},
         "timings_seconds": stopwatch.seconds,
     }
