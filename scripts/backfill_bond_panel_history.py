@@ -8,15 +8,15 @@ not import this module: it is a one-time historical transport only.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import date, datetime
 import hashlib
 import json
 import math
-from pathlib import Path
 import sys
 import tempfile
 import uuid
+from dataclasses import dataclass, replace
+from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import duckdb
@@ -26,7 +26,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if __package__ in {None, ""} and str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.backfill_psql_transport import render_immutable_batch, render_schema  # noqa: E402
+from scripts.backfill_psql_transport import (
+    render_immutable_batch,
+    render_schema,
+)
+
 DEFAULT_ARTIFACT_DIRECTORY = Path(
     r"C:\Users\andre\Downloads\stage1_osbap_0k_volume_2025\bond_panel_monthly"
 )
@@ -72,6 +76,81 @@ EXPECTED_SHA256 = {
     "bond_ratings_pit.parquet": "97c645ce7d98ad945288369e20ed40abe2d7d1590b4953f7a983bc6e719efcb4",
 }
 
+# --- Unit-repair child (T2.1) -------------------------------------------------
+# ``C`` extends the current validated head ``H`` with H's exact window and
+# copies the four ``bond_panel_current_*_v1`` views inside PostgreSQL.  The
+# declared unit predicate is applied ONLY to the two volume surfaces; returns
+# and rating facts are copied verbatim with the identity fill the dual-series
+# trigger requires.  Inputs are the frozen v2 parquet set derived from the
+# T0.2v read-only export; like the rest of this program it never opens a
+# database connection.
+UNIT_REPAIR_CONTRACT = "dollar_volume_unit_repair_v1"
+UNIT_REPAIR_CODE_REVISION = "t3_dollar_volume_unit_repair_v1"
+UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID = "71b672c8-239c-55bc-bccb-ed39960c0fd2"
+UNIT_REPAIR_ROOT_BASE_PUBLICATION_ID = "b3c92982-d82f-5a76-bb51-a4c980d21b25"
+UNIT_REPAIR_CONFIG_HASH = "1863d3d5fa3a0edf"
+UNIT_REPAIR_SCALE = 1_000_000
+UNIT_REPAIR_PREDICATE = "price_source = 'osbap'"
+UNIT_REPAIR_AFFECTED_SURFACES: tuple[Surface, ...] = ("snapshot", "rv_signal")
+UNIT_REPAIR_ARTIFACT_CUTOFF = "2026-06-01"
+# The v2 artifacts store ``dollar_volume`` as float64 while PostgreSQL stores
+# ``numeric``.  The artifact side sums the per-row DECIMAL(38,6) casts, which is
+# exact and order-independent (so the plan fingerprint is reproducible across
+# runs); the measured worst-case difference from the exact numeric sums is
+# 0.0012 USD per year.  The gate keeps exact row/NULL equality and compares the
+# DECIMAL(38,6)-cast sums within this declared absolute tolerance.
+UNIT_REPAIR_SUM_TOLERANCE_USD = 1
+# §14 execution shape: the whole validation + status + CAS runs in one timed
+# transaction; the lock timeout must fail instead of queueing an incident, and
+# the refresh phase after COMMIT gets its own explicit session-level timeout.
+UNIT_REPAIR_FINALIZE_LOCK_TIMEOUT = "5s"
+UNIT_REPAIR_FINALIZE_STATEMENT_TIMEOUT = "55min"
+UNIT_REPAIR_FINALIZE_REFRESH_STATEMENT_TIMEOUT = "20min"
+UNIT_REPAIR_EXPECTED_WINDOW = {
+    "first_month": "2002-07-01",
+    "last_closed_month": "2026-08-01",
+    "open_month": "2026-09-01",
+}
+UNIT_REPAIR_EXPECTED_COUNTS = {
+    "snapshot": 3448307,
+    "rv_signal": 1689773,
+    "returns": 2810912,
+    "rating_pit": 3448307,
+}
+EXPECTED_SHA256_UNIT_REPAIR_V2 = {
+    "bond_panel_live.parquet": "2bc85774f608aebc57e8e345e49113938549f8f89ae87dee509cdcae8758aba2",
+    "universe_snapshots_live.parquet": "eaad18121d48d885fc23b6a28a96f33d00f444a7479296997520dc9e782c07a8",
+    "bond_monthly_returns.parquet": "a2778b5c723f1d4c1c91e31319dfe2618589a30ce56c60a9d7d5008482f39007",
+    "bond_ratings_pit.parquet": "309b405b6de34dae51cf8bb702ad3e4b78123316de23a8f44225c200bf2e96a3",
+}
+UNIT_REPAIR_ARTIFACT_SURFACES = {
+    "bond_panel_live.parquet": "snapshot",
+    "universe_snapshots_live.parquet": "rv_signal",
+    "bond_monthly_returns.parquet": "returns",
+    "bond_ratings_pit.parquet": "rating_pit",
+}
+UNIT_REPAIR_REQUIRED_COLUMNS = {
+    "bond_panel_live.parquet": {"month", "cusip_id", "price_source", "dollar_volume"},
+    "universe_snapshots_live.parquet": {"month", "cusip_id", "price_source", "dollar_volume"},
+    "bond_monthly_returns.parquet": {"month", "cusip_id"},
+    "bond_ratings_pit.parquet": {"month", "cusip_id"},
+}
+UNIT_REPAIR_USD_BAND = (10_000.0, 1_000_000_000.0)
+EXPECTED_EXPORT_PROVENANCE = {
+    "source_pointer": UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID,
+    "export_manifest_sha256": "8afb23a0ff0616a8256f292aa5b6748a7fffa552705b18521874a1d11be6ff4f",
+    "export_datetime_utc": "2026-09-18T21:32:07Z",
+    "export_files": {
+        "snapshot": "55963cc686cf054f6f2b23835fe051018f5891e71d2b7658a86e7edc283faebc",
+        "rv_signal": "378567e56ebc7a602367e75080db367eee42d68e3b65f620583c0badb0f57024",
+        "returns": "3fd16c0c9300dee19a3f14fa11470ed82822c9da36ee603fbacd397bc28a0cec",
+        "rating_pit": "8452ced775290911e8a669de952b36cc497f8ab5a81f00b79daed151f6bf7940",
+    },
+}
+UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY = Path(
+    r"C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\unit_repair_v2"
+)
+
 REQUIRED_COLUMNS = {
     "bond_panel_live.parquet": {"cusip_id", "month", "pr", "ytm", "mod_dur", "bond_maturity", "credit_spread", "trade_count", "dollar_volume", "traded_days", "prc_bid", "prc_ask", "rel_bid_ask_bps", "quoted_days", "amt_outstanding_k", "ff17num", "db_type", "price_source"},
     "universe_snapshots_live.parquet": {"cusip_id", "month", "spread_final", "rating_bucket"},
@@ -100,7 +179,7 @@ class ArtifactSet:
     sha256: dict[str, str]
 
     @classmethod
-    def open(cls, directory: Path, *, expected_hashes: dict[str, str] | None = None) -> "ArtifactSet":
+    def open(cls, directory: Path, *, expected_hashes: dict[str, str] | None = None) -> ArtifactSet:
         """Pin every required input before allowing any output or query."""
         expected = EXPECTED_SHA256 if expected_hashes is None else expected_hashes
         paths: dict[str, Path] = {}
@@ -1070,6 +1149,925 @@ RESET ROLE;
 """
 
 
+def _sql_json(value: Any) -> str:
+    return _sql_string(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False))
+
+
+@dataclass(frozen=True)
+class UnitRepairArtifacts:
+    """Pinned v2 artifacts plus the provenance manifest that declares them."""
+
+    directory: Path
+    paths: dict[str, Path]
+    sha256: dict[str, str]
+    rows: dict[str, int]
+    manifest: dict[str, Any]
+    provenance: dict[str, Any]
+
+    @classmethod
+    def open(
+        cls,
+        directory: Path,
+        *,
+        expected_hashes: dict[str, str] | None = None,
+        expected_counts: dict[str, int] | None = None,
+        expected_provenance: dict[str, Any] | None = None,
+    ) -> UnitRepairArtifacts:
+        """Pin the four v2 parquets and the manifest before any plan or SQL."""
+        expected = EXPECTED_SHA256_UNIT_REPAIR_V2 if expected_hashes is None else expected_hashes
+        counts_expected = UNIT_REPAIR_EXPECTED_COUNTS if expected_counts is None else expected_counts
+        provenance = EXPECTED_EXPORT_PROVENANCE if expected_provenance is None else expected_provenance
+        if set(expected) != set(UNIT_REPAIR_ARTIFACT_SURFACES):
+            raise ArtifactPinError("unit_repair_artifact_map_not_four_surface")
+        manifest_path = directory / "manifest.json"
+        if not manifest_path.is_file():
+            raise ArtifactPinError("unit_repair_manifest_unavailable")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ArtifactPinError("unit_repair_manifest_unreadable") from exc
+        if not isinstance(manifest, dict):
+            raise ArtifactPinError("unit_repair_manifest_unreadable")
+        if manifest.get("unit_repair_contract") != UNIT_REPAIR_CONTRACT:
+            raise PlanError("unit_repair_contract_mismatch")
+        if manifest.get("unit") != "usd":
+            raise PlanError("unit_repair_unit_mismatch")
+        if manifest.get("scale") != UNIT_REPAIR_SCALE:
+            raise PlanError("unit_repair_scale_mismatch")
+        if manifest.get("source_pointer") != provenance["source_pointer"]:
+            raise PlanError("unit_repair_source_pointer_mismatch")
+        predicate = str(manifest.get("predicate", "")).replace(" ", "")
+        if predicate not in {"price_source='osbap'", "price_source=='osbap'"}:
+            raise PlanError("unit_repair_predicate_mismatch")
+        input_state = manifest.get("input_state")
+        if not isinstance(input_state, dict) or input_state.get("unit_repair_applied") is not True:
+            raise PlanError("unit_repair_artifacts_not_repaired")
+        manifest_map = manifest.get("artifact_sha256")
+        if not isinstance(manifest_map, dict):
+            raise ArtifactPinError("unit_repair_manifest_artifact_sha256_absent")
+        if set(manifest_map) != set(expected):
+            raise ArtifactPinError("unit_repair_manifest_artifact_sha256_key_mismatch")
+        export = manifest.get("export")
+        if not isinstance(export, dict):
+            raise ArtifactPinError("unit_repair_manifest_export_absent")
+        if export.get("manifest_sha256") != provenance["export_manifest_sha256"]:
+            raise PlanError("unit_repair_export_manifest_sha256_mismatch")
+        if export.get("export_datetime_utc") != provenance["export_datetime_utc"]:
+            raise PlanError("unit_repair_export_datetime_mismatch")
+        export_files = {
+            entry.get("surface"): entry
+            for entry in export.get("files", [])
+            if isinstance(entry, dict)
+        }
+        for surface, digest in provenance["export_files"].items():
+            if (export_files.get(surface) or {}).get("sha256") != digest:
+                raise PlanError(f"unit_repair_export_file_sha256_mismatch:{surface}")
+        artifacts_block = manifest.get("artifacts")
+        paths: dict[str, Path] = {}
+        actual: dict[str, str] = {}
+        rows: dict[str, int] = {}
+        for filename, expected_digest in expected.items():
+            path = directory / filename
+            if not path.is_file():
+                raise ArtifactPinError(f"artifact_unavailable:{filename}")
+            digest = _sha256(path)
+            if digest != expected_digest:
+                raise ArtifactPinError(f"artifact_sha256_mismatch:{filename}")
+            if manifest_map.get(filename) != digest:
+                raise ArtifactPinError(f"unit_repair_manifest_artifact_sha256_mismatch:{filename}")
+            try:
+                parquet = pq.ParquetFile(path)
+                columns = set(parquet.schema_arrow.names)
+                row_count = int(parquet.metadata.num_rows)
+            except Exception as exc:  # pragma: no cover - pyarrow gives format-specific detail
+                raise ArtifactPinError(f"unreadable_parquet:{filename}") from exc
+            missing = sorted(UNIT_REPAIR_REQUIRED_COLUMNS[filename] - columns)
+            if missing:
+                raise ArtifactPinError(f"missing_required_columns:{filename}:{','.join(missing)}")
+            surface = UNIT_REPAIR_ARTIFACT_SURFACES[filename]
+            manifest_rows = None
+            if isinstance(artifacts_block, dict) and isinstance(artifacts_block.get(filename), dict):
+                manifest_rows = artifacts_block[filename].get("rows")
+            if manifest_rows is not None and int(manifest_rows) != row_count:
+                raise ArtifactPinError(f"unit_repair_manifest_rows_mismatch:{filename}")
+            if row_count != counts_expected[surface]:
+                raise ArtifactPinError(f"unit_repair_rows_mismatch:{filename}")
+            paths[filename] = path
+            actual[filename] = digest
+            rows[surface] = row_count
+        return cls(
+            directory=directory,
+            paths=paths,
+            sha256=actual,
+            rows=rows,
+            manifest=manifest,
+            provenance=provenance,
+        )
+
+    def path(self, filename: str) -> str:
+        return self.paths[filename].as_posix()
+
+
+@dataclass(frozen=True)
+class UnitRepairPlan:
+    publication_id: str
+    input_fingerprint: str
+    from_head_publication_id: str
+    root_base_publication_id: str
+    config_hash: str
+    first_month: str
+    last_closed_month: str
+    open_month: str
+    counts: dict[str, int]
+    source_sha256: dict[str, str]
+    export_provenance: dict[str, Any]
+    per_year: tuple[dict[str, Any], ...]
+    per_year_digest: str
+    contract: str = UNIT_REPAIR_CONTRACT
+    code_revision: str = UNIT_REPAIR_CODE_REVISION
+    scale: int = UNIT_REPAIR_SCALE
+    predicate: str = UNIT_REPAIR_PREDICATE
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "publication_id": self.publication_id,
+            "input_fingerprint": self.input_fingerprint,
+            "contract": self.contract,
+            "code_revision": self.code_revision,
+            "from_head_publication_id": self.from_head_publication_id,
+            "root_base_publication_id": self.root_base_publication_id,
+            "config_hash": self.config_hash,
+            "first_month": self.first_month,
+            "last_closed_month": self.last_closed_month,
+            "open_month": self.open_month,
+            "scale": self.scale,
+            "predicate": self.predicate,
+            "affected_surfaces": list(UNIT_REPAIR_AFFECTED_SURFACES),
+            "counts": self.counts,
+            "artifact_sha256": dict(sorted(self.source_sha256.items())),
+            "export_provenance": self.export_provenance,
+            "per_year": [dict(item) for item in self.per_year],
+            "per_year_volume_digest": self.per_year_digest,
+        }
+
+
+def _unit_repair_artifact_year_aggregates(artifacts: UnitRepairArtifacts) -> list[dict[str, Any]]:
+    """Per-year artifact aggregates for months <= the repair cutoff.
+
+    Volume surfaces carry row/NULL/sum aggregates (the sum cast to
+    DECIMAL(38,6) in DuckDB); the other surfaces carry row counts only.
+    """
+    conn, state = _connect()
+    try:
+        aggregates: list[dict[str, Any]] = []
+        for filename, surface in sorted(UNIT_REPAIR_ARTIFACT_SURFACES.items()):
+            path = artifacts.path(filename)
+            if surface in UNIT_REPAIR_AFFECTED_SURFACES:
+                raw = conn.execute(
+                    "SELECT extract(year FROM CAST(month AS DATE))::int, count(*), "
+                    "count(*) FILTER (WHERE dollar_volume IS NULL), "
+                    "CAST(SUM(CAST(dollar_volume AS DECIMAL(38,6))) AS DECIMAL(38,6)) "
+                    "FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE) "
+                    "GROUP BY 1 ORDER BY 1",
+                    [path, UNIT_REPAIR_ARTIFACT_CUTOFF],
+                ).fetchall()
+                for year, row_count, null_count, total in raw:
+                    aggregates.append({
+                        "surface": surface,
+                        "year": int(year),
+                        "rows": int(row_count),
+                        "nulls": int(null_count),
+                        "sum_dollar_volume": None if total is None else str(total),
+                    })
+            else:
+                raw = conn.execute(
+                    "SELECT extract(year FROM CAST(month AS DATE))::int, count(*) "
+                    "FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE) "
+                    "GROUP BY 1 ORDER BY 1",
+                    [path, UNIT_REPAIR_ARTIFACT_CUTOFF],
+                ).fetchall()
+                for year, row_count in raw:
+                    aggregates.append({
+                        "surface": surface,
+                        "year": int(year),
+                        "rows": int(row_count),
+                        "nulls": None,
+                        "sum_dollar_volume": None,
+                    })
+        return aggregates
+    finally:
+        conn.close()
+        state.cleanup()
+
+
+def _gate_unit_repair_artifact_scale(artifacts: UnitRepairArtifacts) -> None:
+    """Refuse artifacts that are not the declared post-repair unit basis.
+
+    The lower band catches a pre-repair input; the upper band catches an input
+    that already received the predicate a second time (double conversion).
+    """
+    conn, state = _connect()
+    try:
+        row = conn.execute(
+            "SELECT count(*), quantile_cont(dollar_volume, 0.5) FROM read_parquet(?) "
+            "WHERE price_source = 'osbap' AND dollar_volume IS NOT NULL AND dollar_volume > 0",
+            [artifacts.path("bond_panel_live.parquet")],
+        ).fetchone()
+    finally:
+        conn.close()
+        state.cleanup()
+    observed = int(row[0])
+    median = None if row[1] is None else float(row[1])
+    if observed == 0:
+        raise PlanError("unit_repair_artifact_osbap_rows_absent")
+    low, high = UNIT_REPAIR_USD_BAND
+    if median is None or not low <= median <= high:
+        raise PlanError("unit_repair_artifact_scale_out_of_band")
+
+
+def _unit_repair_fingerprint_payload(plan: UnitRepairPlan) -> dict[str, Any]:
+    return {
+        "contract": plan.contract,
+        "from_head_publication_id": plan.from_head_publication_id,
+        "root_base_publication_id": plan.root_base_publication_id,
+        "config_hash": plan.config_hash,
+        "scale": plan.scale,
+        "predicate": plan.predicate,
+        "affected_surfaces": list(UNIT_REPAIR_AFFECTED_SURFACES),
+        "artifact_sha256": dict(sorted(plan.source_sha256.items())),
+        "expected_counts": dict(sorted(plan.counts.items())),
+        "per_year_volume_digest": plan.per_year_digest,
+        "export_provenance": plan.export_provenance,
+    }
+
+
+def _validate_unit_repair_plan(plan: UnitRepairPlan) -> None:
+    """Fail closed before emission when the deterministic plan drifts."""
+    fingerprint = _canonical_digest(_unit_repair_fingerprint_payload(plan))
+    publication_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{PRODUCT}:unit-repair:{fingerprint}"))
+    per_year_digest = _canonical_digest({"per_year_volume": list(plan.per_year)})
+    if (
+        plan.input_fingerprint != fingerprint
+        or plan.publication_id != publication_id
+        or plan.per_year_digest != per_year_digest
+        or plan.contract != UNIT_REPAIR_CONTRACT
+        or plan.code_revision != UNIT_REPAIR_CODE_REVISION
+        or plan.scale != UNIT_REPAIR_SCALE
+        or plan.predicate != UNIT_REPAIR_PREDICATE
+    ):
+        raise PlanError("unit_repair_plan_not_authorized")
+
+
+def build_unit_repair_plan(
+    artifacts: UnitRepairArtifacts, *, from_head_publication_id: str,
+) -> UnitRepairPlan:
+    """Plan the unit-repair child of the pinned validated head."""
+    if from_head_publication_id != UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID:
+        raise PlanError("unit_repair_from_head_not_authorized")
+    _gate_unit_repair_artifact_scale(artifacts)
+    per_year = tuple(_unit_repair_artifact_year_aggregates(artifacts))
+    per_year_digest = _canonical_digest({"per_year_volume": list(per_year)})
+    counts = dict(sorted(artifacts.rows.items()))
+    source_sha256 = dict(sorted(artifacts.sha256.items()))
+    plan = UnitRepairPlan(
+        publication_id="",
+        input_fingerprint="",
+        from_head_publication_id=from_head_publication_id,
+        root_base_publication_id=UNIT_REPAIR_ROOT_BASE_PUBLICATION_ID,
+        config_hash=UNIT_REPAIR_CONFIG_HASH,
+        first_month=UNIT_REPAIR_EXPECTED_WINDOW["first_month"],
+        last_closed_month=UNIT_REPAIR_EXPECTED_WINDOW["last_closed_month"],
+        open_month=UNIT_REPAIR_EXPECTED_WINDOW["open_month"],
+        counts=counts,
+        source_sha256=source_sha256,
+        export_provenance=dict(artifacts.provenance),
+        per_year=per_year,
+        per_year_digest=per_year_digest,
+    )
+    fingerprint = _canonical_digest(_unit_repair_fingerprint_payload(plan))
+    publication_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{PRODUCT}:unit-repair:{fingerprint}"))
+    resolved = replace(plan, input_fingerprint=fingerprint, publication_id=publication_id)
+    _validate_unit_repair_plan(resolved)
+    return resolved
+
+
+def _unit_repair_marker(plan: UnitRepairPlan) -> dict[str, Any]:
+    return {
+        "contract": plan.contract,
+        "from_head_publication_id": plan.from_head_publication_id,
+        "root_base_publication_id": plan.root_base_publication_id,
+        "scale": plan.scale,
+        "predicate": plan.predicate,
+        "affected_surfaces": list(UNIT_REPAIR_AFFECTED_SURFACES),
+        "authorized_code_revision": plan.code_revision,
+        "expected_counts": dict(sorted(plan.counts.items())),
+        "artifact_sha256_v2": dict(sorted(plan.source_sha256.items())),
+        "export_provenance": plan.export_provenance,
+        "per_year_volume_digest": plan.per_year_digest,
+    }
+
+
+_UNIT_REPAIR_IDENTITY_COLUMNS = ("distribution_rule", "reference_cusip9", "distribution_decision_id")
+_UNIT_REPAIR_MARKER_COLUMNS = ("source_lineage", "payload")
+
+
+def _unit_repair_copy_expressions(plan: UnitRepairPlan, surface: Surface) -> list[tuple[str, str]]:
+    marker = _sql_json(_unit_repair_marker(plan))
+    items: list[tuple[str, str]] = []
+    for column in _COPY_COLUMNS[surface]:
+        if column == "publication_id":
+            items.append((column, f"{_sql_string(plan.publication_id)}::uuid"))
+        elif column == "distribution_rule":
+            items.append((column, "COALESCE(source.distribution_rule, 'rule_144a')"))
+        elif column == "reference_cusip9":
+            items.append((column, "COALESCE(source.reference_cusip9, source.cusip_id)"))
+        elif column == "distribution_decision_id":
+            items.append((
+                column,
+                "CASE WHEN source.distribution_rule IS NULL THEN NULL ELSE source.distribution_decision_id END",
+            ))
+        elif column == "dollar_volume" and surface in UNIT_REPAIR_AFFECTED_SURFACES:
+            items.append((
+                column,
+                f"CASE WHEN source.price_source = 'osbap' THEN source.dollar_volume * {UNIT_REPAIR_SCALE} ELSE source.dollar_volume END",
+            ))
+        elif column in _UNIT_REPAIR_MARKER_COLUMNS and surface in UNIT_REPAIR_AFFECTED_SURFACES:
+            items.append((
+                column,
+                f"source.{column} || jsonb_build_object('unit_repair', {marker}::jsonb)",
+            ))
+        else:
+            items.append((column, f"source.{column}"))
+    return items
+
+
+def _unit_repair_verbatim_columns(surface: Surface) -> tuple[str, ...]:
+    """Data columns that must equal the current view row exactly.
+
+    Exclusions from the row-wise comparison (each is different by design):
+    - ``publication_id``: C's identity column; the view row carries H's id, so
+      comparing it would trip the gate on every row.  It is pinned separately by
+      the prepared-child check and the INSERT expression.
+    - ``distribution_rule`` / ``reference_cusip9`` / ``distribution_decision_id``:
+      rewritten by the dual-series identity fill and validated by the finalize
+      identity gates.
+    - volume surfaces only: ``dollar_volume`` (scaled by the declared predicate),
+      ``source_lineage`` and ``payload`` (unioned with the unit-repair marker;
+      the finalize containment gate checks the marker instead).
+    ``month`` and ``cusip_id`` stay in the comparison: they are the join keys,
+    so they are equal by construction and the duplicate check is harmless.
+    """
+    excluded = {"publication_id", *_UNIT_REPAIR_IDENTITY_COLUMNS}
+    if surface in UNIT_REPAIR_AFFECTED_SURFACES:
+        excluded |= {"dollar_volume", *_UNIT_REPAIR_MARKER_COLUMNS}
+    return tuple(column for column in _COPY_COLUMNS[surface] if column not in excluded)
+
+
+def _unit_repair_child_identity_check(plan: UnitRepairPlan) -> str:
+    head = _sql_string(plan.from_head_publication_id)
+    child = _sql_string(plan.publication_id)
+    return f"""EXISTS (
+        SELECT 1 FROM bond_panel_publications candidate
+        WHERE candidate.publication_id = {child}::uuid
+          AND candidate.publication_status IN ('prepared', 'validated')
+          AND candidate.parent_publication_id = {head}::uuid
+          AND candidate.config_hash = {_sql_string(plan.config_hash)}
+          AND candidate.input_fingerprint = {_sql_string(plan.input_fingerprint)}
+          AND candidate.code_revision = {_sql_string(plan.code_revision)}
+          AND candidate.gate_evidence @> jsonb_build_object(
+              'unit_repair',
+              jsonb_build_object(
+                  'contract', {_sql_string(plan.contract)},
+                  'from_head_publication_id', {head}
+              )
+          )
+    )"""
+
+
+def render_unit_repair_prepare_sql(plan: UnitRepairPlan) -> str:
+    """Create or attest the deterministic prepared unit-repair child; never move the pointer."""
+    _validate_unit_repair_plan(plan)
+    head = _sql_string(plan.from_head_publication_id)
+    child = _sql_string(plan.publication_id)
+    marker = _sql_json(_unit_repair_marker(plan))
+    hashes = _sql_json(dict(sorted(plan.source_sha256.items())))
+    counts = plan.counts
+    window = UNIT_REPAIR_EXPECTED_WINDOW
+    frozen_root = _sql_json(dict(sorted(EXPECTED_SHA256.items())))
+    count_checks = "\n".join(
+        f"        IF (SELECT count(*) FROM bond_panel_current_{surface}_v1) <> {counts[surface]} THEN RAISE EXCEPTION 'unit repair prepare requires the pinned {surface} count'; END IF;"
+        for surface in SURFACES
+    )
+    return f"""\\set ON_ERROR_STOP on
+BEGIN;
+SET LOCAL ROLE worker_writer;
+DO $unit_repair_prepare$
+BEGIN
+    IF (SELECT publication_id FROM bond_panel_app_pointer WHERE product = {_sql_string(PRODUCT)}) IS DISTINCT FROM {head}::uuid THEN
+        RAISE EXCEPTION 'unit repair prepare requires the expected head pointer';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM bond_panel_publications head
+        WHERE head.publication_id = {head}::uuid
+          AND head.publication_status = 'validated'
+          AND head.config_hash = {_sql_string(UNIT_REPAIR_CONFIG_HASH)}
+          AND head.first_month = {_sql_string(window['first_month'])}::date
+          AND head.last_closed_month = {_sql_string(window['last_closed_month'])}::date
+          AND head.open_month = {_sql_string(window['open_month'])}::date
+    ) THEN RAISE EXCEPTION 'unit repair prepare requires the pinned head window'; END IF;
+    IF NOT EXISTS (
+        WITH RECURSIVE ancestry(publication_id, parent_publication_id, path) AS (
+            SELECT p.publication_id, p.parent_publication_id, ARRAY[p.publication_id]
+            FROM bond_panel_publications p
+            WHERE p.publication_id = {head}::uuid
+            UNION ALL
+            SELECT p.publication_id, p.parent_publication_id, a.path || p.publication_id
+            FROM bond_panel_publications p JOIN ancestry a ON p.publication_id = a.parent_publication_id
+            WHERE NOT p.publication_id = ANY(a.path)
+        )
+        SELECT 1
+        FROM ancestry a JOIN bond_panel_publications root ON root.publication_id = a.publication_id
+        WHERE a.publication_id = {_sql_string(plan.root_base_publication_id)}::uuid
+          AND a.parent_publication_id IS NULL
+          AND root.publication_status = 'validated'
+          AND root.config_hash = {_sql_string(CONFIG_HASH)}
+          AND root.code_revision = {_sql_string(REPAIR_CODE_REVISION)}
+          AND root.source_lineage->'source_sha256' = {frozen_root}::jsonb
+    ) THEN RAISE EXCEPTION 'unit repair prepare requires the frozen root provenance'; END IF;
+    IF EXISTS (
+        SELECT 1 FROM bond_panel_publications prior
+        WHERE prior.publication_status = 'validated'
+          AND prior.gate_evidence @> jsonb_build_object(
+              'unit_repair',
+              jsonb_build_object(
+                  'contract', {_sql_string(plan.contract)},
+                  'from_head_publication_id', {head}
+              )
+          )
+    ) THEN RAISE EXCEPTION 'unit repair child already validated for this head'; END IF;
+{count_checks}
+END
+$unit_repair_prepare$;
+INSERT INTO bond_panel_publications (publication_id, parent_publication_id, publication_status, config_hash, input_fingerprint, code_revision, first_month, last_closed_month, open_month, snapshot_rows, rv_signal_rows, returns_rows, ratings_pit_rows, source_lineage, gate_evidence)
+SELECT {child}::uuid, {head}::uuid, 'prepared', {_sql_string(plan.config_hash)}, {_sql_string(plan.input_fingerprint)}, {_sql_string(plan.code_revision)}, {_sql_string(window['first_month'])}::date, {_sql_string(window['last_closed_month'])}::date, {_sql_string(window['open_month'])}::date, {counts['snapshot']}, {counts['rv_signal']}, {counts['returns']}, {counts['rating_pit']},
+       head.source_lineage || jsonb_build_object('source_sha256', {hashes}::jsonb, 'unit_repair', {marker}::jsonb),
+       jsonb_build_object('unit_repair', {marker}::jsonb)
+FROM bond_panel_publications head
+WHERE head.publication_id = {head}::uuid
+ON CONFLICT (publication_id) DO NOTHING;
+DO $unit_repair_prepared$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM bond_panel_publications candidate
+        WHERE candidate.publication_id = {child}::uuid
+          AND candidate.parent_publication_id = {head}::uuid
+          AND candidate.publication_status IN ('prepared', 'validated')
+          AND candidate.config_hash = {_sql_string(plan.config_hash)}
+          AND candidate.input_fingerprint = {_sql_string(plan.input_fingerprint)}
+          AND candidate.code_revision = {_sql_string(plan.code_revision)}
+          AND candidate.first_month = {_sql_string(window['first_month'])}::date
+          AND candidate.last_closed_month = {_sql_string(window['last_closed_month'])}::date
+          AND candidate.open_month = {_sql_string(window['open_month'])}::date
+          AND candidate.snapshot_rows = {counts['snapshot']}
+          AND candidate.rv_signal_rows = {counts['rv_signal']}
+          AND candidate.returns_rows = {counts['returns']}
+          AND candidate.ratings_pit_rows = {counts['rating_pit']}
+          AND candidate.source_lineage @> jsonb_build_object('source_sha256', {hashes}::jsonb, 'unit_repair', {marker}::jsonb)
+          AND candidate.gate_evidence @> jsonb_build_object('unit_repair', {marker}::jsonb)
+    ) THEN RAISE EXCEPTION 'non-identical or non-resumable unit-repair publication'; END IF;
+END
+$unit_repair_prepared$;
+COMMIT;
+SELECT jsonb_build_object('publication_id', {child}, 'phase', 'prepared', 'contract', {_sql_string(plan.contract)}, 'from_head_publication_id', {head}, 'input_fingerprint', {_sql_string(plan.input_fingerprint)}, 'counts', {_sql_string(json.dumps(counts, sort_keys=True))}::jsonb) AS unit_repair_evidence;
+"""
+
+
+def render_unit_repair_copy_sql(plan: UnitRepairPlan, surface: Surface) -> str:
+    """Copy one current view into the prepared child inside PostgreSQL."""
+    if surface not in SURFACES:
+        raise ValueError(f"unknown_surface:{surface}")
+    _validate_unit_repair_plan(plan)
+    head = _sql_string(plan.from_head_publication_id)
+    child = _sql_string(plan.publication_id)
+    marker = _sql_json(_unit_repair_marker(plan))
+    table = _TABLES[surface]
+    view = f"bond_panel_current_{surface}_v1"
+    items = _unit_repair_copy_expressions(plan, surface)
+    target_columns = ", ".join(column for column, _expression in items)
+    source_expressions = ", ".join(expression for _column, expression in items)
+    verbatim_columns = _unit_repair_verbatim_columns(surface)
+    candidate_row = ", ".join(f"candidate.{column}" for column in verbatim_columns)
+    source_row = ", ".join(f"source.{column}" for column in verbatim_columns)
+    gates = [
+        f"""    IF (SELECT count(*) FROM {table} WHERE publication_id = {child}::uuid) <> {plan.counts[surface]} THEN
+        RAISE EXCEPTION 'unit repair copy count mismatch:{surface}';
+    END IF;""",
+    ]
+    if verbatim_columns:
+        gates.append(
+            f"""    IF EXISTS (
+        SELECT 1 FROM {table} candidate
+        JOIN {view} source USING (month, cusip_id)
+        WHERE candidate.publication_id = {child}::uuid
+          AND ROW({candidate_row}) IS DISTINCT FROM ROW({source_row})
+    ) THEN RAISE EXCEPTION 'unit repair verbatim conflict:{surface}'; END IF;"""
+        )
+    if surface in UNIT_REPAIR_AFFECTED_SURFACES:
+        gates.append(
+            f"""    IF EXISTS (
+        SELECT 1 FROM {table} candidate
+        JOIN {view} source USING (month, cusip_id)
+        WHERE candidate.publication_id = {child}::uuid
+          AND (
+              NOT candidate.source_lineage @> source.source_lineage
+              OR NOT candidate.payload @> source.payload
+              OR NOT candidate.source_lineage @> jsonb_build_object('unit_repair', {marker}::jsonb)
+              OR NOT candidate.payload @> jsonb_build_object('unit_repair', {marker}::jsonb)
+          )
+    ) THEN RAISE EXCEPTION 'unit repair marker conflict:{surface}'; END IF;"""
+        )
+        gates.append(
+            f"""    IF (SELECT count(*) FROM {table} candidate WHERE candidate.publication_id = {child}::uuid AND candidate.dollar_volume IS NULL) <> (SELECT count(*) FROM {view} source WHERE source.dollar_volume IS NULL) THEN
+        RAISE EXCEPTION 'unit repair null volume mismatch:{surface}';
+    END IF;"""
+        )
+        gates.append(
+            f"""    IF EXISTS (
+        SELECT 1
+        FROM (
+            SELECT extract(year FROM candidate.month)::int AS yr, sum(candidate.dollar_volume) AS osbap_sum
+            FROM {table} candidate
+            WHERE candidate.publication_id = {child}::uuid AND candidate.price_source = 'osbap'
+            GROUP BY 1
+        ) candidate_years
+        FULL JOIN (
+            SELECT extract(year FROM source.month)::int AS yr, sum(source.dollar_volume) AS osbap_sum
+            FROM {view} source
+            WHERE source.price_source = 'osbap'
+            GROUP BY 1
+        ) source_years USING (yr)
+        WHERE candidate_years.osbap_sum IS DISTINCT FROM source_years.osbap_sum * {UNIT_REPAIR_SCALE}
+    ) THEN RAISE EXCEPTION 'unit repair per-year osbap sum mismatch:{surface}'; END IF;"""
+        )
+    gate_block = "\n".join(gates)
+    return f"""\\set ON_ERROR_STOP on
+BEGIN;
+SET LOCAL ROLE worker_writer;
+DO $unit_repair_copy_order$
+BEGIN
+    IF (SELECT publication_id FROM bond_panel_app_pointer WHERE product = {_sql_string(PRODUCT)}) IS DISTINCT FROM {head}::uuid THEN
+        RAISE EXCEPTION 'unit repair copy requires the expected head pointer';
+    END IF;
+    IF NOT {_unit_repair_child_identity_check(plan)} THEN
+        RAISE EXCEPTION 'unit repair copy requires the prepared unit-repair child';
+    END IF;
+END
+$unit_repair_copy_order$;
+LOCK TABLE {table} IN SHARE ROW EXCLUSIVE MODE;
+INSERT INTO {table} ({target_columns})
+SELECT {source_expressions}
+FROM {view} source
+WHERE EXISTS (
+    SELECT 1 FROM bond_panel_publications candidate
+    WHERE candidate.publication_id = {child}::uuid
+      AND candidate.publication_status = 'prepared'
+)
+ON CONFLICT (publication_id, month, cusip_id) DO NOTHING;
+DO $unit_repair_copy_gates$
+BEGIN
+{gate_block}
+END
+$unit_repair_copy_gates$;
+COMMIT;
+"""
+
+
+def _unit_repair_expected_aggregates_json(plan: UnitRepairPlan) -> str:
+    payload = [
+        {
+            "surface": item["surface"],
+            "year": item["year"],
+            "rows": item["rows"],
+            "nulls": item["nulls"],
+            "sum_dollar_volume": item["sum_dollar_volume"],
+        }
+        for item in plan.per_year
+    ]
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _unit_repair_returns_first_month() -> str:
+    first = date.fromisoformat(UNIT_REPAIR_EXPECTED_WINDOW["first_month"])
+    return date(first.year + (first.month == 12), first.month % 12 + 1, 1).isoformat()
+
+
+def render_unit_repair_finalize_sql(plan: UnitRepairPlan) -> str:
+    """Gate the loaded child against the artifact aggregates, then validate and CAS.
+
+    Performance shape (plan amendment §14): one timed transaction whose single DO
+    fills small per-surface monthly summaries, runs every gate from those
+    summaries or from month-bounded, publication-pinned anti-joins, then performs
+    the prepared->validated transition and the pointer CAS.  No EXCEPT set
+    operations, no repeated all-history scans and no trusted fast path: the gates
+    are equivalent to the pre-amendment SQL, and the pointer trigger keeps
+    re-checking identity with the same rules after the CAS.
+    """
+    _validate_unit_repair_plan(plan)
+    head = _sql_string(plan.from_head_publication_id)
+    child = _sql_string(plan.publication_id)
+    marker = _sql_json(_unit_repair_marker(plan))
+    hashes = _sql_json(dict(sorted(plan.source_sha256.items())))
+    counts = plan.counts
+    window = UNIT_REPAIR_EXPECTED_WINDOW
+    aggregates = _sql_string(_unit_repair_expected_aggregates_json(plan))
+    cutoff = _sql_string(UNIT_REPAIR_ARTIFACT_CUTOFF)
+    returns_first = _unit_repair_returns_first_month()
+    closed_months = len(_month_starts(returns_first, window["last_closed_month"]))
+    counts_json = _sql_string(json.dumps(counts, sort_keys=True))
+    invalid_identity = (
+        "f.distribution_rule IS NULL"
+        " OR f.reference_cusip9 IS NULL OR btrim(f.reference_cusip9) = ''"
+        " OR (f.distribution_rule = 'rule_144a' AND"
+        " (f.cusip_id <> f.reference_cusip9 OR f.distribution_decision_id IS NOT NULL))"
+        " OR (f.distribution_rule = 'reg_s' AND nullif(f.distribution_decision_id, '') IS NULL)"
+    )
+    bootstrap_identity = (
+        "f.distribution_rule = 'rule_144a' AND f.cusip_id = f.reference_cusip9"
+        " AND f.distribution_decision_id IS NULL"
+    )
+    metadata = f"""          AND candidate.config_hash = {_sql_string(plan.config_hash)}
+          AND candidate.input_fingerprint = {_sql_string(plan.input_fingerprint)}
+          AND candidate.code_revision = {_sql_string(plan.code_revision)}
+          AND candidate.first_month = {_sql_string(window['first_month'])}::date
+          AND candidate.last_closed_month = {_sql_string(window['last_closed_month'])}::date
+          AND candidate.open_month = {_sql_string(window['open_month'])}::date
+          AND candidate.snapshot_rows = {counts['snapshot']}
+          AND candidate.rv_signal_rows = {counts['rv_signal']}
+          AND candidate.returns_rows = {counts['returns']}
+          AND candidate.ratings_pit_rows = {counts['rating_pit']}
+          AND candidate.source_lineage @> jsonb_build_object('source_sha256', {hashes}::jsonb, 'unit_repair', {marker}::jsonb)"""
+    summaries: list[str] = []
+    for surface in SURFACES:
+        if surface in UNIT_REPAIR_AFFECTED_SURFACES:
+            nulls_expr = "count(*) FILTER (WHERE f.dollar_volume IS NULL)"
+            sum_expr = "sum(f.dollar_volume)"
+        else:
+            nulls_expr = "NULL::bigint"
+            sum_expr = "NULL::numeric"
+        summaries.append(
+            f"""INSERT INTO pg_temp.unit_repair_month_stats (surface, month, rows, nulls, volume_sum, bad_identity, bootstrap)
+SELECT {_sql_string(surface)}, f.month, count(*), {nulls_expr}, {sum_expr},
+       bool_or({invalid_identity}),
+       bool_or({bootstrap_identity})
+FROM {_TABLES[surface]} f
+WHERE f.publication_id = {child}::uuid
+GROUP BY f.month;"""
+        )
+    summary_block = "\n".join(summaries)
+    counts_blocks: list[str] = []
+    for surface in SURFACES:
+        returns_capture = "\n    v_returns_min := v_min;" if surface == "returns" else ""
+        counts_blocks.append(
+            f"""    SELECT coalesce(sum(rows), 0), min(month), max(month) INTO v_rows, v_min, v_max
+    FROM pg_temp.unit_repair_month_stats WHERE surface = {_sql_string(surface)};
+    IF v_rows <> {counts[surface]} THEN
+        RAISE EXCEPTION 'unit repair final count mismatch:{surface}';
+    END IF;{returns_capture}
+    RAISE NOTICE 'unit repair finalize: {surface} rows=% min=% max=% elapsed_ms=%', v_rows, v_min, v_max, round(extract(epoch FROM clock_timestamp() - v_started) * 1000);"""
+        )
+    counts_block = "\n".join(counts_blocks)
+    identity_blocks: list[str] = []
+    for surface in SURFACES:
+        identity_blocks.append(
+            f"""    IF EXISTS (
+        SELECT 1 FROM pg_temp.unit_repair_month_stats
+        WHERE surface = {_sql_string(surface)} AND bad_identity IS TRUE LIMIT 1
+    ) THEN RAISE EXCEPTION 'unit repair identity coverage invalid'; END IF;"""
+        )
+    identity_block = "\n".join(identity_blocks)
+    coverage_specs = (
+        ("rv_signal", "snapshot", " AND s.eligibility_state = 'included'", "unit repair rv_signal coverage mismatch"),
+        ("returns", "snapshot", "", "unit repair returns coverage mismatch"),
+        ("snapshot", "rating_pit", "", "unit repair rating coverage mismatch"),
+        ("rating_pit", "snapshot", "", "unit repair rating coverage mismatch"),
+    )
+    coverage_blocks: list[str] = []
+    for forward_surface, probe_surface, probe_extra, message in coverage_specs:
+        coverage_blocks.append(
+            f"""        IF EXISTS (
+            SELECT 1 FROM bond_panel_{forward_surface} f
+            WHERE f.publication_id = {child}::uuid
+              AND f.month = v_month
+              AND NOT EXISTS (
+                  SELECT 1 FROM bond_panel_{probe_surface} s
+                  WHERE s.publication_id = {child}::uuid
+                    AND s.month = v_month AND s.month = f.month AND s.cusip_id = f.cusip_id{probe_extra}
+              ) LIMIT 1
+        ) THEN RAISE EXCEPTION '{message}'; END IF;"""
+        )
+    for surface in ("rv_signal", "returns", "rating_pit"):
+        coverage_blocks.append(
+            f"""        IF EXISTS (
+            SELECT 1 FROM bond_panel_{surface} f
+            JOIN bond_panel_snapshot s
+              ON s.month = f.month AND s.cusip_id = f.cusip_id
+             AND s.publication_id = {child}::uuid AND s.month = v_month
+            WHERE f.publication_id = {child}::uuid
+              AND f.month = v_month
+              AND (f.distribution_rule, f.reference_cusip9, f.distribution_decision_id)
+                  IS DISTINCT FROM (s.distribution_rule, s.reference_cusip9, s.distribution_decision_id)
+            LIMIT 1
+        ) THEN RAISE EXCEPTION 'unit repair cross-surface identity mismatch:{surface}'; END IF;"""
+        )
+    coverage_block = "\n".join(coverage_blocks)
+    return f"""\\set ON_ERROR_STOP on
+BEGIN;
+SET LOCAL ROLE worker_writer;
+SET LOCAL lock_timeout = {_sql_string(UNIT_REPAIR_FINALIZE_LOCK_TIMEOUT)};
+SET LOCAL statement_timeout = {_sql_string(UNIT_REPAIR_FINALIZE_STATEMENT_TIMEOUT)};
+-- Freeze the four fact tables for the whole validation window: SHARE blocks
+-- writers (INSERT/UPDATE/DELETE) on these tables and allows readers.  Fixed
+-- order.  Requires an operator-confirmed quiet panel-write window; a 5s lock
+-- timeout fails instead of queueing an extended incident.
+LOCK TABLE bond_panel_snapshot, bond_panel_rv_signal, bond_panel_returns, bond_panel_rating_pit IN SHARE MODE;
+DO $unit_repair_finalize$
+DECLARE
+    v_month date;
+    v_rows bigint;
+    v_min date;
+    v_max date;
+    v_returns_min date;
+    v_months integer;
+    v_checked integer := 0;
+    v_mismatches integer;
+    v_status_rows integer;
+    v_cas_rows integer;
+    v_started timestamptz := clock_timestamp();
+BEGIN
+    -- Row locks: the child publication row first, then the pointer row, so a
+    -- concurrent status/CAS writer is serialized behind this transaction.
+    PERFORM 1 FROM bond_panel_publications WHERE publication_id = {child}::uuid FOR UPDATE;
+    PERFORM 1 FROM bond_panel_app_pointer WHERE product = {_sql_string(PRODUCT)} FOR UPDATE;
+    -- Null-safe pointer preflight: missing or unrelated pointer fails immediately.
+    IF NOT EXISTS (
+        SELECT 1 FROM bond_panel_app_pointer
+        WHERE product = {_sql_string(PRODUCT)} AND publication_id IN ({head}::uuid, {child}::uuid)
+    ) THEN RAISE EXCEPTION 'unit repair finalize requires the expected head pointer or this child'; END IF;
+    IF EXISTS (
+        SELECT 1 FROM bond_panel_app_pointer
+        WHERE product = {_sql_string(PRODUCT)} AND publication_id = {child}::uuid
+    ) AND NOT EXISTS (
+        SELECT 1 FROM bond_panel_publications
+        WHERE publication_id = {child}::uuid AND publication_status = 'validated'
+    ) THEN RAISE EXCEPTION 'unit repair finalize cannot point at an unvalidated child'; END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM bond_panel_publications candidate
+        WHERE candidate.publication_id = {child}::uuid
+          AND candidate.parent_publication_id = {head}::uuid
+          AND candidate.publication_status IN ('prepared', 'validated')
+{metadata}
+    ) THEN RAISE EXCEPTION 'non-identical unit-repair publication finalization'; END IF;
+    -- Small monthly summaries: one grouped scan per surface, C only, actual
+    -- dates only (unexpected dates included).  No payload JSON is stored.
+    CREATE TEMP TABLE unit_repair_month_stats (
+        surface text NOT NULL,
+        month date NOT NULL,
+        rows bigint NOT NULL,
+        nulls bigint,
+        volume_sum numeric,
+        bad_identity boolean,
+        bootstrap boolean,
+        PRIMARY KEY (surface, month)
+    ) ON COMMIT DROP;
+{summary_block}
+    RAISE NOTICE 'unit repair finalize: summaries filled months=% elapsed_ms=%', (SELECT count(*) FROM pg_temp.unit_repair_month_stats), round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
+{counts_block}
+    IF v_returns_min IS DISTINCT FROM {_sql_string(returns_first)}::date THEN
+        RAISE EXCEPTION 'unit repair returns must start one month after the first snapshot month';
+    END IF;
+    -- Continuity equivalence: PK months are distinct first-of-month dates, so
+    -- this count plus the pinned minimum is exactly the generate_series coverage.
+    SELECT count(*) INTO v_months
+    FROM pg_temp.unit_repair_month_stats
+    WHERE surface = 'returns'
+      AND month BETWEEN {_sql_string(returns_first)}::date AND {_sql_string(window['last_closed_month'])}::date
+      AND month = date_trunc('month', month)::date;
+    IF v_months <> {closed_months} THEN
+        RAISE EXCEPTION 'unit repair returns history is not contiguous through the closed-month cutoff';
+    END IF;
+    RAISE NOTICE 'unit repair finalize: counts/continuity months=% elapsed_ms=%', v_months, round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
+{identity_block}
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_temp.unit_repair_month_stats
+        WHERE surface = 'snapshot' AND bootstrap IS TRUE LIMIT 1
+    ) THEN RAISE EXCEPTION 'unit repair identity bootstrap missing'; END IF;
+    RAISE NOTICE 'unit repair finalize: identity gates elapsed_ms=%', round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
+    -- Coverage + cross-surface identity, month by month, both sides pinned to C.
+    FOR v_month IN SELECT DISTINCT month FROM pg_temp.unit_repair_month_stats ORDER BY month LOOP
+{coverage_block}
+        v_checked := v_checked + 1;
+        IF v_checked % 25 = 0 THEN
+            RAISE NOTICE 'unit repair finalize: coverage months=% elapsed_ms=%', v_checked, round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
+        END IF;
+    END LOOP;
+    RAISE NOTICE 'unit repair finalize: coverage months=% elapsed_ms=%', v_checked, round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
+    -- Artifact/DB aggregate gate: expected JSON comes unchanged from
+    -- _unit_repair_expected_aggregates_json(plan) (duplicate keys fail on the PK).
+    -- Actual annual totals sum the UNROUNDED monthly numeric partials and cast
+    -- once; that is algebraically identical to the original direct annual cast.
+    -- The artifact stores dollar_volume as float64 (per-row DECIMAL(38,6) cast +
+    -- exact sum; measured worst-case 0.0012 USD/year), so sums are compared
+    -- within {UNIT_REPAIR_SUM_TOLERANCE_USD} USD; row and NULL counts are exact.
+    CREATE TEMP TABLE unit_repair_expected_year (
+        surface text NOT NULL,
+        year integer NOT NULL,
+        rows bigint,
+        nulls bigint,
+        sum_dollar_volume numeric,
+        PRIMARY KEY (surface, year)
+    ) ON COMMIT DROP;
+    INSERT INTO pg_temp.unit_repair_expected_year (surface, year, rows, nulls, sum_dollar_volume)
+    SELECT surface, year, rows, nulls, sum_dollar_volume
+    FROM jsonb_to_recordset({aggregates}::jsonb) AS expected(surface text, "year" int, rows bigint, "nulls" bigint, sum_dollar_volume numeric);
+    CREATE TEMP TABLE unit_repair_actual_year (
+        surface text NOT NULL,
+        year integer NOT NULL,
+        rows bigint,
+        nulls bigint,
+        sum_dollar_volume numeric,
+        PRIMARY KEY (surface, year)
+    ) ON COMMIT DROP;
+    INSERT INTO pg_temp.unit_repair_actual_year (surface, year, rows, nulls, sum_dollar_volume)
+    SELECT surface, extract(year FROM month)::int, sum(rows)::bigint, sum(nulls)::bigint,
+           CAST(sum(volume_sum) AS numeric(38,6))
+    FROM pg_temp.unit_repair_month_stats
+    WHERE month <= {cutoff}::date
+    GROUP BY surface, extract(year FROM month)::int;
+    SELECT count(*) INTO v_mismatches
+    FROM pg_temp.unit_repair_expected_year e
+    FULL JOIN pg_temp.unit_repair_actual_year a USING (surface, year)
+    WHERE e.rows IS DISTINCT FROM a.rows
+       OR e.nulls IS DISTINCT FROM a.nulls
+       OR (e.sum_dollar_volume IS NULL) <> (a.sum_dollar_volume IS NULL)
+       OR (e.sum_dollar_volume IS NOT NULL AND abs(e.sum_dollar_volume - a.sum_dollar_volume) > {UNIT_REPAIR_SUM_TOLERANCE_USD});
+    IF v_mismatches > 0 THEN RAISE EXCEPTION 'unit repair artifact/DB aggregate mismatch'; END IF;
+    RAISE NOTICE 'unit repair finalize: annual artifact gate mismatches=% elapsed_ms=%', v_mismatches, round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
+    -- Status transition and CAS inside the same timed DO, after every gate.
+    -- Replay: either exactly one prepared->validated transition, or an already
+    -- validated identical child (no C->C update, no timestamp change).
+    UPDATE bond_panel_publications
+    SET publication_status = 'validated',
+        validated_at = COALESCE(validated_at, now()),
+        gate_evidence = gate_evidence || jsonb_build_object('validated_counts', {counts_json}::jsonb, 'unit_repair_validated', {marker}::jsonb)
+    WHERE publication_id = {child}::uuid AND publication_status = 'prepared';
+    GET DIAGNOSTICS v_status_rows = ROW_COUNT;
+    IF v_status_rows > 1 THEN
+        RAISE EXCEPTION 'unit repair finalize updated more than one publication row';
+    END IF;
+    IF v_status_rows = 0 AND NOT EXISTS (
+        SELECT 1 FROM bond_panel_publications candidate
+        WHERE candidate.publication_id = {child}::uuid
+          AND candidate.parent_publication_id = {head}::uuid
+          AND candidate.publication_status = 'validated'
+{metadata}
+    ) THEN RAISE EXCEPTION 'unit repair finalize requires one prepared-to-validated transition or an identical validated child'; END IF;
+    UPDATE bond_panel_app_pointer
+    SET publication_id = {child}::uuid, changed_at = now()
+    WHERE product = {_sql_string(PRODUCT)} AND publication_id = {head}::uuid;
+    GET DIAGNOSTICS v_cas_rows = ROW_COUNT;
+    IF v_cas_rows > 1 THEN
+        RAISE EXCEPTION 'unit repair pointer compare-and-swap updated more than one row';
+    END IF;
+    IF v_cas_rows = 0 AND NOT EXISTS (
+        SELECT 1
+        FROM bond_panel_app_pointer pointer
+        JOIN bond_panel_publications candidate ON candidate.publication_id = pointer.publication_id
+        WHERE pointer.product = {_sql_string(PRODUCT)}
+          AND pointer.publication_id = {child}::uuid
+          AND candidate.publication_status = 'validated'
+    ) THEN RAISE EXCEPTION 'unit repair pointer compare-and-swap lost'; END IF;
+    RAISE NOTICE 'unit repair finalize: status_rows=% cas_rows=% elapsed_ms=%', v_status_rows, v_cas_rows, round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
+END
+$unit_repair_finalize$;
+COMMIT;
+SELECT jsonb_build_object('publication_id', {child}, 'phase', 'validated_and_pointed', 'contract', {_sql_string(plan.contract)}, 'from_head_publication_id', {head}, 'counts', {counts_json}::jsonb) AS unit_repair_evidence;
+-- Pointer moved: refresh the *_mat mirrors the Light app reads, deliberately
+-- AFTER the COMMIT and in the same order as the frozen base finalize.  The
+-- refresh phase gets its own explicit session-level timeout (SET LOCAL has
+-- expired at COMMIT) and its failure cannot undo the CAS.
+\\echo unit_repair_finalize_phase=refresh_start
+SET ROLE worker_writer;
+SET statement_timeout = {_sql_string(UNIT_REPAIR_FINALIZE_REFRESH_STATEMENT_TIMEOUT)};
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_rv_signal_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_returns_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_rating_pit_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_snapshot_v1_mat;
+RESET statement_timeout;
+RESET ROLE;
+\\echo unit_repair_finalize_phase=refresh_done
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIRECTORY)
@@ -1085,17 +2083,39 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--emit-prepare", action="store_true")
     mode.add_argument("--emit-batch", choices=SURFACES)
     mode.add_argument("--emit-repair-copy", choices=SURFACES, help="repair-only database-to-database copy of the exact current legacy publication")
+    mode.add_argument("--emit-unit-repair-copy", choices=SURFACES, help="unit-repair-only database-to-database copy of one current surface")
     mode.add_argument("--emit-finalize", action="store_true")
     parser.add_argument("--repair-from-publication-id", help="enable the one evidence-bound legacy root replacement; ordinary mode never repairs return coverage")
+    parser.add_argument("--unit-repair-from-head", help="enable the T2.1 unit-repair child of the given validated head publication; artifacts come from --artifact-dir")
     parser.add_argument("--start-after", type=int, default=0)
     parser.add_argument("--limit", type=int, help="bounded row count for one --emit-batch transaction; choose an operator-safe size")
     args = parser.parse_args(argv)
-    if args.emit_batch and args.limit is None:
+    if args.emit_batch and args.limit is None and not args.unit_repair_from_head:
         parser.error("--limit is required with --emit-batch")
     if args.emit_schema:
         print(render_schema_sql(), end="")
         return 0
     try:
+        if args.unit_repair_from_head:
+            if args.repair_from_publication_id:
+                raise PlanError("unit_repair_does_not_accept_repair_from_publication_id")
+            if args.emit_batch:
+                raise PlanError("unit_repair_does_not_accept_emit_batch")
+            artifacts = UnitRepairArtifacts.open(args.artifact_dir)
+            unit_plan = build_unit_repair_plan(artifacts, from_head_publication_id=args.unit_repair_from_head)
+            if args.plan or args.evidence:
+                print(json.dumps(unit_plan.evidence(), sort_keys=True))
+            elif args.emit_prepare:
+                print(render_unit_repair_prepare_sql(unit_plan), end="")
+            elif args.emit_unit_repair_copy:
+                print(render_unit_repair_copy_sql(unit_plan, args.emit_unit_repair_copy), end="")
+            elif args.emit_finalize:
+                print(render_unit_repair_finalize_sql(unit_plan), end="")
+            else:
+                raise PlanError("unit_repair_requires_plan_prepare_copy_or_finalize")
+            return 0
+        if args.emit_unit_repair_copy:
+            raise PlanError("unit_repair_from_head_required")
         artifacts = ArtifactSet.open(args.artifact_dir)
         plan = build_repair_plan(artifacts, from_publication_id=args.repair_from_publication_id) if args.repair_from_publication_id else build_plan(artifacts, cutoff=args.cutoff)
         if args.plan or args.evidence:
