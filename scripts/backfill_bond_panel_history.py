@@ -8,6 +8,7 @@ not import this module: it is a one-time historical transport only.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -87,6 +88,13 @@ EXPECTED_SHA256 = {
 UNIT_REPAIR_CONTRACT = "dollar_volume_unit_repair_v1"
 UNIT_REPAIR_CODE_REVISION = "t3_dollar_volume_unit_repair_v1"
 UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID = "71b672c8-239c-55bc-bccb-ed39960c0fd2"
+UNIT_REPAIR_EXPECTED_PUBLICATION_ID = "65156481-8cb4-52b5-8676-cf77edc5644f"
+UNIT_REPAIR_EXPECTED_INPUT_FINGERPRINT = (
+    "7063a271999f3861b24fdba0063e3ede0eb382cad053c2b64fefa8c416c01e8e"
+)
+UNIT_REPAIR_EXPECTED_PER_YEAR_DIGEST = (
+    "b3b66e57f0d612e6d2a471543484c82450d09dcb0bf782ea756954517bc14b62"
+)
 UNIT_REPAIR_ROOT_BASE_PUBLICATION_ID = "b3c92982-d82f-5a76-bb51-a4c980d21b25"
 UNIT_REPAIR_CONFIG_HASH = "1863d3d5fa3a0edf"
 UNIT_REPAIR_SCALE = 1_000_000
@@ -1176,7 +1184,11 @@ class UnitRepairArtifacts:
         """Pin the four v2 parquets and the manifest before any plan or SQL."""
         expected = EXPECTED_SHA256_UNIT_REPAIR_V2 if expected_hashes is None else expected_hashes
         counts_expected = UNIT_REPAIR_EXPECTED_COUNTS if expected_counts is None else expected_counts
-        provenance = EXPECTED_EXPORT_PROVENANCE if expected_provenance is None else expected_provenance
+        provenance = copy.deepcopy(
+            EXPECTED_EXPORT_PROVENANCE
+            if expected_provenance is None
+            else expected_provenance
+        )
         if set(expected) != set(UNIT_REPAIR_ARTIFACT_SURFACES):
             raise ArtifactPinError("unit_repair_artifact_map_not_four_surface")
         manifest_path = directory / "manifest.json"
@@ -1303,9 +1315,9 @@ class UnitRepairPlan:
             "scale": self.scale,
             "predicate": self.predicate,
             "affected_surfaces": list(UNIT_REPAIR_AFFECTED_SURFACES),
-            "counts": self.counts,
+            "counts": dict(sorted(self.counts.items())),
             "artifact_sha256": dict(sorted(self.source_sha256.items())),
-            "export_provenance": self.export_provenance,
+            "export_provenance": copy.deepcopy(self.export_provenance),
             "per_year": [dict(item) for item in self.per_year],
             "per_year_volume_digest": self.per_year_digest,
         }
@@ -1402,16 +1414,28 @@ def _unit_repair_fingerprint_payload(plan: UnitRepairPlan) -> dict[str, Any]:
 
 
 def _validate_unit_repair_plan(plan: UnitRepairPlan) -> None:
-    """Fail closed before emission when the deterministic plan drifts."""
+    """Fail closed unless the plan matches the frozen repair authorization."""
     fingerprint = _canonical_digest(_unit_repair_fingerprint_payload(plan))
     publication_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{PRODUCT}:unit-repair:{fingerprint}"))
     per_year_digest = _canonical_digest({"per_year_volume": list(plan.per_year)})
     if (
         plan.input_fingerprint != fingerprint
+        or plan.input_fingerprint != UNIT_REPAIR_EXPECTED_INPUT_FINGERPRINT
         or plan.publication_id != publication_id
+        or plan.publication_id != UNIT_REPAIR_EXPECTED_PUBLICATION_ID
         or plan.per_year_digest != per_year_digest
+        or plan.per_year_digest != UNIT_REPAIR_EXPECTED_PER_YEAR_DIGEST
         or plan.contract != UNIT_REPAIR_CONTRACT
         or plan.code_revision != UNIT_REPAIR_CODE_REVISION
+        or plan.from_head_publication_id != UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID
+        or plan.root_base_publication_id != UNIT_REPAIR_ROOT_BASE_PUBLICATION_ID
+        or plan.config_hash != UNIT_REPAIR_CONFIG_HASH
+        or plan.first_month != UNIT_REPAIR_EXPECTED_WINDOW["first_month"]
+        or plan.last_closed_month != UNIT_REPAIR_EXPECTED_WINDOW["last_closed_month"]
+        or plan.open_month != UNIT_REPAIR_EXPECTED_WINDOW["open_month"]
+        or plan.counts != UNIT_REPAIR_EXPECTED_COUNTS
+        or plan.source_sha256 != EXPECTED_SHA256_UNIT_REPAIR_V2
+        or plan.export_provenance != EXPECTED_EXPORT_PROVENANCE
         or plan.scale != UNIT_REPAIR_SCALE
         or plan.predicate != UNIT_REPAIR_PREDICATE
     ):
@@ -1440,7 +1464,7 @@ def build_unit_repair_plan(
         open_month=UNIT_REPAIR_EXPECTED_WINDOW["open_month"],
         counts=counts,
         source_sha256=source_sha256,
-        export_provenance=dict(artifacts.provenance),
+        export_provenance=copy.deepcopy(artifacts.provenance),
         per_year=per_year,
         per_year_digest=per_year_digest,
     )
@@ -2068,9 +2092,23 @@ RESET ROLE;
 """
 
 
+def _artifact_directory_for_mode(
+    artifact_dir: Path | None, *, unit_repair: bool
+) -> Path:
+    """Resolve the mode-specific artifact root without cross-mode fallback."""
+    if not unit_repair:
+        return DEFAULT_ARTIFACT_DIRECTORY if artifact_dir is None else artifact_dir
+    selected = (
+        UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY if artifact_dir is None else artifact_dir
+    )
+    if selected.resolve() != UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY.resolve():
+        raise PlanError("unit_repair_artifact_directory_not_authorized")
+    return UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIRECTORY)
+    parser.add_argument("--artifact-dir", type=Path)
     parser.add_argument("--cutoff", default=DEFAULT_CUTOFF)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true", help="emit verified read-only planning evidence as JSON")
@@ -2101,7 +2139,14 @@ def main(argv: list[str] | None = None) -> int:
                 raise PlanError("unit_repair_does_not_accept_repair_from_publication_id")
             if args.emit_batch:
                 raise PlanError("unit_repair_does_not_accept_emit_batch")
-            artifacts = UnitRepairArtifacts.open(args.artifact_dir)
+            if args.cutoff != DEFAULT_CUTOFF:
+                raise PlanError("unit_repair_does_not_accept_cutoff")
+            if args.start_after != 0:
+                raise PlanError("unit_repair_does_not_accept_start_after")
+            artifact_dir = _artifact_directory_for_mode(
+                args.artifact_dir, unit_repair=True
+            )
+            artifacts = UnitRepairArtifacts.open(artifact_dir)
             unit_plan = build_unit_repair_plan(artifacts, from_head_publication_id=args.unit_repair_from_head)
             if args.plan or args.evidence:
                 print(json.dumps(unit_plan.evidence(), sort_keys=True))
@@ -2116,7 +2161,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.emit_unit_repair_copy:
             raise PlanError("unit_repair_from_head_required")
-        artifacts = ArtifactSet.open(args.artifact_dir)
+        artifact_dir = _artifact_directory_for_mode(
+            args.artifact_dir, unit_repair=False
+        )
+        artifacts = ArtifactSet.open(artifact_dir)
         plan = build_repair_plan(artifacts, from_publication_id=args.repair_from_publication_id) if args.repair_from_publication_id else build_plan(artifacts, cutoff=args.cutoff)
         if args.plan or args.evidence:
             print(json.dumps(plan.evidence(), sort_keys=True))

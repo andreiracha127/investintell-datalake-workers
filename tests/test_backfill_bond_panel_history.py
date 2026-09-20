@@ -1,6 +1,7 @@
 """Contracts for the offline-only T3 historical panel publication emitter."""
 from __future__ import annotations
 
+import copy
 import decimal
 import hashlib
 import json
@@ -8,6 +9,7 @@ import re
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import duckdb
 import pandas as pd
@@ -91,10 +93,42 @@ def _open_unit_repair(
     )
 
 
-def _unit_repair_plan(tmp_path: Path) -> backfill.UnitRepairPlan:
+def _authorize_synthetic_unit_repair_plan(
+    artifacts: backfill.UnitRepairArtifacts,
+    monkeypatch: pytest.MonkeyPatch,
+) -> backfill.UnitRepairPlan:
+    with patch.object(backfill, "_validate_unit_repair_plan", lambda _plan: None):
+        plan = backfill.build_unit_repair_plan(
+            artifacts, from_head_publication_id=UNIT_REPAIR_HEAD
+        )
+    monkeypatch.setattr(backfill, "UNIT_REPAIR_EXPECTED_COUNTS", dict(plan.counts))
+    monkeypatch.setattr(
+        backfill, "EXPECTED_SHA256_UNIT_REPAIR_V2", dict(plan.source_sha256)
+    )
+    monkeypatch.setattr(
+        backfill, "EXPECTED_EXPORT_PROVENANCE", copy.deepcopy(plan.export_provenance)
+    )
+    monkeypatch.setattr(
+        backfill,
+        "UNIT_REPAIR_EXPECTED_INPUT_FINGERPRINT",
+        plan.input_fingerprint,
+    )
+    monkeypatch.setattr(
+        backfill, "UNIT_REPAIR_EXPECTED_PUBLICATION_ID", plan.publication_id
+    )
+    monkeypatch.setattr(
+        backfill, "UNIT_REPAIR_EXPECTED_PER_YEAR_DIGEST", plan.per_year_digest
+    )
+    backfill._validate_unit_repair_plan(plan)
+    return plan
+
+
+def _unit_repair_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> backfill.UnitRepairPlan:
     directory, hashes, counts, provenance = _unit_repair_dir(tmp_path)
     artifacts = _open_unit_repair(directory, hashes, counts, provenance)
-    return backfill.build_unit_repair_plan(artifacts, from_head_publication_id=UNIT_REPAIR_HEAD)
+    return _authorize_synthetic_unit_repair_plan(artifacts, monkeypatch)
 
 
 def _write(path: Path, rows: list[dict[str, object]]) -> None:
@@ -541,14 +575,14 @@ def test_normal_mode_still_refuses_a_missing_return_tail(tmp_path: Path) -> None
         backfill.build_plan(artifacts)
 
 
-def test_unit_repair_plan_is_deterministic_and_pins_artifact_identity(tmp_path: Path) -> None:
+def test_unit_repair_plan_is_deterministic_and_pins_artifact_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     directory, hashes, counts, provenance = _unit_repair_dir(tmp_path)
-    plan = backfill.build_unit_repair_plan(
-        _open_unit_repair(directory, hashes, counts, provenance),
-        from_head_publication_id=UNIT_REPAIR_HEAD,
-    )
+    artifacts = _open_unit_repair(directory, hashes, counts, provenance)
+    plan = _authorize_synthetic_unit_repair_plan(artifacts, monkeypatch)
     again = backfill.build_unit_repair_plan(
-        _open_unit_repair(directory, hashes, counts, provenance),
+        artifacts,
         from_head_publication_id=UNIT_REPAIR_HEAD,
     )
 
@@ -584,6 +618,17 @@ def test_unit_repair_plan_is_deterministic_and_pins_artifact_identity(tmp_path: 
     return_years = {item["year"]: item for item in plan.per_year if item["surface"] == "returns"}
     assert return_years[2025]["rows"] == 1
     assert return_years[2025]["sum_dollar_volume"] is None
+
+    mutable_evidence = plan.evidence()
+    mutable_evidence["counts"]["snapshot"] = 0
+    mutable_evidence["export_provenance"]["export_files"]["snapshot"] = "0" * 64
+    assert plan.counts["snapshot"] == counts["snapshot"]
+    assert plan.export_provenance["export_files"]["snapshot"] == (
+        provenance["export_files"]["snapshot"]
+    )
+    assert backfill.EXPECTED_EXPORT_PROVENANCE["export_files"]["snapshot"] == (
+        provenance["export_files"]["snapshot"]
+    )
 
 
 def test_unit_repair_artifacts_refuse_the_wrong_head_and_broken_manifests(tmp_path: Path) -> None:
@@ -634,8 +679,10 @@ def test_unit_repair_plan_refuses_unrepaired_and_double_scaled_inputs(tmp_path: 
             )
 
 
-def test_unit_repair_renderers_refuse_a_drifted_plan(tmp_path: Path) -> None:
-    plan = _unit_repair_plan(tmp_path)
+def test_unit_repair_renderers_refuse_a_drifted_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
 
     for drifted in (
         replace(plan, counts={**plan.counts, "returns": plan.counts["returns"] - 1}),
@@ -653,8 +700,85 @@ def test_unit_repair_renderers_refuse_a_drifted_plan(tmp_path: Path) -> None:
             backfill.render_unit_repair_finalize_sql(drifted)
 
 
-def test_unit_repair_prepare_sql_pins_head_root_and_contract(tmp_path: Path) -> None:
-    plan = _unit_repair_plan(tmp_path)
+def test_unit_repair_authorization_constants_are_frozen() -> None:
+    assert backfill.UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID == (
+        "71b672c8-239c-55bc-bccb-ed39960c0fd2"
+    )
+    assert backfill.UNIT_REPAIR_EXPECTED_PUBLICATION_ID == (
+        "65156481-8cb4-52b5-8676-cf77edc5644f"
+    )
+    assert backfill.UNIT_REPAIR_EXPECTED_INPUT_FINGERPRINT == (
+        "7063a271999f3861b24fdba0063e3ede0eb382cad053c2b64fefa8c416c01e8e"
+    )
+    assert backfill.UNIT_REPAIR_EXPECTED_PER_YEAR_DIGEST == (
+        "b3b66e57f0d612e6d2a471543484c82450d09dcb0bf782ea756954517bc14b62"
+    )
+
+
+def test_unit_repair_renderers_refuse_coordinated_self_consistent_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
+    mutations = (
+        replace(plan, counts={**plan.counts, "returns": plan.counts["returns"] - 1}),
+        replace(
+            plan,
+            source_sha256={**plan.source_sha256, "bond_panel_live.parquet": "0" * 64},
+        ),
+        replace(
+            plan,
+            export_provenance={
+                **plan.export_provenance,
+                "export_manifest_sha256": "0" * 64,
+            },
+        ),
+        replace(plan, from_head_publication_id="00000000-0000-0000-0000-000000000000"),
+        replace(plan, root_base_publication_id="00000000-0000-0000-0000-000000000000"),
+        replace(plan, config_hash="0" * 16),
+        replace(plan, first_month="2002-08-01"),
+        replace(plan, contract="other_contract"),
+        replace(plan, code_revision="other_revision"),
+        replace(plan, per_year=plan.per_year[:-1]),
+    )
+
+    for mutation in mutations:
+        per_year_digest = backfill._canonical_digest(
+            {"per_year_volume": list(mutation.per_year)}
+        )
+        candidate = replace(
+            mutation,
+            publication_id="",
+            input_fingerprint="",
+            per_year_digest=per_year_digest,
+        )
+        fingerprint = backfill._canonical_digest(
+            backfill._unit_repair_fingerprint_payload(candidate)
+        )
+        self_consistent = replace(
+            candidate,
+            input_fingerprint=fingerprint,
+            publication_id=str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{backfill.PRODUCT}:unit-repair:{fingerprint}",
+                )
+            ),
+        )
+        assert self_consistent.input_fingerprint == backfill._canonical_digest(
+            backfill._unit_repair_fingerprint_payload(self_consistent)
+        )
+        with pytest.raises(backfill.PlanError, match="unit_repair_plan_not_authorized"):
+            backfill.render_unit_repair_prepare_sql(self_consistent)
+        with pytest.raises(backfill.PlanError, match="unit_repair_plan_not_authorized"):
+            backfill.render_unit_repair_copy_sql(self_consistent, "snapshot")
+        with pytest.raises(backfill.PlanError, match="unit_repair_plan_not_authorized"):
+            backfill.render_unit_repair_finalize_sql(self_consistent)
+
+
+def test_unit_repair_prepare_sql_pins_head_root_and_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     sql = backfill.render_unit_repair_prepare_sql(plan)
 
     assert f"publication_id = '{UNIT_REPAIR_HEAD}'::uuid" in sql
@@ -678,8 +802,10 @@ def test_unit_repair_prepare_sql_pins_head_root_and_contract(tmp_path: Path) -> 
     assert f"{backfill.UNIT_REPAIR_SCALE}" in sql
 
 
-def test_unit_repair_copy_sql_scales_only_volume_surfaces(tmp_path: Path) -> None:
-    plan = _unit_repair_plan(tmp_path)
+def test_unit_repair_copy_sql_scales_only_volume_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     copies = {surface: backfill.render_unit_repair_copy_sql(plan, surface) for surface in backfill.SURFACES}
 
     for surface in ("snapshot", "rv_signal"):
@@ -714,8 +840,10 @@ def test_unit_repair_copy_sql_scales_only_volume_surfaces(tmp_path: Path) -> Non
         assert f"'{plan.publication_id}'::uuid" in sql
 
 
-def test_unit_repair_finalize_sql_gates_then_cas_and_refreshes(tmp_path: Path) -> None:
-    plan = _unit_repair_plan(tmp_path)
+def test_unit_repair_finalize_sql_gates_then_cas_and_refreshes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     sql = backfill.render_unit_repair_finalize_sql(plan)
 
     for surface in backfill.SURFACES:
@@ -755,15 +883,15 @@ def test_unit_repair_cli_plans_and_emits_without_touching_a_database(
     tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     directory, hashes, counts, provenance = _unit_repair_dir(tmp_path)
-    monkeypatch.setattr(backfill, "EXPECTED_SHA256_UNIT_REPAIR_V2", hashes)
-    monkeypatch.setattr(backfill, "UNIT_REPAIR_EXPECTED_COUNTS", counts)
-    monkeypatch.setattr(backfill, "EXPECTED_EXPORT_PROVENANCE", provenance)
+    artifacts = _open_unit_repair(directory, hashes, counts, provenance)
+    plan = _authorize_synthetic_unit_repair_plan(artifacts, monkeypatch)
+    monkeypatch.setattr(backfill, "UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY", directory)
 
-    assert backfill.main(["--plan", "--unit-repair-from-head", UNIT_REPAIR_HEAD, "--artifact-dir", str(directory)]) == 0
+    assert backfill.main(["--plan", "--unit-repair-from-head", UNIT_REPAIR_HEAD]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["counts"] == counts
     assert payload["from_head_publication_id"] == UNIT_REPAIR_HEAD
-    assert payload["publication_id"].count("-") == 4
+    assert payload["publication_id"] == plan.publication_id
 
     assert backfill.main(["--emit-unit-repair-copy", "snapshot", "--unit-repair-from-head", UNIT_REPAIR_HEAD, "--artifact-dir", str(directory)]) == 0
     emitted = capsys.readouterr().out
@@ -780,6 +908,9 @@ def test_unit_repair_cli_plans_and_emits_without_touching_a_database(
     assert "unit repair pointer compare-and-swap lost" in finalize
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_snapshot_v1_mat;" in finalize
 
+    assert backfill.main(["--plan", "--unit-repair-from-head", UNIT_REPAIR_HEAD, "--artifact-dir", str(backfill.DEFAULT_ARTIFACT_DIRECTORY)]) == 2
+    assert "unit_repair_artifact_directory_not_authorized" in capsys.readouterr().err
+
     assert backfill.main(["--plan", "--unit-repair-from-head", "00000000-0000-0000-0000-000000000000", "--artifact-dir", str(directory)]) == 2
     assert "unit_repair_from_head_not_authorized" in capsys.readouterr().err
 
@@ -788,6 +919,44 @@ def test_unit_repair_cli_plans_and_emits_without_touching_a_database(
 
     assert backfill.main(["--emit-batch", "snapshot", "--limit", "1", "--unit-repair-from-head", UNIT_REPAIR_HEAD, "--artifact-dir", str(directory)]) == 2
     assert "unit_repair_does_not_accept_emit_batch" in capsys.readouterr().err
+
+    assert backfill.main(["--plan", "--unit-repair-from-head", UNIT_REPAIR_HEAD, "--cutoff", "2026-07-01"]) == 2
+    assert "unit_repair_does_not_accept_cutoff" in capsys.readouterr().err
+
+    assert backfill.main(["--plan", "--unit-repair-from-head", UNIT_REPAIR_HEAD, "--start-after", "1"]) == 2
+    assert "unit_repair_does_not_accept_start_after" in capsys.readouterr().err
+
+
+def test_artifact_directory_defaults_are_mode_specific(tmp_path: Path) -> None:
+    assert backfill._artifact_directory_for_mode(None, unit_repair=False) == (
+        backfill.DEFAULT_ARTIFACT_DIRECTORY
+    )
+    assert backfill._artifact_directory_for_mode(tmp_path, unit_repair=False) == tmp_path
+    assert backfill._artifact_directory_for_mode(None, unit_repair=True) == (
+        backfill.UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY
+    )
+    equivalent = Path(str(backfill.UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY) + "\\")
+    assert backfill._artifact_directory_for_mode(equivalent, unit_repair=True) == (
+        backfill.UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY
+    )
+    with pytest.raises(
+        backfill.PlanError, match="unit_repair_artifact_directory_not_authorized"
+    ):
+        backfill._artifact_directory_for_mode(
+            backfill.DEFAULT_ARTIFACT_DIRECTORY, unit_repair=True
+        )
+
+
+def test_unit_repair_missing_pinned_default_fails_loudly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        backfill, "UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY", tmp_path / "missing-v2"
+    )
+    assert backfill.main(["--plan", "--unit-repair-from-head", UNIT_REPAIR_HEAD]) == 2
+    assert "unit_repair_manifest_unavailable" in capsys.readouterr().err
 
 
 def _split_sql_list(value: str) -> list[str]:
@@ -848,7 +1017,9 @@ def _verbatim_predicate(sql: str) -> tuple[str, list[str]]:
     return predicate, candidate_columns
 
 
-def test_unit_repair_verbatim_gate_excludes_publication_id(tmp_path: Path) -> None:
+def test_unit_repair_verbatim_gate_excludes_publication_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The row gate must compare exactly the non-key, non-by-design columns.
 
     ``publication_id`` is in the INSERT target but is C's identity, never H's,
@@ -859,7 +1030,7 @@ def test_unit_repair_verbatim_gate_excludes_publication_id(tmp_path: Path) -> No
     volume plus the lineage/payload marker) is exactly the INSERT target minus
     the keys and the publication identity.
     """
-    plan = _unit_repair_plan(tmp_path)
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     for surface in backfill.SURFACES:
         sql = backfill.render_unit_repair_copy_sql(plan, surface)
         _predicate, compared = _verbatim_predicate(sql)
@@ -877,9 +1048,11 @@ def test_unit_repair_verbatim_gate_excludes_publication_id(tmp_path: Path) -> No
         )
 
 
-def test_unit_repair_verbatim_gate_semantics_on_publication_only_differences(tmp_path: Path) -> None:
+def test_unit_repair_verbatim_gate_semantics_on_publication_only_differences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """DuckDB replay of the emitted predicate: H-vs-C identity must not trip it."""
-    plan = _unit_repair_plan(tmp_path)
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     for surface in backfill.SURFACES:
         sql = backfill.render_unit_repair_copy_sql(plan, surface)
         predicate, compared = _verbatim_predicate(sql)
@@ -922,13 +1095,15 @@ def test_unit_repair_verbatim_gate_semantics_on_publication_only_differences(tmp
         finally:
             con.close()
 
-def test_unit_repair_copy_marker_is_nested_under_unit_repair_key(tmp_path: Path) -> None:
+def test_unit_repair_copy_marker_is_nested_under_unit_repair_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Row markers must nest under ``unit_repair`` exactly like the prepare shape.
 
     The copy gate and the prepare both assert ``@> jsonb_build_object('unit_repair',
     <marker>)``; a flat append would never satisfy them.
     """
-    plan = _unit_repair_plan(tmp_path)
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     marker = f"jsonb_build_object('unit_repair', {backfill._sql_json(backfill._unit_repair_marker(plan))}::jsonb)"
     for surface in backfill.UNIT_REPAIR_AFFECTED_SURFACES:
         sql = backfill.render_unit_repair_copy_sql(plan, surface)
@@ -944,10 +1119,12 @@ def test_unit_repair_copy_marker_is_nested_under_unit_repair_key(tmp_path: Path)
                 assert shapes[column] == f"source.{column}"
 
 
-def test_unit_repair_copy_marker_ast_shape(tmp_path: Path) -> None:
+def test_unit_repair_copy_marker_ast_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Parse-level check: the marker projection is ``col || jsonb_build_object('unit_repair', ...)``."""
     sqlglot = pytest.importorskip("sqlglot")
-    plan = _unit_repair_plan(tmp_path)
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     for surface in backfill.UNIT_REPAIR_AFFECTED_SURFACES:
         sql = backfill.render_unit_repair_copy_sql(plan, surface)
         insert_sql = sql[sql.index("INSERT INTO"): sql.index("DO NOTHING;") + len("DO NOTHING;")]
@@ -1294,14 +1471,20 @@ def _annual_rollup_verdict(con, expected: dict[tuple[str, int], dict[str, object
     return mismatch(actual), mismatch(rollup)
 
 
-def test_unit_repair_finalize_has_no_except_set_operations(tmp_path: Path) -> None:
-    sql = backfill.render_unit_repair_finalize_sql(_unit_repair_plan(tmp_path))
+def test_unit_repair_finalize_has_no_except_set_operations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sql = backfill.render_unit_repair_finalize_sql(
+        _unit_repair_plan(tmp_path, monkeypatch)
+    )
     assert re.search(r"\bEXCEPT\b(?!ION)", sql) is None
     assert "RETURNING" not in sql
 
 
-def test_unit_repair_finalize_antijoins_pin_child_and_month_both_sides(tmp_path: Path) -> None:
-    plan = _unit_repair_plan(tmp_path)
+def test_unit_repair_finalize_antijoins_pin_child_and_month_both_sides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     sql = backfill.render_unit_repair_finalize_sql(plan)
     child = plan.publication_id
     start = sql.index("FOR v_month IN SELECT DISTINCT month FROM pg_temp.unit_repair_month_stats ORDER BY month LOOP")
@@ -1327,8 +1510,10 @@ def test_unit_repair_finalize_antijoins_pin_child_and_month_both_sides(tmp_path:
     assert "LIMIT 1" in section
 
 
-def test_unit_repair_finalize_monthly_summaries_reused_once_per_surface(tmp_path: Path) -> None:
-    plan = _unit_repair_plan(tmp_path)
+def test_unit_repair_finalize_monthly_summaries_reused_once_per_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     sql = backfill.render_unit_repair_finalize_sql(plan)
     child = plan.publication_id
     assert "CREATE TEMP TABLE unit_repair_month_stats (" in sql
@@ -1350,8 +1535,10 @@ def test_unit_repair_finalize_monthly_summaries_reused_once_per_surface(tmp_path
     assert "WHERE surface = 'snapshot' AND bootstrap IS TRUE LIMIT 1" in sql
 
 
-def test_unit_repair_finalize_annual_gate_shape_and_rounding(tmp_path: Path) -> None:
-    plan = _unit_repair_plan(tmp_path)
+def test_unit_repair_finalize_annual_gate_shape_and_rounding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     sql = backfill.render_unit_repair_finalize_sql(plan)
     assert backfill._unit_repair_expected_aggregates_json(plan) in sql
     assert sql.count("CREATE TEMP TABLE unit_repair_expected_year (") == 1
@@ -1369,8 +1556,10 @@ def test_unit_repair_finalize_annual_gate_shape_and_rounding(tmp_path: Path) -> 
     assert f"WHERE month <= '{backfill.UNIT_REPAIR_ARTIFACT_CUTOFF}'::date" in sql
 
 
-def test_unit_repair_finalize_single_timed_transaction_and_locks(tmp_path: Path) -> None:
-    plan = _unit_repair_plan(tmp_path)
+def test_unit_repair_finalize_single_timed_transaction_and_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _unit_repair_plan(tmp_path, monkeypatch)
     sql = backfill.render_unit_repair_finalize_sql(plan)
     child = plan.publication_id
     head = backfill.UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID
