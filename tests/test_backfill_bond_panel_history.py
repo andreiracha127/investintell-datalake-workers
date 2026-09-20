@@ -811,6 +811,9 @@ def test_unit_repair_copy_sql_scales_only_volume_surfaces(
     for surface in ("snapshot", "rv_signal"):
         sql = copies[surface]
         assert "CASE WHEN source.price_source = 'osbap' THEN source.dollar_volume * 1000000 ELSE source.dollar_volume END" in sql
+        assert f"unit repair per-row volume mismatch:{surface}" in sql
+        assert "FULL JOIN (" in sql
+        assert "candidate.dollar_volume IS DISTINCT FROM CASE WHEN source.price_source = 'osbap'" in sql
         assert f"unit repair per-year osbap sum mismatch:{surface}" in sql
         assert f"unit repair null volume mismatch:{surface}" in sql
         assert f"unit repair marker conflict:{surface}" in sql
@@ -840,6 +843,121 @@ def test_unit_repair_copy_sql_scales_only_volume_surfaces(
         assert f"'{plan.publication_id}'::uuid" in sql
 
 
+def test_unit_repair_row_volume_gate_rejects_aggregate_preserving_drift() -> None:
+    con = duckdb.connect()
+    try:
+        con.execute(
+            "CREATE TABLE source (month DATE, cusip_id VARCHAR, price_source VARCHAR, "
+            "dollar_volume DECIMAL(38,6))"
+        )
+        con.execute(
+            "CREATE TABLE candidate (month DATE, cusip_id VARCHAR, "
+            "dollar_volume DECIMAL(38,6))"
+        )
+        source_rows = [
+            ("2025-03-01", "AAA000001", "osbap", "1"),
+            ("2025-03-01", "BBB000002", "osbap", "2"),
+            ("2025-03-01", "CCC000003", "osbap", "3"),
+            ("2025-03-01", "DDD000004", "osbap", "4"),
+            ("2025-03-01", "EEE000005", "osbap", None),
+        ]
+        con.executemany("INSERT INTO source VALUES (?, ?, ?, ?)", source_rows)
+        con.execute(
+            "INSERT INTO candidate "
+            "SELECT month, cusip_id, dollar_volume * 1000000 FROM source"
+        )
+        expected = backfill._unit_repair_expected_volume_expression()
+
+        def mismatch_count() -> int:
+            return con.execute(
+                "SELECT count(*) FROM candidate FULL JOIN source USING (month, cusip_id) "
+                "WHERE candidate.month IS NULL OR source.month IS NULL OR "
+                f"candidate.dollar_volume IS DISTINCT FROM {expected}"
+            ).fetchone()[0]
+
+        def aggregates() -> tuple:
+            return con.execute(
+                "SELECT count(*), count(*) FILTER (WHERE dollar_volume IS NULL), "
+                "sum(dollar_volume), min(dollar_volume), max(dollar_volume) FROM candidate"
+            ).fetchone()
+
+        baseline = aggregates()
+        assert mismatch_count() == 0
+        con.execute(
+            "UPDATE candidate SET dollar_volume = CASE "
+            "WHEN cusip_id = 'BBB000002' THEN dollar_volume + 500000 "
+            "WHEN cusip_id = 'CCC000003' THEN dollar_volume - 500000 "
+            "ELSE dollar_volume END"
+        )
+        assert aggregates() == baseline
+        assert mismatch_count() == 2
+        con.execute("DELETE FROM candidate WHERE cusip_id = 'EEE000005'")
+        con.execute("INSERT INTO candidate VALUES ('2025-03-01', 'FFF000006', NULL)")
+        assert aggregates() == baseline
+        assert mismatch_count() == 4
+    finally:
+        con.close()
+
+
+def test_unit_repair_volume_gate_uses_the_full_h_ancestry_projection() -> None:
+    root = "b3c92982-d82f-5a76-bb51-a4c980d21b25"
+    delta = "00000000-0000-0000-0000-000000000001"
+    head = UNIT_REPAIR_HEAD
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE source_ancestry (publication_id VARCHAR, depth INTEGER)")
+        con.executemany(
+            "INSERT INTO source_ancestry VALUES (?, ?)",
+            [(head, 0), (delta, 1), (root, 2)],
+        )
+        con.execute(
+            "CREATE TABLE source_fact (publication_id VARCHAR, month DATE, "
+            "cusip_id VARCHAR, price_source VARCHAR, dollar_volume DECIMAL(38,6))"
+        )
+        con.executemany(
+            "INSERT INTO source_fact VALUES (?, ?, ?, ?, ?)",
+            [
+                (root, "2002-07-01", "AAA000001", "osbap", "1"),
+                (root, "2002-08-01", "AAA000001", "osbap", "2"),
+                (root, "2002-09-01", "AAA000001", "osbap", "3"),
+                (delta, "2002-09-01", "AAA000001", "osbap", "30"),
+                (head, "2002-10-01", "AAA000001", "osbap", "4"),
+            ],
+        )
+        projection = (
+            "SELECT DISTINCT ON (source_fact.month, source_fact.cusip_id) "
+            "source_fact.month, source_fact.cusip_id, source_fact.price_source, "
+            "source_fact.dollar_volume FROM source_fact "
+            "JOIN source_ancestry USING (publication_id) "
+            "ORDER BY source_fact.month, source_fact.cusip_id, source_ancestry.depth"
+        )
+        con.execute(
+            "CREATE TABLE candidate AS SELECT month, cusip_id, "
+            "dollar_volume * 1000000 AS dollar_volume FROM (" + projection + ")"
+        )
+        expected = backfill._unit_repair_expected_volume_expression()
+
+        def mismatches(source_sql: str) -> int:
+            return con.execute(
+                "SELECT count(*) FROM candidate FULL JOIN ("
+                + source_sql
+                + ") source USING (month, cusip_id) "
+                "WHERE candidate.month IS NULL OR source.month IS NULL OR "
+                f"candidate.dollar_volume IS DISTINCT FROM {expected}"
+            ).fetchone()[0]
+
+        assert mismatches(projection) == 0
+        assert mismatches(
+            "SELECT month, cusip_id, price_source, dollar_volume FROM source_fact "
+            f"WHERE publication_id = '{head}'"
+        ) == 3
+        assert con.execute(
+            "SELECT dollar_volume FROM candidate WHERE month = '2002-09-01'"
+        ).fetchone()[0] == decimal.Decimal("30000000.000000")
+    finally:
+        con.close()
+
+
 def test_unit_repair_finalize_sql_gates_then_cas_and_refreshes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -849,6 +967,8 @@ def test_unit_repair_finalize_sql_gates_then_cas_and_refreshes(
     for surface in backfill.SURFACES:
         assert f"unit repair final count mismatch:{surface}" in sql
     assert "unit repair returns must start one month after the first snapshot month" in sql
+    assert "unit repair returns must end at the declared closed-month cutoff" in sql
+    assert "IF v_returns_max IS DISTINCT FROM '2026-08-01'::date THEN" in sql
     assert "unit repair returns history is not contiguous through the closed-month cutoff" in sql
     assert "unit repair rv_signal coverage mismatch" in sql
     assert "unit repair returns coverage mismatch" in sql
@@ -858,6 +978,15 @@ def test_unit_repair_finalize_sql_gates_then_cas_and_refreshes(
     assert "unit repair cross-surface identity mismatch:returns" in sql
     assert "unit repair cross-surface identity mismatch:rating_pit" in sql
     assert "unit repair identity bootstrap missing" in sql
+    assert "unit repair per-row volume mismatch:snapshot" in sql
+    assert "unit repair per-row volume mismatch:rv_signal" in sql
+    assert "CREATE TEMP TABLE unit_repair_source_ancestry" in sql
+    assert f"WHERE p.publication_id = '{UNIT_REPAIR_HEAD}'::uuid" in sql
+    assert backfill.UNIT_REPAIR_CONFIG_HASH in sql
+    assert backfill.CONFIG_HASH in sql
+    assert "SELECT DISTINCT ON (source_fact.month, source_fact.cusip_id)" in sql
+    assert "ORDER BY source_fact.month, source_fact.cusip_id, ancestry.depth" in sql
+    assert "unit repair source ancestry does not match the pinned H projection" in sql
     assert "unit repair artifact/DB aggregate mismatch" in sql
     assert "jsonb_to_recordset(" in sql
     snapshot_sums = {item["year"]: item["sum_dollar_volume"] for item in plan.per_year if item["surface"] == "snapshot"}
@@ -869,7 +998,7 @@ def test_unit_repair_finalize_sql_gates_then_cas_and_refreshes(
     assert f"WHERE product = 'bond_panel_v1' AND publication_id = '{UNIT_REPAIR_HEAD}'::uuid" in sql
     assert "unit repair pointer compare-and-swap lost" in sql
     assert "COMMIT;" in sql
-    assert "dollar_volume * 1000000" not in sql
+    assert sql.count("dollar_volume * 1000000") == 2
     refresh_order = [
         sql.index("REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_rv_signal_v1_mat;"),
         sql.index("REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_returns_v1_mat;"),
@@ -935,7 +1064,7 @@ def test_artifact_directory_defaults_are_mode_specific(tmp_path: Path) -> None:
     assert backfill._artifact_directory_for_mode(None, unit_repair=True) == (
         backfill.UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY
     )
-    equivalent = Path(str(backfill.UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY) + "\\")
+    equivalent = backfill.UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY / "nested" / ".."
     assert backfill._artifact_directory_for_mode(equivalent, unit_repair=True) == (
         backfill.UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY
     )
@@ -1308,8 +1437,13 @@ def _coverage_verdicts(con) -> tuple[bool, bool]:
 
 def _continuity_verdicts(con) -> tuple[bool, bool]:
     child = _UNIT_REPAIR_FIXTURE_CHILD
-    old_min = con.execute("SELECT min(month) FROM returns WHERE publication_id = ?", [child]).fetchone()[0]
-    old_fail = str(old_min) != _UNIT_REPAIR_FIXTURE_FIRST
+    old_min, old_max = con.execute(
+        "SELECT min(month), max(month) FROM returns WHERE publication_id = ?", [child]
+    ).fetchone()
+    old_fail = (
+        str(old_min) != _UNIT_REPAIR_FIXTURE_FIRST
+        or str(old_max) != _UNIT_REPAIR_FIXTURE_LAST
+    )
     if not old_fail:
         gaps = con.execute(
             "SELECT count(*) FROM generate_series(CAST(? AS DATE), CAST(? AS DATE), INTERVAL '1 month') expected(month)"
@@ -1318,8 +1452,13 @@ def _continuity_verdicts(con) -> tuple[bool, bool]:
             [_UNIT_REPAIR_FIXTURE_FIRST, _UNIT_REPAIR_FIXTURE_LAST, child],
         ).fetchone()[0]
         old_fail = gaps > 0
-    new_min = con.execute("SELECT min(month) FROM returns WHERE publication_id = ?", [child]).fetchone()[0]
-    new_fail = str(new_min) != _UNIT_REPAIR_FIXTURE_FIRST
+    new_min, new_max = con.execute(
+        "SELECT min(month), max(month) FROM returns WHERE publication_id = ?", [child]
+    ).fetchone()
+    new_fail = (
+        str(new_min) != _UNIT_REPAIR_FIXTURE_FIRST
+        or str(new_max) != _UNIT_REPAIR_FIXTURE_LAST
+    )
     if not new_fail:
         months = con.execute(
             "SELECT count(*) FROM (SELECT DISTINCT month FROM returns WHERE publication_id = ?) returns_months"
@@ -1631,7 +1770,21 @@ def test_unit_repair_finalize_gate_equivalence_on_adversarial_fixtures() -> None
     case(
         "extra_later_date",
         lambda rows: rows["returns"].append({"month": "2002-11-15", "cusip_id": "AAA000001", **_identity("AAA000001")}),
-        {"continuity": False},
+        {"continuity": True},
+    )
+    case(
+        "closed_row_replaced_by_future_row",
+        lambda rows: rows["returns"].remove(
+            next(
+                row
+                for row in rows["returns"]
+                if row["month"] == "2002-11-01" and row["cusip_id"] == "AAA000001"
+            )
+        )
+        or rows["returns"].append(
+            {"month": "2002-12-01", "cusip_id": "AAA000001", **_identity("AAA000001")}
+        ),
+        {"continuity": True, "coverage": True},
     )
     case("empty_returns_surface", lambda rows: rows.__setitem__("returns", []), {"counts": True, "continuity": True})
     case(

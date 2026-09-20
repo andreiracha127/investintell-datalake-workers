@@ -1495,6 +1495,14 @@ _UNIT_REPAIR_IDENTITY_COLUMNS = ("distribution_rule", "reference_cusip9", "distr
 _UNIT_REPAIR_MARKER_COLUMNS = ("source_lineage", "payload")
 
 
+def _unit_repair_expected_volume_expression(alias: str = "source") -> str:
+    return (
+        f"CASE WHEN {alias}.price_source = 'osbap' "
+        f"THEN {alias}.dollar_volume * {UNIT_REPAIR_SCALE} "
+        f"ELSE {alias}.dollar_volume END"
+    )
+
+
 def _unit_repair_copy_expressions(plan: UnitRepairPlan, surface: Surface) -> list[tuple[str, str]]:
     marker = _sql_json(_unit_repair_marker(plan))
     items: list[tuple[str, str]] = []
@@ -1513,7 +1521,7 @@ def _unit_repair_copy_expressions(plan: UnitRepairPlan, surface: Surface) -> lis
         elif column == "dollar_volume" and surface in UNIT_REPAIR_AFFECTED_SURFACES:
             items.append((
                 column,
-                f"CASE WHEN source.price_source = 'osbap' THEN source.dollar_volume * {UNIT_REPAIR_SCALE} ELSE source.dollar_volume END",
+                _unit_repair_expected_volume_expression(),
             ))
         elif column in _UNIT_REPAIR_MARKER_COLUMNS and surface in UNIT_REPAIR_AFFECTED_SURFACES:
             items.append((
@@ -1697,6 +1705,7 @@ def render_unit_repair_copy_sql(plan: UnitRepairPlan, surface: Surface) -> str:
     ) THEN RAISE EXCEPTION 'unit repair verbatim conflict:{surface}'; END IF;"""
         )
     if surface in UNIT_REPAIR_AFFECTED_SURFACES:
+        expected_volume = _unit_repair_expected_volume_expression()
         gates.append(
             f"""    IF EXISTS (
         SELECT 1 FROM {table} candidate
@@ -1709,6 +1718,21 @@ def render_unit_repair_copy_sql(plan: UnitRepairPlan, surface: Surface) -> str:
               OR NOT candidate.payload @> jsonb_build_object('unit_repair', {marker}::jsonb)
           )
     ) THEN RAISE EXCEPTION 'unit repair marker conflict:{surface}'; END IF;"""
+        )
+        gates.append(
+            f"""    IF EXISTS (
+        SELECT 1
+        FROM (
+            SELECT month, cusip_id, dollar_volume
+            FROM {table} WHERE publication_id = {child}::uuid
+        ) candidate
+        FULL JOIN (
+            SELECT month, cusip_id, price_source, dollar_volume FROM {view}
+        ) source USING (month, cusip_id)
+        WHERE candidate.month IS NULL OR source.month IS NULL
+           OR candidate.dollar_volume IS DISTINCT FROM {expected_volume}
+        LIMIT 1
+    ) THEN RAISE EXCEPTION 'unit repair per-row volume mismatch:{surface}'; END IF;"""
         )
         gates.append(
             f"""    IF (SELECT count(*) FROM {table} candidate WHERE candidate.publication_id = {child}::uuid AND candidate.dollar_volume IS NULL) <> (SELECT count(*) FROM {view} source WHERE source.dollar_volume IS NULL) THEN
@@ -1850,7 +1874,11 @@ GROUP BY f.month;"""
     summary_block = "\n".join(summaries)
     counts_blocks: list[str] = []
     for surface in SURFACES:
-        returns_capture = "\n    v_returns_min := v_min;" if surface == "returns" else ""
+        returns_capture = (
+            "\n    v_returns_min := v_min;\n    v_returns_max := v_max;"
+            if surface == "returns"
+            else ""
+        )
         counts_blocks.append(
             f"""    SELECT coalesce(sum(rows), 0), min(month), max(month) INTO v_rows, v_min, v_max
     FROM pg_temp.unit_repair_month_stats WHERE surface = {_sql_string(surface)};
@@ -1903,7 +1931,72 @@ GROUP BY f.month;"""
             LIMIT 1
         ) THEN RAISE EXCEPTION 'unit repair cross-surface identity mismatch:{surface}'; END IF;"""
         )
+    for surface in UNIT_REPAIR_AFFECTED_SURFACES:
+        expected_volume = _unit_repair_expected_volume_expression()
+        source_projection = f"""SELECT DISTINCT ON (source_fact.month, source_fact.cusip_id)
+                       source_fact.month, source_fact.cusip_id,
+                       source_fact.price_source, source_fact.dollar_volume
+                FROM {_TABLES[surface]} source_fact
+                JOIN pg_temp.unit_repair_source_ancestry ancestry
+                  USING (publication_id)
+                WHERE source_fact.month = v_month
+                ORDER BY source_fact.month, source_fact.cusip_id, ancestry.depth"""
+        coverage_blocks.append(
+            f"""        IF EXISTS (
+            SELECT 1
+            FROM (
+                SELECT month, cusip_id, dollar_volume
+                FROM {_TABLES[surface]}
+                WHERE publication_id = {child}::uuid AND month = v_month
+            ) candidate
+            FULL JOIN (
+                {source_projection}
+            ) source USING (month, cusip_id)
+            WHERE candidate.month IS NULL OR source.month IS NULL
+               OR candidate.dollar_volume IS DISTINCT FROM {expected_volume}
+            LIMIT 1
+        ) THEN RAISE EXCEPTION 'unit repair per-row volume mismatch:{surface}'; END IF;"""
+        )
     coverage_block = "\n".join(coverage_blocks)
+    source_ancestry_block = f"""    CREATE TEMP TABLE unit_repair_source_ancestry (
+        publication_id uuid PRIMARY KEY,
+        depth integer NOT NULL
+    ) ON COMMIT DROP;
+    WITH RECURSIVE source_ancestry(publication_id, parent_publication_id, config_hash, depth, path) AS (
+        SELECT p.publication_id, p.parent_publication_id, p.config_hash, 0,
+               ARRAY[p.publication_id]
+        FROM bond_panel_publications p
+        WHERE p.publication_id = {head}::uuid
+        UNION ALL
+        SELECT p.publication_id, p.parent_publication_id, p.config_hash,
+               ancestry.depth + 1, ancestry.path || p.publication_id
+        FROM bond_panel_publications p
+        JOIN source_ancestry ancestry
+          ON p.publication_id = ancestry.parent_publication_id
+        WHERE NOT p.publication_id = ANY(ancestry.path)
+          AND (
+              p.config_hash = ancestry.config_hash
+              OR (
+                  btrim(ancestry.config_hash::text) = {_sql_string(UNIT_REPAIR_CONFIG_HASH)}
+                  AND btrim(p.config_hash::text) = {_sql_string(CONFIG_HASH)}
+              )
+          )
+    )
+    INSERT INTO pg_temp.unit_repair_source_ancestry (publication_id, depth)
+    SELECT publication_id, depth FROM source_ancestry;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_temp.unit_repair_source_ancestry ancestry
+        WHERE ancestry.publication_id = {head}::uuid AND ancestry.depth = 0
+    ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_temp.unit_repair_source_ancestry ancestry
+        JOIN bond_panel_publications root USING (publication_id)
+        WHERE ancestry.publication_id = {_sql_string(plan.root_base_publication_id)}::uuid
+          AND root.parent_publication_id IS NULL
+          AND root.publication_status = 'validated'
+          AND root.config_hash = {_sql_string(CONFIG_HASH)}
+          AND root.code_revision = {_sql_string(REPAIR_CODE_REVISION)}
+    ) THEN RAISE EXCEPTION 'unit repair source ancestry does not match the pinned H projection'; END IF;"""
     return f"""\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL ROLE worker_writer;
@@ -1921,6 +2014,7 @@ DECLARE
     v_min date;
     v_max date;
     v_returns_min date;
+    v_returns_max date;
     v_months integer;
     v_checked integer := 0;
     v_mismatches integer;
@@ -1951,6 +2045,7 @@ BEGIN
           AND candidate.publication_status IN ('prepared', 'validated')
 {metadata}
     ) THEN RAISE EXCEPTION 'non-identical unit-repair publication finalization'; END IF;
+{source_ancestry_block}
     -- Small monthly summaries: one grouped scan per surface, C only, actual
     -- dates only (unexpected dates included).  No payload JSON is stored.
     CREATE TEMP TABLE unit_repair_month_stats (
@@ -1969,6 +2064,9 @@ BEGIN
     IF v_returns_min IS DISTINCT FROM {_sql_string(returns_first)}::date THEN
         RAISE EXCEPTION 'unit repair returns must start one month after the first snapshot month';
     END IF;
+    IF v_returns_max IS DISTINCT FROM {_sql_string(window['last_closed_month'])}::date THEN
+        RAISE EXCEPTION 'unit repair returns must end at the declared closed-month cutoff';
+    END IF;
     -- Continuity equivalence: PK months are distinct first-of-month dates, so
     -- this count plus the pinned minimum is exactly the generate_series coverage.
     SELECT count(*) INTO v_months
@@ -1986,7 +2084,8 @@ BEGIN
         WHERE surface = 'snapshot' AND bootstrap IS TRUE LIMIT 1
     ) THEN RAISE EXCEPTION 'unit repair identity bootstrap missing'; END IF;
     RAISE NOTICE 'unit repair finalize: identity gates elapsed_ms=%', round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
-    -- Coverage + cross-surface identity, month by month, both sides pinned to C.
+    -- Coverage/cross-surface identity stays within C; volume equality compares
+    -- C to the H-anchored served projection reconstructed above.
     FOR v_month IN SELECT DISTINCT month FROM pg_temp.unit_repair_month_stats ORDER BY month LOOP
 {coverage_block}
         v_checked := v_checked + 1;
