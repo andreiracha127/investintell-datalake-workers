@@ -1,0 +1,13 @@
+# Point the service config path at this file and keep its root directory at the
+# repository root. With no cron, each deployment is a one-shot verify-only run.
+# The reviewed coordinator cap is 9000 seconds. SQL and idle-in-transaction
+# timeouts are separately pinned at 7200 seconds after the measured 1991-second
+# rollback and 1229-second apply invalidated the original 20-minute estimate.
+# No cron schedule, domain, or public port belongs to this private one-shot.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "docker/bond-implied-artifact-loader/Dockerfile"
+
+[deploy]
+startCommand = "timeout --signal=TERM --kill-after=30s 9000s python -m scripts.load_bond_market_implied_rating_artifact --artifact-root /artifact --evidence-dir /evidence --verify-only"
+restartPolicyType = "never"

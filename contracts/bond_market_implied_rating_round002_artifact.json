@@ -1,0 +1,145 @@
+{
+  "schema_version": "bond_market_implied_rating_round002_artifact/1",
+  "status": "ready",
+  "artifact": {
+    "label": "artifact",
+    "relative_path": "round002_cache/baseline_implied_rows.parquet",
+    "size_bytes": 40717323,
+    "sha256": "a7fde442abb529f3e6291ba41871e0d96cd3a0aa75d9654d309ec5e3857eed7a"
+  },
+  "manifests": [
+    {
+      "label": "build",
+      "relative_path": "round002_cache/baseline_build_manifest_a.json",
+      "size_bytes": 2161,
+      "sha256": "eccd41daaa0082dca29a33db28187f72ab2db54f252ad57b3f055b0bec875941"
+    },
+    {
+      "label": "export",
+      "relative_path": "export_manifest.json",
+      "size_bytes": 6488,
+      "sha256": "3261b3bb84784e3426f7825bce7968447c9f7279eb798d358b0751d4f7037011"
+    },
+    {
+      "label": "gates",
+      "relative_path": "round002_cache/gate_results_baseline.json",
+      "size_bytes": 12023,
+      "sha256": "d6fe5fd30d49c140a18e3556ed70f9f29f1fa22ef43ebaf3058214d7a0000649"
+    }
+  ],
+  "producer": {
+    "revision": "c541c35cfcec9cd1df08ce5d7a1eca2ef2f30c76",
+    "policy_version": "bond_market_implied_rating_policy_v1",
+    "policy_digest": "28f70b9bd8f617fedf6104deb86cd518d43307e88b3bbd1fcf53aa1fae869a3b",
+    "manifest_module_sha256": "8d8513beca598600fd5a8a1e64816b81089c33fca8fd7a57ec0ce62aa0d52148",
+    "sources": [
+      {
+        "relative_path": "src/bonds/implied_rating.py",
+        "historical_sha256": "8d8513beca598600fd5a8a1e64816b81089c33fca8fd7a57ec0ce62aa0d52148",
+        "accepted_runtime_sha256": [
+          "8d8513beca598600fd5a8a1e64816b81089c33fca8fd7a57ec0ce62aa0d52148"
+        ]
+      }
+    ]
+  },
+  "arrow_schema": [
+    {"name": "month", "type": "timestamp[us]", "nullable": true},
+    {"name": "cusip_id", "type": "large_string", "nullable": true},
+    {"name": "implied_bucket", "type": "large_string", "nullable": true},
+    {"name": "spread_norm_log", "type": "double", "nullable": true},
+    {"name": "neutralized_score", "type": "double", "nullable": true},
+    {"name": "market_level_l", "type": "double", "nullable": true},
+    {"name": "witnessed", "type": "bool", "nullable": true},
+    {"name": "carry_months", "type": "int64", "nullable": true},
+    {"name": "spell_id", "type": "int64", "nullable": true},
+    {"name": "d_candidate", "type": "bool", "nullable": true},
+    {"name": "d_confirmed", "type": "bool", "nullable": true},
+    {"name": "d_event_month", "type": "timestamp[ms]", "nullable": true},
+    {"name": "recovery_observed", "type": "double", "nullable": true},
+    {"name": "censoring", "type": "large_string", "nullable": true},
+    {"name": "policy_version", "type": "large_string", "nullable": true},
+    {"name": "policy_digest", "type": "large_string", "nullable": true}
+  ],
+  "expected": {
+    "row_count": 3375028,
+    "first_month": "2002-07-01",
+    "last_month": "2026-08-01",
+    "month_count": 290,
+    "unique_key_count": 3375028,
+    "witnessed_count": 1681659,
+    "d_confirmed_count": 11153,
+    "d_candidate_count": 4521,
+    "histogram": {
+      "AAA": 352740,
+      "AA": 386393,
+      "A": 378204,
+      "BBB": 298427,
+      "BB": 183726,
+      "B": 86243,
+      "CCC": 29447,
+      "D": 11153,
+      "WITHDRAWN": 5722,
+      "NOT_RATED": 1642973
+    },
+    "rows_digest": "2c211fdaaa937874bd3f28b703579661438a85439315303917c22f3020c14ab5"
+  },
+  "anchor": {
+    "value": -0.8864114120812487,
+    "repr": "-0.8864114120812487"
+  },
+  "parent": {
+    "publication_id": "65156481-8cb4-52b5-8676-cf77edc5644f",
+    "parent_publication_id": "71b672c8-239c-55bc-bccb-ed39960c0fd2",
+    "config_hash": "1863d3d5fa3a0edf",
+    "code_revision": "t3_dollar_volume_unit_repair_v1",
+    "first_month": "2002-07-01",
+    "last_closed_month": "2026-08-01",
+    "open_month": "2026-09-01",
+    "declared_counts": [3448307, 1689773, 2810912, 3448307],
+    "repair_contract": "dollar_volume_unit_repair_v1",
+    "source_sha256_keys": [
+      "bond_monthly_returns.parquet",
+      "bond_panel_live.parquet",
+      "bond_ratings_pit.parquet",
+      "universe_snapshots_live.parquet"
+    ],
+    "snapshot_source_sha256": "2bc85774f608aebc57e8e345e49113938549f8f89ae87dee509cdcae8758aba2",
+    "header_sha256": null
+  },
+  "identity": {
+    "input_fingerprint": "620760bf4de0584d44138d880ff57bf87d3ffa24ef205074d0b004d8874b9867",
+    "publication_id": "bc13a5e4-7f1a-54fa-8a5b-68862df4020b",
+    "receipt": {
+      "label": "identity",
+      "relative_path": "contracts/bond_market_implied_rating_round002_input_identity.json",
+      "size_bytes": 2104,
+      "sha256": "93c10c42a0c7d25d3513cf3185ddffdb101773535144823c1075683753ee7da3"
+    },
+    "stopped_run_evidence_sha256": "7b6bb4dd9ae46ee9a67cc60fa275b719f0142e0e4adf6f7125fff7d8e2be20b0"
+  },
+  "runtime": {
+    "python_minor": "3.13",
+    "distributions": {
+      "numpy": "2.5.1",
+      "pandas": "3.0.3",
+      "psycopg": "3.3.3",
+      "psycopg-binary": "3.3.3",
+      "pyarrow": "25.0.0"
+    },
+    "base_image": "python:3.13-slim@sha256:2b7445fb71ca9cb15e9aab053fe8cb3162796f8e1d92ada12a49c766a811bc1e",
+    "connect_timeout_seconds": 15,
+    "lock_timeout_ms": 5000,
+    "statement_timeout_ms": 7200000,
+    "idle_transaction_timeout_ms": 7200000,
+    "supervised_process_cap_seconds": 9000,
+    "timeout_decision": "measured full-volume rollback 1991s and apply 1229s; retain finite 2h SQL/idle timeouts with a separate 9000s supervised whole-process cap"
+  },
+  "admission_limits": {
+    "max_manifest_bytes": 131072,
+    "max_row_groups": 4,
+    "max_rows": 3375028,
+    "max_decoded_bytes": 45000000,
+    "max_footer_bytes": 16384,
+    "max_string_bytes": 64
+  }
+}
