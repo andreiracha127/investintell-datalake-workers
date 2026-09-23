@@ -19,6 +19,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from datetime import date, datetime, timezone
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -525,6 +526,8 @@ def _parse_contract(raw: bytes) -> FrozenArtifactContract:
     if repr(anchor["value"]) != anchor_repr or float(anchor_repr) != anchor["value"]:
         _fail(ErrorCode.CONTRACT_INVALID, "anchor.repr")
 
+    if type(root["parent"]) is dict and "header_sha256" not in root["parent"]:
+        _fail(ErrorCode.CONTRACT_INVALID, "parent.header_sha256")
     parent_obj = _closed_object(
         root["parent"],
         {
@@ -544,6 +547,10 @@ def _parse_contract(raw: bytes) -> FrozenArtifactContract:
     header_sha = parent_obj["header_sha256"]
     if header_sha is not None:
         header_sha = _sha(header_sha, "parent.header_sha256")
+    elif status is ContractStatus.READY:
+        # A READY contract must pin the reviewed child/predecessor header digest;
+        # only a parse-only identity_pending contract may still leave it open.
+        _fail(ErrorCode.CONTRACT_INVALID, "parent.header_sha256")
     parent = ParentPins(
         publication_id=_uuid(parent_obj["publication_id"], "parent.publication_id"),
         parent_publication_id=_uuid(
@@ -687,6 +694,9 @@ def load_frozen_contract() -> FrozenArtifactContract:
 def _require_ready(contract: FrozenArtifactContract) -> None:
     if contract.status is ContractStatus.IDENTITY_PENDING or contract.identity is None:
         _fail(ErrorCode.MISSING_IDENTITY, "identity")
+    header_sha = contract.parent.header_sha256
+    if type(header_sha) is not str or SHA256_RE.fullmatch(header_sha) is None:
+        _fail(ErrorCode.CONTRACT_INVALID, "parent.header_sha256")
     if contract.limits is None:
         _fail(ErrorCode.MISSING_IDENTITY, "readiness_evidence")
     if any(pin.sha256 is None or pin.size_bytes is None for pin in contract.manifests):
@@ -700,6 +710,57 @@ def _require_ready(contract: FrozenArtifactContract) -> None:
     )
     if expected_id != contract.identity.publication_id:
         _fail(ErrorCode.IDENTITY_MISMATCH, "publication_id")
+
+
+def _publication_from_contract(contract: FrozenArtifactContract) -> ImpliedRatingPublication:
+    """The only publication metadata a READY contract admits, derived from its pins."""
+    _require_ready(contract)
+    assert contract.identity is not None
+    return ImpliedRatingPublication(
+        publication_id=contract.identity.publication_id,
+        panel_publication_id=contract.parent.publication_id,
+        policy_version=contract.policy_version,
+        policy_digest=contract.policy_digest,
+        code_revision=contract.producer_revision,
+        panel_last_closed_month=contract.parent.last_closed_month,
+        first_month=contract.expected.first_month,
+        last_month=contract.expected.last_month,
+        input_fingerprint=contract.identity.input_fingerprint,
+        l_anchor=contract.anchor_value,
+        rows_digest=contract.expected.rows_digest,
+        d_confirmed_count=contract.expected.d_confirmed_count,
+        d_candidate_count=contract.expected.d_candidate_count,
+        row_count=contract.expected.row_count,
+    )
+
+
+def _strict_same(actual: Any, expected: Any) -> bool:
+    """Exact value equality that refuses Python's loose cross-type equality.
+
+    ``True == 1``, ``np.float64(x) == x``, ``-0.0 == 0.0`` and date/datetime
+    subclasses all compare equal under ``==``; admission of caller-supplied
+    metadata must not.
+    """
+    if type(actual) is not type(expected):
+        return False
+    if type(expected) is float:
+        return actual.hex() == expected.hex()
+    if type(expected) is tuple:
+        return len(actual) == len(expected) and all(
+            _strict_same(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return bool(actual == expected)
+
+
+def _require_publication(
+    publication: Any, expected: ImpliedRatingPublication
+) -> ImpliedRatingPublication:
+    if type(publication) is not ImpliedRatingPublication:
+        _fail(ErrorCode.IDENTITY_MISMATCH, "publication.type")
+    for field in dataclass_fields(ImpliedRatingPublication):
+        if not _strict_same(getattr(publication, field.name), getattr(expected, field.name)):
+            _fail(ErrorCode.IDENTITY_MISMATCH, f"publication.{field.name}")
+    return expected
 
 
 def _runtime_versions() -> dict[str, str]:
@@ -1219,22 +1280,7 @@ def _load_verified_artifact(
     file_evidence.append(artifact_evidence)
     frame = _to_canonical_frame(table)
     summary = _validate_frame(frame, contract)
-    publication = ImpliedRatingPublication(
-        publication_id=contract.identity.publication_id,
-        panel_publication_id=contract.parent.publication_id,
-        policy_version=contract.policy_version,
-        policy_digest=contract.policy_digest,
-        code_revision=contract.producer_revision,
-        panel_last_closed_month=contract.parent.last_closed_month,
-        first_month=contract.expected.first_month,
-        last_month=contract.expected.last_month,
-        input_fingerprint=contract.identity.input_fingerprint,
-        l_anchor=contract.anchor_value,
-        rows_digest=contract.expected.rows_digest,
-        d_confirmed_count=contract.expected.d_confirmed_count,
-        d_candidate_count=contract.expected.d_candidate_count,
-        row_count=contract.expected.row_count,
-    )
+    publication = _publication_from_contract(contract)
     return VerifiedArtifact(contract_sha256, publication, summary, tuple(file_evidence), table)
 
 
@@ -1245,6 +1291,84 @@ def load_verified_artifact(artifact_root: Path) -> VerifiedArtifact:
         contract=_parse_contract(raw),
         contract_sha256=_hash_bytes(raw),
     )
+
+
+_PINNED_SUMMARY_FIELDS = (
+    "row_count", "first_month", "last_month", "month_count", "unique_key_count",
+    "witnessed_count", "d_confirmed_count", "d_candidate_count", "histogram", "rows_digest",
+)
+
+
+def _summary_values(summary: ArtifactSummary) -> tuple[Any, ...]:
+    return tuple(getattr(summary, field.name) for field in dataclass_fields(ArtifactSummary))
+
+
+def _file_values(evidence: FileEvidence) -> tuple[Any, ...]:
+    return (evidence.label, evidence.relative_path, evidence.size_bytes, evidence.sha256)
+
+
+def _expected_file_evidence(contract: FrozenArtifactContract) -> tuple[FileEvidence, ...]:
+    """File evidence a genuine offline load of ``contract`` produces, in load order."""
+    assert contract.identity is not None
+    pins = (*contract.manifests, contract.identity.receipt, contract.artifact)
+    return (
+        *_verify_sources(contract),
+        *(
+            FileEvidence(pin.label, pin.relative_path, pin.size_bytes, pin.sha256)
+            for pin in pins
+        ),
+    )
+
+
+def _bind_verified_artifact(
+    artifact: Any, contract: FrozenArtifactContract
+) -> VerifiedArtifact:
+    """Rebind a caller-supplied artifact to the frozen contract before any DB use.
+
+    ``VerifiedArtifact`` is a plain dataclass, so a programmatic caller can build
+    or ``replace`` one with arbitrary metadata.  Every publication field, every
+    pinned summary value, the Arrow null counts, the file evidence and the Arrow
+    schema/row count must equal what the contract determines; the returned
+    artifact carries the contract-derived publication, never the supplied one.
+    Row *content* is bound to the contract's rows digest by the full frame
+    recomputation in :func:`_artifact_payload` before any write.
+    """
+    publication = _publication_from_contract(contract)
+    if type(artifact) is not VerifiedArtifact:
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.type")
+    contract_sha = artifact.contract_sha256
+    if type(contract_sha) is not str or SHA256_RE.fullmatch(contract_sha) is None:
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.contract_sha256")
+    _require_publication(artifact.publication, publication)
+    table = artifact.table
+    if type(table) is not pa.Table:
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.table")
+    _verify_arrow_schema(table.schema, contract)
+    if table.num_rows != contract.expected.row_count:
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.table.row_count")
+    summary = artifact.summary
+    if type(summary) is not ArtifactSummary:
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.summary")
+    for name in _PINNED_SUMMARY_FIELDS:
+        if not _strict_same(getattr(summary, name), getattr(contract.expected, name)):
+            _fail(ErrorCode.IDENTITY_MISMATCH, f"artifact.summary.{name}")
+    arrow_nulls = tuple(
+        (name, int(table[name].null_count)) for name in policy.PUBLICATION_COLUMNS
+    )
+    if not _strict_same(summary.null_counts, arrow_nulls):
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.summary.null_counts")
+    expected_files = _expected_file_evidence(contract)
+    files = artifact.files
+    if (
+        type(files) is not tuple
+        or len(files) != len(expected_files)
+        or any(type(item) is not FileEvidence for item in files)
+    ):
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.files")
+    for index, (item, expected) in enumerate(zip(files, expected_files, strict=True)):
+        if not _strict_same(_file_values(item), _file_values(expected)):
+            _fail(ErrorCode.IDENTITY_MISMATCH, f"artifact.files.{index}")
+    return VerifiedArtifact(contract_sha, publication, summary, files, table)
 
 
 def _canonical_json_bytes(value: Any) -> bytes:
@@ -1336,7 +1460,9 @@ def _verify_parent(
     if source_shas.get("bond_panel_live.parquet") != pins.snapshot_source_sha256:
         _fail(ErrorCode.PARENT_MISMATCH, "parent.snapshot_sha")
     digest = _hash_bytes(_canonical_json_bytes({"child": child, "parent": predecessor}))
-    if pins.header_sha256 is not None and digest != pins.header_sha256:
+    # Always compared: the complete reviewed child/predecessor projection, not only
+    # the core fields above, is the admitted lineage.
+    if pins.header_sha256 is None or digest != pins.header_sha256:
         _fail(ErrorCode.PARENT_MISMATCH, "parent.header_sha256")
     server_version = int(conn.execute("SHOW server_version_num").fetchone()[0])
     return ParentEvidence(str(pointer[0]), pointer[1], digest, server_version)
@@ -1425,39 +1551,39 @@ _EXPECTED_CONSTRAINT_HASHES = {
     True: "26e024de4030da9600e2ca4704fd5186fe6e8bd385d4056638b76b59603f9689",
 }
 
-_EXPECTED_FUNCTION_CONTRACTS: dict[str, tuple[Any, ...]] = {
-    "bond_market_implied_rating_v1_write_guard()": (
-        "6823804a0b205c5f2b4e38b697b229665e597fdf4883cd53b5ba591022593fb0",
-        "", "", 0, "trigger", "plpgsql", "v", "u", False, False, False, "f", False,
-        None, "worker_writer", None,
-    ),
+# Function contracts: sha256(prosrc), identity args, full args, #defaults, result,
+# language, volatility, parallel, SECURITY DEFINER, strict, leakproof, kind,
+# set-returning, proconfig, owner.  Privileges are validated semantically by
+# ``_verify_function_acls`` (an ACL's text form is not its meaning: NULL and an
+# explicit owner/PUBLIC list grant the same EXECUTE).
+_SHARED_FUNCTION_CONTRACTS: dict[str, tuple[Any, ...]] = {
     "sec_derived_pointer_guard()": (
         "0af65cf5d0c4c04762c82c95eb245888ece0db45d5275d6fcf6f5d73f65ae84e",
         "", "", 0, "trigger", "plpgsql", "v", "u", False, False, False, "f", False,
-        None, "worker_writer", None,
+        None, "worker_writer",
     ),
     "sec_derived_publication_as_of(uuid)": (
         "db638702fda1189bf0d1f196a7a642db33228577a9363bb750d7dc24c9205e94",
         "target_publication_id uuid", "target_publication_id uuid", 0,
         "date", "plpgsql", "s", "u", False, False, False, "f", False,
-        None, "worker_writer", None,
+        None, "worker_writer",
     ),
     "sec_derived_publication_delete_guard()": (
         "e87342589b00a20437f3c7bc8ce9760948121c801514c9103d863e8e1c64f958",
         "", "", 0, "trigger", "plpgsql", "v", "u", False, False, False, "f", False,
-        None, "worker_writer", None,
+        None, "worker_writer",
     ),
     "sec_derived_publication_immutable()": (
         "9263cad4f6b6bf449185d794b0a3c3ddbb04b60144c95beb7e209685cdc40ffd",
         "", "", 0, "trigger", "plpgsql", "v", "u", False, False, False, "f", False,
-        None, "worker_writer", None,
+        None, "worker_writer",
     ),
     "sec_derived_publication_is_validated(uuid,text)": (
         "07c3fac7bb10c6c2e8a2c3d735553cff06cbfee866d3ea8baa7c71ef16a5d505",
         "target_publication_id uuid, expected_product text",
         "target_publication_id uuid, expected_product text DEFAULT NULL::text", 1,
         "boolean", "sql", "s", "u", False, False, False, "f", False,
-        None, "worker_writer", None,
+        None, "worker_writer",
     ),
     "sec_set_current_derived_publication(text,uuid,boolean)": (
         "603e42b96cab1950e0cdecc2b2d33e4a5e495f0824cfd73cee588cc50192a72f",
@@ -1468,17 +1594,40 @@ _EXPECTED_FUNCTION_CONTRACTS: dict[str, tuple[Any, ...]] = {
         ),
         1,
         "void", "plpgsql", "v", "u", False, False, False, "f", False,
-        None, "worker_writer", None,
+        None, "worker_writer",
     ),
     "sec_validate_derived_publication(uuid)": (
         "01ec9ea04a6160b18c33b5afc1f1d9a7d1361c08986496536cb12689a29b527f",
         "target_publication_id uuid", "target_publication_id uuid", 0,
         "void", "plpgsql", "v", "u", False, False, False, "f", False,
-        None, "worker_writer", None,
+        None, "worker_writer",
+    ),
+}
+_PRODUCT_FUNCTION_CONTRACTS: dict[str, tuple[Any, ...]] = {
+    "bond_market_implied_rating_v1_write_guard()": (
+        "6823804a0b205c5f2b4e38b697b229665e597fdf4883cd53b5ba591022593fb0",
+        "", "", 0, "trigger", "plpgsql", "v", "u", False, False, False, "f", False,
+        None, "worker_writer",
     ),
 }
 
-_EXPECTED_TRIGGER_CONTRACTS: dict[tuple[str, str], tuple[Any, ...]] = {
+# Trigger contracts: (trigger, relation) -> (function, tgtype, tgenabled,
+# sha256(pg_get_triggerdef(oid, true))).
+_SHARED_TRIGGER_CONTRACTS: dict[tuple[str, str], tuple[Any, ...]] = {
+    ("sec_derived_current_pointer_guard", "sec_derived_current_pointers"): (
+        "sec_derived_pointer_guard()", 31, "O",
+        "0c98c240f333d02ddd1e15cf82a7ac5c0b6cb0ecfc7c4b3615248fe63cf48cd1",
+    ),
+    ("sec_derived_publications_delete_guard", "sec_derived_publications"): (
+        "sec_derived_publication_delete_guard()", 11, "O",
+        "9f0e3017e51e2a5da89cc86d7428edd03922760088b569257d337c5a9332ed37",
+    ),
+    ("sec_derived_publications_immutable", "sec_derived_publications"): (
+        "sec_derived_publication_immutable()", 19, "O",
+        "b8c1e0ced9ed78690ae79ff8aff6594c5671802676fd6a78db7de4bfec985ac6",
+    ),
+}
+_PRODUCT_TRIGGER_CONTRACTS: dict[tuple[str, str], tuple[Any, ...]] = {
     (
         "bond_market_implied_rating_v1_builds_write_guard",
         "bond_market_implied_rating_v1_builds",
@@ -1493,47 +1642,184 @@ _EXPECTED_TRIGGER_CONTRACTS: dict[tuple[str, str], tuple[Any, ...]] = {
         "bond_market_implied_rating_v1_write_guard()", 31, "O",
         "f36f9ac8e0f76af581835f4221067d01af685e7192480502517c09583f475eae",
     ),
-    ("sec_derived_current_pointer_guard", "sec_derived_current_pointers"): (
-        "sec_derived_pointer_guard()", 31, "O",
-        "0c98c240f333d02ddd1e15cf82a7ac5c0b6cb0ecfc7c4b3615248fe63cf48cd1",
+}
+
+# The RR1 fee-profile guards (schemas/rr1_fee_profiles.sql) that production
+# attaches to the shared ledger.  They are an existing, checked DB dependency,
+# never installed or replaced here, and are admitted only as this complete
+# exact pair of triggers plus functions (all-or-none).  Their product filter
+# lives inside the pinned PL/pgSQL bodies, so exact source equality is what
+# keeps them no-ops for every other product.
+#
+# Provenance: trigger definitions, tgtype/tgenabled, function result, language,
+# volatility, SECURITY INVOKER, proconfig, owner and prosrc hashes equal the
+# read-only production capture (receipt 148e6b2a...) and a clean PG 18.1/18.4
+# install of the reviewed SQL.  Identity/full arguments, defaults, parallel,
+# strict, leakproof, kind and set-returning come from that clean PG18
+# reconstruction only, pending the bounded production attribute capture.
+_RR1_TRIGGER_CONTRACTS: dict[tuple[str, str], tuple[Any, ...]] = {
+    ("rr1_fee_profile_current_pointer_guard", "sec_derived_current_pointers"): (
+        "rr1_fee_profile_current_pointer_guard()", 31, "O",
+        "9d0c812daaac9ed748babba5767c460403fc5772baaed961263543bdad4a7167",
     ),
-    ("sec_derived_publications_delete_guard", "sec_derived_publications"): (
-        "sec_derived_publication_delete_guard()", 11, "O",
-        "9f0e3017e51e2a5da89cc86d7428edd03922760088b569257d337c5a9332ed37",
+    ("rr1_fee_profile_publication_validation_guard", "sec_derived_publications"): (
+        "rr1_fee_profile_publication_validation_guard()", 19, "O",
+        "d00b5314cca674de68b895a00127306f5a6a3c61e218f910660fdc7bb4da8182",
     ),
-    ("sec_derived_publications_immutable", "sec_derived_publications"): (
-        "sec_derived_publication_immutable()", 19, "O",
-        "b8c1e0ced9ed78690ae79ff8aff6594c5671802676fd6a78db7de4bfec985ac6",
+}
+_RR1_FUNCTION_CONTRACTS: dict[str, tuple[Any, ...]] = {
+    "rr1_fee_profile_current_pointer_guard()": (
+        "5e17ad39bf55b7f0c1802527b9b23b271e72f7525aec38402a77647a9b6767cb",
+        "", "", 0, "trigger", "plpgsql", "v", "u", False, False, False, "f", False,
+        None, "worker_writer",
+    ),
+    "rr1_fee_profile_publication_validation_guard()": (
+        "49282817bd24062a49a9b5fb8b73eb095f9d8c2ff28c3755906c2256f6210608",
+        "", "", 0, "trigger", "plpgsql", "v", "u", False, False, False, "f", False,
+        None, "worker_writer",
     ),
 }
 
+# Shared-ledger extension profiles.  A clean install is "baseline"; the known
+# production target carries the RR1 pair, and its envelope requires exactly that.
+PROFILE_BASELINE = "baseline"
+PROFILE_RR1 = "rr1_fee_profile_guards"
+_PRODUCTION_REQUIRED_PROFILE = PROFILE_RR1
+_PRODUCTION_REQUIRED_ROLES = ("worker_writer", "app_runtime", "app_analytics_ro")
+
+# Function EXECUTE admission: the owner and PUBLIC must hold it (PostgreSQL's
+# own default); app_runtime may hold a redundant explicit grant.  Nothing else.
+_FUNCTION_OPTIONAL_GRANTEES = ("app_runtime",)
+
+# Exact PG18 ``pg_get_viewdef(oid, false)`` renderings captured from a clean install
+# of the reviewed DDL (schema on the search_path, as the loader runs).  Compared
+# byte-for-byte: no lowercasing or whitespace folding, so a case-sensitive literal
+# such as the product filter cannot drift while still comparing equal.
 _EXPECTED_VIEW_DEFINITIONS: dict[str, str] = {
     "bond_market_implied_rating_v1_current": (
-        "select r.publication_id, r.month, r.cusip_id, r.implied_bucket, r.spread_norm_log, "
-        "r.neutralized_score, r.market_level_l, r.witnessed, r.carry_months, r.spell_id, "
-        "r.d_candidate, r.d_confirmed, r.d_event_month, r.recovery_observed, r.censoring, "
-        "r.policy_version, r.policy_digest from sec_derived_current_pointers pointer join "
-        "bond_market_implied_rating_v1 r on r.publication_id = pointer.publication_id where "
-        "pointer.product = 'bond_market_implied_rating_v1'::text;"
+        " SELECT r.publication_id,\n    r.month,\n    r.cusip_id,\n    r.implied_bucket,\n"
+        "    r.spread_norm_log,\n    r.neutralized_score,\n    r.market_level_l,\n"
+        "    r.witnessed,\n    r.carry_months,\n    r.spell_id,\n    r.d_candidate,\n"
+        "    r.d_confirmed,\n    r.d_event_month,\n    r.recovery_observed,\n"
+        "    r.censoring,\n    r.policy_version,\n    r.policy_digest\n"
+        "   FROM (sec_derived_current_pointers pointer\n"
+        "     JOIN bond_market_implied_rating_v1 r ON ((r.publication_id = pointer.publication_id)))\n"
+        "  WHERE (pointer.product = 'bond_market_implied_rating_v1'::text);"
     ),
     "bond_market_implied_rating_publications": (
-        "select s.publication_id, s.product, s.lifecycle_state as publication_status, null::text "
-        "as failure_reason, b.policy_version, b.policy_digest, b.code_revision, "
-        "b.panel_publication_id, b.panel_last_closed_month, b.first_month, b.last_month, "
-        "b.input_fingerprint, b.row_count, b.rows_digest, b.d_confirmed_count, "
-        "b.d_candidate_count, s.prepared_at as built_at, s.validated_at from "
-        "sec_derived_publications s join bond_market_implied_rating_v1_builds b using "
-        "(publication_id) where s.product = 'bond_market_implied_rating_v1'::text;"
+        " SELECT s.publication_id,\n    s.product,\n    s.lifecycle_state AS publication_status,\n"
+        "    NULL::text AS failure_reason,\n    b.policy_version,\n    b.policy_digest,\n"
+        "    b.code_revision,\n    b.panel_publication_id,\n    b.panel_last_closed_month,\n"
+        "    b.first_month,\n    b.last_month,\n    b.input_fingerprint,\n    b.row_count,\n"
+        "    b.rows_digest,\n    b.d_confirmed_count,\n    b.d_candidate_count,\n"
+        "    s.prepared_at AS built_at,\n    s.validated_at\n"
+        "   FROM (sec_derived_publications s\n"
+        "     JOIN bond_market_implied_rating_v1_builds b USING (publication_id))\n"
+        "  WHERE (s.product = 'bond_market_implied_rating_v1'::text);"
     ),
     "bond_market_implied_rating_app_pointer": (
-        "select product, publication_id, set_at as changed_at from "
-        "sec_derived_current_pointers where product = 'bond_market_implied_rating_v1'::text;"
+        " SELECT product,\n    publication_id,\n    set_at AS changed_at\n"
+        "   FROM sec_derived_current_pointers\n"
+        "  WHERE (product = 'bond_market_implied_rating_v1'::text);"
     ),
 }
 
+# Relation privilege admission.  The owner is trusted; known readers may hold
+# non-grantable SELECT only (absence of a read grant is fine: read grants are
+# operational).  Everything else -- PUBLIC, other grantees, write privileges,
+# TRUNCATE (which bypasses row-level write guards), REFERENCES, TRIGGER,
+# MAINTAIN, grant options, column-level grants -- is refused, never repaired.
+_RELATION_OWNER = "worker_writer"
+_READER_ROLES = ("app_analytics_ro", "app_runtime")
+_READER_FORBIDDEN_TABLE_PRIVILEGES = (
+    "INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN"
+)
+_READER_FORBIDDEN_COLUMN_PRIVILEGES = "INSERT, UPDATE, REFERENCES"
 
-def _normalized_catalog_sql(value: str) -> str:
-    return re.sub(r"\s+", " ", value.lower()).strip()
+
+def _acl_item_admitted(
+    owner_oid: int, grantee_oid: int, grantee: str | None, privilege: str, grantable: bool
+) -> bool:
+    if grantee_oid == owner_oid:
+        return True
+    return (
+        grantee_oid != 0
+        and grantee in _READER_ROLES
+        and privilege == "SELECT"
+        and grantable is False
+    )
+
+
+def _verify_relation_acls(conn: psycopg.Connection, relation_names: Sequence[str]) -> None:
+    names = list(relation_names)
+    owners = conn.execute(
+        "SELECT c.relname, pg_get_userbyid(c.relowner) FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) ORDER BY c.relname",
+        (names,),
+    ).fetchall()
+    if len(owners) != len(names) or any(owner != _RELATION_OWNER for _, owner in owners):
+        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.owners")
+    relation_acl = conn.execute(
+        "SELECT c.relname, c.relowner, acl.grantee, "
+        "CASE WHEN acl.grantee = 0 THEN NULL ELSE pg_get_userbyid(acl.grantee) END, "
+        "acl.privilege_type, acl.is_grantable FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) acl "
+        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) "
+        "ORDER BY c.relname, acl.grantee, acl.privilege_type",
+        (names,),
+    ).fetchall()
+    for relname, owner_oid, grantee_oid, grantee, privilege, grantable in relation_acl:
+        if not _acl_item_admitted(owner_oid, grantee_oid, grantee, privilege, grantable):
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.acl.{relname}")
+    column_acl = conn.execute(
+        "SELECT c.relname, c.relowner, acl.grantee, "
+        "CASE WHEN acl.grantee = 0 THEN NULL ELSE pg_get_userbyid(acl.grantee) END, "
+        "acl.privilege_type, acl.is_grantable FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum > 0 AND NOT a.attisdropped "
+        "CROSS JOIN LATERAL aclexplode(a.attacl) acl "
+        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) AND a.attacl IS NOT NULL "
+        "ORDER BY c.relname, a.attnum, acl.grantee, acl.privilege_type",
+        (names,),
+    ).fetchall()
+    for relname, owner_oid, grantee_oid, grantee, privilege, grantable in column_acl:
+        if not _acl_item_admitted(owner_oid, grantee_oid, grantee, privilege, grantable):
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.column_acl.{relname}")
+    # Keep the direct owner/ACL checks, then inspect every role assumable through
+    # SET-enabled memberships. UNION bounds the walk even on cyclic graphs.
+    readers = conn.execute(
+        "WITH RECURSIVE assumable(reader_oid, role_oid) AS ("
+        "SELECT oid, oid FROM pg_roles WHERE rolname=ANY(%s) "
+        "UNION SELECT a.reader_oid, m.roleid FROM assumable a "
+        "JOIN pg_auth_members m ON m.member=a.role_oid WHERE m.set_option) "
+        "SELECT r.rolname, r.rolsuper, "
+        "EXISTS (SELECT 1 FROM pg_roles w WHERE w.rolname=%s "
+        "AND pg_has_role(r.oid, w.oid, 'MEMBER')), "
+        "EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) "
+        "AND (has_table_privilege(r.oid, c.oid, %s) "
+        "OR has_any_column_privilege(r.oid, c.oid, %s))), "
+        "EXISTS (SELECT 1 FROM assumable a JOIN pg_roles target ON target.oid=a.role_oid "
+        "WHERE a.reader_oid=r.oid "
+        "AND (target.rolsuper OR EXISTS (SELECT 1 FROM pg_roles w "
+        "WHERE w.rolname=%s AND pg_has_role(target.oid, w.oid, 'MEMBER')) "
+        "OR EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) "
+        "AND (has_table_privilege(target.oid, c.oid, %s) "
+        "OR has_any_column_privilege(target.oid, c.oid, %s))))) "
+        "FROM pg_roles r WHERE r.rolname=ANY(%s) ORDER BY r.rolname",
+        (
+            list(_READER_ROLES), _RELATION_OWNER, names, _READER_FORBIDDEN_TABLE_PRIVILEGES,
+            _READER_FORBIDDEN_COLUMN_PRIVILEGES, _RELATION_OWNER, names,
+            _READER_FORBIDDEN_TABLE_PRIVILEGES, _READER_FORBIDDEN_COLUMN_PRIVILEGES,
+            list(_READER_ROLES),
+        ),
+    ).fetchall()
+    for rolname, superuser, reaches_owner, writes, assumable_writes in readers:
+        if superuser or reaches_owner or writes or assumable_writes:
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.reader_role.{rolname}")
 
 
 def _relation_columns(conn: psycopg.Connection, name: str) -> tuple[tuple[str, str, str], ...]:
@@ -1545,7 +1831,59 @@ def _relation_columns(conn: psycopg.Connection, name: str) -> tuple[tuple[str, s
     return tuple((row[0], row[1], row[2]) for row in rows)
 
 
-def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: bool) -> None:
+def _function_acl_item_admitted(
+    owner_oid: int,
+    grantor_oid: int,
+    grantee_oid: int,
+    grantee: str | None,
+    privilege: str,
+    grantable: bool,
+) -> bool:
+    if grantor_oid != owner_oid or privilege != "EXECUTE" or grantable is not False:
+        return False
+    if grantee_oid in (owner_oid, 0):
+        return True
+    return grantee in _FUNCTION_OPTIONAL_GRANTEES
+
+
+def _verify_function_acls(conn: psycopg.Connection, function_oids: dict[str, int]) -> None:
+    """Semantic EXECUTE admission for every protected function.
+
+    The ACL is expanded (NULL means the owner/PUBLIC default), every entry must be
+    an owner-issued, non-grantable EXECUTE to the owner, PUBLIC or the optional
+    redundant app_runtime grant, and owner plus PUBLIC EXECUTE must both be
+    present.  Order and textual representation are irrelevant; unknown or
+    unresolvable grantees, other grantors and grant options refuse.
+    """
+    if not function_oids:
+        return
+    rows = conn.execute(
+        "SELECT p.oid::regprocedure::text,p.proowner,acl.grantor,acl.grantee,"
+        "CASE WHEN acl.grantee=0 THEN NULL ELSE "
+        "(SELECT r.rolname FROM pg_roles r WHERE r.oid=acl.grantee) END,"
+        "acl.privilege_type,acl.is_grantable FROM pg_proc p "
+        "CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl "
+        "WHERE p.oid=ANY(%s) ORDER BY 1,acl.grantee,acl.privilege_type",
+        (sorted(function_oids.values()),),
+    ).fetchall()
+    holders: dict[str, set[int]] = {signature: set() for signature in function_oids}
+    for signature, owner_oid, grantor_oid, grantee_oid, grantee, privilege, grantable in rows:
+        if not _function_acl_item_admitted(
+            owner_oid, grantor_oid, grantee_oid, grantee, privilege, grantable
+        ):
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.function_acl.{signature}")
+        holders[signature].add(grantee_oid)
+    owners = dict(conn.execute(
+        "SELECT p.oid::regprocedure::text,p.proowner FROM pg_proc p WHERE p.oid=ANY(%s)",
+        (sorted(function_oids.values()),),
+    ).fetchall())
+    for signature, granted in holders.items():
+        if owners.get(signature) not in granted or 0 not in granted:
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.function_acl.{signature}")
+
+
+def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: bool) -> str:
+    """Exact relation/trigger/function/view/ACL contract; returns the extension profile."""
     relation_names = list(_SHARED_SCHEMA_OBJECTS)
     if include_product:
         relation_names.extend(_PRODUCT_SCHEMA_OBJECTS)
@@ -1595,13 +1933,16 @@ def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: boo
 
     trigger_rows = conn.execute(
         "SELECT t.tgname,c.relname,p.oid::regprocedure::text,t.tgtype,t.tgenabled,"
-        "pg_get_triggerdef(t.oid,true) FROM pg_trigger t "
+        "pg_get_triggerdef(t.oid,true),p.pronamespace=c.relnamespace FROM pg_trigger t "
         "JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_class c ON c.oid=t.tgrelid "
         "JOIN pg_namespace n ON n.oid=c.relnamespace "
         "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) AND NOT t.tgisinternal"
         " ORDER BY t.tgname,c.relname",
         (relation_names,),
     ).fetchall()
+    # Every protected trigger executes a function of the ledger's own schema.
+    if not all(row[6] is True for row in trigger_rows):
+        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.trigger_binding")
     observed_triggers = {
         (row[0], row[1]): (
             row[2], int(row[3]), row[4],
@@ -1609,21 +1950,35 @@ def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: boo
         )
         for row in trigger_rows
     }
-    expected_triggers = {
-        key: value
-        for key, value in _EXPECTED_TRIGGER_CONTRACTS.items()
-        if include_product or key[0].startswith("sec_")
-    }
-    if observed_triggers != expected_triggers:
+    baseline_triggers = dict(_SHARED_TRIGGER_CONTRACTS)
+    baseline_functions = dict(_SHARED_FUNCTION_CONTRACTS)
+    if include_product:
+        baseline_triggers.update(_PRODUCT_TRIGGER_CONTRACTS)
+        baseline_functions.update(_PRODUCT_FUNCTION_CONTRACTS)
+    if observed_triggers == baseline_triggers:
+        profile = PROFILE_BASELINE
+        expected_functions = baseline_functions
+    elif observed_triggers == {**baseline_triggers, **_RR1_TRIGGER_CONTRACTS}:
+        profile = PROFILE_RR1
+        expected_functions = {**baseline_functions, **_RR1_FUNCTION_CONTRACTS}
+    else:
         _fail(ErrorCode.SCHEMA_MISMATCH, "schema.triggers")
 
-    function_names = sorted({signature.split("(", 1)[0] for signature in _EXPECTED_FUNCTION_CONTRACTS})
+    # Every protected name is looked up in every profile, so a lingering RR1 guard
+    # without its trigger, a half pair or an overload of any name refuses.
+    function_names = sorted({
+        signature.split("(", 1)[0]
+        for signature in (
+            *_SHARED_FUNCTION_CONTRACTS, *_PRODUCT_FUNCTION_CONTRACTS, *_RR1_FUNCTION_CONTRACTS
+        )
+        if include_product or signature not in _PRODUCT_FUNCTION_CONTRACTS
+    })
     function_rows = conn.execute(
         "SELECT p.oid::regprocedure::text,pg_get_function_identity_arguments(p.oid),"
         "pg_get_function_arguments(p.oid),p.pronargdefaults,"
         "pg_get_function_result(p.oid),l.lanname,p.provolatile,p.proparallel,"
         "p.prosecdef,p.proisstrict,p.proleakproof,p.prokind,p.proretset,p.proconfig,"
-        "pg_get_userbyid(p.proowner),p.proacl,p.prosrc "
+        "pg_get_userbyid(p.proowner),p.oid,p.prosrc "
         "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
         "JOIN pg_language l ON l.oid=p.prolang "
         "WHERE n.nspname=current_schema() AND p.proname=ANY(%s) "
@@ -1631,33 +1986,34 @@ def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: boo
         (function_names,),
     ).fetchall()
     observed_functions: dict[str, tuple[Any, ...]] = {}
+    function_oids: dict[str, int] = {}
     for row in function_rows:
         signature = row[0]
         definition_hash = _hash_bytes(row[16].encode("utf-8"))
         proconfig = None if row[13] is None else tuple(row[13])
-        proacl = None if row[15] is None else tuple(row[15])
-        observed_functions[signature] = (
-            definition_hash, *row[1:13], proconfig, row[14], proacl
-        )
-    expected_functions = {
-        signature: value
-        for signature, value in _EXPECTED_FUNCTION_CONTRACTS.items()
-        if include_product or not signature.startswith("bond_market_")
-    }
+        observed_functions[signature] = (definition_hash, *row[1:13], proconfig, row[14])
+        function_oids[signature] = int(row[15])
     if observed_functions != expected_functions:
         _fail(ErrorCode.SCHEMA_MISMATCH, "schema.functions")
+    _verify_function_acls(conn, function_oids)
 
     if include_product:
+        observed_views = dict(conn.execute(
+            "SELECT c.relname, pg_get_viewdef(c.oid, false) FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname=current_schema() AND c.relkind='v' AND c.relname=ANY(%s)",
+            (list(_EXPECTED_VIEW_DEFINITIONS),),
+        ).fetchall())
         for view_name, expected in _EXPECTED_VIEW_DEFINITIONS.items():
-            definition = conn.execute(
-                "SELECT pg_get_viewdef(%s::regclass, true)", (view_name,)
-            ).fetchone()[0]
-            normalized = _normalized_catalog_sql(definition)
-            if normalized != expected:
+            if observed_views.get(view_name) != expected:
                 _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.view.{view_name}")
 
+    _verify_relation_acls(conn, relation_names)
+    return profile
 
-def _schema_state(conn: psycopg.Connection) -> str:
+
+def _schema_state_and_profile(conn: psycopg.Connection) -> tuple[str, str | None]:
+    """Schema state plus the admitted shared-ledger extension profile (None if absent)."""
     shared = [
         conn.execute("SELECT to_regclass(%s)", (name,)).fetchone()[0] is not None
         for name in _SHARED_SCHEMA_OBJECTS
@@ -1670,23 +2026,36 @@ def _schema_state(conn: psycopg.Connection) -> str:
         _fail(ErrorCode.SCHEMA_MISMATCH, "schema.shared_partial")
     if not any(product):
         if all(shared):
-            _verify_relation_contracts(conn, include_product=False)
-            return "shared_only"
-        return "absent"
+            return "shared_only", _verify_relation_contracts(conn, include_product=False)
+        return "absent", None
     if not all(product) or not all(shared):
         _fail(ErrorCode.SCHEMA_MISMATCH, "schema.partial")
-    _verify_relation_contracts(conn, include_product=True)
-    owners = conn.execute(
-        "SELECT c.relname, pg_get_userbyid(c.relowner) FROM pg_class c "
-        "JOIN pg_namespace n ON n.oid=c.relnamespace "
-        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s)",
-        (list(_PRODUCT_SCHEMA_OBJECTS),),
-    ).fetchall()
-    if len(owners) != len(_PRODUCT_SCHEMA_OBJECTS) or any(
-        owner != "worker_writer" for _, owner in owners
-    ):
-        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.owners")
-    return "compatible"
+    # Includes owner and relation/column ACL admission for all nine relations.
+    return "compatible", _verify_relation_contracts(conn, include_product=True)
+
+
+def _schema_state(conn: psycopg.Connection) -> str:
+    return _schema_state_and_profile(conn)[0]
+
+
+def _require_profile(observed: str | None, required: str | None) -> None:
+    """An operation envelope's pinned profile; absence of the ledger never matches."""
+    if required is not None and observed != required:
+        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile")
+
+
+def _verify_required_roles(conn: psycopg.Connection, roles: Sequence[str]) -> None:
+    """The envelope's roles must exist; they are never created here."""
+    if not roles:
+        return
+    present = {
+        row[0] for row in conn.execute(
+            "SELECT rolname FROM pg_roles WHERE rolname=ANY(%s)", (list(roles),)
+        ).fetchall()
+    }
+    for role in roles:
+        if role not in present:
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.required_role.{role}")
 
 
 def _publication_state(
@@ -1756,6 +2125,7 @@ def _verify_stored_publication(
     contract: FrozenArtifactContract,
     require_current: bool,
 ) -> StoredEvidence:
+    publication = _require_publication(publication, _publication_from_contract(contract))
     build = conn.execute(
         "SELECT " + ",".join(BUILD_COLUMNS) +
         " FROM bond_market_implied_rating_v1_builds WHERE publication_id=%s",
@@ -1996,17 +2366,55 @@ def _receipt_payload(
     })
 
 
+# Every application file the image copies and the CLI executes or reads, including
+# the package initializers and the whole eager ``src.bonds`` import closure: the
+# CLI import runs ``src/bonds/__init__.py``, which imports the pure bond modules.
+# The runtime files (Dockerfile, requirements.lock, railway.toml) carry their own
+# release-context fields; the root-only startup wrapper is bound through the
+# Dockerfile's literal digest (verified below), not by an inventory entry.
 _RELEASE_SOURCE_PATHS = (
+    "src/__init__.py",
     "src/db.py",
+    "src/bonds/__init__.py",
+    "src/bonds/cashflows.py",
+    "src/bonds/debt_mapping.py",
     "src/bonds/errors.py",
+    "src/bonds/identifiers.py",
     "src/bonds/implied_rating.py",
-    "src/bonds/implied_rating_materializer.py",
     "src/bonds/implied_rating_artifact_loader.py",
+    "src/bonds/implied_rating_materializer.py",
+    "src/bonds/matching.py",
+    "src/bonds/oas.py",
+    "src/bonds/panel_states.py",
+    "src/bonds/pricing.py",
+    "src/bonds/states.py",
+    "scripts/__init__.py",
     "scripts/load_bond_market_implied_rating_artifact.py",
     "schemas/sec_derived_publications.sql",
     "schemas/bond_market_implied_rating_v1.sql",
     "contracts/bond_market_implied_rating_round002_artifact.json",
+    "contracts/bond_market_implied_rating_round002_input_identity.json",
 )
+_BOOTSTRAP_RELATIVE_PATH = "docker/bond-implied-artifact-loader/bootstrap_evidence.py"
+_BOOTSTRAP_LITERAL_RE = re.compile(
+    rb'echo "([0-9a-f]{64})  /app/docker/bond-implied-artifact-loader/bootstrap_evidence\.py"'
+    rb" \| sha256sum -c -"
+)
+
+
+def _verify_bootstrap_binding(dockerfile_raw: bytes) -> None:
+    """The copied startup wrapper must still match the release-bound Dockerfile literal."""
+    literals = _BOOTSTRAP_LITERAL_RE.findall(dockerfile_raw)
+    if len(literals) != 1:
+        _fail(ErrorCode.RECEIPT_FAILURE, "release_context.bootstrap_literal")
+    try:
+        actual = _hash_bytes((ROOT / PurePosixPath(_BOOTSTRAP_RELATIVE_PATH)).read_bytes())
+    except OSError as exc:
+        raise ArtifactLoaderError(
+            ErrorCode.RECEIPT_FAILURE, field="release_context.bootstrap_sha256"
+        ) from exc
+    if actual != literals[0].decode("ascii"):
+        _fail(ErrorCode.RECEIPT_FAILURE, "release_context.bootstrap_sha256")
 
 
 def _load_release_evidence(
@@ -2065,15 +2473,17 @@ def _load_release_evidence(
         "dockerfile_sha256": runtime_root / "Dockerfile",
         "railway_toml_sha256": runtime_root / "railway.toml",
     }
+    runtime_bytes: dict[str, bytes] = {}
     for field, file_path in runtime_checks.items():
         try:
-            actual = _hash_bytes(file_path.read_bytes())
+            runtime_bytes[field] = file_path.read_bytes()
         except OSError as exc:
             raise ArtifactLoaderError(
                 ErrorCode.RECEIPT_FAILURE, field=f"release_context.{field}"
             ) from exc
-        if _sha(document[field], f"release_context.{field}") != actual:
+        if _sha(document[field], f"release_context.{field}") != _hash_bytes(runtime_bytes[field]):
             _fail(ErrorCode.RECEIPT_FAILURE, f"release_context.{field}")
+    _verify_bootstrap_binding(runtime_bytes["dockerfile_sha256"])
     return ReleaseEvidence(
         loader_commit=document["loader_commit"],
         loader_tree=document["loader_tree"],
@@ -2199,12 +2609,22 @@ def _best_effort_failure_receipt(
 def _artifact_payload(
     artifact: VerifiedArtifact, contract: FrozenArtifactContract
 ) -> list[tuple[Any, ...]]:
+    """Admit the table content once and build the INSERT payload from it.
+
+    The single full-frame validation both binds the rows to the contract (counts,
+    window, histogram, rows digest) and re-derives the complete summary, which
+    must equal the supplied one; rows are stamped with the contract publication.
+    """
+    _admit_arrow(artifact.table, contract)
     frame = _to_canonical_frame(artifact.table)
-    _validate_frame(frame, contract)
+    summary = _validate_frame(frame, contract)
+    if not _strict_same(_summary_values(summary), _summary_values(artifact.summary)):
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.summary")
+    publication = _publication_from_contract(contract)
     payload: list[tuple[Any, ...]] = []
     for start in range(0, len(frame), ROW_BATCH):
         payload.extend(publication_row_tuples(
-            artifact.publication, frame.iloc[start:start + ROW_BATCH]
+            publication, frame.iloc[start:start + ROW_BATCH]
         ))
     return payload
 
@@ -2212,9 +2632,18 @@ def _artifact_payload(
 def _contract_from_artifact(artifact: VerifiedArtifact) -> FrozenArtifactContract:
     raw = _read_contract_bytes()
     contract = _parse_contract(raw)
-    if _hash_bytes(raw) != artifact.contract_sha256:
+    supplied = getattr(artifact, "contract_sha256", None)
+    if type(supplied) is not str or _hash_bytes(raw) != supplied:
         _fail(ErrorCode.CONTRACT_INVALID, "contract.changed")
     return contract
+
+
+def _admit_operation_artifact(
+    artifact: VerifiedArtifact,
+) -> tuple[FrozenArtifactContract, VerifiedArtifact]:
+    """Public-entrypoint boundary: checked-in contract bytes, then metadata rebinding."""
+    contract = _contract_from_artifact(artifact)
+    return contract, _bind_verified_artifact(artifact, contract)
 
 
 def _read_only_operation(
@@ -2223,19 +2652,32 @@ def _read_only_operation(
     contract: FrozenArtifactContract,
     connection_factory: Callable[[], psycopg.Connection],
     require_published: bool,
+    required_profile: str | None = None,
+    required_roles: Sequence[str] = (),
 ) -> OperationResult:
+    artifact = _bind_verified_artifact(artifact, contract)
     with connection_factory() as conn, conn.transaction():
         conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY")
         _set_local_timeouts(conn)
         _acquire_product_lock(conn)
-        schema = _schema_state(conn)
+        _verify_required_roles(conn, required_roles)
+        schema, profile = _schema_state_and_profile(conn)
+        _require_profile(profile, required_profile)
         first_parent = _verify_parent(conn, contract=contract, lock_pointer=False)
+
+        def recheck_schema() -> None:
+            # READ COMMITTED sees concurrent DDL: the admitted schema and extension
+            # profile must still hold when the read-only verdict is formed.
+            if _schema_state_and_profile(conn) != (schema, profile):
+                _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile_changed")
+
         if schema in {"absent", "shared_only"}:
             if (
                 schema == "shared_only"
                 and _publication_state(conn, artifact.publication) is not PublicationState.ABSENT
             ):
                 _fail(ErrorCode.PUBLICATION_CONFLICT, "publication.partial_state")
+            recheck_schema()
             if require_published:
                 return OperationResult(
                     "not_published", artifact.publication.publication_id,
@@ -2262,22 +2704,36 @@ def _read_only_operation(
         second_parent = _verify_parent(conn, contract=contract, lock_pointer=False)
         if first_parent != second_parent:
             _fail(ErrorCode.PARENT_MISMATCH, "parent.race")
+        recheck_schema()
         return OperationResult(
             outcome, artifact.publication.publication_id, False, stored, first_parent, ()
         )
 
 
-def _ensure_schema(
+def _ensure_schema_profile(
     contract: FrozenArtifactContract,
     connection_factory: Callable[[], psycopg.Connection],
-) -> bool:
+    *,
+    required_profile: str | None = None,
+    required_roles: Sequence[str] = (),
+) -> tuple[bool, str]:
+    """Install the reviewed DDL when needed; return (installed, extension profile).
+
+    Existing state -- shared or product -- is fully admitted (including ACLs and
+    the extension profile) *before* any DDL runs, so installation never repairs
+    an unsafe pre-existing state.  The install itself must not change the
+    profile of a pre-existing ledger.
+    """
     with connection_factory() as conn, conn.transaction():
         _set_local_timeouts(conn)
         _acquire_product_lock(conn)
         _verify_parent(conn, contract=contract, lock_pointer=True)
-        state = _schema_state(conn)
+        _verify_required_roles(conn, required_roles)
+        state, profile = _schema_state_and_profile(conn)
+        _require_profile(profile, required_profile)
         if state == "compatible":
-            return False
+            assert profile is not None
+            return False, profile
         if state == "shared_only":
             assert contract.identity is not None
             if (
@@ -2286,9 +2742,20 @@ def _ensure_schema(
             ):
                 _fail(ErrorCode.PUBLICATION_CONFLICT, "publication.partial_state")
         install_schema(conn)
-        if _schema_state(conn) != "compatible":
+        installed_state, installed_profile = _schema_state_and_profile(conn)
+        if installed_state != "compatible" or installed_profile is None:
             _fail(ErrorCode.SCHEMA_MISMATCH, "schema.install")
-        return True
+        if profile is not None and installed_profile != profile:
+            _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile_changed")
+        _require_profile(installed_profile, required_profile)
+        return True, installed_profile
+
+
+def _ensure_schema(
+    contract: FrozenArtifactContract,
+    connection_factory: Callable[[], psycopg.Connection],
+) -> bool:
+    return _ensure_schema_profile(contract, connection_factory)[0]
 
 
 def _publish_verified_artifact(
@@ -2300,12 +2767,48 @@ def _publish_verified_artifact(
     release: ReleaseEvidence | None = None,
     operation_id: str | None = None,
     operation_started_at_utc: str | None = None,
+    required_profile: str | None = None,
+    required_roles: Sequence[str] = (),
 ) -> OperationResult:
-    _require_ready(contract)
     operation_id = operation_id or str(uuid4())
     operation_started_at_utc = (
         operation_started_at_utc or datetime.now(timezone.utc).isoformat()
     )
+    # Admission of caller-supplied metadata and of the full table content happens
+    # before the pre-apply success receipt and before any database connection.
+    admitted_publication_id: str | None = None
+    try:
+        admitted_publication_id = _publication_from_contract(contract).publication_id
+        artifact = _bind_verified_artifact(artifact, contract)
+    except ArtifactLoaderError as exc:
+        exc.phase = exc.phase or "artifact_binding"
+        exc.transaction_outcome = exc.transaction_outcome or "not_started"
+        if not exc.receipt_written:
+            _best_effort_failure_receipt(
+                exc,
+                evidence_dir,
+                operation_id=operation_id,
+                operation_started_at_utc=operation_started_at_utc,
+                mode="apply",
+                publication_id=admitted_publication_id,
+            )
+        raise
+    try:
+        payload = _artifact_payload(artifact, contract)
+    except ArtifactLoaderError as exc:
+        exc.phase = "payload"
+        exc.schema_installed = False
+        exc.transaction_outcome = "not_started"
+        if not exc.receipt_written:
+            _best_effort_failure_receipt(
+                exc,
+                evidence_dir,
+                operation_id=operation_id,
+                operation_started_at_utc=operation_started_at_utc,
+                mode="apply",
+                publication_id=artifact.publication.publication_id,
+            )
+        raise
     preapply = _persist_receipt(
         evidence_dir,
         phase="pre-apply",
@@ -2323,7 +2826,14 @@ def _publish_verified_artifact(
     )
     schema_installed = False
     try:
-        schema_installed = _ensure_schema(contract, connection_factory)
+        # The extension profile observed here is held for the whole operation:
+        # any later observation must match it exactly.
+        schema_installed, profile = _ensure_schema_profile(
+            contract,
+            connection_factory,
+            required_profile=required_profile,
+            required_roles=required_roles,
+        )
     except ArtifactLoaderError as exc:
         exc.phase = "schema_install"
         exc.schema_installed = None
@@ -2338,6 +2848,25 @@ def _publish_verified_artifact(
                 publication_id=artifact.publication.publication_id,
             )
         raise
+    except psycopg.errors.LockNotAvailable as exc:
+        # Parent-pointer FOR SHARE or DDL relation contention during schema setup is
+        # the same retryable lock timeout as in the publication transaction.
+        primary = ArtifactLoaderError(
+            ErrorCode.LOCK_TIMEOUT,
+            field="schema.install",
+            phase="schema_install",
+            schema_installed=None,
+            transaction_outcome="not_started",
+        )
+        _best_effort_failure_receipt(
+            primary,
+            evidence_dir,
+            operation_id=operation_id,
+            operation_started_at_utc=operation_started_at_utc,
+            mode="apply",
+            publication_id=artifact.publication.publication_id,
+        )
+        raise primary from exc
     except psycopg.Error as exc:
         primary = ArtifactLoaderError(
             ErrorCode.DB_FAILURE,
@@ -2355,22 +2884,6 @@ def _publish_verified_artifact(
             publication_id=artifact.publication.publication_id,
         )
         raise primary from exc
-    try:
-        payload = _artifact_payload(artifact, contract)
-    except ArtifactLoaderError as exc:
-        exc.phase = "payload"
-        exc.schema_installed = schema_installed
-        exc.transaction_outcome = "not_started"
-        if not exc.receipt_written:
-            _best_effort_failure_receipt(
-                exc,
-                evidence_dir,
-                operation_id=operation_id,
-                operation_started_at_utc=operation_started_at_utc,
-                mode="apply",
-                publication_id=artifact.publication.publication_id,
-            )
-        raise
     precommit: ReceiptRef | None = None
     stored: StoredEvidence | None = None
     parent_evidence: ParentEvidence | None = None
@@ -2390,8 +2903,11 @@ def _publish_verified_artifact(
                         conn, contract=contract, lock_pointer=True
                     )
                     transaction_phase = "schema_recheck"
-                    if _schema_state(conn) != "compatible":
+                    recheck_state, recheck_profile = _schema_state_and_profile(conn)
+                    if recheck_state != "compatible":
                         _fail(ErrorCode.SCHEMA_MISMATCH, "schema.changed")
+                    if recheck_profile != profile:
+                        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile_changed")
                     transaction_phase = "publication_state"
                     state = _publication_state(conn, artifact.publication)
                     if state is PublicationState.EXACT_CURRENT:
@@ -2423,6 +2939,9 @@ def _publish_verified_artifact(
                     )
                     if parent_evidence != second_parent:
                         _fail(ErrorCode.PARENT_MISMATCH, "parent.race")
+                    transaction_phase = "schema_precommit"
+                    if _schema_state_and_profile(conn) != ("compatible", profile):
+                        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile_changed")
                     transaction_phase = "precommit_receipt"
                     precommit = _persist_receipt(
                         evidence_dir,
@@ -2552,6 +3071,8 @@ def _publish_verified_artifact(
             contract=contract,
             connection_factory=connection_factory,
             require_published=True,
+            required_profile=profile,
+            required_roles=required_roles,
         )
         if result.outcome != "already_published_verified" or result.stored is None:
             _fail(ErrorCode.STORED_MISMATCH, "readback.outcome")
@@ -2631,19 +3152,25 @@ def publish_verified_artifact(
         operation_started_at_utc or datetime.now(timezone.utc).isoformat()
     )
     phase = "contract"
+    # Failure receipts carry only a contract-admitted publication identity, never
+    # the caller-supplied one.
+    publication_id: str | None = None
     try:
-        contract = _contract_from_artifact(artifact)
+        contract, admitted = _admit_operation_artifact(artifact)
+        publication_id = admitted.publication.publication_id
         phase = "release_context"
         release = _load_release_evidence(evidence_dir, contract)
         phase = "publish"
         return _publish_verified_artifact(
-            artifact,
+            admitted,
             contract=contract,
             connection_factory=connection_factory,
             evidence_dir=evidence_dir,
             release=release,
             operation_id=operation_id,
             operation_started_at_utc=operation_started_at_utc,
+            required_profile=_PRODUCTION_REQUIRED_PROFILE,
+            required_roles=_PRODUCTION_REQUIRED_ROLES,
         )
     except ArtifactLoaderError as exc:
         if not exc.receipt_written:
@@ -2655,7 +3182,7 @@ def publish_verified_artifact(
                 operation_id=operation_id,
                 operation_started_at_utc=operation_started_at_utc,
                 mode="apply",
-                publication_id=artifact.publication.publication_id,
+                publication_id=publication_id,
             )
         raise
     except BondError as exc:
@@ -2671,7 +3198,7 @@ def publish_verified_artifact(
             operation_id=operation_id,
             operation_started_at_utc=operation_started_at_utc,
             mode="apply",
-            publication_id=artifact.publication.publication_id,
+            publication_id=publication_id,
         )
         raise primary from exc
     except psycopg.Error as exc:
@@ -2687,7 +3214,7 @@ def publish_verified_artifact(
             operation_id=operation_id,
             operation_started_at_utc=operation_started_at_utc,
             mode="apply",
-            publication_id=artifact.publication.publication_id,
+            publication_id=publication_id,
         )
         raise primary from exc
 
@@ -2700,24 +3227,32 @@ def dry_run_verified_artifact(
     operation_id: str | None = None,
     operation_started_at_utc: str | None = None,
 ) -> OperationResult:
-    contract = _contract_from_artifact(artifact)
     operation_id = operation_id or str(uuid4())
     operation_started_at_utc = (
         operation_started_at_utc or datetime.now(timezone.utc).isoformat()
     )
+    phase = "artifact_binding"
+    publication_id: str | None = None
     try:
+        contract, artifact = _admit_operation_artifact(artifact)
+        publication_id = artifact.publication.publication_id
+        phase = "dry_run_read"
         result = _read_only_operation(
             artifact,
             contract=contract,
             connection_factory=connection_factory,
             require_published=False,
+            required_profile=_PRODUCTION_REQUIRED_PROFILE,
+            required_roles=_PRODUCTION_REQUIRED_ROLES,
         )
     except ArtifactLoaderError as exc:
         schema_installed = (
             exc.schema_installed if exc.schema_installed is not None else False
         )
-        transaction_outcome = exc.transaction_outcome or "read_only"
-        exc.phase = exc.phase or "dry_run_read"
+        transaction_outcome = exc.transaction_outcome or (
+            "not_started" if phase == "artifact_binding" else "read_only"
+        )
+        exc.phase = exc.phase or phase
         exc.schema_installed = schema_installed
         exc.transaction_outcome = transaction_outcome
         if not exc.receipt_written:
@@ -2727,7 +3262,7 @@ def dry_run_verified_artifact(
                 operation_id=operation_id,
                 operation_started_at_utc=operation_started_at_utc,
                 mode="dry-run",
-                publication_id=artifact.publication.publication_id,
+                publication_id=publication_id,
             )
         raise
     except psycopg.Error as exc:
@@ -2744,7 +3279,7 @@ def dry_run_verified_artifact(
             operation_id=operation_id,
             operation_started_at_utc=operation_started_at_utc,
             mode="dry-run",
-            publication_id=artifact.publication.publication_id,
+            publication_id=publication_id,
         )
         raise primary from exc
     receipt = _persist_receipt(
@@ -2770,24 +3305,32 @@ def recover_published_artifact(
     operation_id: str | None = None,
     operation_started_at_utc: str | None = None,
 ) -> OperationResult:
-    contract = _contract_from_artifact(artifact)
     operation_id = operation_id or str(uuid4())
     operation_started_at_utc = (
         operation_started_at_utc or datetime.now(timezone.utc).isoformat()
     )
+    phase = "artifact_binding"
+    publication_id: str | None = None
     try:
+        contract, artifact = _admit_operation_artifact(artifact)
+        publication_id = artifact.publication.publication_id
+        phase = "verify_published_read"
         result = _read_only_operation(
             artifact,
             contract=contract,
             connection_factory=connection_factory,
             require_published=True,
+            required_profile=_PRODUCTION_REQUIRED_PROFILE,
+            required_roles=_PRODUCTION_REQUIRED_ROLES,
         )
     except ArtifactLoaderError as exc:
         schema_installed = (
             exc.schema_installed if exc.schema_installed is not None else False
         )
-        transaction_outcome = exc.transaction_outcome or "read_only"
-        exc.phase = exc.phase or "verify_published_read"
+        transaction_outcome = exc.transaction_outcome or (
+            "not_started" if phase == "artifact_binding" else "read_only"
+        )
+        exc.phase = exc.phase or phase
         exc.schema_installed = schema_installed
         exc.transaction_outcome = transaction_outcome
         if not exc.receipt_written:
@@ -2797,7 +3340,7 @@ def recover_published_artifact(
                 operation_id=operation_id,
                 operation_started_at_utc=operation_started_at_utc,
                 mode="verify-published",
-                publication_id=artifact.publication.publication_id,
+                publication_id=publication_id,
             )
         raise
     except psycopg.Error as exc:
@@ -2814,7 +3357,7 @@ def recover_published_artifact(
             operation_id=operation_id,
             operation_started_at_utc=operation_started_at_utc,
             mode="verify-published",
-            publication_id=artifact.publication.publication_id,
+            publication_id=publication_id,
         )
         raise primary from exc
     receipt = _persist_receipt(

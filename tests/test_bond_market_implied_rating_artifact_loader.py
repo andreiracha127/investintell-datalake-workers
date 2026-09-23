@@ -5,8 +5,12 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import re
+import shutil
+import subprocess
 import sys
 from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -295,14 +299,14 @@ def _fixture(tmp_path: Path) -> tuple[Path, bytes, loader.FrozenArtifactContract
 
 
 def _write_release_context(
-    evidence: Path, contract: loader.FrozenArtifactContract
+    evidence: Path, contract: loader.FrozenArtifactContract, root: Path = ROOT
 ) -> dict[str, Any]:
     evidence.mkdir(parents=True, exist_ok=True)
     source_sha = {
-        relative: _sha(ROOT / relative)
+        relative: _sha(root / relative)
         for relative in loader._RELEASE_SOURCE_PATHS
     }
-    runtime_root = ROOT / "docker" / "bond-implied-artifact-loader"
+    runtime_root = root / "docker" / "bond-implied-artifact-loader"
     document = {
         "schema_version": "bond_market_implied_rating_artifact_release/1",
         "target": "production",
@@ -331,6 +335,11 @@ def test_checked_in_contract_binds_verified_identity_receipt() -> None:
         "620760bf4de0584d44138d880ff57bf87d3ffa24ef205074d0b004d8874b9867"
     )
     assert contract.identity.publication_id == "bc13a5e4-7f1a-54fa-8a5b-68862df4020b"
+    # Production C/H header digest from the read-only capture receipt
+    # 53edcee77d317e7236b380a2e7f9d97416875a6d9350266399c2e6d4db806ab3.
+    assert contract.parent.header_sha256 == (
+        "faf310864329a7dbe43e7ea3dcd1a55f043683914945bac0b16f6e9bfa982c69"
+    )
     loader._require_ready(contract)
     receipt, evidence = loader._read_pinned_json(
         loader.ROOT, contract.identity.receipt, contract.limits
@@ -787,6 +796,648 @@ def test_complete_release_context_verifies_runtime_image_layout(tmp_path: Path) 
     assert release.loader_commit == "1" * 40
     assert release.release_context_sha256 == _sha(evidence / "release-context.json")
     assert release.railway_toml_sha256 == document["railway_toml_sha256"]
+
+
+# Independent literal: the release inventory must be exactly this set.  It is not
+# derived from the loader constant, the Dockerfile or an import trace, so a change
+# to any one of them has to be reconciled with the others by review.
+_EXPECTED_RELEASE_SOURCES = frozenset({
+    "src/__init__.py",
+    "src/db.py",
+    "src/bonds/__init__.py",
+    "src/bonds/cashflows.py",
+    "src/bonds/debt_mapping.py",
+    "src/bonds/errors.py",
+    "src/bonds/identifiers.py",
+    "src/bonds/implied_rating.py",
+    "src/bonds/implied_rating_artifact_loader.py",
+    "src/bonds/implied_rating_materializer.py",
+    "src/bonds/matching.py",
+    "src/bonds/oas.py",
+    "src/bonds/panel_states.py",
+    "src/bonds/pricing.py",
+    "src/bonds/states.py",
+    "scripts/__init__.py",
+    "scripts/load_bond_market_implied_rating_artifact.py",
+    "schemas/sec_derived_publications.sql",
+    "schemas/bond_market_implied_rating_v1.sql",
+    "contracts/bond_market_implied_rating_round002_artifact.json",
+    "contracts/bond_market_implied_rating_round002_input_identity.json",
+})
+_RUNTIME_DIR = "docker/bond-implied-artifact-loader"
+_RUNTIME_FILES = frozenset({
+    f"{_RUNTIME_DIR}/Dockerfile",
+    f"{_RUNTIME_DIR}/requirements.lock",
+    f"{_RUNTIME_DIR}/railway.toml",
+})
+_BOOTSTRAP = f"{_RUNTIME_DIR}/bootstrap_evidence.py"
+
+
+def _dockerfile_copy_sources() -> set[str]:
+    text = (ROOT / _RUNTIME_DIR / "Dockerfile").read_text(encoding="utf-8")
+    logical = re.sub(r"\\\n", " ", text)
+    sources: set[str] = set()
+    for line in logical.splitlines():
+        tokens = line.split()
+        if tokens and tokens[0] == "COPY":
+            assert not any(token.startswith("--") for token in tokens[1:]), line
+            sources.update(tokens[1:-1])
+    return sources
+
+
+def test_release_inventory_is_the_exact_reviewed_set() -> None:
+    assert len(loader._RELEASE_SOURCE_PATHS) == len(set(loader._RELEASE_SOURCE_PATHS))
+    assert set(loader._RELEASE_SOURCE_PATHS) == _EXPECTED_RELEASE_SOURCES
+    for relative in _EXPECTED_RELEASE_SOURCES:
+        assert (ROOT / relative).is_file(), relative
+
+
+def test_release_inventory_equals_every_copied_application_file() -> None:
+    sources = _dockerfile_copy_sources()
+    # Everything the image copies is either inventory, a runtime file bound by its
+    # own release-context digest, the digest-pinned bootstrap, or the artifact.
+    assert sources - _RUNTIME_FILES - {_BOOTSTRAP, "artifact/"} == set(
+        loader._RELEASE_SOURCE_PATHS
+    )
+    assert _RUNTIME_FILES | {_BOOTSTRAP} <= sources
+
+
+def test_release_inventory_covers_fresh_process_cli_import_closure() -> None:
+    probe = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "root = Path(sys.argv[1]).resolve()\n"
+        "sys.path.insert(0, str(root))\n"
+        "import scripts.load_bond_market_implied_rating_artifact\n"
+        "found = set()\n"
+        "for module in list(sys.modules.values()):\n"
+        "    origin = getattr(module, '__file__', None)\n"
+        "    if origin and Path(origin).resolve().is_relative_to(root):\n"
+        "        found.add(Path(origin).resolve().relative_to(root).as_posix())\n"
+        "print('\\n'.join(sorted(found)))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", probe, str(ROOT)],
+        capture_output=True, text=True, timeout=120, check=True,
+    )
+    loaded = set(completed.stdout.split())
+    python_inventory = {
+        relative for relative in loader._RELEASE_SOURCE_PATHS if relative.endswith(".py")
+    }
+    # The eager import graph (src/bonds/__init__.py pulls the pure bond modules) is
+    # exactly the Python inventory: nothing loaded is unhashed, nothing hashed is dead.
+    assert loaded == python_inventory
+    assert "src/bonds/matching.py" in loaded and "src/__init__.py" in loaded
+
+
+def _release_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "release-root"
+    for relative in (*loader._RELEASE_SOURCE_PATHS, *_RUNTIME_FILES, _BOOTSTRAP):
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    return root
+
+
+@pytest.mark.parametrize("relative", sorted(_EXPECTED_RELEASE_SOURCES))
+def test_release_context_refuses_every_changed_inventory_file(
+    relative: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, contract = _fixture(tmp_path)
+    root = _release_tree(tmp_path)
+    evidence = tmp_path / "evidence"
+    _write_release_context(evidence, contract, root)
+    monkeypatch.setattr(loader, "ROOT", root)
+    assert loader._load_release_evidence(evidence, contract).loader_commit == "1" * 40
+    with (root / relative).open("ab") as handle:
+        handle.write(b"\n# drift\n")
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._load_release_evidence(evidence, contract)
+    assert exc.value.code == loader.ErrorCode.RECEIPT_FAILURE.value
+    assert exc.value.details.get("field") == f"release_context.source.{relative}"
+
+
+@pytest.mark.parametrize("change", ["missing", "extra"])
+def test_release_context_inventory_keys_must_match_exactly(
+    change: str, tmp_path: Path
+) -> None:
+    _, _, contract = _fixture(tmp_path)
+    evidence = tmp_path / "evidence"
+    document = _write_release_context(evidence, contract)
+    if change == "missing":
+        document["source_sha256"].pop("src/bonds/matching.py")
+    else:
+        document["source_sha256"]["src/workers/bond_market_implied_rating.py"] = "0" * 64
+    _json(evidence / "release-context.json", document)
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._load_release_evidence(evidence, contract)
+    assert exc.value.details.get("field") == "release_context.source_inventory"
+
+
+def test_release_context_binds_bootstrap_wrapper_to_dockerfile_literal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, contract = _fixture(tmp_path)
+    root = _release_tree(tmp_path)
+    evidence = tmp_path / "evidence"
+    _write_release_context(evidence, contract, root)
+    monkeypatch.setattr(loader, "ROOT", root)
+    loader._load_release_evidence(evidence, contract)
+    with (root / _BOOTSTRAP).open("ab") as handle:
+        handle.write(b"\n")
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._load_release_evidence(evidence, contract)
+    assert exc.value.code == loader.ErrorCode.RECEIPT_FAILURE.value
+    assert exc.value.details.get("field") == "release_context.bootstrap_sha256"
+    # A Dockerfile without exactly one reviewed literal is refused even when the
+    # release context was built from it.
+    shutil.copyfile(ROOT / _BOOTSTRAP, root / _BOOTSTRAP)
+    dockerfile = root / _RUNTIME_DIR / "Dockerfile"
+    dockerfile.write_bytes(dockerfile.read_bytes().replace(b"sha256sum -c -", b"true"))
+    _write_release_context(evidence, contract, root)
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._load_release_evidence(evidence, contract)
+    assert exc.value.details.get("field") == "release_context.bootstrap_literal"
+
+
+def test_ready_contract_requires_parent_header_digest(tmp_path: Path) -> None:
+    _, raw, contract = _fixture(tmp_path)
+    assert contract.parent.header_sha256 == "b" * 64
+    document = json.loads(raw)
+    document["parent"]["header_sha256"] = None
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._parse_contract(json.dumps(document).encode())
+    assert exc.value.code == loader.ErrorCode.CONTRACT_INVALID.value
+    assert exc.value.details.get("field") == "parent.header_sha256"
+    document["parent"].pop("header_sha256")
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._parse_contract(json.dumps(document).encode())
+    assert exc.value.details.get("field") == "parent.header_sha256"
+    for invalid in ("B" * 64, "b" * 63, 7):
+        document["parent"]["header_sha256"] = invalid
+        with pytest.raises(loader.ArtifactLoaderError):
+            loader._parse_contract(json.dumps(document).encode())
+    unpinned = replace(contract, parent=replace(contract.parent, header_sha256=None))
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._require_ready(unpinned)
+    assert exc.value.details.get("field") == "parent.header_sha256"
+
+
+def test_identity_pending_contract_may_leave_parent_header_open(tmp_path: Path) -> None:
+    _, raw, _ = _fixture(tmp_path)
+    document = json.loads(raw)
+    document["status"] = "identity_pending"
+    document["identity"] = None
+    document["parent"]["header_sha256"] = None
+    contract = loader._parse_contract(json.dumps(document).encode())
+    assert contract.parent.header_sha256 is None
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._require_ready(contract)
+    assert exc.value.code == loader.ErrorCode.MISSING_IDENTITY.value
+
+
+class _NoDatabase:
+    """Connection factory and connection stand-in that fails on any database use."""
+
+    calls = 0
+
+    def __call__(self) -> Any:
+        type(self).calls += 1
+        raise AssertionError("database connection opened")
+
+    def execute(self, *_: object, **__: object) -> Any:
+        type(self).calls += 1
+        raise AssertionError("database statement executed")
+
+
+def _genuine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[loader.VerifiedArtifact, loader.FrozenArtifactContract]:
+    root, raw, contract = _fixture(tmp_path)
+    contract_path = tmp_path / "checked-in-contract.json"
+    contract_path.write_bytes(raw)
+    monkeypatch.setattr(loader, "CONTRACT_PATH", contract_path)
+    artifact = loader._load_verified_artifact(
+        root, contract=contract, contract_sha256=hashlib.sha256(raw).hexdigest()
+    )
+    return artifact, contract
+
+
+_FORGED_PUBLICATIONS: tuple[tuple[str, Any], ...] = (
+    ("publication_id", "33333333-3333-4333-8333-333333333333"),
+    ("panel_publication_id", PARENT_ID),
+    ("policy_version", "forged-policy"),
+    ("policy_digest", "0" * 64),
+    ("code_revision", "forged-revision"),
+    ("panel_last_closed_month", date(2026, 7, 1)),
+    ("panel_last_closed_month", datetime(2026, 8, 1)),
+    ("first_month", date(2026, 5, 1)),
+    ("last_month", date(2026, 9, 1)),
+    ("input_fingerprint", "2" * 64),
+    ("l_anchor", -0.25),
+    ("l_anchor", np.float64(-0.5)),
+    ("rows_digest", "3" * 64),
+    ("d_confirmed_count", 3),
+    ("d_candidate_count", True),
+    ("row_count", 13.0),
+)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), _FORGED_PUBLICATIONS,
+    ids=[f"{name}-{type(value).__name__}" for name, value in _FORGED_PUBLICATIONS],
+)
+@pytest.mark.parametrize("entrypoint", ["publish", "dry_run", "recover"])
+def test_public_entrypoints_refuse_forged_publication_before_database(
+    entrypoint: str, field: str, value: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    forged = replace(artifact, publication=replace(artifact.publication, **{field: value}))
+    no_database = _NoDatabase()
+    _NoDatabase.calls = 0
+    function = {
+        "publish": loader.publish_verified_artifact,
+        "dry_run": loader.dry_run_verified_artifact,
+        "recover": loader.recover_published_artifact,
+    }[entrypoint]
+    evidence = tmp_path / "evidence"
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        function(forged, evidence_dir=evidence, connection_factory=no_database)
+    assert exc.value.code == loader.ErrorCode.IDENTITY_MISMATCH.value
+    assert exc.value.details.get("field") == f"publication.{field}"
+    assert _NoDatabase.calls == 0
+    for receipt in evidence.glob("*.json") if evidence.exists() else ():
+        document = json.loads(receipt.read_text(encoding="utf-8"))
+        assert document.get("publication_id") != value
+        assert "verified" != document.get("outcome")
+
+
+@pytest.mark.parametrize("entrypoint", ["dry_run", "recover"])
+@pytest.mark.parametrize("forgery", ["publication_id", "contract_sha256"])
+def test_read_only_admission_failure_writes_one_untrusted_identity_free_receipt(
+    entrypoint: str, forgery: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    forged_id = "33333333-3333-4333-8333-333333333333"
+    forged = (
+        replace(artifact, publication=replace(artifact.publication, publication_id=forged_id))
+        if forgery == "publication_id"
+        else replace(artifact, contract_sha256="0" * 64)
+    )
+    operation = (
+        loader.dry_run_verified_artifact if entrypoint == "dry_run"
+        else loader.recover_published_artifact
+    )
+    evidence = tmp_path / "admission-evidence"
+    _NoDatabase.calls = 0
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        operation(
+            forged, evidence_dir=evidence, connection_factory=_NoDatabase(),
+            operation_id="admission-test", operation_started_at_utc="2026-09-23T00:00:00+00:00",
+        )
+    assert exc.value.code == (
+        loader.ErrorCode.IDENTITY_MISMATCH.value if forgery == "publication_id"
+        else loader.ErrorCode.CONTRACT_INVALID.value
+    )
+    assert exc.value.phase == "artifact_binding"
+    assert exc.value.transaction_outcome == "not_started"
+    assert exc.value.receipt_written is True
+    assert _NoDatabase.calls == 0
+    receipts = list(evidence.glob("*.json"))
+    assert len(receipts) == 1 and "-failure-" in receipts[0].name
+    receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert receipt["phase"] == "failure"
+    assert receipt["operation_id"] == "admission-test"
+    assert receipt["mode"] == ("dry-run" if entrypoint == "dry_run" else "verify-published")
+    assert receipt["code"] == exc.value.code
+    assert receipt["failure_phase"] == "artifact_binding"
+    assert receipt["transaction_outcome"] == "not_started"
+    assert receipt["schema_installed"] is False
+    assert receipt["publication_id"] is None
+    assert forged_id not in receipts[0].read_text(encoding="utf-8")
+    assert receipt["outcome"] == "failed"
+
+
+@pytest.mark.parametrize("mode", ["--dry-run", "--verify-published"])
+def test_cli_does_not_duplicate_admission_failure_receipt(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    forged_id = "33333333-3333-4333-8333-333333333333"
+    forged = replace(
+        artifact, publication=replace(artifact.publication, publication_id=forged_id)
+    )
+    cli = _load_cli()
+    monkeypatch.setattr(cli.loader, "load_verified_artifact", lambda _: forged)
+    monkeypatch.setattr(cli, "resolve_dsn", lambda: pytest.fail("DB must not be opened"))
+    evidence = tmp_path / "cli-admission-evidence"
+    code = cli.main([
+        "--artifact-root", str(tmp_path), "--evidence-dir", str(evidence), mode
+    ])
+    assert code == 3
+    assert json.loads(capsys.readouterr().err) == {
+        "code": "identity_mismatch", "state": "refused"
+    }
+    receipts = list(evidence.glob("*.json"))
+    assert len(receipts) == 1 and "-failure-" in receipts[0].name
+    assert json.loads(receipts[0].read_text(encoding="utf-8"))["publication_id"] is None
+    assert forged_id not in receipts[0].read_text(encoding="utf-8")
+
+
+def _forged_artifacts(
+    artifact: loader.VerifiedArtifact,
+) -> list[tuple[str, loader.VerifiedArtifact]]:
+    summary = artifact.summary
+    histogram = tuple(
+        (bucket, count + 1 if index == 0 else count)
+        for index, (bucket, count) in enumerate(summary.histogram)
+    )
+    nulls = tuple(
+        (name, count + 1 if index == 0 else count)
+        for index, (name, count) in enumerate(summary.null_counts)
+    )
+    files = artifact.files
+    return [
+        ("artifact.summary.row_count", replace(artifact, summary=replace(summary, row_count=12))),
+        ("artifact.summary.month_count", replace(artifact, summary=replace(summary, month_count=2))),
+        (
+            "artifact.summary.witnessed_count",
+            replace(artifact, summary=replace(summary, witnessed_count=8.0)),
+        ),
+        ("artifact.summary.histogram", replace(artifact, summary=replace(summary, histogram=histogram))),
+        (
+            "artifact.summary.rows_digest",
+            replace(artifact, summary=replace(summary, rows_digest="0" * 64)),
+        ),
+        (
+            "artifact.summary.null_counts",
+            replace(artifact, summary=replace(summary, null_counts=nulls)),
+        ),
+        ("artifact.files", replace(artifact, files=files[:-1])),
+        ("artifact.files", replace(artifact, files=list(files))),
+        (
+            f"artifact.files.{len(files) - 1}",
+            replace(artifact, files=(*files[:-1], replace(files[-1], sha256="0" * 64))),
+        ),
+        (
+            "artifact.table.row_count",
+            replace(artifact, table=artifact.table.slice(0, artifact.table.num_rows - 1)),
+        ),
+        ("artifact.summary", replace(artifact, summary=object())),
+        ("artifact.table", replace(artifact, table=object())),
+    ]
+
+
+@pytest.mark.parametrize("index", range(12))
+def test_forged_summary_files_or_table_are_refused_before_database(
+    index: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, contract = _genuine(tmp_path, monkeypatch)
+    field, forged = _forged_artifacts(artifact)[index]
+    _NoDatabase.calls = 0
+    for function in (
+        loader.publish_verified_artifact,
+        loader.dry_run_verified_artifact,
+        loader.recover_published_artifact,
+    ):
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            function(forged, evidence_dir=tmp_path / "evidence", connection_factory=_NoDatabase())
+        assert exc.value.code == loader.ErrorCode.IDENTITY_MISMATCH.value
+        assert exc.value.details.get("field") == field
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._read_only_operation(
+            forged, contract=contract, connection_factory=_NoDatabase(), require_published=False
+        )
+    assert exc.value.details.get("field") == field
+    assert _NoDatabase.calls == 0
+
+
+def test_forged_contract_digest_and_artifact_type_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    _NoDatabase.calls = 0
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader.dry_run_verified_artifact(
+            replace(artifact, contract_sha256="0" * 64),
+            evidence_dir=tmp_path / "evidence", connection_factory=_NoDatabase(),
+        )
+    assert exc.value.code == loader.ErrorCode.CONTRACT_INVALID.value
+    assert exc.value.details.get("field") == "contract.changed"
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader.recover_published_artifact(
+            replace(artifact, publication=object()),
+            evidence_dir=tmp_path / "evidence", connection_factory=_NoDatabase(),
+        )
+    assert exc.value.details.get("field") == "publication.type"
+    assert _NoDatabase.calls == 0
+
+
+def test_private_publish_refuses_forged_metadata_before_receipt_or_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, contract = _genuine(tmp_path, monkeypatch)
+    forged = replace(
+        artifact, publication=replace(artifact.publication, l_anchor=-0.25)
+    )
+    evidence = tmp_path / "evidence"
+    _NoDatabase.calls = 0
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._publish_verified_artifact(
+            forged, contract=contract, connection_factory=_NoDatabase(), evidence_dir=evidence
+        )
+    assert exc.value.details.get("field") == "publication.l_anchor"
+    assert _NoDatabase.calls == 0
+    receipts = list(evidence.glob("*.json"))
+    assert len(receipts) == 1 and "-failure-" in receipts[0].name
+    receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert receipt["failure_phase"] == "artifact_binding"
+    assert receipt["transaction_outcome"] == "not_started"
+    assert receipt["publication_id"] == contract.identity.publication_id
+
+
+def test_private_publish_refuses_swapped_table_content_before_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, contract = _genuine(tmp_path, monkeypatch)
+    frame = _frame()
+    frame.loc[0, "neutralized_score"] = 99.0
+    swapped = replace(artifact, table=_table(frame))
+    evidence = tmp_path / "evidence"
+    _NoDatabase.calls = 0
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._publish_verified_artifact(
+            swapped, contract=contract, connection_factory=_NoDatabase(), evidence_dir=evidence
+        )
+    assert exc.value.code == loader.ErrorCode.ROW_DIGEST_MISMATCH.value
+    assert _NoDatabase.calls == 0
+    receipt = json.loads(next(evidence.glob("*-failure-*.json")).read_text(encoding="utf-8"))
+    assert receipt["failure_phase"] == "payload"
+    assert receipt["schema_installed"] is False
+    assert not list(evidence.glob("*pre-apply*"))
+
+
+def test_public_stored_verification_refuses_forged_publication_before_queries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    _NoDatabase.calls = 0
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader.verify_stored_publication(
+            _NoDatabase(),  # type: ignore[arg-type]
+            replace(artifact.publication, rows_digest="0" * 64),
+            require_current=False,
+        )
+    assert exc.value.details.get("field") == "publication.rows_digest"
+    assert _NoDatabase.calls == 0
+
+
+def test_strict_metadata_equality_refuses_loose_python_equality() -> None:
+    assert loader._strict_same(-0.5, -0.5)
+    assert loader._strict_same(date(2026, 8, 1), date(2026, 8, 1))
+    assert loader._strict_same((("A", 1),), (("A", 1),))
+    for actual, expected in (
+        (True, 1), (1.0, 1), (np.float64(-0.5), -0.5), (-0.0, 0.0),
+        (datetime(2026, 8, 1), date(2026, 8, 1)), ((("A", True),), (("A", 1),)),
+        ([("A", 1)], (("A", 1),)), ((("A", 1),), (("A", 1), ("B", 2))),
+    ):
+        assert not loader._strict_same(actual, expected), (actual, expected)
+
+
+def test_loader_never_mutates_privileges() -> None:
+    source = (ROOT / "src" / "bonds" / "implied_rating_artifact_loader.py").read_text()
+    # SQL in the loader is upper-case; any privilege-changing statement would appear here.
+    for forbidden in ("GRANT ", "REVOKE ", "ALTER DEFAULT PRIVILEGES", "OWNER TO", "SET ROLE"):
+        assert forbidden not in source, forbidden
+
+
+_OWNER, _PUBLIC, _RUNTIME, _OTHER = 16385, 0, 16400, 16500
+
+
+@pytest.mark.parametrize(
+    ("grantor", "grantee_oid", "grantee", "privilege", "grantable", "admitted"),
+    [
+        (_OWNER, _OWNER, "worker_writer", "EXECUTE", False, True),
+        (_OWNER, _PUBLIC, None, "EXECUTE", False, True),
+        (_OWNER, _RUNTIME, "app_runtime", "EXECUTE", False, True),
+        (_OWNER, _OTHER, "app_analytics_ro", "EXECUTE", False, False),
+        (_OWNER, _OTHER, "unknown_role", "EXECUTE", False, False),
+        (_OWNER, _OTHER, None, "EXECUTE", False, False),
+        (_OWNER, _RUNTIME, "app_runtime", "EXECUTE", True, False),
+        (_OWNER, _PUBLIC, None, "EXECUTE", True, False),
+        (_OWNER, _OWNER, "worker_writer", "EXECUTE", True, False),
+        (_RUNTIME, _PUBLIC, None, "EXECUTE", False, False),
+        (_OTHER, _OWNER, "worker_writer", "EXECUTE", False, False),
+        (_OWNER, _RUNTIME, "app_runtime", "USAGE", False, False),
+    ],
+)
+def test_function_acl_item_rule(
+    grantor: int, grantee_oid: int, grantee: str | None, privilege: str, grantable: bool,
+    admitted: bool,
+) -> None:
+    assert loader._function_acl_item_admitted(
+        _OWNER, grantor, grantee_oid, grantee, privilege, grantable
+    ) is admitted
+
+
+def _plpgsql_body(source: str, name: str) -> str:
+    start = source.index(f"CREATE OR REPLACE FUNCTION {name}()")
+    body_start = source.index("AS $$", start) + len("AS $$")
+    return source[body_start:source.index("$$;", body_start)]
+
+
+def test_rr1_pins_are_bound_to_the_authentic_rr1_sql() -> None:
+    source = (ROOT / "schemas" / "rr1_fee_profiles.sql").read_text(encoding="utf-8")
+    for signature, contract in loader._RR1_FUNCTION_CONTRACTS.items():
+        body = _plpgsql_body(source, signature.split("(")[0])
+        assert hashlib.sha256(body.encode()).hexdigest() == contract[0], signature
+        assert contract[4:7] == ("trigger", "plpgsql", "v")
+        assert contract[8] is False and contract[13] is None and contract[14] == "worker_writer"
+    assert {key: value[:3] for key, value in loader._RR1_TRIGGER_CONTRACTS.items()} == {
+        ("rr1_fee_profile_current_pointer_guard", "sec_derived_current_pointers"): (
+            "rr1_fee_profile_current_pointer_guard()", 31, "O",
+        ),
+        ("rr1_fee_profile_publication_validation_guard", "sec_derived_publications"): (
+            "rr1_fee_profile_publication_validation_guard()", 19, "O",
+        ),
+    }
+    # Admission is exact-name, never a prefix: the pair is exactly two triggers
+    # and two functions, disjoint from the baseline contract.
+    assert len(loader._RR1_FUNCTION_CONTRACTS) == 2
+    assert not set(loader._RR1_TRIGGER_CONTRACTS) & set(loader._SHARED_TRIGGER_CONTRACTS)
+    assert loader._PRODUCTION_REQUIRED_PROFILE == loader.PROFILE_RR1
+    assert loader._PRODUCTION_REQUIRED_ROLES == ("worker_writer", "app_runtime", "app_analytics_ro")
+
+
+def _sql_statements(path: str) -> str:
+    return (ROOT / "schemas" / path).read_text(encoding="utf-8")
+
+
+def test_product_sql_revokes_exactly_inherited_writes_on_its_five_relations() -> None:
+    text = _sql_statements("bond_market_implied_rating_v1.sql")
+    block = text[text.index("DO $$\nDECLARE\n    write_privileges"):]
+    assert "WHERE rolname = 'app_runtime'" in block
+    assert "'INSERT, UPDATE, DELETE, MAINTAIN'" in block and "'INSERT, UPDATE, DELETE'" in block
+    for relation in loader._PRODUCT_SCHEMA_OBJECTS:
+        assert f"|| '{relation}" in block, relation
+    assert block.count("|| 'bond_market_implied_rating_") == 5
+    assert "FROM app_runtime RESTRICT" in block
+    for forbidden in ("CREATE ROLE", "GRANT ", "REVOKE ALL", "SELECT,", "CASCADE", "EXCEPTION"):
+        assert forbidden not in block, forbidden
+
+
+def test_shared_sql_revoke_is_fresh_install_only_and_exact() -> None:
+    text = _sql_statements("sec_derived_publications.sql")
+    marker = text.index("'sec_derived.fresh_ledger_tables'")
+    assert marker < text.index("CREATE TABLE IF NOT EXISTS sec_derived_publications")
+    block = text[text.rindex("DO $$"):]
+    assert "ledger_table = ANY(fresh_tables)" in block
+    assert "'REVOKE %s ON TABLE %I FROM app_runtime RESTRICT'" in block
+    for relation in loader._SHARED_SCHEMA_OBJECTS:
+        assert f"'{relation}'" in block
+    for forbidden in ("CREATE ROLE", "GRANT ", "REVOKE ALL", "CASCADE", "EXCEPTION"):
+        assert forbidden not in block, forbidden
+
+
+@pytest.mark.parametrize("entrypoint", ["publish", "dry_run", "recover"])
+def test_public_entrypoints_pin_the_production_envelope(
+    entrypoint: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, contract = _genuine(tmp_path, monkeypatch)
+    captured: dict[str, Any] = {}
+
+    class _Stop(Exception):
+        pass
+
+    def capture(*_: object, **kwargs: Any) -> None:
+        captured.update(kwargs)
+        raise _Stop
+
+    if entrypoint == "publish":
+        monkeypatch.setattr(loader, "_load_release_evidence", lambda *_: None)
+        monkeypatch.setattr(loader, "_publish_verified_artifact", capture)
+        function = loader.publish_verified_artifact
+    else:
+        monkeypatch.setattr(loader, "_read_only_operation", capture)
+        function = (
+            loader.dry_run_verified_artifact if entrypoint == "dry_run"
+            else loader.recover_published_artifact
+        )
+    with pytest.raises(_Stop):
+        function(artifact, evidence_dir=tmp_path / "evidence", connection_factory=_NoDatabase())
+    assert captured["required_profile"] == loader.PROFILE_RR1
+    assert captured["required_roles"] == loader._PRODUCTION_REQUIRED_ROLES
+
+
+def test_genuine_artifact_rebinds_to_contract_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, contract = _genuine(tmp_path, monkeypatch)
+    bound = loader._bind_verified_artifact(artifact, contract)
+    assert bound.publication == loader._publication_from_contract(contract)
+    assert bound.summary is artifact.summary and bound.table is artifact.table
+    assert loader._artifact_payload(bound, contract)
 
 
 def test_railway_runtime_is_private_verify_only_and_never_restarts() -> None:

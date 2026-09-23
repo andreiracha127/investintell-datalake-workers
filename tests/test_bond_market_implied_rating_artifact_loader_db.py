@@ -167,6 +167,62 @@ def _install_shared_only(factory: Callable[[], psycopg.Connection]) -> None:
         assert loader._schema_state(conn) == "shared_only"
 
 
+def _admin_in_schema(schema: str, *statements: str | sql.Composable) -> None:
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        admin.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        for statement in statements:
+            admin.execute(statement)
+
+
+# The captured production worker_writer default privileges (read-only capture
+# receipt 148e6b2a...): new tables arwd for app_runtime and r for app_analytics_ro,
+# new functions X for app_runtime.
+_CAPTURED_DEFAULT_PRIVILEGES = (
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_runtime",
+    "GRANT SELECT ON TABLES TO app_analytics_ro",
+    "GRANT EXECUTE ON FUNCTIONS TO app_runtime",
+)
+
+
+def _set_default_privileges(schema: str, *grants: str) -> None:
+    # Schema-scoped default ACLs depend on the schema and drop with it.
+    _admin_in_schema(schema, *(
+        sql.SQL("ALTER DEFAULT PRIVILEGES FOR ROLE worker_writer IN SCHEMA {} ").format(
+            sql.Identifier(schema)
+        ) + sql.SQL(grant)
+        for grant in grants
+    ))
+
+
+def _install_production_ledger(
+    factory: Callable[[], psycopg.Connection],
+    schema: str,
+    *,
+    captured_defaults: bool = False,
+    extra_defaults: tuple[str, ...] = (),
+    check: bool = True,
+) -> None:
+    """Shared ledger plus the authentic, unmodified RR1 SQL, installed as worker_writer."""
+    _admin_in_schema(
+        schema,
+        "CREATE TABLE rr1_effective_facts(raw_row_id bigint, ingestion_run_id uuid, "
+        "source_table text, accession_number text, tag text, version text, data_date date, "
+        "series_id text, class_id text, measure_id text, document_id text, dimensions text, "
+        "occurrence text, fact_typed_projection jsonb, effective_date date, "
+        "accepted_at timestamptz, filed_date date, form text)",
+        "GRANT SELECT ON rr1_effective_facts TO worker_writer",
+    )
+    if captured_defaults or extra_defaults:
+        _set_default_privileges(
+            schema, *(_CAPTURED_DEFAULT_PRIVILEGES if captured_defaults else ()), *extra_defaults
+        )
+    with factory() as conn, conn.transaction():
+        for name in ("sec_derived_publications.sql", "rr1_fee_profiles.sql"):
+            conn.execute((loader.ROOT / "schemas" / name).read_text(encoding="utf-8"))
+        if check:
+            assert loader._schema_state_and_profile(conn) == ("shared_only", loader.PROFILE_RR1)
+
+
 def test_pg18_fresh_publish_full_readback_and_exact_replay(tmp_path: Path) -> None:
     with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
         first = loader._publish_verified_artifact(
@@ -267,7 +323,8 @@ def test_panel_pointer_row_is_held_for_share_until_apply_commit(tmp_path: Path) 
 def test_dry_run_does_not_install_schema_or_write_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with _database(tmp_path) as (contract, artifact, factory, _, _):
+    with _database(tmp_path) as (contract, artifact, factory, schema, _):
+        _install_production_ledger(factory, schema)
         monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
         result = loader.dry_run_verified_artifact(
             artifact,
@@ -726,7 +783,19 @@ def test_materializer_bond_error_is_typed_and_receipted(tmp_path: Path) -> None:
             ).fetchone()[0] == 0
 
 
-def test_post_schema_refusal_receipt_records_committed_schema(
+def _counting(
+    factory: Callable[[], psycopg.Connection],
+) -> tuple[Callable[[], psycopg.Connection], list[int]]:
+    calls: list[int] = []
+
+    def counted() -> psycopg.Connection:
+        calls.append(1)
+        return factory()
+
+    return counted, calls
+
+
+def test_payload_refusal_precedes_schema_install_and_success_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
@@ -736,6 +805,36 @@ def test_post_schema_refusal_receipt_records_committed_schema(
             )
 
         monkeypatch.setattr(loader, "_artifact_payload", refuse_payload)
+        counted, calls = _counting(factory)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact,
+                contract=contract,
+                connection_factory=counted,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.code == loader.ErrorCode.ROW_INVALID.value
+        assert calls == []
+        receipts = list(evidence_dir.glob("*.json"))
+        assert len(receipts) == 1 and "-failure-" in receipts[0].name
+        receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+        assert receipt["failure_phase"] == "payload"
+        assert receipt["schema_installed"] is False
+        assert receipt["transaction_outcome"] == "not_started"
+        with factory() as conn:
+            assert loader._schema_state(conn) == "absent"
+
+
+def test_post_schema_refusal_receipt_records_committed_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        def refuse_state(*_: object, **__: object) -> object:
+            raise loader.ArtifactLoaderError(
+                loader.ErrorCode.ROW_INVALID, field="row.injected_refusal"
+            )
+
+        monkeypatch.setattr(loader, "_publication_state", refuse_state)
         with pytest.raises(loader.ArtifactLoaderError) as exc:
             loader._publish_verified_artifact(
                 artifact,
@@ -746,9 +845,9 @@ def test_post_schema_refusal_receipt_records_committed_schema(
         assert exc.value.code == loader.ErrorCode.ROW_INVALID.value
         receipt_path = next(evidence_dir.glob("*-failure-*.json"))
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        assert receipt["failure_phase"] == "payload"
+        assert receipt["failure_phase"] == "publication_state"
         assert receipt["schema_installed"] is True
-        assert receipt["transaction_outcome"] == "not_started"
+        assert receipt["transaction_outcome"] == "not_committed"
         with factory() as conn:
             assert loader._schema_state(conn) == "compatible"
             assert conn.execute(
@@ -885,7 +984,8 @@ def test_insufficient_privilege_during_materialization_is_not_committed(
 def test_public_apply_enforces_complete_release_context_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
         release_document = _write_release_context(evidence_dir, contract)
         monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
         result = loader.publish_verified_artifact(
@@ -942,7 +1042,8 @@ class _AmbiguousCommitConnection:
 def test_commit_acknowledgement_loss_persists_unknown_and_recovers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
         calls = 0
 
         def ambiguous_factory() -> psycopg.Connection | _AmbiguousCommitConnection:
@@ -1045,3 +1146,1369 @@ def test_postcommit_readback_failure_is_classified_as_commit_unknown(tmp_path: P
             assert conn.execute(
                 "SELECT count(*) FROM bond_market_implied_rating_v1"
             ).fetchone()[0] == artifact.summary.row_count
+
+
+# --- r4074042091: exact, case-sensitive PG18 view definitions -----------------------
+
+
+def test_clean_install_views_render_exact_pg18_definitions(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            for view_name, expected in loader._EXPECTED_VIEW_DEFINITIONS.items():
+                observed = conn.execute(
+                    "SELECT pg_get_viewdef(%s::regclass, false)", (view_name,)
+                ).fetchone()[0]
+                assert observed == expected
+                assert "'bond_market_implied_rating_v1'::text" in observed
+
+
+@pytest.mark.parametrize("view_name", sorted(loader._EXPECTED_VIEW_DEFINITIONS))
+def test_case_only_view_literal_drift_is_refused_before_materialization(
+    tmp_path: Path, view_name: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            definition = conn.execute(
+                "SELECT pg_get_viewdef(%s::regclass, false)", (view_name,)
+            ).fetchone()[0]
+            drifted = definition.replace(
+                "'bond_market_implied_rating_v1'::text", "'BOND_MARKET_IMPLIED_RATING_V1'::text"
+            )
+            assert drifted != definition and drifted.lower() == definition.lower()
+            conn.execute(sql.SQL("CREATE OR REPLACE VIEW {} AS {}").format(
+                sql.Identifier(view_name), sql.SQL(drifted.rstrip(";"))
+            ))
+        with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": f"schema.view.{view_name}"}
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir
+            )
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.phase == "schema_install"
+        with factory() as conn:
+            assert conn.execute("SELECT count(*) FROM sec_derived_publications").fetchone()[0] == 0
+            assert conn.execute(
+                "SELECT count(*) FROM bond_market_implied_rating_v1"
+            ).fetchone()[0] == 0
+
+
+# --- r4078254935: relation/column ACL semantic allowlist ----------------------------
+
+_ALL_RELATIONS = (*loader._SHARED_SCHEMA_OBJECTS, *loader._PRODUCT_SCHEMA_OBJECTS)
+_REFUSED_TABLE_GRANTS = (
+    "GRANT INSERT ON {relation} TO app_runtime",
+    "GRANT SELECT ON {relation} TO app_runtime WITH GRANT OPTION",
+    "GRANT SELECT ON {relation} TO PUBLIC",
+    "GRANT TRUNCATE ON {relation} TO app_analytics_ro",
+    "GRANT MAINTAIN ON {relation} TO app_analytics_ro",
+    "GRANT TRIGGER ON {relation} TO app_runtime",
+)
+
+
+def _relation_acls(conn: psycopg.Connection) -> list[tuple[str, str | None]]:
+    return conn.execute(
+        "SELECT c.relname, c.relacl::text FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) ORDER BY c.relname",
+        (list(_ALL_RELATIONS),),
+    ).fetchall()
+
+
+def _admin_execute(statement: sql.Composable | str) -> None:
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        admin.execute(statement)
+
+
+@pytest.mark.parametrize("grant", _REFUSED_TABLE_GRANTS)
+@pytest.mark.parametrize("relation", _ALL_RELATIONS)
+def test_unsafe_relation_grant_is_refused(tmp_path: Path, relation: str, grant: str) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            conn.execute(sql.SQL(grant).format(relation=sql.Identifier(relation)))
+            before = _relation_acls(conn)
+        with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": f"schema.acl.{relation}"}
+        with factory() as conn:
+            assert _relation_acls(conn) == before
+
+
+@pytest.mark.parametrize("privilege", ["UPDATE", "INSERT", "REFERENCES"])
+@pytest.mark.parametrize("relation", _ALL_RELATIONS)
+def test_unsafe_column_grant_is_refused(tmp_path: Path, relation: str, privilege: str) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            column = conn.execute(
+                "SELECT attname FROM pg_attribute WHERE attrelid=%s::regclass AND attnum=1",
+                (relation,),
+            ).fetchone()[0]
+            conn.execute(sql.SQL("GRANT {} ({}) ON {} TO app_runtime").format(
+                sql.SQL(privilege), sql.Identifier(column), sql.Identifier(relation)
+            ))
+        with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._schema_state(conn)
+        assert exc.value.details == {"field": f"schema.column_acl.{relation}"}
+
+
+def test_read_only_reader_grants_are_admitted_and_never_rewritten(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            for relation in _ALL_RELATIONS:
+                conn.execute(sql.SQL("GRANT SELECT ON {} TO app_analytics_ro, app_runtime").format(
+                    sql.Identifier(relation)
+                ))
+            conn.execute(
+                "GRANT SELECT (publication_id) ON bond_market_implied_rating_v1 TO app_analytics_ro"
+            )
+            before = _relation_acls(conn)
+            assert loader._schema_state(conn) == "compatible"
+        first = loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir
+        )
+        assert first.outcome == "published_verified"
+        replay = loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir
+        )
+        assert replay.outcome == "already_published_verified"
+        with factory() as conn:
+            assert _relation_acls(conn) == before
+
+
+def test_unknown_grantee_even_read_only_is_refused(tmp_path: Path) -> None:
+    role = f"acl_probe_{uuid4().hex[:12]}"
+    _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
+    try:
+        with _database(tmp_path) as (contract, _, factory, _, _):
+            assert loader._ensure_schema(contract, factory)
+            with factory() as conn:
+                conn.execute(sql.SQL("GRANT SELECT ON sec_derived_pointer_tokens TO {}").format(
+                    sql.Identifier(role)
+                ))
+            with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+            assert exc.value.details == {"field": "schema.acl.sec_derived_pointer_tokens"}
+    finally:
+        _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+@pytest.mark.parametrize("relation", _ALL_RELATIONS)
+def test_group_role_truncate_is_refused_even_without_current_members(
+    tmp_path: Path, relation: str
+) -> None:
+    group = f"acl_group_{uuid4().hex[:12]}"
+    _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(group)))
+    try:
+        with _database(tmp_path) as (contract, _, factory, _, _):
+            assert loader._ensure_schema(contract, factory)
+            with factory() as conn:
+                conn.execute(sql.SQL("GRANT TRUNCATE ON {} TO {}").format(
+                    sql.Identifier(relation), sql.Identifier(group)
+                ))
+                before = _relation_acls(conn)
+            with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+            assert exc.value.details == {"field": f"schema.acl.{relation}"}
+            with factory() as conn:
+                assert _relation_acls(conn) == before
+    finally:
+        _admin_execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(group)))
+        _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(group)))
+
+
+def test_runtime_inheriting_reader_only_role_is_admitted(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            for relation in _ALL_RELATIONS:
+                conn.execute(sql.SQL("GRANT SELECT ON {} TO app_analytics_ro").format(
+                    sql.Identifier(relation)
+                ))
+        _admin_execute("GRANT app_analytics_ro TO app_runtime")
+        try:
+            with factory() as conn:
+                assert loader._schema_state(conn) == "compatible"
+        finally:
+            _admin_execute("REVOKE app_analytics_ro FROM app_runtime")
+
+
+@pytest.mark.parametrize(
+    ("grant", "revoke", "reader"),
+    [
+        ("GRANT worker_writer TO app_runtime", "REVOKE worker_writer FROM app_runtime", "app_runtime"),
+        (
+            "GRANT worker_writer TO app_analytics_ro WITH INHERIT FALSE, SET TRUE",
+            "REVOKE worker_writer FROM app_analytics_ro",
+            "app_analytics_ro",
+        ),
+        (
+            "GRANT pg_write_all_data TO app_runtime",
+            "REVOKE pg_write_all_data FROM app_runtime",
+            "app_runtime",
+        ),
+        (
+            "GRANT pg_maintain TO app_analytics_ro",
+            "REVOKE pg_maintain FROM app_analytics_ro",
+            "app_analytics_ro",
+        ),
+        ("ALTER ROLE app_runtime SUPERUSER", "ALTER ROLE app_runtime NOSUPERUSER", "app_runtime"),
+    ],
+)
+def test_reader_role_inheritance_or_owner_reach_is_refused(
+    tmp_path: Path, grant: str, revoke: str, reader: str
+) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            assert loader._schema_state(conn) == "compatible"
+            before = _relation_acls(conn)
+        _admin_execute(grant)
+        try:
+            with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+            assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+            assert exc.value.details == {"field": f"schema.reader_role.{reader}"}
+        finally:
+            _admin_execute(revoke)
+        with factory() as conn:
+            assert _relation_acls(conn) == before
+            assert loader._schema_state(conn) == "compatible"
+
+
+@pytest.mark.parametrize("reader", ["app_runtime", "app_analytics_ro"])
+@pytest.mark.parametrize(
+    ("privileged_role", "privilege"),
+    [("pg_write_all_data", "INSERT"), ("pg_maintain", "MAINTAIN")],
+)
+@pytest.mark.parametrize("indirect", [False, True], ids=["direct", "indirect"])
+def test_set_only_predefined_write_roles_are_refused(
+    tmp_path: Path, reader: str, privileged_role: str, privilege: str, indirect: bool
+) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        assert loader._ensure_schema(contract, factory)
+        intermediate = f"acl_set_{uuid4().hex[:12]}"
+        if indirect:
+            _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(intermediate)))
+        try:
+            if indirect:
+                _admin_execute(sql.SQL(
+                    "GRANT {} TO {} WITH INHERIT FALSE, SET TRUE"
+                ).format(sql.Identifier(privileged_role), sql.Identifier(intermediate)))
+                _admin_execute(sql.SQL(
+                    "GRANT {} TO {} WITH INHERIT FALSE, SET TRUE"
+                ).format(sql.Identifier(intermediate), sql.Identifier(reader)))
+            else:
+                _admin_execute(sql.SQL(
+                    "GRANT {} TO {} WITH INHERIT FALSE, SET TRUE"
+                ).format(sql.Identifier(privileged_role), sql.Identifier(reader)))
+            with factory() as conn:
+                assert conn.execute(
+                    "SELECT pg_has_role(%s, %s, 'SET')", (reader, privileged_role)
+                ).fetchone()[0] is True
+                assert conn.execute(
+                    "SELECT has_table_privilege(%s, %s::regclass, %s)",
+                    (reader, "sec_derived_publications", privilege),
+                ).fetchone()[0] is False
+                assert conn.execute(
+                    "SELECT has_table_privilege(%s, %s::regclass, %s)",
+                    (privileged_role, "sec_derived_publications", privilege),
+                ).fetchone()[0] is True
+                assert conn.execute(
+                    "SELECT EXISTS (SELECT 1 FROM pg_roles r CROSS JOIN pg_roles a "
+                    "CROSS JOIN pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+                    "WHERE r.rolname=%s AND a.rolname=%s "
+                    "AND pg_has_role(r.oid,a.oid,'SET') "
+                    "AND n.nspname=current_schema() AND c.relname='sec_derived_publications' "
+                    "AND has_table_privilege(a.oid,c.oid,%s))",
+                    (reader, privileged_role, loader._READER_FORBIDDEN_TABLE_PRIVILEGES),
+                ).fetchone()[0] is True
+                before = _relation_acls(conn)
+                with pytest.raises(loader.ArtifactLoaderError) as exc:
+                    loader._schema_state(conn)
+                assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+                assert exc.value.details == {"field": f"schema.reader_role.{reader}"}
+                assert _relation_acls(conn) == before
+        finally:
+            if indirect:
+                _admin_execute(sql.SQL("REVOKE {} FROM {}").format(
+                    sql.Identifier(intermediate), sql.Identifier(reader)
+                ))
+                _admin_execute(sql.SQL("REVOKE {} FROM {}").format(
+                    sql.Identifier(privileged_role), sql.Identifier(intermediate)
+                ))
+                _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(intermediate)))
+            else:
+                _admin_execute(sql.SQL("REVOKE {} FROM {}").format(
+                    sql.Identifier(privileged_role), sql.Identifier(reader)
+                ))
+        with factory() as conn:
+            assert loader._schema_state(conn) == "compatible"
+
+
+def test_set_only_read_only_membership_remains_admitted(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            for relation in _ALL_RELATIONS:
+                conn.execute(sql.SQL("GRANT SELECT ON {} TO app_analytics_ro").format(
+                    sql.Identifier(relation)
+                ))
+        _admin_execute("GRANT app_analytics_ro TO app_runtime WITH INHERIT FALSE, SET TRUE")
+        try:
+            with factory() as conn:
+                assert conn.execute(
+                    "SELECT pg_has_role('app_runtime', 'app_analytics_ro', 'SET')"
+                ).fetchone()[0] is True
+                assert loader._schema_state(conn) == "compatible"
+        finally:
+            _admin_execute("REVOKE app_analytics_ro FROM app_runtime")
+
+
+def test_live_shared_write_acl_posture_is_refused_before_install(tmp_path: Path) -> None:
+    # Mirrors the read-only production capture: app_runtime=arwdm and
+    # app_analytics_ro=r on the four shared relations owned by worker_writer.
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        _install_shared_only(factory)
+        with factory() as conn:
+            for relation in loader._SHARED_SCHEMA_OBJECTS:
+                conn.execute(sql.SQL(
+                    "GRANT SELECT, INSERT, UPDATE, DELETE, MAINTAIN ON {} TO app_runtime"
+                ).format(sql.Identifier(relation)))
+                conn.execute(sql.SQL("GRANT SELECT ON {} TO app_analytics_ro").format(
+                    sql.Identifier(relation)
+                ))
+            before = _relation_acls(conn)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory, require_published=False
+            )
+        # Relations are checked in name order; the first shared relation refuses.
+        assert exc.value.details == {"field": "schema.acl.sec_derived_current_pointers"}
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir
+            )
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.phase == "schema_install"
+        with factory() as conn:
+            assert _relation_acls(conn) == before
+            assert conn.execute(
+                "SELECT to_regclass('bond_market_implied_rating_v1')"
+            ).fetchone()[0] is None
+
+
+_WRITE_PRIVILEGES = ("INSERT", "UPDATE", "DELETE", "MAINTAIN", "TRUNCATE")
+
+
+def _runtime_table_privileges(conn: psycopg.Connection) -> dict[str, dict[str, bool]]:
+    return {
+        relation: {
+            privilege: conn.execute(
+                "SELECT has_table_privilege('app_runtime', %s::regclass, %s)",
+                (relation, privilege),
+            ).fetchone()[0]
+            for privilege in ("SELECT", *_WRITE_PRIVILEGES)
+        }
+        for relation in _ALL_RELATIONS
+    }
+
+
+def test_captured_default_privileges_fresh_install_is_read_only_for_app_runtime(
+    tmp_path: Path,
+) -> None:
+    # Reproduces the captured worker_writer defaults: the reviewed shared and product
+    # SQL remove exactly the inherited DML/MAINTAIN on the nine relations they create,
+    # including the automatically updatable app_pointer view, and keep SELECT.
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _install_production_ledger(factory, schema, captured_defaults=True)
+        installed, profile = loader._ensure_schema_profile(
+            contract, factory, required_profile=loader.PROFILE_RR1,
+            required_roles=loader._PRODUCTION_REQUIRED_ROLES,
+        )
+        assert (installed, profile) == (True, loader.PROFILE_RR1)
+        with factory() as conn:
+            assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)
+            privileges = _runtime_table_privileges(conn)
+            for relation, held in privileges.items():
+                assert held == {
+                    "SELECT": True, **{privilege: False for privilege in _WRITE_PRIVILEGES}
+                }, relation
+            assert conn.execute(
+                "SELECT pg_relation_is_updatable('bond_market_implied_rating_app_pointer'::regclass,"
+                " false)"
+            ).fetchone()[0] != 0
+            # Captured function defaults (explicit redundant app_runtime EXECUTE) admit.
+            acl = conn.execute(
+                "SELECT proacl::text FROM pg_proc WHERE oid="
+                "'sec_derived_pointer_guard()'::regprocedure"
+            ).fetchone()[0]
+            assert "app_runtime=X/worker_writer" in acl
+
+
+@pytest.mark.parametrize("scope", ["shared", "product"])
+def test_unknown_extra_default_grant_aborts_schema_transaction(
+    tmp_path: Path, scope: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        if scope == "shared":
+            _install_production_ledger(
+                factory, schema, captured_defaults=True,
+                extra_defaults=("GRANT TRUNCATE ON TABLES TO app_runtime",), check=False,
+            )
+        else:
+            _install_production_ledger(factory, schema, captured_defaults=True)
+            _set_default_privileges(schema, "GRANT TRUNCATE ON TABLES TO app_runtime")
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details["field"].startswith("schema.acl.")
+        assert exc.value.phase == "schema_install"
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT to_regclass('bond_market_implied_rating_v1')"
+            ).fetchone()[0] is None
+            assert conn.execute(
+                "SELECT has_table_privilege('app_runtime', 'sec_derived_publications', "
+                "'TRUNCATE')"
+            ).fetchone()[0] is (scope == "shared")
+
+
+# --- r4078254941: lock timeouts during schema setup ---------------------------------
+
+
+def _assert_schema_lock_timeout(error: loader.ArtifactLoaderError, evidence_dir: Path) -> None:
+    assert error.code == loader.ErrorCode.LOCK_TIMEOUT.value
+    assert error.details == {"field": "schema.install"}
+    assert error.phase == "schema_install"
+    assert error.schema_installed is None
+    assert error.transaction_outcome == "not_started"
+    failures = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in evidence_dir.glob("*-failure-*.json")
+    ]
+    assert len(failures) == 1
+    assert failures[0]["code"] == "lock_timeout"
+    assert failures[0]["failure_phase"] == "schema_install"
+    assert failures[0]["transaction_outcome"] == "not_started"
+
+
+def test_schema_setup_parent_pointer_lock_timeout_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(loader, "LOCK_TIMEOUT_MS", 300)
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        with factory() as holder, holder.transaction():
+            holder.execute(
+                "SELECT 1 FROM bond_panel_app_pointer WHERE product=%s FOR UPDATE",
+                (loader.PANEL_PRODUCT,),
+            )
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._publish_verified_artifact(
+                    artifact, contract=contract, connection_factory=factory,
+                    evidence_dir=evidence_dir,
+                )
+        _assert_schema_lock_timeout(exc.value, evidence_dir)
+        with factory() as conn:
+            assert loader._schema_state(conn) == "absent"
+
+
+def test_schema_setup_shared_relation_lock_timeout_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(loader, "LOCK_TIMEOUT_MS", 300)
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        _install_shared_only(factory)
+        with factory() as holder, holder.transaction():
+            holder.execute("LOCK TABLE sec_derived_publications IN ACCESS EXCLUSIVE MODE")
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._publish_verified_artifact(
+                    artifact, contract=contract, connection_factory=factory,
+                    evidence_dir=evidence_dir,
+                )
+        _assert_schema_lock_timeout(exc.value, evidence_dir)
+        with factory() as conn:
+            assert loader._schema_state(conn) == "shared_only"
+
+
+# --- r4078254947: the parent header digest is always enforced -----------------------
+
+
+@pytest.mark.parametrize("pin", [None, "0" * 64])
+def test_parent_header_pin_absence_or_drift_is_refused(tmp_path: Path, pin: str | None) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        drifted = replace(contract, parent=replace(contract.parent, header_sha256=pin))
+        with factory() as conn, conn.transaction():
+            evidence = loader._verify_parent(conn, contract=contract, lock_pointer=False)
+            assert evidence.header_sha256 == contract.parent.header_sha256
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._verify_parent(conn, contract=drifted, lock_pointer=False)
+        assert exc.value.code == loader.ErrorCode.PARENT_MISMATCH.value
+        assert exc.value.details == {"field": "parent.header_sha256"}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        (
+            "UPDATE bond_panel_publications SET gate_evidence=gate_evidence || "
+            "'{\"late_note\": 1}'::jsonb "
+            "WHERE publication_id='11111111-1111-4111-8111-111111111111'"
+        ),
+        (
+            "UPDATE bond_panel_publications SET source_lineage=source_lineage || "
+            "'{\"late_note\": 1}'::jsonb "
+            "WHERE publication_id='11111111-1111-4111-8111-111111111111'"
+        ),
+        (
+            "UPDATE bond_panel_publications SET code_revision='fixture-parent-rewritten' "
+            "WHERE publication_id='22222222-2222-4222-8222-222222222222'"
+        ),
+        (
+            "UPDATE bond_panel_publications SET input_fingerprint=repeat('0', 64) "
+            "WHERE publication_id='22222222-2222-4222-8222-222222222222'"
+        ),
+    ],
+)
+def test_non_core_header_drift_is_refused_by_pinned_digest(tmp_path: Path, mutation: str) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        with factory() as conn:
+            conn.execute(mutation)
+        with factory() as conn, conn.transaction(), pytest.raises(
+            loader.ArtifactLoaderError
+        ) as exc:
+            loader._verify_parent(conn, contract=contract, lock_pointer=False)
+        assert exc.value.code == loader.ErrorCode.PARENT_MISMATCH.value
+        assert exc.value.details == {"field": "parent.header_sha256"}
+
+
+def test_unpinned_ready_contract_is_refused_before_database(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        unpinned = replace(contract, parent=replace(contract.parent, header_sha256=None))
+        counted, calls = _counting(factory)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=unpinned, connection_factory=counted, evidence_dir=evidence_dir
+            )
+        assert exc.value.code == loader.ErrorCode.CONTRACT_INVALID.value
+        assert calls == []
+        with factory() as conn:
+            assert loader._schema_state(conn) == "absent"
+
+
+# --- r4074042094: forged VerifiedArtifact metadata never reaches the database -------
+
+
+def test_forged_metadata_is_refused_without_connecting_and_control_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        _write_release_context(evidence_dir, contract)
+        monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
+        counted, calls = _counting(factory)
+        publication, summary = artifact.publication, artifact.summary
+        forgeries = [
+            replace(artifact, publication=replace(publication, publication_id=str(uuid4()))),
+            replace(artifact, publication=replace(
+                publication, panel_publication_id=contract.parent.parent_publication_id
+            )),
+            replace(artifact, publication=replace(publication, code_revision="forged")),
+            replace(artifact, publication=replace(publication, input_fingerprint="0" * 64)),
+            replace(artifact, publication=replace(publication, l_anchor=float("nan"))),
+            replace(artifact, publication=replace(publication, row_count=True)),
+            replace(artifact, summary=replace(summary, witnessed_count=summary.witnessed_count - 1)),
+            replace(artifact, summary=replace(summary, rows_digest="0" * 64)),
+        ]
+        for forged in forgeries:
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader.publish_verified_artifact(
+                    forged, evidence_dir=evidence_dir, connection_factory=counted
+                )
+            assert exc.value.code == loader.ErrorCode.IDENTITY_MISMATCH.value
+            with pytest.raises(loader.ArtifactLoaderError):
+                loader._publish_verified_artifact(
+                    forged, contract=contract, connection_factory=counted,
+                    evidence_dir=evidence_dir,
+                )
+        assert calls == []
+        assert not list(evidence_dir.glob("*pre-apply*"))
+        with factory() as conn:
+            assert loader._schema_state(conn) == "shared_only"
+        result = loader.publish_verified_artifact(
+            artifact, evidence_dir=evidence_dir, connection_factory=counted
+        )
+        assert result.outcome == "published_verified"
+        calls.clear()
+        for forged in forgeries:
+            for operation in (
+                loader.dry_run_verified_artifact, loader.recover_published_artifact
+            ):
+                with pytest.raises(loader.ArtifactLoaderError):
+                    operation(forged, evidence_dir=evidence_dir, connection_factory=counted)
+        assert calls == []
+        with factory() as conn:
+            assert str(conn.execute(
+                "SELECT publication_id FROM sec_derived_current_pointers WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0]) == contract.identity.publication_id
+            assert conn.execute(
+                "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT count(*) FROM bond_market_implied_rating_v1"
+            ).fetchone()[0] == artifact.summary.row_count
+
+
+# --- RR1 shared-ledger extension profile ---------------------------------------------
+
+
+def _assert_nothing_published(factory: Callable[[], psycopg.Connection]) -> None:
+    with factory() as conn:
+        assert conn.execute(
+            "SELECT to_regclass('bond_market_implied_rating_v1')"
+        ).fetchone()[0] is None
+        assert conn.execute(
+            "SELECT count(*) FROM sec_derived_publications WHERE product=%s", (loader.PRODUCT,)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT count(*) FROM sec_derived_current_pointers WHERE product=%s",
+            (loader.PRODUCT,),
+        ).fetchone()[0] == 0
+
+
+def test_baseline_profile_is_admitted_shared_only_and_complete(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        _install_shared_only(factory)
+        with factory() as conn:
+            assert loader._schema_state_and_profile(conn) == (
+                "shared_only", loader.PROFILE_BASELINE
+            )
+        assert loader._ensure_schema_profile(contract, factory) == (
+            True, loader.PROFILE_BASELINE
+        )
+        with factory() as conn:
+            assert loader._schema_state_and_profile(conn) == (
+                "compatible", loader.PROFILE_BASELINE
+            )
+            # A clean install leaves every protected function ACL NULL (owner/PUBLIC).
+            assert conn.execute(
+                "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE n.nspname=current_schema() AND p.proacl IS NOT NULL "
+                "AND p.proname=ANY(%s)",
+                ([s.split("(")[0] for s in (
+                    *loader._SHARED_FUNCTION_CONTRACTS, *loader._PRODUCT_FUNCTION_CONTRACTS
+                )],),
+            ).fetchone()[0] == 0
+
+
+def test_rr1_pair_is_admitted_shared_only_and_complete(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        assert loader._ensure_schema_profile(
+            contract, factory, required_profile=loader.PROFILE_RR1
+        ) == (True, loader.PROFILE_RR1)
+        with factory() as conn:
+            assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)
+            observed = {
+                (row[0], row[1]): row[2:]
+                for row in conn.execute(
+                    "SELECT t.tgname,c.relname,p.oid::regprocedure::text,t.tgtype,t.tgenabled,"
+                    "encode(sha256(convert_to(pg_get_triggerdef(t.oid,true),'UTF8')),'hex') "
+                    "FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid "
+                    "JOIN pg_proc p ON p.oid=t.tgfoid WHERE t.tgname LIKE 'rr1\\_%%' "
+                    "AND c.relnamespace=current_schema()::regnamespace AND c.relname=ANY(%s)",
+                    (list(loader._SHARED_SCHEMA_OBJECTS),),
+                ).fetchall()
+            }
+            assert observed == {
+                key: (value[0], value[1], value[2], value[3])
+                for key, value in loader._RR1_TRIGGER_CONTRACTS.items()
+            }
+
+
+def _function_redefinition(signature: str, body_edit: tuple[str, str]) -> str:
+    name = signature.split("(")[0]
+    source = (loader.ROOT / "schemas" / "rr1_fee_profiles.sql").read_text(encoding="utf-8")
+    start = source.index(f"CREATE OR REPLACE FUNCTION {name}()")
+    end = source.index("END $$;", start) + len("END $$;")
+    definition = source[start:end]
+    assert body_edit[0] in definition
+    return definition.replace(body_edit[0], body_edit[1], 1)
+
+
+_POINTER_GUARD = "rr1_fee_profile_current_pointer_guard"
+_VALIDATION_GUARD = "rr1_fee_profile_publication_validation_guard"
+_RR1_DRIFTS: dict[str, tuple[tuple[str, ...], str]] = {
+    "missing_pointer_trigger": (
+        (f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",), "schema.triggers",
+    ),
+    "missing_validation_trigger": (
+        (f"DROP TRIGGER {_VALIDATION_GUARD} ON sec_derived_publications",), "schema.triggers",
+    ),
+    "triggers_gone_functions_linger": (
+        (
+            f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",
+            f"DROP TRIGGER {_VALIDATION_GUARD} ON sec_derived_publications",
+        ),
+        "schema.functions",
+    ),
+    "one_function_missing": (
+        (
+            f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",
+            f"DROP TRIGGER {_VALIDATION_GUARD} ON sec_derived_publications",
+            f"DROP FUNCTION {_POINTER_GUARD}()",
+        ),
+        "schema.functions",
+    ),
+    "extra_rr1_like_trigger": (
+        (
+            "CREATE TRIGGER rr1_fee_profile_extra_guard BEFORE UPDATE ON "
+            f"sec_derived_publications FOR EACH ROW EXECUTE FUNCTION {_VALIDATION_GUARD}()",
+        ),
+        "schema.triggers",
+    ),
+    "renamed_trigger": (
+        (
+            f"ALTER TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers "
+            f"RENAME TO {_POINTER_GUARD}_v2",
+        ),
+        "schema.triggers",
+    ),
+    "disabled_trigger": (
+        (f"ALTER TABLE sec_derived_publications DISABLE TRIGGER {_VALIDATION_GUARD}",),
+        "schema.triggers",
+    ),
+    "replica_only_trigger": (
+        (f"ALTER TABLE sec_derived_current_pointers ENABLE REPLICA TRIGGER {_POINTER_GUARD}",),
+        "schema.triggers",
+    ),
+    "event_drift": (
+        (
+            f"DROP TRIGGER {_VALIDATION_GUARD} ON sec_derived_publications",
+            f"CREATE TRIGGER {_VALIDATION_GUARD} BEFORE INSERT OR UPDATE ON "
+            f"sec_derived_publications FOR EACH ROW EXECUTE FUNCTION {_VALIDATION_GUARD}()",
+        ),
+        "schema.triggers",
+    ),
+    "when_clause_drift": (
+        (
+            f"DROP TRIGGER {_VALIDATION_GUARD} ON sec_derived_publications",
+            f"CREATE TRIGGER {_VALIDATION_GUARD} BEFORE UPDATE ON sec_derived_publications "
+            "FOR EACH ROW WHEN (OLD.product = 'rr1_fee_profile_v1') "
+            f"EXECUTE FUNCTION {_VALIDATION_GUARD}()",
+        ),
+        "schema.triggers",
+    ),
+    "statement_level": (
+        (
+            f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",
+            f"CREATE TRIGGER {_POINTER_GUARD} BEFORE INSERT OR UPDATE OR DELETE ON "
+            f"sec_derived_current_pointers FOR EACH STATEMENT EXECUTE FUNCTION {_POINTER_GUARD}()",
+        ),
+        "schema.triggers",
+    ),
+    "table_drift": (
+        (
+            f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",
+            f"CREATE TRIGGER {_POINTER_GUARD} BEFORE INSERT OR UPDATE OR DELETE ON "
+            f"sec_derived_publications FOR EACH ROW EXECUTE FUNCTION {_POINTER_GUARD}()",
+        ),
+        "schema.triggers",
+    ),
+    "function_swap": (
+        (
+            f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",
+            f"CREATE TRIGGER {_POINTER_GUARD} BEFORE INSERT OR UPDATE OR DELETE ON "
+            f"sec_derived_current_pointers FOR EACH ROW EXECUTE FUNCTION {_VALIDATION_GUARD}()",
+        ),
+        "schema.triggers",
+    ),
+    "predicate_drift": (
+        (_function_redefinition(
+            f"{_POINTER_GUARD}()", ("NEW.product='rr1_fee_profile_v1'", "NEW.product='rr1_%'")
+        ),),
+        "schema.functions",
+    ),
+    "product_literal_drift": (
+        (_function_redefinition(
+            f"{_VALIDATION_GUARD}()",
+            ("OLD.product='rr1_fee_profile_v1'", "OLD.product='bond_market_implied_rating_v1'"),
+        ),),
+        "schema.functions",
+    ),
+    "whitespace_only_source_drift": (
+        (_function_redefinition(f"{_POINTER_GUARD}()", ("RETURN COALESCE(NEW,OLD);",
+                                                          "RETURN COALESCE(NEW, OLD);")),),
+        "schema.functions",
+    ),
+    "config_drift": (
+        (f"ALTER FUNCTION {_POINTER_GUARD}() SET search_path = pg_catalog",), "schema.functions",
+    ),
+    "owner_drift": (
+        (f"ALTER FUNCTION {_VALIDATION_GUARD}() OWNER TO app_runtime",), "schema.functions",
+    ),
+    "security_definer": (
+        (f"ALTER FUNCTION {_VALIDATION_GUARD}() SECURITY DEFINER",), "schema.functions",
+    ),
+    "strict_drift": ((f"ALTER FUNCTION {_POINTER_GUARD}() STRICT",), "schema.functions"),
+    "parallel_drift": (
+        (f"ALTER FUNCTION {_POINTER_GUARD}() PARALLEL SAFE",), "schema.functions",
+    ),
+    "leakproof_drift": ((f"ALTER FUNCTION {_POINTER_GUARD}() LEAKPROOF",), "schema.functions"),
+    "volatility_drift": ((f"ALTER FUNCTION {_POINTER_GUARD}() STABLE",), "schema.functions"),
+    "overload": (
+        (
+            f"CREATE FUNCTION {_POINTER_GUARD}(x integer) RETURNS integer "
+            "LANGUAGE sql AS 'SELECT 1'",
+        ),
+        "schema.functions",
+    ),
+    # A defaulted overload makes the zero-argument call ambiguous, so PostgreSQL
+    # already renders the trigger definition differently.
+    "overload_with_default": (
+        (
+            f"CREATE FUNCTION {_POINTER_GUARD}(x integer DEFAULT 1) RETURNS integer "
+            "LANGUAGE sql AS 'SELECT 1'",
+        ),
+        "schema.triggers",
+    ),
+}
+
+
+def _foreign_schema_drift(schema: str) -> tuple[str, ...]:
+    foreign = sql.Identifier(f"{schema}_foreign").as_string(None)
+    body = _function_redefinition(f"{_POINTER_GUARD}()", ("BEGIN", "BEGIN"))
+    return (
+        f"CREATE SCHEMA {foreign}",
+        body.replace(
+            f"CREATE OR REPLACE FUNCTION {_POINTER_GUARD}()",
+            f"CREATE FUNCTION {foreign}.{_POINTER_GUARD}()",
+        ),
+        f"ALTER FUNCTION {foreign}.{_POINTER_GUARD}() OWNER TO worker_writer",
+        f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",
+        f"CREATE TRIGGER {_POINTER_GUARD} BEFORE INSERT OR UPDATE OR DELETE ON "
+        "sec_derived_current_pointers FOR EACH ROW EXECUTE FUNCTION "
+        f"{foreign}.{_POINTER_GUARD}()",
+    )
+
+
+@pytest.mark.parametrize("stage", ["shared_only", "compatible"])
+@pytest.mark.parametrize("drift", [*_RR1_DRIFTS, "foreign_schema_function"])
+def test_rr1_drift_refuses_before_writes(tmp_path: Path, drift: str, stage: str) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        if stage == "compatible":
+            assert loader._ensure_schema_profile(contract, factory)[1] == loader.PROFILE_RR1
+        if drift == "foreign_schema_function":
+            statements, field = _foreign_schema_drift(schema), "schema.trigger_binding"
+        else:
+            statements, field = _RR1_DRIFTS[drift]
+        try:
+            _admin_in_schema(schema, *statements)
+            with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state_and_profile(conn)
+            assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+            assert exc.value.details == {"field": field}
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._publish_verified_artifact(
+                    artifact, contract=contract, connection_factory=factory,
+                    evidence_dir=evidence_dir,
+                )
+            assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+            assert exc.value.phase == "schema_install"
+            with factory() as conn:
+                assert conn.execute(
+                    "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+                    (loader.PRODUCT,),
+                ).fetchone()[0] == 0
+                if stage == "shared_only":
+                    assert conn.execute(
+                        "SELECT to_regclass('bond_market_implied_rating_v1')"
+                    ).fetchone()[0] is None
+        finally:
+            _admin_execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                sql.Identifier(f"{schema}_foreign")
+            ))
+
+
+@pytest.mark.parametrize(
+    ("statement", "field"),
+    [
+        ("ALTER TABLE sec_derived_publications DISABLE TRIGGER sec_derived_publications_immutable",
+         "schema.triggers"),
+        ("DROP TRIGGER sec_derived_publications_delete_guard ON sec_derived_publications",
+         "schema.triggers"),
+        ("ALTER FUNCTION sec_derived_pointer_guard() SECURITY DEFINER", "schema.functions"),
+        ("ALTER FUNCTION sec_set_current_derived_publication(text,uuid,boolean) "
+         "SET search_path = pg_catalog", "schema.functions"),
+    ],
+)
+def test_original_sec_contract_drift_still_refuses_with_rr1_present(
+    tmp_path: Path, statement: str, field: str
+) -> None:
+    with _database(tmp_path) as (_, _, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        _admin_in_schema(schema, statement)
+        with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._schema_state_and_profile(conn)
+        assert exc.value.details == {"field": field}
+
+
+@pytest.mark.parametrize("entrypoint", ["dry_run", "recover", "publish"])
+def test_production_envelope_refuses_rr1_pair_disappearance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
+) -> None:
+    # Absent and baseline-only ledgers are valid for disposable installs but never
+    # for the production target, whose envelope pins the RR1-present profile.
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
+        _write_release_context(evidence_dir, contract)
+        function = {
+            "dry_run": loader.dry_run_verified_artifact,
+            "recover": loader.recover_published_artifact,
+            "publish": loader.publish_verified_artifact,
+        }[entrypoint]
+        for prepare in (None, _install_shared_only):
+            if prepare is not None:
+                prepare(factory)
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                function(artifact, evidence_dir=evidence_dir, connection_factory=factory)
+            assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+            assert exc.value.details == {"field": "schema.profile"}
+        _assert_nothing_published(factory)
+
+
+def test_production_envelope_refuses_published_baseline_after_rr1_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir
+        )
+        _admin_in_schema(
+            schema,
+            f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",
+            f"DROP TRIGGER {_VALIDATION_GUARD} ON sec_derived_publications",
+            f"DROP FUNCTION {_POINTER_GUARD}()",
+            f"DROP FUNCTION {_VALIDATION_GUARD}()",
+        )
+        monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
+        with factory() as conn:
+            assert loader._schema_state_and_profile(conn) == (
+                "compatible", loader.PROFILE_BASELINE
+            )
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader.recover_published_artifact(
+                artifact, evidence_dir=evidence_dir, connection_factory=factory
+            )
+        assert exc.value.details == {"field": "schema.profile"}
+
+
+def test_missing_production_role_blocks_and_ddl_never_creates_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parked = f"app_runtime_parked_{uuid4().hex[:8]}"
+    _admin_execute(sql.SQL("ALTER ROLE app_runtime RENAME TO {}").format(sql.Identifier(parked)))
+    try:
+        with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+            _install_production_ledger(factory, schema)
+            assert loader._ensure_schema_profile(contract, factory)[1] == loader.PROFILE_RR1
+            with factory() as conn:
+                assert conn.execute(
+                    "SELECT count(*) FROM pg_roles WHERE rolname='app_runtime'"
+                ).fetchone()[0] == 0
+            monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader.dry_run_verified_artifact(
+                    artifact, evidence_dir=evidence_dir, connection_factory=factory
+                )
+            assert exc.value.details == {"field": "schema.required_role.app_runtime"}
+    finally:
+        _admin_execute(sql.SQL("ALTER ROLE {} RENAME TO app_runtime").format(
+            sql.Identifier(parked)
+        ))
+
+
+def test_concurrent_profile_drift_fails_schema_recheck_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        original = loader._ensure_schema_profile
+
+        def ensure_then_drop_rr1(*args: object, **kwargs: object) -> tuple[bool, str]:
+            result = original(*args, **kwargs)  # type: ignore[arg-type]
+            _admin_in_schema(
+                schema,
+                f"DROP TRIGGER {_POINTER_GUARD} ON sec_derived_current_pointers",
+                f"DROP TRIGGER {_VALIDATION_GUARD} ON sec_derived_publications",
+                f"DROP FUNCTION {_POINTER_GUARD}()",
+                f"DROP FUNCTION {_VALIDATION_GUARD}()",
+            )
+            return result
+
+        monkeypatch.setattr(loader, "_ensure_schema_profile", ensure_then_drop_rr1)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": "schema.profile_changed"}
+        assert exc.value.phase == "schema_recheck"
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0] == 0
+
+
+def _flip_profile_after_parent_calls(
+    monkeypatch: pytest.MonkeyPatch, calls_before_flip: int
+) -> None:
+    original_parent = loader._verify_parent
+    original_state = loader._schema_state_and_profile
+    seen = {"parent": 0}
+
+    def counting_parent(*args: object, **kwargs: object) -> loader.ParentEvidence:
+        seen["parent"] += 1
+        return original_parent(*args, **kwargs)  # type: ignore[arg-type]
+
+    def flipping_state(conn: psycopg.Connection) -> tuple[str, str | None]:
+        state, profile = original_state(conn)
+        if seen["parent"] >= calls_before_flip:
+            return state, loader.PROFILE_BASELINE
+        return state, profile
+
+    monkeypatch.setattr(loader, "_verify_parent", counting_parent)
+    monkeypatch.setattr(loader, "_schema_state_and_profile", flipping_state)
+
+
+def test_profile_drift_at_precommit_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        # Calls: schema setup, parent preflight, parent recheck -> flip at precommit.
+        _flip_profile_after_parent_calls(monkeypatch, 3)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.details == {"field": "schema.profile_changed"}
+        assert exc.value.phase == "schema_precommit"
+        assert not list(evidence_dir.glob("*precommit*"))
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM bond_market_implied_rating_v1").fetchone()[
+                0
+            ] == 0
+
+
+def test_read_only_profile_drift_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir
+        )
+        # Calls: first parent read, second parent read -> flip at the final recheck.
+        _flip_profile_after_parent_calls(monkeypatch, 2)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory,
+                require_published=True, required_profile=loader.PROFILE_RR1,
+            )
+        assert exc.value.details == {"field": "schema.profile_changed"}
+
+
+# --- Semantic function EXECUTE admission ----------------------------------------------
+
+_ACL_FUNCTIONS = (
+    "sec_set_current_derived_publication(text,uuid,boolean)",
+    f"{_POINTER_GUARD}()",
+    "bond_market_implied_rating_v1_write_guard()",
+)
+
+
+def _complete_production(
+    contract: loader.FrozenArtifactContract,
+    factory: Callable[[], psycopg.Connection],
+    schema: str,
+) -> None:
+    _install_production_ledger(factory, schema)
+    assert loader._ensure_schema_profile(contract, factory) == (True, loader.PROFILE_RR1)
+
+
+def _function_acl(conn: psycopg.Connection, signature: str) -> str | None:
+    return conn.execute(
+        "SELECT proacl::text FROM pg_proc WHERE oid=%s::regprocedure", (signature,)
+    ).fetchone()[0]
+
+
+@pytest.mark.parametrize(
+    "statements",
+    [
+        pytest.param((), id="null_acl"),
+        pytest.param(
+            ("REVOKE EXECUTE ON FUNCTION {f} FROM PUBLIC",
+             "GRANT EXECUTE ON FUNCTION {f} TO PUBLIC"),
+            id="explicit_owner_public",
+        ),
+        pytest.param(
+            ("GRANT EXECUTE ON FUNCTION {f} TO app_runtime",),
+            id="redundant_app_runtime",
+        ),
+        pytest.param(
+            ("GRANT EXECUTE ON FUNCTION {f} TO app_runtime",
+             "REVOKE EXECUTE ON FUNCTION {f} FROM PUBLIC",
+             "GRANT EXECUTE ON FUNCTION {f} TO PUBLIC"),
+            id="reordered_with_app_runtime",
+        ),
+    ],
+)
+@pytest.mark.parametrize("function", _ACL_FUNCTIONS)
+def test_semantically_default_function_acls_are_admitted(
+    tmp_path: Path, function: str, statements: tuple[str, ...]
+) -> None:
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _complete_production(contract, factory, schema)
+        with factory() as conn:
+            for statement in statements:
+                conn.execute(statement.format(f=function))
+            acl = _function_acl(conn, function)
+            assert (acl is None) is (not statements)
+            assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)
+            assert _function_acl(conn, function) == acl
+
+
+@pytest.mark.parametrize(
+    "statements",
+    [
+        pytest.param(("GRANT EXECUTE ON FUNCTION {f} TO app_analytics_ro",),
+                     id="explicit_app_analytics_ro"),
+        pytest.param(("GRANT EXECUTE ON FUNCTION {f} TO {probe}",), id="unknown_role"),
+        pytest.param(("GRANT EXECUTE ON FUNCTION {f} TO app_runtime WITH GRANT OPTION",),
+                     id="grant_option"),
+        pytest.param(("REVOKE EXECUTE ON FUNCTION {f} FROM PUBLIC",), id="public_missing"),
+        pytest.param(("REVOKE EXECUTE ON FUNCTION {f} FROM worker_writer",), id="owner_missing"),
+    ],
+)
+@pytest.mark.parametrize("function", _ACL_FUNCTIONS)
+def test_unsafe_function_acls_are_refused(
+    tmp_path: Path, function: str, statements: tuple[str, ...]
+) -> None:
+    probe = f"acl_fn_probe_{uuid4().hex[:10]}"
+    _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(probe)))
+    try:
+        with _database(tmp_path) as (contract, _, factory, schema, _):
+            _complete_production(contract, factory, schema)
+            with factory() as conn:
+                for statement in statements:
+                    conn.execute(statement.format(f=function, probe=probe))
+                before = _function_acl(conn, function)
+            with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state_and_profile(conn)
+            assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+            assert exc.value.details == {"field": f"schema.function_acl.{function}"}
+            with factory() as conn:
+                assert _function_acl(conn, function) == before
+    finally:
+        _admin_execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(probe)))
+        _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(probe)))
+
+
+def test_function_grant_issued_by_non_owner_is_refused(tmp_path: Path) -> None:
+    function = "sec_derived_publication_as_of(uuid)"
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _complete_production(contract, factory, schema)
+        _admin_in_schema(
+            schema,
+            sql.SQL("GRANT USAGE ON SCHEMA {} TO app_runtime").format(sql.Identifier(schema)),
+        )
+        try:
+            with factory() as conn:
+                conn.execute(
+                    f"GRANT EXECUTE ON FUNCTION {function} TO app_runtime WITH GRANT OPTION"
+                )
+            _admin_in_schema(
+                schema, "SET ROLE app_runtime",
+                f"GRANT EXECUTE ON FUNCTION {function} TO app_analytics_ro",
+            )
+            with factory() as conn:
+                acl = _function_acl(conn, function)
+                assert "app_analytics_ro=X/app_runtime" in (acl or "")
+            with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state_and_profile(conn)
+            assert exc.value.details == {"field": f"schema.function_acl.{function}"}
+        finally:
+            _admin_in_schema(
+                schema,
+                sql.SQL("REVOKE USAGE ON SCHEMA {} FROM app_runtime").format(
+                    sql.Identifier(schema)
+                ),
+            )
+
+
+# --- Production ACL posture, worker workflow and non-RR1 isolation --------------------
+
+
+def test_bad_shared_prestate_is_not_repaired_by_worker_reruns_until_approved_revoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema, captured_defaults=True)
+        with factory() as conn:
+            # The captured live posture: app_runtime=arwdm on the four shared tables.
+            for relation in loader._SHARED_SCHEMA_OBJECTS:
+                conn.execute(sql.SQL(
+                    "GRANT INSERT, UPDATE, DELETE, MAINTAIN ON {} TO app_runtime"
+                ).format(sql.Identifier(relation)))
+            before = _relation_acls(conn)
+        # Any derived worker re-running the shared/RR1 protocol must not repair it.
+        with factory() as conn, conn.transaction():
+            for name in ("sec_derived_publications.sql", "rr1_fee_profiles.sql"):
+                conn.execute((loader.ROOT / "schemas" / name).read_text(encoding="utf-8"))
+        with factory() as conn:
+            assert _relation_acls(conn) == before
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.details == {"field": "schema.acl.sec_derived_current_pointers"}
+        _assert_nothing_published(factory)
+        with factory() as conn:
+            assert _relation_acls(conn) == before
+            # The separately approved remediation: exactly this delta, SELECT kept.
+            for relation in loader._SHARED_SCHEMA_OBJECTS:
+                conn.execute(sql.SQL(
+                    "REVOKE INSERT, UPDATE, DELETE, MAINTAIN ON {} FROM app_runtime RESTRICT"
+                ).format(sql.Identifier(relation)))
+            assert loader._schema_state_and_profile(conn) == ("shared_only", loader.PROFILE_RR1)
+        _write_release_context(evidence_dir, contract)
+        monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
+        result = loader.publish_verified_artifact(
+            artifact, evidence_dir=evidence_dir, connection_factory=factory
+        )
+        assert result.outcome == "published_verified"
+
+
+def test_production_shaped_workflow_rr1_isolation_and_app_runtime_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema, captured_defaults=True)
+        _write_release_context(evidence_dir, contract)
+        monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
+        # The legitimate worker pointer workflow passes both RR1 guards untouched.
+        result = loader.publish_verified_artifact(
+            artifact, evidence_dir=evidence_dir, connection_factory=factory
+        )
+        assert result.outcome == "published_verified"
+        replay = loader.publish_verified_artifact(
+            artifact, evidence_dir=evidence_dir, connection_factory=factory
+        )
+        assert replay.outcome == "already_published_verified"
+        dry = loader.dry_run_verified_artifact(
+            artifact, evidence_dir=evidence_dir, connection_factory=factory
+        )
+        assert dry.outcome == "already_published_verified"
+        with factory() as conn:
+            run_id, package_id = conn.execute(
+                "SELECT source_run_id, source_package_id FROM sec_derived_publications "
+                "WHERE product=%s", (loader.PRODUCT,),
+            ).fetchone()
+            # The RR1 guards stay active for their own product only.
+            rr1_publication = uuid4()
+            conn.execute(
+                "INSERT INTO sec_derived_publications (publication_id,product,"
+                "publication_version,source_run_id,source_package_id,build_fingerprint) "
+                "VALUES (%s,'rr1_fee_profile_v1',1,%s,%s,%s)",
+                (rr1_publication, run_id, package_id, "a" * 64),
+            )
+            with pytest.raises(psycopg.errors.RaiseException, match="RR1 fee-profile validation"):
+                conn.execute("SELECT sec_validate_derived_publication(%s)", (rr1_publication,))
+            assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)
+        _admin_in_schema(
+            schema,
+            sql.SQL("GRANT USAGE ON SCHEMA {} TO app_runtime").format(sql.Identifier(schema)),
+        )
+        try:
+            with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as runtime:
+                runtime.execute("SET ROLE app_runtime")
+                runtime.execute(
+                    sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema))
+                )
+                assert runtime.execute(
+                    "SELECT count(*) FROM bond_market_implied_rating_v1_current"
+                ).fetchone()[0] == artifact.summary.row_count
+                assert runtime.execute(
+                    "SELECT publication_id FROM bond_market_implied_rating_app_pointer"
+                ).fetchone()[0] == UUID(contract.identity.publication_id)
+                for statement in (
+                    "UPDATE bond_market_implied_rating_app_pointer SET changed_at=now()",
+                    "DELETE FROM bond_market_implied_rating_v1_builds",
+                    "UPDATE sec_derived_current_pointers SET set_at=now()",
+                    "DELETE FROM sec_derived_pointer_tokens",
+                    "INSERT INTO sec_derived_publication_tokens VALUES (gen_random_uuid(), 1)",
+                    "SELECT sec_set_current_derived_publication('"
+                    f"{loader.PRODUCT}', '{contract.identity.publication_id}'::uuid, false)",
+                ):
+                    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                        runtime.execute(statement)
+        finally:
+            _admin_in_schema(
+                schema,
+                sql.SQL("REVOKE USAGE ON SCHEMA {} FROM app_runtime").format(
+                    sql.Identifier(schema)
+                ),
+            )
+        with factory() as conn:
+            assert str(conn.execute(
+                "SELECT publication_id FROM sec_derived_current_pointers WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0]) == contract.identity.publication_id
+
+
+def test_outer_transaction_rollback_with_rr1_present(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        assert loader._ensure_schema_profile(contract, factory) == (True, loader.PROFILE_RR1)
+        payload = loader._artifact_payload(artifact, contract)
+        with factory() as conn, pytest.raises(RuntimeError), conn.transaction():
+            loader._set_local_timeouts(conn)
+            loader._acquire_product_lock(conn)
+            loader._verify_parent(conn, contract=contract, lock_pointer=True)
+            materialize(conn, artifact.publication, payload, expected_pointer=None)
+            loader._verify_stored_publication(
+                conn, artifact.publication, contract=contract, require_current=True
+            )
+            raise RuntimeError("interrupt before commit")
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM sec_derived_current_pointers").fetchone()[
+                0
+            ] == 0
+            assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)

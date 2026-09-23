@@ -104,7 +104,7 @@
       "universe_snapshots_live.parquet"
     ],
     "snapshot_source_sha256": "2bc85774f608aebc57e8e345e49113938549f8f89ae87dee509cdcae8758aba2",
-    "header_sha256": null
+    "header_sha256": "faf310864329a7dbe43e7ea3dcd1a55f043683914945bac0b16f6e9bfa982c69"
   },
   "identity": {
     "input_fingerprint": "620760bf4de0584d44138d880ff57bf87d3ffa24ef205074d0b004d8874b9867",
