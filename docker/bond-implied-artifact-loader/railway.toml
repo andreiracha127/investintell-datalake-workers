@@ -4,10 +4,13 @@
 # timeouts are separately pinned at 7200 seconds after the measured 1991-second
 # rollback and 1229-second apply invalidated the original 20-minute estimate.
 # No cron schedule, domain, or public port belongs to this private one-shot.
+# Railway's custom start command replaces the image ENTRYPOINT, so it must name the
+# root-only /evidence bootstrap explicitly; the bare timeout command must never run
+# with this root-start image.
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "docker/bond-implied-artifact-loader/Dockerfile"
 
 [deploy]
-startCommand = "timeout --signal=TERM --kill-after=30s 9000s python -m scripts.load_bond_market_implied_rating_artifact --artifact-root /artifact --evidence-dir /evidence --verify-only"
+startCommand = "/usr/local/bin/python -I -S /app/docker/bond-implied-artifact-loader/bootstrap_evidence.py timeout --signal=TERM --kill-after=30s 9000s python -m scripts.load_bond_market_implied_rating_artifact --artifact-root /artifact --evidence-dir /evidence --verify-only"
 restartPolicyType = "never"

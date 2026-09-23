@@ -51,6 +51,20 @@ RUN python -c "from pathlib import Path; root=Path('/app'); required=('docker/bo
     && python -c "import scripts.load_bond_market_implied_rating_artifact" \
     && command -v timeout >/dev/null
 
+# Root-only startup bootstrap for the mounted /evidence volume. Its reviewed digest is a
+# literal here, so a changed wrapper fails the build instead of reaching the root phase.
+COPY docker/bond-implied-artifact-loader/bootstrap_evidence.py \
+     /app/docker/bond-implied-artifact-loader/
+RUN echo "d4ccd3ecfae99ecb64bea69b17ade2893857cc617eb20eca2ab5369d263db678  /app/docker/bond-implied-artifact-loader/bootstrap_evidence.py" | sha256sum -c - \
+    && chown 0:0 /app/docker/bond-implied-artifact-loader/bootstrap_evidence.py \
+    && chmod 0444 /app/docker/bond-implied-artifact-loader/bootstrap_evidence.py \
+    && chown 0:0 /app /app/docker /app/docker/bond-implied-artifact-loader \
+    && chmod 0755 /app /app/docker /app/docker/bond-implied-artifact-loader \
+    && python -B -I -S -c "import os, stat; paths=('/', '/app', '/app/docker', '/app/docker/bond-implied-artifact-loader', '/usr/bin', '/usr/bin/timeout', '/usr/local/bin/python', '/app/docker/bond-implied-artifact-loader/bootstrap_evidence.py'); facts=[os.stat(p) for p in paths]; assert all(s.st_uid == 0 and not s.st_mode & (stat.S_IWGRP | stat.S_IWOTH | stat.S_ISUID | stat.S_ISGID) for s in facts); assert stat.S_ISREG(os.lstat('/usr/bin/timeout').st_mode); assert stat.S_IMODE(facts[-1].st_mode) == 0o444" \
+    && test "$(command -v timeout)" = /usr/bin/timeout \
+    && test "$(command -v python)" = /usr/local/bin/python \
+    && python -B -I -S -c "import ctypes, hashlib, json, os, re, stat, sys; compile(open('/app/docker/bond-implied-artifact-loader/bootstrap_evidence.py', 'rb').read(), 'bootstrap_evidence.py', 'exec')"
+
 # The private build context supplies artifact/; it is not part of the repository.
 COPY artifact/ /artifact/
 RUN test -n "$(ls -A /artifact)" \
@@ -58,6 +72,11 @@ RUN test -n "$(ls -A /artifact)" \
     && mkdir -p /evidence \
     && chown 65532:65532 /evidence
 
-USER 65532:65532
+# Only the startup wrapper runs as root. It validates the exact argv and mounted /evidence,
+# changes that mount root alone, drops to 65532 behind no_new_privs, then execs the CMD.
+# Railway's custom start command replaces ENTRYPOINT, so railway.toml names it explicitly.
+USER 0:0
+
+ENTRYPOINT ["/usr/local/bin/python", "-I", "-S", "/app/docker/bond-implied-artifact-loader/bootstrap_evidence.py"]
 
 CMD ["timeout", "--signal=TERM", "--kill-after=30s", "9000s", "python", "-m", "scripts.load_bond_market_implied_rating_artifact", "--artifact-root", "/artifact", "--evidence-dir", "/evidence", "--verify-only"]

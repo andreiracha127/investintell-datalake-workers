@@ -799,6 +799,8 @@ def test_railway_runtime_is_private_verify_only_and_never_restarts() -> None:
     }
     assert document["deploy"] == {
         "startCommand": (
+            "/usr/local/bin/python -I -S "
+            "/app/docker/bond-implied-artifact-loader/bootstrap_evidence.py "
             "timeout --signal=TERM --kill-after=30s 9000s "
             "python -m scripts.load_bond_market_implied_rating_artifact "
             "--artifact-root /artifact --evidence-dir /evidence --verify-only"
