@@ -425,6 +425,7 @@ def test_run_refreshes_mv_after_lock_released(monkeypatch):
         return conn
 
     monkeypatch.setattr(rm, "connect", _fake_connect)
+    monkeypatch.setattr(rm, "_finish_risk_run", lambda *_a: None)
 
     @contextlib.contextmanager
     def _granted_lock(_conn, _lock_id):
@@ -754,6 +755,7 @@ def test_run_calls_manager_score_post_step(monkeypatch):
         return _FakeConn({"events": events})
 
     monkeypatch.setattr(rm, "connect", _fake_connect)
+    monkeypatch.setattr(rm, "_finish_risk_run", lambda *_a: None)
 
     @contextlib.contextmanager
     def _granted_lock(_conn, _lock_id):
@@ -822,6 +824,7 @@ def test_parallel_run_updates_peers_and_manager_after_shards(monkeypatch):
         return 1, 1
 
     monkeypatch.setattr(rm, "connect", _fake_connect)
+    monkeypatch.setattr(rm, "_finish_risk_run", lambda *_a: None)
     monkeypatch.setattr(rm, "advisory_lock", _granted_lock)
     monkeypatch.setattr(rm, "_resolve_calc_date", lambda _c, _cd: _dt.date(2026, 6, 11))
     monkeypatch.setattr(rm, "_risk_free_rate", lambda _c, _cd: 0.04)
@@ -857,8 +860,9 @@ def test_parallel_run_updates_peers_and_manager_after_shards(monkeypatch):
     assert events.count("shard_commit") == 2
     assert max(i for i, e in enumerate(events) if e == "shard_commit") < events.index("peer")
     assert events.index("peer") < events.index("manager")
-    assert events.index("manager") < events.index("commit")
-    assert events.index("commit") < events.index("refresh")
+    assert events.index("manager") < max(i for i, e in enumerate(events[:events.index("refresh")])
+                                         if e == "commit")
+    assert events.index("refresh") < events.index("commit", events.index("refresh"))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

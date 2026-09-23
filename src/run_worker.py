@@ -45,6 +45,7 @@ def main() -> None:
             "|quadrant_macro|quadrant_macro_v2|quadrant_macro_v3|quadrant_market"
             "|macro_ingestion"
             "|macro_vintage|treasury_ingestion|benchmark_ingest|instrument_ingestion"
+            "|fund_nav_readiness|nav_current_daily_chain"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
             "|sec_13f_publication_chain"
             "|sec_company_tickers_mf|nport_cusip_enrichment"

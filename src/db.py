@@ -343,3 +343,6 @@ LOCK_NPORT_V2_PUBLICATION_CHAIN = 900_356
 # publication surface with any SEC or market-data lane. 900_359 is the next free
 # documented ingestion lock after the publication chains above.
 LOCK_FOMC_SEP_INGESTION = 900_359
+# current_daily_nav_v1 builds a single completed snapshot and pointer.
+LOCK_FUND_NAV_READINESS = 900_360
+LOCK_FUND_NAV_CURRENT_CHAIN = 900_361

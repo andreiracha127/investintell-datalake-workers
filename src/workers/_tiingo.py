@@ -39,9 +39,11 @@ Yahoo and OpenFIGI, which have their own, different limits.)
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import os
 import threading
 import time
+from dataclasses import dataclass
 
 TIINGO_BASE_URL = "https://api.tiingo.com"
 MAX_CONSECUTIVE_429 = 30
@@ -60,6 +62,39 @@ DEFAULT_RATE_PER_S = 2.5
 
 class TiingoBudgetExceeded(RuntimeError):
     """Raised after MAX_CONSECUTIVE_429 consecutive 429s — resume next cycle."""
+
+
+@dataclass(frozen=True)
+class NavObservation:
+    date: _dt.date
+    price: float | None
+    kind: str  # adjusted, raw or unknown; never a total-return verification
+
+
+@dataclass(frozen=True)
+class NavFetchResult:
+    status: str
+    observations: tuple[NavObservation, ...] = ()
+    attempted_at: _dt.datetime | None = None
+    finished_at: _dt.datetime | None = None
+
+
+def parse_nav_observations(bars: list[dict], *, source: str) -> tuple[NavObservation, ...]:
+    """Keep adjusted/raw selection per endpoint; a mixed series is not spliced."""
+    adjusted_key, raw_key = {
+        "tiingo": ("adjClose", "close"),
+        "eodhd": ("adjusted_close", "close"),
+    }[source]
+    out = []
+    for bar in bars:
+        value = bar.get(adjusted_key)
+        kind = "adjusted"
+        if value is None:
+            value = bar.get(raw_key)
+            kind = "raw" if value is not None else "unknown"
+        out.append(NavObservation(_dt.date.fromisoformat(str(bar["date"])[:10]),
+                                  float(value) if value is not None else None, kind))
+    return tuple(out)
 
 
 class TokenBucket:
@@ -105,14 +140,7 @@ def api_key() -> str:
 
 def parse_price_bars(bars: list[dict]) -> list[tuple[_dt.date, float | None]]:
     """Tiingo daily bars → [(date, adjClose-or-close)]; missing price → None."""
-    out: list[tuple[_dt.date, float | None]] = []
-    for bar in bars:
-        d = _dt.date.fromisoformat(str(bar["date"])[:10])
-        price = bar.get("adjClose")
-        if price is None:
-            price = bar.get("close")
-        out.append((d, float(price) if price is not None else None))
-    return out
+    return [(obs.date, obs.price) for obs in parse_nav_observations(bars, source="tiingo")]
 
 
 class TiingoClient:
@@ -155,17 +183,24 @@ class TiingoClient:
         self.close()
 
     def _get_bars(self, ticker: str, start_date: _dt.date,
-                  end_date: _dt.date | None = None) -> list[dict]:
+                   end_date: _dt.date | None = None) -> list[dict]:
         """Raw Tiingo daily bars for one ticker; [] on 404/no data.
 
         Paced by the token bucket and protected by the 30×429 breaker. Shared
         by ``fetch_daily_prices`` (NAV: date+adjClose) and ``fetch_daily_bars``
         (full OHLCV+adj rows for eod_prices)."""
+        return self._request_bars(ticker, start_date, end_date)[1]
+
+    def _request_bars(self, ticker: str, start_date: _dt.date,
+                      end_date: _dt.date | None = None) -> tuple[str, list[dict]]:
+        if not self._key:
+            return "not_configured", []
         params = {"format": "json", "resampleFreq": "daily",
-                  "startDate": start_date.isoformat()}
+                   "startDate": start_date.isoformat()}
         if end_date:
             params["endDate"] = end_date.isoformat()
         url = f"{TIINGO_BASE_URL}/tiingo/daily/{ticker}/prices"
+        failure = "transient_error"
         for attempt, sleep_s in enumerate(_RETRY_SLEEPS):
             self._bucket.acquire()
             self.requests_made += 1
@@ -175,6 +210,7 @@ class TiingoClient:
                 time.sleep(sleep_s)
                 continue
             if resp.status_code == 429:
+                failure = "rate_limited"
                 self.consecutive_429 += 1
                 if self.consecutive_429 >= MAX_CONSECUTIVE_429:
                     raise TiingoBudgetExceeded(
@@ -183,17 +219,39 @@ class TiingoClient:
                 continue
             self.consecutive_429 = 0
             if resp.status_code == 404:
-                return []
+                return "not_found", []
             if resp.status_code >= 500:
+                failure = "transient_error"
                 time.sleep(sleep_s)
                 continue
             if resp.status_code >= 400:
-                return []
-            payload = resp.json()
+                return "invalid_payload", []
+            try:
+                payload = resp.json()
+            except (ValueError, TypeError):
+                return "invalid_payload", []
             if not isinstance(payload, list):  # error body, e.g. unknown ticker
-                return []
-            return payload
-        return []
+                return "invalid_payload", []
+            return ("empty" if not payload else "success_new"), payload
+        return failure, []
+
+    def fetch_daily_observations(self, ticker: str, start_date: _dt.date,
+                                 end_date: _dt.date) -> NavFetchResult:
+        started = _dt.datetime.now(_dt.timezone.utc)
+        status, bars = self._request_bars(ticker, start_date, end_date)
+        finished = _dt.datetime.now(_dt.timezone.utc)
+        if not bars:
+            if status == "not_configured":
+                return NavFetchResult(status)
+            return NavFetchResult(status, attempted_at=started, finished_at=finished)
+        try:
+            observations = parse_nav_observations(bars, source="tiingo")
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return NavFetchResult("invalid_payload", attempted_at=started, finished_at=finished)
+        if not any(o.price is not None and math.isfinite(o.price) and o.price > 0
+                   for o in observations):
+            return NavFetchResult("success_no_new", observations, started, finished)
+        return NavFetchResult("success_new", observations, started, finished)
 
     def fetch_daily_prices(self, ticker: str, start_date: _dt.date,
                            end_date: _dt.date | None = None) -> list[tuple[_dt.date, float | None]]:

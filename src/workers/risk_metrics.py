@@ -28,13 +28,16 @@ Contract:  run(dsn, *, calc_date=None, limit=None) -> {"processed", "upserted"}
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import json
 import os
+import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 
 import numpy as np
 
-from src.db import LOCK_RISK_METRICS, advisory_lock, connect
+from src.db import LOCK_FUND_NAV_READINESS, LOCK_RISK_METRICS, advisory_lock, connect
 from src.workers import manager_score as _ms
 from src.workers._nav_sanitize import GLITCH_LOG, sanitize_nav_series
 from src.workers.risk_metric_ownership import RISK_METRICS_UPSERT_COLUMNS
@@ -839,7 +842,7 @@ def _fetch_fund_ids(conn, calc_date: _dt.date, limit: int | None) -> list:
         FROM nav_timeseries
         WHERE nav_date <= %s AND nav IS NOT NULL
         GROUP BY instrument_id
-        HAVING count(*) >= 21
+        HAVING count(*) >= 22
         ORDER BY count(*) DESC
     """
     params: list[Any] = [calc_date]
@@ -1120,6 +1123,153 @@ def _upsert(conn, instrument_id, calc_date: _dt.date, metrics: dict[str, Any]) -
         cur.execute(sql, vals)
 
 
+FEATURE_DEFINITION_VERSION = "risk_metrics_nav_v1"
+
+
+def _input_series_evidence(series: list[tuple[_dt.date, float]]) -> dict[str, Any]:
+    normalized = [(d.isoformat(), float(value)) for d, value in series]
+    return {
+        "start": normalized[0][0] if normalized else None,
+        "end": normalized[-1][0] if normalized else None,
+        "count": len(normalized),
+        "digest": hashlib.sha256(json.dumps(normalized, separators=(",", ":")).encode()).hexdigest(),
+    }
+
+
+def _persist_feature_evidence(
+    conn, instrument_id, calc_date: _dt.date, rows: list,
+    rf: float, risk_run_id: uuid.UUID, benchmark_ticker: str | None,
+    bench_returns: dict[str, list[tuple[_dt.date, float]]],
+    macro_changes: dict[str, MacroChangeSeries],
+    eq_crisis_bench: list[tuple[_dt.date, float]],
+) -> None:
+    """Record the exact worker inputs alongside the corresponding metric upsert."""
+    nav_input = [(d.isoformat(), str(v)) for d, v in rows]
+    benchmark = {
+        ticker: _input_series_evidence(bench_returns.get(ticker, []))
+        for ticker in sorted({benchmark_ticker, EQUITY_BENCHMARK_KEY} - {None})
+    }
+    benchmark["crisis_equity"] = _input_series_evidence(eq_crisis_bench)
+    factors = {
+        key: _input_series_evidence(sorted(_factor_change_map(value).items()))
+        for key, value in macro_changes.items() if key != "_equity_benchmark"
+    }
+    payload = {"nav": nav_input, "benchmark": benchmark, "factors": factors,
+               "rf": float(rf), "definition": FEATURE_DEFINITION_VERSION}
+    nav_fingerprint = hashlib.sha256(json.dumps(
+        nav_input, separators=(",", ":")).encode()).hexdigest()
+    fingerprint = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    nav = np.array([float(v) for _d, v in rows], dtype=float)
+    raw_returns = nav[1:] / nav[:-1] - 1.0
+    rejected = int((~np.isfinite(raw_returns) | (np.abs(raw_returns) > MAX_DAILY_RETURN_ABS)).sum())
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO fund_nav_feature_evidence
+               (instrument_id, calc_date, definition_version, risk_run_id, feature_as_of,
+                input_max_date, nav_start, nav_end, nav_count, input_fingerprint,
+                nav_input_fingerprint,
+                benchmark_evidence, factor_evidence, exclusion_reason)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s)
+               ON CONFLICT (instrument_id, calc_date, definition_version) DO UPDATE SET
+                 risk_run_id=EXCLUDED.risk_run_id, feature_as_of=EXCLUDED.feature_as_of,
+                 input_max_date=EXCLUDED.input_max_date, nav_start=EXCLUDED.nav_start,
+                 nav_end=EXCLUDED.nav_end, nav_count=EXCLUDED.nav_count,
+                 input_fingerprint=EXCLUDED.input_fingerprint,
+                 nav_input_fingerprint=EXCLUDED.nav_input_fingerprint,
+                 benchmark_evidence=EXCLUDED.benchmark_evidence,
+                 factor_evidence=EXCLUDED.factor_evidence,
+                 exclusion_reason=EXCLUDED.exclusion_reason,
+                 computed_at=clock_timestamp()""",
+            (instrument_id, calc_date, FEATURE_DEFINITION_VERSION, risk_run_id,
+             rows[-1][0], rows[-1][0], rows[0][0], rows[-1][0], len(rows),
+             fingerprint, nav_fingerprint, json.dumps(benchmark, sort_keys=True),
+             json.dumps(factors, sort_keys=True),
+             "INVALID_OR_EXTREME_RETURNS" if rejected else None),
+        )
+
+
+def _start_risk_run(conn, risk_run_id: uuid.UUID, calc_date: _dt.date, count: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO fund_nav_risk_runs
+               (risk_run_id, calc_date, status, expected_rows)
+               VALUES (%s,%s,'running',%s)""", (risk_run_id, calc_date, count),
+        )
+        cur.execute(
+            """INSERT INTO fund_nav_risk_publication
+               (readiness_profile, revision_id, state, active_risk_run_id)
+               VALUES ('current_daily_nav_v1',0,'running',%s)
+               ON CONFLICT (readiness_profile) DO UPDATE SET
+                 state='running', active_risk_run_id=EXCLUDED.active_risk_run_id""",
+            (risk_run_id,),
+        )
+    conn.commit()  # shards need the parent FK visible on their own connections
+
+
+def _record_risk_exclusion(conn, risk_run_id: uuid.UUID, instrument_id,
+                           calc_date: _dt.date, reason: str, rows: list) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO fund_nav_risk_exclusions
+               (risk_run_id,instrument_id,calc_date,reason_code,nav_count,input_max_date)
+               VALUES (%s,%s,%s,%s,%s,%s)""",
+            (risk_run_id, instrument_id, calc_date, reason, len(rows),
+             rows[-1][0] if rows else None),
+        )
+
+
+def _finish_risk_run(conn, risk_run_id: uuid.UUID, expected: int, persisted: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT (SELECT count(*) FROM fund_nav_feature_evidence
+                       WHERE risk_run_id=%s) +
+                      (SELECT count(*) FROM fund_nav_risk_exclusions
+                       WHERE risk_run_id=%s)""",
+            (risk_run_id, risk_run_id),
+        )
+        covered = cur.fetchone()[0]
+        if covered != expected or persisted > covered:
+            raise RuntimeError("risk evidence incomplete: no MV refresh or readiness promotion")
+        cur.execute(
+            """UPDATE fund_nav_risk_runs SET status='metrics_complete',
+                 persisted_rows=%s
+               WHERE risk_run_id=%s AND status='running' AND expected_rows=%s""",
+            (covered, risk_run_id, expected),
+        )
+        if getattr(cur, "rowcount", 1) != 1:
+            raise RuntimeError("risk run completion lost its expected row set")
+    conn.commit()
+
+
+def _mark_risk_published(dsn: str, risk_run_id: uuid.UUID) -> None:
+    """Commit the MV-verified generation under the readiness publication lock."""
+    with connect(dsn) as conn:
+        with advisory_lock(conn, LOCK_FUND_NAV_READINESS) as acquired:
+            if not acquired:
+                raise RuntimeError("risk publication deferred: readiness lock busy")
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE fund_nav_risk_publication
+                       SET revision_id=revision_id+1, state='idle',
+                           published_risk_run_id=%s, active_risk_run_id=NULL
+                       WHERE readiness_profile='current_daily_nav_v1'
+                         AND state='running' AND active_risk_run_id=%s""",
+                    (risk_run_id, risk_run_id),
+                )
+                if getattr(cur, "rowcount", 1) != 1:
+                    raise RuntimeError("risk publication superseded by another run")
+                cur.execute(
+                    """UPDATE fund_nav_risk_runs SET status='complete',
+                         completed_at=clock_timestamp()
+                       WHERE risk_run_id=%s AND status='metrics_complete'""",
+                    (risk_run_id,),
+                )
+                if getattr(cur, "rowcount", 1) != 1:
+                    raise RuntimeError("risk publication state changed before completion")
+            conn.commit()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Sharded execution (process-level parallelism)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1138,6 +1288,7 @@ def _process_shard(
     macro_changes: dict[str, MacroChangeSeries] | None = None,
     eq_crisis_bench: list[tuple[_dt.date, float]] | None = None,
     fund_asset_classes: dict[str, str] | None = None,
+    risk_run_id: uuid.UUID | None = None,
 ) -> tuple[int, int]:
     """Worker entrypoint for a child process — picklable, module-level.
 
@@ -1157,11 +1308,19 @@ def _process_shard(
         for iid in fund_ids:
             rows = _fetch_nav(conn, iid, cdate)
             if len(rows) < 22:
+                if risk_run_id is None:
+                    raise ValueError("risk_run_id required for NAV input evidence")
+                _record_risk_exclusion(conn, risk_run_id, iid, cdate,
+                                       "NAV_WINDOW_TOO_SHORT", rows)
                 continue
             nav = np.array([float(r[1]) for r in rows], dtype=float)
             metrics = compute_metrics(nav, rf)
             processed += 1
             if metrics is None:
+                if risk_run_id is None:
+                    raise ValueError("risk_run_id required for NAV input evidence")
+                _record_risk_exclusion(conn, risk_run_id, iid, cdate,
+                                       "METRICS_UNAVAILABLE", rows)
                 continue
             ok, gcount = nav_quality([(r[0], r[1]) for r in rows])
             metrics["nav_quality_ok"] = ok
@@ -1182,6 +1341,11 @@ def _process_shard(
                 )
             )
             _upsert(conn, iid, cdate, metrics)
+            if risk_run_id is None:
+                raise ValueError("risk_run_id required for NAV input evidence")
+            _persist_feature_evidence(conn, iid, cdate, rows, rf, risk_run_id,
+                                      fund_benchmarks.get(str(iid)), bench_returns,
+                                      macro_payload, eq_crisis_bench or [])
             upserted += 1
         conn.commit()
     return processed, upserted
@@ -1538,6 +1702,8 @@ def run(
             cdate = _resolve_calc_date(conn, calc_date)
             rf = _risk_free_rate(conn, cdate)
             fund_ids = _fetch_fund_ids(conn, cdate, limit)
+            risk_run_id = uuid.uuid4()
+            _start_risk_run(conn, risk_run_id, cdate, len(fund_ids))
             cdate_iso = cdate.isoformat()
             # Benchmark wiring: lido UMA vez no main e passado aos shards.
             bench_returns = _fetch_benchmark_returns(conn, cdate)
@@ -1561,11 +1727,15 @@ def run(
                 for iid in fund_ids:
                     rows = _fetch_nav(conn, iid, cdate)
                     if len(rows) < 22:
+                        _record_risk_exclusion(conn, risk_run_id, iid, cdate,
+                                               "NAV_WINDOW_TOO_SHORT", rows)
                         continue
                     nav = np.array([float(r[1]) for r in rows], dtype=float)
                     metrics = compute_metrics(nav, rf)
                     processed += 1
                     if metrics is None:
+                        _record_risk_exclusion(conn, risk_run_id, iid, cdate,
+                                               "METRICS_UNAVAILABLE", rows)
                         continue
                     ok, gcount = nav_quality([(r[0], r[1]) for r in rows])
                     metrics["nav_quality_ok"] = ok
@@ -1586,10 +1756,14 @@ def run(
                         )
                     )
                     _upsert(conn, iid, cdate, metrics)
+                    _persist_feature_evidence(conn, iid, cdate, rows, rf, risk_run_id,
+                                              fund_benchmarks.get(str(iid)), bench_returns,
+                                              macro_changes, eq_crisis_bench)
                     upserted += 1
                 peers = _update_peer_percentiles(conn, cdate)
                 mscores = _update_manager_scores(conn, cdate)
                 conn.commit()
+                _finish_risk_run(conn, risk_run_id, len(fund_ids), upserted)
                 result = {
                     "processed": processed,
                     "upserted": upserted,
@@ -1597,6 +1771,7 @@ def run(
                     "manager_score_rows": mscores,
                     "calc_date": cdate_iso,
                     "workers": 1,
+                    "risk_run_id": str(risk_run_id),
                 }
             else:
                 # Parallel path: shard funds, dispatch to a process pool. Each
@@ -1617,6 +1792,7 @@ def run(
                             eq_crisis_bench,
                             {str(i): fund_asset_classes[str(i)]
                              for i in shard if str(i) in fund_asset_classes},
+                            risk_run_id,
                         )
                         for shard in shards
                     ]
@@ -1629,6 +1805,7 @@ def run(
                 peers = _update_peer_percentiles(conn, cdate)
                 mscores = _update_manager_scores(conn, cdate)
                 conn.commit()
+                _finish_risk_run(conn, risk_run_id, len(fund_ids), upserted)
 
                 result = {
                     "processed": processed,
@@ -1637,6 +1814,7 @@ def run(
                     "manager_score_rows": mscores,
                     "calc_date": cdate_iso,
                     "workers": n_workers,
+                    "risk_run_id": str(risk_run_id),
                 }
 
     # Lock released and the main connection is closed. Refresh the API read-model
@@ -1646,8 +1824,9 @@ def run(
     # silently swallowing or failing the committed run.
     try:
         _refresh_fund_risk_latest_mv(dsn)
+        _mark_risk_published(dsn, risk_run_id)
         result["mv_refreshed"] = True
     except Exception as exc:  # noqa: BLE001 — surface, don't discard committed work
         result["mv_refreshed"] = False
-        result["mv_refresh_error"] = str(exc)
+        result["mv_refresh_error"] = type(exc).__name__
     return result

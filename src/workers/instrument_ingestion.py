@@ -38,12 +38,18 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from src.db import LOCK_INSTRUMENT_INGESTION, advisory_lock, connect
-from src.workers._nav_sanitize import sanitize_nav_series
-from src.workers._tiingo import DEFAULT_RATE_PER_S, TiingoBudgetExceeded, TiingoClient
+from psycopg.rows import dict_row
+
+from src.db import LOCK_FUND_NAV_READINESS, LOCK_INSTRUMENT_INGESTION, advisory_lock, connect
+from src.workers._nav_policy import ADJUSTED_OVERLAP_ABS_TOL, ADJUSTED_OVERLAP_REL_TOL
+from src.workers._nav_sanitize import REPAIRED_NAV_KINDS, sanitize_nav_series
+from src.workers._tiingo import (
+    DEFAULT_RATE_PER_S, NavFetchResult, NavObservation, TiingoBudgetExceeded, TiingoClient,
+)
 
 UPSERT_CHUNK = 500
 DEFAULT_LOOKBACK_DAYS = 5475   # ~15y for first-time backfills
@@ -75,13 +81,16 @@ class TickerPlan:
 # ──────────────────────────────────────────────────────────────────────────────
 def select_stale_tickers(universe: list[dict[str, Any]],
                          watermarks: dict[str, _dt.date],
-                         as_of: _dt.date, cap: int) -> list[TickerPlan]:
+                         as_of: _dt.date, cap: int, *,
+                         target_session: _dt.date | None = None) -> list[TickerPlan]:
     """Stale-only, AUM-prioritised fetch plan (one entry per unique ticker).
 
     A ticker is stale when it has no NAV history or its newest nav_date is
     older than STALE_AFTER_DAYS. Plans are ordered by AUM descending (NULLs
     last) and capped to bound the run within the Tiingo budget.
     """
+    if target_session is not None and target_session != as_of:
+        raise ValueError("target_session must match the requested as_of date")
     by_ticker: dict[str, list[dict[str, Any]]] = {}
     for inst in universe:
         ticker = (inst.get("ticker") or "").strip().upper()
@@ -93,7 +102,8 @@ def select_stale_tickers(universe: list[dict[str, Any]],
     threshold = as_of - _dt.timedelta(days=STALE_AFTER_DAYS)
     for ticker, instruments in by_ticker.items():
         wm = watermarks.get(ticker)
-        if wm is not None and wm >= threshold:
+        if wm is not None and (wm >= target_session if target_session is not None
+                               else wm >= threshold):
             continue  # fresh
         start = (wm - _dt.timedelta(days=WATERMARK_OVERLAP_DAYS) if wm is not None
                  else as_of - _dt.timedelta(days=DEFAULT_LOOKBACK_DAYS))
@@ -109,9 +119,10 @@ def select_stale_tickers(universe: list[dict[str, Any]],
     return plans[:cap]
 
 
-def build_rows(series: list[tuple[_dt.date, float | None]],
+def build_rows(series: list[tuple[_dt.date, float | None]] | tuple[NavObservation, ...],
                instruments: list[tuple[Any, str]] | tuple[tuple[Any, str], ...],
-               source: str = "tiingo") -> list[dict[str, Any]]:
+               source: str = "tiingo", *,
+               calendar: dict[_dt.date, tuple[str, str, str]] | None = None) -> list[dict[str, Any]]:
     """One ticker series → rows for every instrument sharing it (log returns).
 
     Runs ``sanitize_nav_series`` over the price series BEFORE computing
@@ -119,25 +130,52 @@ def build_rows(series: list[tuple[_dt.date, float | None]],
     nav_timeseries as an impossible log return. Dead / scale-step series are not
     repaired (the eligibility flag handles them); their values pass through.
     """
-    ordered = sorted((d, p) for d, p in series if p is not None and p > 0)
-    clean = sanitize_nav_series(ordered)
+    observations = [o if isinstance(o, NavObservation) else NavObservation(o[0], o[1], "unknown")
+                    for o in series]
+    observations.sort(key=lambda o: o.date)
+    if len({o.date for o in observations}) != len(observations):
+        raise ValueError("duplicate NAV date in provider response")
+    ordered = [o for o in observations if o.price is not None
+               and math.isfinite(o.price) and o.price > 0]
+    clean = sanitize_nav_series([(o.date, o.price) for o in ordered])
     rows: list[dict[str, Any]] = []
     prev: float | None = None
-    for (d, _orig), price in zip(ordered, clean.nav):
+    prev_date: _dt.date | None = None
+    prev_kind: str | None = None
+    prev_repaired = False
+    for idx, (obs, price) in enumerate(zip(ordered, clean.nav)):
         if price is None or price <= 0:
             continue
-        ret = round(math.log(price / prev), 8) if prev else None
+        compatible = prev is not None and prev_kind == obs.kind
+        ret = round(math.log(price / prev), 8) if compatible and prev else None
+        repair = (clean.repair_kinds[idx] if clean.repaired[idx] else
+                  "not_repaired_dead_series" if clean.dead else
+                  "not_repaired_scale_step" if clean.scale_step else "none")
         for instrument_id, currency in instruments:
             rows.append({
                 "instrument_id": instrument_id,
-                "nav_date": d,
+                "nav_date": obs.date,
                 "nav": round(price, 6),
                 "return_1d": ret,
                 "return_type": "log",
                 "currency": currency,
                 "source": source,
+                "source_nav": round(obs.price, 6),
+                "source_nav_kind": obs.kind,
+                "nav_repair_kind": repair,
+                "return_start_date": prev_date if compatible else None,
+                "return_source_boundary": (prev_kind != obs.kind if prev_kind is not None else None),
+                "return_uses_repaired_nav": (prev_repaired or clean.repaired[idx]) if compatible else None,
+                "return_semantics": "observed_interval_log_ratio" if compatible else None,
+                "return_verification_status": "unverified" if compatible else None,
+                "calendar_id": calendar[obs.date][0] if calendar and obs.date in calendar else None,
+                "calendar_version": calendar[obs.date][1] if calendar and obs.date in calendar else None,
+                "calendar_source": calendar[obs.date][2] if calendar and obs.date in calendar else None,
             })
         prev = price
+        prev_date = obs.date
+        prev_kind = obs.kind
+        prev_repaired = clean.repaired[idx]
     return rows
 
 
@@ -162,61 +200,284 @@ def _fetch_watermarks(conn) -> dict[str, _dt.date]:
     so a brand-new share class forces a refetch deep enough to cover it)."""
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT upper(iu.ticker), min(mx) FROM (
-                   SELECT instrument_id, max(nav_date) AS mx
-                   FROM nav_timeseries GROUP BY instrument_id
-               ) n JOIN instruments_universe iu USING (instrument_id)
-               WHERE iu.ticker IS NOT NULL AND iu.ticker != ''
-               GROUP BY upper(iu.ticker)""")
+            """SELECT upper(iu.ticker),
+                      CASE WHEN count(*)=count(mx) THEN min(mx) END
+               FROM instruments_universe iu
+                LEFT JOIN (
+                    SELECT instrument_id, max(nav_date) AS mx
+                    FROM nav_timeseries GROUP BY instrument_id
+                ) n USING (instrument_id)
+                WHERE iu.ticker IS NOT NULL AND iu.ticker != ''
+                GROUP BY upper(iu.ticker)""")
         return {r[0]: r[1] for r in cur.fetchall() if r[1] is not None}
 
 
-def upsert_nav_timeseries(conn, rows: list[dict[str, Any]]) -> int:
-    """Chunked idempotent upsert (per-chunk commit for fault isolation)."""
-    upserted = 0
-    sql = """
-        INSERT INTO nav_timeseries
-            (instrument_id, nav_date, nav, return_1d, return_type, currency, source)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (instrument_id, nav_date) DO UPDATE SET
-            nav = EXCLUDED.nav,
-            return_1d = EXCLUDED.return_1d,
-            return_type = EXCLUDED.return_type,
-            currency = EXCLUDED.currency,
-            source = EXCLUDED.source
-    """
+def _published_calendar(conn, dates: list[_dt.date]) -> dict[_dt.date, tuple[str, str, str]]:
+    """Only an already-published policy may identify a due session."""
+    if not dates:
+        return {}
     with conn.cursor() as cur:
-        for i in range(0, len(rows), UPSERT_CHUNK):
-            chunk = rows[i:i + UPSERT_CHUNK]
-            cur.executemany(sql, [
-                (r["instrument_id"], r["nav_date"], r["nav"], r["return_1d"],
-                 r["return_type"], r["currency"], r["source"])
-                for r in chunk
-            ])
-            conn.commit()
-            upserted += len(chunk)
+        cur.execute(
+            """SELECT policy.calendar_id, policy.calendar_version, policy.calendar_source
+               FROM nav_policy_current current_policy
+               JOIN nav_policy_versions policy USING (policy_id, policy_version)
+               WHERE current_policy.readiness_profile = 'current_daily_nav_v1'
+                 AND policy.published_at IS NOT NULL"""
+        )
+        policies = cur.fetchall()
+        if len(policies) != 1:
+            return {}  # unpublished: no calendar assertion
+        calendar_id, version, source = policies[0]
+        cur.execute(
+            """SELECT session_date, calendar_source FROM nav_valuation_schedules
+               WHERE calendar_id = %s AND calendar_version = %s
+                 AND session_date = ANY(%s)""",
+            (calendar_id, version, dates),
+        )
+        return {date: (calendar_id, version, source) for date, observed_source in cur.fetchall()
+                if observed_source == source}
+
+
+def _instrument_last_nav(conn, instruments: tuple[tuple[Any, str], ...]) -> dict[Any, _dt.date]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT instrument_id, max(nav_date) FROM nav_timeseries
+               WHERE instrument_id = ANY(%s) GROUP BY instrument_id""",
+            ([iid for iid, _ in instruments],),
+        )
+        return dict(cur.fetchall())
+
+
+def _record_attempt(conn, run_id: uuid.UUID, plan: TickerPlan, provider: str,
+                    result: NavFetchResult, requested_end: _dt.date,
+                    last_dates: dict[Any, _dt.date] | None = None) -> None:
+    """Persist only a bounded code, never provider response, URL or exception text."""
+    valid = [o for o in result.observations if o.price is not None
+             and math.isfinite(o.price) and o.price > 0]
+    latest = max((o.date for o in valid), default=None)
+    count = len(valid)
+    with conn.cursor() as cur:
+        for iid, _currency in plan.instruments:
+            actual = result.status
+            if actual == "success_new" and not valid:
+                actual = "invalid_payload"
+            if actual == "success_new" and latest is not None and last_dates is not None:
+                if last_dates.get(iid) is not None and latest <= last_dates[iid]:
+                    actual = "success_no_new"
+            cur.execute(
+                """INSERT INTO nav_ingestion_attempts
+                   (run_id, instrument_id, ticker, provider, requested_start,
+                    requested_end, attempted_at, finished_at, status,
+                    newest_observed_date, row_count, reason_code)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (run_id, instrument_id, provider) DO UPDATE SET
+                     attempted_at=EXCLUDED.attempted_at,
+                     finished_at=EXCLUDED.finished_at, status=EXCLUDED.status,
+                     newest_observed_date=EXCLUDED.newest_observed_date,
+                     row_count=EXCLUDED.row_count, reason_code=EXCLUDED.reason_code,
+                     persisted_at=clock_timestamp()""",
+                (run_id, iid, plan.ticker, provider, plan.start_date,
+                 requested_end,
+                 result.attempted_at, result.finished_at, actual, latest, count,
+                 actual.upper() if actual not in ("success_new", "success_no_new") else None),
+            )
+    conn.commit()
+
+
+def upsert_nav_timeseries(conn, rows: list[dict[str, Any]], *,
+                          run_id: uuid.UUID | None = None) -> int:
+    """Write levels, true persisted-neighbor returns and DB revisions per chunk."""
+    levels = """
+        INSERT INTO nav_timeseries
+            (instrument_id, nav_date, nav, return_1d, return_type, currency, source,
+             source_nav, source_nav_kind, nav_repair_kind,
+             calendar_id, calendar_version, calendar_source)
+        VALUES (%s,%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (instrument_id, nav_date) DO UPDATE SET
+            nav=EXCLUDED.nav, return_type=EXCLUDED.return_type,
+            currency=EXCLUDED.currency, source=EXCLUDED.source,
+            source_nav=EXCLUDED.source_nav, source_nav_kind=EXCLUDED.source_nav_kind,
+            nav_repair_kind=EXCLUDED.nav_repair_kind,
+            calendar_id=EXCLUDED.calendar_id,
+            calendar_version=EXCLUDED.calendar_version,
+            calendar_source=EXCLUDED.calendar_source
+    """
+    return_update = """
+        UPDATE nav_timeseries SET return_1d=%s, return_start_date=%s,
+            return_source_boundary=%s, return_uses_repaired_nav=%s,
+            return_semantics=%s, return_verification_status=%s
+        WHERE instrument_id=%s AND nav_date=%s
+          AND (return_1d, return_start_date, return_source_boundary,
+               return_uses_repaired_nav, return_semantics,
+               return_verification_status)
+              IS DISTINCT FROM (%s,%s,%s,%s,%s,%s)
+    """
+    source_fields = ("nav", "return_type", "currency", "source", "source_nav",
+                     "source_nav_kind", "nav_repair_kind", "calendar_id",
+                     "calendar_version", "calendar_source")
+    grouped: dict[Any, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["instrument_id"], []).append(row)
+    upserted = 0
+    with conn.cursor(row_factory=dict_row) as cur:
+        for instrument_id, series in grouped.items():
+            series.sort(key=lambda r: r["nav_date"])
+            if len({r["nav_date"] for r in series}) != len(series):
+                raise ValueError("duplicate NAV date for instrument")
+            for i in range(0, len(series), UPSERT_CHUNK):
+                chunk = series[i:i + UPSERT_CHUNK]
+                cur.execute("SELECT set_config('nav.ingestion_run_id', %s, true)",
+                            (str(run_id) if run_id else "",))
+                cur.execute(
+                    """SELECT nav_date, nav, return_type, currency, source,
+                              source_nav, source_nav_kind, nav_repair_kind,
+                              calendar_id, calendar_version, calendar_source
+                       FROM nav_timeseries WHERE instrument_id=%s
+                         AND nav_date BETWEEN %s AND %s
+                       ORDER BY nav_date FOR UPDATE""",
+                    (instrument_id, chunk[0]["nav_date"], chunk[-1]["nav_date"]),
+                )
+                old = {r["nav_date"]: r for r in cur.fetchall()}
+                changed = {row["nav_date"] for row in chunk if row["nav_date"] not in old
+                           or any((float(old[row["nav_date"]][field]) != float(row[field])
+                                   if field in ("nav", "source_nav")
+                                   and old[row["nav_date"]][field] is not None
+                                   and row[field] is not None
+                                   else old[row["nav_date"]][field] != row[field])
+                                  for field in source_fields)}
+                reexpressed = []
+                for row in chunk:
+                    prior = old.get(row["nav_date"])
+                    if prior is None or row["source_nav_kind"] != "adjusted":
+                        continue
+                    prior_level = prior["source_nav"] if prior["source_nav"] is not None else prior["nav"]
+                    if (prior_level is not None and row["source_nav"] is not None
+                            and not math.isclose(float(prior_level), float(row["source_nav"]),
+                                                 rel_tol=ADJUSTED_OVERLAP_REL_TOL,
+                                                 abs_tol=ADJUSTED_OVERLAP_ABS_TOL)):
+                        reexpressed.append(row["nav_date"])
+                if reexpressed:
+                    cur.execute(
+                        """INSERT INTO fund_nav_reexpression_holds
+                           (instrument_id, first_changed_date, last_changed_date,
+                            source_run_id, reason_code)
+                           VALUES (%s,%s,%s,%s,'ADJUSTED_HISTORY_REEXPRESSION')
+                           ON CONFLICT (instrument_id) DO UPDATE SET
+                             first_changed_date=LEAST(fund_nav_reexpression_holds.first_changed_date,
+                                                      EXCLUDED.first_changed_date),
+                             last_changed_date=GREATEST(fund_nav_reexpression_holds.last_changed_date,
+                                                        EXCLUDED.last_changed_date)""",
+                        (instrument_id, min(reexpressed), max(reexpressed), run_id),
+                    )
+                cur.executemany(levels, [
+                    (instrument_id, r["nav_date"], r["nav"], r["return_type"],
+                     r["currency"], r["source"], r["source_nav"],
+                     r["source_nav_kind"], r["nav_repair_kind"],
+                     r["calendar_id"], r["calendar_version"], r["calendar_source"])
+                    for r in chunk
+                ])
+                if changed:
+                    cur.execute(
+                        """SELECT nav_date, nav, source, source_nav_kind, nav_repair_kind
+                           FROM nav_timeseries WHERE instrument_id=%s AND nav_date < %s
+                           ORDER BY nav_date DESC LIMIT 1 FOR UPDATE""",
+                        (instrument_id, chunk[0]["nav_date"]),
+                    )
+                    predecessor = cur.fetchone()
+                    cur.execute(
+                        """SELECT nav_date FROM nav_timeseries
+                           WHERE instrument_id=%s AND nav_date > %s
+                           ORDER BY nav_date LIMIT 1 FOR UPDATE""",
+                        (instrument_id, chunk[-1]["nav_date"]),
+                    )
+                    successor = cur.fetchone()
+                    end = successor["nav_date"] if successor else chunk[-1]["nav_date"]
+                    cur.execute(
+                        """SELECT nav_date, nav, source, source_nav_kind, nav_repair_kind
+                           FROM nav_timeseries WHERE instrument_id=%s
+                             AND nav_date BETWEEN %s AND %s
+                           ORDER BY nav_date FOR UPDATE""",
+                        (instrument_id, chunk[0]["nav_date"], end),
+                    )
+                    neighborhood = ([predecessor] if predecessor else []) + cur.fetchall()
+                    affected = set(changed)
+                    for position, persisted in enumerate(neighborhood[:-1]):
+                        if persisted["nav_date"] in changed:
+                            affected.add(neighborhood[position + 1]["nav_date"])
+                    for position, persisted in enumerate(neighborhood):
+                        if persisted["nav_date"] not in affected:
+                            continue
+                        prev = neighborhood[position - 1] if position else None
+                        boundary = (prev["source"] != persisted["source"] or
+                                    prev["source_nav_kind"] != persisted["source_nav_kind"]
+                                    if prev is not None else None)
+                        compatible = (prev is not None and not boundary
+                                      and persisted["source_nav_kind"] in ("adjusted", "raw", "unknown")
+                                      and prev["nav_repair_kind"] is not None
+                                      and persisted["nav_repair_kind"] is not None
+                                      and prev["nav"] is not None and persisted["nav"] is not None
+                                      and min(float(prev["nav"]), float(persisted["nav"])) > 0)
+                        ret = (round(math.log(float(persisted["nav"]) / float(prev["nav"])), 8)
+                               if compatible else None)
+                        values = (
+                            ret, prev["nav_date"] if compatible else None,
+                            boundary, (prev["nav_repair_kind"] in REPAIRED_NAV_KINDS
+                                       or persisted["nav_repair_kind"] in REPAIRED_NAV_KINDS)
+                            if compatible else None,
+                            "observed_interval_log_ratio" if compatible else None,
+                            "unverified" if compatible else None,
+                        )
+                        cur.execute(return_update,
+                                    (*values, instrument_id, persisted["nav_date"], *values))
+                conn.commit()
+                upserted += len(chunk)
     return upserted
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
-def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict:
+def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
+        target_session: _dt.date | None = None) -> dict:
     """Refresh nav_timeseries for the stalest/biggest tickers from Tiingo."""
     as_of = _dt.date.fromisoformat(calc_date) if calc_date else _dt.date.today()
+    if target_session is not None and target_session != as_of:
+        raise ValueError("target_session must match calc_date")
     cap = limit if limit is not None else DEFAULT_TICKER_CAP
     fetched = upserted = 0
     empty_tickers: list[str] = []
     aborted = None
+    run_id = uuid.uuid4()
 
     with connect(dsn) as conn:
-        with advisory_lock(conn, LOCK_INSTRUMENT_INGESTION) as got:
-            if not got:
+        with (advisory_lock(conn, LOCK_INSTRUMENT_INGESTION) as got,
+              advisory_lock(conn, LOCK_FUND_NAV_READINESS) as readiness_got):
+            if not got or not readiness_got:
                 return {"fetched": 0, "upserted": 0, "skipped": "lock_busy"}
 
             universe = _fetch_universe(conn)
             watermarks = _fetch_watermarks(conn)
-            plans = select_stale_tickers(universe, watermarks, as_of, cap)
+            all_plans = select_stale_tickers(
+                universe, watermarks, as_of, len(universe),
+                target_session=target_session,
+            )
+            plans = all_plans[:cap]
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO nav_ingestion_runs
+                       (run_id, started_at, requested_end, status)
+                       VALUES (%s, clock_timestamp(), %s, 'running')""",
+                    (run_id, as_of),
+                )
+            conn.commit()
+            planned_tickers = {p.ticker for p in all_plans}
+            for p in all_plans[cap:]:
+                _record_attempt(conn, run_id, p, "tiingo", NavFetchResult("not_attempted_budget"), as_of)
+            for inst in universe:
+                ticker = (inst.get("ticker") or "").strip().upper()
+                if ticker and ticker not in planned_tickers:
+                    skipped = TickerPlan(ticker, as_of, ((inst["instrument_id"], inst.get("currency") or "USD"),), None)
+                    _record_attempt(conn, run_id, skipped, "tiingo", NavFetchResult("not_due"), as_of)
 
             done = 0
             fallback_loaded: dict[str, int] = {}
@@ -227,48 +488,63 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                     FallbackNav() as fallback:
                 import concurrent.futures
 
-                def fetch_one(p: TickerPlan) -> tuple[list, str | None]:
-                    """Primary (Tiingo), then the EODHD→Yahoo fallback chain."""
-                    series = tiingo.fetch_daily_prices(p.ticker, p.start_date, as_of)
-                    if series:
-                        return series, "tiingo"
-                    return fallback.fetch(p.ticker, p.start_date, as_of)
+                def fetch_one(p: TickerPlan) -> tuple[NavFetchResult, str | None,
+                                                      list[tuple[str, NavFetchResult]]]:
+                    primary = tiingo.fetch_daily_observations(p.ticker, p.start_date, as_of)
+                    attempts = [("tiingo", primary)]
+                    if primary.status == "success_new":
+                        return primary, "tiingo", attempts
+                    result, provider, tried = fallback.fetch_observations(p.ticker, p.start_date, as_of)
+                    return result, provider, attempts + tried
 
                 # Fetches fan out across threads (httpx.Client is thread-safe);
                 # upserts stay serialized on this one connection.
                 with concurrent.futures.ThreadPoolExecutor(FETCH_CONCURRENCY) as pool:
                     futures = {pool.submit(fetch_one, p): p for p in plans}
-                    # Rows accumulate across tickers and flush in large batches:
-                    # one commit per ~2k rows instead of one per ticker (the DB
-                    # round-trip, not Tiingo, dominates a watermark sweep).
-                    pending: list[dict[str, Any]] = []
                     for fut in concurrent.futures.as_completed(futures):
                         plan = futures[fut]
                         try:
-                            series, source = fut.result()
-                        except TiingoBudgetExceeded as exc:
-                            aborted = str(exc)
+                            result, source, attempts = fut.result()
+                        except TiingoBudgetExceeded:
+                            aborted = "tiingo_budget"
+                            now = _dt.datetime.now(_dt.timezone.utc)
+                            _record_attempt(conn, run_id, plan, "tiingo",
+                                            NavFetchResult("rate_limited", attempted_at=now,
+                                                           finished_at=now), as_of)
                             pool.shutdown(cancel_futures=True)
                             break
-                        if not series or source is None:
+                        except Exception:
+                            # Nothing about an arbitrary exception is safe to persist.
+                            _record_attempt(conn, run_id, plan, "tiingo", NavFetchResult("transient_error"), as_of)
+                            raise
+                        last_dates = _instrument_last_nav(conn, plan.instruments)
+                        if source is None or not result.observations:
                             empty_tickers.append(plan.ticker)  # gap em todos os provedores
-                            continue
-                        fetched += len(series)
-                        if source != "tiingo":
-                            fallback_loaded[source] = fallback_loaded.get(source, 0) + 1
-                        pending.extend(build_rows(series, plan.instruments, source))
-                        done += 1
-                        if len(pending) >= 4 * UPSERT_CHUNK:
-                            upserted += upsert_nav_timeseries(conn, pending)
-                            pending = []
-                    if pending:
-                        upserted += upsert_nav_timeseries(conn, pending)
+                        else:
+                            fetched += len(result.observations)
+                            if source != "tiingo":
+                                fallback_loaded[source] = fallback_loaded.get(source, 0) + 1
+                            calendar = _published_calendar(conn, [o.date for o in result.observations])
+                            built = build_rows(result.observations, plan.instruments, source,
+                                               calendar=calendar)
+                            upserted += upsert_nav_timeseries(conn, built, run_id=run_id)
+                            done += 1
+                        for provider, attempt in attempts:
+                            _record_attempt(conn, run_id, plan, provider, attempt, as_of,
+                                            last_dates=last_dates)
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE nav_ingestion_runs SET status = %s, completed_at = clock_timestamp()
+                       WHERE run_id = %s""",
+                    ("aborted" if aborted else "completed", run_id),
+                )
             conn.commit()
 
     stats: dict[str, Any] = {
         "fetched": fetched, "upserted": upserted,
         "tickers_planned": len(plans), "tickers_loaded": done,
         "tickers_empty": len(empty_tickers), "as_of": as_of.isoformat(),
+        "ingestion_run_id": str(run_id),
     }
     if fallback_loaded:
         stats["fallback_loaded"] = fallback_loaded
