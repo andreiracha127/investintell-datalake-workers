@@ -5,12 +5,13 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -296,6 +297,18 @@ def _fixture(tmp_path: Path) -> tuple[Path, bytes, loader.FrozenArtifactContract
     }
     raw = json.dumps(contract_dict, sort_keys=True, separators=(",", ":")).encode()
     return artifact_root, raw, loader._parse_contract(raw)
+
+
+def _approve_release_context(evidence: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Provision a synthetic approval for the context as currently written.
+
+    This stands in for the protected deployment setting only; it is never evidence
+    of production review authentication.  Tests that tamper afterwards must NOT
+    call this again, so the fixed approval keeps refusing the tampered bytes.
+    """
+    approved = _sha(evidence / "release-context.json")
+    monkeypatch.setenv(loader.APPROVED_RELEASE_CONTEXT_ENV, approved)
+    return approved
 
 
 def _write_release_context(
@@ -788,10 +801,13 @@ def test_apply_requires_reviewed_release_context_before_database(tmp_path: Path)
     assert exc.value.code == loader.ErrorCode.RECEIPT_FAILURE.value
 
 
-def test_complete_release_context_verifies_runtime_image_layout(tmp_path: Path) -> None:
+def test_complete_release_context_verifies_runtime_image_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _, _, contract = _fixture(tmp_path)
     evidence = tmp_path / "evidence"
     document = _write_release_context(evidence, contract)
+    _approve_release_context(evidence, monkeypatch)
     release = loader._load_release_evidence(evidence, contract)
     assert release.loader_commit == "1" * 40
     assert release.release_context_sha256 == _sha(evidence / "release-context.json")
@@ -907,6 +923,7 @@ def test_release_context_refuses_every_changed_inventory_file(
     root = _release_tree(tmp_path)
     evidence = tmp_path / "evidence"
     _write_release_context(evidence, contract, root)
+    _approve_release_context(evidence, monkeypatch)
     monkeypatch.setattr(loader, "ROOT", root)
     assert loader._load_release_evidence(evidence, contract).loader_commit == "1" * 40
     with (root / relative).open("ab") as handle:
@@ -919,8 +936,10 @@ def test_release_context_refuses_every_changed_inventory_file(
 
 @pytest.mark.parametrize("change", ["missing", "extra"])
 def test_release_context_inventory_keys_must_match_exactly(
-    change: str, tmp_path: Path
+    change: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Even a context the deployer approved as-is is refused when its inventory
+    # does not cover exactly the reviewed release closure.
     _, _, contract = _fixture(tmp_path)
     evidence = tmp_path / "evidence"
     document = _write_release_context(evidence, contract)
@@ -929,6 +948,7 @@ def test_release_context_inventory_keys_must_match_exactly(
     else:
         document["source_sha256"]["src/workers/bond_market_implied_rating.py"] = "0" * 64
     _json(evidence / "release-context.json", document)
+    _approve_release_context(evidence, monkeypatch)
     with pytest.raises(loader.ArtifactLoaderError) as exc:
         loader._load_release_evidence(evidence, contract)
     assert exc.value.details.get("field") == "release_context.source_inventory"
@@ -941,6 +961,7 @@ def test_release_context_binds_bootstrap_wrapper_to_dockerfile_literal(
     root = _release_tree(tmp_path)
     evidence = tmp_path / "evidence"
     _write_release_context(evidence, contract, root)
+    _approve_release_context(evidence, monkeypatch)
     monkeypatch.setattr(loader, "ROOT", root)
     loader._load_release_evidence(evidence, contract)
     with (root / _BOOTSTRAP).open("ab") as handle:
@@ -955,9 +976,522 @@ def test_release_context_binds_bootstrap_wrapper_to_dockerfile_literal(
     dockerfile = root / _RUNTIME_DIR / "Dockerfile"
     dockerfile.write_bytes(dockerfile.read_bytes().replace(b"sha256sum -c -", b"true"))
     _write_release_context(evidence, contract, root)
+    # Approved as a new context on purpose: the literal rule refuses independently.
+    _approve_release_context(evidence, monkeypatch)
     with pytest.raises(loader.ArtifactLoaderError) as exc:
         loader._load_release_evidence(evidence, contract)
     assert exc.value.details.get("field") == "release_context.bootstrap_literal"
+
+
+# --- r4081728349: independently approved release-context trust root -------------------
+
+
+def _approval_refused(evidence: Path, contract: loader.FrozenArtifactContract) -> None:
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._load_release_evidence(evidence, contract)
+    assert exc.value.code == loader.ErrorCode.RECEIPT_FAILURE.value
+    assert exc.value.details == {"field": "release_context.approval"}
+
+
+def test_release_context_approval_is_absent_by_default_and_never_file_derived(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, contract = _fixture(tmp_path)
+    evidence = tmp_path / "evidence"
+    _write_release_context(evidence, contract)
+    monkeypatch.delenv(loader.APPROVED_RELEASE_CONTEXT_ENV, raising=False)
+    _approval_refused(evidence, contract)
+    # Absent approval refuses even before the context is opened.
+    _approval_refused(tmp_path / "no-such-evidence", contract)
+    source = (ROOT / "src" / "bonds" / "implied_rating_artifact_loader.py").read_text()
+    assert source.count(loader.APPROVED_RELEASE_CONTEXT_ENV) == 1
+    for path in (
+        ROOT / "docker" / "bond-implied-artifact-loader" / "Dockerfile",
+        ROOT / "docker" / "bond-implied-artifact-loader" / "railway.toml",
+        ROOT / "scripts" / "load_bond_market_implied_rating_artifact.py",
+    ):
+        assert loader.APPROVED_RELEASE_CONTEXT_ENV not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "B" * 64, "b" * 63, "b" * 65, "b" * 64 + "\n", " " + "b" * 64, "g" * 64],
+)
+def test_malformed_release_context_approval_refuses(
+    value: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, contract = _fixture(tmp_path)
+    evidence = tmp_path / "evidence"
+    _write_release_context(evidence, contract)
+    genuine = _approve_release_context(evidence, monkeypatch)
+    assert loader._load_release_evidence(evidence, contract).release_context_sha256 == genuine
+    # Case, surrounding whitespace or a trailing newline around the genuine hash is
+    # still malformed; so is any other value.
+    for candidate in (value, value.replace("b" * 64, genuine).replace("B" * 64, genuine.upper())):
+        if candidate == genuine:
+            continue
+        monkeypatch.setenv(loader.APPROVED_RELEASE_CONTEXT_ENV, candidate)
+        _approval_refused(evidence, contract)
+
+
+_SELF_ATTESTED_FIELDS = (
+    "loader_commit", "loader_tree", "review_changeset_sha256", "review_report_sha256",
+    "context_archive_sha256", "inventory_sha256", "exclusion_evidence_sha256",
+)
+
+
+@pytest.mark.parametrize("field", _SELF_ATTESTED_FIELDS)
+def test_fixed_approval_refuses_any_changed_self_attested_field(
+    field: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, contract = _fixture(tmp_path)
+    evidence = tmp_path / "evidence"
+    document = _write_release_context(evidence, contract)
+    _approve_release_context(evidence, monkeypatch)
+    loader._load_release_evidence(evidence, contract)
+    width = 40 if field in {"loader_commit", "loader_tree"} else 64
+    document[field] = "e" * width  # syntactically valid, different value
+    _json(evidence / "release-context.json", document)
+    _approval_refused(evidence, contract)
+
+
+def test_fixed_approval_refuses_changed_source_with_matching_self_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, contract = _fixture(tmp_path)
+    root = _release_tree(tmp_path)
+    evidence = tmp_path / "evidence"
+    _write_release_context(evidence, contract, root)
+    _approve_release_context(evidence, monkeypatch)
+    monkeypatch.setattr(loader, "ROOT", root)
+    loader._load_release_evidence(evidence, contract)
+    target = root / "src" / "bonds" / "implied_rating_artifact_loader.py"
+    with target.open("ab") as handle:
+        handle.write(b"\n# attacker change\n")
+    # The attacker also rewrites the context so every self-attested hash matches.
+    _write_release_context(evidence, contract, root)
+    _approval_refused(evidence, contract)
+
+
+@pytest.mark.parametrize("variant", ["reordered", "whitespace", "trailing_newline"])
+def test_approval_pins_raw_bytes_not_json_meaning(
+    variant: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, contract = _fixture(tmp_path)
+    evidence = tmp_path / "evidence"
+    document = _write_release_context(evidence, contract)
+    _approve_release_context(evidence, monkeypatch)
+    path = evidence / "release-context.json"
+    if variant == "reordered":
+        raw = json.dumps(dict(reversed(list(document.items())))).encode()
+    elif variant == "whitespace":
+        raw = json.dumps(document, indent=4, sort_keys=True).encode()
+    else:
+        raw = path.read_bytes() + b"\n"
+    assert json.loads(raw) == document
+    path.write_bytes(raw)
+    _approval_refused(evidence, contract)
+
+
+def test_publish_refuses_unapproved_context_before_receipt_or_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, contract = _genuine(tmp_path, monkeypatch)
+    evidence = tmp_path / "evidence"
+    document = _write_release_context(evidence, contract)
+    _approve_release_context(evidence, monkeypatch)
+    document["review_report_sha256"] = "e" * 64
+    _json(evidence / "release-context.json", document)
+    _NoDatabase.calls = 0
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader.publish_verified_artifact(
+            artifact, evidence_dir=evidence, connection_factory=_NoDatabase()
+        )
+    assert exc.value.details == {"field": "release_context.approval"}
+    assert _NoDatabase.calls == 0
+    names = [path.name for path in evidence.glob("*.json") if path.name != "release-context.json"]
+    assert not [name for name in names if "-pre-apply-" in name]
+
+
+# --- r4081728318: durable receipt directory entry -------------------------------------
+
+requires_directory_fsync = pytest.mark.skipif(
+    not all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW")),
+    reason="receipt durability requires POSIX directory descriptors",
+)
+
+
+@pytest.mark.parametrize("missing", ["O_DIRECTORY", "open_dir_fd", "mkdir_dir_fd"])
+def test_receipts_refuse_where_directory_fsync_is_unsupported(
+    missing: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if missing == "O_DIRECTORY":
+        monkeypatch.delattr(loader.os, "O_DIRECTORY", raising=False)
+    else:
+        unsupported = loader.os.open if missing == "open_dir_fd" else loader.os.mkdir
+        monkeypatch.setattr(
+            loader.os, "supports_dir_fd",
+            {function for function in loader.os.supports_dir_fd if function is not unsupported},
+        )
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._persist_receipt(tmp_path, phase="test", payload=b"{}")
+    assert exc.value.details == {"field": "receipt.directory_unsupported"}
+    assert not list(tmp_path.glob("*.json"))
+
+
+class _FsSpy:
+    """Record the durability-relevant syscalls and optionally fault one of them.
+
+    fsync kinds are ``file``, ``dir`` (the evidence directory) and ``parent`` (the
+    directory holding the evidence directory's entry, identified by device/inode).
+    ``fail`` is read at call time, so a test can clear it between attempts.
+    """
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fail: str | None = None,
+        *,
+        evidence: Path,
+    ) -> None:
+        self.events: list[tuple[str, str]] = []
+        self.open_fds: set[int] = set()
+        self.fail = fail
+        self.fsync_count = 0
+        kinds: dict[int, str] = {}
+
+        def fsync_kind(fd: int) -> str:
+            kind = kinds.get(fd, "dir")
+            if kind == "dir" and os.path.samestat(os.fstat(fd), os.stat(evidence.parent)):
+                return "parent"
+            return kind
+
+        def spy_open(path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+            kind = "dir" if flags & os.O_DIRECTORY else "file"
+            if self.fail == f"open_{kind}":
+                raise OSError("injected open failure")
+            fd = os.open(path, flags, mode, dir_fd=dir_fd)
+            kinds[fd] = kind
+            self.open_fds.add(fd)
+            self.events.append(("open", kind))
+            return fd
+
+        def spy_close(fd: int) -> None:
+            self.open_fds.discard(fd)
+            os.close(fd)
+
+        def spy_fsync(fd: int) -> None:
+            kind = fsync_kind(fd)
+            self.fsync_count += 1
+            self.events.append(("fsync", kind))
+            if self.fail == f"fsync_{kind}":
+                raise OSError("injected fsync failure")
+            os.fsync(fd)
+
+        def spy_read(fd: int, size: int) -> bytes:
+            data = os.read(fd, size)
+            return b"tampered" if self.fail == "readback" else data
+
+        def spy_mkdir(name: str, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+            self.events.append(("mkdir", name))
+            os.mkdir(name, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(loader._DurableFs, "open", staticmethod(spy_open))
+        monkeypatch.setattr(loader._DurableFs, "close", staticmethod(spy_close))
+        monkeypatch.setattr(loader._DurableFs, "fsync", staticmethod(spy_fsync))
+        monkeypatch.setattr(loader._DurableFs, "read", staticmethod(spy_read))
+        monkeypatch.setattr(loader._DurableFs, "mkdir", staticmethod(spy_mkdir))
+
+
+@requires_directory_fsync
+def test_receipt_fsyncs_file_then_directory_before_returning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _FsSpy(monkeypatch, evidence=tmp_path)
+    ref = loader._persist_receipt(tmp_path, phase="test", payload=b'{"x":1}')
+    fsyncs = [event for event in spy.events if event[0] == "fsync"]
+    # A local (same-device) evidence directory has its own entry synced into its
+    # parent on every admission, before the receipt file is even created; the file
+    # is then synced before the directory entry that names it.
+    assert fsyncs == [("fsync", "parent"), ("fsync", "file"), ("fsync", "dir")]
+    assert spy.events.index(("fsync", "parent")) < spy.events.index(("open", "file"))
+    assert spy.events.index(("fsync", "file")) < spy.events.index(("fsync", "dir"))
+    assert spy.open_fds == set()
+    path = tmp_path / ref.basename
+    assert path.read_bytes() == b'{"x":1}'
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+@requires_directory_fsync
+@pytest.mark.parametrize(
+    "fault", ["open_dir", "open_file", "fsync_parent", "fsync_file", "fsync_dir", "readback"]
+)
+def test_receipt_durability_faults_are_typed_and_close_descriptors(
+    fault: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _FsSpy(monkeypatch, fail=fault, evidence=tmp_path)
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._persist_receipt(tmp_path, phase="test", payload=b'{"x":1}')
+    assert exc.value.code == loader.ErrorCode.RECEIPT_FAILURE.value
+    assert exc.value.details == {
+        "field": "receipt.readback" if fault == "readback" else "receipt.write"
+    }
+    assert spy.open_fds == set()
+    if fault == "fsync_parent":
+        assert ("open", "file") not in spy.events
+        assert not list(tmp_path.glob("*.json"))
+
+
+@requires_directory_fsync
+def test_receipt_creates_single_missing_leaf_and_fsyncs_its_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leaf = tmp_path / "evidence"
+    spy = _FsSpy(monkeypatch, evidence=leaf)
+    loader._persist_receipt(leaf, phase="test", payload=b"{}")
+    mkdir_at = spy.events.index(("mkdir", "evidence"))
+    parent_sync_at = spy.events.index(("fsync", "parent"))
+    assert mkdir_at < parent_sync_at < spy.events.index(("open", "file"))
+    assert spy.events.count(("fsync", "parent")) == 1
+    assert oct(leaf.stat().st_mode & 0o777) == "0o700"
+    assert spy.open_fds == set()
+
+
+@requires_directory_fsync
+def test_receipt_missing_leaf_parent_fsync_failure_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leaf = tmp_path / "evidence"
+    spy = _FsSpy(monkeypatch, fail="fsync_parent", evidence=leaf)
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._persist_receipt(leaf, phase="test", payload=b"{}")
+    assert exc.value.details == {"field": "receipt.write"}
+    assert spy.events[-1] == ("fsync", "parent")
+    assert ("open", "file") not in spy.events
+    assert not list(leaf.glob("*.json"))
+    assert spy.open_fds == set()
+
+
+def _started_at() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@requires_directory_fsync
+def test_leftover_leaf_refuses_every_retry_until_its_parent_entry_is_durable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    leaf = tmp_path / "evidence"
+    spy = _FsSpy(monkeypatch, fail="fsync_parent", evidence=leaf)
+    with pytest.raises(loader.ArtifactLoaderError) as first:
+        loader._persist_receipt(leaf, phase="pre-apply", payload=b"{}")
+    assert first.value.details == {"field": "receipt.write"}
+    # mkdir succeeded, so the leaf is left behind -- but its entry is not durable.
+    assert leaf.is_dir() and not list(leaf.iterdir())
+
+    def best_effort() -> loader.ArtifactLoaderError:
+        return loader._best_effort_failure_receipt(
+            first.value, leaf, operation_id="op", operation_started_at_utc=_started_at(),
+            mode="apply", publication_id=None,
+        )
+
+    # The immediate best-effort failure receipt on the same path must not treat
+    # the leftover leaf as durable either.
+    spy.events.clear()
+    assert best_effort().receipt_written is False
+    assert ("mkdir", "evidence") not in spy.events
+    assert spy.events[-1] == ("fsync", "parent")
+    assert ("open", "file") not in spy.events
+    # Every later retry on the same path refuses before any receipt file exists.
+    for _ in range(2):
+        spy.events.clear()
+        with pytest.raises(loader.ArtifactLoaderError) as retry:
+            loader._persist_receipt(leaf, phase="pre-apply", payload=b"{}")
+        assert retry.value.code == loader.ErrorCode.RECEIPT_FAILURE.value
+        assert retry.value.details == {"field": "receipt.write"}
+        assert ("mkdir", "evidence") not in spy.events
+        assert spy.events[-1] == ("fsync", "parent")
+        assert ("open", "file") not in spy.events
+        assert not list(leaf.iterdir())
+    assert spy.open_fds == set()
+    # Once the parent sync succeeds the same leftover leaf is admitted.
+    spy.fail = None
+    spy.events.clear()
+    ref = loader._persist_receipt(leaf, phase="pre-apply", payload=b'{"x":1}')
+    assert spy.events.index(("fsync", "parent")) < spy.events.index(("open", "file"))
+    assert spy.events.index(("fsync", "file")) < spy.events.index(("fsync", "dir"))
+    assert [path.name for path in leaf.iterdir()] == [ref.basename]
+    assert best_effort().receipt_written is True
+    assert len(list(leaf.glob("*-failure-*.json"))) == 1
+    assert spy.open_fds == set()
+
+
+@requires_directory_fsync
+def test_public_failure_receipt_on_leftover_leaf_refuses_until_parent_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    monkeypatch.delenv(loader.APPROVED_RELEASE_CONTEXT_ENV, raising=False)
+    leaf = tmp_path / "evidence"
+    spy = _FsSpy(monkeypatch, fail="fsync_parent", evidence=leaf)
+    _NoDatabase.calls = 0
+    # The first attempt creates the leaf inside its immediate best-effort failure
+    # receipt; the second finds that leftover leaf.  Both must refuse the receipt.
+    for attempt in range(2):
+        spy.events.clear()
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader.publish_verified_artifact(
+                artifact, evidence_dir=leaf, connection_factory=_NoDatabase()
+            )
+        assert exc.value.details == {"field": "release_context.approval"}
+        assert exc.value.receipt_written is False
+        assert (("mkdir", "evidence") in spy.events) is (attempt == 0)
+        assert spy.events[-1] == ("fsync", "parent")
+        assert leaf.is_dir() and not list(leaf.iterdir())
+    spy.fail = None
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader.publish_verified_artifact(
+            artifact, evidence_dir=leaf, connection_factory=_NoDatabase()
+        )
+    assert exc.value.receipt_written is True
+    [receipt] = leaf.glob("*-failure-*.json")
+    document = json.loads(receipt.read_text(encoding="utf-8"))
+    assert document["code"] == loader.ErrorCode.RECEIPT_FAILURE.value
+    assert document["transaction_outcome"] == "not_started"
+    assert _NoDatabase.calls == 0
+    assert spy.open_fds == set()
+
+
+@requires_directory_fsync
+def test_premounted_evidence_root_does_not_depend_on_its_parent_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Production /evidence is a pre-mounted volume root on its own device: its entry
+    # is never created here, so the parent is not synced (and cannot block it).
+    leaf = tmp_path / "evidence"
+    leaf.mkdir()
+    leaf_stat = os.stat(leaf)
+
+    def fstat(fd: int) -> os.stat_result:
+        result = os.fstat(fd)
+        if not os.path.samestat(result, leaf_stat):
+            return result
+        fields = list(result[:10])
+        fields[2] = result.st_dev + 1  # st_dev: another mounted filesystem
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(loader._DurableFs, "fstat", staticmethod(fstat))
+    spy = _FsSpy(monkeypatch, fail="fsync_parent", evidence=leaf)
+    ref = loader._persist_receipt(leaf, phase="test", payload=b'{"x":1}')
+    fsyncs = [event for event in spy.events if event[0] == "fsync"]
+    assert fsyncs == [("fsync", "file"), ("fsync", "dir")]
+    assert (leaf / ref.basename).read_bytes() == b'{"x":1}'
+    assert spy.open_fds == set()
+
+
+@requires_directory_fsync
+@pytest.mark.parametrize("name", ["/", "."])
+def test_receipt_refuses_evidence_path_without_a_leaf_name(
+    name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._persist_receipt(Path(name), phase="test", payload=b"{}")
+    assert exc.value.details == {"field": "receipt.directory"}
+    assert not list(tmp_path.glob("*.json"))
+
+
+@requires_directory_fsync
+def test_receipt_refuses_missing_ancestor_chain_and_symlinked_directory(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._persist_receipt(tmp_path / "a" / "b", phase="test", payload=b"{}")
+    assert exc.value.details == {"field": "receipt.directory_parent"}
+    assert not (tmp_path / "a").exists()
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    with pytest.raises(loader.ArtifactLoaderError):
+        loader._persist_receipt(link, phase="test", payload=b"{}")
+    assert not list(real.iterdir())
+
+
+# --- r4081728306: full content binding in read-only paths -----------------------------
+
+
+def _swapped_content_artifact(artifact: loader.VerifiedArtifact) -> loader.VerifiedArtifact:
+    """Same schema/count/nulls/histogram/metadata, one valid score changed."""
+    frame = _frame()
+    frame.loc[1, "neutralized_score"] = frame.loc[1, "neutralized_score"] + 1.0
+    swapped = _table(frame)
+    assert swapped.schema == artifact.table.schema
+    assert swapped.num_rows == artifact.table.num_rows
+    assert [swapped[name].null_count for name in swapped.column_names] == [
+        artifact.table[name].null_count for name in artifact.table.column_names
+    ]
+    return replace(artifact, table=swapped)
+
+
+@pytest.mark.parametrize("entrypoint", ["dry_run", "recover"])
+def test_public_read_only_entrypoints_bind_full_content_before_database(
+    entrypoint: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    swapped = _swapped_content_artifact(artifact)
+    operation = (
+        loader.dry_run_verified_artifact if entrypoint == "dry_run"
+        else loader.recover_published_artifact
+    )
+    payloads: list[int] = []
+    monkeypatch.setattr(
+        loader, "publication_row_tuples", lambda *a, **k: payloads.append(1) or []
+    )
+    evidence = tmp_path / "content-evidence"
+    evidence.mkdir()
+    _NoDatabase.calls = 0
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        operation(swapped, evidence_dir=evidence, connection_factory=_NoDatabase())
+    assert exc.value.code == loader.ErrorCode.ROW_DIGEST_MISMATCH.value
+    assert exc.value.phase == "artifact_binding"
+    assert exc.value.transaction_outcome == "not_started"
+    assert _NoDatabase.calls == 0
+    assert payloads == []
+    receipts = list(evidence.glob("*.json"))
+    assert all("-failure-" in path.name for path in receipts)
+    if receipts:
+        receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+        assert receipt["failure_phase"] == "artifact_binding"
+        assert receipt["publication_id"] is None
+
+
+def test_private_read_only_seam_binds_full_content_before_connecting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, contract = _genuine(tmp_path, monkeypatch)
+    swapped = _swapped_content_artifact(artifact)
+    _NoDatabase.calls = 0
+    for require_published in (False, True):
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._read_only_operation(
+                swapped, contract=contract, connection_factory=_NoDatabase(),
+                require_published=require_published,
+            )
+        assert exc.value.code == loader.ErrorCode.ROW_DIGEST_MISMATCH.value
+    assert _NoDatabase.calls == 0
+
+
+def test_genuine_read_only_admission_builds_no_insert_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    payloads: list[int] = []
+    monkeypatch.setattr(
+        loader, "publication_row_tuples", lambda *a, **k: payloads.append(1) or []
+    )
+    contract, admitted = loader._admit_read_only_operation_artifact(artifact)
+    assert admitted.publication == loader._publication_from_contract(contract)
+    assert payloads == []
 
 
 def test_ready_contract_requires_parent_header_digest(tmp_path: Path) -> None:

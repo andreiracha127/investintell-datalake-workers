@@ -9,10 +9,16 @@ Linux filesystem (Linux host or Docker Desktop's WSL2 VM, not Windows bind metad
 
 Only disposable directories inside a per-run named volume are prepared and chowned;
 no developer, home or production directory is mounted writable. Every container uses
-``--network none`` and receives no database variables; only the tampered-wrapper build
-check uses the candidate build's default network so its locked dependency layer is reused. The two opt-in variables are
-read only by this harness; the production wrapper reads neither. Test harness code is
-passed to disposable containers with ``python -c`` and is never copied into an image.
+``--network none``; only the tampered-wrapper build check uses the candidate build's
+default network so its locked dependency layer is reused. No real database variable is
+ever passed: the child-startup tests pass one fabricated DSN for an unreachable host,
+solely to prove it is preserved and never printed. The two opt-in variables are read
+only by this harness; the production wrapper reads neither. Test harness code is passed
+to disposable containers with ``python -c`` and is never copied into an image.
+
+Tests named ``*real_artifact*`` or ``*second_startup_is_idempotent*`` run the complete
+frozen artifact; every other test is synthetic (no full-volume verification) and can be
+selected alone with ``-k "not real_artifact and not second_startup_is_idempotent"``.
 """
 from __future__ import annotations
 
@@ -43,6 +49,53 @@ LOADER_ARGV = [
 RAILWAY_ENTRYPOINT = ["--entrypoint", "/usr/local/bin/python"]
 RAILWAY_PREFIX = ["-I", "-S", WRAPPER_PATH]
 REAL_RUN_TIMEOUT = 1800
+PINNED_CHILD_PYTHON = {
+    "PYTHONPATH": "/app",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+}
+FAKE_DSN = "postgresql://startup_probe:do-not-print@127.0.0.1:1/none"
+# Deployment-environment injection attempts against the ordinary ``python -m`` child.
+HOSTILE_ENVIRONMENT = {
+    "PYTHONPATH": "/evidence",
+    "PYTHONHOME": "/evidence/home",
+    "PYTHONUSERBASE": "/evidence/userbase",
+    "PYTHONSTARTUP": "/evidence/startup.py",
+    "PYTHONINSPECT": "1",
+    "PYTHONWARNINGS": "ignore::evilwarn.EvilWarning",
+    "PYTHONNOUSERSITE": "",
+    "PYTHON_FUTURE_SETTING": "/evidence",
+    "LD_PRELOAD": "/evidence/evil.so",
+    "LD_LIBRARY_PATH": "/evidence",
+    "LD_AUDIT": "/evidence/audit.so",
+    "DATABASE_URL": FAKE_DSN,
+}
+# Hostile modules planted in /evidence and in a writable working directory. Each records
+# its execution as a sentinel in a world-writable /sentinel; impostor packages exit 97.
+_HOSTILE_MODULES = {
+    "sitecustomize.py": "",
+    "usercustomize.py": "",
+    "evilwarn.py": "class EvilWarning(Warning):\n    pass\n",
+    "startup.py": "",
+    "scripts/__init__.py": "_o._exit(97)\n",
+    "scripts/load_bond_market_implied_rating_artifact.py": "_o._exit(97)\n",
+    "src/__init__.py": "_o._exit(97)\n",
+    "src/bonds/__init__.py": "_o._exit(97)\n",
+    "userbase/lib/python3.13/site-packages/usercustomize.py": "",
+}
+
+
+def _hostile_tree(origin: str) -> dict[str, str]:
+    files = {}
+    for relative, tail in _HOSTILE_MODULES.items():
+        tag = f"{origin}-{relative.replace('/', '.')}"
+        files[relative] = (
+            "import os as _o\n"
+            f"_o.close(_o.open('/sentinel/{tag}', _o.O_WRONLY | _o.O_CREAT, 0o666))\n"
+            + tail
+        )
+    return files
 
 pytestmark = pytest.mark.skipif(
     not ENABLED,
@@ -96,6 +149,32 @@ print(json.dumps({'processes': uids}, sort_keys=True), flush=True)
 raise SystemExit(17)
 """
 
+# An ordinary (not -I/-S) interpreter, like the loader child: import the real CLI and
+# report where every relevant module and path entry came from.
+STARTUP = """
+import hashlib, json, os, sys
+import scripts.load_bond_market_implied_rating_artifact
+names = ('scripts', 'scripts.load_bond_market_implied_rating_artifact', 'src', 'src.db',
+         'src.bonds', 'src.bonds.implied_rating_artifact_loader')
+hostile = ('sitecustomize', 'usercustomize', 'evilwarn')
+print(json.dumps({
+    'cwd': os.getcwd(),
+    'sys_path': sys.path,
+    'prefix': sys.prefix,
+    'flags': {'isolated': sys.flags.isolated, 'no_user_site': sys.flags.no_user_site,
+              'inspect': sys.flags.inspect, 'dont_write_bytecode': sys.flags.dont_write_bytecode},
+    'files': {name: sys.modules[name].__file__ for name in names},
+    'hostile_loaded': {name: getattr(sys.modules[name], '__file__', None)
+                       for name in hostile if name in sys.modules},
+    'evidence_modules': sorted(name for name, mod in list(sys.modules.items())
+                               if str(getattr(mod, '__file__', '') or '').startswith('/evidence')),
+    'python_env': {k: v for k, v in os.environ.items() if k.startswith('PYTHON')},
+    'ld_keys': sorted(k for k in os.environ if k.startswith('LD_')),
+    'dsn_sha256': hashlib.sha256(os.environ.get('DATABASE_URL', '').encode()).hexdigest(),
+    'warnings_filters': len(sys.warnoptions),
+}, sort_keys=True), flush=True)
+"""
+
 class ProbeOps(module.SystemOps):
     def execve(self, path, argv, env):
         if action == "probe":
@@ -127,10 +206,16 @@ class ProbeOps(module.SystemOps):
                 },
                 "sentinel_read": attempt(read, "/root-sentinel/secret"),
                 "evidence": [evidence.st_uid, evidence.st_gid, evidence.st_mode & 0o7777],
+                "cwd": os.getcwd(),
+                "env_python": {k: v for k, v in env.items() if k.startswith("PYTHON")},
+                "env_ld": sorted(k for k in env if k.startswith("LD_")),
             }
             print(json.dumps(report, sort_keys=True), flush=True)
             os._exit(0)
-        if action == "exit17":
+        if action == "startup":
+            test_argv = ["timeout", "--signal=TERM", "--kill-after=5s", "120s",
+                         "python", "-c", STARTUP]
+        elif action == "exit17":
             test_argv = ["timeout", "--signal=TERM", "--kill-after=5s", "120s",
                          "python", "-I", "-S", "-c", CHILD]
         elif action == "timeout124":
@@ -197,6 +282,24 @@ class Scratch:
 
     def read(self, path: str) -> str:
         return self.shell(f"cat /work/{path}")
+
+    def write_tree(self, name: str, files: dict[str, str]) -> None:
+        """Create root-owned 0644 files (0755 directories) below one case directory."""
+        writer = (
+            "import json, os, sys\n"
+            "base = '/work/' + sys.argv[1]\n"
+            "for relative, text in json.loads(sys.argv[2]).items():\n"
+            "    target = os.path.join(base, relative)\n"
+            "    os.makedirs(os.path.dirname(target), mode=0o755, exist_ok=True)\n"
+            "    with open(target, 'w', encoding='utf-8') as handle:\n"
+            "        handle.write(text)\n"
+            "    os.chmod(target, 0o644)\n"
+        )
+        _checked(
+            "run", "--rm", "--network", "none", "--user", "0:0", "--entrypoint",
+            "/usr/local/bin/python", "-v", f"{self.volume}:/work", IMAGE,
+            "-I", "-S", "-B", "-c", writer, name, json.dumps(files),
+        )
 
     def close(self) -> None:
         _docker("volume", "rm", "-f", self.volume)
@@ -405,8 +508,160 @@ def test_privilege_drop_is_complete_and_irreversible(
     }
     assert report["sentinel_read"] == 13
     assert report["evidence"] == [65532, 65532, 0o700]
+    assert report["cwd"] == "/app"
+    assert report["env_python"] == PINNED_CHILD_PYTHON
+    assert report["env_ld"] == []
     assert scratch.listing(name) == []
     assert scratch.listing(f"{name}-sentinel") == ["secret|0:0|600|f|"]
+
+
+# -- 3b: loader child startup cannot be steered by environment, volume or cwd --------------
+
+
+def _hostile_workspace(scratch: Scratch, name: str) -> tuple[str, str, str, list[str]]:
+    """Root-owned evidence mount and a writable cwd, both planted with hostile modules."""
+    evidence = scratch.case(name)
+    cwd = scratch.case(f"{name}-cwd", mode="0777")
+    sentinel = scratch.case(f"{name}-sentinel", mode="1777")
+    empty_artifact = scratch.case(f"{name}-artifact")
+    scratch.write_tree(evidence, _hostile_tree("evidence"))
+    scratch.write_tree(cwd, _hostile_tree("cwd"))
+    mounts = [
+        *scratch.mount(evidence),
+        *scratch.mount(cwd, "/hostile-cwd"),
+        *scratch.mount(sentinel, "/sentinel"),
+        # Verify-only refuses fast on the absent frozen files: no full-volume run here.
+        *scratch.mount(empty_artifact, "/artifact", readonly=True),
+        "-w", "/hostile-cwd",
+    ]
+    return evidence, cwd, sentinel, mounts
+
+
+def _environment_args(environment: dict[str, str]) -> list[str]:
+    return [arg for key, value in environment.items() for arg in ("-e", f"{key}={value}")]
+
+
+def test_hostile_workspace_executes_without_the_wrapper(scratch: Scratch) -> None:
+    """Control: the same planted modules and environment do run in an unwrapped child."""
+    evidence, cwd, sentinel, mounts = _hostile_workspace(scratch, "hostile-control")
+    control_environment = {
+        key: value for key, value in HOSTILE_ENVIRONMENT.items()
+        if key != "PYTHONHOME" and not key.startswith("LD_")
+    }
+    result = _docker(
+        "run", "--rm", "--network", "none", "--user", "65532:65532",
+        "--entrypoint", "/usr/local/bin/python", *_environment_args(control_environment),
+        *mounts, IMAGE, "-m", "scripts.load_bond_market_implied_rating_artifact",
+        "--artifact-root", "/artifact", "--evidence-dir", "/evidence", "--verify-only",
+        timeout=300,
+    )
+    assert result.returncode == 97, (result.returncode, result.stdout, result.stderr)
+    fired = {entry.split("|")[0] for entry in scratch.listing(sentinel)}
+    # site hooks resolve through PYTHONPATH=/evidence; -m then puts the cwd first on
+    # sys.path, so the cwd impostor package replaces the real CLI.
+    assert {"evidence-sitecustomize.py", "evidence-usercustomize.py",
+            "cwd-scripts.__init__.py"} <= fired, fired
+    print("BOND_BOOTSTRAP_CONTROL " + json.dumps(sorted(fired)))
+
+
+def _assert_startup_isolated(
+    scratch: Scratch, evidence: str, cwd: str, sentinel: str,
+    result: subprocess.CompletedProcess[str],
+) -> dict[str, Any]:
+    output = result.stdout + result.stderr
+    for fatal in ("Traceback", "Fatal Python error", "do-not-print"):
+        assert fatal not in output, output[-4000:]
+    # ld.so reports an unloadable LD_PRELOAD once per process that inherits it; only the
+    # root launch (outside the wrapper's control) may inherit it, never the children.
+    assert output.count("/evidence/evil.so") <= 1, output[-4000:]
+    marker = _handoff_marker(result)
+    assert marker["child"]["cwd"] == "/app"
+    assert marker["child"]["python_environment"] == PINNED_CHILD_PYTHON
+    assert scratch.listing(sentinel) == []
+    hostile_evidence = sorted(
+        f"{relative}|0:0|644|f|" for relative in _hostile_tree("evidence")
+    )
+    evidence_files = [entry for entry in scratch.listing(evidence) if entry.endswith("|f|")]
+    assert [entry for entry in evidence_files if not entry.endswith(".json|65532:65532|600|f|")
+            ] == hostile_evidence
+    assert not [entry for entry in scratch.listing(evidence) if "__pycache__" in entry]
+    assert sorted(entry for entry in scratch.listing(cwd) if entry.endswith("|f|")) == sorted(
+        f"{relative}|0:0|644|f|" for relative in _hostile_tree("cwd")
+    )
+    assert not [entry for entry in scratch.listing(cwd) if "__pycache__" in entry]
+    return marker
+
+
+def test_child_imports_only_app_code_despite_hostile_environment_volume_and_cwd(
+    scratch: Scratch,
+) -> None:
+    evidence, cwd, sentinel, mounts = _hostile_workspace(scratch, "hostile-harness")
+    result = _harness("startup", *_environment_args(HOSTILE_ENVIRONMENT), *mounts)
+    assert result.returncode == 0, (result.stdout[-2000:], result.stderr[-4000:])
+    _assert_startup_isolated(scratch, evidence, cwd, sentinel, result)
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["cwd"] == "/app"
+    assert report["prefix"] == "/usr/local"
+    assert all(path.startswith("/app/") for path in report["files"].values()), report["files"]
+    assert report["files"]["scripts.load_bond_market_implied_rating_artifact"] == (
+        "/app/scripts/load_bond_market_implied_rating_artifact.py"
+    )
+    assert report["files"]["src.bonds.implied_rating_artifact_loader"] == (
+        "/app/src/bonds/implied_rating_artifact_loader.py"
+    )
+    assert not [path for path in report["sys_path"]
+                if path.startswith(("/evidence", "/hostile-cwd", "/sentinel"))]
+    assert report["sys_path"][:2] == ["", "/app"]
+    assert report["hostile_loaded"] == {} and report["evidence_modules"] == []
+    assert report["flags"] == {
+        "isolated": 0, "no_user_site": 1, "inspect": 0, "dont_write_bytecode": 1,
+    }
+    assert report["python_env"] == PINNED_CHILD_PYTHON
+    assert report["ld_keys"] == []
+    assert report["warnings_filters"] == 0
+    # The database setting reaches the child unchanged without being printed.
+    assert report["dsn_sha256"] == hashlib.sha256(FAKE_DSN.encode()).hexdigest()
+    print("BOND_BOOTSTRAP_STARTUP " + json.dumps(report, sort_keys=True))
+
+
+def _expected_stripped_keys(extra: dict[str, str]) -> int:
+    image_env = json.loads(_checked("image", "inspect", IMAGE))[0]["Config"]["Env"] or []
+    keys = {item.split("=", 1)[0] for item in image_env} | set(extra)
+    return sum(1 for key in keys if key.startswith(("PYTHON", "LD_")))
+
+
+@pytest.mark.parametrize("invocation", ["default", "railway"])
+def test_real_cli_child_ignores_hostile_environment_volume_and_cwd(
+    scratch: Scratch, invocation: str
+) -> None:
+    evidence, cwd, sentinel, mounts = _hostile_workspace(scratch, f"hostile-{invocation}")
+    arguments = [*_environment_args(HOSTILE_ENVIRONMENT), *mounts]
+    result = (
+        _default_run(*arguments, timeout=300) if invocation == "default"
+        else _railway_run(*arguments, timeout=300)
+    )
+    # The genuine /app CLI ran and refused the absent artifact (exit 3); an impostor
+    # package from the volume or the writable cwd would have exited 97 instead.
+    assert result.returncode == 3, (result.returncode, result.stdout, result.stderr[-4000:])
+    marker = _assert_startup_isolated(scratch, evidence, cwd, sentinel, result)
+    assert marker["child"]["stripped_environment_keys"] == _expected_stripped_keys(
+        HOSTILE_ENVIRONMENT
+    )
+    refusal = [
+        json.loads(line) for line in result.stderr.splitlines()
+        if line.startswith('{"code":')
+    ]
+    assert len(refusal) == 1 and refusal[0]["state"] == "refused", result.stderr[-4000:]
+    receipts = [entry.split("|")[0] for entry in scratch.listing(evidence)
+                if entry.endswith(".json|65532:65532|600|f|")]
+    assert len(receipts) == 1 and "-failure-" in receipts[0], receipts
+    receipt = json.loads(scratch.read(f"{evidence}/{receipts[0]}"))
+    assert receipt["phase"] == "failure" and receipt["mode"] == "verify-only"
+    assert receipt["code"] == refusal[0]["code"] and receipt["publication_id"] is None
+    print("BOND_BOOTSTRAP_HOSTILE " + json.dumps({
+        "invocation": invocation, "exit": result.returncode, "refusal": refusal[0],
+        "receipt": receipts[0], "child": marker["child"],
+    }, sort_keys=True))
 
 
 def test_supervisor_propagates_child_exit_code_with_no_privileged_process(
@@ -477,6 +732,35 @@ def test_only_the_mount_root_changes_and_second_startup_is_idempotent(
     assert scratch.shell(
         f"sha256sum /work/{case}/child.txt /work/{case}/subdir/inner.txt /work/{outside}/sentinel"
     ) == content_before
+
+
+def test_mount_root_only_and_idempotent_bootstrap_without_full_volume(
+    scratch: Scratch,
+) -> None:
+    """Synthetic twin of the real-artifact rerun: two bootstraps, children untouched."""
+    case = scratch.case("children-synthetic")
+    scratch.shell(
+        f"printf child > /work/{case}/child.txt && chown 1234:1234 /work/{case}/child.txt"
+        f" && chmod 0640 /work/{case}/child.txt && mkdir /work/{case}/subdir"
+        f" && chmod 0750 /work/{case}/subdir && printf inner > /work/{case}/subdir/inner.txt"
+        f" && chmod 0600 /work/{case}/subdir/inner.txt && ln -s /nowhere /work/{case}/link"
+    )
+    before = scratch.listing(case)
+    content = scratch.shell(f"sha256sum /work/{case}/child.txt /work/{case}/subdir/inner.txt")
+    markers = []
+    for _ in range(2):
+        sentinel = scratch.case(f"children-synthetic-{uuid.uuid4().hex[:8]}", mode="0700")
+        result = _harness("probe", *scratch.mount(case), *scratch.mount(sentinel, "/root-sentinel"))
+        assert result.returncode == 0, result.stderr
+        markers.append(_handoff_marker(result)["evidence"])
+        assert scratch.facts(case) == "65532:65532:700:directory"
+        assert scratch.listing(case) == before
+    assert (markers[0]["chmod_applied"], markers[0]["chown_applied"]) == (True, True)
+    assert (markers[1]["chmod_applied"], markers[1]["chown_applied"]) == (False, False)
+    assert (markers[1]["initial_uid"], markers[1]["initial_mode"]) == (65532, "0700")
+    assert scratch.shell(
+        f"sha256sum /work/{case}/child.txt /work/{case}/subdir/inner.txt"
+    ) == content
 
 
 # -- 5: negative matrix -------------------------------------------------------------------

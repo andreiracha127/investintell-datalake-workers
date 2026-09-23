@@ -55,7 +55,7 @@ RUN python -c "from pathlib import Path; root=Path('/app'); required=('docker/bo
 # literal here, so a changed wrapper fails the build instead of reaching the root phase.
 COPY docker/bond-implied-artifact-loader/bootstrap_evidence.py \
      /app/docker/bond-implied-artifact-loader/
-RUN echo "d4ccd3ecfae99ecb64bea69b17ade2893857cc617eb20eca2ab5369d263db678  /app/docker/bond-implied-artifact-loader/bootstrap_evidence.py" | sha256sum -c - \
+RUN echo "e289e8cf67deea9a241f50052ff512a987876e6f0c9fb36077293d1b9c75999a  /app/docker/bond-implied-artifact-loader/bootstrap_evidence.py" | sha256sum -c - \
     && chown 0:0 /app/docker/bond-implied-artifact-loader/bootstrap_evidence.py \
     && chmod 0444 /app/docker/bond-implied-artifact-loader/bootstrap_evidence.py \
     && chown 0:0 /app /app/docker /app/docker/bond-implied-artifact-loader \

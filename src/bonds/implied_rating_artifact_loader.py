@@ -1486,6 +1486,54 @@ def _set_local_timeouts(conn: psycopg.Connection) -> None:
     )
 
 
+_WORKER_ROLE = "worker_writer"
+
+
+def _verify_worker_session(conn: psycopg.Connection) -> None:
+    """The session must genuinely be the non-elevated LOGIN ``worker_writer``.
+
+    ``current_user`` and ``session_user`` must both be the worker role, the session
+    ``role`` setting must be ``none`` (an explicit role switch -- even to itself -- or
+    an administrative login switched to the worker is refused), the role must be a
+    LOGIN role without superuser/createrole/createdb/replication/bypassrls, and no
+    SET- or inherit-enabled membership path may reach an elevated role.  Catalog
+    lookups are schema-qualified, so a search_path shadow cannot answer them.  The
+    refusal is a bounded field; role names and the DSN are never echoed.
+    """
+    row = conn.execute(
+        "SELECT pg_catalog.current_setting('role'), current_user, session_user, "
+        "r.rolcanlogin, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolreplication, "
+        "r.rolbypassrls, "
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_roles e "
+        "WHERE e.oid <> r.oid AND (pg_catalog.pg_has_role(r.oid, e.oid, 'SET') "
+        "OR pg_catalog.pg_has_role(r.oid, e.oid, 'USAGE')) "
+        "AND (e.rolsuper OR e.rolcreaterole OR e.rolcreatedb OR e.rolreplication "
+        "OR e.rolbypassrls)) "
+        "FROM pg_catalog.pg_roles r WHERE r.rolname = session_user"
+    ).fetchone()
+    if row is None:
+        _fail(ErrorCode.IDENTITY_MISMATCH, "database.session_role")
+    role_setting, current_user, session_user, can_login, *elevated = row
+    if (
+        role_setting != "none"
+        or current_user != _WORKER_ROLE
+        or session_user != _WORKER_ROLE
+        or can_login is not True
+        or any(value is not False for value in elevated)
+    ):
+        _fail(ErrorCode.IDENTITY_MISMATCH, "database.session_role")
+
+
+@contextlib.contextmanager
+def _worker_connection(
+    connection_factory: Callable[[], psycopg.Connection],
+) -> Iterator[psycopg.Connection]:
+    """Open a connection and admit its session before any DDL, lock or read."""
+    with connection_factory() as conn:
+        _verify_worker_session(conn)
+        yield conn
+
+
 def _acquire_product_lock(conn: psycopg.Connection) -> None:
     try:
         conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (PRODUCT,))
@@ -1545,6 +1593,38 @@ _EXPECTED_COLUMNS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("policy_digest", "bpchar", "NO"),
     ),
 }
+
+# Exact PG18 column-expression semantics of the six physical tables, captured from a
+# clean install of the reviewed DDL (schema first on the search_path, genuine
+# worker_writer login): (atthasdef, pg_get_expr(adbin, adrelid, false) or None,
+# attidentity, attgenerated).  Every column not listed has no default, no identity
+# and no generated expression -- an explicit DEFAULT NULL is a drift, not an
+# equivalent.  Strings are compared byte-for-byte, never case- or space-folded.
+_NO_COLUMN_EXPRESSION: tuple[bool, str | None, str, str] = (False, None, "", "")
+_EXPECTED_COLUMN_EXPRESSIONS: dict[str, dict[str, tuple[bool, str | None, str, str]]] = {
+    "sec_derived_publications": {
+        "prepared_at": (True, "now()", "", ""),
+        "lifecycle_state": (True, "'prepared'::text", "", ""),
+    },
+    "sec_derived_current_pointers": {"set_at": (True, "now()", "", "")},
+    "sec_derived_publication_tokens": {},
+    "sec_derived_pointer_tokens": {},
+    "bond_market_implied_rating_v1_builds": {"created_at": (True, "now()", "", "")},
+    "bond_market_implied_rating_v1": {},
+}
+_PHYSICAL_TABLES = (
+    *_SHARED_SCHEMA_OBJECTS,
+    "bond_market_implied_rating_v1_builds", "bond_market_implied_rating_v1",
+)
+
+
+def _expected_relation_columns(name: str) -> tuple[tuple[Any, ...], ...]:
+    expressions = _EXPECTED_COLUMN_EXPRESSIONS[name]
+    return tuple(
+        (*column, *expressions.get(column[0], _NO_COLUMN_EXPRESSION))
+        for column in _EXPECTED_COLUMNS[name]
+    )
+
 
 _EXPECTED_CONSTRAINT_HASHES = {
     False: "9d69f7f1c5ebf1b77426b7c1857a4c165840fda7760b25151c05630e274eb64a",
@@ -1822,13 +1902,27 @@ def _verify_relation_acls(conn: psycopg.Connection, relation_names: Sequence[str
             _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.reader_role.{rolname}")
 
 
-def _relation_columns(conn: psycopg.Connection, name: str) -> tuple[tuple[str, str, str], ...]:
+def _relation_columns(conn: psycopg.Connection, name: str) -> tuple[tuple[Any, ...], ...]:
+    """Name, type, nullability plus exact default/identity/generated semantics.
+
+    Reads ``pg_attribute`` of the schema-resolved relation (not the search_path)
+    with a LEFT JOIN on ``pg_attrdef``; dropped and system columns are excluded.
+    The default is the PG18 deparser's exact text, NULL when there is none.
+    """
     rows = conn.execute(
-        "SELECT column_name, udt_name, is_nullable FROM information_schema.columns "
-        "WHERE table_schema=current_schema() AND table_name=%s ORDER BY ordinal_position",
+        "SELECT a.attname, t.typname, CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, "
+        "a.atthasdef, pg_catalog.pg_get_expr(d.adbin, d.adrelid, false), "
+        "a.attidentity::text, a.attgenerated::text "
+        "FROM pg_catalog.pg_attribute a "
+        "JOIN pg_catalog.pg_class c ON c.oid=a.attrelid "
+        "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+        "JOIN pg_catalog.pg_type t ON t.oid=a.atttypid "
+        "LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum "
+        "WHERE n.nspname=current_schema() AND c.relname=%s "
+        "AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum",
         (name,),
     ).fetchall()
-    return tuple((row[0], row[1], row[2]) for row in rows)
+    return tuple(tuple(row) for row in rows)
 
 
 def _function_acl_item_admitted(
@@ -1887,11 +1981,16 @@ def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: boo
     relation_names = list(_SHARED_SCHEMA_OBJECTS)
     if include_product:
         relation_names.extend(_PRODUCT_SCHEMA_OBJECTS)
-    kinds = dict(conn.execute(
-        "SELECT c.relname, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
-        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s)",
-        (relation_names,),
-    ).fetchall())
+    relations = {
+        row[0]: (row[1], row[2])
+        for row in conn.execute(
+            "SELECT c.relname, c.relkind, c.relpersistence FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname=current_schema() AND c.relname=ANY(%s)",
+            (relation_names,),
+        ).fetchall()
+    }
+    kinds = {name: kind for name, (kind, _) in relations.items()}
     expected_kinds = {name: "r" for name in _SHARED_SCHEMA_OBJECTS}
     if include_product:
         expected_kinds.update({
@@ -1903,16 +2002,15 @@ def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: boo
         })
     if kinds != expected_kinds:
         _fail(ErrorCode.SCHEMA_MISMATCH, "schema.relation_kinds")
-    for name in _SHARED_SCHEMA_OBJECTS[:2]:
-        if _relation_columns(conn, name) != _EXPECTED_COLUMNS[name]:
+    physical = [name for name in _PHYSICAL_TABLES if name in expected_kinds]
+    # Crash-safe WAL-logged tables only: an UNLOGGED (or temporary) ledger/product
+    # table is truncated by crash recovery and never repaired here.
+    for name in physical:
+        if relations[name][1] != "p":
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.persistence.{name}")
+    for name in physical:
+        if _relation_columns(conn, name) != _expected_relation_columns(name):
             _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.columns.{name}")
-    for name in _SHARED_SCHEMA_OBJECTS[2:]:
-        if _relation_columns(conn, name) != _EXPECTED_COLUMNS[name]:
-            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.columns.{name}")
-    if include_product:
-        for name in ("bond_market_implied_rating_v1_builds", "bond_market_implied_rating_v1"):
-            if _relation_columns(conn, name) != _EXPECTED_COLUMNS[name]:
-                _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.columns.{name}")
 
     constraint_relations = list(_SHARED_SCHEMA_OBJECTS)
     if include_product:
@@ -2417,9 +2515,33 @@ def _verify_bootstrap_binding(dockerfile_raw: bytes) -> None:
         _fail(ErrorCode.RECEIPT_FAILURE, "release_context.bootstrap_sha256")
 
 
+# Independent trust root for the external release context.  The expected SHA256 of
+# the exact release-context.json bytes is provisioned through protected deployment
+# configuration by the authenticated deployer -- never by the evidence writer, a
+# file, a CLI flag, an image default or this source.  It is absent by default, so
+# apply refuses unless an approval was provisioned.  Local tests that set it prove
+# only the comparison, not the operational approval or image binding.
+APPROVED_RELEASE_CONTEXT_ENV = "BOND_ARTIFACT_APPROVED_RELEASE_CONTEXT_SHA256"
+
+
+_APPROVED_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _approved_release_context_sha256() -> str:
+    """Exactly 64 lowercase hex characters; no whitespace, newline or case folding."""
+    value = os.environ.get(APPROVED_RELEASE_CONTEXT_ENV)
+    if value is None or _APPROVED_SHA256_RE.match(value) is None:
+        _fail(ErrorCode.RECEIPT_FAILURE, "release_context.approval")
+    assert value is not None
+    return value
+
+
 def _load_release_evidence(
     evidence_dir: Path, contract: FrozenArtifactContract
 ) -> ReleaseEvidence:
+    # The approval must exist before the file is even opened, and the raw bytes
+    # must match it before any of the file's self-attested claims is parsed.
+    approved = _approved_release_context_sha256()
     try:
         with _open_regular(evidence_dir, "release-context.json") as (handle, path, descriptor):
             if descriptor.st_size <= 0 or descriptor.st_size > 65_536:
@@ -2432,6 +2554,8 @@ def _load_release_evidence(
         raise ArtifactLoaderError(
             ErrorCode.RECEIPT_FAILURE, field="release_context.open"
         ) from exc
+    if _hash_bytes(raw) != approved:
+        _fail(ErrorCode.RECEIPT_FAILURE, "release_context.approval")
     document = _closed_object(
         _strict_json(raw, label="release_context"),
         {
@@ -2518,21 +2642,147 @@ def _load_release_evidence(
     )
 
 
-def _persist_receipt(evidence_dir: Path, *, phase: str, payload: bytes) -> ReceiptRef:
+class _DurableFs:
+    """The exact OS primitives receipt durability depends on (substitutable in tests)."""
+
+    open = staticmethod(os.open)
+    close = staticmethod(os.close)
+    fsync = staticmethod(os.fsync)
+    write = staticmethod(os.write)
+    read = staticmethod(os.read)
+    mkdir = staticmethod(os.mkdir)
+    fstat = staticmethod(os.fstat)
+
+
+_DIRECTORY_FLAGS_NAMES = ("O_RDONLY", "O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC")
+
+
+def _directory_open_flags() -> int:
+    """Directory-descriptor flags; refuse (never degrade) where they do not exist."""
+    missing = [name for name in _DIRECTORY_FLAGS_NAMES if not hasattr(os, name)]
+    if missing or os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
+        _fail(ErrorCode.RECEIPT_FAILURE, "receipt.directory_unsupported")
+    flags = 0
+    for name in _DIRECTORY_FLAGS_NAMES:
+        flags |= getattr(os, name)
+    return flags
+
+
+def _open_directory(path: Path | str, flags: int, *, dir_fd: int | None = None) -> int:
+    descriptor = _DurableFs.open(str(path), flags, dir_fd=dir_fd)
     try:
-        evidence_dir.mkdir(parents=True, exist_ok=True)
-        if evidence_dir.is_symlink() or not evidence_dir.is_dir():
+        if not stat.S_ISDIR(_DurableFs.fstat(descriptor).st_mode):
             _fail(ErrorCode.RECEIPT_FAILURE, "receipt.directory")
-        basename = (
-            f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
-            f"-{phase}-{uuid4()}.json"
-        )
-        path = evidence_dir / basename
-        with path.open("xb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        readback = path.read_bytes()
+    except BaseException:
+        _DurableFs.close(descriptor)
+        raise
+    return descriptor
+
+
+def _pin_evidence_directory(evidence_dir: Path, flags: int) -> int:
+    """Return a pinned descriptor of an evidence directory whose own entry is durable.
+
+    The parent is pinned first and the leaf is opened relative to it, so both
+    descriptors name the same directory entry; symlinks are refused (O_NOFOLLOW).
+    For local use a *single* missing leaf (mode 0700) is created under an existing
+    parent; missing ancestor chains are refused rather than recursively created.
+
+    Unless the leaf is a mount root on another device -- the pre-mounted production
+    ``/evidence`` volume, whose entry this process never creates -- the parent is
+    fsynced on *every* admission, not only right after ``mkdir``.  A leaf left by an
+    earlier attempt whose parent fsync failed (or that crashed before it) is thus
+    never trusted as durable: every retry, including an immediate best-effort
+    failure receipt, refuses until the parent sync succeeds.
+    """
+    name = evidence_dir.name
+    if name in {"", ".", ".."}:
+        _fail(ErrorCode.RECEIPT_FAILURE, "receipt.directory")
+    try:
+        parent_fd = _open_directory(evidence_dir.parent, flags)
+    except FileNotFoundError as exc:
+        raise ArtifactLoaderError(
+            ErrorCode.RECEIPT_FAILURE, field="receipt.directory_parent"
+        ) from exc
+    try:
+        created = False
+        try:
+            directory_fd = _open_directory(name, flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            try:
+                _DurableFs.mkdir(name, 0o700, dir_fd=parent_fd)
+                created = True
+            except FileExistsError:
+                pass  # created concurrently: its entry is synced below like any leaf
+            directory_fd = _open_directory(name, flags, dir_fd=parent_fd)
+        try:
+            mount_root = (
+                _DurableFs.fstat(directory_fd).st_dev != _DurableFs.fstat(parent_fd).st_dev
+            )
+            if created or not mount_root:
+                _DurableFs.fsync(parent_fd)
+        except BaseException:
+            _DurableFs.close(directory_fd)
+            raise
+    finally:
+        _DurableFs.close(parent_fd)
+    return directory_fd
+
+
+def _persist_receipt(evidence_dir: Path, *, phase: str, payload: bytes) -> ReceiptRef:
+    """Write one receipt durably before returning its reference.
+
+    Ordering: pin the directory descriptor (its own entry synced into its parent
+    unless it is a pre-mounted volume root), create the uniquely named receipt
+    exclusively (mode 0600, no symlink follow) relative to it, write and fsync the
+    file, fsync the directory so the new entry itself is durable, then read the
+    exact bytes back.  Only then is a ReceiptRef returned, so a caller can never
+    commit on a receipt whose directory entry could vanish on crash.  Every
+    failure -- including unsupported directory fsync -- is RECEIPT_FAILURE; every
+    descriptor is closed on every path.  This is the filesystem's durability
+    ordering guarantee, not a claim about hardware beyond it.
+    """
+    basename = (
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+        f"-{phase}-{uuid4()}.json"
+    )
+    try:
+        flags = _directory_open_flags()
+        directory_fd = _pin_evidence_directory(evidence_dir, flags)
+        try:
+            file_fd = _DurableFs.open(
+                basename,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            try:
+                view = memoryview(payload)
+                while view:
+                    written = _DurableFs.write(file_fd, view)
+                    if written <= 0:
+                        _fail(ErrorCode.RECEIPT_FAILURE, "receipt.write")
+                    view = view[written:]
+                _DurableFs.fsync(file_fd)
+            finally:
+                _DurableFs.close(file_fd)
+            _DurableFs.fsync(directory_fd)
+            read_fd = _DurableFs.open(
+                basename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd
+            )
+            try:
+                chunks: list[bytes] = []
+                remaining = len(payload) + 1
+                while remaining > 0:
+                    chunk = _DurableFs.read(read_fd, remaining)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                readback = b"".join(chunks)
+            finally:
+                _DurableFs.close(read_fd)
+        finally:
+            _DurableFs.close(directory_fd)
     except ArtifactLoaderError:
         raise
     except OSError as exc:
@@ -2606,6 +2856,31 @@ def _best_effort_failure_receipt(
     return error
 
 
+def _validated_artifact_frame(
+    artifact: VerifiedArtifact, contract: FrozenArtifactContract
+) -> pd.DataFrame:
+    """Bind the complete table content and the full summary to the contract.
+
+    Arrow admission plus the full canonical-frame validation bind every row to the
+    contract (counts, window, histogram, rows digest), and the re-derived summary
+    -- including null counts -- must equal the supplied one exactly.  Nothing is
+    allocated for writing here; callers that only read never build a payload.
+    """
+    _admit_arrow(artifact.table, contract)
+    frame = _to_canonical_frame(artifact.table)
+    summary = _validate_frame(frame, contract)
+    if not _strict_same(_summary_values(summary), _summary_values(artifact.summary)):
+        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.summary")
+    return frame
+
+
+def _admit_read_only_content(
+    artifact: VerifiedArtifact, contract: FrozenArtifactContract
+) -> None:
+    """Read-only operations bind the full content before any connection or receipt."""
+    _validated_artifact_frame(artifact, contract)
+
+
 def _artifact_payload(
     artifact: VerifiedArtifact, contract: FrozenArtifactContract
 ) -> list[tuple[Any, ...]]:
@@ -2615,11 +2890,7 @@ def _artifact_payload(
     window, histogram, rows digest) and re-derives the complete summary, which
     must equal the supplied one; rows are stamped with the contract publication.
     """
-    _admit_arrow(artifact.table, contract)
-    frame = _to_canonical_frame(artifact.table)
-    summary = _validate_frame(frame, contract)
-    if not _strict_same(_summary_values(summary), _summary_values(artifact.summary)):
-        _fail(ErrorCode.IDENTITY_MISMATCH, "artifact.summary")
+    frame = _validated_artifact_frame(artifact, contract)
     publication = _publication_from_contract(contract)
     payload: list[tuple[Any, ...]] = []
     for start in range(0, len(frame), ROW_BATCH):
@@ -2646,6 +2917,15 @@ def _admit_operation_artifact(
     return contract, _bind_verified_artifact(artifact, contract)
 
 
+def _admit_read_only_operation_artifact(
+    artifact: VerifiedArtifact,
+) -> tuple[FrozenArtifactContract, VerifiedArtifact]:
+    """Read-only public boundary: contract, metadata and the complete table content."""
+    contract, admitted = _admit_operation_artifact(artifact)
+    _admit_read_only_content(admitted, contract)
+    return contract, admitted
+
+
 def _read_only_operation(
     artifact: VerifiedArtifact,
     *,
@@ -2654,9 +2934,14 @@ def _read_only_operation(
     require_published: bool,
     required_profile: str | None = None,
     required_roles: Sequence[str] = (),
+    content_admitted: bool = False,
 ) -> OperationResult:
     artifact = _bind_verified_artifact(artifact, contract)
-    with connection_factory() as conn, conn.transaction():
+    if not content_admitted:
+        # Full content binding before the connection: a swapped table can never
+        # reach a read-only verdict, even through the private entrypoint.
+        _admit_read_only_content(artifact, contract)
+    with _worker_connection(connection_factory) as conn, conn.transaction():
         conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY")
         _set_local_timeouts(conn)
         _acquire_product_lock(conn)
@@ -2667,9 +2952,11 @@ def _read_only_operation(
 
         def recheck_schema() -> None:
             # READ COMMITTED sees concurrent DDL: the admitted schema and extension
-            # profile must still hold when the read-only verdict is formed.
+            # profile must still hold when the read-only verdict is formed, and so
+            # must the genuine worker session.
             if _schema_state_and_profile(conn) != (schema, profile):
                 _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile_changed")
+            _verify_worker_session(conn)
 
         if schema in {"absent", "shared_only"}:
             if (
@@ -2724,7 +3011,7 @@ def _ensure_schema_profile(
     an unsafe pre-existing state.  The install itself must not change the
     profile of a pre-existing ledger.
     """
-    with connection_factory() as conn, conn.transaction():
+    with _worker_connection(connection_factory) as conn, conn.transaction():
         _set_local_timeouts(conn)
         _acquire_product_lock(conn)
         _verify_parent(conn, contract=contract, lock_pointer=True)
@@ -2742,12 +3029,16 @@ def _ensure_schema_profile(
             ):
                 _fail(ErrorCode.PUBLICATION_CONFLICT, "publication.partial_state")
         install_schema(conn)
+        # The reviewed DDL must not have changed the session identity either.
+        _verify_worker_session(conn)
         installed_state, installed_profile = _schema_state_and_profile(conn)
         if installed_state != "compatible" or installed_profile is None:
             _fail(ErrorCode.SCHEMA_MISMATCH, "schema.install")
         if profile is not None and installed_profile != profile:
             _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile_changed")
         _require_profile(installed_profile, required_profile)
+        # Recheck the genuine worker session before the schema transaction commits.
+        _verify_worker_session(conn)
         return True, installed_profile
 
 
@@ -2895,6 +3186,24 @@ def _publish_verified_artifact(
             if conn.info.transaction_status is not TransactionStatus.IDLE:
                 _fail(ErrorCode.DB_FAILURE, "transaction.not_idle")
             try:
+                # A substituted publication connection is refused before any lock,
+                # read or write; nothing has started, and a schema transaction that
+                # already committed on a genuine connection stays committed.
+                _verify_worker_session(conn)
+            except ArtifactLoaderError as exc:
+                exc.phase = "transaction_setup"
+                exc.schema_installed = schema_installed
+                exc.transaction_outcome = "not_started"
+                _best_effort_failure_receipt(
+                    exc,
+                    evidence_dir,
+                    operation_id=operation_id,
+                    operation_started_at_utc=operation_started_at_utc,
+                    mode="apply",
+                    publication_id=artifact.publication.publication_id,
+                )
+                raise
+            try:
                 with conn.transaction():
                     _set_local_timeouts(conn)
                     _acquire_product_lock(conn)
@@ -2942,6 +3251,8 @@ def _publish_verified_artifact(
                     transaction_phase = "schema_precommit"
                     if _schema_state_and_profile(conn) != ("compatible", profile):
                         _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile_changed")
+                    transaction_phase = "session_precommit"
+                    _verify_worker_session(conn)
                     transaction_phase = "precommit_receipt"
                     precommit = _persist_receipt(
                         evidence_dir,
@@ -3073,6 +3384,8 @@ def _publish_verified_artifact(
             require_published=True,
             required_profile=profile,
             required_roles=required_roles,
+            # Admitted by the full-frame payload validation before any connection.
+            content_admitted=True,
         )
         if result.outcome != "already_published_verified" or result.stored is None:
             _fail(ErrorCode.STORED_MISMATCH, "readback.outcome")
@@ -3234,7 +3547,9 @@ def dry_run_verified_artifact(
     phase = "artifact_binding"
     publication_id: str | None = None
     try:
-        contract, artifact = _admit_operation_artifact(artifact)
+        # Contract, metadata and full table content are all admitted before any
+        # connection or success receipt; no INSERT payload is ever built here.
+        contract, artifact = _admit_read_only_operation_artifact(artifact)
         publication_id = artifact.publication.publication_id
         phase = "dry_run_read"
         result = _read_only_operation(
@@ -3244,6 +3559,7 @@ def dry_run_verified_artifact(
             require_published=False,
             required_profile=_PRODUCTION_REQUIRED_PROFILE,
             required_roles=_PRODUCTION_REQUIRED_ROLES,
+            content_admitted=True,
         )
     except ArtifactLoaderError as exc:
         schema_installed = (
@@ -3312,7 +3628,9 @@ def recover_published_artifact(
     phase = "artifact_binding"
     publication_id: str | None = None
     try:
-        contract, artifact = _admit_operation_artifact(artifact)
+        # Recovery never trusts a table it has not bound to the contract: full
+        # content admission precedes the connection and the recovery receipt.
+        contract, artifact = _admit_read_only_operation_artifact(artifact)
         publication_id = artifact.publication.publication_id
         phase = "verify_published_read"
         result = _read_only_operation(
@@ -3322,6 +3640,7 @@ def recover_published_artifact(
             require_published=True,
             required_profile=_PRODUCTION_REQUIRED_PROFILE,
             required_roles=_PRODUCTION_REQUIRED_ROLES,
+            content_admitted=True,
         )
     except ArtifactLoaderError as exc:
         schema_installed = (

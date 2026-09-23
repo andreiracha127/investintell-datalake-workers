@@ -17,6 +17,16 @@ that UID 65532 can create and remove a receipt-shaped file and replaces itself w
 unchanged ``timeout`` argv. It imports only the standard library, never the loader,
 never touches the database, reads no path/UID/executable from the environment and has
 no repair, test or fallback mode. Every startup failure exits 78 before the loader runs.
+
+The loader child is an ordinary ``python -m`` process, so its import path must not be
+steerable by the deployment environment or the writable evidence volume. Before the
+exec, every inherited ``PYTHON*`` variable and every dynamic-loader ``LD_*`` variable is
+removed, only the reviewed ``PYTHONPATH=/app``, ``PYTHONNOUSERSITE=1``,
+``PYTHONDONTWRITEBYTECODE=1`` and ``PYTHONUNBUFFERED=1`` are set, PATH is pinned, and the
+working directory becomes the image-owned, non-writable ``/app``. Other variables (for
+example the database settings) pass through unchanged and their values are never logged.
+The root interpreter's own launch cannot be sanitized from inside it; it relies on the
+trusted image and deployment environment together with ``-I -S``.
 """
 import sys
 
@@ -41,6 +51,17 @@ PYTHON_EXECUTABLE = "/usr/local/bin/python"
 WRAPPER_PATH = "/app/docker/bond-implied-artifact-loader/bootstrap_evidence.py"
 TIMEOUT_EXECUTABLE = "/usr/bin/timeout"
 TRUSTED_PATH = "/usr/local/bin:/usr/bin:/bin"
+APP_DIRECTORY = "/app"
+# The only interpreter settings the loader child receives; inherited values are dropped.
+CHILD_PYTHON_ENVIRONMENT = (
+    ("PYTHONPATH", APP_DIRECTORY),
+    ("PYTHONNOUSERSITE", "1"),
+    ("PYTHONDONTWRITEBYTECODE", "1"),
+    ("PYTHONUNBUFFERED", "1"),
+)
+# Interpreter startup (PYTHONPATH/HOME/USERBASE/STARTUP/INSPECT/WARNINGS and any future
+# PYTHON* setting) and dynamic-loader injection (LD_PRELOAD/LD_LIBRARY_PATH/LD_AUDIT...).
+STRIPPED_ENVIRONMENT_PREFIXES = ("PYTHON", "LD_")
 
 INTERPRETER_ARGV = (PYTHON_EXECUTABLE, "-I", "-S", WRAPPER_PATH)
 LOADER_PREFIX = (
@@ -175,6 +196,9 @@ class SystemOps:
 
     def unlink(self, name: str, dir_fd: int) -> None:
         os.unlink(name, dir_fd=dir_fd)
+
+    def fchdir(self, fd: int) -> None:
+        os.fchdir(fd)
 
     def environ(self) -> dict[str, str]:
         return dict(os.environ)
@@ -512,6 +536,50 @@ def _probe(ops: SystemOps, fd: int) -> None:
         raise BootstrapError(failure)
 
 
+def loader_environment(environment: dict[str, str]) -> dict[str, str]:
+    """Return the child environment: no inherited PYTHON*/LD_* keys, pinned values only."""
+    child = {
+        key: value for key, value in environment.items()
+        if not key.startswith(STRIPPED_ENVIRONMENT_PREFIXES)
+    }
+    child.update(CHILD_PYTHON_ENVIRONMENT)
+    child["PATH"] = TRUSTED_PATH
+    return child
+
+
+def _pin_working_directory(ops: SystemOps) -> None:
+    """Make the image-owned, non-writable /app the child's working directory."""
+    try:
+        path_stat = ops.lstat(APP_DIRECTORY)
+    except OSError as exc:
+        raise BootstrapError("working_directory_unsafe") from exc
+    _require(stat.S_ISDIR(path_stat.st_mode), "working_directory_unsafe")
+    try:
+        fd = ops.open_directory(APP_DIRECTORY)
+    except OSError as exc:
+        raise BootstrapError("working_directory_unsafe") from exc
+    try:
+        try:
+            fd_stat = ops.fstat(fd)
+        except OSError as exc:
+            raise BootstrapError("working_directory_unsafe") from exc
+        _require(
+            stat.S_ISDIR(fd_stat.st_mode)
+            and _same_object(path_stat, fd_stat)
+            and fd_stat.st_uid == 0
+            and not stat.S_IMODE(fd_stat.st_mode) & (stat.S_IWGRP | stat.S_IWOTH),
+            "working_directory_unsafe",
+        )
+        try:
+            ops.fchdir(fd)
+            current = ops.lstat(APP_DIRECTORY)
+        except OSError as exc:
+            raise BootstrapError("working_directory_failed") from exc
+        _require(_same_object(current, fd_stat), "working_directory_unsafe")
+    finally:
+        _close_quietly(ops, fd)
+
+
 def _emit(ops: SystemOps, document: dict[str, object]) -> None:
     payload = json.dumps(
         {"schema": MARKER_SCHEMA, **document},
@@ -570,6 +638,10 @@ def bootstrap(argv: list[str], ops: SystemOps) -> None:
         ops.close(fd)
     except OSError as exc:
         raise BootstrapError("evidence_close_failed") from exc
+    _pin_working_directory(ops)
+    inherited = ops.environ()
+    environment = loader_environment(inherited)
+    removed = sum(1 for key in inherited if key.startswith(STRIPPED_ENVIRONMENT_PREFIXES))
     _emit(ops, {
         "phase": "privileges_dropped",
         "wrapper_sha256": wrapper_sha256,
@@ -587,10 +659,14 @@ def bootstrap(argv: list[str], ops: SystemOps) -> None:
             "chmod_applied": chmod_applied,
             "chown_applied": chown_applied,
         },
+        "child": {
+            "cwd": APP_DIRECTORY,
+            "path": TRUSTED_PATH,
+            "python_environment": dict(CHILD_PYTHON_ENVIRONMENT),
+            "stripped_environment_keys": removed,
+        },
         **credentials,
     })
-    environment = ops.environ()
-    environment["PATH"] = TRUSTED_PATH
     try:
         ops.execve(TIMEOUT_EXECUTABLE, list(argv), environment)
     except OSError as exc:

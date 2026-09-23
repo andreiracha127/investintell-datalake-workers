@@ -4,9 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Self
 from uuid import UUID, uuid4
@@ -19,13 +21,41 @@ from psycopg.types.json import Jsonb
 from src.bonds import implied_rating_artifact_loader as loader
 from src.bonds.implied_rating_materializer import materialize
 from tests.test_bond_market_implied_rating_artifact_loader import (
+    _approve_release_context,
     _fixture,
     _write_release_context,
 )
 
+# SEC_TEST_DATABASE_URL is the disposable-cluster administrator: fixture setup,
+# teardown and fault injection only.  Every loader connection uses
+# SEC_TEST_WORKER_DATABASE_URL, a genuine LOGIN worker_writer on the same database.
+# A missing worker DSN is an unmet PG18 gate, never a silently green run: when the
+# admin DSN is configured, the worker DSN is required.
 pytestmark = pytest.mark.skipif(
     not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL unavailable"
 )
+
+
+def _worker_dsn() -> str:
+    dsn = os.getenv("SEC_TEST_WORKER_DATABASE_URL")
+    if not dsn:
+        pytest.fail(
+            "SEC_TEST_WORKER_DATABASE_URL (genuine LOGIN worker_writer) is required "
+            "whenever SEC_TEST_DATABASE_URL is set"
+        )
+    return dsn
+
+
+def _same_isolated_database(admin_dsn: str, worker_dsn: str) -> None:
+    with (
+        psycopg.connect(admin_dsn, autocommit=True) as admin,
+        psycopg.connect(worker_dsn, autocommit=True) as worker,
+    ):
+        identity = "SELECT current_database(), inet_server_port(), pg_postmaster_start_time()"
+        assert admin.execute(identity).fetchone() == worker.execute(identity).fetchone()
+        assert worker.execute("SELECT current_user, session_user").fetchone() == (
+            "worker_writer", "worker_writer"
+        )
 
 
 @contextmanager
@@ -41,8 +71,11 @@ def _database(
     ]
 ]:
     dsn = os.environ["SEC_TEST_DATABASE_URL"]
+    worker_dsn = _worker_dsn()
+    _same_isolated_database(dsn, worker_dsn)
     schema = f"test_artifact_loader_{uuid4().hex}"
     artifact_root, raw, original_contract = _fixture(tmp_path)
+    (tmp_path / "evidence").mkdir()
     with psycopg.connect(dsn, autocommit=True) as admin:
         version = int(admin.execute("SHOW server_version_num").fetchone()[0])
         assert 180000 <= version < 190000
@@ -144,12 +177,14 @@ def _database(
         ).format(sql.Identifier(schema)))
 
         def connection_factory() -> psycopg.Connection:
-            conn = psycopg.connect(dsn, autocommit=True, connect_timeout=5)
-            conn.execute("SET ROLE worker_writer")
-            conn.execute(
-                sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema))
+            # Genuine LOGIN worker_writer session; the search_path is set through the
+            # connection options so the session carries no role switch at all.
+            return psycopg.connect(
+                worker_dsn,
+                autocommit=True,
+                connect_timeout=5,
+                options=f"-c search_path={schema},public",
             )
-            return conn
 
         try:
             yield contract, artifact, connection_factory, schema, tmp_path / "evidence"
@@ -987,6 +1022,7 @@ def test_public_apply_enforces_complete_release_context_end_to_end(
     with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
         _install_production_ledger(factory, schema)
         release_document = _write_release_context(evidence_dir, contract)
+        _approve_release_context(evidence_dir, monkeypatch)
         monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
         result = loader.publish_verified_artifact(
             artifact,
@@ -1715,6 +1751,7 @@ def test_forged_metadata_is_refused_without_connecting_and_control_publishes(
     with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
         _install_production_ledger(factory, schema)
         _write_release_context(evidence_dir, contract)
+        _approve_release_context(evidence_dir, monkeypatch)
         monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
         counted, calls = _counting(factory)
         publication, summary = artifact.publication, artifact.summary
@@ -2075,6 +2112,7 @@ def test_production_envelope_refuses_rr1_pair_disappearance(
     with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
         monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
         _write_release_context(evidence_dir, contract)
+        _approve_release_context(evidence_dir, monkeypatch)
         function = {
             "dry_run": loader.dry_run_verified_artifact,
             "recover": loader.recover_published_artifact,
@@ -2405,6 +2443,7 @@ def test_bad_shared_prestate_is_not_repaired_by_worker_reruns_until_approved_rev
                 ).format(sql.Identifier(relation)))
             assert loader._schema_state_and_profile(conn) == ("shared_only", loader.PROFILE_RR1)
         _write_release_context(evidence_dir, contract)
+        _approve_release_context(evidence_dir, monkeypatch)
         monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
         result = loader.publish_verified_artifact(
             artifact, evidence_dir=evidence_dir, connection_factory=factory
@@ -2418,6 +2457,7 @@ def test_production_shaped_workflow_rr1_isolation_and_app_runtime_read_only(
     with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
         _install_production_ledger(factory, schema, captured_defaults=True)
         _write_release_context(evidence_dir, contract)
+        _approve_release_context(evidence_dir, monkeypatch)
         monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
         # The legitimate worker pointer workflow passes both RR1 guards untouched.
         result = loader.publish_verified_artifact(
@@ -2512,3 +2552,688 @@ def test_outer_transaction_rollback_with_rr1_present(tmp_path: Path) -> None:
                 0
             ] == 0
             assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)
+
+
+# --- r4081728357: genuine LOGIN worker session on every connection -------------------
+
+_SUBSTITUTE_LOGIN = "loader_substitute_login"
+
+
+def _admin_factory(schema: str, *setup: str) -> Callable[[], psycopg.Connection]:
+    def connect() -> psycopg.Connection:
+        conn = psycopg.connect(
+            os.environ["SEC_TEST_DATABASE_URL"], autocommit=True, connect_timeout=5,
+            options=f"-c search_path={schema},public",
+        )
+        for statement in setup:
+            conn.execute(statement)
+        return conn
+
+    return connect
+
+
+def _worker_factory(schema: str, *setup: str) -> Callable[[], psycopg.Connection]:
+    def connect() -> psycopg.Connection:
+        conn = psycopg.connect(
+            _worker_dsn(), autocommit=True, connect_timeout=5,
+            options=f"-c search_path={schema},public",
+        )
+        for statement in setup:
+            conn.execute(statement)
+        return conn
+
+    return connect
+
+
+@contextmanager
+def _substitute_login() -> Iterator[Callable[[str], Callable[[], psycopg.Connection]]]:
+    """A second disposable LOGIN role that is a SET-enabled member of worker_writer."""
+    password = uuid4().hex
+    _admin_execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+        sql.Identifier(_SUBSTITUTE_LOGIN), sql.Literal(password)
+    ))
+    _admin_execute(sql.SQL("GRANT worker_writer TO {} WITH INHERIT FALSE, SET TRUE").format(
+        sql.Identifier(_SUBSTITUTE_LOGIN)
+    ))
+    base = psycopg.conninfo.conninfo_to_dict(_worker_dsn())
+
+    def factory(schema: str) -> Callable[[], psycopg.Connection]:
+        def connect() -> psycopg.Connection:
+            conn = psycopg.connect(
+                **{**base, "user": _SUBSTITUTE_LOGIN, "password": password},
+                autocommit=True, connect_timeout=5,
+                options=f"-c search_path={schema},public",
+            )
+            conn.execute("SET ROLE worker_writer")
+            return conn
+
+        return connect
+
+    try:
+        yield factory
+    finally:
+        _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(_SUBSTITUTE_LOGIN)))
+
+
+def _assert_session_refused(error: loader.ArtifactLoaderError) -> None:
+    assert error.code == loader.ErrorCode.IDENTITY_MISMATCH.value
+    assert error.details == {"field": "database.session_role"}
+
+
+def _run_all_connection_paths(
+    contract: loader.FrozenArtifactContract,
+    artifact: loader.VerifiedArtifact,
+    factory: Callable[[], psycopg.Connection],
+    evidence_dir: Path,
+) -> None:
+    for operation in (
+        lambda: loader._ensure_schema_profile(contract, factory),
+        lambda: loader._read_only_operation(
+            artifact, contract=contract, connection_factory=factory, require_published=False
+        ),
+        lambda: loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir
+        ),
+    ):
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            operation()
+        _assert_session_refused(exc.value)
+
+
+@pytest.mark.parametrize("stage", ["absent", "shared_only", "complete"])
+@pytest.mark.parametrize(
+    "variant",
+    ["admin_login", "admin_set_role_worker", "worker_set_role_self", "member_set_role_worker"],
+)
+def test_non_genuine_worker_sessions_are_refused_before_any_ddl_or_lock(
+    tmp_path: Path, stage: str, variant: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        if stage in {"shared_only", "complete"}:
+            _install_production_ledger(factory, schema)
+        if stage == "complete":
+            assert loader._ensure_schema_profile(contract, factory) == (
+                True, loader.PROFILE_RR1
+            )
+        with factory() as conn:
+            before = loader._schema_state(conn)
+        with _substitute_login() as substitute:
+            bad = {
+                "admin_login": _admin_factory(schema),
+                "admin_set_role_worker": _admin_factory(schema, "SET ROLE worker_writer"),
+                "worker_set_role_self": _worker_factory(schema, "SET ROLE worker_writer"),
+                "member_set_role_worker": substitute(schema),
+            }[variant]
+            _run_all_connection_paths(contract, artifact, bad, evidence_dir)
+        with factory() as conn:
+            assert loader._schema_state(conn) == before
+            if stage != "absent":
+                assert conn.execute(
+                    "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+                    (loader.PRODUCT,),
+                ).fetchone()[0] == 0
+        # The offline pre-apply receipt precedes every connection by design; no
+        # database-phase evidence may exist after a refused session.
+        names = [path.name for path in evidence_dir.glob("*.json")]
+        assert not [name for name in names if "-precommit-" in name or "-readback-" in name]
+        failures = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in evidence_dir.glob("*-failure-*.json")
+        ]
+        assert [receipt["failure_phase"] for receipt in failures] == ["schema_install"]
+        assert failures[0]["code"] == "identity_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("alter", "restore"),
+    [
+        ("ALTER ROLE worker_writer SUPERUSER", "ALTER ROLE worker_writer NOSUPERUSER"),
+        ("ALTER ROLE worker_writer CREATEROLE", "ALTER ROLE worker_writer NOCREATEROLE"),
+        ("ALTER ROLE worker_writer CREATEDB", "ALTER ROLE worker_writer NOCREATEDB"),
+        ("ALTER ROLE worker_writer REPLICATION", "ALTER ROLE worker_writer NOREPLICATION"),
+        ("ALTER ROLE worker_writer BYPASSRLS", "ALTER ROLE worker_writer NOBYPASSRLS"),
+        ("GRANT pg_create_subscription TO worker_writer",
+         "REVOKE pg_create_subscription FROM worker_writer"),
+    ],
+)
+def test_elevated_worker_role_is_refused(tmp_path: Path, alter: str, restore: str) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        elevated_role = f"loader_elevated_{uuid4().hex[:10]}"
+        if alter.startswith("GRANT"):
+            # A membership path to an elevated role, rather than a role attribute.
+            _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN CREATEDB").format(
+                sql.Identifier(elevated_role)
+            ))
+            alter = f"GRANT {elevated_role} TO worker_writer WITH INHERIT FALSE, SET TRUE"
+            restore = f"REVOKE {elevated_role} FROM worker_writer"
+        _admin_execute(alter)
+        try:
+            _run_all_connection_paths(contract, artifact, factory, evidence_dir)
+        finally:
+            _admin_execute(restore)
+            _admin_execute(sql.SQL("DROP ROLE IF EXISTS {}").format(
+                sql.Identifier(elevated_role)
+            ))
+        with factory() as conn:
+            assert loader._schema_state(conn) == "shared_only"
+
+
+def test_genuine_worker_session_passes_and_innocuous_membership_is_allowed(
+    tmp_path: Path,
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        _admin_execute("GRANT app_analytics_ro TO worker_writer WITH INHERIT FALSE, SET TRUE")
+        try:
+            with factory() as conn:
+                loader._verify_worker_session(conn)
+                assert conn.execute("SELECT current_setting('role')").fetchone()[0] == "none"
+            result = loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+            assert result.outcome == "published_verified"
+        finally:
+            _admin_execute("REVOKE app_analytics_ro FROM worker_writer")
+
+
+def _substitute_nth_connection(
+    good: Callable[[], psycopg.Connection],
+    bad: Callable[[], psycopg.Connection],
+    substitute_at: int,
+) -> tuple[Callable[[], psycopg.Connection], list[int]]:
+    calls: list[int] = []
+
+    def factory() -> psycopg.Connection:
+        calls.append(1)
+        return bad() if len(calls) == substitute_at else good()
+
+    return factory, calls
+
+
+def test_substituted_publication_connection_is_refused_before_writes(
+    tmp_path: Path,
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        # Connection 1: schema setup (genuine), connection 2: publication (admin).
+        substituted, calls = _substitute_nth_connection(
+            factory, _admin_factory(schema, "SET ROLE worker_writer"), 2
+        )
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=substituted,
+                evidence_dir=evidence_dir,
+            )
+        _assert_session_refused(exc.value)
+        assert exc.value.phase == "transaction_setup"
+        assert exc.value.transaction_outcome == "not_started"
+        assert len(calls) == 2
+        failures = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in evidence_dir.glob("*-failure-*.json")
+        ]
+        assert [receipt["failure_phase"] for receipt in failures] == ["transaction_setup"]
+        with factory() as conn:
+            # The genuinely committed schema transaction is not undone.
+            assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)
+        _assert_nothing_published_rows(factory)
+
+
+def _assert_nothing_published_rows(factory: Callable[[], psycopg.Connection]) -> None:
+    with factory() as conn:
+        for statement in (
+            "SELECT count(*) FROM bond_market_implied_rating_v1",
+            "SELECT count(*) FROM bond_market_implied_rating_v1_builds",
+            "SELECT count(*) FROM sec_derived_current_pointers WHERE product="
+            "'bond_market_implied_rating_v1'",
+            "SELECT count(*) FROM sec_derived_publications WHERE product="
+            "'bond_market_implied_rating_v1'",
+        ):
+            assert conn.execute(statement).fetchone()[0] == 0, statement
+
+
+def test_substituted_fresh_readback_yields_recovery_required(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        # Connection 3 is the fresh post-commit readback.
+        substituted, _ = _substitute_nth_connection(
+            factory, _admin_factory(schema, "SET ROLE worker_writer"), 3
+        )
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=substituted,
+                evidence_dir=evidence_dir,
+            )
+        # Existing typed postcommit taxonomy: committed, readback not trusted.
+        assert exc.value.code == loader.ErrorCode.COMMIT_UNKNOWN.value
+        assert exc.value.details == {"field": "transaction.postcommit_readback"}
+        assert exc.value.phase == "postcommit_readback"
+        assert exc.value.transaction_outcome == "committed"
+        assert exc.value.outcome == "recovery_required"
+        assert isinstance(exc.value.__cause__, loader.ArtifactLoaderError)
+        assert exc.value.__cause__.details == {"field": "database.session_role"}
+        # The committed publication is intact and genuinely recoverable.
+        recovered = loader._read_only_operation(
+            artifact, contract=contract, connection_factory=factory, require_published=True
+        )
+        assert recovered.outcome == "already_published_verified"
+
+
+def test_session_change_inside_publication_is_refused_at_precommit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        original = loader._verify_parent
+        seen = {"calls": 0}
+
+        def switch_role_after_parent_recheck(conn, **kwargs):  # type: ignore[no-untyped-def]
+            seen["calls"] += 1
+            result = original(conn, **kwargs)
+            # Calls: schema setup, publication preflight, publication recheck.
+            if seen["calls"] == 3:
+                conn.execute("SET LOCAL ROLE worker_writer")
+            return result
+
+        monkeypatch.setattr(loader, "_verify_parent", switch_role_after_parent_recheck)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        _assert_session_refused(exc.value)
+        assert exc.value.phase == "session_precommit"
+        assert exc.value.transaction_outcome == "not_committed"
+        assert not list(evidence_dir.glob("*-precommit-*"))
+        _assert_nothing_published_rows(factory)
+
+
+# --- r4081728337 / r4081728342: exact column expressions and persistence --------------
+
+
+def test_clean_install_column_expressions_match_pinned_pg18_catalog(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        assert loader._ensure_schema_profile(contract, factory)[0] is True
+        with factory() as conn:
+            for name in loader._PHYSICAL_TABLES:
+                observed = loader._relation_columns(conn, name)
+                assert observed == loader._expected_relation_columns(name), name
+            defaults = {
+                (row[0], row[1]): row[2]
+                for row in conn.execute(
+                    "SELECT c.relname, a.attname, pg_get_expr(d.adbin, d.adrelid, false) "
+                    "FROM pg_attrdef d JOIN pg_class c ON c.oid=d.adrelid "
+                    "JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum "
+                    "WHERE c.relnamespace=current_schema()::regnamespace AND c.relname=ANY(%s)",
+                    (list(loader._PHYSICAL_TABLES),),
+                ).fetchall()
+            }
+            assert defaults == {
+                ("sec_derived_publications", "prepared_at"): "now()",
+                ("sec_derived_publications", "lifecycle_state"): "'prepared'::text",
+                ("sec_derived_current_pointers", "set_at"): "now()",
+                ("bond_market_implied_rating_v1_builds", "created_at"): "now()",
+            }
+
+
+_EXPRESSION_DRIFTS: tuple[tuple[str, str, str], ...] = (
+    ("sec_derived_publications", "prepared_at",
+     "ALTER TABLE sec_derived_publications ALTER COLUMN prepared_at "
+     "SET DEFAULT '2000-01-01 00:00:00+00'::timestamptz"),
+    ("sec_derived_publications", "prepared_at",
+     "ALTER TABLE sec_derived_publications ALTER COLUMN prepared_at "
+     "SET DEFAULT clock_timestamp()"),
+    ("sec_derived_publications", "prepared_at",
+     "ALTER TABLE sec_derived_publications ALTER COLUMN prepared_at DROP DEFAULT"),
+    ("sec_derived_publications", "lifecycle_state",
+     "ALTER TABLE sec_derived_publications ALTER COLUMN lifecycle_state "
+     "SET DEFAULT 'validated'"),
+    ("sec_derived_publications", "lifecycle_state",
+     "ALTER TABLE sec_derived_publications ALTER COLUMN lifecycle_state "
+     "SET DEFAULT 'PREPARED'"),
+    # A genuinely recorded null-producing default on a defaultless column.  (A bare
+    # DEFAULT NULL is not recorded by PG18 at all; see the equivalence test below.)
+    ("sec_derived_publications", "validated_at",
+     "ALTER TABLE sec_derived_publications ALTER COLUMN validated_at "
+     "SET DEFAULT nullif(now(), now())"),
+    ("sec_derived_current_pointers", "set_at",
+     "ALTER TABLE sec_derived_current_pointers ALTER COLUMN set_at "
+     "SET DEFAULT clock_timestamp()"),
+    ("sec_derived_current_pointers", "set_at",
+     "ALTER TABLE sec_derived_current_pointers ALTER COLUMN set_at DROP DEFAULT"),
+    ("sec_derived_publication_tokens", "backend_pid",
+     "ALTER TABLE sec_derived_publication_tokens ALTER COLUMN backend_pid "
+     "SET DEFAULT pg_backend_pid()"),
+    ("bond_market_implied_rating_v1_builds", "created_at",
+     "ALTER TABLE bond_market_implied_rating_v1_builds ALTER COLUMN created_at "
+     "SET DEFAULT '2000-01-01 00:00:00+00'::timestamptz"),
+    ("bond_market_implied_rating_v1_builds", "row_count",
+     "ALTER TABLE bond_market_implied_rating_v1_builds ALTER COLUMN row_count "
+     "ADD GENERATED ALWAYS AS IDENTITY"),
+    ("bond_market_implied_rating_v1", "spell_id",
+     "ALTER TABLE bond_market_implied_rating_v1 ALTER COLUMN spell_id "
+     "ADD GENERATED BY DEFAULT AS IDENTITY"),
+    ("bond_market_implied_rating_v1", "cusip_id",
+     "ALTER TABLE bond_market_implied_rating_v1 ALTER COLUMN cusip_id SET DEFAULT ''"),
+)
+
+
+@pytest.mark.parametrize(
+    ("relation", "column", "statement"), _EXPRESSION_DRIFTS,
+    ids=[f"{r}.{c}-{i}" for i, (r, c, _) in enumerate(_EXPRESSION_DRIFTS)],
+)
+def test_column_expression_drift_is_refused_and_never_repaired(
+    tmp_path: Path, relation: str, column: str, statement: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        product = relation.startswith("bond_market_")
+        if product:
+            assert loader._ensure_schema_profile(contract, factory)[0] is True
+        _admin_in_schema(schema, statement)
+        with factory() as conn:
+            drifted = loader._relation_columns(conn, relation)
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": f"schema.columns.{relation}"}
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.details == {"field": f"schema.columns.{relation}"}
+        with factory() as conn:
+            assert loader._relation_columns(conn, relation) == drifted
+            if not product:
+                assert conn.execute(
+                    "SELECT to_regclass('bond_market_implied_rating_v1')"
+                ).fetchone()[0] is None
+
+
+def test_bare_default_null_is_not_recorded_by_pg18_and_is_catalog_identical(
+    tmp_path: Path,
+) -> None:
+    # PG18 stores no pg_attrdef entry for a constant NULL default, so it cannot
+    # differ from "no default" in any catalog field the loader could compare.
+    with _database(tmp_path) as (_, _, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        with factory() as conn:
+            before = loader._relation_columns(conn, "sec_derived_publications")
+        _admin_in_schema(
+            schema,
+            "ALTER TABLE sec_derived_publications ALTER COLUMN validated_at SET DEFAULT NULL",
+        )
+        with factory() as conn:
+            assert loader._relation_columns(conn, "sec_derived_publications") == before
+            assert conn.execute(
+                "SELECT count(*) FROM pg_attrdef d JOIN pg_attribute a "
+                "ON a.attrelid=d.adrelid AND a.attnum=d.adnum "
+                "WHERE d.adrelid='sec_derived_publications'::regclass "
+                "AND a.attname='validated_at'"
+            ).fetchone()[0] == 0
+            assert loader._schema_state_and_profile(conn) == ("shared_only", loader.PROFILE_RR1)
+
+
+@pytest.mark.parametrize("mode", ["stored", "virtual"])
+def test_generated_column_replacement_table_is_refused(tmp_path: Path, mode: str) -> None:
+    # PG18 cannot convert an existing column to a generated one; replace the token
+    # table in the disposable schema, keeping names, types and nullability.
+    with _database(tmp_path) as (_, _, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        _admin_in_schema(
+            schema,
+            "ALTER TABLE sec_derived_publication_tokens RENAME TO sec_derived_publication_tokens_old",
+            "CREATE TABLE sec_derived_publication_tokens ("
+            "publication_id uuid NOT NULL, "
+            f"backend_pid integer GENERATED ALWAYS AS (1) {mode.upper()})",
+            "ALTER TABLE sec_derived_publication_tokens OWNER TO worker_writer",
+            "DROP TABLE sec_derived_publication_tokens_old CASCADE",
+        )
+        with factory() as conn:
+            generated = conn.execute(
+                "SELECT attgenerated::text FROM pg_attribute WHERE attrelid="
+                "'sec_derived_publication_tokens'::regclass AND attname='backend_pid'"
+            ).fetchone()[0]
+            assert generated == ("s" if mode == "stored" else "v")
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details["field"].startswith("schema.")
+
+
+def _set_unlogged_with_referencers(schema: str, relation: str) -> list[str]:
+    """SET UNLOGGED on ``relation`` and every table transitively referencing it.
+
+    PostgreSQL forbids a permanent table referencing an unlogged one, so the whole
+    foreign-key referencer closure (e.g. the RR1 fee-profile tables referencing the
+    ledger) goes UNLOGGED together, deepest referencers first.
+    """
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        admin.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        closure = [
+            row[0] for row in admin.execute(
+                "WITH RECURSIVE ref(oid) AS (SELECT %s::regclass::oid UNION "
+                "SELECT c.conrelid FROM pg_constraint c JOIN ref ON c.confrelid=ref.oid "
+                "WHERE c.contype='f' AND c.conrelid<>c.confrelid) "
+                "SELECT DISTINCT cl.relname FROM ref JOIN pg_class cl ON cl.oid=ref.oid",
+                (relation,),
+            ).fetchall()
+        ]
+        pending = list(closure)
+        for _ in range(len(closure) + 1):
+            remaining = []
+            for name in pending:
+                try:
+                    admin.execute(
+                        sql.SQL("ALTER TABLE {} SET UNLOGGED").format(sql.Identifier(name))
+                    )
+                except psycopg.errors.InvalidTableDefinition:
+                    remaining.append(name)
+            pending = remaining
+            if not pending:
+                break
+        assert not pending, pending
+    return closure
+
+
+@pytest.mark.parametrize("relation", loader._PHYSICAL_TABLES)
+def test_unlogged_physical_table_is_refused_and_never_repaired(
+    tmp_path: Path, relation: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        product = relation.startswith("bond_market_")
+        if product:
+            assert loader._ensure_schema_profile(contract, factory)[0] is True
+        assert relation in _set_unlogged_with_referencers(schema, relation)
+        with factory() as conn:
+            persistence = conn.execute(
+                "SELECT relpersistence FROM pg_class WHERE oid=%s::regclass", (relation,)
+            ).fetchone()[0]
+            assert persistence == "u"
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details["field"].startswith("schema.persistence.")
+        for operation in (
+            lambda: loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            ),
+            lambda: loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory,
+                require_published=product,
+            ),
+        ):
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                operation()
+            assert exc.value.details["field"].startswith("schema.persistence.")
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT relpersistence FROM pg_class WHERE oid=%s::regclass", (relation,)
+            ).fetchone()[0] == "u"
+        _assert_nothing_published_rows_if_present(factory)
+
+
+def _assert_nothing_published_rows_if_present(
+    factory: Callable[[], psycopg.Connection],
+) -> None:
+    with factory() as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+            (loader.PRODUCT,),
+        ).fetchone()[0] == 0
+
+
+def test_temporary_shadow_table_is_not_admitted_as_the_ledger(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        _admin_in_schema(schema, "DROP TABLE sec_derived_pointer_tokens")
+        with factory() as conn:
+            # A session-local shadow with the same name lives in pg_temp, not the
+            # ledger schema; the ledger is then partial and refused.
+            conn.execute(
+                "CREATE TEMPORARY TABLE sec_derived_pointer_tokens "
+                "(product text NOT NULL, backend_pid integer NOT NULL)"
+            )
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+
+
+# --- r4081728318: durable receipts around the publication transaction -----------------
+
+
+def test_precommit_directory_fsync_failure_rolls_back_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        original_persist = loader._persist_receipt
+        original_fsync = loader._DurableFs.fsync
+        state = {"precommit": False}
+
+        def persist(evidence: Path, *, phase: str, payload: bytes) -> loader.ReceiptRef:
+            state["precommit"] = phase == "precommit"
+            try:
+                return original_persist(evidence, phase=phase, payload=payload)
+            finally:
+                state["precommit"] = False
+
+        evidence_stat = os.stat(evidence_dir)
+        calls = {"parent": 0, "file": 0, "dir": 0}
+
+        def fsync(fd: int) -> None:
+            if state["precommit"]:
+                status = os.fstat(fd)
+                if os.path.samestat(status, evidence_stat):
+                    calls["dir"] += 1
+                    # The directory fsync that makes the written file's entry durable.
+                    raise OSError("injected directory fsync failure")
+                calls["file" if stat.S_ISREG(status.st_mode) else "parent"] += 1
+            original_fsync(fd)
+
+        monkeypatch.setattr(loader, "_persist_receipt", persist)
+        monkeypatch.setattr(loader._DurableFs, "fsync", staticmethod(fsync))
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.code == loader.ErrorCode.RECEIPT_FAILURE.value
+        assert exc.value.phase == "precommit_receipt"
+        assert exc.value.transaction_outcome == "not_committed"
+        # Local leaf: parent entry synced, then the file, then the failing directory.
+        assert calls == {"parent": 1, "file": 1, "dir": 1}
+        _assert_nothing_published_rows(factory)
+
+
+def test_leftover_local_evidence_leaf_refuses_apply_until_parent_sync_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        leaf = tmp_path / "fresh-evidence"
+        parent_stat = os.stat(tmp_path)
+        original_fsync = loader._DurableFs.fsync
+        state = {"fail": True, "parent_syncs": 0}
+
+        def fsync(fd: int) -> None:
+            if os.path.samestat(os.fstat(fd), parent_stat):
+                state["parent_syncs"] += 1
+                if state["fail"]:
+                    raise OSError("injected parent directory fsync failure")
+            original_fsync(fd)
+
+        monkeypatch.setattr(loader._DurableFs, "fsync", staticmethod(fsync))
+        counted, calls = _counting(factory)
+        # Attempt 0 creates the leaf (mkdir succeeds, its parent sync fails); attempt 1
+        # finds that leftover leaf.  Neither the pre-apply receipt nor the immediate
+        # best-effort failure receipt may treat it as durable, so no connection opens.
+        for attempt in range(2):
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._publish_verified_artifact(
+                    artifact, contract=contract, connection_factory=counted,
+                    evidence_dir=leaf,
+                )
+            assert exc.value.code == loader.ErrorCode.RECEIPT_FAILURE.value
+            assert exc.value.details == {"field": "receipt.write"}
+            error = loader._best_effort_failure_receipt(
+                exc.value,
+                leaf,
+                operation_id=str(uuid4()),
+                operation_started_at_utc=datetime.now(timezone.utc).isoformat(),
+                mode="apply",
+                publication_id=artifact.publication.publication_id,
+            )
+            assert error.receipt_written is False
+            assert state["parent_syncs"] == 2 * (attempt + 1)
+            assert leaf.is_dir() and not list(leaf.iterdir())
+            assert calls == []
+        _assert_nothing_published_rows_if_present(factory)
+        # Once the parent entry is durable, the same path is admitted end to end.
+        state["fail"] = False
+        result = loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=counted, evidence_dir=leaf,
+        )
+        assert result.outcome == "published_verified"
+        assert calls
+        assert state["parent_syncs"] > 4
+        assert sorted(path.name for path in leaf.iterdir()) == sorted(
+            receipt.basename for receipt in result.receipts
+        )
+
+
+def test_postcommit_receipt_fsync_failure_reports_evidence_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        original_persist = loader._persist_receipt
+
+        def persist(evidence: Path, *, phase: str, payload: bytes) -> loader.ReceiptRef:
+            if phase in {"readback", "failure"}:
+                # Even the failure receipt cannot be made durable.
+                raise loader.ArtifactLoaderError(
+                    loader.ErrorCode.RECEIPT_FAILURE, field="receipt.write"
+                )
+            return original_persist(evidence, phase=phase, payload=payload)
+
+        monkeypatch.setattr(loader, "_persist_receipt", persist)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.code == loader.ErrorCode.COMMITTED_EVIDENCE_INCOMPLETE.value
+        assert exc.value.phase == "final_receipt"
+        assert exc.value.transaction_outcome == "committed"
+        assert exc.value.outcome == "recovery_required"
+        recovered = loader._read_only_operation(
+            artifact, contract=contract, connection_factory=factory, require_published=True
+        )
+        assert recovered.outcome == "already_published_verified"

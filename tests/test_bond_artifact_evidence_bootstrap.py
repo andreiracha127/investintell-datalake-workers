@@ -28,7 +28,35 @@ RUNTIME = ROOT / "docker" / "bond-implied-artifact-loader"
 WRAPPER = RUNTIME / "bootstrap_evidence.py"
 DIR_FD = 5
 PROBE_FD = 6
+APP_FD = 8
 EVIDENCE_MOUNT_ID = 812
+DSN = "postgresql://u:secret@h/db"
+# Every inherited interpreter/dynamic-loader injection vector the child must never see.
+HOSTILE_ENVIRONMENT = {
+    "PYTHONPATH": "/evidence",
+    "PYTHONHOME": "/evidence/home",
+    "PYTHONUSERBASE": "/evidence/userbase",
+    "PYTHONSTARTUP": "/evidence/startup.py",
+    "PYTHONINSPECT": "1",
+    "PYTHONWARNINGS": "ignore::evilwarn.EvilWarning",
+    "PYTHONSAFEPATH": "",
+    "PYTHONNOUSERSITE": "",
+    "PYTHONDONTWRITEBYTECODE": "",
+    "PYTHONUNBUFFERED": "0",
+    "PYTHONPLATLIBDIR": "evil",
+    "PYTHONBREAKPOINT": "evil.hook",
+    "PYTHON_FUTURE_SETTING": "/evidence",
+    "LD_PRELOAD": "/evidence/evil.so",
+    "LD_LIBRARY_PATH": "/evidence",
+    "LD_AUDIT": "/evidence/audit.so",
+    "LD_DEBUG_OUTPUT": "/evidence/ld",
+}
+PINNED_CHILD_PYTHON = {
+    "PYTHONPATH": "/app",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+}
 FULL_CAPS = "000001ffffffffff"
 ZERO_CAPS = "0000000000000000"
 LOADER_ARGV = [
@@ -119,7 +147,14 @@ class FakeOps(boot.SystemOps):
         self.probe_files: dict[str, bytearray] = {}
         self.probe_short_write = False
         self.wrapper_bytes = b"reviewed wrapper bytes\n"
-        self.env = {"PATH": "/tmp/evil:/usr/bin", "DATABASE_URL": "postgresql://u:secret@h/db"}
+        self.app = FakeStat(stat.S_IFDIR | 0o755, 0, 0, st_dev=1, st_ino=90)
+        self.app_path_override: FakeStat | None = None
+        self.app_path_after_chdir: FakeStat | None = None
+        self.cwd: int | None = None
+        self.env = {
+            "PATH": "/tmp/evil:/usr/bin", "DATABASE_URL": DSN, "HOME": "/root",
+            "OMP_NUM_THREADS": "1", **HOSTILE_ENVIRONMENT,
+        }
         self.stderr = bytearray()
         self.umask_value: int | None = None
 
@@ -179,6 +214,10 @@ class FakeOps(boot.SystemOps):
         self._record("lstat", path)
         if path == "/":
             return self.root
+        if path == "/app":
+            if self.cwd == APP_FD and self.app_path_after_chdir is not None:
+                return self.app_path_after_chdir
+            return self.app_path_override or self.app
         assert path == "/evidence"
         if self.path_missing:
             raise FileNotFoundError(errno.ENOENT, "missing")
@@ -186,6 +225,11 @@ class FakeOps(boot.SystemOps):
 
     def open_directory(self, path: str) -> int:
         self._record("open_directory", path)
+        if path == "/app":
+            assert self.dropped
+            if not stat.S_ISDIR((self.app_path_override or self.app).st_mode):
+                raise OSError(errno.ELOOP, "not followed")
+            return APP_FD
         assert path == "/evidence"
         if not stat.S_ISDIR((self.path_override or self.evidence).st_mode):
             raise OSError(errno.ELOOP, "not followed")
@@ -195,6 +239,8 @@ class FakeOps(boot.SystemOps):
         self._record("fstat", fd)
         if fd == DIR_FD:
             return replace(self.evidence)
+        if fd == APP_FD:
+            return replace(self.app)
         assert fd == PROBE_FD
         return FakeStat(stat.S_IFREG | 0o600, self.uid[1], self.gid[1], st_nlink=1)
 
@@ -291,6 +337,11 @@ class FakeOps(boot.SystemOps):
         assert dir_fd == DIR_FD
         del self.probe_files[name]
 
+    def fchdir(self, fd: int) -> None:
+        self._record("fchdir", fd)
+        assert fd == APP_FD
+        self.cwd = fd
+
     def environ(self) -> dict[str, str]:
         self._record("environ")
         return dict(self.env)
@@ -321,7 +372,7 @@ def _refused(ops: FakeOps, argv: list[str] | None = None) -> str:
 
 
 MUTATIONS = {"fchmod", "fchown", "umask", "prctl", "setgroups", "setresgid", "setresuid",
-             "open_probe", "unlink", "execve"}
+             "open_probe", "unlink", "fchdir", "execve"}
 
 
 def _no_mutation(ops: FakeOps) -> None:
@@ -342,7 +393,7 @@ def test_root_owned_mount_is_prepared_dropped_probed_then_execs_unchanged_argv()
     names = ops.names()
     order = [
         "fchmod", "fchown", "umask", "prctl", "setgroups", "setresgid", "setresuid",
-        "open_probe", "unlink", "execve",
+        "open_probe", "unlink", "fchdir", "environ", "execve",
     ]
     positions = [names.index(name) for name in order]
     assert positions == sorted(positions)
@@ -375,9 +426,29 @@ def test_root_owned_mount_is_prepared_dropped_probed_then_execs_unchanged_argv()
     assert path == "/usr/bin/timeout"
     assert list(argv) == LOADER_ARGV
     env_map = dict(env)
+    # Only reviewed interpreter settings, pinned PATH; operational variables pass through.
+    assert {key: value for key, value in env_map.items() if key.startswith("PYTHON")} == (
+        PINNED_CHILD_PYTHON
+    )
+    assert not [key for key in env_map if key.startswith("LD_")]
     assert env_map["PATH"] == "/usr/local/bin:/usr/bin:/bin"
-    assert env_map["DATABASE_URL"] == ops.env["DATABASE_URL"]
+    assert env_map["DATABASE_URL"] == DSN
+    assert env_map["HOME"] == "/root" and env_map["OMP_NUM_THREADS"] == "1"
+    assert set(env_map) == {"PATH", "DATABASE_URL", "HOME", "OMP_NUM_THREADS",
+                            *PINNED_CHILD_PYTHON}
+    # The child starts in the pinned, image-owned /app: opened no-follow, identity-checked,
+    # entered by descriptor after the drop and the probe, and closed before the handoff.
+    assert ops.cwd == APP_FD
+    app_open = ops.calls.index(("open_directory", ("/app",)))
+    assert names.index("setresuid") < app_open < ops.calls.index(("fchdir", (APP_FD,)))
+    assert ops.calls.index(("close", (APP_FD,))) < names.index("execve")
+    assert ops.calls.index(("close", (DIR_FD,))) < app_open
     (marker,) = _markers(ops)
+    assert marker["child"] == {
+        "cwd": "/app", "path": "/usr/local/bin:/usr/bin:/bin",
+        "python_environment": PINNED_CHILD_PYTHON,
+        "stripped_environment_keys": len(HOSTILE_ENVIRONMENT),
+    }
     assert marker["phase"] == "privileges_dropped"
     assert marker["wrapper_sha256"] == hashlib.sha256(ops.wrapper_bytes).hexdigest()
     assert marker["loader_mode"] == "--verify-only"
@@ -391,8 +462,98 @@ def test_root_owned_mount_is_prepared_dropped_probed_then_execs_unchanged_argv()
         "initial_gid": 0, "initial_mode": "0755", "uid": 65532, "gid": 65532,
         "mode": "0700", "chmod_applied": True, "chown_applied": True,
     }
-    assert "secret" not in ops.stderr.decode("ascii")
-    assert "DATABASE_URL" not in ops.stderr.decode("ascii")
+    stderr = ops.stderr.decode("ascii")
+    assert "secret" not in stderr and "DATABASE_URL" not in stderr
+    # No inherited value is echoed; the marker's child block (asserted exactly above) names
+    # only the pinned settings ("/evidence" itself is the legitimate evidence path).
+    for key, value in HOSTILE_ENVIRONMENT.items():
+        if key.startswith("LD_") or key == "PYTHON_FUTURE_SETTING":
+            assert key not in stderr
+        if value and value not in {"/evidence", "1", "0"}:
+            assert value not in stderr
+
+
+def test_loader_environment_strips_every_inherited_python_and_loader_variable() -> None:
+    inherited = {
+        "DATABASE_URL": DSN, "PGSSLMODE": "require", "HOME": "/root", "TZ": "UTC",
+        "PATH": "/evidence/bin", **HOSTILE_ENVIRONMENT,
+        "PYTHONEXECUTABLE": "/evidence/python", "PYTHONUTF8": "0", "PYTHON_GIL": "0",
+        "PYTHONZZZ_NOT_YET_INVENTED": "/evidence", "LD_BIND_NOW": "1",
+        "pythonpath": "/evidence",  # not read by CPython; case-sensitive keys are data
+    }
+    snapshot = dict(inherited)
+    child = boot.loader_environment(inherited)
+    assert inherited == snapshot  # the input mapping is not mutated
+    assert child == {
+        "DATABASE_URL": DSN, "PGSSLMODE": "require", "HOME": "/root", "TZ": "UTC",
+        "pythonpath": "/evidence", "PATH": "/usr/local/bin:/usr/bin:/bin",
+        **PINNED_CHILD_PYTHON,
+    }
+    assert tuple(boot.CHILD_PYTHON_ENVIRONMENT) == tuple(PINNED_CHILD_PYTHON.items())
+    assert boot.loader_environment({}) == {
+        "PATH": "/usr/local/bin:/usr/bin:/bin", **PINNED_CHILD_PYTHON,
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("symlink", "working_directory_unsafe"),
+        ("regular", "working_directory_unsafe"),
+        ("missing", "working_directory_unsafe"),
+        ("app_owned", "working_directory_unsafe"),
+        ("group_writable", "working_directory_unsafe"),
+        ("world_writable", "working_directory_unsafe"),
+        ("replaced_before_open", "working_directory_unsafe"),
+        ("replaced_after_chdir", "working_directory_unsafe"),
+        ("open_fails", "working_directory_unsafe"),
+        ("fchdir_fails", "working_directory_failed"),
+    ],
+)
+def test_unsafe_or_unenterable_app_directory_refuses_before_exec(
+    change: str, reason: str
+) -> None:
+    class AppFails(FakeOps):
+        def lstat(self, path: str) -> Any:
+            if path == "/app" and change == "missing":
+                self._record("lstat", path)
+                raise FileNotFoundError(errno.ENOENT, "missing")
+            return super().lstat(path)
+
+        def open_directory(self, path: str) -> int:
+            if path == "/app" and change == "open_fails":
+                self._record("open_directory", path)
+                raise PermissionError(errno.EACCES, "denied")
+            return super().open_directory(path)
+
+    ops = AppFails()
+    if change == "symlink":
+        ops.app_path_override = FakeStat(stat.S_IFLNK | 0o777, 0, 0, st_dev=1, st_ino=91)
+    elif change == "regular":
+        ops.app_path_override = FakeStat(stat.S_IFREG | 0o644, 0, 0, st_dev=1, st_ino=90)
+    elif change == "app_owned":
+        ops.app = FakeStat(stat.S_IFDIR | 0o755, 65532, 65532, st_dev=1, st_ino=90)
+    elif change == "group_writable":
+        ops.app = FakeStat(stat.S_IFDIR | 0o775, 0, 0, st_dev=1, st_ino=90)
+    elif change == "world_writable":
+        ops.app = FakeStat(stat.S_IFDIR | 0o757, 0, 0, st_dev=1, st_ino=90)
+    elif change == "replaced_before_open":
+        ops.app_path_override = FakeStat(stat.S_IFDIR | 0o755, 0, 0, st_dev=1, st_ino=91)
+    elif change == "replaced_after_chdir":
+        ops.app_path_after_chdir = FakeStat(stat.S_IFDIR | 0o755, 0, 0, st_dev=1, st_ino=91)
+    elif change == "fchdir_fails":
+        ops.fail["fchdir"] = OSError(errno.EIO, "io")
+    assert boot.run(list(LOADER_ARGV), ops) == 78
+    (marker,) = _markers(ops)
+    assert marker == {
+        "schema": "bond_artifact_bootstrap/1", "phase": "bootstrap_failure", "reason": reason,
+    }
+    assert "execve" not in ops.names() and "environ" not in ops.names()
+    # The refusal happens as the dropped user, and any opened /app descriptor is closed.
+    assert ops.dropped
+    app_opened = change not in {"symlink", "regular", "missing", "open_fails"}
+    assert (("close", (APP_FD,)) in ops.calls) is app_opened
+    assert ("fchdir" in ops.names()) is (change in {"fchdir_fails", "replaced_after_chdir"})
 
 
 def test_already_owned_private_mount_is_idempotent_without_metadata_changes() -> None:
@@ -965,7 +1126,7 @@ def test_railway_start_command_invokes_the_same_wrapper_and_cmd() -> None:
 
 
 def test_release_context_binds_new_runtime_and_refuses_pre_bootstrap_hashes(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from src.bonds import implied_rating_artifact_loader as loader
 
@@ -995,7 +1156,13 @@ def test_release_context_binds_new_runtime_and_refuses_pre_bootstrap_hashes(
                 for relative in loader._RELEASE_SOURCE_PATHS
             },
         }
-        (evidence / "release-context.json").write_text(json.dumps(document), encoding="utf-8")
+        raw = json.dumps(document).encode("utf-8")
+        (evidence / "release-context.json").write_bytes(raw)
+        # Each synthetic context is independently approved so only the runtime-file
+        # binding under test can refuse it (a loader without the pin ignores the setting).
+        monkeypatch.setenv(
+            "BOND_ARTIFACT_APPROVED_RELEASE_CONTEXT_SHA256", hashlib.sha256(raw).hexdigest()
+        )
         return evidence
 
     fresh_dockerfile = hashlib.sha256((RUNTIME / "Dockerfile").read_bytes()).hexdigest()
