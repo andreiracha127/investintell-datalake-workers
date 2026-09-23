@@ -1377,29 +1377,31 @@ def test_runtime_inheriting_reader_only_role_is_admitted(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize(
-    ("grant", "revoke", "reader"),
+    ("grant", "revoke", "field"),
     [
-        ("GRANT worker_writer TO app_runtime", "REVOKE worker_writer FROM app_runtime", "app_runtime"),
+        ("GRANT worker_writer TO app_runtime", "REVOKE worker_writer FROM app_runtime",
+         "schema.runtime_create"),
         (
             "GRANT worker_writer TO app_analytics_ro WITH INHERIT FALSE, SET TRUE",
             "REVOKE worker_writer FROM app_analytics_ro",
-            "app_analytics_ro",
+            "schema.reader_role.app_analytics_ro",
         ),
         (
             "GRANT pg_write_all_data TO app_runtime",
             "REVOKE pg_write_all_data FROM app_runtime",
-            "app_runtime",
+            "schema.reader_role.app_runtime",
         ),
         (
             "GRANT pg_maintain TO app_analytics_ro",
             "REVOKE pg_maintain FROM app_analytics_ro",
-            "app_analytics_ro",
+            "schema.reader_role.app_analytics_ro",
         ),
-        ("ALTER ROLE app_runtime SUPERUSER", "ALTER ROLE app_runtime NOSUPERUSER", "app_runtime"),
+        ("ALTER ROLE app_runtime SUPERUSER", "ALTER ROLE app_runtime NOSUPERUSER",
+         "schema.runtime_create"),
     ],
 )
 def test_reader_role_inheritance_or_owner_reach_is_refused(
-    tmp_path: Path, grant: str, revoke: str, reader: str
+    tmp_path: Path, grant: str, revoke: str, field: str
 ) -> None:
     with _database(tmp_path) as (contract, _, factory, _, _):
         assert loader._ensure_schema(contract, factory)
@@ -1411,7 +1413,7 @@ def test_reader_role_inheritance_or_owner_reach_is_refused(
             with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
                 loader._schema_state(conn)
             assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
-            assert exc.value.details == {"field": f"schema.reader_role.{reader}"}
+            assert exc.value.details == {"field": field}
         finally:
             _admin_execute(revoke)
         with factory() as conn:
@@ -3087,6 +3089,493 @@ def _assert_nothing_published_rows_if_present(
             "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
             (loader.PRODUCT,),
         ).fetchone()[0] == 0
+
+
+def test_pristine_schema_security_and_indexes_admit(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, _, _):
+        with factory() as conn:
+            assert loader._schema_state(conn) == "absent"
+        _install_shared_only(factory)
+        with factory() as conn:
+            assert loader._schema_state(conn) == "shared_only"
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            assert loader._schema_state(conn) == "compatible"
+            assert conn.execute(
+                "SELECT count(*) FROM pg_index i JOIN pg_class idx ON idx.oid=i.indexrelid "
+                "WHERE idx.relname=ANY(%s) AND i.indisvalid AND i.indisready AND i.indislive",
+                (list(loader._SECONDARY_INDEXES),),
+            ).fetchone()[0] == 2
+            with conn.transaction():
+                conn.execute("SET LOCAL enable_seqscan TO off")
+                plan = "\n".join(row[0] for row in conn.execute(
+                    "EXPLAIN SELECT month FROM bond_market_implied_rating_v1 "
+                    "WHERE cusip_id=%s ORDER BY month", ("000000000",)
+                ).fetchall())
+                assert "bond_market_implied_rating_v1_cusip_month_idx" in plan
+        result = loader._read_only_operation(
+            artifact, contract=contract, connection_factory=factory, require_published=False
+        )
+        assert result.outcome == "dry_run_verified"
+        _assert_nothing_published_rows(factory)
+
+
+@pytest.mark.parametrize("relation", loader._PHYSICAL_TABLES)
+@pytest.mark.parametrize("mutation", ["enabled", "forced", "policy"])
+def test_rls_and_policies_refuse_before_publication(
+    tmp_path: Path, relation: str, mutation: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, _, evidence_dir):
+        product = relation not in loader._SHARED_SCHEMA_OBJECTS
+        if product:
+            assert loader._ensure_schema(contract, factory)
+        else:
+            _install_shared_only(factory)
+        with factory() as conn:
+            statement = {
+                "enabled": "ALTER TABLE {} ENABLE ROW LEVEL SECURITY",
+                "forced": "ALTER TABLE {} FORCE ROW LEVEL SECURITY",
+                "policy": "CREATE POLICY admission_probe ON {} USING (true)",
+            }[mutation]
+            conn.execute(sql.SQL(statement).format(sql.Identifier(relation)))
+        for operation in (
+            lambda: loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory,
+                require_published=False,
+            ),
+            lambda: loader._ensure_schema(contract, factory),
+            lambda: loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            ),
+        ):
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                operation()
+            assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+            assert exc.value.details == {"field": f"schema.rls.{relation}"}
+        _assert_nothing_published_rows_if_present(factory)
+        if not product:
+            _assert_nothing_published(factory)
+
+
+@pytest.mark.parametrize("stage", ["absent", "shared_only", "compatible"])
+def test_runtime_schema_create_refuses_at_every_admission_stage(
+    tmp_path: Path, stage: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        if stage == "shared_only":
+            _install_shared_only(factory)
+        elif stage == "compatible":
+            assert loader._ensure_schema(contract, factory)
+        _admin_in_schema(schema, sql.SQL("GRANT CREATE ON SCHEMA {} TO app_runtime").format(
+            sql.Identifier(schema)
+        ))
+        for operation in (
+            lambda: loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory,
+                require_published=False,
+            ),
+            lambda: loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            ),
+        ):
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                operation()
+            assert exc.value.details == {"field": "schema.runtime_create"}
+        if stage != "absent":
+            _assert_nothing_published_rows_if_present(factory)
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT has_schema_privilege('app_runtime', %s, 'CREATE')", (schema,)
+            ).fetchone()[0] is True
+        if stage == "shared_only":
+            _assert_nothing_published(factory)
+
+
+@pytest.mark.parametrize(
+    ("grant", "field"),
+    [
+        ("PUBLIC", "schema.reader_role.app_analytics_ro"),
+        ("app_runtime", "schema.runtime_create"),
+    ],
+)
+def test_runtime_schema_create_grant_is_not_repaired(
+    tmp_path: Path, grant: str, field: str
+) -> None:
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _install_shared_only(factory)
+        _admin_in_schema(schema, sql.SQL("GRANT CREATE ON SCHEMA {} TO {}").format(
+            sql.Identifier(schema), sql.SQL(grant)
+        ))
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._ensure_schema(contract, factory)
+        assert exc.value.details == {"field": field}
+        _assert_nothing_published(factory)
+
+
+@pytest.mark.parametrize("reader", loader._READER_ROLES)
+def test_reader_create_in_later_search_path_schema_is_refused(
+    tmp_path: Path, reader: str
+) -> None:
+    shadow = f"schema_shadow_{uuid4().hex[:12]}"
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _install_shared_only(factory)
+        _admin_execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(shadow)))
+        try:
+            _admin_execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO worker_writer").format(
+                sql.Identifier(shadow)
+            ))
+
+            def searched_factory() -> psycopg.Connection:
+                return psycopg.connect(
+                    _worker_dsn(), autocommit=True,
+                    options=f"-c search_path={schema},{shadow},public",
+                )
+
+            with searched_factory() as conn:
+                assert conn.execute("SELECT current_schemas(false)").fetchone()[0] == [
+                    schema, shadow, "public"
+                ]
+                assert loader._schema_state(conn) == "shared_only"
+            _admin_execute(sql.SQL("GRANT CREATE ON SCHEMA {} TO {}").format(
+                sql.Identifier(shadow), sql.Identifier(reader)
+            ))
+            with searched_factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+            field = (
+                "schema.runtime_create" if reader == "app_runtime"
+                else "schema.reader_role.app_analytics_ro"
+            )
+            assert exc.value.details == {"field": field}
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._ensure_schema(contract, searched_factory)
+            assert exc.value.details == {"field": field}
+            _assert_nothing_published(factory)
+        finally:
+            _admin_execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(shadow)))
+
+
+def test_admin_only_membership_to_schema_creator_is_refused(tmp_path: Path) -> None:
+    creator = f"schema_admin_{uuid4().hex[:12]}"
+    _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(creator)))
+    try:
+        with _database(tmp_path) as (contract, _, factory, schema, _):
+            _install_shared_only(factory)
+            _admin_in_schema(schema, sql.SQL("GRANT CREATE ON SCHEMA {} TO {}").format(
+                sql.Identifier(schema), sql.Identifier(creator)
+            ))
+            _admin_execute(sql.SQL(
+                "GRANT {} TO app_runtime WITH INHERIT FALSE, SET FALSE, ADMIN TRUE"
+            ).format(sql.Identifier(creator)))
+            try:
+                with factory() as conn:
+                    assert conn.execute(
+                        "SELECT has_schema_privilege('app_runtime', %s, 'CREATE'), "
+                        "pg_has_role('app_runtime', %s, 'SET'), "
+                        "pg_has_role('app_runtime', %s, 'MEMBER WITH ADMIN OPTION')",
+                        (schema, creator, creator),
+                    ).fetchone() == (False, False, True)
+                    with pytest.raises(loader.ArtifactLoaderError) as exc:
+                        loader._schema_state(conn)
+                assert exc.value.details == {"field": "schema.runtime_create"}
+                with pytest.raises(loader.ArtifactLoaderError) as exc:
+                    loader._ensure_schema(contract, factory)
+                assert exc.value.details == {"field": "schema.runtime_create"}
+                _assert_nothing_published(factory)
+            finally:
+                _admin_execute(sql.SQL("REVOKE {} FROM app_runtime").format(
+                    sql.Identifier(creator)
+                ))
+    finally:
+        _admin_execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(creator)))
+        _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(creator)))
+
+
+def test_runtime_schema_owner_is_refused_without_relation_acl_drift(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_shared_only(factory)
+        with factory() as conn:
+            owner = conn.execute(
+                "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname=%s",
+                (schema,),
+            ).fetchone()[0]
+        _admin_in_schema(schema, sql.SQL("ALTER SCHEMA {} OWNER TO app_runtime").format(
+            sql.Identifier(schema)
+        ))
+        try:
+            for operation in (
+                lambda: loader._read_only_operation(
+                    artifact, contract=contract, connection_factory=factory,
+                    require_published=False,
+                ),
+                lambda: loader._publish_verified_artifact(
+                    artifact, contract=contract, connection_factory=factory,
+                    evidence_dir=evidence_dir,
+                ),
+            ):
+                with pytest.raises(loader.ArtifactLoaderError) as exc:
+                    operation()
+                assert exc.value.details == {"field": "schema.runtime_create"}
+            _assert_nothing_published(factory)
+        finally:
+            _admin_in_schema(schema, sql.SQL("ALTER SCHEMA {} OWNER TO {}").format(
+                sql.Identifier(schema), sql.Identifier(owner)
+            ))
+
+
+def test_set_only_schema_creator_role_is_refused(tmp_path: Path) -> None:
+    creator = f"schema_creator_{uuid4().hex[:12]}"
+    _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(creator)))
+    try:
+        with _database(tmp_path) as (contract, _, factory, schema, _):
+            _install_shared_only(factory)
+            _admin_in_schema(schema, sql.SQL("GRANT CREATE ON SCHEMA {} TO {}").format(
+                sql.Identifier(schema), sql.Identifier(creator)
+            ))
+            _admin_execute(sql.SQL(
+                "GRANT {} TO app_runtime WITH INHERIT FALSE, SET TRUE"
+            ).format(sql.Identifier(creator)))
+            try:
+                with factory() as conn:
+                    assert conn.execute(
+                        "SELECT has_schema_privilege('app_runtime', %s, 'CREATE'), "
+                        "pg_has_role('app_runtime', %s, 'SET')", (schema, creator)
+                    ).fetchone() == (False, True)
+                    with pytest.raises(loader.ArtifactLoaderError) as exc:
+                        loader._schema_state(conn)
+                assert exc.value.details == {"field": "schema.runtime_create"}
+                with pytest.raises(loader.ArtifactLoaderError) as exc:
+                    loader._ensure_schema(contract, factory)
+                assert exc.value.details == {"field": "schema.runtime_create"}
+                _assert_nothing_published(factory)
+            finally:
+                _admin_execute(sql.SQL("REVOKE {} FROM app_runtime").format(
+                    sql.Identifier(creator)
+                ))
+    finally:
+        _admin_execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(creator)))
+        _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(creator)))
+
+
+def test_set_only_schema_owner_role_is_refused(tmp_path: Path) -> None:
+    owner_role = f"schema_owner_{uuid4().hex[:12]}"
+    _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(owner_role)))
+    try:
+        with _database(tmp_path) as (contract, _, factory, schema, _):
+            _install_shared_only(factory)
+            with factory() as conn:
+                prior_owner = conn.execute(
+                    "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname=%s",
+                    (schema,),
+                ).fetchone()[0]
+                before = _relation_acls(conn)
+            _admin_in_schema(schema, sql.SQL("ALTER SCHEMA {} OWNER TO {}").format(
+                sql.Identifier(schema), sql.Identifier(owner_role)
+            ))
+            try:
+                # Ownership can drop a schema even after ordinary CREATE is revoked.
+                _admin_in_schema(schema, sql.SQL("REVOKE CREATE ON SCHEMA {} FROM {}").format(
+                    sql.Identifier(schema), sql.Identifier(owner_role)
+                ))
+                _admin_execute(sql.SQL(
+                    "GRANT {} TO app_runtime WITH INHERIT FALSE, SET TRUE"
+                ).format(sql.Identifier(owner_role)))
+                try:
+                    with factory() as conn:
+                        assert conn.execute(
+                            "SELECT has_schema_privilege('app_runtime', %s, 'CREATE'), "
+                            "has_schema_privilege(%s, %s, 'CREATE'), "
+                            "pg_has_role('app_runtime', %s, 'SET')",
+                            (schema, owner_role, schema, owner_role),
+                        ).fetchone() == (False, False, True)
+                        assert _relation_acls(conn) == before
+                        with pytest.raises(loader.ArtifactLoaderError) as exc:
+                            loader._schema_state(conn)
+                    assert exc.value.details == {"field": "schema.runtime_create"}
+                    with pytest.raises(loader.ArtifactLoaderError) as exc:
+                        loader._ensure_schema(contract, factory)
+                    assert exc.value.details == {"field": "schema.runtime_create"}
+                    _assert_nothing_published(factory)
+                    with factory() as conn:
+                        assert _relation_acls(conn) == before
+                finally:
+                    _admin_execute(sql.SQL("REVOKE {} FROM app_runtime").format(
+                        sql.Identifier(owner_role)
+                    ))
+            finally:
+                _admin_in_schema(schema, sql.SQL("ALTER SCHEMA {} OWNER TO {}").format(
+                    sql.Identifier(schema), sql.Identifier(prior_owner)
+                ))
+    finally:
+        _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(owner_role)))
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "replaced", "descending", "partial", "included", "unique", "invalid"]
+)
+@pytest.mark.parametrize("index", tuple(loader._SECONDARY_INDEXES))
+def test_secondary_index_drift_refuses_without_a_new_publication(
+    tmp_path: Path, index: str, mutation: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        assert loader._ensure_schema(contract, factory)
+        if mutation == "invalid":
+            # The already-published fixture supplies duplicate month values, so
+            # CREATE UNIQUE INDEX CONCURRENTLY leaves an invalid index on failure.
+            result = loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+            assert result.outcome == "published_verified"
+        with factory() as conn:
+            before = conn.execute(
+                "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0]
+            pointer = conn.execute(
+                "SELECT publication_id FROM sec_derived_current_pointers WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()
+            conn.execute(sql.SQL("DROP INDEX {}").format(sql.Identifier(index)))
+            if mutation in {"replaced", "descending", "partial", "included", "unique"}:
+                first, second = loader._SECONDARY_INDEXES[index]
+                definition = {
+                    "replaced": sql.SQL("(month, publication_id)"),
+                    "descending": sql.SQL("({} DESC, {})").format(
+                        sql.Identifier(first), sql.Identifier(second)
+                    ),
+                    "partial": sql.SQL("({}, {}) WHERE witnessed").format(
+                        sql.Identifier(first), sql.Identifier(second)
+                    ),
+                    "included": sql.SQL("({}, {}) INCLUDE (witnessed)").format(
+                        sql.Identifier(first), sql.Identifier(second)
+                    ),
+                    "unique": sql.SQL("({}, {})").format(
+                        sql.Identifier(first), sql.Identifier(second)
+                    ),
+                }[mutation]
+                prefix = "CREATE UNIQUE INDEX" if mutation == "unique" else "CREATE INDEX"
+                conn.execute(sql.SQL(prefix + " {} ON bond_market_implied_rating_v1 ").format(
+                    sql.Identifier(index)
+                ) + definition)
+        if mutation == "invalid":
+            with psycopg.connect(_worker_dsn(), autocommit=True,
+                                 options=f"-c search_path={schema},public") as conn:
+                with pytest.raises(psycopg.errors.UniqueViolation):
+                    conn.execute(sql.SQL(
+                        "CREATE UNIQUE INDEX CONCURRENTLY {} "
+                        "ON bond_market_implied_rating_v1 (month)"
+                    ).format(sql.Identifier(index)))
+                assert conn.execute(
+                    "SELECT indisvalid, indisready FROM pg_index "
+                    "WHERE indexrelid=%s::regclass",
+                    (index,),
+                ).fetchone() == (False, True)
+        for operation in (
+            lambda: loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory,
+                require_published=False,
+            ),
+            lambda: loader._ensure_schema(contract, factory),
+            lambda: loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            ),
+        ):
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                operation()
+            assert exc.value.details == {"field": f"schema.index.{index}"}
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM sec_derived_publications WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0] == before
+            assert conn.execute(
+                "SELECT publication_id FROM sec_derived_current_pointers WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone() == pointer
+        if mutation != "invalid":
+            _assert_nothing_published_rows(factory)
+
+
+@pytest.mark.parametrize(("flag", "column"), [("invalid", 7), ("not_ready", 8)])
+def test_mocked_index_catalog_flag_is_refused_with_unchanged_definition(
+    tmp_path: Path, flag: str, column: int,
+) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            assert loader._schema_state(conn) == "compatible"
+
+            class MutatedIndexCatalog:
+                def execute(self, statement: str, params: object = None) -> object:
+                    cursor = conn.execute(statement, params)
+                    if "FROM pg_catalog.pg_class idx " not in statement:
+                        return cursor
+
+                    class MutatedIndexRows:
+                        def fetchall(self) -> list[tuple[object, ...]]:
+                            rows = cursor.fetchall()
+                            return [
+                                (*row[:column], False, *row[column + 1:])
+                                if row[0] == "bond_market_implied_rating_v1_pub_month_idx" else row
+                                for row in rows
+                            ]
+
+                    return MutatedIndexRows()
+
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(MutatedIndexCatalog())  # type: ignore[arg-type]
+            assert exc.value.details == {
+                "field": "schema.index.bond_market_implied_rating_v1_pub_month_idx"
+            }, flag
+        _assert_nothing_published_rows(factory)
+
+
+@pytest.mark.parametrize("drift", ["rls", "index", "schema_create"])
+def test_admission_drift_at_precommit_rolls_back_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        assert loader._ensure_schema(contract, factory)
+        original = loader.materialize
+
+        def materialize_then_drift(
+            conn: psycopg.Connection, *args: object, **kwargs: object
+        ) -> None:
+            original(conn, *args, **kwargs)  # type: ignore[arg-type]
+            if drift == "rls":
+                conn.execute("ALTER TABLE bond_market_implied_rating_v1 ENABLE ROW LEVEL SECURITY")
+            elif drift == "index":
+                conn.execute("DROP INDEX bond_market_implied_rating_v1_cusip_month_idx")
+            else:
+                _admin_in_schema(schema, sql.SQL("GRANT CREATE ON SCHEMA {} TO app_runtime").format(
+                    sql.Identifier(schema)
+                ))
+
+        monkeypatch.setattr(loader, "materialize", materialize_then_drift)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.phase == "schema_precommit"
+        assert exc.value.details == {"field": {
+            "rls": "schema.rls.bond_market_implied_rating_v1",
+            "index": "schema.index.bond_market_implied_rating_v1_cusip_month_idx",
+            "schema_create": "schema.runtime_create",
+        }[drift]}
+        assert not list(evidence_dir.glob("*precommit*"))
+        _assert_nothing_published_rows(factory)
+        with factory() as conn:
+            if drift == "schema_create":
+                assert conn.execute(
+                    "SELECT has_schema_privilege('app_runtime', %s, 'CREATE')", (schema,)
+                ).fetchone()[0] is True
+            else:
+                assert loader._schema_state(conn) == "compatible"
 
 
 def test_temporary_shadow_table_is_not_admitted_as_the_ledger(tmp_path: Path) -> None:

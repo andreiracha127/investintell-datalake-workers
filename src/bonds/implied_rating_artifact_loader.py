@@ -1616,6 +1616,10 @@ _PHYSICAL_TABLES = (
     *_SHARED_SCHEMA_OBJECTS,
     "bond_market_implied_rating_v1_builds", "bond_market_implied_rating_v1",
 )
+_SECONDARY_INDEXES = {
+    "bond_market_implied_rating_v1_pub_month_idx": ("publication_id", "month"),
+    "bond_market_implied_rating_v1_cusip_month_idx": ("cusip_id", "month"),
+}
 
 
 def _expected_relation_columns(name: str) -> tuple[tuple[Any, ...], ...]:
@@ -1830,6 +1834,36 @@ def _acl_item_admitted(
     )
 
 
+def _verify_schema_privileges(conn: psycopg.Connection) -> None:
+    """Readers cannot create in, or assume the owner of, any searched schema."""
+    rows = conn.execute(
+        "WITH RECURSIVE assumable(reader_oid,role_oid) AS ("
+        "SELECT oid,oid FROM pg_catalog.pg_roles WHERE rolname=ANY(%s) "
+        "UNION SELECT a.reader_oid,m.roleid FROM assumable a "
+        "JOIN pg_catalog.pg_auth_members m ON m.member=a.role_oid "
+        "WHERE m.set_option OR m.admin_option) "
+        "SELECT n.nspname,r.rolname,EXISTS ("
+        "SELECT 1 FROM assumable a JOIN pg_catalog.pg_roles target ON target.oid=a.role_oid "
+        "WHERE a.reader_oid=r.oid AND (target.rolsuper "
+        "OR pg_catalog.pg_has_role(target.oid,n.nspowner,'MEMBER') "
+        "OR pg_catalog.has_schema_privilege(target.oid,n.oid,'CREATE'))) "
+        "FROM pg_catalog.pg_namespace n "
+        "LEFT JOIN pg_catalog.pg_roles r ON r.rolname=ANY(%s) "
+        "WHERE n.nspname=ANY(pg_catalog.current_schemas(false)) "
+        "ORDER BY n.nspname,r.rolname",
+        (list(_READER_ROLES), list(_READER_ROLES)),
+    ).fetchall()
+    if not rows:
+        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.runtime_create")
+    for _, reader, can_create in rows:
+        if can_create:
+            field = (
+                "schema.runtime_create" if reader == "app_runtime"
+                else f"schema.reader_role.{reader}"
+            )
+            _fail(ErrorCode.SCHEMA_MISMATCH, field)
+
+
 def _verify_relation_acls(conn: psycopg.Connection, relation_names: Sequence[str]) -> None:
     names = list(relation_names)
     owners = conn.execute(
@@ -2008,9 +2042,52 @@ def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: boo
     for name in physical:
         if relations[name][1] != "p":
             _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.persistence.{name}")
+    rls = conn.execute(
+        "SELECT c.relname,c.relrowsecurity,c.relforcerowsecurity,"
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid=c.oid) "
+        "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) ORDER BY c.relname",
+        (physical,),
+    ).fetchall()
+    if len(rls) != len(physical):
+        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.rls")
+    for name, enabled, forced, policies in rls:
+        if enabled or forced or policies:
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.rls.{name}")
     for name in physical:
         if _relation_columns(conn, name) != _expected_relation_columns(name):
             _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.columns.{name}")
+
+    if include_product:
+        indexes = conn.execute(
+            "SELECT idx.relname,t.relname,idx.relkind,idx.relpersistence,"
+            "idx.reloptions,idx.reltablespace,"
+            "am.amname,i.indisvalid,i.indisready,i.indislive,i.indisunique,i.indisprimary,"
+            "i.indisexclusion,i.indisreplident,i.indnkeyatts,i.indnatts,"
+            "i.indnullsnotdistinct,i.indexprs IS NULL,i.indpred IS NULL,"
+            "ARRAY(SELECT a.attname::text FROM generate_series(0,i.indnkeyatts-1) g "
+            "JOIN pg_catalog.pg_attribute a ON a.attrelid=t.oid AND a.attnum=i.indkey[g] "
+            "JOIN pg_catalog.pg_opclass op ON op.oid=i.indclass[g] "
+            "WHERE op.opcdefault AND op.opcintype=a.atttypid "
+            "AND i.indcollation[g]=a.attcollation AND i.indoption[g]=0 "
+            "ORDER BY g) "
+            "FROM pg_catalog.pg_class idx "
+            "JOIN pg_catalog.pg_namespace n ON n.oid=idx.relnamespace "
+            "JOIN pg_catalog.pg_index i ON i.indexrelid=idx.oid "
+            "JOIN pg_catalog.pg_class t ON t.oid=i.indrelid "
+            "JOIN pg_catalog.pg_am am ON am.oid=idx.relam "
+            "WHERE n.nspname=current_schema() AND idx.relname=ANY(%s)",
+            (list(_SECONDARY_INDEXES),),
+        ).fetchall()
+        observed = {row[0]: row[1:] for row in indexes}
+        for name, columns in _SECONDARY_INDEXES.items():
+            expected = (
+                "bond_market_implied_rating_v1", "i", "p", None, 0, "btree",
+                True, True, True, False, False, False, False,
+                len(columns), len(columns), False, True, True, list(columns),
+            )
+            if observed.get(name) != expected:
+                _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.index.{name}")
 
     constraint_relations = list(_SHARED_SCHEMA_OBJECTS)
     if include_product:
@@ -2112,6 +2189,7 @@ def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: boo
 
 def _schema_state_and_profile(conn: psycopg.Connection) -> tuple[str, str | None]:
     """Schema state plus the admitted shared-ledger extension profile (None if absent)."""
+    _verify_schema_privileges(conn)
     shared = [
         conn.execute("SELECT to_regclass(%s)", (name,)).fetchone()[0] is not None
         for name in _SHARED_SCHEMA_OBJECTS

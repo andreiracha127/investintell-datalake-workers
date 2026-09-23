@@ -1846,6 +1846,51 @@ def test_loader_never_mutates_privileges() -> None:
         assert forbidden not in source, forbidden
 
 
+def _declared_product_indexes(ddl: str) -> set[str]:
+    statements = re.findall(
+        r"(?im)^[ \t]*CREATE\s+(?:UNIQUE\s+)?INDEX\b[^;]*;", ddl
+    )
+    return {
+        re.sub(r"\s+", " ", statement).strip()
+        for statement in statements
+        if re.search(
+            r'\bON\s+(?:ONLY\s+)?(?:(?:"[^"]+"|\w+)\.)?'
+            r'(?:"bond_market_implied_rating_v1"|bond_market_implied_rating_v1)(?!\w)',
+            statement, re.IGNORECASE,
+        )
+    }
+
+
+def test_secondary_index_pins_match_the_declared_ddl() -> None:
+    ddl = (ROOT / "schemas" / "bond_market_implied_rating_v1.sql").read_text(
+        encoding="utf-8"
+    )
+    assert _declared_product_indexes(ddl) == {
+        f"CREATE INDEX IF NOT EXISTS {name} ON bond_market_implied_rating_v1 "
+        f"({', '.join(columns)});"
+        for name, columns in loader._SECONDARY_INDEXES.items()
+    }
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "CREATE INDEX ON bond_market_implied_rating_v1 (month);",
+        "CREATE UNIQUE INDEX extra_idx ON bond_market_implied_rating_v1 (month);",
+        "CREATE INDEX extra_idx ON bond_market_implied_rating_v1 USING hash (cusip_id);",
+        "CREATE INDEX extra_idx ON bond_market_implied_rating_v1 (month) WHERE witnessed;",
+        'CREATE INDEX CONCURRENTLY extra_idx ON "bond_market_implied_rating_v1" (month);',
+        'CREATE INDEX extra_idx ON ONLY "public"."bond_market_implied_rating_v1" (month);',
+    ],
+)
+def test_secondary_index_ddl_pin_refuses_extra_shapes(extra: str) -> None:
+    ddl = (ROOT / "schemas" / "bond_market_implied_rating_v1.sql").read_text(
+        encoding="utf-8"
+    )
+    assert len(_declared_product_indexes(ddl)) == 2
+    assert len(_declared_product_indexes(f"{ddl}\n{extra}")) == 3
+
+
 _OWNER, _PUBLIC, _RUNTIME, _OTHER = 16385, 0, 16400, 16500
 
 
