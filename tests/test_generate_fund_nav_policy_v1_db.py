@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import hashlib
 import json
 import os
+import stat
 import uuid
 from pathlib import Path
 
 import psycopg
 import pytest
+from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from scripts import fund_nav_readiness_schema as operator
 from scripts import generate_fund_nav_policy_v1 as generator
+from scripts import verify_fund_nav_identity_v2 as verifier
 from src.workers import fund_nav_readiness as readiness
 from src.workers import instrument_ingestion as ingestion
 from src.workers import risk_metrics as risk
@@ -23,6 +28,7 @@ from src.workers._nav_policy import (
     risk_universe_digest,
 )
 from src.workers._tiingo import NavObservation
+from tests._nav_identity_fixtures import entity, synthetic_figi
 
 ROOT = Path(__file__).parents[1]
 NAV_SQL = (ROOT / "schemas" / "instrument_ingestion.sql").read_text(encoding="utf-8")
@@ -52,40 +58,80 @@ def dsn():
     return value
 
 
+CATALOG_DDL = (
+    # A database reused from the v1 suite has funds_v as a plain table.
+    """DO $$ BEGIN
+         IF (SELECT relkind FROM pg_class WHERE oid = to_regclass('public.funds_v')) = 'r'
+         THEN DROP TABLE public.funds_v; END IF;
+       END $$""",
+    """CREATE TABLE IF NOT EXISTS public.instruments_universe
+       (instrument_id uuid PRIMARY KEY,instrument_type text,ticker text,
+        isin text,currency text,is_active boolean)""",
+    # funds_v is a VIEW over a base table, as in production: SELECT on the
+    # view never implies SELECT on the registry base table.
+    """CREATE TABLE IF NOT EXISTS public.nav_fixture_funds
+       (instrument_id uuid,series_id text,ticker text,isin text,cusip text,
+        currency text,fund_type text)""",
+    """CREATE OR REPLACE VIEW public.funds_v AS
+       SELECT instrument_id,series_id,ticker,isin,cusip,currency,fund_type
+       FROM public.nav_fixture_funds""",
+    """CREATE TABLE IF NOT EXISTS public.instrument_identity
+       (instrument_id uuid,sec_series_id text,sec_class_id text,ticker text,
+        isin text,cusip_9 text,figi text,resolution_status text,conflict_state jsonb)""",
+)
+
+
+def _seed(conn, *entities) -> None:
+    for iu, fund, registry in entities:
+        if iu is not None:
+            conn.execute(
+                "INSERT INTO public.instruments_universe VALUES (%s,%s,%s,%s,%s,%s)",
+                tuple(iu[k] for k in generator.SOURCE_FIELDS["instruments"]),
+            )
+        if fund is not None:
+            conn.execute(
+                "INSERT INTO public.nav_fixture_funds VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                tuple(fund[k] for k in generator.SOURCE_FIELDS["funds"]),
+            )
+        if registry is not None:
+            values = [registry[k] for k in generator.SOURCE_FIELDS["identity"]]
+            values[-1] = None if values[-1] is None else Jsonb(values[-1])
+            conn.execute(
+                "INSERT INTO public.instrument_identity VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                values,
+            )
+
+
+def _uuid_entity(identifier: uuid.UUID, number: int, **kwargs):
+    rows = entity(number, **kwargs)
+    for row in rows:
+        row["instrument_id"] = identifier
+    return rows
+
+
 @pytest.fixture
 def catalog(dsn):
     with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS public.instruments_universe
-                     (instrument_id uuid PRIMARY KEY,instrument_type text,ticker text,
-                      isin text,currency text,is_active boolean)""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS public.funds_v
-                     (instrument_id uuid,series_id text,ticker text,isin text,
-                      currency text,fund_type text)""")
-        conn.execute("TRUNCATE TABLE public.instruments_universe, public.funds_v")
+        for statement in CATALOG_DDL:
+            conn.execute(statement)
+        conn.execute(
+            "TRUNCATE TABLE public.instruments_universe, public.nav_fixture_funds, "
+            "public.instrument_identity"
+        )
         active, inactive = uuid.uuid4(), uuid.uuid4()
-        conn.execute(
-            "INSERT INTO public.instruments_universe VALUES "
-            "(%s,'fund','FAKEA','US0000000001','USD',true),"
-            "(%s,'fund','FAKEB','US0000000002','USD',false)",
-            (active, inactive),
-        )
-        conn.execute(
-            "INSERT INTO public.funds_v VALUES "
-            "(%s,'SYNTH-SERIES','FAKEA','US0000000001','USD','etf')",
-            (active,),
-        )
+        active_rows = _uuid_entity(active, 1, ticker="FAKEA", series="SYNTH-SERIES", figi=synthetic_figi(1))
+        inactive_rows = _uuid_entity(inactive, 2, ticker="FAKEB", active=False)
+        _seed(conn, active_rows, (inactive_rows[0], None, None))
     return {"active": active, "inactive": inactive}
 
 
-def _artifact(dsn, tmp_path, monkeypatch):
-    output = tmp_path / "approved-policy.json"
-    monkeypatch.setenv("NAV_POLICY_TEST_DSN", dsn)
-    args = [
+def _build_args(dsn_env, root, output, *extra, version="2026-09-24.2"):
+    return [
         "build",
         "--dsn-env",
-        "NAV_POLICY_TEST_DSN",
+        dsn_env,
         "--custody-root",
-        str(tmp_path),
+        str(root),
         "--output",
         str(output),
         "--coverage-start",
@@ -95,9 +141,15 @@ def _artifact(dsn, tmp_path, monkeypatch):
         "--policy-id",
         "synthetic-xnys",
         "--policy-version",
-        "v1",
+        version,
+        *extra,
     ]
-    assert generator.main(args) == 0
+
+
+def _artifact(dsn, tmp_path, monkeypatch, *extra):
+    output = tmp_path / "approved-policy.json"
+    monkeypatch.setenv("NAV_POLICY_TEST_DSN", dsn)
+    assert generator.main(_build_args("NAV_POLICY_TEST_DSN", tmp_path, output, *extra)) == 0
     raw = output.read_bytes()
     return output, raw, json.loads(raw)
 
@@ -118,10 +170,15 @@ def test_read_only_repeatable_snapshot_and_no_xid(dsn, catalog, monkeypatch):
                 "WHERE instrument_id=%s",
                 (catalog["active"],),
             )
+            writer.execute(
+                "UPDATE public.instrument_identity SET resolution_status='candidate' "
+                "WHERE instrument_id=%s",
+                (catalog["active"],),
+            )
         return original(cursor)
 
     monkeypatch.setattr(generator, "_catalog_rows", concurrent_update)
-    instant, instruments, funds = generator.read_catalog_snapshot(dsn)
+    instant, instruments, funds, identity = generator.read_catalog_snapshot(dsn)
     assert details[0]["read_only"] == "on" and details[0]["xid"] is None
     assert instant.tzinfo is not None
     assert (
@@ -130,16 +187,15 @@ def test_read_only_repeatable_snapshot_and_no_xid(dsn, catalog, monkeypatch):
         ]
         is True
     )
+    assert [row["resolution_status"] for row in identity] == ["canonical"]
+    assert identity[0]["conflict_state"] == {}  # jsonb object, not the string '{}'
     assert len(funds) == 1
     with psycopg.connect(dsn) as conn:
-        assert (
-            conn.execute(
-                "SELECT is_active FROM public.instruments_universe "
-                "WHERE instrument_id=%s",
-                (catalog["active"],),
-            ).fetchone()[0]
-            is False
-        )
+        assert conn.execute(
+            "SELECT i.is_active, r.resolution_status FROM public.instruments_universe i "
+            "JOIN public.instrument_identity r USING (instrument_id) WHERE instrument_id=%s",
+            (catalog["active"],),
+        ).fetchone() == (False, "candidate")
 
 
 def test_db_build_rejects_duplicate_and_conflicting_identity_without_network(
@@ -147,24 +203,16 @@ def test_db_build_rejects_duplicate_and_conflicting_identity_without_network(
 ):
     with psycopg.connect(dsn) as conn:
         duplicate = uuid.uuid4()
-        conn.execute(
-            "INSERT INTO public.instruments_universe VALUES "
-            "(%s,'fund','FAKEA','US0000000003','USD',true)",
-            (duplicate,),
-        )
-        conn.execute(
-            "INSERT INTO public.funds_v VALUES "
-            "(%s,'OTHER-SERIES','FAKEA','US0000000003','USD','etf')",
-            (duplicate,),
-        )
+        _seed(conn, _uuid_entity(duplicate, 3, ticker="FAKEA", series="OTHER-SERIES"))
     output, raw, policy = _artifact(dsn, tmp_path, monkeypatch)
     printed = capsys.readouterr().out
     assert "navpolicytest" not in printed and "FAKEA" not in printed
-    assert "US0000000001" not in raw.decode()
+    assert "SYNTH-SERIES" not in raw.decode() and "FAKEA" not in raw.decode()
     by_id = {row["instrument_id"]: row for row in policy["instrument_evidence"]}
     assert by_id[str(catalog["active"])]["fund_status"] == "UNKNOWN"
     assert by_id[str(catalog["inactive"])]["fund_status"] == "INACTIVE"
     assert by_id[str(duplicate)]["valuation_frequency"] == "unknown"
+    assert policy["generation"]["counts"]["identity_first_failure"] == {"ticker.global_conflict": 2}
     assert generator.main(["verify", "--policy-file", str(output)]) == 0
     with pytest.raises(
         generator.PolicyGenerationError, match="artifact_already_exists"
@@ -179,23 +227,7 @@ def test_build_cli_requires_force_to_replace_and_verify_needs_no_db(
 ):
     output, raw, first = _artifact(dsn, tmp_path, monkeypatch)
     capsys.readouterr()
-    arguments = [
-        "build",
-        "--dsn-env",
-        "NAV_POLICY_TEST_DSN",
-        "--custody-root",
-        str(tmp_path),
-        "--output",
-        str(output),
-        "--coverage-start",
-        START.isoformat(),
-        "--coverage-end",
-        END.isoformat(),
-        "--policy-id",
-        "synthetic-xnys",
-        "--policy-version",
-        "v1",
-    ]
+    arguments = _build_args("NAV_POLICY_TEST_DSN", tmp_path, output)
     assert generator.main(arguments) == 2
     assert json.loads(capsys.readouterr().out)["status"] == "blocked"
     assert output.read_bytes() == raw
@@ -489,3 +521,451 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
             ).fetchone()[0]
             == 0
         )
+
+
+# ── identity v2: privileges, limits, projection and cardinality in PG ────────
+def _role_dsn(dsn: str, role: str) -> str:
+    params = psycopg.conninfo.conninfo_to_dict(dsn)
+    params["user"] = role
+    params.pop("password", None)
+    return psycopg.conninfo.make_conninfo(**params)
+
+
+def test_view_access_does_not_imply_registry_privilege(dsn, catalog, tmp_path, monkeypatch, capsys):
+    role = "nav_policy_reader_" + uuid.uuid4().hex[:12]
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(role)))
+        conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
+        conn.execute(
+            sql.SQL("GRANT SELECT ON public.instruments_universe, public.funds_v TO {}").format(
+                sql.Identifier(role)
+            )
+        )
+    try:
+        reader = _role_dsn(dsn, role)
+        with psycopg.connect(reader) as conn:  # the view itself is readable
+            assert conn.execute("SELECT count(*) FROM public.funds_v").fetchone()[0] == 1
+        with pytest.raises(generator.PolicyGenerationError, match="catalog_source_privilege_missing"):
+            generator.read_catalog_snapshot(reader)
+        monkeypatch.setenv("NAV_POLICY_READER_DSN", reader)
+        output = tmp_path / "no-privilege.json"
+        assert generator.main(_build_args("NAV_POLICY_READER_DSN", tmp_path, output)) == 2
+        blocked = json.loads(capsys.readouterr().out)
+        assert blocked["code"] == "catalog_source_privilege_missing" and not output.exists()
+        assert role not in json.dumps(blocked)
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("REVOKE ALL ON public.instruments_universe, public.funds_v FROM {}").format(sql.Identifier(role)))
+            conn.execute(sql.SQL("REVOKE USAGE ON SCHEMA public FROM {}").format(sql.Identifier(role)))
+            conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+
+
+def test_missing_registry_relation_blocks_with_sqlstate_only(dsn, catalog, tmp_path, monkeypatch, capsys):
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("DROP TABLE public.instrument_identity")
+    monkeypatch.setenv("NAV_POLICY_TEST_DSN", dsn)
+    output = tmp_path / "missing.json"
+    assert generator.main(_build_args("NAV_POLICY_TEST_DSN", tmp_path, output)) == 2
+    blocked = json.loads(capsys.readouterr().out)
+    assert (blocked["reason"], blocked["sqlstate"]) == ("UndefinedTable", "42P01")
+    assert not output.exists()
+
+
+def test_registry_row_sentinel_aborts_before_classification(dsn, catalog):
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO public.instrument_identity (instrument_id, resolution_status, conflict_state) "
+            "SELECT gen_random_uuid(), 'candidate', '{}'::jsonb FROM generate_series(1, 100000)"
+        )
+    with pytest.raises(generator.PolicyGenerationError, match="catalog_row_limit_exceeded"):
+        generator.read_catalog_snapshot(dsn)
+
+
+def test_database_projection_divergence_aborts_entire_build(dsn, catalog, tmp_path, monkeypatch, capsys):
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE public.nav_fixture_funds SET cusip=NULL WHERE instrument_id=%s",
+            (catalog["active"],),
+        )
+    monkeypatch.setenv("NAV_POLICY_TEST_DSN", dsn)
+    output = tmp_path / "diverged.json"
+    assert generator.main(_build_args("NAV_POLICY_TEST_DSN", tmp_path, output)) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "catalog_identity_projection_mismatch"
+    assert not output.exists()
+
+
+def test_duplicate_registry_row_and_non_object_conflict_state(dsn, catalog, tmp_path, monkeypatch):
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        second, third = uuid.uuid4(), uuid.uuid4()
+        rows = _uuid_entity(second, 5)
+        _seed(conn, rows, (None, None, rows[2]))
+        stringly = _uuid_entity(third, 6)
+        _seed(conn, (stringly[0], stringly[1], None))
+        conn.execute(
+            "INSERT INTO public.instrument_identity VALUES (%s,%s,NULL,%s,%s,%s,NULL,'canonical',to_jsonb('{}'::text))",
+            (third, stringly[2]["sec_series_id"], stringly[2]["ticker"], stringly[2]["isin"], stringly[2]["cusip_9"]),
+        )
+    _, _, policy = _artifact(dsn, tmp_path, monkeypatch)
+    status = {row["instrument_id"]: row["fund_status"] for row in policy["instrument_evidence"]}
+    assert status[str(second)] == status[str(third)] == "UNKNOWN"
+    assert status[str(catalog["active"])] == "ACTIVE"
+    assert policy["generation"]["counts"]["identity_first_failure"] == {
+        "cardinality.registry_duplicate": 1,
+        "registry.conflict_state_not_empty": 1,
+    }
+
+
+def _install_w1(dsn: str, schema: str) -> None:
+    with psycopg.connect(dsn, autocommit=True, options=f"-csearch_path={schema},public") as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        conn.execute(NAV_SQL)
+        operator.apply_ddl(conn, schema, SCHEMA_SQL)
+
+
+def _hand_authored_previous(policy: dict) -> dict:
+    """The pre-v2 current pointer: same calendar, no generator metadata."""
+    previous = copy.deepcopy(policy)
+    for key in ("generation", "generator_version", "provider_contract"):
+        previous.pop(key)
+    previous["policy_version"] = "2026-09-23.1"
+    for row in previous["instrument_evidence"]:
+        row["evidence_reference"] = "fixture-previous-identity"
+    return previous
+
+
+def test_v2_publication_moves_pointer_reuses_calendar_and_v1_stays_immutable(
+    dsn, catalog, tmp_path, monkeypatch, capsys
+):
+    output, raw, policy = _artifact(dsn, tmp_path, monkeypatch)
+    schema = "nav_policy_v2_" + uuid.uuid4().hex[:12]
+    _install_w1(dsn, schema)
+    try:
+        previous = _hand_authored_previous(policy)
+        with psycopg.connect(dsn, options=f"-csearch_path={schema},public") as conn:
+            first_hash, changed = operator._publish_policy(conn, operator._policy(previous)[0])
+            conn.commit()
+            assert changed is True
+            before = conn.execute(
+                "SELECT to_jsonb(v) FROM nav_policy_versions v WHERE policy_version='2026-09-23.1'"
+            ).fetchone()[0]
+            sessions = conn.execute("SELECT count(*) FROM nav_valuation_schedules").fetchone()[0]
+            v2_hash, changed = operator._publish_policy(conn, operator._policy(str(output))[0])
+            conn.commit()
+            assert changed is True and v2_hash == policy["generation"]["policy_hash"] != first_hash
+            assert conn.execute(
+                "SELECT c.policy_id, c.policy_version, v.policy_hash FROM nav_policy_current c "
+                "JOIN nav_policy_versions v USING (policy_id, policy_version)"
+            ).fetchone() == ("synthetic-xnys", "2026-09-24.2", v2_hash)
+            assert conn.execute(
+                "SELECT to_jsonb(v) FROM nav_policy_versions v WHERE policy_version='2026-09-23.1'"
+            ).fetchone()[0] == before
+            assert conn.execute("SELECT count(*) FROM nav_valuation_schedules").fetchone()[0] == sessions
+            assert conn.execute(
+                "SELECT count(DISTINCT (calendar_id, calendar_version)) FROM nav_policy_versions"
+            ).fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT policy_version, count(*) FROM nav_instrument_policy_evidence "
+                "GROUP BY 1 ORDER BY 1"
+            ).fetchall() == [("2026-09-23.1", 2), ("2026-09-24.2", 2)]
+            state = conn.execute(
+                "SELECT (SELECT count(*) FROM nav_policy_versions),"
+                "(SELECT count(*) FROM nav_instrument_policy_evidence),"
+                "(SELECT to_jsonb(c) FROM nav_policy_current c)"
+            ).fetchone()
+        # A generator-v1 artifact is refused by v2 code before any database work.
+        v1 = copy.deepcopy(policy)
+        v1["generator_version"] = v1["generation"]["generator_version"] = "fund-nav-policy-generator-v1"
+        v1["generation"]["source_query_version"] = "nav-current-catalog-snapshot-v1"
+        v1["policy_version"] = "2026-09-23.1"
+        v1_path = tmp_path / "v1.json"
+        v1_path.write_bytes(generator.canonical_json(v1))
+        monkeypatch.setenv("NAV_READINESS_DATABASE_URL", dsn)
+        capsys.readouterr()
+        result = operator.main(
+            [
+                "--schema", schema,
+                "--expected-sql-sha256", hashlib.sha256(SCHEMA_SQL).hexdigest(),
+                "--policy-file", str(v1_path),
+                "--mode", "apply", "--plan-sha256", "0" * 64,
+            ]
+        )
+        emitted = json.loads(capsys.readouterr().out)
+        assert result != 0 and emitted["code"] == "generator_metadata_invalid"
+        assert emitted["dml_committed"] is False and emitted["published"] is False
+        with pytest.raises((generator.PolicyGenerationError, ValueError)):
+            generator.verify_artifact(v1)
+        with psycopg.connect(dsn, options=f"-csearch_path={schema},public") as conn:
+            assert conn.execute(
+                "SELECT (SELECT count(*) FROM nav_policy_versions),"
+                "(SELECT count(*) FROM nav_instrument_policy_evidence),"
+                "(SELECT to_jsonb(c) FROM nav_policy_current c)"
+            ).fetchone() == state
+            immutable = conn.execute(
+                "SELECT (SELECT jsonb_agg(to_jsonb(v) ORDER BY policy_version) FROM nav_policy_versions v),"
+                "(SELECT md5(string_agg(to_jsonb(e)::text, '' ORDER BY evidence_id)) "
+                " FROM nav_instrument_policy_evidence e),"
+                "(SELECT md5(string_agg(to_jsonb(s)::text, '' ORDER BY session_date)) "
+                " FROM nav_valuation_schedules s)"
+            ).fetchone()
+            conn.rollback()
+            # Pointer-only rollback: same advisory locks as the operator, CAS on
+            # the expected .2 pointer and hash-pinned .1 target; no row of any
+            # version/evidence/calendar table is inserted, updated or deleted.
+            rollback_sql = (
+                "UPDATE nav_policy_current c SET policy_id=%(pid)s, policy_version=%(target)s "
+                "FROM nav_policy_versions t, nav_policy_versions cur "
+                "WHERE c.readiness_profile='current_daily_nav_v1' "
+                "AND c.policy_id=%(pid)s AND c.policy_version=%(expected)s "
+                "AND cur.policy_id=c.policy_id AND cur.policy_version=c.policy_version "
+                "AND cur.policy_hash=%(expected_hash)s "
+                "AND t.policy_id=%(pid)s AND t.policy_version=%(target)s "
+                "AND t.policy_hash=%(target_hash)s AND t.published_at IS NOT NULL "
+                "AND t.calendar_id=cur.calendar_id AND t.calendar_version=cur.calendar_version"
+            )
+            params = {
+                "pid": "synthetic-xnys",
+                "expected": "2026-09-24.2",
+                "expected_hash": v2_hash,
+                "target": "2026-09-23.1",
+                "target_hash": first_hash,
+            }
+            for key in (operator.LOCK_INSTRUMENT_INGESTION, operator.LOCK_FUND_NAV_READINESS):
+                conn.execute("SELECT pg_advisory_xact_lock(%s)", (key,))
+            conn.execute(
+                "SELECT 1 FROM nav_policy_current WHERE readiness_profile='current_daily_nav_v1' FOR UPDATE"
+            )
+            stamp_before = conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0]
+            assert conn.execute(rollback_sql, params).rowcount == 1
+            conn.commit()
+            assert conn.execute(
+                "SELECT policy_version, published_at > %s FROM nav_policy_current", (stamp_before,)
+            ).fetchone() == ("2026-09-23.1", True)
+            # Idempotent replay: the CAS no longer matches, nothing changes.
+            assert conn.execute(rollback_sql, params).rowcount == 0
+            conn.commit()
+            assert conn.execute(
+                "SELECT (SELECT jsonb_agg(to_jsonb(v) ORDER BY policy_version) FROM nav_policy_versions v),"
+                "(SELECT md5(string_agg(to_jsonb(e)::text, '' ORDER BY evidence_id)) "
+                " FROM nav_instrument_policy_evidence e),"
+                "(SELECT md5(string_agg(to_jsonb(s)::text, '' ORDER BY session_date)) "
+                " FROM nav_valuation_schedules s)"
+            ).fetchone() == immutable
+            # A stale expectation (wrong hash) never moves the pointer.
+            assert conn.execute(
+                rollback_sql, {**params, "expected": "2026-09-23.1", "target": "2026-09-24.2",
+                               "expected_hash": "0" * 64, "target_hash": v2_hash}
+            ).rowcount == 0
+            conn.rollback()
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def _audit_config(query: str, **builder) -> dict:
+    return {
+        "audit_config_version": verifier.AUDIT_CONFIG_VERSION,
+        "audit_contract_version": verifier.AUDIT_CONTRACT_VERSION,
+        "active_ceiling": 5103,
+        "canary_salt": "db-canary",
+        "sec": {"max_synced_age_days": 7},
+        "builder": {
+            "light_revision": "b" * 40,
+            "cohort_query": query,
+            "cohort_parameters": {},
+            "label_to_sleeve": {"Large Blend": "equity", "Government Bond": "fixed_income"},
+            "stage1_quotas": {"equity": 1},
+            "margin_fraction": "1/10",
+            **builder,
+        },
+    }
+
+
+@pytest.fixture
+def live_audit(dsn, catalog, tmp_path, monkeypatch, capsys):
+    custody = tmp_path / "custody"
+    custody.mkdir(mode=0o700)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        extra = [_uuid_entity(uuid.uuid4(), n, fund_type=kind) for n, kind in ((11, "mutual_fund"), (12, "etf"))]
+        for rows in extra:
+            _seed(conn, rows)
+        conn.execute("DROP TABLE IF EXISTS public.nav_fixture_cohort, public.fund_classes_latest_mv, public.nav_fixture_sink")
+        conn.execute("CREATE TABLE public.nav_fixture_cohort (instrument_id uuid, strategy_label text)")
+        conn.execute(
+            "CREATE TABLE public.fund_classes_latest_mv (class_id text, series_id text, ticker text, "
+            "source_period_end date, synced_at timestamptz)"
+        )
+        members = [catalog["active"], catalog["inactive"], *(rows[0]["instrument_id"] for rows in extra)]
+        for identifier, label in zip(members, ("Large Blend", "Large Blend", "Government Bond", "Large Blend")):
+            conn.execute("INSERT INTO public.nav_fixture_cohort VALUES (%s,%s)", (identifier, label))
+        conn.execute(
+            "INSERT INTO public.fund_classes_latest_mv VALUES "
+            "('C000000001','SYNTH-SERIES','FAKEA','2026-06-30',clock_timestamp())"
+        )
+    output, raw, policy = _artifact(dsn, custody, monkeypatch, "--source-snapshot-output", str(custody / "source.json"))
+    capsys.readouterr()
+    previous = json.dumps(
+        {
+            "generator_version": "fund-nav-policy-generator-v1",
+            "generation": {"policy_hash": "1" * 64},
+            "instrument_evidence": [
+                {"instrument_id": str(catalog["active"]), "fund_status": "ACTIVE"},
+                {"instrument_id": str(catalog["inactive"]), "fund_status": "INACTIVE"},
+            ],
+            **{
+                k: policy[k]
+                for k in (
+                    "calendar_id", "calendar_version", "calendar_source", "calendar_digest",
+                    "calendar_session_count", "coverage_start", "coverage_end", "sessions",
+                )
+            },
+        }
+    ).encode()
+    (custody / "v1.json").write_bytes(previous)
+    monkeypatch.setenv("NAV_AUDIT_DSN", dsn)
+    counter = iter(range(1000))
+
+    def run(config: dict, *extra: str) -> tuple[int, dict, dict, Path]:
+        n = next(counter)
+        config_path = custody / f"config-{n}.json"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        capture_path = custody / f"capture-{n}.json"
+        code = verifier.main(
+            [
+                "--policy-file", str(output),
+                "--source-snapshot-file", str(custody / "source.json"),
+                "--dsn-env", "NAV_AUDIT_DSN",
+                "--capture-output", str(capture_path),
+                "--audit-config", str(config_path),
+                "--previous-policy-file", str(custody / "v1.json"),
+                "--previous-policy-sha256", hashlib.sha256(previous).hexdigest(),
+                "--custody-root", str(custody),
+                "--output", str(custody / f"audit-{n}.json"),
+                "--strict",
+                *extra,
+            ]
+        )
+        printed = capsys.readouterr().out
+        assert "postgresql" not in printed and str(catalog["active"]) not in printed
+        dossier_path = custody / f"audit-{n}.json"
+        dossier = json.loads(dossier_path.read_bytes()) if dossier_path.exists() else {}
+        return code, json.loads(printed), dossier, capture_path
+
+    return {"run": run, "custody": custody, "policy": policy, "members": members}
+
+
+def test_live_readonly_audit_strict_pass_and_canary(dsn, catalog, live_audit):
+    custody = live_audit["custody"]
+    config = _audit_config(
+        "SELECT instrument_id, strategy_label FROM public.nav_fixture_cohort ORDER BY instrument_id"
+    )
+    code, summary, dossier, capture_path = live_audit["run"](config, "--canary-output", str(custody / "canary.json"))
+    assert code == 0 and set(summary["gates"].values()) == {"PASS"}, summary["gates"]
+    assert summary["sec_outcomes"] == {"matched": 1, "missing": 2}
+    assert summary["canary"]["status"] == "written" and summary["canary"]["size"] == 3
+    capture_raw = capture_path.read_bytes()
+    for path in (capture_path, custody / "canary.json"):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    bundle = json.loads(capture_raw)
+    assert bundle["cohort"]["row_count"] == 4 and bundle["sec"]["row_count"] == 1
+    assert bundle["source_snapshot_sha256"] == live_audit["policy"]["generation"]["source_snapshot_sha256"]
+    assert dossier["inputs"]["capture"]["capture_bundle_sha256"] == hashlib.sha256(capture_raw).hexdigest()
+    assert dossier["details"]["A8"]["freshness"]["max_synced_age_days"] == 7
+    canary = json.loads((custody / "canary.json").read_bytes())
+    assert canary["policy_hash"] == live_audit["policy"]["generation"]["policy_hash"]
+    assert canary["capture_bundle_sha256"] == hashlib.sha256(capture_raw).hexdigest()
+    assert len(canary["allowlist"]) == 3
+    # The persisted bundle replays offline to the identical dossier content.
+    replay = verifier.audit(
+        (custody / "approved-policy.json").read_bytes(),
+        snapshot_raw=(custody / "source.json").read_bytes(),
+        capture_raw=capture_raw,
+        previous_raw=(custody / "v1.json").read_bytes(),
+        config_raw=json.dumps(config).encode(),
+    )
+    assert replay["gates"] == dossier["gates"]
+
+
+def test_live_cohort_is_bounded_server_side(dsn, catalog, live_audit, monkeypatch):
+    fetched = []
+    original = verifier.drain_bounded
+
+    def counting(fetchmany, **kwargs):
+        def spy(size):
+            chunk = fetchmany(size)
+            fetched.append(len(chunk))
+            return chunk
+
+        return original(spy, **kwargs)
+
+    monkeypatch.setattr(verifier, "drain_bounded", counting)
+    huge = _audit_config(
+        "SELECT gen_random_uuid() AS instrument_id, 'Large Blend' AS strategy_label "
+        "FROM generate_series(1, 250000)"
+    )
+    code, summary, dossier, capture_path = live_audit["run"](huge)
+    assert code == 3 and summary["gates"]["A7"] == "NOT_EVALUATED"
+    assert dossier["gates"]["A7"]["code"] == "cohort_row_ceiling_exceeded"
+    # The outer LIMIT stops the server at the sentinel: 250k produced, 100,001
+    # sent, read in bounded batches (never a whole-result fetchall).
+    assert sum(fetched) == verifier.ROW_CEILING + 1
+    assert max(fetched) <= verifier.FETCH_BATCH
+    assert json.loads(capture_path.read_bytes())["cohort"]["rows"] == []
+    # A query's own ORDER BY / LIMIT is preserved inside the wrapper.
+    own_limit = _audit_config(
+        "SELECT instrument_id, strategy_label FROM public.nav_fixture_cohort ORDER BY instrument_id LIMIT 2"
+    )
+    fetched.clear()
+    code, summary, dossier, capture_path = live_audit["run"](own_limit)
+    assert json.loads(capture_path.read_bytes())["cohort"]["row_count"] == 2
+    assert dossier["details"]["A7"]["cohort_rows"] == 2 and sum(fetched) == 2
+
+
+def test_live_cohort_write_attempts_are_rejected_or_read_only(dsn, catalog, live_audit):
+    custody = live_audit["custody"]
+    # Lexically unsafe queries never reach the database.
+    for query, expected in (
+        ("SELECT nextval('public.nav_audit_seq') AS instrument_id, 'x' AS strategy_label", "audit_config_cohort_query_unsafe"),
+        ("WITH d AS (DELETE FROM public.nav_fixture_cohort RETURNING *) SELECT * FROM d", "audit_config_builder_invalid"),
+    ):
+        code, summary, dossier, capture_path = live_audit["run"](_audit_config(query))
+        assert code == 2 and summary["code"] == expected
+        assert not dossier and not capture_path.exists()
+    # A write hidden in a function passes the lexical check but not READ ONLY.
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("CREATE TABLE public.nav_fixture_sink (x int)")
+        conn.execute(
+            "CREATE OR REPLACE FUNCTION public.nav_fixture_write() RETURNS uuid LANGUAGE plpgsql AS "
+            "$$ BEGIN INSERT INTO public.nav_fixture_sink VALUES (1); RETURN gen_random_uuid(); END $$"
+        )
+    code, summary, dossier, capture_path = live_audit["run"](
+        _audit_config("SELECT public.nav_fixture_write() AS instrument_id, 'x' AS strategy_label")
+    )
+    assert code == 3 and summary["gates"]["A7"] == "NOT_EVALUATED"
+    assert dossier["gates"]["A7"]["code"] == "cohort_query_failed:25006"
+    assert capture_path.exists()
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute("SELECT count(*) FROM public.nav_fixture_sink").fetchone()[0] == 0
+    assert (custody / "approved-policy.json").exists()
+
+
+def test_live_source_drift_fails_a5_and_skips_a7_a8(dsn, catalog, live_audit):
+    config = _audit_config("SELECT instrument_id, strategy_label FROM public.nav_fixture_cohort")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("UPDATE public.instruments_universe SET currency='EUR' WHERE instrument_id=%s", (catalog["active"],))
+    code, summary, dossier, capture_path = live_audit["run"](config)
+    assert code == 3 and summary["gates"]["A5"] == "FAIL"
+    assert summary["gates"]["A7"] == summary["gates"]["A8"] == "NOT_EVALUATED"
+    assert json.loads(capture_path.read_bytes())["source_snapshot_sha256"] == dossier["inputs"]["live_source_snapshot_sha256"]
+
+
+def test_live_stale_sec_fails_a8_and_refuses_canary(dsn, catalog, live_audit):
+    custody = live_audit["custody"]
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute("UPDATE public.fund_classes_latest_mv SET synced_at = clock_timestamp() - interval '8 days'")
+    config = _audit_config("SELECT instrument_id, strategy_label FROM public.nav_fixture_cohort")
+    code, summary, dossier, _ = live_audit["run"](config, "--canary-output", str(custody / "canary-stale.json"))
+    assert code == 3 and summary["gates"]["A8"] == "FAIL"
+    assert summary["canary"] == {"status": "refused", "code": "canary_requires_strict_audit_pass"}
+    assert dossier["gates"]["A8"]["checks"]["fresh_within_max_age"] is False
+    assert not (custody / "canary-stale.json").exists()

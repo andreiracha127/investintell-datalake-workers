@@ -32,12 +32,15 @@ from src.workers._nav_policy import (
     CURRENT_CATALOG_QUERY_VERSION,
     GENERATOR_VERSION,
     PROVIDER_CONTRACT_VERSION,
+    RETIRED_CATALOG_QUERY_VERSIONS,
+    RETIRED_GENERATOR_VERSIONS,
     SOURCE_QUERY_SHA256,
     calendar_digest,
     canonical_digest,
     generation_metadata_digest,
     instrument_evidence_digest,
     policy_content_digest,
+    validate_generation_v2,
 )
 from src.workers._nav_sanitize import REPAIRED_NAV_KINDS
 
@@ -270,8 +273,34 @@ def _policy(path: str | dict | None) -> tuple[dict | None, bytes]:
         ):
             raise ValueError("identity_evidence_missing")
     generation = policy.get("generation")
+    # Retired (v1) and generator-owned catalog references can never be applied
+    # by this operator without full current-generator metadata: a v1 artifact
+    # stays immutable and is never re-published or re-audited by v2 code.
+    catalog_prefixes = tuple(
+        f"{version}:"
+        for version in (*RETIRED_CATALOG_QUERY_VERSIONS, CURRENT_CATALOG_QUERY_VERSION)
+    )
+
+    def _retired(value: object, retired: frozenset[str]) -> bool:
+        return isinstance(value, str) and value in retired
+
+    if _retired(policy.get("generator_version"), RETIRED_GENERATOR_VERSIONS) or (
+        isinstance(generation, dict)
+        and (
+            _retired(generation.get("generator_version"), RETIRED_GENERATOR_VERSIONS)
+            or _retired(
+                generation.get("source_query_version"), RETIRED_CATALOG_QUERY_VERSIONS
+            )
+        )
+    ):
+        raise ValueError("generator_metadata_invalid")
     if generation is None and (
-        "generator_version" in policy or "provider_contract" in policy
+        "generator_version" in policy
+        or "provider_contract" in policy
+        or any(
+            row["evidence_reference"].startswith(catalog_prefixes)
+            for row in policy["instrument_evidence"]
+        )
     ):
         raise ValueError("generator_metadata_invalid")
     if generation is not None:
@@ -311,6 +340,9 @@ def _policy(path: str | dict | None) -> tuple[dict | None, bytes]:
                 )
             ):
                 raise ValueError("generator_metadata_invalid")
+            # v2 identity diagnostics: partition, first-failure closure, flags
+            # and ACTIVE digests are recounted from the document itself.
+            validate_generation_v2(policy)
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("generator_metadata_invalid") from exc
     return policy, raw
