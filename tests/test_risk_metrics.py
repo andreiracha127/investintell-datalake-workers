@@ -391,6 +391,40 @@ def test_refresh_fund_risk_latest_mv_concurrently_in_fresh_autocommit_conn(monke
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_risk_latest_mv" in sink["sql"]
 
 
+def _fake_generation(monkeypatch):
+    """Seam for fake-connection tests: a diagnostic plan, no DB registration.
+
+    Real registration, invalidation, completion and CAS publication are
+    exercised on PostgreSQL in tests/test_fund_nav_readiness_db.py.
+    """
+    import uuid
+
+    def _begin(conn, calc_date, limit):
+        cdate = rm._resolve_calc_date(conn, calc_date)
+        members = tuple(rm._fetch_fund_ids(conn, cdate, None))
+        plan = rm.RiskRunPlan(
+            risk_run_id=uuid.uuid4(),
+            calc_date=cdate,
+            requested_calc_date=None,
+            requested_limit=limit,
+            universe=members,
+            members=members,
+            universe_digest="0" * 64,
+            run_scope="diagnostic",
+            nonpublishing_reason="POLICY_UNAVAILABLE",
+            definition_version=rm.FEATURE_DEFINITION_VERSION,
+            policy_id=None,
+            policy_version=None,
+            policy_hash=None,
+            due_session=None,
+            decision_at=_dt.datetime.now(_dt.timezone.utc),
+        )
+        return plan, None
+
+    monkeypatch.setattr(rm, "_begin_risk_generation", _begin)
+    monkeypatch.setattr(rm, "_complete_risk_run", lambda *_a: None)
+
+
 def test_run_does_not_refresh_when_lock_busy(monkeypatch):
     """Lock busy → run() returns early and never refreshes (nothing recomputed)."""
     import contextlib
@@ -410,12 +444,29 @@ def test_run_does_not_refresh_when_lock_busy(monkeypatch):
     )
 
     stats = rm.run("postgres://x")
-    assert stats == {"processed": 0, "upserted": 0, "skipped": "lock_busy"}
+    assert stats == {
+        "processed": 0,
+        "upserted": 0,
+        "calc_date": None,
+        "workers": 0,
+        "risk_run_id": None,
+        "mv_refreshed": False,
+        "skipped": "lock_busy",
+        "risk_publication": {
+            "eligible": False,
+            "published": False,
+            "reason": "LOCK_BUSY",
+            "risk_run_id": None,
+            "as_of_session": None,
+            "retryable": True,
+        },
+    }
+    assert "status" not in stats  # legacy fleet exit contract unchanged
     assert refreshed["called"] is False
 
 
-def test_run_refreshes_mv_after_lock_released(monkeypatch):
-    """Successful run: the MV refresh fires once, AFTER the advisory lock is freed."""
+def test_run_refreshes_mv_inside_the_generation_lock(monkeypatch):
+    """W3: the MV refresh fires once, BEFORE the risk advisory lock is freed."""
     import contextlib
 
     events: list[str] = []
@@ -425,6 +476,8 @@ def test_run_refreshes_mv_after_lock_released(monkeypatch):
         return conn
 
     monkeypatch.setattr(rm, "connect", _fake_connect)
+    monkeypatch.setattr(rm, "_finish_risk_run", lambda *_a: None)
+    _fake_generation(monkeypatch)
 
     @contextlib.contextmanager
     def _granted_lock(_conn, _lock_id):
@@ -455,7 +508,16 @@ def test_run_refreshes_mv_after_lock_released(monkeypatch):
 
     assert stats["mv_refreshed"] is True
     assert "refresh" in events
-    assert events.index("refresh") > events.index("lock_release")
+    assert events.index("lock_acquire") < events.index("refresh")
+    assert events.index("refresh") < events.index("lock_release")
+    assert stats["risk_publication"] == {
+        "eligible": False,
+        "published": False,
+        "reason": "POLICY_UNAVAILABLE",
+        "risk_run_id": stats["risk_run_id"],
+        "as_of_session": None,
+        "retryable": False,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -754,6 +816,8 @@ def test_run_calls_manager_score_post_step(monkeypatch):
         return _FakeConn({"events": events})
 
     monkeypatch.setattr(rm, "connect", _fake_connect)
+    monkeypatch.setattr(rm, "_finish_risk_run", lambda *_a: None)
+    _fake_generation(monkeypatch)
 
     @contextlib.contextmanager
     def _granted_lock(_conn, _lock_id):
@@ -822,6 +886,8 @@ def test_parallel_run_updates_peers_and_manager_after_shards(monkeypatch):
         return 1, 1
 
     monkeypatch.setattr(rm, "connect", _fake_connect)
+    monkeypatch.setattr(rm, "_finish_risk_run", lambda *_a: None)
+    _fake_generation(monkeypatch)
     monkeypatch.setattr(rm, "advisory_lock", _granted_lock)
     monkeypatch.setattr(rm, "_resolve_calc_date", lambda _c, _cd: _dt.date(2026, 6, 11))
     monkeypatch.setattr(rm, "_risk_free_rate", lambda _c, _cd: 0.04)
@@ -857,8 +923,10 @@ def test_parallel_run_updates_peers_and_manager_after_shards(monkeypatch):
     assert events.count("shard_commit") == 2
     assert max(i for i, e in enumerate(events) if e == "shard_commit") < events.index("peer")
     assert events.index("peer") < events.index("manager")
-    assert events.index("manager") < events.index("commit")
-    assert events.index("commit") < events.index("refresh")
+    assert events.index("manager") < max(i for i, e in enumerate(events[:events.index("refresh")])
+                                         if e == "commit")
+    # No open parent transaction while the separate connection refreshes the MV.
+    assert events[events.index("refresh") - 1] == "commit"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -35,6 +35,11 @@ import sys
 
 from src.db import resolve_dsn
 
+# The two NAV publication lanes succeed only when they actually published: a
+# lock_busy, blocked or otherwise unpublished result exits 1 (W2). The rest of
+# the fleet keeps its own contract below.
+NAV_PUBLICATION_LANES = frozenset({"fund_nav_readiness", "nav_current_daily_chain"})
+
 
 def main() -> None:
     worker = os.getenv("WORKER")
@@ -45,6 +50,7 @@ def main() -> None:
             "|quadrant_macro|quadrant_macro_v2|quadrant_macro_v3|quadrant_market"
             "|macro_ingestion"
             "|macro_vintage|treasury_ingestion|benchmark_ingest|instrument_ingestion"
+            "|fund_nav_readiness|nav_current_daily_chain"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
             "|sec_13f_publication_chain"
             "|sec_company_tickers_mf|nport_cusip_enrichment"
@@ -125,6 +131,8 @@ def main() -> None:
     # run was truncated, which is exactly how the 2026-08-02 Tiingo starvation went
     # unnoticed for five days. Emit the stats first (operators need the progress),
     # then fail, so the truncation is visible as a failure and not just a log line.
+    if worker in NAV_PUBLICATION_LANES and stats.get("published") is not True:
+        sys.exit(1)
     if stats.get("aborted") or stats.get("status") == "lock_busy" or stats.get("state") in {
         "failed", "conflict", "blocked"
     } or (
