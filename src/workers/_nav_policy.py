@@ -122,6 +122,46 @@ def risk_universe_digest(instrument_ids: Iterable[Any]) -> str:
     return canonical_digest(sorted({str(value) for value in instrument_ids}))
 
 
+LEVEL_EVIDENCE_VERSION = "nav-level-evidence-v1"
+
+
+def level_evidence_digest(
+    nav_date: dt.date,
+    nav: Any,
+    source_nav: Any,
+    source: str | None,
+    source_nav_kind: str | None,
+    currency: str | None,
+    nav_repair_kind: str | None,
+) -> str:
+    """Python mirror of SQL ``nav_level_evidence_digest_v1`` (level projection).
+
+    Numerics are rendered as PostgreSQL ``numeric::text`` of the persisted
+    NUMERIC(18,6) value (``Decimal`` quantized to 6 places); NULL is JSON null.
+    Calendar and derived-return columns are excluded by design.
+    """
+    from decimal import Decimal
+
+    def _numeric(value: Any) -> str | None:
+        return None if value is None else str(Decimal(str(value)).quantize(Decimal("0.000001")))
+
+    payload = json.dumps(
+        [
+            LEVEL_EVIDENCE_VERSION,
+            nav_date.isoformat(),
+            _numeric(nav),
+            _numeric(source_nav),
+            source,
+            source_nav_kind,
+            currency,
+            nav_repair_kind,
+        ],
+        separators=(", ", " : "),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Current policy/grid resolution shared by readiness, risk and the NAV chain.
 # ──────────────────────────────────────────────────────────────────────────────

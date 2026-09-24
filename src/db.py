@@ -346,3 +346,9 @@ LOCK_FOMC_SEP_INGESTION = 900_359
 # current_daily_nav_v1 builds a single completed snapshot and pointer.
 LOCK_FUND_NAV_READINESS = 900_360
 LOCK_FUND_NAV_CURRENT_CHAIN = 900_361
+# Governed economic NAV rebase operator (scripts/rebase_fund_nav_window.py).
+# Session-level operator mutex held for a whole batch, fetches included; only
+# its holder may recover `operation='rebase'` runs. Order: this mutex, then the
+# INGESTION -> READINESS transaction locks. No other worker takes it. 900_362
+# is the next free id after LOCK_FUND_NAV_CURRENT_CHAIN (no other use in repo).
+LOCK_NAV_ECONOMIC_REBASE = 900_362

@@ -27,6 +27,12 @@ from src.workers._tiingo import NavObservation
 ROOT = Path(__file__).parents[1]
 NAV_SQL = (ROOT / "schemas" / "instrument_ingestion.sql").read_text(encoding="utf-8")
 SCHEMA_SQL = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+_RISK_SQL = (ROOT / "schemas" / "risk_metrics.sql").read_text(encoding="utf-8")
+RISK_READ_MODEL_SQL = _RISK_SQL[
+    _RISK_SQL.index("CREATE TABLE IF NOT EXISTS fund_risk_metrics") : _RISK_SQL.index(
+        "CREATE MATERIALIZED VIEW funds_list_mv"
+    )
+]
 START = dt.date(2024, 1, 1)
 END = dt.date(2027, 12, 31)
 
@@ -241,11 +247,24 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
         "--policy-file",
         str(output),
     ]
+    # Light runtime prerequisites that W1 never grants (role, USAGE, external
+    # read dependencies); without them the operator is truthfully blocked.
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname='app_runtime'").fetchone():
+            pytest.fail("fixture role app_runtime is required (created by the harness)")
+        conn.execute("GRANT USAGE ON SCHEMA public TO app_runtime")
+        conn.execute(RISK_READ_MODEL_SQL)
+        conn.execute("GRANT SELECT ON nav_timeseries, fund_risk_latest_mv TO app_runtime")
     assert operator.main(base) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "upgrade_required"
-    plan = operator.plan_hash(SCHEMA_SQL, "public", raw, [], None, None)
+    planned = json.loads(capsys.readouterr().out)
+    assert (planned["status"], planned["compatibility"]) == ("planned", "absent")
+    assert planned["plan"]["operations"] == ["ddl", "policy"]
+    plan = planned["plan_sha256"]
     assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "applied"
+    applied = json.loads(capsys.readouterr().out)
+    assert (applied["status"], applied["ddl"], applied["policy"], applied["published"]) == (
+        "applied", "applied", "committed", True,
+    )
     with psycopg.connect(dsn) as conn:
         approved = conn.execute(
             "SELECT policy_hash,published_at,calendar_id,calendar_version "
@@ -268,8 +287,12 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
         )
     assert operator.main(base) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "ready"
+    # Replaying the committed plan is a truthful no-op (no re-stamp).
     assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 0
-    capsys.readouterr()
+    replay = json.loads(capsys.readouterr().out)
+    assert (replay["status"], replay["ddl"], replay["dml_committed"]) == (
+        "unchanged", "unchanged", False,
+    )
     with psycopg.connect(dsn) as conn:
         assert (
             conn.execute(
@@ -368,11 +391,12 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
     run_id, risk_run = uuid.uuid4(), uuid.uuid4()
     with psycopg.connect(dsn) as conn:
         conn.execute(
-            "INSERT INTO nav_ingestion_runs "
-            "(run_id,started_at,completed_at,requested_end,status) "
-            "VALUES (%s,clock_timestamp(),clock_timestamp(),%s,'completed')",
+            "INSERT INTO nav_ingestion_runs (run_id,requested_end,status) "
+            "VALUES (%s,%s,'running')",
             (run_id, grid[-1]),
         )
+        conn.commit()
+        # Attempt and NAV commit together (same xid), then the run completes.
         conn.execute(
             "INSERT INTO nav_ingestion_attempts "
             "(run_id,instrument_id,ticker,provider,requested_start,requested_end,"
@@ -381,7 +405,6 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
             "'success_new',%s,401)",
             (run_id, catalog["active"], grid[0], grid[-1], grid[-1]),
         )
-        conn.commit()
         rows = ingestion.build_rows(
             tuple(
                 NavObservation(day, round(100.0 + index * 0.01, 6), "adjusted")
@@ -397,7 +420,11 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
                 for day in grid
             },
         )
-        ingestion.upsert_nav_timeseries(conn, rows, run_id=run_id)
+        ingestion.upsert_nav_timeseries(conn, rows, run_id=run_id, provider="tiingo")
+        conn.execute(
+            "UPDATE nav_ingestion_runs SET status='completed' WHERE run_id=%s", (run_id,)
+        )
+        conn.commit()
         # Explicit P1 fixture registration (no W3 worker classification).
         conn.execute(
             "INSERT INTO fund_nav_risk_runs (risk_run_id,calc_date,run_scope,"

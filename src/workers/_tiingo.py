@@ -43,6 +43,7 @@ import math
 import os
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 TIINGO_BASE_URL = "https://api.tiingo.com"
@@ -62,6 +63,17 @@ DEFAULT_RATE_PER_S = 2.5
 
 class TiingoBudgetExceeded(RuntimeError):
     """Raised after MAX_CONSECUTIVE_429 consecutive 429s — resume next cycle."""
+
+
+class TiingoDeadlineExceeded(RuntimeError):
+    """The caller's remaining wall-clock budget cannot cover the next pacing
+    wait or request. Raised BEFORE the token is consumed or the request is
+    sent, so nothing was requested for that attempt."""
+
+
+# Per-request ceiling of the shared httpx client; a deadline-bound request
+# never waits longer than the caller's remaining budget either.
+REQUEST_TIMEOUT_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -118,7 +130,10 @@ class TokenBucket:
         self._last = time.monotonic()
         self._lock = threading.Lock()
 
-    def acquire(self) -> None:
+    def acquire(self, max_wait: float | None = None) -> None:
+        """Take one token, sleeping for refill; ``max_wait`` bounds the total
+        wait: a refill longer than the remaining allowance raises
+        ``TiingoDeadlineExceeded`` without sleeping or consuming a token."""
         while True:
             with self._lock:
                 now = time.monotonic()
@@ -128,7 +143,11 @@ class TokenBucket:
                     self._tokens -= 1.0
                     return
                 wait = (1.0 - self._tokens) / self.refill_rate
+                if max_wait is not None and wait > max_wait:
+                    raise TiingoDeadlineExceeded("pacing wait exceeds the remaining budget")
             time.sleep(wait)
+            if max_wait is not None:
+                max_wait -= wait
 
 
 def api_key() -> str:
@@ -166,7 +185,7 @@ class TiingoClient:
         self._key = key or api_key()
         self._bucket = bucket or TokenBucket()
         self._client = httpx.Client(
-            timeout=30.0,
+            timeout=REQUEST_TIMEOUT_S,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Token {self._key}"},
         )
@@ -192,20 +211,49 @@ class TiingoClient:
         return self._request_bars(ticker, start_date, end_date)[1]
 
     def _request_bars(self, ticker: str, start_date: _dt.date,
-                      end_date: _dt.date | None = None) -> tuple[str, list[dict]]:
+                      end_date: _dt.date | None = None, *,
+                      max_attempts: int | None = None,
+                      remaining: Callable[[], float] | None = None,
+                      ) -> tuple[str, list[dict]]:
+        """``max_attempts`` bounds HTTP requests (governed rebase: exactly 1).
+
+        ``None`` keeps the historical retry ladder unchanged. With an explicit
+        bound, no sleep follows the final permitted request. ``remaining``
+        (seconds left in the caller's own monotonic budget) is checked before
+        pacing, bounds the pacing wait, is checked again before the request and
+        caps the request timeout; an exhausted budget raises
+        ``TiingoDeadlineExceeded`` before anything is sent.
+        """
         if not self._key:
             return "not_configured", []
+        if max_attempts is not None and max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
         params = {"format": "json", "resampleFreq": "daily",
                    "startDate": start_date.isoformat()}
         if end_date:
             params["endDate"] = end_date.isoformat()
         url = f"{TIINGO_BASE_URL}/tiingo/daily/{ticker}/prices"
         failure = "transient_error"
-        for attempt, sleep_s in enumerate(_RETRY_SLEEPS):
-            self._bucket.acquire()
+        sleeps = _RETRY_SLEEPS if max_attempts is None else _RETRY_SLEEPS[:max_attempts]
+        for attempt, sleep_s in enumerate(sleeps):
+            if max_attempts is not None and attempt == len(sleeps) - 1:
+                sleep_s = 0.0
+            request_kwargs: dict = {}
+            if remaining is None:
+                self._bucket.acquire()
+            else:
+                left = remaining()
+                if left <= 0:
+                    raise TiingoDeadlineExceeded("budget exhausted before pacing")
+                self._bucket.acquire(max_wait=left)
+                left = remaining()
+                if left <= 0:
+                    raise TiingoDeadlineExceeded("budget exhausted before the request")
+                request_kwargs["timeout"] = min(left, REQUEST_TIMEOUT_S)
+                sleep_s = min(sleep_s, left)
             self.requests_made += 1
             try:
-                resp = self._client.get(url, params=params)
+                resp = self._client.get(url, params=params, **request_kwargs)
             except Exception:
                 time.sleep(sleep_s)
                 continue
@@ -236,9 +284,13 @@ class TiingoClient:
         return failure, []
 
     def fetch_daily_observations(self, ticker: str, start_date: _dt.date,
-                                 end_date: _dt.date) -> NavFetchResult:
+                                 end_date: _dt.date, *,
+                                 max_attempts: int | None = None,
+                                 remaining: Callable[[], float] | None = None,
+                                 ) -> NavFetchResult:
         started = _dt.datetime.now(_dt.timezone.utc)
-        status, bars = self._request_bars(ticker, start_date, end_date)
+        status, bars = self._request_bars(ticker, start_date, end_date,
+                                          max_attempts=max_attempts, remaining=remaining)
         finished = _dt.datetime.now(_dt.timezone.utc)
         if not bars:
             if status == "not_configured":

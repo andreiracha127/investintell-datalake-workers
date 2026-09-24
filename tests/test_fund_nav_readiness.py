@@ -337,27 +337,186 @@ def test_batched_calendar_equivalence_requires_each_session_tuple(mismatched_dat
         assert (grid[mismatched_date], *old) not in mapping
 
 
+class _LineageCursor:
+    """Scripted cursor: rows, revisions, row evidence, then attempts (if asked)."""
+
+    def __init__(self, rows, revisions=(), evidence=(), attempts=()):
+        self.results = iter((list(rows), list(revisions), list(evidence), list(attempts)))
+
+    def execute(self, *_args):
+        return None
+
+    def fetchall(self):
+        return next(self.results)
+
+
+_NOW = dt.datetime(2026, 9, 10, 12, tzinfo=dt.timezone.utc)
+_DAY = dt.date(2026, 9, 4)
+_PRIOR = dt.date(2026, 9, 3)
+
+
+def _lineage_row(day=_DAY, nav=100.0):
+    return {"nav_date": day, "nav": nav, "source_nav": nav, "source": "tiingo",
+            "source_nav_kind": "adjusted", "currency": "USD", "nav_repair_kind": "none",
+            "calendar_id": None, "calendar_version": None, "calendar_source": None}
+
+
+def _attempt_row(run_id, xid, *, start=_DAY, end=_DAY, status="success_new",
+                 finished=_NOW - dt.timedelta(hours=1)):
+    return {"run_id": run_id, "provider": "tiingo", "status": status, "commit_xid": xid,
+            "requested_start": start, "requested_end": end, "finished_at": finished,
+            "persisted_at": finished}
+
+
+def _revision(day=_DAY, *, level=None, derived=None, dependency=None):
+    empty = {f"{kind}_{field}": None for kind in ("level", "derived", "calendar")
+             for field in ("run_id", "provider", "xid", "recorded_at")}
+    out = {**empty, "nav_date": day, "level_revision_id": None, "derived_revision_id": None,
+           "calendar_revision_id": None, "dependency_start_date": dependency,
+           "calendar_maintenance_id": None}
+    for kind, spec in (("level", level), ("derived", derived)):
+        if spec is not None:
+            rev_id, run_id, xid = spec
+            out.update({f"{kind}_revision_id": rev_id, f"{kind}_run_id": run_id,
+                        f"{kind}_provider": "tiingo", f"{kind}_xid": xid,
+                        f"{kind}_recorded_at": _NOW - dt.timedelta(hours=1)})
+    return out
+
+
+def _evidence(run_id, head, xid, *, digest=None, attempt_xid=None, start=_DAY):
+    from src.workers._nav_policy import level_evidence_digest
+
+    row = _lineage_row()
+    return {"nav_date": _DAY, "run_id": run_id, "provider": "tiingo",
+            "level_digest": digest or level_evidence_digest(
+                _DAY, row["nav"], row["source_nav"], row["source"], row["source_nav_kind"],
+                row["currency"], row["nav_repair_kind"]),
+            "revision_head": head, "commit_xid": xid,
+            "recorded_at": _NOW - dt.timedelta(hours=1),
+            "attempt_status": "success_no_new", "attempt_xid": attempt_xid or xid,
+            "finished_at": _NOW - dt.timedelta(hours=1),
+            "persisted_at": _NOW - dt.timedelta(hours=1),
+            "requested_start": start, "requested_end": _DAY}
+
+
 def test_per_date_lineage_cannot_accept_missing_grid_date_or_revision():
-    day = dt.date(2026, 9, 4)
-
-    class Cursor:
-        def __init__(self, rows, revisions):
-            self.results = iter((rows, revisions))
-
-        def execute(self, *_args):
-            return None
-
-        def fetchall(self):
-            return next(self.results)
-
-    now = dt.datetime.now(dt.timezone.utc)
-    row = {"nav_date": day, "source": "tiingo", "calendar_id": None,
-           "calendar_version": None, "calendar_source": None}
-    assert _per_date_lineage(Cursor([row], []), uuid.uuid4(), [day], day, now)[0] is False
+    row = _lineage_row()
+    assert _per_date_lineage(_LineageCursor([row]), uuid.uuid4(), [_DAY], _DAY, _NOW)[0] is False
     assert _per_date_lineage(
-        Cursor([row], []), uuid.uuid4(), [day, day + dt.timedelta(days=1)],
-        day + dt.timedelta(days=1), now,
+        _LineageCursor([row]), uuid.uuid4(), [_DAY, _DAY + dt.timedelta(days=1)],
+        _DAY + dt.timedelta(days=1), _NOW,
     )[0] is False
+
+
+def test_per_date_lineage_accepts_same_xid_attempt_regardless_of_parent():
+    run, xid = uuid.uuid4(), "900"
+    cursor = _LineageCursor([_lineage_row()], [_revision(level=(7, run, xid))], [],
+                            [_attempt_row(run, xid)])
+    verified, lineage = _per_date_lineage(cursor, uuid.uuid4(), [_DAY], _DAY, _NOW)
+    assert verified is True and lineage[0][1][0] == "revision"
+    # Other-xid, failed, uncovering or future attempts prove nothing.
+    for attempt in (_attempt_row(run, "901"), _attempt_row(run, xid, status="empty"),
+                    _attempt_row(run, xid, start=_PRIOR, end=_PRIOR),
+                    _attempt_row(run, xid, finished=_NOW + dt.timedelta(seconds=1))):
+        cursor = _LineageCursor([_lineage_row()], [_revision(level=(7, run, xid))], [],
+                                [attempt])
+        assert _per_date_lineage(cursor, uuid.uuid4(), [_DAY], _DAY, _NOW)[0] is False
+
+
+def test_per_date_lineage_row_evidence_proves_unchanged_level_until_superseded():
+    run, xid = uuid.uuid4(), "910"
+    # Typed level with no revision at all (head 0): evidence alone proves it.
+    cursor = _LineageCursor([_lineage_row()], [], [_evidence(run, 0, xid)])
+    verified, lineage = _per_date_lineage(cursor, uuid.uuid4(), [_DAY], _DAY, _NOW)
+    assert verified is True and lineage[0][1][0] == "evidence"
+    # Evidence recorded at head 5 survives a later revision on ANOTHER date
+    # (not in this date's revisions) but not a later level revision of this date.
+    other = uuid.uuid4()
+    assert _per_date_lineage(_LineageCursor(
+        [_lineage_row()], [_revision(level=(5, other, "1"))], [_evidence(run, 5, xid)],
+        [_attempt_row(other, "2")]), uuid.uuid4(), [_DAY], _DAY, _NOW)[0] is True
+    assert _per_date_lineage(_LineageCursor(
+        [_lineage_row()], [_revision(level=(6, other, "1"))], [_evidence(run, 5, xid)],
+        [_attempt_row(other, "2")]), uuid.uuid4(), [_DAY], _DAY, _NOW)[0] is False
+    # Digest of another projection, other-xid attempt, or window not covering.
+    for evidence in (_evidence(run, 0, xid, digest="0" * 64),
+                     _evidence(run, 0, xid, attempt_xid="911"),
+                     _evidence(run, 0, xid, start=_DAY + dt.timedelta(days=1))):
+        assert _per_date_lineage(_LineageCursor([_lineage_row()], [], [evidence]),
+                                 uuid.uuid4(), [_DAY], _DAY, _NOW)[0] is False
+
+
+def test_per_date_lineage_derived_return_needs_attributed_dependency_not_a_fetch():
+    level_run, level_xid = uuid.uuid4(), "920"
+    derived_run, derived_xid = uuid.uuid4(), "921"
+    revisions = [_revision(level=(3, level_run, level_xid),
+                           derived=(8, derived_run, derived_xid), dependency=_PRIOR)]
+    attempts = [_attempt_row(level_run, level_xid),
+                # The derived writer fetched only the predecessor (_PRIOR).
+                _attempt_row(derived_run, derived_xid, start=_PRIOR, end=_PRIOR)]
+    cursor = _LineageCursor([_lineage_row()], revisions, [], attempts)
+    verified, lineage = _per_date_lineage(cursor, uuid.uuid4(), [_DAY], _DAY, _NOW)
+    # The level keeps its own origin; the derived revision is attributed via
+    # its dependency without claiming _DAY was fetched by derived_run.
+    assert verified is True and lineage[0][1] == ["revision", 3, str(level_run)]
+    assert lineage[0][2] == 8
+    # An unattributed derived revision (unknown writer) invalidates.
+    unknown = [_revision(level=(3, level_run, level_xid), derived=(9, None, None),
+                         dependency=_PRIOR)]
+    unknown[0]["derived_run_id"] = None
+    assert _per_date_lineage(_LineageCursor([_lineage_row()], unknown, [], attempts[:1]),
+                             uuid.uuid4(), [_DAY], _DAY, _NOW)[0] is False
+    # Dependency outside the derived attempt window invalidates too.
+    far = [_revision(level=(3, level_run, level_xid), derived=(8, derived_run, derived_xid),
+                     dependency=_PRIOR - dt.timedelta(days=5))]
+    assert _per_date_lineage(_LineageCursor([_lineage_row()], far, [], attempts),
+                             uuid.uuid4(), [_DAY], _DAY, _NOW)[0] is False
+
+
+def test_reason_precedence_matrix_section_12_2d():
+    """NULL kind -> missing; explicit raw/unknown/other conventions -> semantics
+    (even without lineage); other gaps -> missing; then hold/interval."""
+    p, g, r, lifecycle, f, a = _case()
+
+    def reason(rows, **kwargs):
+        return _assess(p, g, rows, lifecycle, f, a, **kwargs)["reason_code"]
+
+    def with_kind(kind, index=-1):
+        rows = [dict(row) for row in r]
+        rows[index]["source_nav_kind"] = kind
+        return rows
+
+    assert reason(with_kind(None)) == "NAV_DATA_UNAVAILABLE"
+    assert reason(with_kind("raw")) == "NAV_RETURN_SEMANTICS_UNSUPPORTED"
+    assert reason(with_kind("unknown")) == "NAV_RETURN_SEMANTICS_UNSUPPORTED"
+    # Known incompatibility is not hidden behind missing lineage or a hold.
+    assert reason(with_kind("raw"), revision_verified=False) == (
+        "NAV_RETURN_SEMANTICS_UNSUPPORTED")
+    assert reason(with_kind("raw"), hold=True) == "NAV_RETURN_SEMANTICS_UNSUPPORTED"
+    # Absent kind outranks an explicit incompatibility elsewhere in the window.
+    mixed = with_kind("raw")
+    mixed[5]["source_nav_kind"] = None
+    assert reason(mixed) == "NAV_DATA_UNAVAILABLE"
+    # A declared non-required return convention is also a known incompatibility.
+    convention = [dict(row) for row in r]
+    convention[-1]["return_semantics"] = "close_to_close_simple"
+    assert reason(convention, revision_verified=False) == "NAV_RETURN_SEMANTICS_UNSUPPORTED"
+    # Missing lineage/attempt outranks hold and interval problems.
+    assert reason(r, revision_verified=False, hold=True) == "NAV_DATA_UNAVAILABLE"
+    assert _assess(p, g, r, lifecycle, f, None, hold=True)["reason_code"] == (
+        "NAV_DATA_UNAVAILABLE")
+    # Only then: active hold or conflicting interval.
+    assert reason(r, hold=True) == "RETURN_INTERVAL_INCOMPATIBLE"
+    gap = [dict(row) for row in r]
+    gap[-1]["return_semantics"] = None
+    gap[-1]["return_1d"] = None
+    assert reason(gap) == "RETURN_INTERVAL_INCOMPATIBLE"
+    # Lifecycle gates stay first; rejected rows never become admissible.
+    lifecycle["identity_verified"] = False
+    assert reason(with_kind("raw")) == "NAV_DATA_UNAVAILABLE"
+    lifecycle["identity_verified"] = True
+    assert all(not _assess(p, g, rows, lifecycle, f, a)["admissible"]
+               for rows in (with_kind(None), with_kind("raw"), mixed, convention, gap))
 
 
 def test_catalog_manifest_is_reproducible_from_pinned_signature():
@@ -366,7 +525,10 @@ def test_catalog_manifest_is_reproducible_from_pinned_signature():
     root = Path(__file__).parents[1]
     ddl = (root / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     current = (root / "schemas" / "fund_nav_readiness_v1.catalog.json").read_bytes()
-    assert manifest_bytes(json.loads(current)["signature"], ddl) == current
+    manifest = json.loads(current)
+    assert manifest_bytes(
+        manifest["signature"], manifest["access_profile"]["signature"], ddl
+    ) == current
 
 
 def test_29_march_15_to_18_vs_one_march_14_to_18_is_not_a_daily_cohort():
@@ -725,3 +887,55 @@ def test_chain_outer_lock_and_ingestion_contention_are_normalized(monkeypatch):
     )
     assert stats == {**_BUSY, "blocked_stage": "instrument_ingestion"}
     assert risk_calls == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# R2-A pure contracts: PR132 extractor matrix (N5) and level evidence digest.
+# ──────────────────────────────────────────────────────────────────────────────
+def _pr132_exact():
+    from scripts.nav_timeseries_provenance_schema import EXPECTED_COLUMNS
+
+    return {name: (type_name, False, "", "", False) for name, type_name in EXPECTED_COLUMNS}
+
+
+def test_pr132_extractor_matrix_every_column_and_attribute():
+    """Controlled catalog: combinations PG cannot build on these types (identity on
+    numeric/varchar/date/boolean/text) are exercised only through the extractor."""
+    from scripts.fund_nav_readiness_schema import pr132_violations
+
+    exact = _pr132_exact()
+    assert pr132_violations("r", exact) == []
+    assert pr132_violations(None, {}) == ["relation:missing"]
+    for relkind in ("v", "p", "m", "f"):
+        assert pr132_violations(relkind, exact) == [f"relkind:{relkind}"]
+    variants = {
+        "type": lambda t: ("text" if t[0] != "text" else "character varying(1)",) + t[1:],
+        "notnull": lambda t: (t[0], True) + t[2:],
+        "generated": lambda t: t[:2] + ("s",) + t[3:],
+        "identity_always": lambda t: t[:3] + ("a",) + t[4:],
+        "identity_default": lambda t: t[:3] + ("d",) + t[4:],
+        "default": lambda t: t[:4] + (True,),
+    }
+    for column in exact:
+        for name, mutate in variants.items():
+            state = {**exact, column: mutate(exact[column])}
+            assert pr132_violations("r", state) == [f"mismatch:{column}"], (column, name)
+        missing = {k: v for k, v in exact.items() if k != column}
+        assert pr132_violations("r", missing) == [f"missing:{column}"]
+    extra = {**exact, "unrelated": ("integer", True, "", "a", True)}
+    assert pr132_violations("r", extra) == []  # only the 11 PR132 columns are contract
+
+
+def test_level_evidence_digest_vectors_are_frozen():
+    from decimal import Decimal
+
+    from src.workers._nav_policy import level_evidence_digest
+
+    assert level_evidence_digest(
+        dt.date(2026, 9, 22), Decimal("100.12"), Decimal("100.12"),
+        "tiingo", "adjusted", "USD", "none",
+    ) == "3e579fa89be3638c7628e37f43b11a48b759b54a34be16e9bf0458785d668770"
+    # Numerics are rendered at NUMERIC(18,6) scale; NULLs are JSON null.
+    assert level_evidence_digest(
+        dt.date(2026, 9, 21), 5, None, None, None, None, None,
+    ) == "bfa9840f79ad4dea3f7c680eeb2b7d52622a7ed4b9eb72635faa31a422addccb"

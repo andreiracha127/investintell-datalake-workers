@@ -1,5 +1,8 @@
 -- Additive, versioned NAV evidence. Apply only to an explicitly selected schema.
 -- PR132's nav_timeseries provenance upgrade is a prerequisite, not repeated here.
+-- The operator applies this file with `SET search_path TO <schema>, pg_temp`;
+-- every function captures exactly that path (`SET search_path FROM CURRENT`),
+-- so pg_temp is searched last and a temporary object cannot shadow W1 state.
 BEGIN;
 SET LOCAL lock_timeout = '2s';
 SET LOCAL statement_timeout = '30s';
@@ -55,14 +58,24 @@ CREATE TABLE IF NOT EXISTS nav_policy_current (
 );
 
 CREATE OR REPLACE FUNCTION nav_policy_freeze_v1() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
     calendar_key varchar(128);
     version_key varchar(64);
 BEGIN
     IF TG_TABLE_NAME = 'nav_policy_versions' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.published_at IS NOT NULL THEN
+                RAISE EXCEPTION 'NAV policy must be inserted unpublished';
+            END IF;
+            RETURN NEW;
+        END IF;
         IF TG_OP = 'DELETE' OR OLD.published_at IS NOT NULL THEN
             RAISE EXCEPTION 'published NAV policy is immutable';
+        END IF;
+        -- Publication instant is the server clock, never a caller value.
+        IF NEW.published_at IS NOT NULL THEN
+            NEW.published_at := clock_timestamp();
         END IF;
         IF NEW.policy_id IS DISTINCT FROM OLD.policy_id
            OR NEW.policy_version IS DISTINCT FROM OLD.policy_version
@@ -113,11 +126,37 @@ BEGIN
     RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
 END$$;
 DROP TRIGGER IF EXISTS nav_policy_freeze ON nav_policy_versions;
-CREATE TRIGGER nav_policy_freeze BEFORE UPDATE OR DELETE ON nav_policy_versions
+CREATE TRIGGER nav_policy_freeze BEFORE INSERT OR UPDATE OR DELETE ON nav_policy_versions
 FOR EACH ROW EXECUTE FUNCTION nav_policy_freeze_v1();
 DROP TRIGGER IF EXISTS nav_schedule_freeze ON nav_valuation_schedules;
 CREATE TRIGGER nav_schedule_freeze BEFORE INSERT OR UPDATE OR DELETE ON nav_valuation_schedules
 FOR EACH ROW EXECUTE FUNCTION nav_policy_freeze_v1();
+
+-- N3: pointer instants are server-controlled. Any real INSERT/UPDATE is stamped
+-- with the current server clock (a caller value is overwritten), a regressed
+-- clock aborts instead of back-dating, and the target must already be published.
+-- Re-pointing to an older version is allowed and receives a new instant.
+CREATE OR REPLACE FUNCTION nav_policy_pointer_stamp_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE
+    stamp timestamptz := clock_timestamp();
+    target_published timestamptz;
+BEGIN
+    IF TG_OP = 'UPDATE' AND stamp <= OLD.published_at THEN
+        RAISE EXCEPTION 'publication_clock_regressed';
+    END IF;
+    SELECT p.published_at INTO target_published FROM nav_policy_versions p
+    WHERE p.policy_id = NEW.policy_id AND p.policy_version = NEW.policy_version
+      AND p.readiness_profile = NEW.readiness_profile;
+    IF target_published IS NULL OR target_published > stamp THEN
+        RAISE EXCEPTION 'NAV policy pointer target is not published';
+    END IF;
+    NEW.published_at := stamp;
+    RETURN NEW;
+END$$;
+DROP TRIGGER IF EXISTS nav_policy_pointer_stamp ON nav_policy_current;
+CREATE TRIGGER nav_policy_pointer_stamp BEFORE INSERT OR UPDATE ON nav_policy_current
+FOR EACH ROW EXECUTE FUNCTION nav_policy_pointer_stamp_v1();
 
 -- Lifecycle/identity evidence is temporal and distinct from catalogue discovery.
 -- Absence of a row means UNKNOWN, even when instruments_universe.is_active=true.
@@ -140,23 +179,73 @@ CREATE TABLE IF NOT EXISTS nav_instrument_policy_evidence (
 );
 CREATE INDEX IF NOT EXISTS nav_instrument_policy_latest_idx
     ON nav_instrument_policy_evidence (instrument_id, policy_id, policy_version, known_at DESC);
+-- recorded_at is the server instant the fact became known to W (N3 filter).
 CREATE OR REPLACE FUNCTION nav_instrument_evidence_append_only_v1() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.recorded_at := clock_timestamp();
+        RETURN NEW;
+    END IF;
     RAISE EXCEPTION 'NAV lifecycle evidence is append-only';
 END$$;
 DROP TRIGGER IF EXISTS nav_instrument_evidence_append_only ON nav_instrument_policy_evidence;
 CREATE TRIGGER nav_instrument_evidence_append_only
-BEFORE UPDATE OR DELETE ON nav_instrument_policy_evidence
+BEFORE INSERT OR UPDATE OR DELETE ON nav_instrument_policy_evidence
 FOR EACH ROW EXECUTE FUNCTION nav_instrument_evidence_append_only_v1();
 
+-- A run is a batch envelope, not economic evidence: per-instrument success is
+-- proven by the attempt committed in the same transaction as its NAV writes.
 CREATE TABLE IF NOT EXISTS nav_ingestion_runs (
     run_id uuid PRIMARY KEY,
-    started_at timestamptz NOT NULL,
+    started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     completed_at timestamptz,
     requested_end date NOT NULL,
-    status text NOT NULL CHECK (status IN ('running','completed','aborted'))
+    status text NOT NULL CHECK (status IN ('running','completed','aborted','failed')),
+    operation text NOT NULL DEFAULT 'normal' CHECK (operation IN ('normal','rebase')),
+    contract_version text,
+    plan_sha256 char(64) CHECK (plan_sha256 ~ '^[0-9a-f]{64}$'),
+    reason_code varchar(48) CHECK (reason_code IS NULL OR reason_code ~ '^[A-Z_]{1,48}$'),
+    CHECK ((status = 'running') = (completed_at IS NULL)),
+    CHECK (status <> 'running' OR reason_code IS NULL),
+    CHECK ((operation = 'normal' AND contract_version IS NULL AND plan_sha256 IS NULL)
+        OR (operation = 'rebase' AND contract_version = 'w1-tiingo-adjusted-daily-v1'
+            AND plan_sha256 IS NOT NULL))
 );
+CREATE OR REPLACE FUNCTION nav_ingestion_run_guard_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.status <> 'running' THEN
+            RAISE EXCEPTION 'NAV ingestion run must be registered running';
+        END IF;
+        NEW.started_at := clock_timestamp();
+        NEW.completed_at := NULL;
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'DELETE' OR OLD.status <> 'running' THEN
+        RAISE EXCEPTION 'terminal NAV ingestion run is immutable';
+    END IF;
+    IF NEW.status NOT IN ('completed','aborted','failed')
+       OR (NEW.run_id, NEW.started_at, NEW.requested_end, NEW.operation,
+           NEW.contract_version, NEW.plan_sha256)
+          IS DISTINCT FROM
+          (OLD.run_id, OLD.started_at, OLD.requested_end, OLD.operation,
+           OLD.contract_version, OLD.plan_sha256) THEN
+        RAISE EXCEPTION 'NAV ingestion run may only transition running to terminal';
+    END IF;
+    NEW.completed_at := clock_timestamp();
+    RETURN NEW;
+END$$;
+DROP TRIGGER IF EXISTS nav_ingestion_run_guard ON nav_ingestion_runs;
+CREATE TRIGGER nav_ingestion_run_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nav_ingestion_runs
+FOR EACH ROW EXECUTE FUNCTION nav_ingestion_run_guard_v1();
+
+-- One persisted, append-only attempt per (run, instrument, provider). The server
+-- assigns commit_xid/persisted_at; a success must be a completed, ordered fetch
+-- with rows. Provider-attributed NAV revisions must reference an attempt with
+-- the same xid (fund_nav_revision_attribution_v1), never an older attempt.
 CREATE TABLE IF NOT EXISTS nav_ingestion_attempts (
     run_id uuid NOT NULL REFERENCES nav_ingestion_runs,
     instrument_id uuid NOT NULL,
@@ -174,20 +263,56 @@ CREATE TABLE IF NOT EXISTS nav_ingestion_attempts (
     newest_observed_date date,
     row_count integer NOT NULL DEFAULT 0 CHECK (row_count >= 0),
     reason_code varchar(48),
+    commit_xid xid8 NOT NULL,
     PRIMARY KEY (run_id, instrument_id, provider),
+    CHECK (requested_start <= requested_end),
     CHECK (finished_at IS NULL OR attempted_at IS NULL OR finished_at >= attempted_at),
-    CHECK (reason_code IS NULL OR reason_code ~ '^[A-Z_]{1,48}$')
+    CHECK (reason_code IS NULL OR reason_code ~ '^[A-Z_]{1,48}$'),
+    CHECK (status NOT IN ('success_new','success_no_new') OR COALESCE(
+        attempted_at IS NOT NULL AND finished_at IS NOT NULL
+        AND finished_at >= attempted_at AND persisted_at >= finished_at
+        AND row_count > 0 AND reason_code IS NULL, false))
 );
 CREATE INDEX IF NOT EXISTS nav_ingestion_attempts_recent_idx
     ON nav_ingestion_attempts (instrument_id, attempted_at DESC);
 CREATE INDEX IF NOT EXISTS nav_ingestion_attempts_persisted_idx
     ON nav_ingestion_attempts (instrument_id, persisted_at DESC);
+CREATE OR REPLACE FUNCTION nav_ingestion_attempt_guard_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'NAV ingestion attempts are append-only';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM nav_ingestion_runs r
+                   WHERE r.run_id = NEW.run_id AND r.status = 'running') THEN
+        RAISE EXCEPTION 'NAV ingestion attempt requires a running parent run';
+    END IF;
+    NEW.commit_xid := pg_current_xact_id();
+    NEW.persisted_at := clock_timestamp();
+    RETURN NEW;
+END$$;
+DROP TRIGGER IF EXISTS nav_ingestion_attempt_guard ON nav_ingestion_attempts;
+CREATE TRIGGER nav_ingestion_attempt_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nav_ingestion_attempts
+FOR EACH ROW EXECUTE FUNCTION nav_ingestion_attempt_guard_v1();
+
+-- nav-level-evidence-v1: canonical digest of one persisted level projection
+-- (date, nav, source_nav, source, kind, currency, repair); never calendar or
+-- derived return. Mirrored by _nav_policy.level_evidence_digest.
+CREATE OR REPLACE FUNCTION nav_level_evidence_digest_v1(
+    nav_date date, nav numeric, source_nav numeric, source text,
+    source_nav_kind text, currency text, nav_repair_kind text
+) RETURNS char(64) LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $$
+SELECT encode(sha256(convert_to(json_build_array(
+    'nav-level-evidence-v1', $1::text, $2::text, $3::text, $4, $5, $6, $7)::text,
+    'UTF8')), 'hex')::char(64)
+$$;
 
 -- Calendar maintenance is not ingestion: it never fetches, never creates a
 -- provider run/attempt and may only stamp the pinned published calendar tuple
 -- on already-typed rows. Scope, pins and completion are validated in the DB.
 CREATE OR REPLACE FUNCTION nav_uuid_array_unique_v1(ids uuid[]) RETURNS boolean
-LANGUAGE sql IMMUTABLE STRICT AS $$
+LANGUAGE sql IMMUTABLE STRICT SET search_path FROM CURRENT AS $$
 SELECT count(*) = count(DISTINCT id) AND count(id) = count(*) FROM unnest(ids) AS id
 $$;
 CREATE TABLE IF NOT EXISTS nav_calendar_maintenance_runs (
@@ -239,11 +364,25 @@ CREATE TABLE IF NOT EXISTS fund_nav_data_revisions (
     data_changed boolean NOT NULL,
     calendar_changed boolean NOT NULL,
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    -- Provider attribution is (run, provider, xid of the writing transaction);
+    -- all three or none. A derived return-only update (level/provenance
+    -- unchanged) records the dependency start date instead of claiming a fetch.
+    source_provider text,
+    source_attempt_xid xid8,
+    derived_return_only boolean NOT NULL DEFAULT false,
+    dependency_start_date date,
     CHECK (source_run_id IS NULL OR maintenance_run_id IS NULL),
+    CHECK (num_nulls(source_run_id, source_provider, source_attempt_xid) IN (0, 3)),
     CHECK (data_changed OR calendar_changed),
     CHECK (mutation_kind = 'UPDATE' OR data_changed),
     CHECK (maintenance_run_id IS NULL
-        OR (mutation_kind = 'UPDATE' AND NOT data_changed AND calendar_changed))
+        OR (mutation_kind = 'UPDATE' AND NOT data_changed AND calendar_changed)),
+    CHECK (NOT derived_return_only
+        OR (mutation_kind = 'UPDATE' AND data_changed AND NOT calendar_changed)),
+    CHECK (dependency_start_date IS NULL OR derived_return_only),
+    FOREIGN KEY (source_run_id, instrument_id, source_provider)
+        REFERENCES nav_ingestion_attempts (run_id, instrument_id, provider)
+        DEFERRABLE INITIALLY DEFERRED
 );
 CREATE INDEX IF NOT EXISTS fund_nav_data_revisions_instrument_idx
     ON fund_nav_data_revisions (instrument_id, revision_id DESC);
@@ -254,7 +393,7 @@ CREATE INDEX IF NOT EXISTS fund_nav_data_revisions_maintenance_idx
     WHERE maintenance_run_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION nav_calendar_maintenance_guard_v1() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
     revision_count bigint;
     revisions_in_scope boolean;
@@ -313,7 +452,7 @@ FOR EACH ROW EXECUTE FUNCTION nav_calendar_maintenance_guard_v1();
 -- Revisions are append-only and only the nav_timeseries stamp trigger may write
 -- them (nested trigger depth), so lineage cannot be forged by a direct INSERT.
 CREATE OR REPLACE FUNCTION fund_nav_revision_append_only_v1() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
     IF TG_OP <> 'INSERT' THEN
         RAISE EXCEPTION 'NAV data revisions are append-only';
@@ -327,37 +466,369 @@ DROP TRIGGER IF EXISTS fund_nav_revision_append_only ON fund_nav_data_revisions;
 CREATE TRIGGER fund_nav_revision_append_only
 BEFORE INSERT OR UPDATE OR DELETE ON fund_nav_data_revisions
 FOR EACH ROW EXECUTE FUNCTION fund_nav_revision_append_only_v1();
-CREATE TABLE IF NOT EXISTS fund_nav_reexpression_holds (
-    instrument_id uuid PRIMARY KEY,
+
+-- Checked at COMMIT: a provider-attributed revision needs a success attempt of
+-- the same run/instrument/provider persisted in the SAME transaction, finished
+-- before the write, whose requested window covers the level date (or, for a
+-- derived return-only update, the predecessor it depends on).
+CREATE OR REPLACE FUNCTION fund_nav_revision_attribution_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE
+    attempt record;
+BEGIN
+    SELECT a.status, a.commit_xid, a.finished_at, a.requested_start, a.requested_end
+      INTO attempt
+    FROM nav_ingestion_attempts a
+    WHERE a.run_id = NEW.source_run_id AND a.instrument_id = NEW.instrument_id
+      AND a.provider = NEW.source_provider;
+    IF NOT FOUND
+       OR attempt.status NOT IN ('success_new','success_no_new')
+       OR attempt.commit_xid IS DISTINCT FROM NEW.source_attempt_xid
+       OR NOT COALESCE(attempt.finished_at <= NEW.recorded_at, false)
+       OR NOT COALESCE(
+            NEW.nav_date BETWEEN attempt.requested_start AND attempt.requested_end
+            OR (NEW.derived_return_only AND NEW.dependency_start_date
+                BETWEEN attempt.requested_start AND attempt.requested_end), false) THEN
+        RAISE EXCEPTION 'NAV revision lacks a same-transaction successful provider attempt';
+    END IF;
+    RETURN NULL;
+END$$;
+DROP TRIGGER IF EXISTS fund_nav_revision_attribution ON fund_nav_data_revisions;
+CREATE CONSTRAINT TRIGGER fund_nav_revision_attribution
+AFTER INSERT ON fund_nav_data_revisions
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW WHEN (NEW.source_run_id IS NOT NULL)
+EXECUTE FUNCTION fund_nav_revision_attribution_v1();
+
+-- Row evidence proves a real fetch confirmed the persisted level without a
+-- fake revision (unchanged data). Server-assigned xid/instant; verified at
+-- COMMIT against the persisted projection, the final head and the attempt.
+CREATE TABLE IF NOT EXISTS nav_ingestion_row_evidence (
+    run_id uuid NOT NULL,
+    instrument_id uuid NOT NULL,
+    provider text NOT NULL,
+    nav_date date NOT NULL,
+    level_digest char(64) NOT NULL CHECK (level_digest ~ '^[0-9a-f]{64}$'),
+    observed_nav numeric NOT NULL CHECK (observed_nav > 0),
+    source_nav_kind text NOT NULL CHECK (source_nav_kind IN ('adjusted','raw','unknown')),
+    revision_head bigint NOT NULL CHECK (revision_head >= 0),
+    commit_xid xid8 NOT NULL,
+    recorded_at timestamptz NOT NULL,
+    PRIMARY KEY (run_id, instrument_id, provider, nav_date),
+    FOREIGN KEY (run_id, instrument_id, provider)
+        REFERENCES nav_ingestion_attempts (run_id, instrument_id, provider)
+);
+CREATE INDEX IF NOT EXISTS nav_ingestion_row_evidence_date_idx
+    ON nav_ingestion_row_evidence (instrument_id, nav_date, recorded_at DESC);
+CREATE OR REPLACE FUNCTION nav_row_evidence_guard_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE
+    attempt record;
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'NAV row evidence is append-only';
+    END IF;
+    SELECT a.status, a.commit_xid, a.requested_start, a.requested_end, r.operation
+      INTO attempt
+    FROM nav_ingestion_attempts a JOIN nav_ingestion_runs r USING (run_id)
+    WHERE a.run_id = NEW.run_id AND a.instrument_id = NEW.instrument_id
+      AND a.provider = NEW.provider;
+    IF NOT FOUND OR attempt.status NOT IN ('success_new','success_no_new')
+       OR attempt.commit_xid <> pg_current_xact_id()
+       OR NEW.nav_date NOT BETWEEN attempt.requested_start AND attempt.requested_end THEN
+        RAISE EXCEPTION 'NAV row evidence requires a same-transaction successful attempt covering its date';
+    END IF;
+    IF attempt.operation = 'rebase' AND NEW.source_nav_kind <> 'adjusted' THEN
+        RAISE EXCEPTION 'NAV rebase row evidence must be adjusted';
+    END IF;
+    NEW.commit_xid := pg_current_xact_id();
+    NEW.recorded_at := clock_timestamp();
+    RETURN NEW;
+END$$;
+DROP TRIGGER IF EXISTS nav_row_evidence_guard ON nav_ingestion_row_evidence;
+CREATE TRIGGER nav_row_evidence_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nav_ingestion_row_evidence
+FOR EACH ROW EXECUTE FUNCTION nav_row_evidence_guard_v1();
+CREATE OR REPLACE FUNCTION nav_row_evidence_verify_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE
+    persisted record;
+    head bigint;
+BEGIN
+    SELECT n.nav_date, n.nav, n.source_nav, n.source, n.source_nav_kind, n.currency,
+           n.nav_repair_kind
+      INTO persisted
+    FROM nav_timeseries n
+    WHERE n.instrument_id = NEW.instrument_id AND n.nav_date = NEW.nav_date;
+    SELECT COALESCE(max(h.revision_id), 0) INTO head
+    FROM fund_nav_data_heads h WHERE h.instrument_id = NEW.instrument_id;
+    IF persisted.nav_date IS NULL
+       OR NOT COALESCE(nav_level_evidence_digest_v1(
+              persisted.nav_date, persisted.nav, persisted.source_nav, persisted.source,
+              persisted.source_nav_kind, persisted.currency, persisted.nav_repair_kind)
+            = NEW.level_digest, false)
+       OR NOT COALESCE(persisted.source_nav = NEW.observed_nav, false)
+       OR persisted.source_nav_kind IS DISTINCT FROM NEW.source_nav_kind
+       OR head <> NEW.revision_head THEN
+        RAISE EXCEPTION 'NAV row evidence does not match the persisted level and final head';
+    END IF;
+    RETURN NULL;
+END$$;
+DROP TRIGGER IF EXISTS nav_row_evidence_verify ON nav_ingestion_row_evidence;
+CREATE CONSTRAINT TRIGGER nav_row_evidence_verify
+AFTER INSERT ON nav_ingestion_row_evidence
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION nav_row_evidence_verify_v1();
+
+-- Rebase receipt: the full-window reconciliation of one instrument, committed
+-- in the same transaction as its attempt, row evidence and NAV writes. The
+-- provider digest is canonical over the observations used, not raw HTTP bytes.
+CREATE TABLE IF NOT EXISTS nav_rebase_receipts (
+    receipt_id uuid PRIMARY KEY,
+    run_id uuid NOT NULL,
+    instrument_id uuid NOT NULL,
+    provider text NOT NULL,
+    contract_version text NOT NULL CHECK (contract_version = 'w1-tiingo-adjusted-daily-v1'),
+    plan_sha256 char(64) NOT NULL CHECK (plan_sha256 ~ '^[0-9a-f]{64}$'),
+    policy_id text NOT NULL,
+    policy_version text NOT NULL,
+    policy_hash char(64) NOT NULL,
+    lifecycle_evidence_id uuid NOT NULL REFERENCES nav_instrument_policy_evidence,
+    window_start date NOT NULL,
+    window_end date NOT NULL,
+    grid_digest char(64) NOT NULL CHECK (grid_digest ~ '^[0-9a-f]{64}$'),
+    provider_snapshot_sha256 char(64) NOT NULL
+        CHECK (provider_snapshot_sha256 ~ '^[0-9a-f]{64}$'),
+    row_evidence_digest char(64) NOT NULL CHECK (row_evidence_digest ~ '^[0-9a-f]{64}$'),
+    before_head bigint NOT NULL CHECK (before_head >= 0),
+    after_head bigint NOT NULL,
+    observed_levels_count integer NOT NULL CHECK (observed_levels_count >= 401),
+    changed_level_rows integer NOT NULL CHECK (changed_level_rows >= 0),
+    changed_return_rows integer NOT NULL CHECK (changed_return_rows >= 0),
+    committed_at timestamptz NOT NULL,
+    commit_xid xid8 NOT NULL,
+    UNIQUE (run_id, instrument_id, provider),
+    UNIQUE (plan_sha256, instrument_id),
+    FOREIGN KEY (run_id, instrument_id, provider)
+        REFERENCES nav_ingestion_attempts (run_id, instrument_id, provider),
+    FOREIGN KEY (policy_id, policy_version) REFERENCES nav_policy_versions,
+    CHECK (window_start < window_end AND before_head <= after_head)
+);
+CREATE OR REPLACE FUNCTION nav_rebase_receipt_guard_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'NAV rebase receipts are append-only';
+    END IF;
+    NEW.commit_xid := pg_current_xact_id();
+    NEW.committed_at := clock_timestamp();
+    RETURN NEW;
+END$$;
+DROP TRIGGER IF EXISTS nav_rebase_receipt_guard ON nav_rebase_receipts;
+CREATE TRIGGER nav_rebase_receipt_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nav_rebase_receipts
+FOR EACH ROW EXECUTE FUNCTION nav_rebase_receipt_guard_v1();
+-- Checked at COMMIT: governed rebase run/contract/plan, success attempt of the
+-- same xid covering the window, current published unexpired policy pins,
+-- latest lifecycle evidence, row evidence of the same xid for every due session
+-- of the pinned calendar in the window, and the final head.
+CREATE OR REPLACE FUNCTION nav_rebase_receipt_verify_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE
+    run record;
+    attempt record;
+    policy record;
+    latest_evidence uuid;
+    head bigint;
+    missing_sessions bigint;
+    evidence_count bigint;
+    evidence_digest text;
+    grid text;
+BEGIN
+    SELECT r.operation, r.contract_version, r.plan_sha256 INTO run
+    FROM nav_ingestion_runs r WHERE r.run_id = NEW.run_id;
+    SELECT a.status, a.commit_xid, a.requested_start, a.requested_end INTO attempt
+    FROM nav_ingestion_attempts a
+    WHERE a.run_id = NEW.run_id AND a.instrument_id = NEW.instrument_id
+      AND a.provider = NEW.provider;
+    SELECT p.policy_id, p.policy_version, p.policy_hash, p.calendar_id,
+           p.calendar_version, p.calendar_source
+      INTO policy
+    FROM nav_policy_current c JOIN nav_policy_versions p USING (policy_id, policy_version)
+    WHERE c.readiness_profile = 'current_daily_nav_v1'
+      AND p.published_at IS NOT NULL AND p.valid_through >= clock_timestamp();
+    SELECT e.evidence_id INTO latest_evidence FROM nav_instrument_policy_evidence e
+    WHERE e.instrument_id = NEW.instrument_id AND e.policy_id = NEW.policy_id
+      AND e.policy_version = NEW.policy_version AND e.known_at <= clock_timestamp()
+      AND e.effective_at <= clock_timestamp() AND e.recorded_at <= clock_timestamp()
+    ORDER BY e.effective_at DESC, e.known_at DESC, e.recorded_at DESC, e.evidence_id DESC
+    LIMIT 1;
+    SELECT COALESCE(max(h.revision_id), 0) INTO head
+    FROM fund_nav_data_heads h WHERE h.instrument_id = NEW.instrument_id;
+    SELECT count(*) INTO missing_sessions
+    FROM nav_valuation_schedules s
+    WHERE s.calendar_id = policy.calendar_id AND s.calendar_version = policy.calendar_version
+      AND s.session_date BETWEEN NEW.window_start AND NEW.window_end
+      AND s.nav_due_at <= clock_timestamp()
+      AND NOT EXISTS (SELECT 1 FROM nav_ingestion_row_evidence ev
+                      WHERE ev.run_id = NEW.run_id AND ev.instrument_id = NEW.instrument_id
+                        AND ev.provider = NEW.provider AND ev.nav_date = s.session_date
+                        AND ev.commit_xid = NEW.commit_xid);
+    SELECT '[' || COALESCE(string_agg('"' || s.session_date::text || '"', ','
+                                      ORDER BY s.session_date), '') || ']'
+      INTO grid
+    FROM nav_valuation_schedules s
+    WHERE s.calendar_id = policy.calendar_id AND s.calendar_version = policy.calendar_version
+      AND s.session_date BETWEEN NEW.window_start AND NEW.window_end
+      AND s.nav_due_at <= clock_timestamp();
+    SELECT count(*), '[' || COALESCE(string_agg(
+               '["' || ev.nav_date::text || '","' || ev.level_digest || '"]', ','
+               ORDER BY ev.nav_date), '') || ']'
+      INTO evidence_count, evidence_digest
+    FROM nav_ingestion_row_evidence ev
+    WHERE ev.run_id = NEW.run_id AND ev.instrument_id = NEW.instrument_id
+      AND ev.provider = NEW.provider AND ev.commit_xid = NEW.commit_xid
+      AND ev.nav_date BETWEEN NEW.window_start AND NEW.window_end;
+    IF run.operation IS DISTINCT FROM 'rebase'
+       OR run.contract_version IS DISTINCT FROM NEW.contract_version
+       OR run.plan_sha256 IS DISTINCT FROM NEW.plan_sha256
+       OR attempt.status IS DISTINCT FROM 'success_new'
+          AND attempt.status IS DISTINCT FROM 'success_no_new'
+       OR attempt.commit_xid IS DISTINCT FROM NEW.commit_xid
+       OR NOT COALESCE(attempt.requested_start <= NEW.window_start
+                       AND attempt.requested_end >= NEW.window_end, false)
+       OR (policy.policy_id, policy.policy_version, policy.policy_hash)
+          IS DISTINCT FROM (NEW.policy_id, NEW.policy_version, NEW.policy_hash)
+       OR latest_evidence IS DISTINCT FROM NEW.lifecycle_evidence_id
+       OR head <> NEW.after_head
+       OR missing_sessions <> 0
+       OR evidence_count <> NEW.observed_levels_count
+       OR encode(sha256(convert_to(grid, 'UTF8')), 'hex') <> NEW.grid_digest
+       OR encode(sha256(convert_to(evidence_digest, 'UTF8')), 'hex')
+          <> NEW.row_evidence_digest THEN
+        RAISE EXCEPTION 'NAV rebase receipt does not match its governed full-window evidence';
+    END IF;
+    RETURN NULL;
+END$$;
+DROP TRIGGER IF EXISTS nav_rebase_receipt_verify ON nav_rebase_receipts;
+CREATE CONSTRAINT TRIGGER nav_rebase_receipt_verify
+AFTER INSERT ON nav_rebase_receipts
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION nav_rebase_receipt_verify_v1();
+
+-- N1-a: append-only reexpression ledger. DETECTED opens a hold; RESOLVED closes
+-- exactly one DETECTED event of the same instrument, in the same transaction as
+-- a validated full-window receipt whose window covers the whole event.
+CREATE TABLE IF NOT EXISTS fund_nav_reexpression_events (
+    event_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    instrument_id uuid NOT NULL,
+    event_kind text NOT NULL CHECK (event_kind IN ('DETECTED','RESOLVED')),
     first_changed_date date NOT NULL,
     last_changed_date date NOT NULL,
-    source_run_id uuid,
-    reason_code text NOT NULL CHECK (reason_code = 'ADJUSTED_HISTORY_REEXPRESSION'),
-    detected_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    CHECK (first_changed_date <= last_changed_date)
+    source_run_id uuid NOT NULL,
+    source_provider text NOT NULL,
+    revision_head bigint NOT NULL CHECK (revision_head >= 0),
+    recorded_at timestamptz NOT NULL,
+    reason_code text NOT NULL CHECK (reason_code IN (
+        'ADJUSTED_HISTORY_REEXPRESSION','FULL_WINDOW_RECONCILED')),
+    resolves_event_id bigint REFERENCES fund_nav_reexpression_events (event_id),
+    rebase_receipt_id uuid REFERENCES nav_rebase_receipts (receipt_id),
+    CHECK (first_changed_date <= last_changed_date),
+    CHECK ((event_kind = 'DETECTED' AND resolves_event_id IS NULL
+            AND rebase_receipt_id IS NULL AND reason_code = 'ADJUSTED_HISTORY_REEXPRESSION')
+        OR (event_kind = 'RESOLVED' AND resolves_event_id IS NOT NULL
+            AND rebase_receipt_id IS NOT NULL AND reason_code = 'FULL_WINDOW_RECONCILED')),
+    FOREIGN KEY (source_run_id, instrument_id, source_provider)
+        REFERENCES nav_ingestion_attempts (run_id, instrument_id, provider)
+        DEFERRABLE INITIALLY DEFERRED
 );
+CREATE UNIQUE INDEX IF NOT EXISTS fund_nav_reexpression_events_resolves_idx
+    ON fund_nav_reexpression_events (resolves_event_id)
+    WHERE resolves_event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS fund_nav_reexpression_events_instrument_idx
+    ON fund_nav_reexpression_events (instrument_id, event_id DESC);
+CREATE OR REPLACE FUNCTION fund_nav_reexpression_event_guard_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE
+    original record;
+    receipt record;
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'NAV reexpression events are append-only';
+    END IF;
+    PERFORM 1 FROM fund_nav_data_heads h WHERE h.instrument_id = NEW.instrument_id
+    FOR UPDATE;
+    SELECT COALESCE(max(h.revision_id), 0) INTO NEW.revision_head
+    FROM fund_nav_data_heads h WHERE h.instrument_id = NEW.instrument_id;
+    NEW.recorded_at := clock_timestamp();
+    IF NEW.event_kind = 'DETECTED' THEN
+        RETURN NEW;
+    END IF;
+    SELECT e.* INTO original FROM fund_nav_reexpression_events e
+    WHERE e.event_id = NEW.resolves_event_id FOR UPDATE;
+    SELECT r.* INTO receipt FROM nav_rebase_receipts r
+    WHERE r.receipt_id = NEW.rebase_receipt_id;
+    IF original.event_id IS NULL OR original.event_kind <> 'DETECTED'
+       OR original.instrument_id <> NEW.instrument_id
+       OR receipt.receipt_id IS NULL
+       OR receipt.instrument_id <> NEW.instrument_id
+       OR receipt.commit_xid <> pg_current_xact_id()
+       OR (receipt.run_id, receipt.provider)
+          IS DISTINCT FROM (NEW.source_run_id, NEW.source_provider)
+       OR NEW.first_changed_date > original.first_changed_date
+       OR NEW.last_changed_date < original.last_changed_date
+       OR NEW.first_changed_date < receipt.window_start
+       OR NEW.last_changed_date > receipt.window_end THEN
+        RAISE EXCEPTION 'NAV reexpression resolution must cover one DETECTED event with a same-transaction receipt';
+    END IF;
+    RETURN NEW;
+END$$;
+DROP TRIGGER IF EXISTS fund_nav_reexpression_event_guard ON fund_nav_reexpression_events;
+CREATE TRIGGER fund_nav_reexpression_event_guard
+BEFORE INSERT OR UPDATE OR DELETE ON fund_nav_reexpression_events
+FOR EACH ROW EXECUTE FUNCTION fund_nav_reexpression_event_guard_v1();
+-- Private current-active view (the old table name, for readers only): a
+-- DETECTED event without a RESOLVED one. Newer detections stay active.
+CREATE OR REPLACE VIEW fund_nav_reexpression_holds AS
+SELECT d.event_id, d.instrument_id, d.first_changed_date, d.last_changed_date,
+       d.source_run_id, d.source_provider, d.revision_head, d.reason_code,
+       d.recorded_at AS detected_at
+FROM fund_nav_reexpression_events d
+WHERE d.event_kind = 'DETECTED'
+  AND NOT EXISTS (
+      SELECT 1 FROM fund_nav_reexpression_events r
+      WHERE r.event_kind = 'RESOLVED' AND r.resolves_event_id = d.event_id
+  );
 -- The calendar tuple (calendar_id, calendar_version, calendar_source) is one
 -- assertion: partial tuples and resets to NULL are rejected, and a new stamp
 -- must be an attributed session of the current published policy. UPDATE
 -- revisions distinguish economic data from calendar-only metadata.
 CREATE OR REPLACE FUNCTION fund_nav_stamp_revision_v1() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
     affected_instrument uuid;
     affected_date date;
     new_revision bigint;
     ingestion_run uuid;
+    ingestion_provider text;
     maintenance_run uuid;
     data_change boolean;
     calendar_change boolean;
+    level_change boolean := true;
+    derived boolean := false;
+    dependency date;
     asserts_stamp boolean := false;
     maintenance record;
     lifecycle record;
 BEGIN
     ingestion_run := NULLIF(current_setting('nav.ingestion_run_id', true), '')::uuid;
+    ingestion_provider := NULLIF(current_setting('nav.ingestion_provider', true), '');
     maintenance_run := NULLIF(current_setting('nav.maintenance_run_id', true), '')::uuid;
     IF ingestion_run IS NOT NULL AND maintenance_run IS NOT NULL THEN
         RAISE EXCEPTION 'NAV ingestion and maintenance contexts are mutually exclusive';
+    END IF;
+    IF (ingestion_run IS NULL) <> (ingestion_provider IS NULL) THEN
+        RAISE EXCEPTION 'NAV ingestion attribution requires both run and provider';
     END IF;
     IF TG_OP = 'UPDATE' THEN
         IF OLD.instrument_id IS DISTINCT FROM NEW.instrument_id
@@ -395,6 +866,21 @@ BEGIN
                 (to_jsonb(OLD) - ARRAY['calendar_id','calendar_version','calendar_source'])
                 IS DISTINCT FROM
                 (to_jsonb(NEW) - ARRAY['calendar_id','calendar_version','calendar_source']);
+            -- Level/provenance projection vs derived-return projection.
+            level_change :=
+                (to_jsonb(OLD) - ARRAY['calendar_id','calendar_version','calendar_source',
+                    'return_1d','return_start_date','return_source_boundary',
+                    'return_uses_repaired_nav','return_semantics',
+                    'return_verification_status'])
+                IS DISTINCT FROM
+                (to_jsonb(NEW) - ARRAY['calendar_id','calendar_version','calendar_source',
+                    'return_1d','return_start_date','return_source_boundary',
+                    'return_uses_repaired_nav','return_semantics',
+                    'return_verification_status']);
+            derived := data_change AND NOT level_change AND NOT calendar_change;
+            IF derived THEN
+                dependency := COALESCE(NEW.return_start_date, OLD.return_start_date);
+            END IF;
         END IF;
         asserts_stamp := calendar_change;
     END IF;
@@ -473,9 +959,12 @@ BEGIN
     PERFORM 1 FROM fund_nav_data_heads WHERE instrument_id = affected_instrument FOR UPDATE;
     INSERT INTO fund_nav_data_revisions
         (instrument_id, nav_date, mutation_kind, source_run_id, maintenance_run_id,
-         data_changed, calendar_changed)
+         data_changed, calendar_changed, source_provider, source_attempt_xid,
+         derived_return_only, dependency_start_date)
     VALUES (affected_instrument, affected_date, TG_OP, ingestion_run, maintenance_run,
-            data_change, calendar_change)
+            data_change, calendar_change, ingestion_provider,
+            CASE WHEN ingestion_run IS NOT NULL THEN pg_current_xact_id() END,
+            derived, dependency)
     RETURNING revision_id INTO new_revision;
     UPDATE fund_nav_data_heads SET revision_id = new_revision
     WHERE instrument_id = affected_instrument;
@@ -578,7 +1067,7 @@ CREATE INDEX IF NOT EXISTS fund_nav_feature_evidence_identity_idx
     ON fund_nav_feature_evidence (instrument_id, calc_date DESC, definition_version, risk_run_id);
 
 CREATE OR REPLACE FUNCTION fund_nav_risk_run_guard_v1() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
     member_count bigint;
     uncovered bigint;
@@ -626,6 +1115,7 @@ BEGIN
         RETURN NEW;
     END IF;
     IF OLD.status = 'metrics_complete' AND NEW.status = 'complete' THEN
+        NEW.completed_at := clock_timestamp();  -- server instant (N3)
         RETURN NEW;
     END IF;
     RAISE EXCEPTION 'NAV risk run status transition is not permitted';
@@ -636,7 +1126,7 @@ BEFORE INSERT OR UPDATE OR DELETE ON fund_nav_risk_runs
 FOR EACH ROW EXECUTE FUNCTION fund_nav_risk_run_guard_v1();
 
 CREATE OR REPLACE FUNCTION fund_nav_risk_evidence_guard_v1() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
     parent record;
 BEGIN
@@ -667,6 +1157,7 @@ BEGIN
         IF NEW.definition_version IS DISTINCT FROM parent.feature_definition_version THEN
             RAISE EXCEPTION 'NAV feature definition differs from its run';
         END IF;
+        NEW.computed_at := clock_timestamp();  -- server instant (N3)
     END IF;
     RETURN NEW;
 END$$;
@@ -809,7 +1300,7 @@ CREATE TABLE IF NOT EXISTS fund_nav_readiness_current (
 );
 
 CREATE OR REPLACE FUNCTION fund_nav_readiness_freeze_v1() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
     parent_state text;
     parent_run_id uuid;
@@ -817,6 +1308,9 @@ BEGIN
     IF TG_TABLE_NAME = 'fund_nav_readiness_runs' THEN
         IF TG_OP = 'DELETE' OR OLD.state = 'complete' THEN
             RAISE EXCEPTION 'completed NAV readiness run is immutable';
+        END IF;
+        IF NEW.state = 'complete' THEN
+            NEW.completed_at := clock_timestamp();  -- server instant (N3)
         END IF;
     ELSE
         IF TG_OP = 'INSERT' THEN
@@ -841,16 +1335,50 @@ CREATE TRIGGER fund_nav_readiness_row_freeze
 BEFORE INSERT OR UPDATE OR DELETE ON fund_nav_readiness_v1
 FOR EACH ROW EXECUTE FUNCTION fund_nav_readiness_freeze_v1();
 
--- Explicit as_of permits deterministic lifecycle/coverage boundary tests. No
--- HTTP attempt or computed_at timestamp is used as a publication generation.
+CREATE OR REPLACE FUNCTION fund_nav_readiness_pointer_stamp_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE
+    stamp timestamptz := clock_timestamp();
+    target record;
+BEGIN
+    IF TG_OP = 'UPDATE' AND stamp <= OLD.published_at THEN
+        RAISE EXCEPTION 'publication_clock_regressed';
+    END IF;
+    SELECT run.state, run.completed_at, run.readiness_profile INTO target
+    FROM fund_nav_readiness_runs run WHERE run.run_id = NEW.run_id;
+    IF target.state IS DISTINCT FROM 'complete'
+       OR target.readiness_profile IS DISTINCT FROM NEW.readiness_profile
+       OR NOT COALESCE(target.completed_at <= stamp, false) THEN
+        RAISE EXCEPTION 'NAV readiness pointer target is not a completed run';
+    END IF;
+    NEW.published_at := stamp;
+    RETURN NEW;
+END$$;
+DROP TRIGGER IF EXISTS fund_nav_readiness_pointer_stamp ON fund_nav_readiness_current;
+CREATE TRIGGER fund_nav_readiness_pointer_stamp
+BEFORE INSERT OR UPDATE ON fund_nav_readiness_current
+FOR EACH ROW EXECUTE FUNCTION fund_nav_readiness_pointer_stamp_v1();
+
+-- Current-pointer semantics, not a PIT ledger: every server instant used as
+-- evidence (both pointers, policy publication, risk completion, feature
+-- computation, lifecycle knowledge) must be <= t; a superseded pointer, newer
+-- NAV head, current hold or replaced risk can still make an older t false.
+-- Instants are server clock readings inside the writing transaction, not
+-- commit timestamps; readers only see committed transactions.
 CREATE OR REPLACE FUNCTION fund_nav_snapshot_current_at_v1(
     subject_id uuid, selected_run_id uuid, evaluated_at timestamptz
 ) RETURNS boolean LANGUAGE sql STABLE AS $$
 SELECT COALESCE((
     SELECT run.state='complete' AND $3 >= run.completed_at
+       AND p.published_at <= $3
        AND $3 <= policy.valid_through
        AND policy.policy_hash = run.policy_hash
        AND policy.published_at <= $3
+       AND active_policy.published_at <= $3
+       AND published_risk.completed_at <= $3
+       AND published_risk.policy_id = run.policy_id
+       AND published_risk.policy_version = run.policy_version
+       AND published_risk.policy_hash = run.policy_hash
        AND due.session_date = run.as_of_session
        AND closed.session_date = run.latest_closed_session
        AND due.session_date BETWEEN policy.coverage_start AND policy.coverage_end
@@ -866,11 +1394,14 @@ SELECT COALESCE((
             AND NOT EXISTS (
                 SELECT 1 FROM fund_nav_reexpression_holds hold
                 WHERE hold.instrument_id = r.instrument_id
+                  AND hold.last_changed_date >= run.window_start
+                  AND hold.first_changed_date <= run.window_end
             )
             AND EXISTS (
                 SELECT 1 FROM fund_nav_feature_evidence feature
                 WHERE feature.risk_run_id = r.risk_run_id
                   AND feature.instrument_id = r.instrument_id
+                  AND feature.computed_at <= $3
                   AND feature.calc_date::text = split_part(r.feature_evidence_id, ':', 2)
                   AND feature.definition_version = split_part(r.feature_evidence_id, ':', 3)
                   AND feature.definition_version = published_risk.feature_definition_version
@@ -909,16 +1440,16 @@ SELECT COALESCE((
         SELECT e.evidence_id FROM nav_instrument_policy_evidence e
         WHERE e.instrument_id = r.instrument_id AND e.policy_id = r.policy_id
           AND e.policy_version = r.policy_version
-          AND e.known_at <= $3 AND e.effective_at <= $3
-        ORDER BY e.effective_at DESC, e.known_at DESC LIMIT 1
+          AND e.known_at <= $3 AND e.effective_at <= $3 AND e.recorded_at <= $3
+        ORDER BY e.effective_at DESC, e.known_at DESC, e.recorded_at DESC,
+                 e.evidence_id DESC
+        LIMIT 1
     ) active ON true
     WHERE p.readiness_profile='current_daily_nav_v1'
       AND p.run_id=$2
     LIMIT 1
 ), false)
 $$ SECURITY DEFINER SET search_path FROM CURRENT;
-REVOKE ALL ON FUNCTION fund_nav_snapshot_current_at_v1(uuid,uuid,timestamptz)
-    FROM PUBLIC;
 
 CREATE OR REPLACE VIEW fund_nav_readiness_current_v1 AS
 SELECT r.*, p.published_at AS pointer_published_at,
@@ -938,8 +1469,24 @@ LEFT JOIN LATERAL (
 ) due ON true
 WHERE p.readiness_profile = 'current_daily_nav_v1' AND run.state = 'complete';
 
--- Read-model grants only. The view executes with its owner privileges and does
--- not expose provider attempt/lifecycle/risk evidence relations to app_runtime.
+-- Access profile light_app_runtime_v1 (N6). Only local W1 grants: PUBLIC has
+-- nothing on W1 functions (default EXECUTE revoked, helpers and triggers
+-- included); app_runtime gets SELECT on exactly seven read models and EXECUTE
+-- on the snapshot, without grant option. Roles and memberships are never
+-- created or altered here; a missing role is reported by the operator.
+REVOKE ALL ON FUNCTION nav_policy_freeze_v1(), nav_policy_pointer_stamp_v1(),
+    nav_instrument_evidence_append_only_v1(), nav_ingestion_run_guard_v1(),
+    nav_ingestion_attempt_guard_v1(),
+    nav_level_evidence_digest_v1(date,numeric,numeric,text,text,text,text),
+    nav_uuid_array_unique_v1(uuid[]), nav_calendar_maintenance_guard_v1(),
+    fund_nav_revision_append_only_v1(), fund_nav_revision_attribution_v1(),
+    nav_row_evidence_guard_v1(), nav_row_evidence_verify_v1(),
+    nav_rebase_receipt_guard_v1(), nav_rebase_receipt_verify_v1(),
+    fund_nav_reexpression_event_guard_v1(), fund_nav_stamp_revision_v1(),
+    fund_nav_risk_run_guard_v1(), fund_nav_risk_evidence_guard_v1(),
+    fund_nav_readiness_freeze_v1(), fund_nav_readiness_pointer_stamp_v1(),
+    fund_nav_snapshot_current_at_v1(uuid,uuid,timestamptz)
+    FROM PUBLIC;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_runtime') THEN

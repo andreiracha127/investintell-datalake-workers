@@ -24,6 +24,8 @@ from src.workers import risk_metrics as risk
 from src.workers._nav_policy import (
     FEATURE_DEFINITION_VERSION,
     calendar_digest,
+    canonical_digest,
+    level_evidence_digest,
     risk_universe_digest,
 )
 from src.workers._nav_sanitize import REPAIRED_NAV_KINDS
@@ -94,9 +96,19 @@ def _grid(end=None):
 
 
 def _install(conn, schema):
-    """Apply the readiness DDL exactly like the operator (target-only search_path)."""
+    """Apply the readiness DDL exactly like the operator (<schema>, pg_temp)."""
     operator.apply_ddl(conn, schema, SCHEMA_SQL.encode("utf-8"))
     conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+
+
+def _access_fixture(conn, schema):
+    """Light runtime prerequisites that W1 never grants: schema USAGE, the
+    external risk read model and SELECT on the external read dependencies."""
+    ident = sql.Identifier(schema)
+    conn.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO app_runtime").format(ident))
+    if conn.execute("SELECT to_regclass('fund_risk_latest_mv') IS NULL").fetchone()[0]:
+        conn.execute(RISK_READ_MODEL_SQL)
+    conn.execute("GRANT SELECT ON nav_timeseries, fund_risk_latest_mv TO app_runtime")
 
 
 def _bootstrap(dsn, schema):
@@ -104,7 +116,56 @@ def _bootstrap(dsn, schema):
         conn.execute(NAV_SQL)
         _install(conn, schema)
         _install(conn, schema)  # additive, rerunnable, no MV replacement
+        _access_fixture(conn, schema)
         conn.execute("CREATE TABLE funds_profile_mv (instrument_id uuid PRIMARY KEY)")
+
+
+def _plan(check_args, capsys):
+    """Run the operator check and return its plan v3 digest (asserts exit 0)."""
+    assert operator.main(check_args) == 0, capsys.readouterr().out
+    out = json.loads(capsys.readouterr().out)
+    assert out["plan"]["plan_version"] == "nav-schema-plan-v3"
+    return out["plan_sha256"]
+
+
+def _write(conn, rows):
+    """Attributed write for mechanics tests on bare instruments (no policy)."""
+    return _provider_write(conn, rows)
+
+
+def _provider_write(conn, rows, *, start=None, end=None, provider=None,
+                    complete=True, status="success_new"):
+    """Governed provider write: running run, then attempt + NAV in ONE txn.
+
+    The successful attempt and the revisions it attributes share the commit
+    xid (checked by the deferred DB trigger); the run is completed afterwards
+    unless ``complete=False``. Returns the run id.
+    """
+    run_id = uuid.uuid4()
+    days = sorted({row["nav_date"] for row in rows})
+    provider = provider or rows[0]["source"]
+    conn.execute(
+        "INSERT INTO nav_ingestion_runs (run_id,requested_end,status) "
+        "VALUES (%s,%s,'running')",
+        (run_id, end or days[-1]),
+    )
+    conn.commit()
+    for iid in sorted({row["instrument_id"] for row in rows}, key=str):
+        conn.execute(
+            "INSERT INTO nav_ingestion_attempts (run_id,instrument_id,ticker,provider,"
+            "requested_start,requested_end,attempted_at,finished_at,status,"
+            "newest_observed_date,row_count) VALUES (%s,%s,'SYN',%s,%s,%s,"
+            "clock_timestamp()-interval '1 minute',clock_timestamp(),%s,%s,%s)",
+            (run_id, iid, provider, start or days[0], end or days[-1], status,
+             days[-1], len(days)),
+        )
+    ingest.upsert_nav_timeseries(conn, rows, run_id=run_id, provider=provider)
+    if complete:
+        conn.execute(
+            "UPDATE nav_ingestion_runs SET status='completed' WHERE run_id=%s", (run_id,)
+        )
+        conn.commit()
+    return run_id
 
 
 def _seed(
@@ -204,21 +265,6 @@ def _seed(
                            true,true,true,'synthetic_verified_basis')""",
                 (iid,),
             )
-        ing_run = uuid.uuid4()
-        conn.execute(
-            """INSERT INTO nav_ingestion_runs
-               VALUES (%s,clock_timestamp()-interval '1 hour',clock_timestamp(),%s,'completed')""",
-            (ing_run, grid[-1]),
-        )
-        conn.execute(
-            """INSERT INTO nav_ingestion_attempts
-               (run_id,instrument_id,ticker,provider,requested_start,requested_end,
-                attempted_at,finished_at,status,newest_observed_date,row_count)
-               VALUES (%s,%s,'SYN','tiingo',%s,%s,
-                       clock_timestamp()-interval '1 hour',clock_timestamp()-interval '1 minute',
-                       'success_new',%s,401)""",
-            (ing_run, iid, grid[0], grid[-1], grid[-1]),
-        )
         conn.commit()
         observations = tuple(
             NavObservation(d, round(100.0 + i * 0.01, 6), "adjusted")
@@ -230,7 +276,7 @@ def _seed(
             else None
         )
         rows = ingest.build_rows(observations, [(iid, "USD")], calendar=calendar)
-        ingest.upsert_nav_timeseries(conn, rows, run_id=ing_run)
+        ing_run = _provider_write(conn, rows)
         nav_rows = conn.execute(
             "SELECT nav_date, nav FROM nav_timeseries WHERE instrument_id=%s ORDER BY nav_date",
             (iid,),
@@ -551,13 +597,17 @@ def test_operator_cli_dry_run_then_allowlisted_apply_on_disposable_db(
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     sha = hashlib.sha256(ddl).hexdigest()
     base = ["--schema", schema, "--expected-sql-sha256", sha]
-    assert operator.main(base) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "ready"
+    fingerprint = _plan(base, capsys)
     assert operator.main([*base, "--mode", "apply"]) == 2
-    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
-    fingerprint = operator.plan_hash(ddl, schema, b"", [], None, None)
+    assert json.loads(capsys.readouterr().out)["code"] == "plan_hash_required"
+    legacy = operator.plan_hash(ddl, schema, b"", [], None, None)
+    assert operator.main([*base, "--mode", "apply", "--plan-sha256", legacy]) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "plan_version_mismatch"
     assert operator.main([*base, "--mode", "apply", "--plan-sha256", fingerprint]) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "applied"
+    result = json.loads(capsys.readouterr().out)
+    assert (result["status"], result["ddl"], result["dml_committed"]) == (
+        "unchanged", "unchanged", False,
+    )
     with _connect(test_dsn, schema) as conn:
         assert (
             conn.execute("SELECT count(*) FROM nav_policy_versions").fetchone()[0] == 0
@@ -582,27 +632,25 @@ def test_operator_lock_timeout_rolls_back_then_reruns(
     _bootstrap(test_dsn, schema)
     monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
-    base = [
-        "--schema",
-        schema,
-        "--expected-sql-sha256",
-        hashlib.sha256(ddl).hexdigest(),
-        "--mode",
-        "apply",
-        "--plan-sha256",
-        operator.plan_hash(ddl, schema, b"", [], None, None),
-    ]
+    check = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute("DROP TRIGGER fund_nav_stamp_revision ON nav_timeseries")  # repairable
+    base = [*check, "--mode", "apply", "--plan-sha256", _plan(check, capsys)]
     with _connect(test_dsn, schema) as blocker:
         blocker.execute("LOCK TABLE nav_policy_versions IN ACCESS EXCLUSIVE MODE")
         assert operator.main(base) == 2
-        assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+        out = json.loads(capsys.readouterr().out)
+        assert (out["status"], out["code"], out["sqlstate"]) == (
+            "blocked", "database_error", "55P03",
+        )
         blocker.rollback()
     with _connect(test_dsn, schema) as conn:
         assert (
             conn.execute("SELECT count(*) FROM nav_policy_versions").fetchone()[0] == 0
         )
     assert operator.main(base) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "applied"
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["ddl"]) == ("applied", "applied")
 
 
 def test_operator_rejects_precoverage_w1_shape_without_altering_policy(
@@ -745,8 +793,14 @@ def test_governed_policy_publication_idempotent_and_version_frozen(
     parsed, raw = operator._policy(str(path))
     assert parsed == policy and raw
     with _connect(test_dsn, schema) as conn:
-        fingerprint = operator._publish_policy(conn, parsed)
-        assert fingerprint == operator._publish_policy(conn, parsed)
+        fingerprint, changed = operator._publish_policy(conn, parsed)
+        assert changed is True
+        # Identical republish: same hash, nothing changed, no pointer re-stamp.
+        stamp = conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0]
+        assert operator._publish_policy(conn, parsed) == (fingerprint, False)
+        assert conn.execute(
+            "SELECT published_at FROM nav_policy_current"
+        ).fetchone()[0] == stamp
         assert (
             conn.execute("SELECT count(*) FROM nav_valuation_schedules").fetchone()[0]
             == 401
@@ -1002,13 +1056,7 @@ def test_risk_metrics_and_feature_evidence_roll_back_together(test_dsn, schema):
     iid = uuid.uuid4()
     date = dt.date.today() - dt.timedelta(days=1)
     with _connect(test_dsn, schema) as conn:
-        conn.execute(
-            """CREATE TABLE fund_risk_metrics (
-                 instrument_id uuid,calc_date date,organization_id uuid,
-                 volatility_1y numeric,
-                 UNIQUE NULLS NOT DISTINCT (instrument_id,calc_date,organization_id))"""
-        )
-        conn.commit()
+        # The bootstrap already installs the real risk read model (N6 dependency).
         risk._upsert(conn, iid, date, {"volatility_1y": 0.2})
         rows = [(date - dt.timedelta(days=n), 100 + n) for n in range(22, 0, -1)]
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
@@ -1067,8 +1115,6 @@ def test_two_connections_risk_recalc_blocks_pointer_until_mv_verified_revision(
 ):
     iid, grid, _run = _seed(test_dsn, schema)
     monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
-    with _connect(test_dsn, schema, autocommit=True) as conn:
-        conn.execute(RISK_READ_MODEL_SQL)
     first = readiness.run(test_dsn)
     with _connect(test_dsn, schema) as publisher, _connect(test_dsn, schema) as reader:
         assert reader.execute(
@@ -1177,11 +1223,11 @@ def test_overlap_revision_reconciles_successor_without_changing_source_level(
             ),
             [(iid, "USD")],
         )
-        assert ingest.upsert_nav_timeseries(conn, first) == 3
+        _write(conn, first)
         revised = ingest.build_rows(
             (NavObservation(days[1], 101.5, "adjusted"),), [(iid, "USD")]
         )
-        assert ingest.upsert_nav_timeseries(conn, revised) == 1
+        _write(conn, revised)
         prior, current, following = conn.execute(
             """SELECT nav,source_nav,return_start_date,return_1d
                FROM nav_timeseries WHERE instrument_id=%s ORDER BY nav_date""",
@@ -1205,7 +1251,7 @@ def test_gap_payload_reconciles_persisted_b_and_true_successors(test_dsn, schema
             tuple(NavObservation(d, 100.0 + i, "adjusted") for i, d in enumerate(days)),
             [(iid, "USD")],
         )
-        ingest.upsert_nav_timeseries(conn, initial)
+        _write(conn, initial)
         changed = ingest.build_rows(
             (
                 NavObservation(days[0], 100.5, "adjusted"),
@@ -1213,7 +1259,7 @@ def test_gap_payload_reconciles_persisted_b_and_true_successors(test_dsn, schema
             ),
             [(iid, "USD")],
         )
-        ingest.upsert_nav_timeseries(conn, changed)
+        _write(conn, changed)
         data = conn.execute(
             """SELECT nav_date,nav,return_start_date,return_1d,source_nav
                FROM nav_timeseries WHERE instrument_id=%s ORDER BY nav_date""",
@@ -1253,7 +1299,7 @@ def test_sanitizer_real_rows_repaired_flags_and_contract_old_kinds(test_dsn, sch
             ),
             [(iid, "USD")],
         )
-        ingest.upsert_nav_timeseries(conn, produced)
+        _write(conn, produced)
         original = conn.execute(
             "SELECT source_nav,nav,nav_repair_kind,return_uses_repaired_nav "
             "FROM nav_timeseries WHERE instrument_id=%s ORDER BY nav_date",
@@ -1271,7 +1317,7 @@ def test_sanitizer_real_rows_repaired_flags_and_contract_old_kinds(test_dsn, sch
             revised = ingest.build_rows(
                 (NavObservation(days[2], 101.5, "adjusted"),), [(iid, "USD")]
             )
-            ingest.upsert_nav_timeseries(conn, revised)
+            _write(conn, revised)
             assert (
                 conn.execute(
                     "SELECT return_uses_repaired_nav FROM nav_timeseries "
@@ -1288,7 +1334,7 @@ def test_sanitizer_real_rows_repaired_flags_and_contract_old_kinds(test_dsn, sch
             ),
             [(carry_id, "USD")],
         )
-        ingest.upsert_nav_timeseries(conn, carry)
+        _write(conn, carry)
         assert conn.execute(
             "SELECT nav_repair_kind FROM nav_timeseries "
             "WHERE instrument_id=%s AND nav_date=%s",
@@ -1309,8 +1355,7 @@ def test_source_switch_updates_true_successor_boundaries(test_dsn, schema):
     iid = uuid.uuid4()
     days = [dt.date(2026, 1, day) for day in (2, 5, 6, 7)]
     with _connect(test_dsn, schema) as conn:
-        ingest.upsert_nav_timeseries(
-            conn,
+        _write(conn,
             ingest.build_rows(
                 tuple(
                     NavObservation(d, 100.0 + i, "adjusted") for i, d in enumerate(days)
@@ -1323,7 +1368,7 @@ def test_source_switch_updates_true_successor_boundaries(test_dsn, schema):
             [(iid, "USD")],
             source="yahoo",
         )
-        ingest.upsert_nav_timeseries(conn, yahoo)
+        _write(conn, yahoo)
         rows = conn.execute(
             "SELECT nav_date,source,return_1d,return_source_boundary "
             "FROM nav_timeseries WHERE instrument_id=%s ORDER BY nav_date",
@@ -1342,8 +1387,7 @@ def test_first_middle_and_last_endpoint_revise_real_successor(
     iid = uuid.uuid4()
     days = [dt.date(2026, 1, day) for day in (2, 5, 6, 7)]
     with _connect(test_dsn, schema) as conn:
-        ingest.upsert_nav_timeseries(
-            conn,
+        _write(conn,
             ingest.build_rows(
                 tuple(
                     NavObservation(d, 100.0 + i, "adjusted") for i, d in enumerate(days)
@@ -1355,7 +1399,7 @@ def test_first_middle_and_last_endpoint_revise_real_successor(
             (NavObservation(days[position], 100.5 + position, "adjusted"),),
             [(iid, "USD")],
         )
-        ingest.upsert_nav_timeseries(conn, revised)
+        _write(conn, revised)
         data = conn.execute(
             "SELECT nav,return_start_date,return_1d FROM nav_timeseries "
             "WHERE instrument_id=%s ORDER BY nav_date",
@@ -1385,19 +1429,28 @@ def test_adjusted_proportional_reexpression_opens_hold_despite_small_daily_retur
         observations = tuple(
             NavObservation(d, 100.0 + i, "adjusted") for i, d in enumerate(days)
         )
-        ingest.upsert_nav_timeseries(
-            conn, ingest.build_rows(observations, [(iid, "USD")])
+        _write(conn, ingest.build_rows(observations, [(iid, "USD")])
         )
         revised = tuple(
             NavObservation(d, (100.0 + i) / 2, "adjusted") for i, d in enumerate(days)
         )
-        ingest.upsert_nav_timeseries(conn, ingest.build_rows(revised, [(iid, "USD")]))
+        run_id = _write(conn, ingest.build_rows(revised, [(iid, "USD")]))
         hold = conn.execute(
             "SELECT first_changed_date,last_changed_date FROM "
             "fund_nav_reexpression_holds WHERE instrument_id=%s",
             (iid,),
         ).fetchone()
         assert hold == (days[0], days[-1])
+        # The hold is an active DETECTED event of the ledger, attributed to the
+        # run/provider and to the revision head of its own write.
+        event = conn.execute(
+            "SELECT event_kind, source_run_id, source_provider, revision_head, "
+            "resolves_event_id, rebase_receipt_id FROM fund_nav_reexpression_events "
+            "WHERE instrument_id=%s",
+            (iid,),
+        ).fetchone()
+        assert event[:3] == ("DETECTED", run_id, "tiingo") and event[4:] == (None, None)
+        assert 0 < event[3] <= _head(conn, iid)
         rows = conn.execute(
             "SELECT return_1d FROM nav_timeseries WHERE instrument_id=%s "
             "AND nav_date>%s ORDER BY nav_date",
@@ -1413,8 +1466,7 @@ def test_nav_level_and_revision_roll_back_together_after_successor_failure(
     iid = uuid.uuid4()
     days = [dt.date(2026, 1, day) for day in (2, 5)]
     with _connect(test_dsn, schema) as conn:
-        ingest.upsert_nav_timeseries(
-            conn,
+        _write(conn,
             ingest.build_rows(
                 (
                     NavObservation(days[0], 100, "adjusted"),
@@ -1432,8 +1484,7 @@ def test_nav_level_and_revision_roll_back_together_after_successor_failure(
         )
         conn.commit()
         with pytest.raises(psycopg.Error):
-            ingest.upsert_nav_timeseries(
-                conn,
+            _write(conn,
                 ingest.build_rows(
                     (NavObservation(days[0], 50, "adjusted"),), [(iid, "USD")]
                 ),
@@ -1555,27 +1606,13 @@ def test_new_completed_head_does_not_hide_older_unverified_window_revision(
                 (iid, grid[-1]),
             ).fetchone()[0]
         )
-        conn.execute(
-            "INSERT INTO nav_ingestion_runs (run_id,started_at,completed_at,"
-            "requested_end,status) VALUES (%s,clock_timestamp(),clock_timestamp(),"
-            "%s,'completed')",
-            (repaired_run, grid[-1]),
-        )
-        conn.execute(
-            "INSERT INTO nav_ingestion_attempts "
-            "(run_id,instrument_id,ticker,provider,requested_start,requested_end,"
-            "attempted_at,finished_at,status,newest_observed_date,row_count) "
-            "VALUES (%s,%s,'SYN','tiingo',%s,%s,clock_timestamp(),"
-            "clock_timestamp(),'success_new',%s,1)",
-            (repaired_run, iid, grid[-1], grid[-1], grid[-1]),
-        )
         conn.commit()
         corrected = ingest.build_rows(
             (NavObservation(grid[-1], price, "adjusted"),),
             [(iid, "USD")],
             calendar={grid[-1]: ("NYSE-TEST", "v1", "fixture:NYSE-valuation-due")},
         )
-        ingest.upsert_nav_timeseries(conn, corrected, run_id=repaired_run)
+        repaired_run = _provider_write(conn, corrected)
     assert readiness.run(test_dsn)["ready_count"] == 0
     with _connect(test_dsn, schema) as conn:
         head = conn.execute(
@@ -1608,18 +1645,19 @@ def test_first_instrument_commit_then_crash_invalidates_without_http_attempt(
         repeated = ingest.build_rows(
             (NavObservation(grid[-1], 105, "adjusted"),), [(other, "USD")]
         )
-        attempt_id = uuid.uuid4()
-        writer.execute(
-            "INSERT INTO nav_ingestion_runs "
-            "(run_id,started_at,requested_end,status) "
-            "VALUES (%s,clock_timestamp(),%s,'running')",
-            (attempt_id, grid[-1]),
-        )
-        writer.commit()
+        # First instrument: its attempt and NAV commit together (same xid).
+        attempt_id = _provider_write(writer, first, complete=False)
+        # Second instrument crashes before commit: nothing of it survives.
         with pytest.raises(ValueError, match="duplicate NAV date"):
             ingest.upsert_nav_timeseries(
-                writer, first + repeated + repeated, run_id=attempt_id
+                writer, repeated + repeated, run_id=attempt_id, provider="tiingo"
             )
+        assert (
+            reader.execute(
+                "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s", (other,)
+            ).fetchone()[0]
+            == 0
+        )
         assert (
             reader.execute(
                 "SELECT snapshot_current FROM fund_nav_readiness_current_v1 "
@@ -1628,20 +1666,15 @@ def test_first_instrument_commit_then_crash_invalidates_without_http_attempt(
             ).fetchone()[0]
             is False
         )
-        assert (
-            reader.execute(
-                "SELECT count(*) FROM nav_ingestion_attempts WHERE instrument_id=%s",
-                (iid,),
-            ).fetchone()[0]
-            == 1
-        )
-        assert (
-            reader.execute(
-                "SELECT run_id FROM nav_ingestion_attempts WHERE instrument_id=%s",
-                (iid,),
-            ).fetchone()[0]
-            == attempt_run
-        )
+        assert reader.execute(
+            "SELECT array_agg(run_id ORDER BY persisted_at) FROM nav_ingestion_attempts "
+            "WHERE instrument_id=%s",
+            (iid,),
+        ).fetchone()[0] == [attempt_run, attempt_id]
+        # The committed attempt stays valid although its run is still running.
+        assert reader.execute(
+            "SELECT status FROM nav_ingestion_runs WHERE run_id=%s", (attempt_id,)
+        ).fetchone()[0] == "running"
         revisions = reader.execute(
             "SELECT revision_id,source_run_id FROM fund_nav_data_revisions "
             "WHERE instrument_id=%s ORDER BY revision_id",
@@ -1734,7 +1767,8 @@ def test_ingestion_attempts_distinguish_no_data_error_no_attempt_and_not_due(
             "SELECT ticker,provider,status FROM nav_ingestion_attempts ORDER BY ticker,provider"
         ).fetchall()
         assert ("A", "tiingo", "success_new") in records
-        assert ("B", "tiingo", "success_no_new") in records
+        # A success claim without persisted rows is not success evidence.
+        assert ("B", "tiingo", "empty") in records
         assert ("B", "yahoo", "not_found") in records
         assert ("C", "tiingo", "transient_error") in records
         assert ("C", "yahoo", "invalid_payload") in records
@@ -1807,13 +1841,18 @@ def _head(conn, iid):
 
 
 def _completed_run(conn, iid, start, end, *, status="completed"):
+    """Register a run and a successful attempt without NAV writes (own txn).
+
+    Such an attempt cannot attribute later writes (different xid); tests that
+    write NAV use ``_provider_write``. Returns the run id.
+    """
     run_id = uuid.uuid4()
     conn.execute(
-        "INSERT INTO nav_ingestion_runs (run_id,started_at,completed_at,requested_end,"
-        "status) VALUES (%s,clock_timestamp(),"
-        "CASE WHEN %s='completed' THEN clock_timestamp() END,%s,%s)",
-        (run_id, status, end, status),
+        "INSERT INTO nav_ingestion_runs (run_id,requested_end,status) "
+        "VALUES (%s,%s,'running')",
+        (run_id, end),
     )
+    conn.commit()
     conn.execute(
         "INSERT INTO nav_ingestion_attempts (run_id,instrument_id,ticker,provider,"
         "requested_start,requested_end,attempted_at,finished_at,status,"
@@ -1821,6 +1860,10 @@ def _completed_run(conn, iid, start, end, *, status="completed"):
         "clock_timestamp(),clock_timestamp(),'success_new',%s,1)",
         (run_id, iid, start, end, end),
     )
+    if status != "running":
+        conn.execute(
+            "UPDATE nav_ingestion_runs SET status=%s WHERE run_id=%s", (status, run_id)
+        )
     conn.commit()
     return run_id
 
@@ -1918,14 +1961,9 @@ def test_datum_without_revision_stays_unavailable_after_maintenance_stamp(
                        true,true,true,'legacy-history')""",
             (legacy,),
         )
-        conn.execute(
-            "INSERT INTO nav_ingestion_attempts (run_id,instrument_id,ticker,provider,"
-            "requested_start,requested_end,attempted_at,finished_at,status,"
-            "newest_observed_date,row_count) VALUES (%s,%s,'LEG','tiingo',%s,%s,"
-            "clock_timestamp()-interval '1 hour',clock_timestamp()-interval '1 minute',"
-            "'success_new',%s,401)",
-            (ing_run, legacy, grid[0], grid[-1], grid[-1]),
-        )
+        conn.commit()
+        # A successful attempt that justifies no revision (different xid).
+        _completed_run(conn, legacy, grid[0], grid[-1])
         # Pre-DDL history: rows exist with full provenance but no revision.
         conn.execute("SET LOCAL session_replication_role = replica")
         columns = (
@@ -1989,44 +2027,60 @@ def test_incomplete_or_uncovering_provider_run_fails_data_lineage(
     iid, grid, _ = _seed(test_dsn, schema)
     monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
     with _connect(test_dsn, schema) as conn:
-        running = _completed_run(conn, iid, grid[0], grid[-1], status="running")
         price = float(
             conn.execute(
                 "SELECT nav FROM nav_timeseries WHERE instrument_id=%s AND nav_date=%s",
                 (iid, grid[-1]),
             ).fetchone()[0]
         )
-        ingest.upsert_nav_timeseries(
+        running = _provider_write(
             conn,
             ingest.build_rows(
                 (NavObservation(grid[-1], price + 0.000001, "adjusted"),),
                 [(iid, "USD")],
                 calendar={grid[-1]: STAMP},
             ),
-            run_id=running,
+            start=grid[0],
+            complete=False,
         )
+    # N1-b: the committed same-xid attempt proves the level although its parent
+    # is still running; the NAV change only makes the old risk input stale.
     readiness.run(test_dsn)
     with _connect(test_dsn, schema) as conn:
-        assert _reason(conn, iid) == "NAV_DATA_UNAVAILABLE"
+        assert _reason(conn, iid) == "RETURN_SAMPLE_NOT_CURRENT"
         conn.execute(
-            "UPDATE nav_ingestion_runs SET status='completed',"
-            "completed_at=clock_timestamp() WHERE run_id=%s",
+            "UPDATE nav_ingestion_runs SET status='aborted', reason_code='INTERRUPTED' "
+            "WHERE run_id=%s",
             (running,),
         )
         conn.commit()
     readiness.run(test_dsn)
     with _connect(test_dsn, schema) as conn:
-        assert _reason(conn, iid) != "NAV_DATA_UNAVAILABLE"
-        narrow = _completed_run(conn, iid, grid[-1], grid[-1])
-        ingest.upsert_nav_timeseries(
-            conn,
-            ingest.build_rows(
-                (NavObservation(grid[-2], 50.0, "adjusted"),),
-                [(iid, "USD")],
-                calendar={grid[-2]: STAMP},
-            ),
-            run_id=narrow,
+        assert _reason(conn, iid) == "RETURN_SAMPLE_NOT_CURRENT"
+        # A write whose attempt window does not cover the level date is refused
+        # by the DB at COMMIT (no revision can claim it).
+        with pytest.raises(psycopg.errors.RaiseException, match="same-transaction"):
+            _provider_write(
+                conn,
+                ingest.build_rows(
+                    (NavObservation(grid[-2], 50.0, "adjusted"),),
+                    [(iid, "USD")],
+                    calendar={grid[-2]: STAMP},
+                ),
+                start=grid[-1],
+                end=grid[-1],
+            )
+        conn.rollback()
+        assert float(conn.execute(
+            "SELECT nav FROM nav_timeseries WHERE instrument_id=%s AND nav_date=%s",
+            (iid, grid[-2]),
+        ).fetchone()[0]) != 50.0
+        # An unattributed direct write still invalidates lineage.
+        conn.execute(
+            "UPDATE nav_timeseries SET nav=50.0 WHERE instrument_id=%s AND nav_date=%s",
+            (iid, grid[-2]),
         )
+        conn.commit()
     readiness.run(test_dsn)
     with _connect(test_dsn, schema) as conn:
         assert _reason(conn, iid) == "NAV_DATA_UNAVAILABLE"
@@ -2161,20 +2215,21 @@ def test_maintenance_and_ingestion_locks_exclude_each_other(
     monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     ids = [str(iid)]
-    plan = operator.plan_hash(ddl, schema, b"", ids, grid[0].isoformat(),
-                              grid[-1].isoformat())
     cli = ["--schema", schema, "--expected-sql-sha256",
            hashlib.sha256(ddl).hexdigest(), "--instrument-id", ids[0],
            "--start", grid[0].isoformat(), "--end", grid[-1].isoformat()]
     assert operator.main(cli) == 0
     dry = json.loads(capsys.readouterr().out)
-    assert dry["maintenance_plan"]["eligible_rows"] == 401
+    assert dry["plan"]["before"]["maintenance"]["eligible_rows"] == 401
+    assert dry["plan"]["operations"] == ["ddl", "maintenance"]
+    plan = dry["plan_sha256"]
     with _connect(test_dsn, schema) as holder:
         with advisory_lock(holder, LOCK_INSTRUMENT_INGESTION) as got:
             assert got
             assert operator.main([*cli, "--mode", "apply", "--plan-sha256", plan]) == 4
             busy = json.loads(capsys.readouterr().out)
             assert busy["status"] == "lock_busy" and busy["retryable"] is True
+            assert busy["dml_committed"] is False
     with _connect(test_dsn, schema) as holder:
         holder.execute("SELECT pg_advisory_xact_lock(%s)", (LOCK_INSTRUMENT_INGESTION,))
         monkeypatch.setattr(ingest, "connect", lambda dsn: _connect(dsn, schema))
@@ -2187,11 +2242,19 @@ def test_maintenance_and_ingestion_locks_exclude_each_other(
         ).fetchone()[0] == 0
     assert operator.main([*cli, "--mode", "apply", "--plan-sha256", plan]) == 0
     applied = json.loads(capsys.readouterr().out)
-    assert applied["maintenance"]["changed_rows"] == 401
+    assert (applied["maintenance"], applied["changed_rows"], applied["dml_committed"]) == (
+        "committed", 401, True,
+    )
     with _connect(test_dsn, schema) as conn:
         assert conn.execute(
             "SELECT plan_sha256 FROM nav_calendar_maintenance_runs"
         ).fetchone()[0] == plan
+    # Retry of the same (now stale) plan after commit: truthful no-op.
+    assert operator.main([*cli, "--mode", "apply", "--plan-sha256", plan]) == 0
+    replay = json.loads(capsys.readouterr().out)
+    assert (replay["status"], replay["maintenance"], replay["dml_committed"]) == (
+        "unchanged", "unchanged", False,
+    )
     too_many = [a for i in range(21) for a in ("--instrument-id", str(uuid.uuid4()))]
     assert operator.main(["--schema", schema, "--expected-sql-sha256",
                           hashlib.sha256(ddl).hexdigest(), *too_many,
@@ -2205,14 +2268,11 @@ def test_overlap_without_mapping_preserves_tuple_and_head(test_dsn, schema, monk
     monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
     with _connect(test_dsn, schema) as conn:
         head = _head(conn, iid)
-        overlap = _completed_run(conn, iid, grid[-5], grid[-1])
         same = tuple(
             NavObservation(d, round(100.0 + (401 - 5 + i) * 0.01, 6), "adjusted")
             for i, d in enumerate(grid[-5:])
         )
-        ingest.upsert_nav_timeseries(
-            conn, ingest.build_rows(same, [(iid, "USD")]), run_id=overlap
-        )
+        _provider_write(conn, ingest.build_rows(same, [(iid, "USD")]))
         assert _head(conn, iid) == head
         assert conn.execute(
             "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s AND "
@@ -2222,9 +2282,7 @@ def test_overlap_without_mapping_preserves_tuple_and_head(test_dsn, schema, monk
     assert readiness.run(test_dsn)["ready_count"] == 1
     with _connect(test_dsn, schema) as conn:
         changed = (NavObservation(grid[-1], 150.0, "adjusted"),)
-        ingest.upsert_nav_timeseries(
-            conn, ingest.build_rows(changed, [(iid, "USD")]), run_id=overlap
-        )
+        overlap = _provider_write(conn, ingest.build_rows(changed, [(iid, "USD")]))
         assert _head(conn, iid) > head
         assert conn.execute(
             "SELECT calendar_id,calendar_version,calendar_source FROM nav_timeseries "
@@ -2256,11 +2314,19 @@ def test_db_rejects_partial_reset_unattributed_and_ungoverned_stamps(test_dsn, s
             with pytest.raises(psycopg.Error, match=message):
                 conn.execute(statement, params)
             conn.rollback()
+        conn.execute("SELECT set_config('nav.ingestion_run_id', %s, true)", (str(ing_run),))
+        with pytest.raises(psycopg.Error, match="both run and provider"):
+            conn.execute(
+                "INSERT INTO nav_timeseries (instrument_id,nav_date,nav) VALUES (%s,%s,1)",
+                (fresh, grid[-1]),
+            )
+        conn.rollback()
         for day, stamp in ((grid[-1], ("NYSE-TEST", "v9", SOURCE)),
                            (dt.date(2026, 9, 7), STAMP)):
             conn.execute(
                 "SELECT set_config('nav.ingestion_run_id', %s, true)", (str(ing_run),)
             )
+            conn.execute("SELECT set_config('nav.ingestion_provider', 'tiingo', true)")
             with pytest.raises(psycopg.Error, match="current published policy"):
                 conn.execute(
                     "INSERT INTO nav_timeseries (instrument_id,nav_date,nav,calendar_id,"
@@ -2273,7 +2339,7 @@ def test_db_rejects_partial_reset_unattributed_and_ungoverned_stamps(test_dsn, s
         )
         partial[0]["calendar_version"] = "v1"
         with pytest.raises(ValueError, match="partial"):
-            ingest.upsert_nav_timeseries(conn, partial, run_id=ing_run)
+            ingest.upsert_nav_timeseries(conn, partial, run_id=ing_run, provider="tiingo")
         assert conn.execute(
             "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s", (fresh,)
         ).fetchone()[0] == 0
@@ -2338,6 +2404,16 @@ def test_rollover_accepts_equivalent_old_stamps_without_restamp(
     with _connect(test_dsn, schema) as conn:
         head = _head(conn, iid)
         _publish_rollover(conn, iid, grid, tweak_index=tweak_index)
+    # N3: the v1-pinned risk run is not evidence for the v2 readiness policy.
+    assert readiness.run(test_dsn)["ready_count"] == 0
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, iid) != "NAV_POLICY_UNAVAILABLE"
+        nav_rows = conn.execute(
+            "SELECT nav_date, nav FROM nav_timeseries WHERE instrument_id=%s "
+            "ORDER BY nav_date",
+            (iid,),
+        ).fetchall()
+        _publish_risk_run(conn, grid[-1], {iid: nav_rows})  # pins v2
     report = readiness.run(test_dsn)
     with _connect(test_dsn, schema) as conn:
         row = conn.execute(
@@ -2627,16 +2703,25 @@ def test_operator_absent_schema_installs_fresh(test_dsn, schema, monkeypatch, ca
         conn.execute(NAV_SQL)
         report = operator._check(conn, schema)
         assert (report["status"], report["compatibility"]) == ("upgrade_required", "absent")
+        assert report["code"] == "blocked_schema_usage_missing"
     monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
-    assert operator.main(base) == 0
-    capsys.readouterr()
-    plan = operator.plan_hash(ddl, schema, b"", [], None, None)
-    assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "applied"
+    assert operator.main(base) == 3  # not ready: USAGE and read dependencies missing
+    plan = json.loads(capsys.readouterr().out)["plan_sha256"]
+    # DDL is a separate idempotent step: applied, but never reported ready.
+    assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 3
+    out = json.loads(capsys.readouterr().out)
+    assert (out["ddl"], out["code"], out["dml_committed"]) == (
+        "applied", "blocked_schema_usage_missing", False,
+    )
     with _connect(test_dsn, schema, autocommit=True) as conn:
+        assert operator._check(conn, schema)["compatibility"] == "exact"
+        _access_fixture(conn, schema)
         assert operator._check(conn, schema)["status"] == "ready"
+    assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["ddl"]) == ("unchanged", "unchanged")
 
 
 def test_catalog_manifest_is_pinned_to_the_ddl():
@@ -2667,16 +2752,43 @@ def test_catalog_manifest_is_pinned_to_the_ddl():
         "evaluated_at timestamp with time zone)"
     ]
     assert snapshot["security_definer"] is True
-    assert snapshot["config"] == ["search_path=@schema@"]
+    # N2: trusted target schema first, pg_temp explicitly last, nothing else.
+    assert snapshot["config"] == ["search_path=@schema@, pg_temp"]
     assert snapshot["public_execute"] is False
+    assert {
+        json.dumps(fn["config"]) for fn in manifest["signature"]["functions"].values()
+    } == {'["search_path=@schema@, pg_temp"]'}
+    assert not any(
+        fn["public_execute"] for fn in manifest["signature"]["functions"].values()
+    )
+    access = manifest["access_profile"]
+    assert (access["name"], access["role"]) == ("light_app_runtime_v1", "app_runtime")
+    assert access["read_relations"] == list(operator.READ_RELATIONS)
+    readable = sorted(
+        name for name, rel in access["signature"]["relations"].items() if rel["effective"]
+    )
+    assert readable == sorted(operator.READ_RELATIONS)
+    assert all(
+        rel["effective"] in ([], ["SELECT"]) and rel["grantable"] == []
+        and rel["public"] == [] and rel["column_acl"] == []
+        for rel in access["signature"]["relations"].values()
+    )
+    assert [
+        name for name, fn in access["signature"]["functions"].items() if fn["execute"]
+    ] == [
+        "fund_nav_snapshot_current_at_v1(subject_id uuid, selected_run_id uuid, "
+        "evaluated_at timestamp with time zone)"
+    ]
+    assert access["signature"]["unsafe_membership"] == []
 
 
 def test_generator_reproduces_committed_manifest_byte_identical(test_dsn):
     from scripts import generate_fund_nav_readiness_catalog as generator
 
     committed = (ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json").read_bytes()
+    signature, access = generator.fresh_signatures(test_dsn)
     regenerated = generator.manifest_bytes(
-        generator.fresh_signature(test_dsn), (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+        signature, access, (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     )
     assert regenerated == committed
 
@@ -2982,23 +3094,19 @@ def _offline_risk_inputs(monkeypatch):
         monkeypatch.setattr(risk, name, value)
 
 
-def _add_fund(conn, ing_run, dates, *, base, step):
+def _add_fund(conn, _ing_run, dates, *, base, step):
     fid = uuid.uuid4()
     observations = tuple(
         NavObservation(d, round(base + i * step + (i % 5) * 0.07, 6), "adjusted")
         for i, d in enumerate(dates)
     )
-    ingest.upsert_nav_timeseries(
-        conn, ingest.build_rows(observations, [(fid, "USD")]), run_id=ing_run
-    )
+    _provider_write(conn, ingest.build_rows(observations, [(fid, "USD")]))
     return fid
 
 
 def _risk_env(test_dsn, schema, monkeypatch, *, extra=2, stale=1, **seed):
     """Seeded policy/NAV/fixture publication plus the real risk read model."""
     iid, grid, ing_run = _seed(test_dsn, schema, **seed)
-    with _connect(test_dsn, schema, autocommit=True) as conn:
-        conn.execute(RISK_READ_MODEL_SQL)
     with _connect(test_dsn, schema) as conn:
         extras = [
             _add_fund(conn, ing_run, grid[-300:], base=50.0 + n, step=0.02 + 0.01 * n)
@@ -3830,13 +3938,11 @@ def test_missing_or_stale_mv_content_is_mismatch_even_with_matching_date(
     # Same calc_date in the MV, but its content predates this generation.
     changed = funds[1]
     with _connect(test_dsn, schema) as conn:
-        run_id = _completed_run(conn, changed, grid[-1], grid[-1])
-        ingest.upsert_nav_timeseries(
+        _provider_write(
             conn,
             ingest.build_rows(
                 (NavObservation(grid[-1], 175.0, "adjusted"),), [(changed, "USD")]
             ),
-            run_id=run_id,
         )
     monkeypatch.setattr(risk, "_refresh_fund_risk_latest_mv", lambda _dsn: None)
     stale = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
@@ -3874,3 +3980,1039 @@ def test_read_model_without_risk_contract_columns_fails_loud(
     with _connect(test_dsn, schema) as conn:
         revision, state, active, published = _singleton(conn)
         assert (state, published) == ("running", None)  # invalidated, never promoted
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# R2-A: N1 seams (attempt/row evidence/revision same xid), N1-a hold ledger,
+# N3 server-controlled time, N4 atomic operator, N5 PR132 prerequisite.
+# ──────────────────────────────────────────────────────────────────────────────
+REBASE_CONTRACT = "w1-tiingo-adjusted-daily-v1"
+
+
+def _replica(conn):
+    """Controlled-catalog simulation: bypass W1 triggers in this txn only."""
+    conn.execute("SET LOCAL session_replication_role = replica")
+
+
+def _attempt(conn, run_id, iid, start, end, *, status="success_new", rows=1,
+             finished="clock_timestamp()", provider="tiingo"):
+    conn.execute(
+        "INSERT INTO nav_ingestion_attempts (run_id,instrument_id,ticker,provider,"
+        "requested_start,requested_end,attempted_at,finished_at,status,"
+        f"newest_observed_date,row_count) VALUES (%s,%s,'SYN',%s,%s,%s,"
+        f"clock_timestamp()-interval '1 minute',{finished},%s,%s,%s)",
+        (run_id, iid, provider, start, end, status, end, rows),
+    )
+
+
+def _running_run(conn, end, *, operation="normal", plan=None):
+    run_id = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO nav_ingestion_runs (run_id,requested_end,status,operation,"
+        "contract_version,plan_sha256) VALUES (%s,%s,'running',%s,%s,%s)",
+        (run_id, end, operation, REBASE_CONTRACT if operation == "rebase" else None,
+         plan),
+    )
+    return run_id
+
+
+def test_revision_attribution_requires_same_transaction_success_attempt(
+    test_dsn, schema
+):
+    _bootstrap(test_dsn, schema)
+    iid = uuid.uuid4()
+    days = [dt.date(2026, 1, 2), dt.date(2026, 1, 5)]
+    rows = ingest.build_rows(
+        tuple(NavObservation(d, 100.0 + i, "adjusted") for i, d in enumerate(days)),
+        [(iid, "USD")],
+    )
+    with _connect(test_dsn, schema) as conn:
+        # Attempt committed in an earlier transaction: different xid.
+        earlier = _completed_run(conn, iid, days[0], days[-1], status="running")
+        with pytest.raises(psycopg.errors.RaiseException, match="same-transaction"):
+            ingest.upsert_nav_timeseries(conn, rows, run_id=earlier, provider="tiingo")
+        # Same transaction but a failed fetch.
+        run_id = _running_run(conn, days[-1])
+        conn.commit()
+        _attempt(conn, run_id, iid, days[0], days[-1], status="transient_error", rows=0)
+        with pytest.raises(psycopg.errors.RaiseException, match="same-transaction"):
+            ingest.upsert_nav_timeseries(conn, rows, run_id=run_id, provider="tiingo")
+        # A success cannot finish after it was persisted (so after the write).
+        run_id = _running_run(conn, days[-1])
+        conn.commit()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _attempt(conn, run_id, iid, days[0], days[-1], rows=2,
+                     finished="clock_timestamp()+interval '1 hour'")
+        conn.rollback()
+        assert conn.execute(
+            "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s", (iid,)
+        ).fetchone()[0] == 0
+        # Valid: success attempt + NAV in one txn; a later aborted parent does
+        # not invalidate the committed proof (N1-b schema seam).
+        run_id = _running_run(conn, days[-1])
+        conn.commit()
+        _attempt(conn, run_id, iid, days[0], days[-1], rows=2)
+        ingest.upsert_nav_timeseries(conn, rows, run_id=run_id, provider="tiingo")
+        conn.execute("UPDATE nav_ingestion_runs SET status='aborted', "
+                     "reason_code='TIINGO_BUDGET' WHERE run_id=%s", (run_id,))
+        conn.commit()
+        proof = conn.execute(
+            "SELECT bool_and(r.source_attempt_xid = a.commit_xid), count(*) "
+            "FROM fund_nav_data_revisions r JOIN nav_ingestion_attempts a "
+            "ON a.run_id=r.source_run_id AND a.instrument_id=r.instrument_id "
+            "AND a.provider=r.source_provider WHERE r.instrument_id=%s",
+            (iid,),
+        ).fetchone()
+        assert proof[0] is True and proof[1] >= 2
+
+
+def test_runs_and_attempts_are_append_only_with_server_fields(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    iid = uuid.uuid4()
+    day = dt.date(2026, 1, 2)
+    with _connect(test_dsn, schema) as conn:
+        for statement, error in (
+            ("INSERT INTO nav_ingestion_runs (run_id,requested_end,status,completed_at) "
+             "VALUES (gen_random_uuid(),CURRENT_DATE,'completed',clock_timestamp())",
+             "registered running"),
+            ("INSERT INTO nav_ingestion_runs (run_id,requested_end,status,operation) "
+             "VALUES (gen_random_uuid(),CURRENT_DATE,'running','rebase')", None),
+        ):
+            if error:
+                with pytest.raises(psycopg.Error, match=error):
+                    conn.execute(statement)
+            else:
+                with pytest.raises(psycopg.errors.CheckViolation):
+                    conn.execute(statement)
+            conn.rollback()
+        run_id = uuid.uuid4()
+        conn.execute(
+            "INSERT INTO nav_ingestion_runs (run_id,started_at,requested_end,status) "
+            "VALUES (%s,'2000-01-01',%s,'running')",
+            (run_id, day),
+        )
+        with pytest.raises(psycopg.Error, match="may only transition"):
+            conn.execute("UPDATE nav_ingestion_runs SET requested_end=%s WHERE run_id=%s",
+                         (day, run_id))
+        conn.rollback()
+        conn.execute(
+            "INSERT INTO nav_ingestion_runs (run_id,started_at,requested_end,status) "
+            "VALUES (%s,'2000-01-01',%s,'running')",
+            (run_id, day),
+        )
+        conn.commit()
+        _attempt(conn, run_id, iid, day, day)
+        conn.commit()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _attempt(conn, run_id, uuid.uuid4(), day, day, rows=0)
+        conn.rollback()
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _attempt(conn, run_id, iid, day, day)
+        conn.rollback()
+        for statement in ("UPDATE nav_ingestion_attempts SET status='empty'",
+                          "DELETE FROM nav_ingestion_attempts"):
+            with pytest.raises(psycopg.Error, match="append-only"):
+                conn.execute(statement)
+            conn.rollback()
+        conn.execute("UPDATE nav_ingestion_runs SET status='completed', "
+                     "completed_at='2000-01-01' WHERE run_id=%s", (run_id,))
+        started, completed = conn.execute(
+            "SELECT started_at, completed_at FROM nav_ingestion_runs WHERE run_id=%s",
+            (run_id,),
+        ).fetchone()
+        assert started.year > 2000 and completed.year > 2000  # server stamped
+        conn.commit()
+        with pytest.raises(psycopg.Error, match="attempt requires a running parent"):
+            _attempt(conn, run_id, uuid.uuid4(), day, day)
+        conn.rollback()
+        for statement in ("UPDATE nav_ingestion_runs SET status='aborted'",
+                          "DELETE FROM nav_ingestion_runs"):
+            with pytest.raises(psycopg.Error, match="immutable"):
+                conn.execute(statement)
+            conn.rollback()
+
+
+def _row_evidence(conn, run_id, iid, start, end, *, provider="tiingo", digest=None):
+    conn.execute(
+        """INSERT INTO nav_ingestion_row_evidence
+           (run_id,instrument_id,provider,nav_date,level_digest,observed_nav,
+            source_nav_kind,revision_head,commit_xid,recorded_at)
+           SELECT %s, n.instrument_id, %s, n.nav_date,
+                  COALESCE(%s, nav_level_evidence_digest_v1(n.nav_date, n.nav,
+                      n.source_nav, n.source, n.source_nav_kind, n.currency,
+                      n.nav_repair_kind)),
+                  n.source_nav, n.source_nav_kind,
+                  COALESCE((SELECT revision_id FROM fund_nav_data_heads h
+                            WHERE h.instrument_id = n.instrument_id), 0),
+                  '0'::xid8, TIMESTAMPTZ '2000-01-01'
+           FROM nav_timeseries n
+           WHERE n.instrument_id=%s AND n.nav_date BETWEEN %s AND %s""",
+        (run_id, provider, digest, iid, start, end),
+    )
+
+
+def test_unchanged_refetch_is_row_evidence_not_a_fake_revision(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    iid = uuid.uuid4()
+    days = [dt.date(2026, 1, 2), dt.date(2026, 1, 5), dt.date(2026, 1, 6)]
+    rows = ingest.build_rows(
+        tuple(NavObservation(d, 100.0 + i, "adjusted") for i, d in enumerate(days)),
+        [(iid, "USD")],
+    )
+    with _connect(test_dsn, schema) as conn:
+        _write(conn, rows)
+        head = _head(conn, iid)
+        # Identical re-fetch: no DML, no revision; proof is explicit row evidence.
+        run_id = _running_run(conn, days[-1])
+        conn.commit()
+        _attempt(conn, run_id, iid, days[0], days[-1], status="success_no_new", rows=3)
+        result = ingest._write_instrument_nav_tx(conn, rows, run_id=run_id, provider="tiingo")
+        assert (result.changed_level_rows, result.revision_count) == (0, 0)
+        _row_evidence(conn, run_id, iid, days[0], days[-1])
+        conn.commit()
+        assert _head(conn, iid) == head
+        evidence = conn.execute(
+            "SELECT count(*), bool_and(e.commit_xid = a.commit_xid), "
+            "bool_and(e.recorded_at > TIMESTAMPTZ '2001-01-01'), "
+            "bool_and(e.revision_head = %s) FROM nav_ingestion_row_evidence e "
+            "JOIN nav_ingestion_attempts a USING (run_id, instrument_id, provider)",
+            (head,),
+        ).fetchone()
+        assert evidence == (3, True, True, True)
+        # Python/SQL digest parity on persisted values.
+        stored = conn.execute(
+            "SELECT e.level_digest, n.nav_date, n.nav, n.source_nav, n.source, "
+            "n.source_nav_kind, n.currency, n.nav_repair_kind "
+            "FROM nav_ingestion_row_evidence e JOIN nav_timeseries n "
+            "USING (instrument_id, nav_date) ORDER BY n.nav_date"
+        ).fetchall()
+        assert all(row[0] == level_evidence_digest(*row[1:]) for row in stored)
+        # Wrong digest, stale head, other-xid attempt: rejected at COMMIT.
+        for case in ("digest", "head", "xid"):
+            run_id = _running_run(conn, days[-1])
+            conn.commit()
+            if case == "xid":
+                _attempt(conn, run_id, iid, days[0], days[-1], rows=3)
+                conn.commit()
+                with pytest.raises(psycopg.Error, match="same-transaction successful attempt"):
+                    _row_evidence(conn, run_id, iid, days[0], days[-1])
+                conn.rollback()
+                continue
+            _attempt(conn, run_id, iid, days[0], days[-1], rows=3)
+            _row_evidence(conn, run_id, iid, days[0], days[-1],
+                          digest="0" * 64 if case == "digest" else None)
+            if case == "head":
+                conn.execute(
+                    "UPDATE nav_timeseries SET aum_usd=1 WHERE instrument_id=%s "
+                    "AND nav_date=%s", (iid, days[0]),
+                )
+            with pytest.raises(psycopg.Error, match="does not match the persisted level"):
+                conn.commit()
+            conn.rollback()
+        for statement in ("UPDATE nav_ingestion_row_evidence SET observed_nav=1",
+                          "DELETE FROM nav_ingestion_row_evidence"):
+            with pytest.raises(psycopg.Error, match="append-only"):
+                conn.execute(statement)
+            conn.rollback()
+
+
+def test_successor_return_revision_is_derived_not_a_claimed_fetch(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    iid = uuid.uuid4()
+    days = [dt.date(2026, 1, day) for day in (2, 5, 6)]
+    with _connect(test_dsn, schema) as conn:
+        _write(conn, ingest.build_rows(
+            tuple(NavObservation(d, 100.0 + i, "adjusted") for i, d in enumerate(days)),
+            [(iid, "USD")],
+        ))
+        # Fetch covers only days[1]; its successor's return must be recomputed.
+        run_id = _provider_write(
+            conn,
+            ingest.build_rows((NavObservation(days[1], 101.25, "adjusted"),), [(iid, "USD")]),
+        )
+        revisions = conn.execute(
+            "SELECT nav_date, data_changed, derived_return_only, dependency_start_date "
+            "FROM fund_nav_data_revisions WHERE source_run_id=%s ORDER BY revision_id",
+            (run_id,),
+        ).fetchall()
+        # Level write, its own return recomputation, and the successor's return,
+        # which is a derived revision depending on the fetched date (no fake fetch).
+        assert revisions == [
+            (days[1], True, False, None),
+            (days[1], True, True, days[0]),
+            (days[2], True, True, days[1]),
+        ]
+
+
+# ── N1-a: reexpression ledger ────────────────────────────────────────────────
+def _reexpress(conn, iid, dates, factor=0.5):
+    prices = dict(conn.execute(
+        "SELECT nav_date, source_nav FROM nav_timeseries WHERE instrument_id=%s "
+        "AND nav_date = ANY(%s)", (iid, list(dates)),
+    ).fetchall())
+    rows = ingest.build_rows(
+        tuple(NavObservation(d, round(float(prices[d]) * factor, 6), "adjusted")
+              for d in sorted(dates)),
+        [(iid, "USD")],
+        calendar={d: STAMP for d in dates} if dates[-1] >= dt.date(2025, 1, 1) else None,
+    )
+    return _provider_write(conn, rows)
+
+
+def _receipt_tx(conn, iid, start, end, *, plan="e" * 64, drop_day=None):
+    """Hand-built rebase receipt (DB contract seam; R2-B builds the real one)."""
+    run_id = _running_run(conn, end, operation="rebase", plan=plan)
+    _attempt(conn, run_id, iid, start, end, status="success_no_new", rows=401)
+    _row_evidence(conn, run_id, iid, start, end)
+    if drop_day is not None:
+        _replica(conn)
+        conn.execute("DELETE FROM nav_ingestion_row_evidence WHERE run_id=%s "
+                     "AND nav_date=%s", (run_id, drop_day))
+        conn.execute("SET LOCAL session_replication_role = origin")
+    days = [row[0] for row in conn.execute(
+        "SELECT session_date FROM nav_valuation_schedules WHERE calendar_id='NYSE-TEST' "
+        "AND calendar_version='v1' AND session_date BETWEEN %s AND %s "
+        "AND nav_due_at <= clock_timestamp() ORDER BY session_date", (start, end),
+    ).fetchall()]
+    evidence = conn.execute(
+        "SELECT nav_date, level_digest FROM nav_ingestion_row_evidence WHERE run_id=%s "
+        "ORDER BY nav_date", (run_id,),
+    ).fetchall()
+    grid_json = "[" + ",".join(f'"{d.isoformat()}"' for d in days) + "]"
+    evidence_json = "[" + ",".join(f'["{d.isoformat()}","{g}"]' for d, g in evidence) + "]"
+    head = _head(conn, iid)
+    lifecycle = conn.execute(
+        "SELECT evidence_id FROM nav_instrument_policy_evidence WHERE instrument_id=%s "
+        "ORDER BY effective_at DESC, known_at DESC, recorded_at DESC, evidence_id DESC "
+        "LIMIT 1", (iid,),
+    ).fetchone()[0]
+    receipt_id = uuid.uuid4()
+    conn.execute(
+        """INSERT INTO nav_rebase_receipts
+           (receipt_id,run_id,instrument_id,provider,contract_version,plan_sha256,
+            policy_id,policy_version,policy_hash,lifecycle_evidence_id,window_start,
+            window_end,grid_digest,provider_snapshot_sha256,row_evidence_digest,
+            before_head,after_head,observed_levels_count,changed_level_rows,
+            changed_return_rows,committed_at,commit_xid)
+           VALUES (%s,%s,%s,'tiingo',%s,%s,'synthetic','v1',%s,%s,%s,%s,%s,%s,%s,
+                   %s,%s,401,0,0,TIMESTAMPTZ '2000-01-01','0'::xid8)""",
+        (receipt_id, run_id, iid, REBASE_CONTRACT, plan, "a" * 64, lifecycle, start, end,
+         hashlib.sha256(grid_json.encode()).hexdigest(), "f" * 64,
+         hashlib.sha256(evidence_json.encode()).hexdigest(), head, head),
+    )
+    return run_id, receipt_id
+
+
+def _resolve(conn, iid, event_id, run_id, receipt_id, first, last):
+    conn.execute(
+        """INSERT INTO fund_nav_reexpression_events
+           (instrument_id,event_kind,first_changed_date,last_changed_date,
+            source_run_id,source_provider,revision_head,recorded_at,reason_code,
+            resolves_event_id,rebase_receipt_id)
+           VALUES (%s,'RESOLVED',%s,%s,%s,'tiingo',0,TIMESTAMPTZ '2000-01-01',
+                   'FULL_WINDOW_RECONCILED',%s,%s)""",
+        (iid, first, last, run_id, event_id, receipt_id),
+    )
+
+
+def _holds(conn, iid):
+    return conn.execute(
+        "SELECT event_id, first_changed_date, last_changed_date FROM "
+        "fund_nav_reexpression_holds WHERE instrument_id=%s ORDER BY event_id", (iid,),
+    ).fetchall()
+
+
+def test_hold_ledger_blocks_overlap_only_and_resolves_with_same_txn_receipt(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    with _connect(test_dsn, schema) as conn:
+        # A detection wholly outside the due grid is ledger-only (never blocks).
+        # Old history is fetched together with grid[0] (unchanged level), so the
+        # recomputed grid[0] return is covered by that attempt; derived-return
+        # lineage across attempt windows is an R2-B read (fail-closed today).
+        old = [dt.date(2012, 3, day) for day in (5, 6, 7)]
+        _provider_write(conn, ingest.build_rows(
+            (*(NavObservation(d, 20.0 + i, "adjusted") for i, d in enumerate(old)),
+             NavObservation(grid[0], 100.0, "adjusted")),
+            [(iid, "USD")],
+        ))
+        _reexpress(conn, iid, old[:2])  # not grid[0]'s predecessor
+        assert [h[1:] for h in _holds(conn, iid)] == [(old[0], old[1])]
+    assert readiness.run(test_dsn)["ready_count"] == 1
+    with _connect(test_dsn, schema) as conn:
+        scope = grid[-3:]
+        _reexpress(conn, iid, scope)
+        event_id = _holds(conn, iid)[-1][0]
+        assert _holds(conn, iid)[-1][1:] == (scope[0], scope[-1])
+    readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, iid) == "RETURN_INTERVAL_INCOMPATIBLE"
+        # Tamper and ungoverned resolution fail.
+        for statement in ("UPDATE fund_nav_reexpression_events SET last_changed_date=first_changed_date",
+                          "DELETE FROM fund_nav_reexpression_events"):
+            with pytest.raises(psycopg.Error, match="append-only"):
+                conn.execute(statement)
+            conn.rollback()
+        # Receipt committed in an EARLIER transaction cannot resolve.
+        early_run, early_receipt = _receipt_tx(conn, iid, grid[0], grid[-1], plan="1" * 64)
+        conn.commit()
+        with pytest.raises(psycopg.Error, match="same-transaction receipt"):
+            _resolve(conn, iid, event_id, early_run, early_receipt, scope[0], scope[-1])
+        conn.rollback()
+        # Receipt missing one due session: the whole transaction rolls back.
+        run_id, receipt_id = _receipt_tx(conn, iid, grid[0], grid[-1], plan="2" * 64,
+                                         drop_day=grid[100])
+        _resolve(conn, iid, event_id, run_id, receipt_id, scope[0], scope[-1])
+        with pytest.raises(psycopg.Error, match="governed full-window evidence"):
+            conn.commit()
+        conn.rollback()
+        assert [h[0] for h in _holds(conn, iid)][-1] == event_id  # still active
+        # Narrower than the event, or another instrument: refused.
+        run_id, receipt_id = _receipt_tx(conn, iid, grid[0], grid[-1], plan="3" * 64)
+        with pytest.raises(psycopg.Error, match="must cover one DETECTED"):
+            _resolve(conn, iid, event_id, run_id, receipt_id, scope[1], scope[-1])
+        conn.rollback()
+        run_id, receipt_id = _receipt_tx(conn, iid, grid[0], grid[-1], plan="4" * 64)
+        with pytest.raises(psycopg.Error, match="must cover one DETECTED"):
+            _resolve(conn, uuid.uuid4(), event_id, run_id, receipt_id, scope[0], scope[-1])
+        conn.rollback()
+        # Valid: same-transaction full-window receipt covering the event.
+        run_id, receipt_id = _receipt_tx(conn, iid, grid[0], grid[-1], plan="5" * 64)
+        _resolve(conn, iid, event_id, run_id, receipt_id, scope[0], scope[-1])
+        conn.commit()
+        assert [h[0] for h in _holds(conn, iid)] != [event_id]
+        assert event_id not in [h[0] for h in _holds(conn, iid)]
+        audit = conn.execute(
+            "SELECT event_kind, resolves_event_id, rebase_receipt_id IS NOT NULL "
+            "FROM fund_nav_reexpression_events WHERE instrument_id=%s ORDER BY event_id",
+            (iid,),
+        ).fetchall()
+        assert audit[-2:] == [("DETECTED", None, False), ("RESOLVED", event_id, True)]
+        # Repeated resolution of the same event fails.
+        run_id, receipt_id = _receipt_tx(conn, iid, grid[0], grid[-1], plan="6" * 64)
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _resolve(conn, iid, event_id, run_id, receipt_id, scope[0], scope[-1])
+        conn.rollback()
+        # A new detection reopens the hold.
+        _reexpress(conn, iid, scope, factor=2.0)
+        assert any(h[1:] == (scope[0], scope[-1]) for h in _holds(conn, iid))
+    readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, iid) == "RETURN_INTERVAL_INCOMPATIBLE"
+
+
+def test_unattributed_reexpression_is_refused_and_rolls_back(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    iid = uuid.uuid4()
+    days = [dt.date(2026, 1, 2), dt.date(2026, 1, 5)]
+    with _connect(test_dsn, schema) as conn:
+        _write(conn, ingest.build_rows(
+            tuple(NavObservation(d, 100.0 + i, "adjusted") for i, d in enumerate(days)),
+            [(iid, "USD")],
+        ))
+        head = _head(conn, iid)
+        with pytest.raises(ValueError, match="requires provider attribution"):
+            ingest.upsert_nav_timeseries(conn, ingest.build_rows(
+                tuple(NavObservation(d, 50.0, "adjusted") for d in days), [(iid, "USD")],
+            ))
+        assert _head(conn, iid) == head and _holds(conn, iid) == []
+
+
+# ── N3: server-controlled instants and conservative current semantics ────────
+def test_server_stamps_override_or_reject_client_timestamps(test_dsn, schema, monkeypatch):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    readiness.run(test_dsn)
+    ancient = dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc)
+    with _connect(test_dsn, schema) as conn:
+        with pytest.raises(psycopg.Error, match="inserted unpublished"):
+            conn.execute(
+                "INSERT INTO nav_policy_versions SELECT policy_id, 'v9', policy_hash, "
+                "readiness_profile, valuation_frequency, calendar_id, calendar_version, "
+                "calendar_source, timezone, coverage_start, coverage_end, valid_through, "
+                "calendar_session_count, calendar_digest, sample_intervals, "
+                "annualization_sessions, required_nav_kind, required_return_semantics, "
+                "modeling_currency, currency_treatment, source_reference, %s "
+                "FROM nav_policy_versions", (ancient,),
+            )
+        conn.rollback()
+        for table in ("nav_policy_current", "fund_nav_readiness_current"):
+            before = conn.execute(f"SELECT published_at FROM {table}").fetchone()[0]
+            conn.execute(f"UPDATE {table} SET published_at=%s", (ancient,))
+            after = conn.execute(f"SELECT published_at FROM {table}").fetchone()[0]
+            assert after > before > ancient
+        conn.execute(
+            """INSERT INTO nav_instrument_policy_evidence
+               (instrument_id,policy_id,policy_version,known_at,effective_at,fund_status,
+                valuation_frequency,identity_verified,return_basis_verified,
+                currency_verified,evidence_reference,recorded_at)
+               VALUES (%s,'synthetic','v1',%s,%s,'ACTIVE','daily',true,true,true,'x',%s)""",
+            (iid, ancient, ancient, ancient),
+        )
+        assert conn.execute(
+            "SELECT max(recorded_at) FROM nav_instrument_policy_evidence"
+        ).fetchone()[0] > ancient
+        conn.rollback()
+        with pytest.raises(psycopg.Error, match="immutable"):
+            conn.execute("UPDATE fund_nav_readiness_runs SET completed_at=%s", (ancient,))
+        conn.rollback()
+        with pytest.raises(psycopg.Error, match="not published"):
+            conn.execute("UPDATE nav_policy_current SET policy_version='v9'")
+        conn.rollback()
+        # Risk completion and feature computation are stamped by the server.
+        nav = conn.execute(
+            "SELECT nav_date, nav FROM nav_timeseries WHERE instrument_id=%s "
+            "ORDER BY nav_date", (iid,),
+        ).fetchall()
+        run_id = uuid.uuid4()
+        _register_risk_run(conn, run_id, grid[-1], [iid], scope="current_full")
+        risk._persist_feature_evidence(conn, iid, grid[-1], nav, 0.04, run_id, None, {}, {}, [])
+        conn.commit()
+        risk._finish_risk_run(conn, run_id, 1, 1)
+        conn.execute("UPDATE fund_nav_risk_runs SET status='complete', completed_at=%s "
+                     "WHERE risk_run_id=%s", (ancient, run_id))
+        stamps = conn.execute(
+            "SELECT r.completed_at, f.computed_at FROM fund_nav_risk_runs r "
+            "JOIN fund_nav_feature_evidence f USING (risk_run_id) WHERE risk_run_id=%s",
+            (run_id,),
+        ).fetchone()
+        assert all(stamp > ancient for stamp in stamps)
+        conn.rollback()
+
+
+def test_repointing_older_version_or_run_gets_a_new_instant(test_dsn, schema, monkeypatch):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    first = uuid.UUID(readiness.run(test_dsn)["run_id"])
+    second = uuid.UUID(readiness.run(test_dsn)["run_id"])
+    with _connect(test_dsn, schema) as conn:
+        t_second = conn.execute("SELECT published_at FROM fund_nav_readiness_current").fetchone()[0]
+        conn.execute("UPDATE fund_nav_readiness_current SET run_id=%s", (first,))
+        conn.commit()
+        t_back = conn.execute("SELECT published_at FROM fund_nav_readiness_current").fetchone()[0]
+        assert t_back > t_second
+        # The old run is NOT current at an instant before its re-publication.
+        assert conn.execute(
+            "SELECT fund_nav_snapshot_current_at_v1(%s,%s,%s)", (iid, first, t_second)
+        ).fetchone()[0] is False
+        assert conn.execute(
+            "SELECT fund_nav_snapshot_current_at_v1(%s,%s,clock_timestamp())", (iid, first)
+        ).fetchone()[0] is True
+        assert conn.execute(
+            "SELECT fund_nav_snapshot_current_at_v1(%s,%s,clock_timestamp())", (iid, second)
+        ).fetchone()[0] is False
+        # Policy V1 -> V2 -> V1: every pointer write is a new, later instant.
+        stamps = [conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0]]
+        _publish_rollover(conn, iid, grid)
+        stamps.append(conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0])
+        conn.execute("UPDATE nav_policy_current SET policy_version='v1'")
+        conn.commit()
+        stamps.append(conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0])
+        assert stamps == sorted(stamps) and len(set(stamps)) == 3
+
+
+@pytest.mark.parametrize("table", ["nav_policy_current", "fund_nav_readiness_current"])
+def test_publication_clock_regression_aborts(test_dsn, schema, monkeypatch, table):
+    _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        _replica(conn)  # simulate a server clock that later reads earlier
+        conn.execute(f"UPDATE {table} SET published_at=clock_timestamp()+interval '1 day'")
+        conn.commit()
+        with pytest.raises(psycopg.Error, match="publication_clock_regressed"):
+            conn.execute(f"UPDATE {table} SET published_at=published_at")
+        conn.rollback()
+
+
+BOUNDARIES = {
+    "readiness_pointer": "UPDATE fund_nav_readiness_current SET published_at=%(t)s",
+    "readiness_run": "UPDATE fund_nav_readiness_runs SET completed_at=%(t)s",
+    "policy_pointer": "UPDATE nav_policy_current SET published_at=%(t)s",
+    "policy_version": "UPDATE nav_policy_versions SET published_at=%(t)s",
+    "risk_completed": "UPDATE fund_nav_risk_runs SET completed_at=%(t)s "
+                      "WHERE risk_run_id=%(risk)s",
+    "feature_computed": "UPDATE fund_nav_feature_evidence SET computed_at=%(t)s "
+                        "WHERE risk_run_id=%(risk)s",
+    "lifecycle_recorded": "UPDATE nav_instrument_policy_evidence SET recorded_at=%(t)s",
+}
+
+
+@pytest.mark.parametrize("boundary", sorted(BOUNDARIES))
+def test_snapshot_is_false_before_each_evidence_instant(
+    test_dsn, schema, monkeypatch, boundary
+):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    run_id = uuid.UUID(readiness.run(test_dsn)["run_id"])
+    with _connect(test_dsn, schema) as conn:
+        published_risk = conn.execute(
+            "SELECT published_risk_run_id FROM fund_nav_risk_publication"
+        ).fetchone()[0]
+        now = conn.execute("SELECT clock_timestamp()").fetchone()[0]
+        instants = conn.execute(
+            """SELECT p.published_at, run.completed_at, cp.published_at, pv.published_at,
+                      risk.completed_at, f.computed_at, e.recorded_at
+               FROM fund_nav_readiness_current p
+               JOIN fund_nav_readiness_runs run ON run.run_id = p.run_id
+               JOIN nav_policy_current cp ON true
+               JOIN nav_policy_versions pv ON pv.policy_id = cp.policy_id
+                AND pv.policy_version = cp.policy_version
+               JOIN fund_nav_risk_runs risk ON risk.risk_run_id=%s
+               JOIN fund_nav_feature_evidence f ON f.risk_run_id=risk.risk_run_id
+               JOIN nav_instrument_policy_evidence e ON e.instrument_id=%s""",
+            (published_risk, iid),
+        ).fetchone()
+        assert max(instants) == instants[0] <= now  # pointer is the latest instant
+        later = now + dt.timedelta(hours=1)
+        _replica(conn)  # controlled catalog: move ONE instant after the others
+        conn.execute(BOUNDARIES[boundary], {"t": later, "risk": published_risk})
+        conn.commit()
+        at = [
+            conn.execute(
+                "SELECT fund_nav_snapshot_current_at_v1(%s,%s,%s)", (iid, run_id, t)
+            ).fetchone()[0]
+            for t in (later - dt.timedelta(minutes=30), later + dt.timedelta(minutes=30))
+        ]
+        assert at == [False, True]
+
+
+def test_backdated_lifecycle_fact_cannot_rewrite_a_past_instant(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    run_id = uuid.UUID(readiness.run(test_dsn)["run_id"])
+    with _connect(test_dsn, schema) as conn:
+        before = conn.execute("SELECT clock_timestamp()").fetchone()[0]
+        # Known/effective before `before`, newer than the ACTIVE fact, but only
+        # recorded now: it must not change what was current at `before`.
+        conn.execute(
+            """INSERT INTO nav_instrument_policy_evidence
+               (instrument_id,policy_id,policy_version,known_at,effective_at,fund_status,
+                valuation_frequency,identity_verified,return_basis_verified,
+                currency_verified,evidence_reference)
+               VALUES (%s,'synthetic','v1',%s,%s,'INACTIVE','daily',true,true,true,
+                       'backdated-closure')""",
+            (iid, before - dt.timedelta(minutes=1), before - dt.timedelta(minutes=1)),
+        )
+        conn.commit()
+        snapshot = [
+            conn.execute("SELECT fund_nav_snapshot_current_at_v1(%s,%s,%s)",
+                         (iid, run_id, t)).fetchone()[0]
+            for t in (before, conn.execute("SELECT clock_timestamp()").fetchone()[0])
+        ]
+        assert snapshot == [True, False]
+
+
+def test_risk_policy_pin_mismatch_is_not_current(test_dsn, schema, monkeypatch):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    run_id = uuid.UUID(readiness.run(test_dsn)["run_id"])
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute("SELECT fund_nav_snapshot_current_at_v1(%s,%s,clock_timestamp())",
+                            (iid, run_id)).fetchone()[0] is True
+        _replica(conn)
+        conn.execute("UPDATE fund_nav_risk_runs SET policy_hash=%s", ("f" * 64,))
+        conn.commit()
+        assert conn.execute("SELECT fund_nav_snapshot_current_at_v1(%s,%s,clock_timestamp())",
+                            (iid, run_id)).fetchone()[0] is False
+        # NULL pins cannot exist on a current_full run (CHECK, even without triggers).
+        _replica(conn)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute("UPDATE fund_nav_risk_runs SET policy_hash=NULL")
+        conn.rollback()
+
+
+# ── N4: operator atomicity ───────────────────────────────────────────────────
+def _policy_document(grid, iid, *, calendar_id="NYSE-OPS", source="ops-fixture"):
+    sessions = [
+        (d, dt.datetime.combine(d, dt.time(20), dt.timezone.utc),
+         dt.datetime.combine(d, dt.time(23), dt.timezone.utc), "ops-fixture-ref")
+        for d in grid
+    ]
+    return {
+        "policy_id": "ops", "policy_version": "v1",
+        "readiness_profile": "current_daily_nav_v1", "valuation_frequency": "daily",
+        "timezone": "America/New_York", "calendar_id": calendar_id,
+        "calendar_version": "v1", "calendar_source": source,
+        "source_reference": "ops-fixture-ref", "sample_intervals": 400,
+        "annualization_sessions": 252, "required_nav_kind": "adjusted",
+        "required_return_semantics": "observed_interval_log_ratio",
+        "modeling_currency": "USD", "currency_treatment": "native_only",
+        "publication_state": "approved",
+        "repaired_nav_kinds": sorted(REPAIRED_NAV_KINDS),
+        "adjusted_overlap_absolute_tolerance": 0.0000005,
+        "adjusted_overlap_relative_tolerance": 0.00000001,
+        "coverage_start": grid[0].isoformat(), "coverage_end": grid[-1].isoformat(),
+        "valid_through": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)).isoformat(),
+        "calendar_session_count": len(grid),
+        "calendar_digest": calendar_digest(sessions),
+        "sessions": [
+            {"session_date": d.isoformat(), "valuation_close_at": c.isoformat(),
+             "nav_due_at": due.isoformat()}
+            for d, c, due, _ref in sessions
+        ],
+        "instrument_evidence": [{
+            "instrument_id": str(iid), "fund_status": "ACTIVE",
+            "valuation_frequency": "daily", "identity_verified": True,
+            "return_basis_verified": True, "currency_verified": True,
+            "known_at": "2025-01-01T00:00:00+00:00",
+            "effective_at": "2025-01-01T00:00:00+00:00",
+            "evidence_reference": "ops-fixture-identity",
+        }],
+    }
+
+
+W1_STATE_SQL = """
+SELECT (SELECT count(*) FROM nav_policy_versions),
+       (SELECT count(*) FROM nav_valuation_schedules),
+       (SELECT count(*) FROM nav_instrument_policy_evidence),
+       (SELECT to_jsonb(c) FROM nav_policy_current c),
+       (SELECT count(*) FROM nav_calendar_maintenance_runs),
+       (SELECT count(*) FROM fund_nav_data_revisions),
+       (SELECT to_jsonb(p) FROM fund_nav_readiness_current p),
+       (SELECT md5(string_agg(to_jsonb(n)::text, ',' ORDER BY instrument_id, nav_date))
+        FROM nav_timeseries n)
+"""
+
+
+def _w1_state(test_dsn, schema):
+    with _connect(test_dsn, schema) as conn:
+        return conn.execute(W1_STATE_SQL).fetchone()
+
+
+def _ops_env(test_dsn, schema, tmp_path, monkeypatch):
+    iid, grid, _ = _seed(test_dsn, schema, with_policy=False)
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    path = tmp_path / "ops-policy.json"
+    path.write_text(json.dumps(_policy_document(grid, iid)), encoding="utf-8")
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    combined = [*base, "--policy-file", str(path), "--instrument-id", str(iid),
+                "--start", grid[0].isoformat(), "--end", grid[-1].isoformat()]
+    policy_only = [*base, "--policy-file", str(path)]
+    return iid, grid, combined, policy_only
+
+
+@pytest.mark.parametrize("mode", ["combined", "policy_only"])
+@pytest.mark.parametrize("lock", ["ingestion", "readiness"])
+def test_operator_lock_busy_is_exit4_with_zero_dml(
+    test_dsn, schema, tmp_path, monkeypatch, capsys, mode, lock
+):
+    iid, grid, combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    cli = combined if mode == "combined" else policy_only
+    plan = _plan(cli, capsys)
+    before = _w1_state(test_dsn, schema)
+    key = LOCK_INSTRUMENT_INGESTION if lock == "ingestion" else LOCK_FUND_NAV_READINESS
+    with _connect(test_dsn, schema) as holder:
+        with advisory_lock(holder, key) as held:
+            assert held
+            assert operator.main([*cli, "--mode", "apply", "--plan-sha256", plan]) == 4
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["retryable"], out["dml_committed"], out["published"]) == (
+        "lock_busy", True, False, False,
+    )
+    assert out["ddl"] == "unchanged"
+    assert _w1_state(test_dsn, schema) == before
+
+
+def test_combined_failure_after_policy_rolls_back_everything_then_retries(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    iid, grid, combined, _ = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    plan_out_code = operator.main(combined)
+    plan_out = json.loads(capsys.readouterr().out)
+    assert plan_out_code == 0 and plan_out["plan"]["operations"] == [
+        "ddl", "maintenance", "policy",
+    ]
+    assert plan_out["plan"]["before"]["maintenance"]["eligible_rows"] == 401
+    plan = plan_out["plan_sha256"]
+    before = _w1_state(test_dsn, schema)
+    real_tx = operator._apply_calendar_maintenance_tx
+    written = {}
+
+    def _fail_before_commit(conn, *args, **kwargs):
+        written.update(real_tx(conn, *args, **kwargs))  # policy + stamps written
+        written["policy_in_txn"] = conn.execute(
+            "SELECT policy_id FROM nav_policy_current").fetchone()[0]
+        raise ValueError("maintenance_verification_failed")
+
+    monkeypatch.setattr(operator, "_apply_calendar_maintenance_tx", _fail_before_commit)
+    assert operator.main([*combined, "--mode", "apply", "--plan-sha256", plan]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert (out["code"], out["policy"], out["maintenance"], out["dml_committed"]) == (
+        "maintenance_verification_failed", "rolled_back", "rolled_back", False,
+    )
+    assert (written["changed_rows"], written["policy_in_txn"]) == (401, "ops")
+    assert _w1_state(test_dsn, schema) == before  # policy rolled back with it
+    monkeypatch.setattr(operator, "_apply_calendar_maintenance_tx", real_tx)
+    assert operator.main([*combined, "--mode", "apply", "--plan-sha256", plan]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["policy"], out["maintenance"], out["changed_rows"],
+            out["published"], out["dml_committed"]) == (
+        "applied", "committed", "committed", 401, True, True,
+    )
+    after = _w1_state(test_dsn, schema)
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s "
+            "AND calendar_id='NYSE-OPS'", (iid,),
+        ).fetchone()[0] == 401
+        assert conn.execute(
+            "SELECT policy_id FROM nav_policy_current").fetchone()[0] == "ops"
+    # Same hash again: truthful no-op, no re-publication instant.
+    assert operator.main([*combined, "--mode", "apply", "--plan-sha256", plan]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["policy"], out["maintenance"], out["dml_committed"]) == (
+        "unchanged", "unchanged", "unchanged", False,
+    )
+    assert _w1_state(test_dsn, schema) == after
+
+
+def test_stale_plan_is_blocked_without_dml(test_dsn, schema, tmp_path, monkeypatch, capsys):
+    iid, grid, combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    plan = _plan(combined, capsys)
+    policy_plan = _plan(policy_only, capsys)
+    with _connect(test_dsn, schema) as conn:  # scope changes after planning
+        _provider_write(conn, ingest.build_rows(
+            (NavObservation(grid[-1], 999.0, "adjusted"),), [(iid, "USD")]))
+    before = _w1_state(test_dsn, schema)
+    assert operator.main([*combined, "--mode", "apply", "--plan-sha256", plan]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert (out["code"], out["dml_committed"]) == ("PLAN_STALE", False)
+    assert _w1_state(test_dsn, schema) == before
+    # Policy-only plan is unaffected by the NAV change and still applies once.
+    assert operator.main([*policy_only, "--mode", "apply", "--plan-sha256", policy_plan]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert (out["policy"], out["maintenance"], out["dml_committed"]) == (
+        "committed", "not_attempted", True,
+    )
+
+
+# ── R2-C F1: replay identity is the whole persisted operation ───────────────
+def _check_out(cli, capsys):
+    assert operator.main(cli) == 0, capsys.readouterr().out
+    return json.loads(capsys.readouterr().out)
+
+
+def _apply_out(cli, plan, capsys):
+    code = operator.main([*cli, "--mode", "apply", "--plan-sha256", plan])
+    return code, json.loads(capsys.readouterr().out)
+
+
+def _lifecycle(conn, iid):
+    return conn.execute(
+        "SELECT fund_status, evidence_reference FROM nav_instrument_policy_evidence "
+        "WHERE instrument_id=%s ORDER BY effective_at, known_at", (iid,),
+    ).fetchall()
+
+
+def test_same_pointer_new_lifecycle_evidence_is_published_not_replayed(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    iid, grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    first = _check_out(policy_only, capsys)
+    assert first["plan"]["policy_document_digest"] == canonical_digest(
+        json.loads((tmp_path / "ops-policy.json").read_text()))
+    code, out = _apply_out(policy_only, first["plan_sha256"], capsys)
+    assert (code, out["policy"], out["dml_committed"]) == (0, "committed", True)
+    # Same V1 (same policy_hash, pointer already at it) + a NEW lifecycle row.
+    document = json.loads((tmp_path / "ops-policy.json").read_text())
+    later = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=5)
+    document["instrument_evidence"].append({
+        **document["instrument_evidence"][0], "fund_status": "INACTIVE",
+        "known_at": later.isoformat(), "effective_at": later.isoformat(),
+        "evidence_reference": "ops-fixture-closure",
+    })
+    (tmp_path / "ops-policy.json").write_text(json.dumps(document), encoding="utf-8")
+    second = _check_out(policy_only, capsys)
+    assert second["plan"]["policy_hash"] == first["plan"]["policy_hash"]
+    assert second["plan"]["policy_document_digest"] != first["plan"]["policy_document_digest"]
+    assert second["plan_sha256"] != first["plan_sha256"]
+    # The OLD plan hash does not describe this document: stale, nothing written.
+    with _connect(test_dsn, schema) as conn:
+        before = _lifecycle(conn, iid)
+    code, out = _apply_out(policy_only, first["plan_sha256"], capsys)
+    assert (code, out["code"], out["dml_committed"]) == (2, "PLAN_STALE", False)
+    with _connect(test_dsn, schema) as conn:
+        assert _lifecycle(conn, iid) == before
+    # The current plan executes _publish_policy and persists the new evidence.
+    code, out = _apply_out(policy_only, second["plan_sha256"], capsys)
+    assert (code, out["status"], out["policy"], out["dml_committed"]) == (
+        0, "applied", "committed", True)
+    with _connect(test_dsn, schema) as conn:
+        assert _lifecycle(conn, iid) == [("ACTIVE", "ops-fixture-identity"),
+                                         ("INACTIVE", "ops-fixture-closure")]
+        pointer = conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0]
+    # Exact replay of the applied plan: persisted facts match, a true no-op.
+    state = _w1_state(test_dsn, schema)
+    code, out = _apply_out(policy_only, second["plan_sha256"], capsys)
+    assert (code, out["status"], out["policy"], out["dml_committed"]) == (
+        0, "unchanged", "unchanged", False)
+    assert _w1_state(test_dsn, schema) == state
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT published_at FROM nav_policy_current").fetchone()[0] == pointer
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, iid) == "INACTIVE_FUND"
+
+
+def test_maintenance_receipt_of_scope_a_never_suppresses_scope_b(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    iid, grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    code, out = _apply_out(policy_only, _check_out(policy_only, capsys)["plan_sha256"],
+                           capsys)
+    assert code == 0
+    base = policy_only[:4]
+    half = grid[len(grid) // 2]
+    scope_a = [*base, "--instrument-id", str(iid), "--start", grid[0].isoformat(),
+               "--end", half.isoformat()]
+    scope_b = [*base, "--instrument-id", str(iid),
+               "--start", (half + dt.timedelta(days=1)).isoformat(),
+               "--end", grid[-1].isoformat()]
+    plan_a = _check_out(scope_a, capsys)["plan_sha256"]
+    plan_b = _check_out(scope_b, capsys)["plan_sha256"]
+    code, out = _apply_out(scope_a, plan_a, capsys)
+    assert (code, out["maintenance"]) == (0, "committed")
+    stamped_a = out["changed_rows"]
+    # B supplied with A's receipt hash: A's receipt describes another scope.
+    code, out = _apply_out(scope_b, plan_a, capsys)
+    assert (code, out["code"], out["dml_committed"]) == (2, "PLAN_STALE", False)
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s AND calendar_id "
+            "IS NOT NULL", (iid,)).fetchone()[0] == stamped_a
+    code, out = _apply_out(scope_b, plan_b, capsys)
+    assert (code, out["maintenance"], out["changed_rows"]) == (0, "committed",
+                                                              401 - stamped_a)
+    # Exact replay of A: its receipt and post-state still hold -> no-op.
+    code, out = _apply_out(scope_a, plan_a, capsys)
+    assert (code, out["status"], out["maintenance"]) == (0, "unchanged", "unchanged")
+    # Post-state moved inside A's scope: the receipt no longer proves the
+    # operation, so the replay is stale (never a silent "unchanged").
+    with _connect(test_dsn, schema) as conn:
+        _provider_write(conn, ingest.build_rows(
+            (NavObservation(grid[3], 777.0, "adjusted"),), [(iid, "USD")],
+            calendar={grid[3]: ("NYSE-OPS", "v1", "ops-fixture")}))
+    code, out = _apply_out(scope_a, plan_a, capsys)
+    assert (code, out["code"], out["dml_committed"]) == (2, "PLAN_STALE", False)
+    # A receipt of a different (fabricated) scope under the hash is ignored.
+    with _connect(test_dsn, schema) as conn:
+        assert operator._maintenance_receipt_exact(
+            conn, plan_a, [str(uuid.uuid4())], grid[0], half,
+            operator._pinned_policy(conn, lock=False)) is False
+        conn.rollback()
+
+
+def test_previous_plan_version_digest_is_rejected(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    _iid, _grid, combined, _ = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    out = _check_out(combined, capsys)
+    legacy = operator.previous_version_digest(out["plan"])
+    assert legacy != out["plan_sha256"]
+    code, applied = _apply_out(combined, legacy, capsys)
+    assert (code, applied["code"], applied["dml_committed"]) == (
+        2, "plan_version_mismatch", False)
+
+
+# ── N5: PR132 prerequisite (real catalog, representable mutations) ───────────
+PR132_ALT_TYPES = {
+    "source_nav": "numeric(18,4)", "source_nav_kind": "varchar(17)",
+    "nav_repair_kind": "varchar(49)", "return_start_date": "timestamp",
+    "return_source_boundary": "text", "return_uses_repaired_nav": "text",
+    "return_semantics": "varchar(49)", "return_verification_status": "varchar(25)",
+    "calendar_id": "varchar(129)", "calendar_version": "varchar(65)",
+    "calendar_source": "varchar(100)",
+}
+
+
+def _pr132_cases():
+    from scripts.nav_timeseries_provenance_schema import EXPECTED_COLUMNS
+
+    defaults = {"numeric": "0", "date": "DATE '2000-01-01'", "boolean": "false"}
+    for column, _type in EXPECTED_COLUMNS:
+        default = defaults.get(_type.split("(")[0], "'x'")
+        yield f"{column}:notnull", [f"ALTER TABLE nav_timeseries ALTER COLUMN {column} SET NOT NULL"]
+        yield f"{column}:default", [
+            f"ALTER TABLE nav_timeseries ALTER COLUMN {column} SET DEFAULT {default}"
+        ]
+        yield f"{column}:type", [
+            f"ALTER TABLE nav_timeseries ALTER COLUMN {column} TYPE {PR132_ALT_TYPES[column]} "
+            f"USING {column}::text::{PR132_ALT_TYPES[column]}"
+        ]
+        yield f"{column}:missing", [f"ALTER TABLE nav_timeseries DROP COLUMN {column}"]
+    yield "calendar_source:generated", [
+        "ALTER TABLE nav_timeseries DROP COLUMN calendar_source",
+        "ALTER TABLE nav_timeseries ADD COLUMN calendar_source text "
+        "GENERATED ALWAYS AS ('x') STORED",
+    ]
+    yield "relkind:view", [
+        "ALTER TABLE nav_timeseries RENAME TO nav_timeseries_base",
+        "CREATE VIEW nav_timeseries AS SELECT * FROM nav_timeseries_base",
+    ]
+
+
+@pytest.mark.parametrize(("case", "statements"), list(_pr132_cases()),
+                         ids=[case for case, _ in _pr132_cases()])
+def test_pr132_contract_blocks_before_any_ddl_or_dml(
+    test_dsn, schema, monkeypatch, capsys, case, statements
+):
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute(NAV_SQL)
+        try:
+            for statement in statements:
+                conn.execute(statement)
+        except psycopg.errors.FeatureNotSupported:
+            pytest.fail(f"mutation not representable on this server: {case}")
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    for argv in (base, [*base, "--mode", "apply", "--plan-sha256", "0" * 64]):
+        assert operator.main(argv) == 3
+        out = json.loads(capsys.readouterr().out)
+        assert out["code"].startswith("nav_provenance_pr132_")
+        assert out["ddl"] == "not_attempted"
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname=%s AND c.relname = ANY(%s)", (schema, list(operator.TABLES)),
+        ).fetchone()[0] == 0
+
+
+# ── Old shapes are incompatible, never migrated ──────────────────────────────
+@pytest.mark.parametrize(
+    "statements",
+    [
+        ["DROP VIEW fund_nav_reexpression_holds",
+         "CREATE TABLE fund_nav_reexpression_holds (instrument_id uuid PRIMARY KEY, "
+         "first_changed_date date NOT NULL, last_changed_date date NOT NULL, "
+         "source_run_id uuid, reason_code text NOT NULL, detected_at timestamptz)"],
+        ["ALTER TABLE nav_ingestion_attempts DROP COLUMN commit_xid"],
+        ["ALTER TABLE nav_ingestion_runs DROP COLUMN operation CASCADE"],
+        ["DROP TABLE nav_rebase_receipts CASCADE"],
+    ],
+    ids=["holds_table", "attempt_without_xid", "run_without_operation", "no_receipts"],
+)
+def test_pre_r2_shapes_are_upgrade_required_without_mutation(
+    test_dsn, schema, monkeypatch, capsys, statements
+):
+    _bootstrap(test_dsn, schema)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        for statement in statements:
+            conn.execute(statement)
+        before = operator._check(conn, schema)
+    assert (before["compatibility"], before["ready"]) == ("incompatible", False)
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    assert operator.main([*base, "--mode", "apply", "--plan-sha256", "0" * 64]) == 3
+    assert json.loads(capsys.readouterr().out)["code"] == "incompatible_schema"
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        assert operator._check(conn, schema)["catalog_sha256"] == before["catalog_sha256"]
