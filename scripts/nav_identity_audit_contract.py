@@ -22,7 +22,7 @@ from __future__ import annotations
 
 AUDIT_VERSION = "nav-identity-audit-v2"
 AUDIT_CONFIG_VERSION = "nav-identity-audit-config-v2"
-AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v2-round3"
+AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v2-round4"
 CAPTURE_KIND = "nav-identity-audit-capture-v2-round2"
 CANARY_KIND = "nav-policy-v2-canary-manifest-round2"
 PLAN_VERSION = "nav-schema-plan-v4"
@@ -381,12 +381,21 @@ AUDIT_CONTRACT = {
         "relation": PUBLICATION_RECEIPT_RELATION,
         "rule": "append-only, written in the publication transaction; binds the "
         "plan-v4 digest, policy bytes/document/hash, the normalized receipt digest "
-        "and the dossier/manifest/capture hashes; a current pointer already at "
-        "the target is accepted only as an exact replay of such a row",
+        "and the dossier/manifest/capture hashes, plus server-stamped event fields: "
+        "the exact current pointer published_at instant and the server SHA-256 of "
+        "the whole lifecycle partition (policy_id, policy_version), every row with "
+        "evidence_id and recorded_at, at most one receipt per pointer event; a "
+        "current pointer already at the target is accepted only as an exact replay: "
+        "one snapshot where such a receipt of the same identity (and the same plan "
+        "digest when the original plan is supplied) still matches the current "
+        "pointer instant and the current partition digest; any append to the "
+        "partition (document or other instrument, retroactive or future) or any "
+        "pointer re-stamp (rollback, re-publication, no-op update) invalidates it; "
+        "maintenance-only operations write neither and stay outside",
     },
     "row_ceiling": ROW_CEILING,
     "stage1_margin": f"max(1, ceil({STAGE1_MARGIN_TEXT} * quota)) for quota > 0",
 }
 AUDIT_CONTRACT_SHA256 = (
-    "1ef74c426526f5308223921c8297516c9fa4ac4034737fad59cad668f73b0001"
+    "64c75b3db696132e435523e0f3d072309fc78c72069c2d8942bf7ef89bfd68db"
 )

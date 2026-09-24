@@ -2363,6 +2363,9 @@ def _shift(value: str, **delta) -> str:
         ("lineage_after_decision", "audit_receipt_time_invalid"),
         ("capture_before_generation", "audit_receipt_time_invalid"),
         ("naive_capture_time", "audit_dossier_invalid"),
+        # Round4 T9: Round3 dossiers are never accepted (version or literal).
+        ("round3_contract_version", "audit_contract_mismatch"),
+        ("round3_contract_sha256", "audit_contract_mismatch"),
     ],
 )
 def test_operator_receipt_nested_shapes_and_time_window_offline(
@@ -2439,6 +2442,18 @@ def test_operator_receipt_nested_shapes_and_time_window_offline(
         "naive_capture_time": {
             "dossier": lambda d: d["inputs"]["capture"].update(
                 captured_at="2026-09-24T12:05:00"
+            )
+        },
+        "round3_contract_version": {
+            "dossier": lambda d: d["inputs"].update(
+                audit_contract_version="nav-identity-audit-contract-v2-round3"
+            )
+        },
+        "round3_contract_sha256": {
+            "dossier": lambda d: d["inputs"].update(
+                audit_contract_sha256=(
+                    "1ef74c426526f5308223921c8297516c9fa4ac4034737fad59cad668f73b0001"
+                )
             )
         },
     }

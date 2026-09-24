@@ -23,9 +23,14 @@ policy.valid_through`` and ``now <= sec_valid_until`` (exactly the oldest
 matched SEC ``updated_at`` + 7 days). Each committed publication appends one
 row to the private ``nav_policy_publication_receipts`` ledger (same
 transaction), binding the plan-v4 digest, the policy bytes/document and the
-normalized receipt. A pointer already at the target is accepted only as an
-exact no-write replay of such a row; a stale plan replays only with the row of
-that exact plan digest and audit identity.
+normalized receipt, and the publication EVENT: the server stamps the current
+pointer instant and a server digest of the whole lifecycle partition
+(``nav_policy_evidence_digest_v1``, pgcrypto-backed, private). A pointer
+already at the target is accepted only as an exact no-write replay of such a
+row that still certifies the current pointer instant and partition digest (one
+snapshot); a stale plan replays only with the row of that exact plan digest and
+audit identity. Any partition append or pointer re-stamp ends the replay.
+pgcrypto ``digest(bytea, text)`` is a verified prerequisite (exit 3 if absent).
 
 Run from the repository root: ``python -m scripts.fund_nav_readiness_schema``.
 """
@@ -142,6 +147,7 @@ FUNCTIONS = (
     "nav_policy_freeze_v1",
     "nav_policy_pointer_stamp_v1",
     "nav_instrument_evidence_append_only_v1",
+    "nav_policy_evidence_digest_v1",
     "nav_policy_publication_receipt_guard_v1",
     "nav_ingestion_run_guard_v1",
     "nav_ingestion_attempt_guard_v1",
@@ -164,9 +170,27 @@ FUNCTIONS = (
 )
 # Additive objects of the plan-v4 publication receipt: an older W1 schema that
 # lacks ALL of them (and is otherwise exact/repairable) is repairable by the
-# idempotent DDL; any partial or reshaped presence stays incompatible.
+# idempotent DDL; any partial or reshaped presence stays incompatible, except
+# the exact Round3 fragment below (local/dev only, and only while empty).
+DIGEST_FUNCTION = "nav_policy_evidence_digest_v1"
+RECEIPT_GUARD_FUNCTION = "nav_policy_publication_receipt_guard_v1"
 ADDITIVE_RELATIONS = (PUBLICATION_RECEIPT_RELATION,)
-ADDITIVE_FUNCTIONS = ("nav_policy_publication_receipt_guard_v1",)
+ADDITIVE_FUNCTIONS = (DIGEST_FUNCTION, RECEIPT_GUARD_FUNCTION)
+_RECEIPT_SECTIONS = ("relations", "columns", "constraints", "indexes", "triggers")
+# canonical_digest(_receipt_fragment(signature)) of the c30ab29 (Round3)
+# manifest: ledger without event columns, Round3 guard, no digest helper.
+ROUND3_RECEIPT_FRAGMENT_SHA256 = (
+    "50a8d59eb37bba53ce2000fc2af0d9f0c0a26a36a46a114b2543d867c9f5a261"
+)
+# Round4 event columns; a ledger without them is never queried for replay.
+RECEIPT_EVENT_COLUMNS = ("evidence_partition_digest", "pointer_published_at")
+# SQLSTATE raised by the shared DDL when it refuses an existing receipt ledger
+# (fingerprint not admissible, or a non-empty Round3 ledger).
+RECEIPT_ADMISSION_SQLSTATE = "NV409"
+# The namespace of the pgcrypto extension that the digest helper qualifies
+# digest() with is normalized to this token in the catalog (only that proven
+# namespace, only in the helper body).
+PGCRYPTO_TOKEN = "<pgcrypto_schema>"
 # N6 access profile: the Light read runtime.
 ACCESS_PROFILE = "light_app_runtime_v1"
 ACCESS_ROLE = "app_runtime"
@@ -514,6 +538,65 @@ def _function_key(name: str, args: str, schema: str) -> str:
     return f"{name}({_canonical_text(args, schema)})"
 
 
+# pgcrypto's digest(bytea, text): the extension namespace, proven by
+# pg_extension.extnamespace AND pg_depend extension membership (deptype 'e'),
+# plus the caller's USAGE on that namespace and EXECUTE on the function.
+_PGCRYPTO_SQL = """
+SELECT n.nspname, pg_catalog.quote_ident(n.nspname), p.oid IS NOT NULL,
+       pg_catalog.has_schema_privilege(n.oid, 'USAGE'),
+       p.oid IS NOT NULL AND pg_catalog.has_function_privilege(p.oid, 'EXECUTE')
+FROM pg_catalog.pg_extension x
+JOIN pg_catalog.pg_namespace n ON n.oid = x.extnamespace
+LEFT JOIN pg_catalog.pg_proc p
+  ON p.pronamespace = n.oid AND p.proname = 'digest'
+ AND pg_catalog.oidvectortypes(p.proargtypes) = 'bytea, text'
+ AND EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+             WHERE d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass
+               AND d.objid = p.oid
+               AND d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass
+               AND d.refobjid = x.oid AND d.deptype = 'e')
+WHERE x.extname = 'pgcrypto'
+"""
+
+
+def pgcrypto_digest(conn) -> dict:
+    """Resolve and verify pgcrypto ``digest(bytea, text)`` (never installed here).
+
+    Returns ``{"namespace", "ident", "issues"}``; ``issues`` is empty only when
+    the extension exists, its namespace holds ``digest(bytea, text)`` as an
+    extension member, and the current role has USAGE on the namespace and
+    EXECUTE on the function. Shared by ``_check`` and ``catalog_signature``
+    (hence by the manifest generator): one verified resolution.
+    """
+    row = conn.execute(_PGCRYPTO_SQL).fetchone()
+    if row is None:
+        return {"namespace": None, "ident": None, "issues": ["pgcrypto_extension_missing"]}
+    namespace, ident, member, usage, execute = row
+    issues = [
+        issue
+        for issue, ok in (
+            ("pgcrypto_digest_not_extension_member", member),
+            ("pgcrypto_schema_usage_missing", usage),
+            ("pgcrypto_digest_execute_missing", execute),
+        )
+        if not ok
+    ]
+    return {"namespace": namespace, "ident": ident, "issues": issues}
+
+
+def _canonical_digest_body(source: str, schema: str, pgcrypto_ident: str | None) -> str:
+    """Helper body with the proven pgcrypto namespace and target schema tokenized.
+
+    Only ``<pgcrypto ident>.digest(`` of the verified extension namespace is
+    replaced (never a homonymous function elsewhere); then qualifiers of the
+    target schema become ``@schema@``. Everything else stays verbatim.
+    """
+    if pgcrypto_ident:
+        pattern = rf'(?<![\w$."]){re.escape(pgcrypto_ident)}\.digest\('
+        source = re.sub(pattern, PGCRYPTO_TOKEN + ".digest(", source)
+    return _canonical_text(source, schema)
+
+
 def catalog_signature(conn, schema: str) -> dict:
     """The one catalog extractor used by ``_check`` and the tracked generator.
 
@@ -523,10 +606,14 @@ def catalog_signature(conn, schema: str) -> dict:
     with body hash and semantic attributes, and *every* non-internal trigger on
     ``TRIGGER_RELATIONS`` of the target schema (owned tables plus the external
     ``nav_timeseries``), including the schema-qualified function it executes.
-    Constraint names are excluded (auto-names are not semantics).
+    Constraint names are excluded (auto-names are not semantics). The digest
+    helper's body is hashed after tokenizing the verified pgcrypto namespace
+    and the target schema (``_canonical_digest_body``); every other body is
+    hashed verbatim.
 
     Must run inside an open transaction: ``search_path`` is pinned locally.
     """
+    pgcrypto_ident = pgcrypto_digest(conn)["ident"]
     conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema)))
     owned = [*TABLES, *VIEWS]
     relations = {
@@ -597,6 +684,8 @@ def catalog_signature(conn, schema: str) -> dict:
            WHERE n.nspname=%s AND p.proname=ANY(%s)""",
         (schema, list(FUNCTIONS)),
     ).fetchall():
+        if name == DIGEST_FUNCTION:
+            source = _canonical_digest_body(source, schema, pgcrypto_ident)
         functions[_function_key(name, args, schema)] = {
             "result": _canonical_text(result, schema),
             "language": language,
@@ -700,6 +789,38 @@ def _additive_absent(actual: dict) -> bool:
     )
 
 
+def _receipt_fragment(signature: dict) -> dict:
+    """The publication-receipt objects of a signature (ledger + its functions)."""
+    return {
+        "table": {
+            section: signature.get(section, {}).get(PUBLICATION_RECEIPT_RELATION)
+            for section in _RECEIPT_SECTIONS
+        },
+        "functions": {
+            key: value
+            for key, value in signature.get("functions", {}).items()
+            if key.split("(", 1)[0] in ADDITIVE_FUNCTIONS
+        },
+    }
+
+
+def round3_receipt_candidate(expected: dict, actual: dict) -> bool:
+    """Pure: the receipt objects are EXACTLY the Round3 (c30ab29) fragment.
+
+    Ledger columns/constraints/indexes/trigger and the Round3 guard entry match
+    the frozen fragment digest (no digest helper, no event columns), and the
+    rest of the schema is exact or repairable under the ordinary rules. Missing
+    only two columns is not enough; a reshaped fragment is incompatible.
+    Emptiness is NOT decided here (``_check`` asks the database).
+    """
+    if canonical_digest(_receipt_fragment(actual)) != ROUND3_RECEIPT_FRAGMENT_SHA256:
+        return False
+    base, _ = _classify_catalog(
+        _without_additive(expected), _without_additive(actual), additive=False
+    )
+    return base in ("exact", "repairable")
+
+
 def classify_catalog(expected: dict, actual: dict) -> tuple[str, list[str]]:
     """``exact`` | ``absent`` | ``repairable`` | ``incompatible`` (pure).
 
@@ -709,8 +830,10 @@ def classify_catalog(expected: dict, actual: dict) -> tuple[str, list[str]]:
       actual triggers are a subset of expected with only W1-recreatable ones
       missing. Extra, disabled, redefined or foreign-schema triggers are not.
       Also repairable: an older W1 schema lacking EVERY additive publication-
-      receipt object (table, function, trigger, constraints, index) and
-      otherwise matching under the same rules; a partially present or
+      receipt object (table, functions, trigger, constraints, indexes) and
+      otherwise matching under the same rules; and the exact Round3 receipt
+      fragment (``round3_receipt_candidate``), which ``_check`` downgrades to
+      incompatible unless the ledger is empty. A partially present or
       reshaped additive object is incompatible.
     * incompatible: anything else; no DDL or maintenance may run.
     """
@@ -732,6 +855,8 @@ def _classify_catalog(
         return ("repairable" if base in ("exact", "repairable") else "incompatible"), (
             mismatches
         )
+    if additive and actual.get("relations") and round3_receipt_candidate(expected, actual):
+        return "repairable", mismatches
     expected_triggers = expected.get("triggers", {})
     actual_triggers = actual.get("triggers", {})
     if not actual.get("relations") and not actual.get("functions"):
@@ -1156,7 +1281,10 @@ def _check(conn, schema: str) -> dict:
     ``classify_access``; ``dependencies`` from ``dependency_checks``. Ready only
     when structure and access are exact and every dependency is ``ok``; a
     structurally exact schema with an unsafe profile is never ready. Raises
-    ``PrerequisiteBlocked`` for PR132 violations before reading anything else.
+    ``PrerequisiteBlocked`` for PR132 violations before reading anything else,
+    then for an unusable pgcrypto ``digest(bytea, text)``. An exact Round3
+    receipt fragment is repairable (``receipt_upgrade``) only while the ledger
+    is empty (one ``EXISTS``); with any receipt it is incompatible.
     """
     manifest = load_manifest(DDL.read_bytes())
     conn.execute("BEGIN TRANSACTION READ ONLY")
@@ -1175,8 +1303,24 @@ def _check(conn, schema: str) -> dict:
                 else "nav_provenance_pr132_incompatible"
             )
             raise PrerequisiteBlocked(code, pr132)
+        # pgcrypto digest(bytea, text) is an OPS prerequisite of the partition
+        # digest helper: verified here, never installed or granted.
+        crypto = pgcrypto_digest(conn)
+        if crypto["issues"]:
+            raise PrerequisiteBlocked("pgcrypto_digest_unavailable", crypto["issues"])
         actual = catalog_signature(conn, schema)
         compatibility, mismatches = classify_catalog(manifest["signature"], actual)
+        receipt_upgrade = compatibility == "repairable" and round3_receipt_candidate(
+            manifest["signature"], actual
+        )
+        if receipt_upgrade and conn.execute(
+            sql.SQL("SELECT EXISTS (SELECT 1 FROM {}.{})").format(
+                sql.Identifier(schema), sql.Identifier(PUBLICATION_RECEIPT_RELATION)
+            )
+        ).fetchone()[0]:
+            # Round3 receipts cannot be certified retroactively: no upgrade.
+            compatibility, receipt_upgrade = "incompatible", False
+            mismatches = sorted({*mismatches, "round3_receipts_not_empty"})
         access = access_profile_signature(conn, schema)
         access_status, access_mismatches = classify_access(
             manifest["access_profile"]["signature"], access
@@ -1204,6 +1348,8 @@ def _check(conn, schema: str) -> dict:
             "ready": ready,
             "compatibility": compatibility,
             "mismatches": mismatches,
+            "receipt_upgrade": receipt_upgrade,
+            "pgcrypto_schema": crypto["namespace"],
             "access_profile": ACCESS_PROFILE,
             "access": access_status,
             "access_mismatches": access_mismatches,
@@ -1818,8 +1964,11 @@ def _policy_facts_exact(conn, evidence: dict) -> bool:
 
     The immutable version row (content hash, published), the current pointer
     at it, every valuation session tuple with the persisted calendar count and
-    digest, and EVERY instrument lifecycle row with identical content. A new
-    lifecycle row for the same policy version is therefore never a replay.
+    digest, and EVERY instrument lifecycle row of the document with identical
+    content. This is inclusion only, an additional defence: it does NOT prove
+    the absence of other persisted rows in the partition (legitimate earlier
+    generations share it). That negative proof is the publication receipt's
+    server partition digest + pointer event (``_publication_receipt_exact``).
     """
     if not all(_relation_exists(conn, name) for name in _POLICY_RELATIONS):
         return False
@@ -2496,40 +2645,91 @@ def _receipt_identity(evidence: dict, audit: dict, policy_sha256: str | None) ->
     )
 
 
+def _receipt_ledger_state(conn) -> str:
+    """``absent`` | ``round4`` (event columns + digest helper) | ``outdated``."""
+    if not _relation_exists(conn, PUBLICATION_RECEIPT_RELATION):
+        return "absent"
+    columns, helper = conn.execute(
+        """SELECT (SELECT pg_catalog.count(*) FROM pg_catalog.pg_attribute
+                    WHERE attrelid = %s::regclass AND NOT attisdropped
+                      AND attname = ANY(%s)),
+                  pg_catalog.to_regprocedure(%s) IS NOT NULL""",
+        (PUBLICATION_RECEIPT_RELATION, list(RECEIPT_EVENT_COLUMNS),
+         f"{DIGEST_FUNCTION}(text,text)"),
+    ).fetchone()
+    return "round4" if columns == len(RECEIPT_EVENT_COLUMNS) and helper else "outdated"
+
+
+# One statement, hence one snapshot: the receipt of THIS governed operation,
+# still certifying the CURRENT pointer event (exact pointer instant) of the
+# published version with the same hash, and the server digest of the whole
+# lifecycle partition as it is NOW equal to the digest stamped at publication.
+_RECEIPT_EXACT_SQL = """
+SELECT EXISTS (
+    SELECT 1
+    FROM nav_policy_publication_receipts r
+    JOIN nav_policy_current c
+      ON c.readiness_profile = r.readiness_profile
+     AND c.policy_id = r.policy_id AND c.policy_version = r.policy_version
+     AND c.published_at = r.pointer_published_at
+    JOIN nav_policy_versions p
+      ON p.policy_id = r.policy_id AND p.policy_version = r.policy_version
+     AND p.policy_hash = r.policy_hash AND p.published_at IS NOT NULL
+    WHERE r.readiness_profile = 'current_daily_nav_v1'
+      AND r.policy_id = %s AND r.policy_version = %s AND r.policy_hash = %s
+      AND r.policy_artifact_sha256 = %s AND r.policy_document_digest = %s
+      AND r.audit_receipt_sha256 = %s AND r.audit_dossier_sha256 = %s
+      AND r.canary_manifest_sha256 = %s AND r.capture_bundle_sha256 = %s
+      AND (%s::text IS NULL OR r.plan_sha256 = %s::text)
+      AND r.evidence_partition_digest
+          = nav_policy_evidence_digest_v1(r.policy_id, r.policy_version)
+)
+"""
+
+
 def _publication_receipt_exact(
     conn, evidence: dict, audit: dict | None, policy_sha256: str | None,
     *, plan_sha256: str | None = None,
 ) -> bool:
-    """Read-only: a persisted publication receipt of THIS governed operation.
+    """Read-only: a receipt of THIS governed operation certifies the current event.
 
-    Same policy identity/hash, policy bytes, whole document, normalized audit
-    receipt and dossier/manifest/capture hashes; with ``plan_sha256`` also the
-    same original plan-v4 digest. Absent relation or receipt: not proven.
+    One SELECT (one snapshot): the receipt with the same policy identity/hash,
+    policy bytes, whole document, normalized audit receipt and dossier/
+    manifest/capture hashes (with ``plan_sha256``, also that original plan-v4
+    digest) whose ``pointer_published_at`` is exactly the current pointer's
+    instant, for the published version with that hash, and whose
+    ``evidence_partition_digest`` equals the server digest of the WHOLE
+    lifecycle partition now. Any append to the partition (document or other
+    instrument, retroactive, future, committed after the receipt) or any
+    pointer re-stamp (rollback, re-publication, privileged no-op UPDATE)
+    breaks it. No ledger: not proven. A pre-Round4 ledger is never queried
+    (``schema_upgrade_required``); DB errors propagate.
     """
-    if audit is None or not policy_sha256 or not _relation_exists(
-        conn, PUBLICATION_RECEIPT_RELATION
-    ):
+    if audit is None or not policy_sha256:
         return False
-    rows = conn.execute(
-        """SELECT plan_sha256 FROM nav_policy_publication_receipts
-           WHERE readiness_profile = 'current_daily_nav_v1'
-             AND policy_id = %s AND policy_version = %s AND policy_hash = %s
-             AND policy_artifact_sha256 = %s AND policy_document_digest = %s
-             AND audit_receipt_sha256 = %s AND audit_dossier_sha256 = %s
-             AND canary_manifest_sha256 = %s AND capture_bundle_sha256 = %s""",
-        _receipt_identity(evidence, audit, policy_sha256),
-    ).fetchall()
-    return any(plan_sha256 is None or row[0] == plan_sha256 for row in rows)
+    ledger = _receipt_ledger_state(conn)
+    if ledger == "absent":
+        return False
+    if ledger != "round4":
+        raise ValueError("schema_upgrade_required")
+    return conn.execute(
+        _RECEIPT_EXACT_SQL,
+        (*_receipt_identity(evidence, audit, policy_sha256), plan_sha256, plan_sha256),
+    ).fetchone()[0]
 
 
 def _audit_pointer(conn, evidence: dict, audit: dict, policy_sha256: str | None) -> bool:
     """The pointer is the audited previous version, or the target as a replay.
 
-    A pointer already at the target is accepted ONLY as an exact replay: every
-    document fact persisted exactly AND a publication receipt of this exact
-    governed operation. Anything else at the target (new evidence, another
-    generation or audit of the same version) is ``target_policy_not_exact_replay``.
-    Returns True for an exact replay: no write may follow.
+    A pointer already at the target is accepted ONLY as an exact replay: a
+    publication receipt of this exact governed operation that still certifies
+    the current pointer event and the whole lifecycle partition
+    (``_publication_receipt_exact``, the proof), with every document fact
+    persisted (``_policy_facts_exact``, an additional defence). Anything else
+    at the target (new evidence, an extra row of any instrument, another
+    generation or audit of the same version, a re-stamped pointer) is
+    ``target_policy_not_exact_replay``. Returns True for an exact replay: no
+    write may follow.
     """
     pointer = _pointer_identity(conn)
     target = [evidence["policy_id"], evidence["policy_version"],
@@ -2664,6 +2864,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             if state["code"] in PRE_DDL_BLOCKS:
                 return finish(EXIT_INCOMPATIBLE, code=state["code"])
+            if audit is not None and state["receipt_upgrade"]:
+                # A Round3 ledger is never queried for replay: upgrade the
+                # schema alone first (schema-only plan), then audit/publish.
+                return finish(EXIT_INCOMPATIBLE, code="schema_upgrade_required")
             conn.execute(sql.SQL("SET search_path TO {}, pg_temp").format(
                 sql.Identifier(args.schema)))
             if ids and evidence is None and not state["ready"]:
@@ -2730,6 +2934,14 @@ def main(argv: list[str] | None = None) -> int:
             return _apply_dml(conn, out, finish, evidence, ids, start, end, digest,
                               plan, supplied, stale, audit=audit)
     except psycopg.Error as exc:
+        if exc.sqlstate == RECEIPT_ADMISSION_SQLSTATE:
+            # The shared DDL refused the receipt ledger (not admissible, or a
+            # Round3 receipt committed after the check); its whole transaction
+            # rolled back. Same classification as a check-time refusal.
+            return finish(
+                EXIT_INCOMPATIBLE, code="incompatible_schema", ddl="rolled_back",
+                mismatches=["receipt_ledger_not_admissible"],
+            )
         return finish(EXIT_BLOCKED, code="database_error", sqlstate=exc.sqlstate)
     except (ValueError, TypeError, KeyError) as exc:
         code = str(exc) if isinstance(exc, ValueError) and _SAFE_CODES.fullmatch(str(exc)) else (

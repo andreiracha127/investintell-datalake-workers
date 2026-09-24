@@ -82,6 +82,28 @@ def test_sec_source_is_only_company_tickers_mf():
         assert "fetched_at" not in text
 
 
+def test_round4_contract_is_frozen_and_round3_is_retired():
+    """T9: new version and literal; Round3 pins can no longer match."""
+    assert contract.AUDIT_CONTRACT_VERSION == "nav-identity-audit-contract-v2-round4"
+    assert contract.AUDIT_CONTRACT_SHA256 != (
+        "1ef74c426526f5308223921c8297516c9fa4ac4034737fad59cad668f73b0001"
+    )
+    rule = contract.AUDIT_CONTRACT["publication_receipt"]["rule"]
+    for phrase in (
+        "pointer published_at",
+        "whole lifecycle partition",
+        "evidence_id and recorded_at",
+        "one receipt per pointer event",
+        "same plan digest",
+        "maintenance-only",
+    ):
+        assert phrase in rule
+    # plan-v4 shape unchanged: no new plan field, same version literal.
+    assert contract.PLAN_VERSION == operator.PLAN_VERSION == "nav-schema-plan-v4"
+    assert "evidence_partition_digest" not in contract.AUDIT_RECEIPT_KEYS
+    assert "pointer_published_at" not in contract.AUDIT_RECEIPT_KEYS
+
+
 def test_repository_config_is_pinned_to_the_leaf():
     config = json.loads((ROOT / "configs" / "nav_identity_audit_v2.json").read_bytes())
     assert config["audit_contract_version"] == contract.AUDIT_CONTRACT_VERSION

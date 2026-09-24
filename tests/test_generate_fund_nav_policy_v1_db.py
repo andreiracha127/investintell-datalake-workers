@@ -1140,6 +1140,19 @@ def _state(dsn, schema):
         ).fetchone()
 
 
+def _event_certified(dsn, schema):
+    """Per receipt: (pointer instant == current, digest == server now, rows)."""
+    with psycopg.connect(dsn, options=f"-csearch_path={schema},public") as conn:
+        return conn.execute(
+            "SELECT r.pointer_published_at = c.published_at, "
+            "r.evidence_partition_digest = nav_policy_evidence_digest_v1(r.policy_id, "
+            "r.policy_version), (SELECT count(*) FROM nav_instrument_policy_evidence e "
+            "WHERE e.policy_id = r.policy_id AND e.policy_version = r.policy_version) "
+            "FROM nav_policy_publication_receipts r JOIN nav_policy_current c "
+            "USING (readiness_profile, policy_id, policy_version) ORDER BY r.published_at"
+        ).fetchall()
+
+
 def _ledger(dsn, schema):
     """The private publication-receipt ledger (F4), oldest first."""
     with psycopg.connect(dsn, options=f"-csearch_path={schema},public") as conn:
@@ -1274,6 +1287,10 @@ def test_governed_publication_check_apply_replay(dsn, catalog, governed, capsys)
         _sha(env["files"]["canary_manifest"]), _sha(env["files"]["capture"]),
         *previous_pointer, True,
     )]
+    # Round4: the receipt certifies the current pointer event and the whole
+    # lifecycle partition as published (server-stamped, never caller values).
+    assert _event_certified(dsn, env["schema"]) == [
+        (True, True, len(env["policy"]["instrument_evidence"]))]
     code, replay, _ = _op(_op_args(env, mode="apply", plan=out["plan_sha256"]), capsys)
     assert (code, replay["status"], replay["dml_committed"]) == (0, "unchanged", False)
     assert _state(dsn, env["schema"]) == after
