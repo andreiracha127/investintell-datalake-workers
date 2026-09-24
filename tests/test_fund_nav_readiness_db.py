@@ -121,10 +121,10 @@ def _bootstrap(dsn, schema):
 
 
 def _plan(check_args, capsys):
-    """Run the operator check and return its plan v3 digest (asserts exit 0)."""
+    """Run the operator check and return its plan v4 digest (asserts exit 0)."""
     assert operator.main(check_args) == 0, capsys.readouterr().out
     out = json.loads(capsys.readouterr().out)
-    assert out["plan"]["plan_version"] == "nav-schema-plan-v3"
+    assert out["plan"]["plan_version"] == "nav-schema-plan-v4"
     return out["plan_sha256"]
 
 
@@ -689,6 +689,85 @@ def test_operator_detects_missing_nav_revision_trigger_and_repairs_idempotently(
         )
         _install(conn, schema)
         assert operator._check(conn, schema)["status"] == "ready"
+
+
+# Round3 F4: the plan-v4 publication receipt ledger is additive. A W1 schema
+# of the previous release (every receipt object absent) is repairable by the
+# idempotent DDL with its data intact; partial or reshaped receipt objects
+# stay incompatible and receive no DDL.
+_RECEIPT_STATEMENTS = {
+    "previous_release_without_ledger": [
+        "DROP TABLE nav_policy_publication_receipts",
+        "DROP FUNCTION nav_policy_publication_receipt_guard_v1()",
+    ],
+    "ledger_trigger_missing": [
+        "DROP TRIGGER nav_policy_publication_receipt_guard ON nav_policy_publication_receipts",
+    ],
+    "ledger_without_guard_function": [
+        "DROP FUNCTION nav_policy_publication_receipt_guard_v1() CASCADE",
+    ],
+    "ledger_reshaped": [
+        "ALTER TABLE nav_policy_publication_receipts DROP COLUMN captured_at CASCADE",
+    ],
+    "ledger_function_without_table": [
+        "DROP TABLE nav_policy_publication_receipts",
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "case,compatibility",
+    [
+        ("previous_release_without_ledger", "repairable"),
+        ("ledger_trigger_missing", "repairable"),
+        ("ledger_without_guard_function", "incompatible"),
+        ("ledger_reshaped", "incompatible"),
+        ("ledger_function_without_table", "incompatible"),
+    ],
+)
+def test_publication_receipt_ledger_is_an_additive_upgrade(
+    test_dsn, schema, monkeypatch, capsys, case, compatibility
+):
+    _seed(test_dsn, schema)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        for statement in _RECEIPT_STATEMENTS[case]:
+            conn.execute(statement)
+        report = operator._check(conn, schema)
+    assert (report["compatibility"], report["ready"]) == (compatibility, False)
+    before = _w1_state(test_dsn, schema)
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    if compatibility == "incompatible":
+        assert operator.main([*base, "--mode", "apply", "--plan-sha256", "0" * 64]) == 3
+        out = json.loads(capsys.readouterr().out)
+        assert (out["code"], out["ddl"]) == ("incompatible_schema", "not_attempted")
+        with _connect(test_dsn, schema, autocommit=True) as conn:
+            assert operator._check(conn, schema)["catalog_sha256"] == report["catalog_sha256"]
+        return
+    assert report["code"] is None and report["access"] in ("exact", "repairable")
+    plan = _plan_planned(base, capsys)
+    assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["ddl"], out["dml_committed"]) == ("applied", "applied", False)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        after = operator._check(conn, schema)
+        assert (after["compatibility"], after["access"], after["ready"]) == (
+            "exact", "exact", True)
+        assert conn.execute(
+            "SELECT count(*) FROM nav_policy_publication_receipts").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT has_table_privilege('app_runtime', 'nav_policy_publication_receipts', "
+            "'SELECT')").fetchone()[0] is False
+    assert _w1_state(test_dsn, schema) == before  # existing W1 data untouched
+
+
+def _plan_planned(check_args, capsys):
+    """Operator check on a repairable schema: exit 0, status ``planned``."""
+    assert operator.main(check_args) == 0, capsys.readouterr().out
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["code"]) == ("planned", None)
+    return out["plan_sha256"]
 
 
 def test_schema_apply_lock_timeout_rolls_back_all_new_relations(test_dsn, schema):
@@ -4684,9 +4763,50 @@ def _w1_state(test_dsn, schema):
         return conn.execute(W1_STATE_SQL).fetchone()
 
 
+def _fixture_receipt(valid_until=None) -> dict:
+    """Aggregate plan-v4 receipt for atomicity fixtures (bootstrap: no pointer).
+
+    Only the receipt FILE validation is replaced here; locks, plan, freshness
+    and pointer checks of the real operator still run. The governed receipt
+    itself is covered end-to-end in test_generate_fund_nav_policy_v1_db.py.
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    until = valid_until or now + dt.timedelta(days=7) - dt.timedelta(hours=1)
+    # Internally consistent window: until == min matched + 7d, the capture
+    # (== decision) lies in [min matched, until] and precedes now.
+    minimum = until - dt.timedelta(days=7)
+    captured = min(now - dt.timedelta(seconds=2), until)
+    receipt = {key: "0" * 64 for key in operator.AUDIT_RECEIPT_KEYS}
+    receipt.update(
+        audit_contract_version=operator.AUDIT_CONTRACT_VERSION,
+        audit_contract_sha256=operator.AUDIT_CONTRACT_SHA256,
+        sec_source_contract=operator.SEC_SOURCE_CONTRACT,
+        sec_query_contract_sha256=operator.SEC_QUERY_CONTRACT_SHA256,
+        captured_at=captured.isoformat(),
+        decision_at=captured.isoformat(),
+        min_matched_synced_at=minimum.isoformat(),
+        sec_valid_until=until.isoformat(),
+        previous_policy_identity=None,
+    )
+    return receipt
+
+
+def _install_receipt_seam(monkeypatch, receipt=None):
+    fixed = receipt or _fixture_receipt()  # one receipt: the plan digest is stable
+
+    def governed(args):
+        if args.policy_file is None:
+            return None, b"", None
+        evidence, raw = operator._policy(args.policy_file)
+        return evidence, raw, fixed
+
+    monkeypatch.setattr(operator, "_governed_policy", governed)
+
+
 def _ops_env(test_dsn, schema, tmp_path, monkeypatch):
     iid, grid, _ = _seed(test_dsn, schema, with_policy=False)
     monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    _install_receipt_seam(monkeypatch)
     path = tmp_path / "ops-policy.json"
     path.write_text(json.dumps(_policy_document(grid, iid)), encoding="utf-8")
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
@@ -4810,17 +4930,32 @@ def _lifecycle(conn, iid):
     ).fetchall()
 
 
-def test_same_pointer_new_lifecycle_evidence_is_published_not_replayed(
+def _receipt_rows(conn):
+    return conn.execute(
+        "SELECT plan_sha256, policy_document_digest, audit_receipt_sha256 "
+        "FROM nav_policy_publication_receipts ORDER BY published_at"
+    ).fetchall()
+
+
+def test_target_pointer_accepts_only_exact_replay_never_new_lifecycle(
     test_dsn, schema, tmp_path, monkeypatch, capsys
 ):
+    """Round3 F3: a pointer already at the target is an exact replay or nothing."""
     iid, grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
     first = _check_out(policy_only, capsys)
     assert first["plan"]["policy_document_digest"] == canonical_digest(
         json.loads((tmp_path / "ops-policy.json").read_text()))
     code, out = _apply_out(policy_only, first["plan_sha256"], capsys)
     assert (code, out["policy"], out["dml_committed"]) == (0, "committed", True)
-    # Same V1 (same policy_hash, pointer already at it) + a NEW lifecycle row.
-    document = json.loads((tmp_path / "ops-policy.json").read_text())
+    with _connect(test_dsn, schema) as conn:
+        receipts = _receipt_rows(conn)
+        pointer = conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0]
+    # One receipt row, bound to the applied plan digest and document.
+    assert [row[:2] for row in receipts] == [
+        (first["plan_sha256"], first["plan"]["policy_document_digest"])]
+    # Same version (same policy_hash, pointer already at it) + a NEW lifecycle row.
+    original = (tmp_path / "ops-policy.json").read_text()
+    document = json.loads(original)
     later = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=5)
     document["instrument_evidence"].append({
         **document["instrument_evidence"][0], "fund_status": "INACTIVE",
@@ -4828,38 +4963,103 @@ def test_same_pointer_new_lifecycle_evidence_is_published_not_replayed(
         "evidence_reference": "ops-fixture-closure",
     })
     (tmp_path / "ops-policy.json").write_text(json.dumps(document), encoding="utf-8")
-    second = _check_out(policy_only, capsys)
-    assert second["plan"]["policy_hash"] == first["plan"]["policy_hash"]
-    assert second["plan"]["policy_document_digest"] != first["plan"]["policy_document_digest"]
-    assert second["plan_sha256"] != first["plan_sha256"]
-    # The OLD plan hash does not describe this document: stale, nothing written.
-    with _connect(test_dsn, schema) as conn:
-        before = _lifecycle(conn, iid)
-    code, out = _apply_out(policy_only, first["plan_sha256"], capsys)
-    assert (code, out["code"], out["dml_committed"]) == (2, "PLAN_STALE", False)
-    with _connect(test_dsn, schema) as conn:
-        assert _lifecycle(conn, iid) == before
-    # The current plan executes _publish_policy and persists the new evidence.
-    code, out = _apply_out(policy_only, second["plan_sha256"], capsys)
-    assert (code, out["status"], out["policy"], out["dml_committed"]) == (
-        0, "applied", "committed", True)
-    with _connect(test_dsn, schema) as conn:
-        assert _lifecycle(conn, iid) == [("ACTIVE", "ops-fixture-identity"),
-                                         ("INACTIVE", "ops-fixture-closure")]
-        pointer = conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0]
-    # Exact replay of the applied plan: persisted facts match, a true no-op.
     state = _w1_state(test_dsn, schema)
-    code, out = _apply_out(policy_only, second["plan_sha256"], capsys)
+    # Rejected at check and at apply (old plan hash or none): nothing appended.
+    assert operator.main(policy_only) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "target_policy_not_exact_replay"
+    code, out = _apply_out(policy_only, first["plan_sha256"], capsys)
+    assert (code, out["code"], out["dml_committed"]) == (
+        2, "target_policy_not_exact_replay", False)
+    assert _w1_state(test_dsn, schema) == state
+    with _connect(test_dsn, schema) as conn:
+        assert _lifecycle(conn, iid) == [("ACTIVE", "ops-fixture-identity")]
+        assert _receipt_rows(conn) == receipts
+    # The original document is an exact replay: its old plan and a fresh plan
+    # both return "unchanged" without any write or pointer re-stamp.
+    (tmp_path / "ops-policy.json").write_text(original, encoding="utf-8")
+    code, out = _apply_out(policy_only, first["plan_sha256"], capsys)
+    assert (code, out["status"], out["policy"], out["dml_committed"]) == (
+        0, "unchanged", "unchanged", False)
+    fresh = _check_out(policy_only, capsys)
+    assert fresh["plan_sha256"] != first["plan_sha256"]  # before-state moved
+    code, out = _apply_out(policy_only, fresh["plan_sha256"], capsys)
     assert (code, out["status"], out["policy"], out["dml_committed"]) == (
         0, "unchanged", "unchanged", False)
     assert _w1_state(test_dsn, schema) == state
     with _connect(test_dsn, schema) as conn:
+        assert _receipt_rows(conn) == receipts
         assert conn.execute(
             "SELECT published_at FROM nav_policy_current").fetchone()[0] == pointer
-    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
-    readiness.run(test_dsn)
+    # A different audit receipt of the same policy bytes never replays.
+    other = _fixture_receipt()
+    other["audit_dossier_sha256"] = "1" * 64
+    _install_receipt_seam(monkeypatch, other)
+    assert operator.main(policy_only) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "target_policy_not_exact_replay"
+    code, out = _apply_out(policy_only, first["plan_sha256"], capsys)
+    assert (code, out["code"], out["dml_committed"]) == (
+        2, "target_policy_not_exact_replay", False)
+    assert _w1_state(test_dsn, schema) == state
+
+
+def test_publication_receipt_ledger_is_private_append_only_and_windowed(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    """Round3 F4: one server-stamped receipt row per governed publication."""
+    _iid, _grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    check = _check_out(policy_only, capsys)
+    code, out = _apply_out(policy_only, check["plan_sha256"], capsys)
+    assert (code, out["policy"]) == (0, "committed")
+    audit = check["audit"]
     with _connect(test_dsn, schema) as conn:
-        assert _reason(conn, iid) == "INACTIVE_FUND"
+        row = conn.execute(
+            "SELECT policy_id, policy_version, policy_hash, plan_version, plan_sha256, "
+            "policy_artifact_sha256, policy_document_digest, audit_receipt_sha256, "
+            "previous_policy_id IS NULL, captured_at <= published_at, "
+            "published_at <= sec_valid_until, commit_xid IS NOT NULL "
+            "FROM nav_policy_publication_receipts"
+        ).fetchone()
+        assert row == (
+            "ops", "v1", check["plan"]["policy_hash"], "nav-schema-plan-v4",
+            check["plan_sha256"], check["plan"]["policy_sha256"],
+            check["plan"]["policy_document_digest"], canonical_digest(audit),
+            True, True, True, True,
+        )
+        # No Light runtime access to the private ledger.
+        assert conn.execute(
+            "SELECT has_table_privilege('app_runtime', 'nav_policy_publication_receipts', "
+            "'SELECT')").fetchone()[0] is False
+        for statement in (
+            "UPDATE nav_policy_publication_receipts SET plan_sha256 = %s",
+            "DELETE FROM nav_policy_publication_receipts WHERE plan_sha256 <> %s",
+        ):
+            with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
+                conn.execute(statement, ("f" * 64,))
+            conn.rollback()
+        # A row must describe the current published pointer, inside its window.
+        columns = (
+            "readiness_profile, policy_id, policy_version, policy_hash, plan_version, "
+            "plan_sha256, policy_artifact_sha256, policy_document_digest, "
+            "audit_receipt_sha256, audit_dossier_sha256, canary_manifest_sha256, "
+            "capture_bundle_sha256, captured_at, sec_valid_until"
+        )
+        values = (
+            "'current_daily_nav_v1', 'ops', 'v1', %s, 'nav-schema-plan-v4', %s, %s, %s, "
+            "%s, %s, %s, %s, clock_timestamp() - interval '1 minute', %s"
+        )
+        base = [check["plan"]["policy_hash"], "a" * 64, *["b" * 64] * 6]
+        with pytest.raises(psycopg.errors.RaiseException, match="current published"):
+            conn.execute(
+                f"INSERT INTO nav_policy_publication_receipts ({columns}) VALUES ({values})",
+                ["0" * 64, *base[1:], "2099-01-01T00:00:00+00:00"],
+            )
+        conn.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                f"INSERT INTO nav_policy_publication_receipts ({columns}) VALUES ({values})",
+                [*base, "2000-01-01T00:00:00+00:00"],
+            )
+        conn.rollback()
 
 
 def test_maintenance_receipt_of_scope_a_never_suppresses_scope_b(
@@ -4915,11 +5115,63 @@ def test_previous_plan_version_digest_is_rejected(
 ):
     _iid, _grid, combined, _ = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
     out = _check_out(combined, capsys)
-    legacy = operator.previous_version_digest(out["plan"])
-    assert legacy != out["plan_sha256"]
-    code, applied = _apply_out(combined, legacy, capsys)
-    assert (code, applied["code"], applied["dml_committed"]) == (
-        2, "plan_version_mismatch", False)
+    assert out["plan"]["audit"] == out["audit"]
+    assert out["plan"]["operation"]["audit"] == ["0" * 64] * 3
+    for legacy in (operator.previous_version_digest(out["plan"]),
+                   operator.v2_version_digest(out["plan"])):
+        assert legacy != out["plan_sha256"]
+        code, applied = _apply_out(combined, legacy, capsys)
+        assert (code, applied["code"], applied["dml_committed"]) == (
+            2, "plan_version_mismatch", False)
+
+
+def test_hand_authored_policy_cli_publication_is_blocked(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    """No flag or fallback publishes a hand-authored document from the CLI."""
+    iid, grid, _ = _seed(test_dsn, schema, with_policy=False)
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    path = tmp_path / "hand.json"
+    path.write_text(json.dumps(_policy_document(grid, iid)), encoding="utf-8")
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    before = _w1_state(test_dsn, schema)
+    for extra in ([], ["--mode", "apply", "--plan-sha256", "0" * 64]):
+        assert operator.main([*base, "--policy-file", str(path), *extra]) == 2
+        out = json.loads(capsys.readouterr().out)
+        assert (out["code"], out["dml_committed"], out["published"]) == (
+            "audit_receipt_required", False, False)
+    # Receipt arguments without a policy are refused too.
+    assert operator.main([*base, "--audit-dossier-file", str(path)]) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "audit_receipt_without_policy"
+    assert _w1_state(test_dsn, schema) == before
+    # The parser itself still accepts the document programmatically.
+    assert operator._policy(str(path))[0]["policy_id"] == "ops"
+
+
+def test_expired_receipt_and_foreign_pointer_block_under_locks(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    _iid, _grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    plan = _check_out(policy_only, capsys)["plan_sha256"]
+    # SEC freshness expires between check and apply: re-decided at apply.
+    expired = _fixture_receipt(dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1))
+    _install_receipt_seam(monkeypatch, expired)
+    before = _w1_state(test_dsn, schema)
+    assert operator.main(policy_only) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "audit_sec_freshness_expired"
+    code, out = _apply_out(policy_only, plan, capsys)
+    assert (code, out["code"], out["dml_committed"]) == (2, "audit_sec_freshness_expired", False)
+    assert _w1_state(test_dsn, schema) == before
+    # The receipt expects "no pointer"; a pointer published meanwhile is foreign.
+    _install_receipt_seam(monkeypatch)
+    with _connect(test_dsn, schema) as conn:
+        other = _policy_document(_grid, _iid)
+        other["policy_id"], other["policy_version"] = "foreign", "f1"
+        operator._publish_policy(conn, operator._policy(other)[0])
+        conn.commit()
+    code, out = _apply_out(policy_only, plan, capsys)
+    assert (code, out["code"], out["dml_committed"]) == (2, "current_pointer_not_previous", False)
 
 
 # ── N5: PR132 prerequisite (real catalog, representable mutations) ───────────

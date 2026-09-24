@@ -1,15 +1,19 @@
 {
   "audit_config_version": "nav-identity-audit-config-v2",
-  "audit_contract_version": "nav-identity-audit-contract-v2",
-  "note": "Template for python -m scripts.verify_fund_nav_identity_v2. Pinned to Light main aeb5933754f46af997198a0ab82c14e108a4553a (merge of PR #166). Before a strict audit OPS must confirm, live, that the deployed Light revision, the builder request/policy and the Stage-1 quotas are still these; otherwise re-pin light_revision, cohort_query/parameters and stage1_quotas and record the change. The quotas are the previously observed 30-fund request and are valid only if request/policy/deploy are equal. active_ceiling is the parent-supplied structural daily potential (a ceiling, never a target, never auto-raised). A non-zero structural_baseline delta must be explained and then acknowledged via accepted_structural_delta. margin_fraction is a contract constant (exactly \"1/10\"); any other value is rejected.",
-  "active_ceiling": 5103,
+  "audit_contract_version": "nav-identity-audit-contract-v2-round3",
+  "note": "Versioned audit config for python -m scripts.verify_fund_nav_identity_v2; the operator pins the SHA-256 of THIS repository file, so a re-pin is a reviewed change, never a temporary production edit. Pinned to Light main aeb5933754f46af997198a0ab82c14e108a4553a (merge of PR #166). Before a strict audit OPS must confirm, live, that the deployed Light revision, the builder request/policy and the Stage-1 quotas are still these; otherwise re-pin light_revision, cohort_query/parameters and stage1_quotas in a reviewed change. structural_daily_ceiling bounds P = structural daily pre-claims population (v2 gates without ISIN/CUSIP/FIGI claims); it is a ceiling, never a target, never auto-raised, and the retired key active_ceiling is rejected. structural_baseline is the drift baseline B (v1 structural daily without ISIN); a non-zero delta must be explained and acknowledged via accepted_structural_delta, which never raises the ceiling. margin_fraction is a contract constant (exactly \"1/10\").",
+  "structural_daily_ceiling": 5103,
   "structural_baseline": 5103,
   "accepted_structural_delta": null,
   "expected_previous_inactive": 8979,
   "canary_salt": "nav-policy-v2-canary-2026-09-24",
   "sec": {
+    "source_contract": "sec-company-tickers-mf-class-map-v1",
+    "relation": "public.sec_company_tickers_mf",
+    "timestamp_column": "updated_at",
+    "query_contract_sha256": "60cd2425e504b346ee43967f341fe563e20392be6c4d2b5d70b310b6f243c870",
     "max_synced_age_days": 7,
-    "rationale": "Required positive integer: A8 is NOT_EVALUATED (strict audit blocked) when absent/null, and FAIL when fund_classes_latest_mv max(synced_at) is in the future or older than this many days relative to the audit capture timestamp. 7 days is a conservative bound pending OPS confirmation of the SEC class sync cadence; a larger value must be justified and recorded, never raised to make A8 pass."
+    "rationale": "A8 corroborates every ACTIVE (MMF included) against public.sec_company_tickers_mf only, the external class/series/ticker crosswalk; updated_at is refreshed on every upsert (fetched_at is not). Exactly 7 days, not tunable: each matched row must satisfy 0 <= capture decision time - updated_at <= 7 days. Every related row of an ACTIVE is evaluated before any match: a valid companion never hides a malformed, contradicting or incomplete related row. Missing or partial (incomplete related) mappings are NOT_EVALUATED (strict blocked); poisoned or malformed populated related identifiers, contradictions, ambiguity, duplicates, stale or future timestamps FAIL; unrelated poison is counted, never fatal. The source is upsert-only: a fresh timestamp does not prove a complete refresh or the withdrawal of absent classes; A8 attests current corroboration of each ACTIVE, not the full SEC universe or point-in-time state."
   },
   "builder": {
     "light_revision": "aeb5933754f46af997198a0ab82c14e108a4553a",

@@ -98,14 +98,49 @@ def _failed_checks(report, gate):
     )
 
 
+SEC_CONFIG = {
+    "source_contract": "sec-company-tickers-mf-class-map-v1",
+    "relation": "public.sec_company_tickers_mf",
+    "timestamp_column": "updated_at",
+    "query_contract_sha256": verifier.SEC_QUERY_CONTRACT_SHA256,
+    "max_synced_age_days": 7,
+}
+SYNCED = "2026-09-23T00:00:00+00:00"
+
+
+_DEFAULT = object()
+
+
+def _sec_row(n, *, class_id=_DEFAULT, series=_DEFAULT, ticker=_DEFAULT, synced=SYNCED):
+    return {
+        "class_id": f"C{n:09d}" if class_id is _DEFAULT else class_id,
+        "series_id": f"S{n:09d}" if series is _DEFAULT else series,
+        "ticker": f"T{n}" if ticker is _DEFAULT else ticker,
+        "synced_at": synced,
+    }
+
+
+def _lineage(rows):
+    """Lineage aggregate exactly describing the given rows (as the DB would)."""
+
+    def instant(row):
+        return dt.datetime.fromisoformat(row["synced_at"])
+
+    return {
+        "row_count": len(rows),
+        "min_synced_at": min(rows, key=instant)["synced_at"] if rows else None,
+        "max_synced_at": max(rows, key=instant)["synced_at"] if rows else None,
+    }
+
+
 def _config(**overrides):
     config = {
         "audit_config_version": verifier.AUDIT_CONFIG_VERSION,
         "audit_contract_version": verifier.AUDIT_CONTRACT_VERSION,
-        "active_ceiling": 5103,
+        "structural_daily_ceiling": 5103,
         "structural_baseline": None,
         "canary_salt": "nav-policy-v2-canary-2026-09-24",
-        "sec": {"max_synced_age_days": 7},
+        "sec": dict(SEC_CONFIG),
         "builder": {
             "light_revision": "a" * 40,
             "cohort_query": "SELECT instrument_id, strategy_label FROM cohort",
@@ -128,23 +163,13 @@ def _live(rows, *, cohort=None, sec=None):
             for n in range(1, 18)
         ] + [{"instrument_id": uuid.UUID(int=99), "strategy_label": "Unclassified"}]
     if sec is None:
-        sec = [
-            {"class_id": f"C{n:09d}", "series_id": f"S{n:09d}", "ticker": f"T{n}"}
-            for n in range(1, 9)
-        ]
+        # Every ACTIVE of the rich fixture (1..9, MMF included) is corroborated.
+        sec = [_sec_row(n) for n in range(1, 10)]
     return {
         "captured_at": CAPTURED,
         "sources": {"instruments": instruments, "funds": funds, "identity": identity},
         "cohort": {"state": "captured", "rows": cohort},
-        "sec": {
-            "state": "captured",
-            "rows": sec,
-            "lineage": {
-                "row_count": len(sec),
-                "max_synced_at": "2026-09-23T00:00:00+00:00",
-                "max_source_period_end": "2026-06-30",
-            },
-        },
+        "sec": {"state": "captured", "rows": sec, "lineage": _lineage(sec)},
     }
 
 
@@ -181,9 +206,10 @@ def _previous(active_ids=(), inactive_ids=(), unknown_ids=(), calendar=None):
         for n in ids
     ]
     document = {
+        "policy_id": "current-daily-nav-xnys-usd-adjusted",
+        "policy_version": "2026-09-23.1",
         "generator_version": "fund-nav-policy-generator-v1",
         "instrument_evidence": rows,
-        "generation": {"policy_hash": "1" * 64},
     }
     if calendar is not None:
         for field in (
@@ -195,6 +221,9 @@ def _previous(active_ids=(), inactive_ids=(), unknown_ids=(), calendar=None):
             "coverage_start",
             "coverage_end",
             "sessions",
+            "timezone",
+            "source_reference",
+            "valid_through",
         ):
             document[field] = calendar[field]
     return json.dumps(document, sort_keys=True).encode()
@@ -286,7 +315,24 @@ def test_rich_fixture_passes_offline_core_and_strict_requires_every_gate(calenda
         "neither": 2,
         "registry_only": 2,
     }
-    assert report["details"]["A4"]["structural_pre_claims"] == 10
+    # B (v1 structural daily, no ISIN) ⊇ P (v2 pre-claims daily) ⊇ D (ACTIVE daily)
+    a4 = report["details"]["A4"]
+    assert (
+        a4["baseline_count"],
+        a4["structural_daily_count"],
+        a4["active_daily_count"],
+    ) == (
+        11,
+        9,
+        8,
+    )
+    assert a4["pre_claim_first_failure"] == {
+        "cardinality.registry_missing": 1,
+        "registry.status_not_canonical": 1,
+    }
+    assert a4["claim_first_failure"] == {"isin.checksum": 1}
+    assert a4["ceiling_population"] == "structural_pre_claims_daily"
+    assert set(a4) == set(verifier.A4_DETAIL_KEYS)
 
 
 @pytest.mark.parametrize(
@@ -432,12 +478,199 @@ def test_snapshot_tamper_and_source_type_errors(calendar):
     )
     snapshot = json.loads(snapshot_raw)
     snapshot["sources"]["instruments"][0]["is_active"] = 1
-    with pytest.raises(verifier.AuditBlocked, match="source_value_type_invalid"):
+    with pytest.raises(verifier.AuditBlocked, match="source_snapshot_contract_invalid"):
         verifier.audit(policy_raw, snapshot_raw=generator.canonical_json(snapshot))
     snapshot = json.loads(snapshot_raw)
     snapshot["sources"]["funds"][0]["extra"] = "x"
-    with pytest.raises(verifier.AuditBlocked, match="source_row_shape_invalid"):
+    with pytest.raises(verifier.AuditBlocked, match="source_snapshot_contract_invalid"):
         verifier.audit(policy_raw, snapshot_raw=generator.canonical_json(snapshot))
+
+
+# ── Round2 F4/F5: hostile top-level shapes and full snapshot linkage ────────
+@pytest.mark.parametrize(
+    "raw",
+    [b"[]", b"null", b"1", b'"x"', b'{"a":1,"a":2}', b'{"a":NaN}', b"\xff", b"{"],
+)
+def test_hostile_policy_snapshot_previous_roots_block_with_static_codes(calendar, raw):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    for kwargs, code in (
+        ({"snapshot_raw": raw}, "source_snapshot_contract_invalid"),
+        (
+            {"snapshot_raw": snapshot_raw, "previous_raw": raw},
+            "previous_policy_invalid",
+        ),
+    ):
+        with pytest.raises(verifier.AuditBlocked, match=code):
+            verifier.audit(policy_raw, **kwargs)
+    with pytest.raises(verifier.AuditBlocked) as exc:
+        verifier.audit(raw, snapshot_raw=snapshot_raw)
+    assert str(exc.value) in ("policy_not_json", "artifact_not_object")
+    for loader, code in (
+        (lambda: generator.verify_artifact(json.loads(raw)), "artifact_not_object"),
+        (
+            lambda: generator.verify_source_snapshot(
+                json.loads(raw), json.loads(policy_raw)
+            ),
+            "source_snapshot_contract_invalid",
+        ),
+    ):
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            continue
+        with pytest.raises(generator.PolicyGenerationError, match=code):
+            loader()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda s: s["sources"].__setitem__("funds", "not-a-list"),
+        lambda s: s["sources"].__setitem__("funds", [1, 2]),
+        lambda s: s["sources"].pop("identity"),
+        lambda s: s["sources"].__setitem__("extra", []),
+        lambda s: s.__setitem__("row_counts", []),
+        lambda s: s.__setitem__(
+            "row_counts", {"funds": True, "identity": 1, "instruments": 1}
+        ),
+        lambda s: s.__setitem__("sources", []),
+        lambda s: s.pop("policy_id"),
+        lambda s: s.__setitem__("unexpected", 1),
+    ],
+)
+def test_malformed_snapshot_blocks_before_lookup_in_both_verifiers(calendar, mutate):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    snapshot = json.loads(snapshot_raw)
+    mutate(snapshot)
+    raw = json.dumps(snapshot, sort_keys=True).encode()
+    with pytest.raises(verifier.AuditBlocked, match="source_snapshot_contract_invalid"):
+        verifier.audit(policy_raw, snapshot_raw=raw)
+    with pytest.raises(
+        generator.PolicyGenerationError, match="source_snapshot_contract_invalid"
+    ):
+        generator.verify_source_snapshot(snapshot, json.loads(policy_raw))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("policy_id", "other-policy"),
+        ("policy_version", "2026-09-24.9"),
+        ("generator_version", "fund-nav-policy-generator-v1"),
+        ("source_query_version", "nav-current-catalog-snapshot-v1"),
+        ("row_counts", {"funds": 1, "identity": 1, "instruments": 1}),
+    ],
+)
+def test_snapshot_link_covers_identity_versions_and_row_counts(calendar, field, value):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    snapshot = json.loads(snapshot_raw)
+    snapshot[field] = value
+    raw = generator.canonical_json(snapshot)
+    report = verifier.audit(policy_raw, snapshot_raw=raw)
+    assert "snapshot_link" in _failed_checks(report, "A1")
+    with pytest.raises(generator.PolicyGenerationError):
+        generator.verify_source_snapshot(snapshot, json.loads(policy_raw), raw=raw)
+
+
+def test_generator_cli_verify_blocks_hostile_roots(tmp_path, capsys):
+    target = tmp_path / "x.json"
+    for raw in (b"[]", b'{"a":1,"a":2}', b"null"):
+        target.write_bytes(raw)
+        assert generator.main(["verify", "--policy-file", str(target)]) == 2
+        assert json.loads(capsys.readouterr().out)["code"] == "artifact_not_object"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.pop("policy_id"),
+        lambda p: p.__setitem__("policy_version", ""),
+        lambda p: p.__setitem__("instrument_evidence", {"not": "a list"}),
+        lambda p: p["instrument_evidence"].__setitem__(0, "row"),
+        lambda p: p.__setitem__("generation", None),
+    ],
+)
+def test_malformed_previous_policy_is_blocked(calendar, mutate):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    previous = json.loads(_previous(active_ids=(1,), calendar=calendar))
+    mutate(previous)
+    with pytest.raises(verifier.AuditBlocked, match="previous_policy_invalid"):
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            previous_raw=json.dumps(previous).encode(),
+        )
+
+
+# ── Round2 F2: calendar/deadline continuity ────────────────────────────────
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("timezone", "America/Chicago"),
+        ("source_reference", "other-reference"),
+        ("valid_through", "2027-12-31T18:05:00-05:00"),  # same instant, other text
+        ("valid_through", "2028-01-03T23:05:00+00:00"),
+        ("calendar_digest", "0" * 64),
+    ],
+)
+def test_previous_continuity_is_exact_text(calendar, field, value):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    previous = json.loads(_previous(active_ids=(1,), calendar=calendar))
+    previous[field] = value
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        previous_raw=json.dumps(previous).encode(),
+    )
+    assert "calendar_identical_to_previous" in _failed_checks(report, "A1")
+    previous.pop(field)
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        previous_raw=json.dumps(previous).encode(),
+    )
+    assert "calendar_identical_to_previous" in _failed_checks(report, "A1")
+
+
+@pytest.mark.parametrize(
+    "mutate,check",
+    [
+        (
+            lambda p: p.__setitem__("valid_through", "2028-01-03T23:05:00+00:00"),
+            "valid_through_equals_last_deadline",
+        ),
+        (
+            lambda p: p.__setitem__("valid_through", "2027-12-31T23:05:00"),
+            "valid_through_equals_last_deadline",
+        ),
+        (
+            lambda p: p.__setitem__("publication_state", "draft"),
+            "publication_state_approved",
+        ),
+        (lambda p: p.__setitem__("timezone", "UTC"), "timezone_new_york"),
+        (lambda p: p.__setitem__("source_reference", " "), "source_reference_present"),
+    ],
+)
+def test_policy_state_timezone_reference_and_deadline_are_checked(
+    calendar, mutate, check
+):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    policy = json.loads(policy_raw)
+    mutate(policy)
+    generation = policy["generation"]
+    generation["policy_hash"] = policy_content_digest(policy)
+    generation["generation_sha256"] = generation_metadata_digest(generation)
+    report = verifier.audit(generator.canonical_json(policy), snapshot_raw=snapshot_raw)
+    assert check in _failed_checks(report, "A1")
+
+
+def test_valid_through_equal_instant_other_offset_matches_deadline(calendar):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    policy = json.loads(policy_raw)
+    policy["valid_through"] = "2027-12-31T18:05:00-05:00"
+    assert verifier._deadline_check(policy) is True
 
 
 # ── A2/A3 continuity against a hash-pinned previous artifact ────────────────
@@ -501,25 +734,101 @@ def test_previous_active_lost_without_source_reason_is_unexplained(
 
 
 # ── A4 ceiling and structural baseline ──────────────────────────────────────
-def test_ceiling_and_structural_baseline_acknowledgement(calendar):
+def test_ceiling_bounds_structural_daily_not_active(calendar):
+    """Reviewer repro: D=8, P=9 — a ceiling of 8 fails even though D <= 8."""
     policy_raw, snapshot_raw, _ = _build(calendar)
     over = verifier.audit(
-        policy_raw, snapshot_raw=snapshot_raw, config_raw=_config(active_ceiling=8)
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        config_raw=_config(structural_daily_ceiling=8),
     )
-    assert "active_within_ceiling" in _failed_checks(over, "A4")
+    assert _failed_checks(over, "A4") == ["structural_daily_within_ceiling"]
+    assert over["details"]["A4"]["active_daily_count"] == 8
+    exact = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        config_raw=_config(structural_daily_ceiling=9),
+    )
+    assert exact["gates"]["A4"]["status"] == "PASS"
     report = verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
         config_raw=_config(structural_baseline=5103),
     )
-    assert "structural_baseline_delta_acknowledged" in _failed_checks(report, "A4")
-    delta = report["details"]["A4"]["structural_baseline_delta"]
+    assert _failed_checks(report, "A4") == ["structural_baseline_accepted"]
+    delta = report["details"]["A4"]["structural_delta"]
+    assert delta == 11 - 5103
     acknowledged = verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
         config_raw=_config(structural_baseline=5103, accepted_structural_delta=delta),
     )
     assert acknowledged["gates"]["A4"]["status"] == "PASS"
+    # An accepted baseline delta never raises the ceiling on P.
+    both = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        config_raw=_config(
+            structural_daily_ceiling=8,
+            structural_baseline=5103,
+            accepted_structural_delta=delta,
+        ),
+    )
+    assert _failed_checks(both, "A4") == ["structural_daily_within_ceiling"]
+
+
+@pytest.mark.parametrize(
+    "overrides,code",
+    [
+        ({"active_ceiling": 5103}, "audit_config_ceiling_key_retired"),
+        ({"structural_daily_ceiling": None}, "audit_config_ceiling_invalid"),
+        ({"structural_daily_ceiling": True}, "audit_config_ceiling_invalid"),
+        ({"structural_daily_ceiling": -1}, "audit_config_ceiling_invalid"),
+        ({"structural_daily_ceiling": 5103.0}, "audit_config_ceiling_invalid"),
+    ],
+)
+def test_ceiling_config_is_renamed_and_strict(calendar, overrides, code):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    with pytest.raises(verifier.AuditBlocked, match=code):
+        verifier.audit(
+            policy_raw, snapshot_raw=snapshot_raw, config_raw=_config(**overrides)
+        )
+    config = json.loads(_config())
+    config.pop("structural_daily_ceiling")
+    with pytest.raises(verifier.AuditBlocked, match="audit_config_ceiling_invalid"):
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            config_raw=json.dumps(config).encode(),
+        )
+
+
+@pytest.mark.parametrize(
+    "patch,check",
+    [
+        ("p_outside_b", "structural_daily_subset_of_baseline"),
+        ("b_minus_p_claim", "baseline_first_failure_closure"),
+    ],
+)
+def test_a4_closure_detects_inconsistent_populations(
+    calendar, monkeypatch, patch, check
+):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    original = verifier.Catalog.v1_structural_sets
+    if patch == "p_outside_b":
+
+        def shrunk(self):
+            total, daily = original(self)
+            return total, daily - {str(uuid.UUID(int=1))}
+    else:
+
+        def shrunk(self):  # B gains UUID 14, whose first failure is activity.*
+            total, daily = original(self)
+            return total, daily | {str(uuid.UUID(int=14))}
+
+    monkeypatch.setattr(verifier.Catalog, "v1_structural_sets", shrunk)
+    report = verifier.audit(policy_raw, snapshot_raw=snapshot_raw)
+    assert check in _failed_checks(report, "A4")
 
 
 # ── A7/A8 over one live read-only capture ───────────────────────────────────
@@ -538,8 +847,19 @@ def test_live_capture_same_snapshot_passes_all_gates_and_builds_canary(calendar)
         ]
         == 1
     )
-    assert report["details"]["A8"]["outcomes"] == {"matched": 8, "missing": 1}
+    assert report["details"]["A8"]["outcomes"] == {
+        "ambiguous": 0,
+        "contradiction": 0,
+        "matched": 9,  # MMF included: A8 corroborates every ACTIVE
+        "missing": 0,
+        "partial": 0,
+        "poisoned_active_mapping": 0,
+    }
+    assert set(report["details"]) == set(
+        verifier.AUDIT_CONTRACT["dossier"]["detail_keys"]
+    )
     canary = _canary_of(report, policy_raw, config_raw)
+    assert canary["selection_sha256"] == report["details"]["canary_selection_sha256"]
     again, *_ = _strict_report(calendar)
     assert canary == _canary_of(again, policy_raw, config_raw)
     assert canary["size"] == canary["cohort_size"] == 8
@@ -724,150 +1044,411 @@ def test_a7_every_cohort_exclusion_carries_a_reason(calendar):
     assert report["inputs"]["capture"]["cohort"]["row_count"] == 2  # multiplicity kept
 
 
-@pytest.mark.parametrize(
-    "sec_rows,registry_class,expected",
-    [
-        (
-            [{"class_id": "C1", "series_id": "S000000001", "ticker": "T1"}],
-            "C1",
-            "matched",
-        ),
-        (
-            [{"class_id": "C1", "series_id": "S-OTHER", "ticker": "T1"}],
-            "C1",
-            "contradiction",
-        ),
-        (
-            [{"class_id": "C1", "series_id": "S000000001", "ticker": "OTHER"}],
-            "C1",
-            "contradiction",
-        ),
-        ([], "C1", "missing"),
-        (
-            [{"class_id": "C9", "series_id": "S-OTHER", "ticker": "T1"}],
-            None,
-            "contradiction",
-        ),
-        (
-            [{"class_id": "C9", "series_id": "S000000001", "ticker": "T1"}],
-            None,
-            "matched",
-        ),
-        (
-            [
-                {"class_id": "C8", "series_id": "S000000001", "ticker": "T1"},
-                {"class_id": "C9", "series_id": "S000000001", "ticker": "T1"},
-            ],
-            None,
-            "ambiguous_consistent",
-        ),
-        ([], None, "missing"),
-        (
-            [
-                {"class_id": "C1", "series_id": "S000000001", "ticker": "T1"},
-                {"class_id": "C9", "series_id": "S000000001", "ticker": "T1"},
-            ],
-            "C1",
-            "contradiction",  # the ticker belongs to another SEC class
-        ),
-        ([{"class_id": "C1", "series_id": None, "ticker": "T1"}], "C1", "partial"),
-        ([{"class_id": "C9", "series_id": None, "ticker": "T1"}], None, "partial"),
-        (
-            [
-                {"class_id": "C1", "series_id": "S000000001", "ticker": "T1"},
-                {"class_id": "C1", "series_id": "S000000001", "ticker": "T1"},
-            ],
-            "C1",
-            "ambiguous_consistent",
-        ),
-    ],
-)
-def test_a8_sec_class_series_ticker_outcomes(
-    calendar, sec_rows, registry_class, expected
+def _a8_case(
+    calendar, sec_rows, *, class_id=None, lineage=None, captured=CAPTURED, config=None
 ):
-    policy_raw, snapshot_raw, rows = _build(
-        calendar, [entity(1, class_id=registry_class)]
-    )
-    report = verifier.audit(
-        policy_raw,
-        snapshot_raw=snapshot_raw,
-        live=_live(rows, sec=sec_rows, cohort=[]),
-        config_raw=_config(),
-    )
-    assert report["details"]["A8"]["outcomes"] == {expected: 1}
-    assert report["gates"]["A8"]["status"] == (
-        "FAIL" if expected == "contradiction" else "PASS"
-    )
-
-
-# ── F1: SEC freshness contract ───────────────────────────────────────────────
-@pytest.mark.parametrize(
-    "case,status,code,failed",
-    [
-        ("criterion_absent", "NOT_EVALUATED", "sec_freshness_criterion_absent", []),
-        ("criterion_null", "NOT_EVALUATED", "sec_freshness_criterion_absent", []),
-        ("lineage_null", "NOT_EVALUATED", "sec_lineage_unverifiable", []),
-        ("lineage_naive", "NOT_EVALUATED", "sec_lineage_unverifiable", []),
-        ("lineage_garbage", "NOT_EVALUATED", "sec_lineage_unverifiable", []),
-        ("capture_naive", "NOT_EVALUATED", "sec_decision_time_unverifiable", []),
-        ("stale", "FAIL", None, ["fresh_within_max_age"]),
-        ("future", "FAIL", None, ["synced_not_in_future"]),
-        ("boundary", "PASS", None, []),
-        ("current", "PASS", None, []),
-    ],
-)
-def test_a8_freshness_contract(calendar, case, status, code, failed):
-    policy_raw, snapshot_raw, rows = _build(calendar)
-    live = _live(rows)
-    config = json.loads(_config())
-    lineage = live["sec"]["lineage"]
-    if case == "criterion_absent":
-        config.pop("sec")
-    elif case == "criterion_null":
-        config["sec"] = {"max_synced_age_days": None}
-    elif case == "lineage_null":
-        lineage["max_synced_at"] = None
-    elif case == "lineage_naive":
-        lineage["max_synced_at"] = "2026-09-23T00:00:00"
-    elif case == "lineage_garbage":
-        lineage["max_synced_at"] = "yesterday"
-    elif case == "capture_naive":
-        live["captured_at"] = "2026-09-24T12:05:00"
-    elif case == "stale":
-        lineage["max_synced_at"] = "2026-09-17T12:04:59+00:00"  # 7d + 1s
-    elif case == "future":
-        lineage["max_synced_at"] = "2026-09-24T12:05:01+00:00"
-    elif case == "boundary":
-        lineage["max_synced_at"] = "2026-09-17T08:05:00-04:00"  # exactly 7 days
-    report = verifier.audit(
+    """One ACTIVE fund (UUID 1, S000000001/T1) against the given SEC rows."""
+    policy_raw, snapshot_raw, rows = _build(calendar, [entity(1, class_id=class_id)])
+    live = _live(rows, sec=sec_rows, cohort=[])
+    if lineage is not None:
+        live["sec"]["lineage"] = lineage
+    live["captured_at"] = captured
+    return verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
         live=live,
-        previous_raw=_previous(active_ids=(1,), inactive_ids=(16,), calendar=calendar),
-        config_raw=json.dumps(config).encode(),
+        config_raw=config or _config(),
     )
+
+
+def _outcome(report):
+    return {k: v for k, v in report["details"]["A8"]["outcomes"].items() if v}
+
+
+OTHER = "2026-09-22T00:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "sec_rows,class_id,outcome,status,failed",
+    [
+        ([_sec_row(1)], None, "matched", "PASS", []),
+        ([_sec_row(1)], "C000000001", "matched", "PASS", []),
+        (
+            [_sec_row(1, class_id="c000000001", ticker="t1")],
+            None,
+            "matched",
+            "PASS",
+            [],
+        ),
+        (
+            [_sec_row(1, series="S000000009")],
+            None,
+            "contradiction",
+            "FAIL",
+            ["zero_contradictions"],
+        ),
+        (
+            [
+                _sec_row(1, ticker="OTHER"),
+                _sec_row(2, series="S000000001", ticker="T1"),
+            ],
+            "C000000001",
+            "contradiction",
+            "FAIL",
+            ["zero_contradictions"],
+        ),
+        ([_sec_row(1)], "C000000002", "contradiction", "FAIL", ["zero_contradictions"]),
+        ([_sec_row(1)], "S000000001", "contradiction", "FAIL", ["zero_contradictions"]),
+        (
+            [_sec_row(1), _sec_row(2, series="S000000001", ticker="T1")],
+            None,
+            "ambiguous",
+            "FAIL",
+            ["zero_contradictions"],
+        ),
+        (
+            [_sec_row(1), _sec_row(1, synced=OTHER)],
+            None,
+            "ambiguous",
+            "FAIL",
+            ["zero_contradictions"],
+        ),
+        (
+            [_sec_row(1), _sec_row(1)],
+            None,
+            "ambiguous",
+            "FAIL",
+            ["zero_active_duplicates", "zero_contradictions"],
+        ),
+        (
+            [_sec_row(1, class_id="S000000001")],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        (
+            [_sec_row(1, class_id="S000000001:T1")],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        (
+            [_sec_row(1, class_id="")],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        (
+            [_sec_row(1, class_id=None)],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        (
+            [_sec_row(1), _sec_row(1, class_id="series:ticker")],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        (
+            [_sec_row(1, series=None)],
+            None,
+            "partial",
+            "NOT_EVALUATED",
+            ["all_active_matched"],
+        ),
+        (
+            [_sec_row(1, series="")],
+            None,
+            "partial",
+            "NOT_EVALUATED",
+            ["all_active_matched"],
+        ),
+        # A POPULATED malformed series is poison (FAIL), never a mere gap.
+        (
+            [_sec_row(1, series="SX")],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        # Round3 F2: a valid companion never hides a related malformed row...
+        (
+            [_sec_row(1), _sec_row(2, series="SX", ticker="T1")],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        (
+            [_sec_row(1), _sec_row(2, class_id="C2", ticker="T1")],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        # ...nor an incomplete related row (NOT_EVALUATED, not matched)...
+        (
+            [_sec_row(1), _sec_row(2, series="", ticker="T1")],
+            None,
+            "partial",
+            "NOT_EVALUATED",
+            ["all_active_matched"],
+        ),
+        (
+            [_sec_row(1), _sec_row(2, series=None, ticker="T1")],
+            None,
+            "partial",
+            "NOT_EVALUATED",
+            ["all_active_matched"],
+        ),
+        (
+            [_sec_row(1), _sec_row(1, ticker="")],
+            "C000000001",
+            "partial",
+            "NOT_EVALUATED",
+            ["all_active_matched"],
+        ),
+        # ...and a populated contradiction on an otherwise incomplete row fails.
+        (
+            [_sec_row(1), _sec_row(1, series="", ticker="OTHER")],
+            "C000000001",
+            "contradiction",
+            "FAIL",
+            ["zero_contradictions"],
+        ),
+        # Precedence: poison > contradiction > ambiguous > partial.
+        (
+            [_sec_row(1, series=""), _sec_row(2, series="SX", ticker="T1")],
+            None,
+            "poisoned_active_mapping",
+            "FAIL",
+            ["zero_active_poisoned"],
+        ),
+        (
+            [_sec_row(1, series=""), _sec_row(2, series="S000000009", ticker="T1")],
+            None,
+            "contradiction",
+            "FAIL",
+            ["zero_contradictions"],
+        ),
+        (
+            [_sec_row(1), _sec_row(1), _sec_row(2, series="", ticker="T1")],
+            None,
+            "ambiguous",
+            "FAIL",
+            ["zero_active_duplicates", "zero_contradictions"],
+        ),
+        (
+            [
+                _sec_row(1),
+                _sec_row(2, series="S000000001", ticker="T1"),
+                _sec_row(3, series="", ticker="T1"),
+            ],
+            None,
+            "ambiguous",
+            "FAIL",
+            ["zero_contradictions"],
+        ),
+        ([], None, "missing", "NOT_EVALUATED", ["all_active_matched"]),
+        ([_sec_row(5)], None, "missing", "NOT_EVALUATED", ["all_active_matched"]),
+    ],
+)
+def test_a8_company_tickers_mf_outcome_matrix(
+    calendar, sec_rows, class_id, outcome, status, failed
+):
+    report = _a8_case(calendar, sec_rows, class_id=class_id)
+    assert _outcome(report) == {outcome: 1}
     gate = report["gates"]["A8"]
     assert gate["status"] == status
-    assert gate.get("code") == code
+    # Any non-matched ACTIVE also fails the completeness check.
+    expected = set(failed) | ({"all_active_matched"} if outcome != "matched" else set())
+    assert _failed_checks(report, "A8") == sorted(expected)
+    if status == "NOT_EVALUATED":
+        assert gate["code"] == "sec_active_mapping_incomplete"
+    assert verifier.verdict_of(report, strict=True) is False or status == "PASS"
+
+
+def test_a8_unrelated_poison_is_counted_and_excluded_but_not_fatal(calendar):
+    report = _a8_case(calendar, [_sec_row(1), _sec_row(7, class_id="S000000007:T7")])
+    assert report["gates"]["A8"]["status"] == "PASS"
+    detail = report["details"]["A8"]
+    assert (detail["excluded_poisoned_count"], detail["invalid_source_rows"]) == (1, 1)
+    assert detail["active_poisoned_count"] == 0
+    # Unrelated malformed-series and incomplete rows are ignored as well.
+    report = _a8_case(
+        calendar,
+        [_sec_row(1), _sec_row(7, series="SX"), _sec_row(8, series="", ticker="T8")],
+    )
+    assert report["gates"]["A8"]["status"] == "PASS"
+    detail = report["details"]["A8"]
+    assert (detail["excluded_poisoned_count"], detail["invalid_source_rows"]) == (1, 2)
+    assert _outcome(report) == {"matched": 1}
+
+
+def test_a8_reviewer_repro_valid_plus_malformed_related_row_fails(calendar):
+    """ACTIVE (S000000001, T1), no declared class: C1/S1/T1 + C2/SX/T1 FAIL."""
+    report = _a8_case(
+        calendar,
+        [
+            _sec_row(1, class_id="C000000001", series="S000000001", ticker="T1"),
+            _sec_row(2, class_id="C000000002", series="SX", ticker="T1"),
+        ],
+    )
+    assert report["gates"]["A8"]["status"] == "FAIL"
+    assert _outcome(report) == {"poisoned_active_mapping": 1}
+    assert report["details"]["A8"]["active_poisoned_count"] == 1
+    assert report["details"]["A8"]["freshness"]["valid_until"] is None
+
+
+def test_a8_failure_dominates_gaps(calendar):
+    entities = [entity(1), entity(2)]
+    policy_raw, snapshot_raw, rows = _build(calendar, entities)
+    sec = [_sec_row(1, series="S000000009")]  # UUID 1 contradiction, UUID 2 missing
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        live=_live(rows, sec=sec, cohort=[]),
+        config_raw=_config(),
+    )
+    assert report["gates"]["A8"]["status"] == "FAIL"
+    assert _outcome(report) == {"contradiction": 1, "missing": 1}
+
+
+def test_a8_never_passes_vacuously_without_active(calendar):
+    report = _a8_case(calendar, [_sec_row(1)])
+    policy_raw, snapshot_raw, rows = _build(calendar, [entity(1, active=None)])
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        live=_live(rows, sec=[_sec_row(1)], cohort=[]),
+        config_raw=_config(),
+    )
+    assert report["gates"]["A8"]["status"] == "FAIL"
+    assert "active_nonempty" in _failed_checks(report, "A8")
+
+
+# ── A8 freshness: updated_at of every matched row vs the capture DB clock ──
+@pytest.mark.parametrize(
+    "synced,captured,status,failed",
+    [
+        ("2026-09-17T12:05:00+00:00", CAPTURED, "PASS", []),  # exactly 7 days
+        ("2026-09-17T08:05:00-04:00", CAPTURED, "PASS", []),  # same instant, offset
+        ("2026-09-17T12:04:59+00:00", CAPTURED, "FAIL", ["fresh_within_max_age"]),
+        ("2026-09-24T12:05:01+00:00", CAPTURED, "FAIL", ["synced_not_in_future"]),
+        ("2026-09-24T12:05:00+00:00", CAPTURED, "PASS", []),
+    ],
+)
+def test_a8_freshness_per_matched_row(calendar, synced, captured, status, failed):
+    report = _a8_case(calendar, [_sec_row(1, synced=synced)], captured=captured)
+    assert report["gates"]["A8"]["status"] == status
     assert _failed_checks(report, "A8") == failed
-    if status != "NOT_EVALUATED":
-        assert report["details"]["A8"]["freshness"]["decision_at"] == CAPTURED
-    assert verifier.verdict_of(report, strict=True) is (status == "PASS")
-
-
-@pytest.mark.parametrize("value", [0, -3, True, "7", 7.0])
-def test_sec_freshness_criterion_must_be_a_positive_int(calendar, value):
-    policy_raw, snapshot_raw, _ = _build(calendar)
-    config = json.loads(_config())
-    config["sec"] = {"max_synced_age_days": value}
-    with pytest.raises(
-        verifier.AuditBlocked, match="audit_config_sec_freshness_invalid"
-    ):
-        verifier.audit(
-            policy_raw,
-            snapshot_raw=snapshot_raw,
-            config_raw=json.dumps(config).encode(),
+    freshness = report["details"]["A8"]["freshness"]
+    assert freshness["decision_at"] == CAPTURED
+    assert freshness["max_synced_age_days"] == 7
+    if status == "PASS":
+        assert dt.datetime.fromisoformat(freshness["valid_until"]) == (
+            dt.datetime.fromisoformat(synced) + dt.timedelta(days=7)
         )
+
+
+def test_a8_one_stale_mapping_among_fresh_ones_fails(calendar):
+    """Reviewer repro: max(updated_at) fresh does not hide one stale ACTIVE."""
+    entities = [entity(1), entity(2)]
+    policy_raw, snapshot_raw, rows = _build(calendar, entities)
+    sec = [
+        _sec_row(1, synced="2026-09-24T00:00:00+00:00"),
+        _sec_row(2, synced="2026-09-01T00:00:00+00:00"),
+    ]
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        live=_live(rows, sec=sec, cohort=[]),
+        config_raw=_config(),
+    )
+    assert _failed_checks(report, "A8") == ["fresh_within_max_age"]
+    assert report["details"]["A8"]["freshness"]["lineage_max_synced_at"] == (
+        "2026-09-24T00:00:00+00:00"
+    )
+
+
+def test_a8_unrelated_future_row_fails(calendar):
+    report = _a8_case(
+        calendar, [_sec_row(1), _sec_row(8, synced="2026-09-25T00:00:00+00:00")]
+    )
+    assert _failed_checks(report, "A8") == ["synced_not_in_future"]
+
+
+@pytest.mark.parametrize(
+    "mutate,code",
+    [
+        (
+            lambda live: live["sec"]["rows"][0].__setitem__(
+                "synced_at", "2026-09-23T00:00:00"
+            ),
+            "sec_timestamp_not_aware",
+        ),
+        (
+            lambda live: live["sec"]["rows"][0].__setitem__("synced_at", "yesterday"),
+            "sec_timestamp_not_aware",
+        ),
+        (
+            lambda live: live["sec"]["rows"][0].__setitem__("synced_at", None),
+            "sec_timestamp_not_aware",
+        ),
+        (
+            lambda live: live["sec"]["rows"][0].__setitem__("ticker", 5),
+            "sec_source_shape_invalid",
+        ),
+        (
+            lambda live: live["sec"]["rows"][0].pop("synced_at"),
+            "sec_source_shape_invalid",
+        ),
+        (
+            lambda live: live["sec"]["rows"][0].__setitem__("extra", 1),
+            "sec_source_shape_invalid",
+        ),
+        (
+            lambda live: live["sec"]["lineage"].__setitem__("row_count", 7),
+            "sec_lineage_mismatch",
+        ),
+        (
+            lambda live: live["sec"]["lineage"].__setitem__(
+                "max_synced_at", "2026-09-24T00:00:00+00:00"
+            ),
+            "sec_lineage_mismatch",
+        ),
+        (
+            lambda live: live["sec"]["lineage"].__setitem__("max_synced_at", None),
+            "sec_lineage_mismatch",
+        ),
+        (
+            lambda live: live["sec"]["lineage"].pop("min_synced_at"),
+            "sec_lineage_invalid",
+        ),
+        (
+            lambda live: live["sec"]["lineage"].__setitem__("row_count", True),
+            "sec_lineage_invalid",
+        ),
+        (lambda live: live.__setitem__("captured_at", "2026-09-24T12:05:00"), None),
+    ],
+)
+def test_a8_malformed_capture_is_not_evaluated(calendar, mutate, code):
+    policy_raw, snapshot_raw, rows = _build(calendar)
+    live = _live(rows)
+    mutate(live)
+    report = verifier.audit(
+        policy_raw, snapshot_raw=snapshot_raw, live=live, config_raw=_config()
+    )
+    gate = report["gates"]["A8"]
+    assert gate["status"] == "NOT_EVALUATED"
+    assert gate["code"] == (code or "sec_decision_time_unverifiable")
+    assert verifier.verdict_of(report, strict=True) is False
 
 
 @pytest.mark.parametrize(
@@ -882,8 +1463,12 @@ def test_sec_freshness_criterion_must_be_a_positive_int(calendar, value):
             "sec_privilege_missing",
         ),
         (
-            {"state": "failed", "code": "sec_query_failed:57014"},
-            "sec_query_failed:57014",
+            {"state": "failed", "code": "sec_query_failed:42703"},
+            "sec_query_failed:42703",
+        ),
+        (
+            {"state": "failed", "code": "sec_row_ceiling_exceeded"},
+            "sec_row_ceiling_exceeded",
         ),
     ],
 )
@@ -896,6 +1481,74 @@ def test_a8_unavailable_source_is_not_evaluated_not_zero(calendar, sec_state, co
     )
     assert report["gates"]["A8"]["status"] == "NOT_EVALUATED"
     assert report["gates"]["A8"]["code"] == code
+    captured = report["inputs"]["capture"]["sec"]
+    assert captured["relation"] == "public.sec_company_tickers_mf"
+    assert captured["rows_sha256"] is None and captured["row_count"] is None
+
+
+def test_a8_absent_sec_config_is_not_evaluated(calendar):
+    policy_raw, snapshot_raw, rows = _build(calendar)
+    config = json.loads(_config())
+    config.pop("sec")
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        live=_live(rows),
+        config_raw=json.dumps(config).encode(),
+    )
+    assert report["gates"]["A8"] == {
+        "status": "NOT_EVALUATED",
+        "code": "sec_freshness_criterion_absent",
+        "checks": {},
+    }
+
+
+@pytest.mark.parametrize(
+    "field,value,code",
+    [
+        ("max_synced_age_days", 8, "audit_config_sec_freshness_invalid"),
+        ("max_synced_age_days", 0, "audit_config_sec_freshness_invalid"),
+        ("max_synced_age_days", True, "audit_config_sec_freshness_invalid"),
+        ("max_synced_age_days", "7", "audit_config_sec_freshness_invalid"),
+        ("max_synced_age_days", None, "audit_config_sec_freshness_invalid"),
+        ("relation", "public.sec_fund_classes", "audit_config_sec_source_invalid"),
+        (
+            "relation",
+            "public.fund_classes_latest_mv",
+            "audit_config_sec_source_invalid",
+        ),
+        ("timestamp_column", "fetched_at", "audit_config_sec_source_invalid"),
+        ("source_contract", "other", "audit_config_sec_source_invalid"),
+        ("query_contract_sha256", "0" * 64, "audit_config_sec_source_invalid"),
+    ],
+)
+def test_sec_config_is_pinned_to_the_contract(calendar, field, value, code):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    config = json.loads(_config())
+    config["sec"][field] = value
+    with pytest.raises(verifier.AuditBlocked, match=code):
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            config_raw=json.dumps(config).encode(),
+        )
+
+
+def test_prohibited_sec_sources_are_absent_from_runtime_code():
+    """A8 reads only public.sec_company_tickers_mf; no fallback exists."""
+    sources = [
+        Path(verifier.__file__).read_text(encoding="utf-8"),
+        (Path(verifier.__file__).parent / "nav_identity_audit_contract.py").read_text(
+            encoding="utf-8"
+        ),
+        Path(operator.__file__).read_text(encoding="utf-8"),
+    ]
+    for text in sources:
+        assert "fund_classes_latest_mv" not in text
+        assert "sec_fund_classes" not in text
+    assert verifier.SEC_SQL.count("FROM public.sec_company_tickers_mf") == 1
+    assert "updated_at AS synced_at" in verifier.SEC_SQL
+    assert "LIMIT 100001" in verifier.SEC_SQL
 
 
 # ── F2: canonical private capture bundle ────────────────────────────────────
@@ -911,7 +1564,10 @@ def test_capture_bundle_is_canonical_order_independent_and_reloadable(calendar):
         shuffled["sources"][name] = list(reversed(shuffled["sources"][name]))
     assert verifier.capture_bytes(shuffled, config) == raw
     bundle = verifier.load_capture(raw, config)
-    assert bundle["cohort"]["row_count"] == 18 and bundle["sec"]["row_count"] == 8
+    assert bundle["cohort"]["row_count"] == 18 and bundle["sec"]["row_count"] == 9
+    assert bundle["sec"]["relation"] == "public.sec_company_tickers_mf"
+    assert bundle["sec"]["timestamp_column"] == "updated_at"
+    assert bundle["kind"] == "nav-identity-audit-capture-v2-round2"
     assert (
         bundle["source_snapshot_sha256"]
         == json.loads(policy_raw)["generation"]["source_snapshot_sha256"]
@@ -958,12 +1614,16 @@ def test_swapping_a_cohort_member_changes_bound_digests(calendar):
         != second["inputs"]["capture"]["capture_bundle_sha256"]
     )
     assert verifier.report_bytes(first) != verifier.report_bytes(second)
-    sec_a = run((1,))
-    live = _live(
-        rows, cohort=[], sec=[{"class_id": "C9", "series_id": None, "ticker": "ZZZ"}]
-    )
-    sec_b = verifier.audit(
-        policy_raw, snapshot_raw=snapshot_raw, live=live, config_raw=_config()
+    # Same A8 outcomes, different captured SEC rows → different pinned digest.
+    base = [_sec_row(n) for n in range(1, 5)]
+    sec_a, sec_b = (
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            live=_live(rows, cohort=[], sec=extra_rows),
+            config_raw=_config(),
+        )
+        for extra_rows in (base, [*base, _sec_row(77)])
     )
     assert sec_a["details"]["A8"]["outcomes"] == sec_b["details"]["A8"]["outcomes"]
     assert (
@@ -982,7 +1642,13 @@ def test_swapping_a_cohort_member_changes_bound_digests(calendar):
         ("source_row", "capture_bundle_invalid"),
         ("source_digest", "capture_bundle_invalid"),
         ("kind", "capture_contract_invalid"),
+        ("kind_round1", "capture_contract_invalid"),
         ("query", "capture_cohort_query_mismatch"),
+        ("sec_relation", "capture_sec_contract_invalid"),
+        ("sec_timestamp_column", "capture_sec_contract_invalid"),
+        ("sec_query", "capture_sec_contract_invalid"),
+        ("sec_lineage", "capture_bundle_invalid"),
+        ("duplicate_key", "capture_not_json"),
     ],
 )
 def test_capture_bundle_tamper_is_blocked(calendar, tamper, code):
@@ -992,7 +1658,22 @@ def test_capture_bundle_tamper_is_blocked(calendar, tamper, code):
     bundle = json.loads(raw)
     if tamper == "bytes":
         tampered = raw.replace(b"\n", b" \n")
+    elif tamper == "duplicate_key":
+        tampered = raw.replace(
+            b'{"audit_contract_version"', b'{"kind":"x","audit_contract_version"', 1
+        )
     else:
+        sec = bundle["sec"]
+        if tamper == "kind_round1":
+            bundle["kind"] = "nav-identity-audit-capture-v2"
+        elif tamper == "sec_relation":
+            sec["relation"] = "public.sec_fund_classes"
+        elif tamper == "sec_timestamp_column":
+            sec["timestamp_column"] = "fetched_at"
+        elif tamper == "sec_query":
+            sec["query_sha256"] = "0" * 64
+        elif tamper == "sec_lineage":
+            sec["lineage"]["row_count"] = sec["lineage"]["row_count"] + 1
         if tamper == "cohort_row":
             bundle["cohort"]["rows"][0]["strategy_label"] = "Technology"
         elif tamper == "cohort_digest":
@@ -1203,10 +1884,11 @@ def test_canary_is_capped_covers_strata_and_ignores_input_order(calendar):
     ]
     config = _config()
     previous = _previous(active_ids=(1,), calendar=calendar)
+    sec = [_sec_row(n) for n in range(1, 41)]
     first = verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
-        live=_live(rows, cohort=cohort),
+        live=_live(rows, cohort=cohort, sec=sec),
         previous_raw=previous,
         config_raw=config,
     )
@@ -1215,7 +1897,7 @@ def test_canary_is_capped_covers_strata_and_ignores_input_order(calendar):
     second = verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
-        live=_live(rows, cohort=list(reversed(cohort))),
+        live=_live(rows, cohort=list(reversed(cohort)), sec=list(reversed(sec))),
         previous_raw=previous,
         config_raw=config,
     )
@@ -1349,20 +2031,18 @@ def test_cli_strict_failure_persists_dossier_and_refuses_canary(
     live_kwargs = {}
     if failure == "sec_contradiction":
         live_kwargs["sec"] = [
-            {"class_id": "C000000001", "series_id": "S-FOREIGN", "ticker": "T1"}
+            _sec_row(1, series="S000000099"),
+            *[_sec_row(n) for n in range(2, 10)],
         ]
     elif failure == "insufficient_sleeve":
         config["builder"]["stage1_quotas"] = {"equity": 30}
+    elif failure == "stale_sec":
+        live_kwargs["sec"] = [
+            _sec_row(n, synced="2026-01-01T00:00:00+00:00") for n in range(1, 10)
+        ]
     base, _, capture = _cli_inputs(
         root, calendar, config=json.dumps(config).encode(), live_kwargs=live_kwargs
     )
-    if failure == "stale_sec":
-        bundle = json.loads(capture)
-        live = _live(_build(calendar)[2])
-        live["sec"]["lineage"]["max_synced_at"] = "2026-01-01T00:00:00+00:00"
-        (root / "capture.json").unlink()
-        (root / "capture.json").write_bytes(verifier.capture_bytes(live, config))
-        assert bundle["sec"]["lineage"]["max_synced_at"] != "2026-01-01T00:00:00+00:00"
     args = [
         *base,
         "--capture-file",
@@ -1391,7 +2071,9 @@ def test_cli_strict_failure_persists_dossier_and_refuses_canary(
     }
     assert failing == expected[failure]
     if failure == "sec_contradiction":
-        assert dossier["differences"]["sec_contradictions"] == [str(uuid.UUID(int=1))]
+        assert dossier["differences"]["sec"]["per_active_outcome"] == {
+            str(uuid.UUID(int=1)): "contradiction"
+        }
 
 
 @pytest.mark.skipif(os.name != "posix", reason="custody writer is POSIX-only")
@@ -1473,3 +2155,351 @@ def test_cli_live_capture_is_persisted_before_audit(
     assert (root / "capture-live.json").read_bytes() == capture
     assert stat.S_IMODE((root / "capture-live.json").stat().st_mode) == 0o600
     assert "fake.invalid" not in printed and str(uuid.UUID(int=1)) not in printed
+
+
+# ── Round3 F5: non-object siblings at every nested path, through the CLIs ───
+def _nested_paths(value, prefix=()):
+    """Every object-key path (lists: their first element) of a JSON document."""
+    if isinstance(value, dict):
+        for key in sorted(value):
+            yield (*prefix, key)
+            yield from _nested_paths(value[key], (*prefix, key))
+    elif isinstance(value, list) and value:
+        yield (*prefix, 0)
+        yield from _nested_paths(value[0], (*prefix, 0))
+
+
+def _replaced(document, path, value):
+    mutated = copy.deepcopy(document)
+    target = mutated
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = value
+    return mutated
+
+
+def _cli_json(capsys, code: int) -> dict:
+    printed = capsys.readouterr().out
+    assert code in (0, 2, 3), printed
+    return json.loads(printed)  # one static JSON line, never a traceback
+
+
+@pytest.mark.skipif(os.name != "posix", reason="custody writer is POSIX-only")
+@pytest.mark.parametrize("sibling", [[], 5], ids=["list", "number"])
+def test_cli_nested_non_object_siblings_never_raise(
+    calendar, tmp_path, capsys, sibling
+):
+    """[]/5 at every nested path of the canonical policy, snapshot and previous
+    reaches the auditor CLI, the generator verify CLI and the operator parser
+    as a static blocked/failed result (no AttributeError traceback)."""
+    root = _custody(tmp_path)
+    base, policy_raw, _ = _cli_inputs(root, calendar)
+    policy = json.loads(policy_raw)
+    snapshot = json.loads((root / "source.json").read_bytes())
+    previous = json.loads((root / "v1.json").read_bytes())
+    counter = iter(range(100_000))
+
+    def write(document) -> Path:
+        path = root / f"fuzz-{next(counter)}.json"
+        path.write_bytes(generator.canonical_json(document))
+        return path
+
+    def audit_cli(args):
+        output = root / f"fuzz-audit-{next(counter)}.json"
+        return _cli_json(capsys, verifier.main([*args, "--output", str(output)]))
+
+    def swap(args, flag, path):
+        args = list(args)
+        args[args.index(flag) + 1] = str(path)
+        return args
+
+    for path in _nested_paths(policy):
+        mutated = _replaced(policy, path, sibling)
+        target = write(mutated)
+        audit_cli(swap(base, "--policy-file", target))
+        _cli_json(
+            capsys,
+            generator.main(
+                [
+                    "verify",
+                    "--policy-file",
+                    str(target),
+                    "--source-snapshot-file",
+                    str(root / "source.json"),
+                ]
+            ),
+        )
+        try:
+            operator._policy(generator.canonical_json(mutated))
+        except (ValueError, TypeError, KeyError):
+            pass  # the operator CLI reports these as static codes
+    for path in _nested_paths(snapshot):
+        target = write(_replaced(snapshot, path, sibling))
+        audit_cli(swap(base, "--source-snapshot-file", target))
+        _cli_json(
+            capsys,
+            generator.main(
+                [
+                    "verify",
+                    "--policy-file",
+                    str(root / "policy.json"),
+                    "--source-snapshot-file",
+                    str(target),
+                ]
+            ),
+        )
+    for path in _nested_paths(previous):
+        raw = generator.canonical_json(_replaced(previous, path, sibling))
+        target = root / f"fuzz-prev-{next(counter)}.json"
+        target.write_bytes(raw)
+        args = swap(base, "--previous-policy-file", target)
+        args = swap(args, "--previous-policy-sha256", hashlib.sha256(raw).hexdigest())
+        audit_cli(args)
+
+
+# ── Round3 F1/F5/F6: operator receipt validation offline (no database) ─────
+def _operator_receipt(root, calendar, capsys, monkeypatch):
+    """A strict offline audit + canary chain in custody, pinned for the operator."""
+    base, _, _ = _cli_inputs(root, calendar)
+    for name in ("policy.json", "capture.json"):
+        (root / name).chmod(0o600)
+    args = [
+        *base,
+        "--capture-file",
+        str(root / "capture.json"),
+        "--output",
+        str(root / "audit.json"),
+        "--canary-output",
+        str(root / "canary.json"),
+    ]
+    assert verifier.main(args) == 0, capsys.readouterr().out
+    capsys.readouterr()
+    monkeypatch.setattr(operator, "AUDIT_CONFIG", root / "config.json")
+    monkeypatch.delenv("NAV_READINESS_DATABASE_URL", raising=False)
+    return {
+        "policy": root / "policy.json",
+        "audit_dossier": root / "audit.json",
+        "canary_manifest": root / "canary.json",
+        "capture": root / "capture.json",
+    }
+
+
+def _operator_args(root, files):
+    args = [
+        "--schema",
+        "nav_offline",
+        "--expected-sql-sha256",
+        hashlib.sha256(operator.DDL.read_bytes()).hexdigest(),
+        "--custody-root",
+        str(root),
+    ]
+    for key in ("policy", "audit_dossier", "canary_manifest", "capture"):
+        flag = key.replace("_", "-")
+        args += [
+            f"--{flag}-file",
+            str(files[key]),
+            f"--{flag}-sha256",
+            hashlib.sha256(files[key].read_bytes()).hexdigest(),
+        ]
+    return args
+
+
+def _private(root, name, data: bytes) -> Path:
+    path = root / name
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+    return path
+
+
+def _relinked(root, files, *, dossier=None, capture=None, tag="x"):
+    """Consistently rewrite dossier/capture and relink the canary manifest."""
+    files = dict(files)
+    capture_doc = json.loads(files["capture"].read_bytes())
+    dossier_doc = json.loads(files["audit_dossier"].read_bytes())
+    manifest_doc = json.loads(files["canary_manifest"].read_bytes())
+    if capture is not None:
+        capture(capture_doc)
+        raw = generator.canonical_json(capture_doc)
+        files["capture"] = _private(root, f"capture-{tag}.json", raw)
+        dossier_doc["inputs"]["capture"]["capture_bundle_sha256"] = hashlib.sha256(
+            raw
+        ).hexdigest()
+        dossier_doc["inputs"]["capture"]["captured_at"] = capture_doc["captured_at"]
+        manifest_doc["capture_bundle_sha256"] = hashlib.sha256(raw).hexdigest()
+    if dossier is not None:
+        dossier(dossier_doc)
+    raw = generator.canonical_json(dossier_doc)
+    files["audit_dossier"] = _private(root, f"audit-{tag}.json", raw)
+    manifest_doc["audit_report_sha256"] = hashlib.sha256(raw).hexdigest()
+    files["canary_manifest"] = _private(
+        root, f"canary-{tag}.json", generator.canonical_json(manifest_doc)
+    )
+    return files
+
+
+def _shift(value: str, **delta) -> str:
+    return (dt.datetime.fromisoformat(value) + dt.timedelta(**delta)).isoformat()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="custody reader is POSIX-only")
+@pytest.mark.parametrize(
+    "case,code",
+    [
+        # A fully valid chain passes every file check; only the DSN is absent.
+        ("valid", "KeyError"),
+        ("capture_cohort_list", "audit_dossier_invalid"),
+        ("capture_sec_number", "audit_dossier_invalid"),
+        ("capture_inputs_list", "audit_dossier_invalid"),
+        ("a7_list", "audit_dossier_invalid"),
+        ("a7_number", "audit_dossier_invalid"),
+        ("a7_missing_field", "audit_dossier_invalid"),
+        ("deadline_plus_one_day", "audit_sec_deadline_inconsistent"),
+        ("deadline_same_instant_other_offset", "KeyError"),
+        ("decision_not_capture", "audit_receipt_time_invalid"),
+        ("min_matched_after_decision", "audit_receipt_time_invalid"),
+        ("min_matched_older_than_max_age", "audit_receipt_time_invalid"),
+        ("max_matched_before_min", "audit_receipt_time_invalid"),
+        ("lineage_after_decision", "audit_receipt_time_invalid"),
+        ("capture_before_generation", "audit_receipt_time_invalid"),
+        ("naive_capture_time", "audit_dossier_invalid"),
+    ],
+)
+def test_operator_receipt_nested_shapes_and_time_window_offline(
+    calendar, tmp_path, capsys, monkeypatch, case, code
+):
+    root = _custody(tmp_path)
+    files = _operator_receipt(root, calendar, capsys, monkeypatch)
+
+    def freshness(mutate):
+        return lambda d: mutate(d["details"]["A8"]["freshness"])
+
+    mutations = {
+        "capture_cohort_list": {
+            "dossier": lambda d: d["inputs"]["capture"].update(cohort=[])
+        },
+        "capture_sec_number": {
+            "dossier": lambda d: d["inputs"]["capture"].update(sec=5)
+        },
+        "capture_inputs_list": {"dossier": lambda d: d["inputs"].update(capture=[])},
+        "a7_list": {"dossier": lambda d: d["details"].update(A7=[])},
+        "a7_number": {"dossier": lambda d: d["details"].update(A7=5)},
+        "a7_missing_field": {
+            "dossier": lambda d: d["details"]["A7"].pop("cohort_rows_sha256")
+        },
+        "deadline_plus_one_day": {
+            "dossier": freshness(
+                lambda f: f.update(valid_until=_shift(f["valid_until"], days=1))
+            )
+        },
+        "deadline_same_instant_other_offset": {
+            "dossier": freshness(
+                lambda f: f.update(
+                    valid_until=dt.datetime.fromisoformat(f["valid_until"])
+                    .astimezone(dt.timezone(dt.timedelta(hours=-4)))
+                    .isoformat()
+                )
+            )
+        },
+        "decision_not_capture": {
+            "dossier": freshness(
+                lambda f: f.update(decision_at=_shift(f["decision_at"], seconds=1))
+            )
+        },
+        "min_matched_after_decision": {
+            "dossier": freshness(
+                lambda f: f.update(
+                    min_matched_synced_at=_shift(f["decision_at"], seconds=1),
+                    valid_until=_shift(f["decision_at"], days=7, seconds=1),
+                )
+            )
+        },
+        "min_matched_older_than_max_age": {
+            "dossier": freshness(
+                lambda f: f.update(
+                    min_matched_synced_at=_shift(f["decision_at"], days=-7, seconds=-1),
+                    valid_until=_shift(f["decision_at"], seconds=-1),
+                )
+            )
+        },
+        "max_matched_before_min": {
+            "dossier": freshness(
+                lambda f: f.update(
+                    max_matched_synced_at=_shift(f["min_matched_synced_at"], seconds=-1)
+                )
+            )
+        },
+        "lineage_after_decision": {
+            "dossier": freshness(
+                lambda f: f.update(
+                    lineage_max_synced_at=_shift(f["decision_at"], seconds=1)
+                )
+            )
+        },
+        "naive_capture_time": {
+            "dossier": lambda d: d["inputs"]["capture"].update(
+                captured_at="2026-09-24T12:05:00"
+            )
+        },
+    }
+    if case == "capture_before_generation":
+        # Consistent capture/dossier/manifest rewrite: the capture (and so the
+        # A8 decision) now precedes the policy generation instant.
+        earlier = "2026-09-24T11:59:00+00:00"
+        files = _relinked(
+            root,
+            files,
+            capture=lambda c: c.update(captured_at=earlier),
+            dossier=freshness(lambda f: f.update(decision_at=earlier)),
+            tag=case,
+        )
+    elif case != "valid":
+        files = _relinked(root, files, **mutations[case], tag=case)
+    result = operator.main(_operator_args(root, files))
+    out = json.loads(capsys.readouterr().out)
+    assert (result, out["code"], out["dml_committed"]) == (2, code, False), out
+    if code == "KeyError":
+        assert set(out["audit"]) == set(operator.AUDIT_RECEIPT_KEYS)
+        assert out["audit"]["captured_at"] == out["audit"]["decision_at"] == CAPTURED
+
+
+@pytest.mark.skipif(os.name != "posix", reason="custody reader is POSIX-only")
+def test_operator_custody_fifo_is_rejected_without_blocking(
+    calendar, tmp_path, capsys, monkeypatch
+):
+    """A writer-less FIFO in custody is refused at once (bounded subprocess)."""
+    import subprocess
+    import sys
+    import time
+
+    root = _custody(tmp_path)
+    files = _operator_receipt(root, calendar, capsys, monkeypatch)
+    args = _operator_args(root, files)
+    fifo = root / "fifo.json"
+    os.mkfifo(fifo, 0o600)
+    args[args.index("--audit-dossier-file") + 1] = str(fifo)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "NAV_READINESS_DATABASE_URL"
+    }
+    started = time.monotonic()
+    completed = subprocess.run(
+        [sys.executable, "-m", "scripts.fund_nav_readiness_schema", *args],
+        cwd=Path(operator.__file__).parents[1],
+        env=env,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    out = json.loads(completed.stdout)
+    assert (completed.returncode, out["code"], out["dml_committed"]) == (
+        2,
+        "custody_file_not_regular",
+        False,
+    ), completed.stderr
+    assert elapsed < 30 and b"Traceback" not in completed.stderr
+    # In-process, the reader classifies the FIFO before any read.
+    with pytest.raises(ValueError, match="custody_file_not_regular"):
+        operator._read_custody(operator._custody_root(str(root)), str(fifo))

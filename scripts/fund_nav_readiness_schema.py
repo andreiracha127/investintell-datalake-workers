@@ -4,6 +4,30 @@ Exit codes: 0 success/ready/unchanged/check; 2 input, verification or SQL
 failure (DML rolled back); 3 incompatible structure, PR132 prerequisite, access
 profile (role missing/unsafe) or external dependency; 4 lock busy with
 ``dml_committed=false`` (the separate DDL step may still have been applied).
+
+Policy publication (``--policy-file``) is governed: the policy must be a
+generator-v2 catalog artifact and must come with a strict all-PASS audit
+dossier and the canary manifest of that same audit, all read once from a
+private POSIX custody root (``--custody-root``, 0700; files 0600, regular, no
+symlink/escape) and pinned by SHA-256 on the command line. The receipt is
+validated against the leaf contract only (never by importing the auditor or
+the classifier) and is part of the nav-schema-plan-v4 digest. Hand-authored
+documents stay a programmatic parser input (``_policy``), never a CLI
+publication path. Integrity and linkage are not authorship signatures: an
+authorized operator able to rewrite every artifact and hash remains the trust
+boundary.
+
+The receipt window is enforced by the database clock at check, again under
+the NAV writer locks at apply, and on every replay: ``captured_at <= now <=
+policy.valid_through`` and ``now <= sec_valid_until`` (exactly the oldest
+matched SEC ``updated_at`` + 7 days). Each committed publication appends one
+row to the private ``nav_policy_publication_receipts`` ledger (same
+transaction), binding the plan-v4 digest, the policy bytes/document and the
+normalized receipt. A pointer already at the target is accepted only as an
+exact no-write replay of such a row; a stale plan replays only with the row of
+that exact plan digest and audit identity.
+
+Run from the repository root: ``python -m scripts.fund_nav_readiness_schema``.
 """
 
 from __future__ import annotations
@@ -15,6 +39,7 @@ import hmac
 import json
 import os
 import re
+import stat
 import sys
 import uuid
 from decimal import Decimal
@@ -24,6 +49,36 @@ from zoneinfo import ZoneInfo
 import psycopg
 from psycopg import sql
 
+from scripts.nav_identity_audit_contract import (
+    A4_DETAIL_KEYS,
+    A8_DETAIL_KEYS,
+    A8_FRESHNESS_KEYS,
+    A8_OUTCOMES,
+    AUDIT_CONTRACT_SHA256,
+    AUDIT_CONTRACT_VERSION,
+    AUDIT_RECEIPT_KEYS,
+    AUDIT_RECEIPT_TIME_KEYS,
+    AUDIT_VERSION,
+    CANARY_KIND,
+    CANARY_MANIFEST_KEYS,
+    CANARY_MAX,
+    CANARY_SELECTION_KEYS,
+    CANARY_STRATA,
+    CAPTURE_KIND,
+    CATALOG_SOURCE_QUERY_SHA256,
+    DOSSIER_DETAIL_KEYS,
+    DOSSIER_INPUT_KEYS,
+    DOSSIER_KEYS,
+    GATE_CHECKS,
+    GATE_NAMES,
+    PUBLICATION_RECEIPT_RELATION,
+    SEC_MAX_SYNCED_AGE_DAYS,
+    SEC_QUERY_CONTRACT_SHA256,
+    SEC_RELATION,
+    SEC_SOURCE_CONTRACT,
+    SEC_TIMESTAMP_COLUMN,
+)
+from scripts.nav_identity_audit_contract import PLAN_VERSION as _LEAF_PLAN_VERSION
 from src.db import LOCK_FUND_NAV_READINESS, LOCK_INSTRUMENT_INGESTION
 from src.workers._nav_policy import (
     ADJUSTED_OVERLAP_ABS_TOL,
@@ -46,6 +101,10 @@ from src.workers._nav_sanitize import REPAIRED_NAV_KINDS
 
 ROOT = Path(__file__).resolve().parents[1]
 DDL = ROOT / "schemas" / "fund_nav_readiness_v1.sql"
+# Versioned audit code/config pinned by the receipt (repository files, not 0600).
+AUDIT_VERIFIER = ROOT / "scripts" / "verify_fund_nav_identity_v2.py"
+AUDIT_CONFIG = ROOT / "configs" / "nav_identity_audit_v2.json"
+MAX_CUSTODY_BYTES = 512 * 1024 * 1024
 CATALOG_MANIFEST = ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json"
 EXIT_INCOMPATIBLE = 3
 EXIT_LOCK_BUSY = 4
@@ -56,6 +115,7 @@ TABLES = (
     "nav_valuation_schedules",
     "nav_policy_current",
     "nav_instrument_policy_evidence",
+    PUBLICATION_RECEIPT_RELATION,
     "nav_ingestion_runs",
     "nav_ingestion_attempts",
     "nav_calendar_maintenance_runs",
@@ -82,6 +142,7 @@ FUNCTIONS = (
     "nav_policy_freeze_v1",
     "nav_policy_pointer_stamp_v1",
     "nav_instrument_evidence_append_only_v1",
+    "nav_policy_publication_receipt_guard_v1",
     "nav_ingestion_run_guard_v1",
     "nav_ingestion_attempt_guard_v1",
     "nav_level_evidence_digest_v1",
@@ -101,6 +162,11 @@ FUNCTIONS = (
     "fund_nav_readiness_pointer_stamp_v1",
     "fund_nav_snapshot_current_at_v1",
 )
+# Additive objects of the plan-v4 publication receipt: an older W1 schema that
+# lacks ALL of them (and is otherwise exact/repairable) is repairable by the
+# idempotent DDL; any partial or reshaped presence stays incompatible.
+ADDITIVE_RELATIONS = (PUBLICATION_RECEIPT_RELATION,)
+ADDITIVE_FUNCTIONS = ("nav_policy_publication_receipt_guard_v1",)
 # N6 access profile: the Light read runtime.
 ACCESS_PROFILE = "light_app_runtime_v1"
 ACCESS_ROLE = "app_runtime"
@@ -141,11 +207,14 @@ DEPENDENCIES = {
 WRITE_PRIVILEGES = ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN")
 COLUMN_WRITE_PRIVILEGES = ("INSERT", "UPDATE", "REFERENCES")
 EXIT_BLOCKED = 2
-# v3 adds the full-document policy digest (instrument evidence + generation)
-# and the explicit operation identity; v2 digests are recognised and rejected.
-PLAN_VERSION = "nav-schema-plan-v3"
-PREVIOUS_PLAN_VERSION = "nav-schema-plan-v2"
+# v4 adds the governed audit receipt (``audit`` and ``operation.audit``);
+# v3 added the full-document policy digest and the explicit operation
+# identity. v1/v2/v3 digests of the same inputs are recognised and rejected.
+PLAN_VERSION = _LEAF_PLAN_VERSION
+PREVIOUS_PLAN_VERSION = "nav-schema-plan-v3"
+V2_PLAN_VERSION = "nav-schema-plan-v2"
 _V3_ONLY_FIELDS = ("policy_document_digest", "operation")
+_V4_ONLY_FIELDS = ("audit",)
 
 
 class MaintenanceBusy(RuntimeError):
@@ -153,9 +222,51 @@ class MaintenanceBusy(RuntimeError):
 
 
 SCHEMA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_$]{0,62}\Z")
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+LOWER_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
-def _policy(path: str | dict | None) -> tuple[dict | None, bytes]:
+def _unique_pairs(pairs: list) -> dict:
+    keys = [key for key, _value in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate_key")
+    return dict(pairs)
+
+
+def _no_constant(_name: str):
+    raise ValueError("non_finite_constant")
+
+
+def _strict_object(raw: bytes, code: str) -> dict:
+    """Strict JSON object: duplicate keys, NaN/Infinity or non-object → code."""
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_no_constant)
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise ValueError(code) from exc
+    if not isinstance(value, dict):
+        raise ValueError(code)
+    return value
+
+
+def _document_bytes(value) -> bytes:
+    """Canonical artifact bytes (sorted keys, compact, ASCII, trailing LF)."""
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+    ).encode("ascii")
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _policy(path: str | dict | bytes | None) -> tuple[dict | None, bytes]:
+    """Parse and validate a policy document (programmatic input).
+
+    Accepts a path, a dict or raw bytes. This parser is the shared validation
+    of hand-authored fixtures and generated artifacts; it is NOT the CLI
+    publication path, which additionally requires the governed audit receipt
+    (``_governed_policy``).
+    """
     if path is None:
         return None, b""
     if isinstance(path, dict):
@@ -164,8 +275,10 @@ def _policy(path: str | dict | None) -> tuple[dict | None, bytes]:
             json.dumps(policy, sort_keys=True, separators=(",", ":")) + "\n"
         ).encode()
     else:
-        raw = Path(path).read_bytes()
-        policy = json.loads(raw)
+        raw = path if isinstance(path, bytes) else Path(path).read_bytes()
+        policy = _strict_object(raw, "policy_not_object")
+    if not isinstance(policy, dict):
+        raise ValueError("policy_not_object")
     required = {
         "policy_id",
         "policy_version",
@@ -211,6 +324,17 @@ def _policy(path: str | dict | None) -> tuple[dict | None, bytes]:
         )
     ):
         raise ValueError("policy_evidence_incomplete")
+    # Nested shapes before any lookup: a list/number where an object is
+    # expected is a static code, never an AttributeError.
+    if not isinstance(policy["sessions"], list) or any(
+        not isinstance(entry, dict) for entry in policy["sessions"]
+    ):
+        raise ValueError("policy_sessions_invalid")
+    if not isinstance(policy["instrument_evidence"], list) or any(
+        not isinstance(row, dict) or not isinstance(row.get("instrument_id"), str)
+        for row in policy["instrument_evidence"]
+    ):
+        raise ValueError("instrument_evidence_shape_invalid")
     coverage_start = dt.date.fromisoformat(policy["coverage_start"])
     coverage_end = dt.date.fromisoformat(policy["coverage_end"])
     valid_through = dt.datetime.fromisoformat(policy["valid_through"])
@@ -542,6 +666,40 @@ def _recreatable(trigger: list) -> bool:
     return target.startswith(SCHEMA_TOKEN + ".") and target.split(".", 1)[1].split("(")[0] in FUNCTIONS
 
 
+def _without_additive(signature: dict) -> dict:
+    """The signature minus every object of the additive publication receipt.
+
+    Only ``ADDITIVE_RELATIONS`` (with their columns, constraints, indexes and
+    triggers) and ``ADDITIVE_FUNCTIONS`` are removed; nothing else is ever
+    normalized away.
+    """
+    reduced = json.loads(json.dumps(signature))
+    for section in ("relations", "columns", "constraints", "indexes", "triggers"):
+        bucket = reduced.get(section)
+        if isinstance(bucket, dict):
+            for name in ADDITIVE_RELATIONS:
+                bucket.pop(name, None)
+    functions = reduced.get("functions")
+    if isinstance(functions, dict):
+        reduced["functions"] = {
+            key: value
+            for key, value in functions.items()
+            if key.split("(", 1)[0] not in ADDITIVE_FUNCTIONS
+        }
+    return reduced
+
+
+def _additive_absent(actual: dict) -> bool:
+    """No trace of the additive receipt objects in the actual catalog."""
+    return not any(
+        name in actual.get(section, {})
+        for section in ("relations", "columns", "constraints", "indexes", "triggers")
+        for name in ADDITIVE_RELATIONS
+    ) and not any(
+        key.split("(", 1)[0] in ADDITIVE_FUNCTIONS for key in actual.get("functions", {})
+    )
+
+
 def classify_catalog(expected: dict, actual: dict) -> tuple[str, list[str]]:
     """``exact`` | ``absent`` | ``repairable`` | ``incompatible`` (pure).
 
@@ -550,8 +708,18 @@ def classify_catalog(expected: dict, actual: dict) -> tuple[str, list[str]]:
     * repairable: every non-trigger section is exact and, per trigger relation,
       actual triggers are a subset of expected with only W1-recreatable ones
       missing. Extra, disabled, redefined or foreign-schema triggers are not.
+      Also repairable: an older W1 schema lacking EVERY additive publication-
+      receipt object (table, function, trigger, constraints, index) and
+      otherwise matching under the same rules; a partially present or
+      reshaped additive object is incompatible.
     * incompatible: anything else; no DDL or maintenance may run.
     """
+    return _classify_catalog(expected, actual, additive=True)
+
+
+def _classify_catalog(
+    expected: dict, actual: dict, *, additive: bool
+) -> tuple[str, list[str]]:
     mismatches = sorted(
         section
         for section in set(expected) | set(actual)
@@ -559,6 +727,11 @@ def classify_catalog(expected: dict, actual: dict) -> tuple[str, list[str]]:
     )
     if not mismatches:
         return "exact", mismatches
+    if additive and actual.get("relations") and _additive_absent(actual):
+        base, _ = _classify_catalog(_without_additive(expected), actual, additive=False)
+        return ("repairable" if base in ("exact", "repairable") else "incompatible"), (
+            mismatches
+        )
     expected_triggers = expected.get("triggers", {})
     actual_triggers = actual.get("triggers", {})
     if not actual.get("relations") and not actual.get("functions"):
@@ -1536,15 +1709,20 @@ def _dml_state(conn, evidence: dict | None, ids: list[str], start, end) -> dict:
 def build_plan(
     *, ddl: bytes, manifest: dict, schema: str, policy_raw: bytes, evidence: dict | None,
     ids: list[str], start: str | None, end: str | None, dml_state: dict,
+    audit: dict | None = None,
 ) -> tuple[dict, str]:
-    """Normalized nav-schema-plan-v3 and its SHA256 (canonical JSON).
+    """Normalized nav-schema-plan-v4 and its SHA256 (canonical JSON).
 
     ``policy_hash`` identifies the immutable policy version (it excludes
     instrument evidence and generation by design); ``policy_document_digest``
     is the canonical digest of the WHOLE document, so a new lifecycle row for
-    the same version is a different operation. ``operation`` is the ordered
-    identity a replay must match exactly; ``before`` pins the pre-state.
+    the same version is a different operation. ``audit`` is the governed
+    receipt (hashes/aggregates only) that a policy publication requires;
+    ``operation`` is the ordered identity a replay must match exactly (it
+    includes the audit receipt); ``before`` pins the pre-state.
     """
+    if (evidence is None) != (audit is None):
+        raise ValueError("audit_receipt_required")
     operations = sorted(
         ["ddl", *(["policy"] if evidence else []), *(["maintenance"] if ids else [])]
     )
@@ -1559,11 +1737,17 @@ def build_plan(
         "policy_sha256": hashlib.sha256(policy_raw).hexdigest() if policy_raw else None,
         "policy_hash": policy_content_digest(evidence) if evidence else None,
         "policy_document_digest": canonical_digest(evidence) if evidence else None,
+        "audit": audit,
         "operation": {
             "policy": (
                 [evidence["policy_id"], evidence["policy_version"],
                  policy_content_digest(evidence), canonical_digest(evidence)]
                 if evidence else None
+            ),
+            "audit": (
+                None if audit is None
+                else [audit["audit_dossier_sha256"], audit["canary_manifest_sha256"],
+                      audit["capture_bundle_sha256"]]
             ),
             "maintenance": (
                 {"instrument_ids": sorted(ids), "window": [start, end]} if ids else None
@@ -1578,9 +1762,21 @@ def build_plan(
 
 
 def previous_version_digest(plan: dict) -> str:
-    """Digest the same inputs would have had under nav-schema-plan-v2."""
-    legacy = {k: v for k, v in plan.items() if k not in _V3_ONLY_FIELDS}
+    """Digest the same inputs would have had under nav-schema-plan-v3."""
+    legacy = {k: v for k, v in plan.items() if k not in _V4_ONLY_FIELDS}
+    legacy["operation"] = {
+        k: v for k, v in plan["operation"].items() if k != "audit"
+    }
     legacy["plan_version"] = PREVIOUS_PLAN_VERSION
+    return canonical_digest(legacy)
+
+
+def v2_version_digest(plan: dict) -> str:
+    """Digest the same inputs would have had under nav-schema-plan-v2."""
+    legacy = {
+        k: v for k, v in plan.items() if k not in (*_V3_ONLY_FIELDS, *_V4_ONLY_FIELDS)
+    }
+    legacy["plan_version"] = V2_PLAN_VERSION
     return canonical_digest(legacy)
 
 
@@ -1720,17 +1916,26 @@ def _maintenance_receipt_exact(
 def _already_applied(
     conn, plan_sha256: str, evidence: dict | None, ids: list[str],
     start: dt.date | None = None, end: dt.date | None = None,
+    *, audit: dict | None = None, policy_sha256: str | None = None,
 ) -> bool:
     """A stale plan is a replay only when this exact operation is persisted.
 
-    Policy: every document fact persisted exactly (``_policy_facts_exact``).
+    Policy: every document fact persisted exactly (``_policy_facts_exact``)
+    AND a publication receipt of this very plan digest, policy bytes/document
+    and normalized audit receipt (``_publication_receipt_exact``): another
+    valid audit of the same policy bytes never replays the old plan.
     Maintenance: an exact receipt of this plan hash, scope, window and pins
     whose post-state still holds (``_maintenance_receipt_exact``). A current
     pointer alone, or any receipt carrying the hash, never suffices.
     """
     if evidence is None and not ids:
         return False
-    if evidence is not None and not _policy_facts_exact(conn, evidence):
+    if evidence is not None and not (
+        _policy_facts_exact(conn, evidence)
+        and _publication_receipt_exact(
+            conn, evidence, audit, policy_sha256, plan_sha256=plan_sha256
+        )
+    ):
         return False
     if ids:
         try:
@@ -1742,6 +1947,629 @@ def _already_applied(
             return False
         return _maintenance_receipt_exact(conn, plan_sha256, ids, start, end, policy)
     return True
+
+
+# ── governed publication receipt (plan-v4) ───────────────────────────────────
+RECEIPT_FILE_ARGS = (
+    ("policy_file", "policy_sha256"),
+    ("audit_dossier_file", "audit_dossier_sha256"),
+    ("canary_manifest_file", "canary_manifest_sha256"),
+    ("capture_file", "capture_sha256"),
+)
+
+
+def _platform_name() -> str:
+    return os.name
+
+
+def _inside_git_checkout(path: Path) -> bool:
+    for ancestor in (path, *path.parents):
+        try:
+            (ancestor / ".git").lstat()  # presence only; contents never read
+        except FileNotFoundError:
+            continue
+        return True
+    return False
+
+
+def _custody_root(value: str | None) -> Path:
+    """Private POSIX custody root: absolute, no symlink, owner-only, no Git."""
+    if _platform_name() != "posix":
+        raise ValueError("custody_requires_posix")
+    if not value:
+        raise ValueError("audit_receipt_required")
+    raw = Path(value).expanduser().absolute()
+    try:
+        root = raw.resolve(strict=True)
+        info = os.stat(root, follow_symlinks=False)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise ValueError("custody_root_missing") from exc
+    if raw != root or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("custody_root_invalid")
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise ValueError("custody_root_not_private")
+    if _inside_git_checkout(root):
+        raise ValueError("custody_inside_git_checkout")
+    return root
+
+
+def _read_custody(root: Path, value: str) -> bytes:
+    """Read one custody file ONCE through no-follow fds; validate what was read.
+
+    The path must resolve inside the root without any symlink component; the
+    final file must be a regular owner-only (0600-compatible) single-link file;
+    size, inode and mtime are checked before and after the read so a
+    concurrent rewrite or replacement blocks instead of being half-read. The
+    final component is opened NON-BLOCKING and classified by ``fstat`` before
+    any read: a FIFO (or device/socket) is rejected at once instead of
+    blocking on a missing writer.
+    """
+    raw = Path(value).expanduser().absolute()
+    if raw.resolve(strict=False) != raw:
+        raise ValueError("custody_symlink_invalid")
+    try:
+        relative = raw.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("custody_path_outside_root") from exc
+    if not relative.parts or ".." in relative.parts:
+        raise ValueError("custody_path_outside_root")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(root, directory_flags)
+    try:
+        for component in relative.parts[:-1]:
+            try:
+                following = os.open(component, directory_flags, dir_fd=fd)
+            except OSError as exc:
+                raise ValueError("custody_symlink_invalid") from exc
+            os.close(fd)
+            fd = following
+        try:
+            file_fd = os.open(
+                relative.parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=fd,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError("custody_file_missing") from exc
+        except OSError as exc:
+            raise ValueError("custody_symlink_invalid") from exc
+    finally:
+        os.close(fd)
+    try:
+        before = os.fstat(file_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("custody_file_not_regular")
+        # Regular file established: restore blocking reads (no effect on a
+        # regular file's data, but keeps the read loop's semantics explicit).
+        os.set_blocking(file_fd, True)
+        if before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) & 0o077:
+            raise ValueError("custody_file_not_private")
+        if before.st_nlink != 1:
+            raise ValueError("custody_file_not_regular")
+        if before.st_size > MAX_CUSTODY_BYTES:
+            raise ValueError("custody_file_too_large")
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(file_fd, 1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_CUSTODY_BYTES:
+                raise ValueError("custody_file_too_large")
+            chunks.append(chunk)
+        after = os.fstat(file_fd)
+    finally:
+        os.close(file_fd)
+    content = b"".join(chunks)
+    if (
+        (before.st_ino, before.st_size, before.st_mtime_ns)
+        != (after.st_ino, after.st_size, after.st_mtime_ns)
+        or len(content) != before.st_size
+    ):
+        raise ValueError("custody_file_changed")
+    try:
+        current = os.stat(raw, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise ValueError("custody_file_changed") from exc
+    if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+        raise ValueError("custody_file_changed")
+    return content
+
+
+def _hash_arg(value: str | None) -> str:
+    text = (value or "").lower()
+    if not HEX64.fullmatch(text):
+        raise ValueError("audit_receipt_hash_invalid")
+    return text
+
+
+def _aware(value) -> dt.datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+
+
+SEC_MAX_AGE = dt.timedelta(days=SEC_MAX_SYNCED_AGE_DAYS)
+
+
+def _hex64(value) -> bool:
+    return isinstance(value, str) and HEX64.fullmatch(value) is not None
+
+
+def _receipt_window(times: dict) -> dict[str, dt.datetime]:
+    """Aware, ordered, internally consistent audit instants (static codes).
+
+    ``captured_at == decision_at`` (the capture's DB clock is the A8 decision
+    instant); ``min_matched_synced_at <= decision_at`` within the maximum age;
+    ``sec_valid_until`` is exactly ``min_matched_synced_at + max age``.
+    """
+    parsed = {key: _aware(times.get(key)) for key in AUDIT_RECEIPT_TIME_KEYS}
+    if any(value is None for value in parsed.values()):
+        raise ValueError("audit_receipt_time_invalid")
+    captured, decided = parsed["captured_at"], parsed["decision_at"]
+    minimum, until = parsed["min_matched_synced_at"], parsed["sec_valid_until"]
+    if captured != decided or minimum > decided or decided - minimum > SEC_MAX_AGE:
+        raise ValueError("audit_receipt_time_invalid")
+    if until != minimum + SEC_MAX_AGE:
+        raise ValueError("audit_sec_deadline_inconsistent")
+    return parsed
+
+
+def _uuid_list(value) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or any(not isinstance(item, str) or not LOWER_UUID.fullmatch(item) for item in value)
+        or value != sorted(set(value))
+    ):
+        raise ValueError("canary_manifest_invalid")
+    return value
+
+
+def _validate_dossier(dossier: dict, policy: dict, policy_sha: str) -> None:
+    """Strict all-PASS dossier of exactly this policy, contract and code."""
+    generation = policy["generation"]
+    gates = dossier.get("gates")
+    inputs = dossier.get("inputs")
+    details = dossier.get("details")
+    if (
+        set(dossier) != set(DOSSIER_KEYS)
+        or dossier["audit_version"] != AUDIT_VERSION
+        or dossier["result"] != "pass"
+        or dossier["strict"] is not True
+        or dossier["canary_requested"] is not True
+        or not isinstance(gates, dict)
+        or set(gates) != set(GATE_NAMES)
+        or not isinstance(inputs, dict)
+        or set(inputs) != set(DOSSIER_INPUT_KEYS)
+        or not isinstance(details, dict)
+        or set(details) != set(DOSSIER_DETAIL_KEYS)
+    ):
+        raise ValueError("audit_dossier_invalid")
+    for name in GATE_NAMES:
+        gate = gates[name]
+        if (
+            not isinstance(gate, dict)
+            or set(gate) != {"status", "code", "checks"}
+            or gate["status"] != "PASS"
+            or gate["code"] is not None
+            or not isinstance(gate["checks"], dict)
+            or set(gate["checks"]) != set(GATE_CHECKS[name])
+            or any(value is not True for value in gate["checks"].values())
+        ):
+            raise ValueError("audit_not_strict_pass")
+    if (
+        inputs["audit_contract_version"] != AUDIT_CONTRACT_VERSION
+        or inputs["audit_contract_sha256"] != AUDIT_CONTRACT_SHA256
+        or inputs["source_query_sha256"] != CATALOG_SOURCE_QUERY_SHA256
+        or inputs["sec_source_contract"] != SEC_SOURCE_CONTRACT
+        or inputs["sec_query_contract_sha256"] != SEC_QUERY_CONTRACT_SHA256
+    ):
+        raise ValueError("audit_contract_mismatch")
+    if (
+        inputs["policy_artifact_sha256"] != policy_sha
+        or inputs["policy_id"] != policy["policy_id"]
+        or inputs["policy_version"] != policy["policy_version"]
+        or inputs["policy_hash"] != generation["policy_hash"]
+        or inputs["policy_generation_sha256"] != generation["generation_sha256"]
+        or inputs["source_snapshot_sha256"] != generation["source_snapshot_sha256"]
+        or inputs["live_source_snapshot_sha256"] != generation["source_snapshot_sha256"]
+    ):
+        raise ValueError("audit_policy_mismatch")
+    if inputs["verifier_source_sha256"] != _sha256(AUDIT_VERIFIER.read_bytes()):
+        raise ValueError("audit_verifier_mismatch")
+    if inputs["audit_config_sha256"] != _sha256(AUDIT_CONFIG.read_bytes()):
+        raise ValueError("audit_config_mismatch")
+    identity = inputs["previous_policy_identity"]
+    if (
+        not isinstance(identity, list)
+        or len(identity) != 3
+        or not all(isinstance(part, str) and part for part in identity)
+        or not HEX64.fullmatch(identity[2])
+        or not isinstance(inputs["previous_policy_sha256"], str)
+        or not HEX64.fullmatch(inputs["previous_policy_sha256"])
+        or not isinstance(inputs["source_snapshot_file_sha256"], str)
+        or not HEX64.fullmatch(inputs["source_snapshot_file_sha256"])
+    ):
+        raise ValueError("audit_previous_policy_invalid")
+    # Nested objects are typed before any lookup (static codes, no
+    # AttributeError): the recorded capture, its cohort/SEC parts and A7.
+    capture = inputs["capture"]
+    recorded_cohort = capture.get("cohort") if isinstance(capture, dict) else None
+    recorded_sec = capture.get("sec") if isinstance(capture, dict) else None
+    a4, a7, a8 = details["A4"], details["A7"], details["A8"]
+    if (
+        not isinstance(capture, dict)
+        or not _hex64(capture.get("capture_bundle_sha256"))
+        or _aware(capture.get("captured_at")) is None
+        or not _hex64(capture.get("source_snapshot_sha256"))
+        or not isinstance(recorded_cohort, dict)
+        or not _hex64(recorded_cohort.get("rows_sha256"))
+        or not isinstance(recorded_sec, dict)
+        or not _hex64(recorded_sec.get("rows_sha256"))
+        or not isinstance(a7, dict)
+        or not _hex64(a7.get("eligible_cohort_sha256"))
+        or type(a7.get("eligible_cohort_size")) is not int
+        or not isinstance(a7.get("light_revision"), str)
+        or not _hex64(a7.get("cohort_query_sha256"))
+        or not _hex64(a7.get("cohort_rows_sha256"))
+    ):
+        raise ValueError("audit_dossier_invalid")
+    if (
+        not isinstance(a4, dict)
+        or set(a4) != set(A4_DETAIL_KEYS)
+        or a4["ceiling_population"] != "structural_pre_claims_daily"
+        or not isinstance(a8, dict)
+        or set(a8) != set(A8_DETAIL_KEYS)
+        or a8["source_contract"] != SEC_SOURCE_CONTRACT
+        or a8["relation"] != SEC_RELATION
+        or a8["timestamp_column"] != SEC_TIMESTAMP_COLUMN
+        or a8["sec_query_contract_sha256"] != SEC_QUERY_CONTRACT_SHA256
+        or not isinstance(a8["freshness"], dict)
+        or set(a8["freshness"]) != set(A8_FRESHNESS_KEYS)
+        or a8["freshness"]["max_synced_age_days"] != SEC_MAX_SYNCED_AGE_DAYS
+        or _aware(a8["freshness"]["valid_until"]) is None
+        or not isinstance(a8["outcomes"], dict)
+        or set(a8["outcomes"]) != set(A8_OUTCOMES)
+        or a8["outcomes"]["matched"] != sum(
+            1 for row in policy["instrument_evidence"] if row["fund_status"] == "ACTIVE"
+        )
+        or any(a8["outcomes"][name] != 0 for name in A8_OUTCOMES if name != "matched")
+        or not _hex64(details["canary_selection_sha256"])
+    ):
+        raise ValueError("audit_dossier_invalid")
+    # F1 time window, retained and re-derived from the dossier itself: the
+    # capture instant IS the A8 decision instant, the SEC deadline is exactly
+    # the oldest matched updated_at + max age, every matched/lineage instant
+    # lies in [min matched, decision] and generation precedes the capture.
+    freshness = a8["freshness"]
+    window = _receipt_window(
+        {
+            "captured_at": capture["captured_at"],
+            "decision_at": freshness["decision_at"],
+            "min_matched_synced_at": freshness["min_matched_synced_at"],
+            "sec_valid_until": freshness["valid_until"],
+        }
+    )
+    max_matched = _aware(freshness["max_matched_synced_at"])
+    lineage_max = _aware(freshness["lineage_max_synced_at"])
+    generated = _aware(generation.get("generated_at"))
+    if (
+        max_matched is None
+        or lineage_max is None
+        or generated is None
+        or not (
+            window["min_matched_synced_at"]
+            <= max_matched
+            <= lineage_max
+            <= window["decision_at"]
+        )
+        or generated > window["captured_at"]
+    ):
+        raise ValueError("audit_receipt_time_invalid")
+
+
+def _validate_capture(capture: dict, capture_raw: bytes, dossier: dict, policy: dict) -> set:
+    """Capture of the same snapshot; cohort/SEC row digests recomputed here."""
+    recorded = dossier["inputs"]["capture"]
+    if (
+        capture_raw != _document_bytes(capture)
+        or capture.get("kind") != CAPTURE_KIND
+        or capture.get("audit_contract_version") != AUDIT_CONTRACT_VERSION
+        or capture.get("source_query_sha256") != CATALOG_SOURCE_QUERY_SHA256
+        or capture.get("source_snapshot_sha256")
+        != policy["generation"]["source_snapshot_sha256"]
+        or not isinstance(recorded, dict)
+        or recorded.get("capture_bundle_sha256") != _sha256(capture_raw)
+        or recorded.get("captured_at") != capture.get("captured_at")
+        or recorded.get("source_snapshot_sha256") != capture.get("source_snapshot_sha256")
+    ):
+        raise ValueError("audit_capture_mismatch")
+    cohort, sec = capture.get("cohort"), capture.get("sec")
+    if not isinstance(cohort, dict) or not isinstance(sec, dict):
+        raise ValueError("audit_capture_mismatch")
+    for part, name in ((cohort, "cohort"), (sec, "sec")):
+        rows = part.get("rows")
+        if (
+            part.get("state") != "captured"
+            or not isinstance(rows, list)
+            or _sha256(_document_bytes(rows)) != part.get("rows_sha256")
+            or recorded[name].get("rows_sha256") != part.get("rows_sha256")
+            or part.get("row_count") != len(rows)
+        ):
+            raise ValueError("audit_capture_mismatch")
+    if (
+        sec.get("source_contract") != SEC_SOURCE_CONTRACT
+        or sec.get("relation") != SEC_RELATION
+        or sec.get("timestamp_column") != SEC_TIMESTAMP_COLUMN
+        or sec.get("query_contract_sha256") != SEC_QUERY_CONTRACT_SHA256
+        or dossier["details"]["A8"]["sec_rows_sha256"] != sec.get("rows_sha256")
+        or dossier["details"]["A7"].get("cohort_rows_sha256") != cohort.get("rows_sha256")
+    ):
+        raise ValueError("audit_capture_mismatch")
+    members = set()
+    for row in cohort["rows"]:
+        if not isinstance(row, dict) or not isinstance(row.get("instrument_id"), str):
+            raise ValueError("audit_capture_mismatch")
+        members.add(row["instrument_id"])
+    return members
+
+
+def _selection_digest(manifest: dict) -> str:
+    return _sha256(_document_bytes({key: manifest[key] for key in CANARY_SELECTION_KEYS}))
+
+
+def _validate_manifest(
+    manifest: dict, dossier: dict, dossier_sha: str, capture_sha: str,
+    policy: dict, policy_sha: str, cohort_members: set,
+) -> None:
+    inputs, a7 = dossier["inputs"], dossier["details"]["A7"]
+    config = _strict_object(AUDIT_CONFIG.read_bytes(), "audit_config_mismatch")
+    allowlist = _uuid_list(manifest.get("allowlist")) if isinstance(manifest, dict) else None
+    active_daily = {
+        row["instrument_id"]
+        for row in policy["instrument_evidence"]
+        if row["fund_status"] == "ACTIVE" and row["valuation_frequency"] == "daily"
+    }
+    if (
+        set(manifest) != set(CANARY_MANIFEST_KEYS)
+        or manifest["kind"] != CANARY_KIND
+        or manifest["audit_contract_version"] != AUDIT_CONTRACT_VERSION
+        or manifest["audit_contract_sha256"] != AUDIT_CONTRACT_SHA256
+        or manifest["audit_report_sha256"] != dossier_sha
+        or manifest["capture_bundle_sha256"] != capture_sha
+        or manifest["audit_config_sha256"] != inputs["audit_config_sha256"]
+        or manifest["verifier_source_sha256"] != inputs["verifier_source_sha256"]
+        or manifest["sec_source_contract"] != SEC_SOURCE_CONTRACT
+        or manifest["sec_query_contract_sha256"] != SEC_QUERY_CONTRACT_SHA256
+        or manifest["policy_id"] != policy["policy_id"]
+        or manifest["policy_version"] != policy["policy_version"]
+        or manifest["policy_hash"] != policy["generation"]["policy_hash"]
+        or manifest["policy_artifact_sha256"] != policy_sha
+        or manifest["active_daily_set_sha256"]
+        != policy["generation"]["active_daily_set_sha256"]
+        or manifest["eligible_cohort_sha256"] != a7.get("eligible_cohort_sha256")
+        or manifest["eligible_cohort_size"] != a7.get("eligible_cohort_size")
+        or manifest["light_revision"] != a7.get("light_revision")
+        or manifest["cohort_query_sha256"] != a7.get("cohort_query_sha256")
+        or manifest["max_size"] != CANARY_MAX
+        or manifest["salt"] != config.get("canary_salt")
+        or type(manifest["size"]) is not int
+        or not 1 <= manifest["size"] <= CANARY_MAX
+        or manifest["size"] != len(allowlist)
+        or type(manifest["cohort_size"]) is not int
+        or manifest["cohort_size"] != manifest["eligible_cohort_size"]
+        or not isinstance(manifest["strata"], dict)
+        or set(manifest["strata"]) != set(CANARY_STRATA)
+        or manifest["selection_sha256"] != _selection_digest(manifest)
+        or manifest["selection_sha256"] != dossier["details"]["canary_selection_sha256"]
+        or not set(allowlist) <= active_daily
+        or not set(allowlist) <= cohort_members
+    ):
+        raise ValueError("canary_manifest_invalid")
+
+
+def _governed_policy(args) -> tuple[dict | None, bytes, dict | None]:
+    """The ONLY CLI policy path: policy + strict dossier + canary + capture.
+
+    Returns ``(evidence, raw, audit_receipt)``. No flag, environment variable
+    or fallback publishes a policy without the receipt.
+    """
+    receipt_args = [
+        getattr(args, name) for pair in RECEIPT_FILE_ARGS for name in pair
+    ] + [args.custody_root]
+    if args.policy_file is None:
+        if any(value is not None for value in receipt_args):
+            raise ValueError("audit_receipt_without_policy")
+        return None, b"", None
+    if any(value is None for value in receipt_args):
+        raise ValueError("audit_receipt_required")
+    root = _custody_root(args.custody_root)
+    paths = [Path(getattr(args, file_arg)).expanduser().absolute()
+             for file_arg, _hash in RECEIPT_FILE_ARGS]
+    if len(set(paths)) != len(paths):
+        raise ValueError("audit_receipt_paths_collide")
+    content = {}
+    for file_arg, hash_arg in RECEIPT_FILE_ARGS:
+        expected = _hash_arg(getattr(args, hash_arg))
+        data = _read_custody(root, getattr(args, file_arg))
+        if not hmac.compare_digest(_sha256(data), expected):
+            raise ValueError(f"{hash_arg}_mismatch")
+        content[file_arg] = data
+    raw = content["policy_file"]
+    policy = _strict_object(raw, "policy_not_object")
+    if raw != _document_bytes(policy):
+        raise ValueError("policy_not_canonical")
+    if not isinstance(policy.get("generation"), dict):
+        raise ValueError("policy_not_generated")
+    evidence, _ = _policy(raw)
+    policy_sha = _sha256(raw)
+    dossier_raw = content["audit_dossier_file"]
+    dossier = _strict_object(dossier_raw, "audit_dossier_invalid")
+    if dossier_raw != _document_bytes(dossier):
+        raise ValueError("audit_dossier_invalid")
+    _validate_dossier(dossier, evidence, policy_sha)
+    capture_raw = content["capture_file"]
+    capture = _strict_object(capture_raw, "audit_capture_mismatch")
+    members = _validate_capture(capture, capture_raw, dossier, evidence)
+    manifest_raw = content["canary_manifest_file"]
+    manifest = _strict_object(manifest_raw, "canary_manifest_invalid")
+    if manifest_raw != _document_bytes(manifest):
+        raise ValueError("canary_manifest_invalid")
+    dossier_sha, capture_sha = _sha256(dossier_raw), _sha256(capture_raw)
+    _validate_manifest(
+        manifest, dossier, dossier_sha, capture_sha, evidence, policy_sha, members
+    )
+    inputs = dossier["inputs"]
+    freshness = dossier["details"]["A8"]["freshness"]
+    receipt = {
+        "audit_contract_version": AUDIT_CONTRACT_VERSION,
+        "audit_contract_sha256": AUDIT_CONTRACT_SHA256,
+        "audit_config_sha256": inputs["audit_config_sha256"],
+        "verifier_source_sha256": inputs["verifier_source_sha256"],
+        "audit_dossier_sha256": dossier_sha,
+        "canary_manifest_sha256": _sha256(manifest_raw),
+        "canary_selection_sha256": manifest["selection_sha256"],
+        "capture_bundle_sha256": capture_sha,
+        "source_snapshot_sha256": inputs["source_snapshot_sha256"],
+        "source_snapshot_file_sha256": inputs["source_snapshot_file_sha256"],
+        "sec_source_contract": SEC_SOURCE_CONTRACT,
+        "sec_query_contract_sha256": SEC_QUERY_CONTRACT_SHA256,
+        "sec_rows_sha256": capture["sec"]["rows_sha256"],
+        "captured_at": inputs["capture"]["captured_at"],
+        "decision_at": freshness["decision_at"],
+        "min_matched_synced_at": freshness["min_matched_synced_at"],
+        "sec_valid_until": freshness["valid_until"],
+        "previous_policy_identity": list(inputs["previous_policy_identity"]),
+        "previous_policy_sha256": inputs["previous_policy_sha256"],
+    }
+    if set(receipt) != set(AUDIT_RECEIPT_KEYS):  # pragma: no cover - contract guard
+        raise ValueError("audit_receipt_invalid")
+    return evidence, raw, receipt
+
+
+def _pointer_identity(conn) -> list | None:
+    row = conn.execute(
+        """SELECT c.policy_id, c.policy_version, v.policy_hash
+             FROM nav_policy_current c
+             JOIN nav_policy_versions v USING (policy_id, policy_version)
+            WHERE c.readiness_profile = 'current_daily_nav_v1'"""
+    ).fetchone()
+    return None if row is None else [row[0], row[1], row[2]]
+
+
+def _audit_window(conn, evidence: dict, audit: dict) -> None:
+    """The receipt's time window holds NOW, by the database clock.
+
+    ``captured_at <= now <= policy.valid_through`` and ``now <=
+    sec_valid_until``, after re-validating the receipt's own consistency
+    (``_receipt_window``). Run at check, again under the NAV writer locks at
+    apply, and before any replay decision.
+    """
+    window = _receipt_window(audit)
+    valid_through = _aware(evidence.get("valid_through"))
+    if valid_through is None:
+        raise ValueError("calendar_expiration_unverified")
+    now = conn.execute("SELECT clock_timestamp()").fetchone()[0]
+    if now < window["captured_at"]:
+        raise ValueError("audit_capture_in_future")
+    if now > valid_through:
+        raise ValueError("policy_valid_through_expired")
+    if now > window["sec_valid_until"]:
+        raise ValueError("audit_sec_freshness_expired")
+
+
+def _receipt_identity(evidence: dict, audit: dict, policy_sha256: str | None) -> tuple:
+    return (
+        evidence["policy_id"],
+        evidence["policy_version"],
+        policy_content_digest(evidence),
+        policy_sha256,
+        canonical_digest(evidence),
+        canonical_digest(audit),
+        audit["audit_dossier_sha256"],
+        audit["canary_manifest_sha256"],
+        audit["capture_bundle_sha256"],
+    )
+
+
+def _publication_receipt_exact(
+    conn, evidence: dict, audit: dict | None, policy_sha256: str | None,
+    *, plan_sha256: str | None = None,
+) -> bool:
+    """Read-only: a persisted publication receipt of THIS governed operation.
+
+    Same policy identity/hash, policy bytes, whole document, normalized audit
+    receipt and dossier/manifest/capture hashes; with ``plan_sha256`` also the
+    same original plan-v4 digest. Absent relation or receipt: not proven.
+    """
+    if audit is None or not policy_sha256 or not _relation_exists(
+        conn, PUBLICATION_RECEIPT_RELATION
+    ):
+        return False
+    rows = conn.execute(
+        """SELECT plan_sha256 FROM nav_policy_publication_receipts
+           WHERE readiness_profile = 'current_daily_nav_v1'
+             AND policy_id = %s AND policy_version = %s AND policy_hash = %s
+             AND policy_artifact_sha256 = %s AND policy_document_digest = %s
+             AND audit_receipt_sha256 = %s AND audit_dossier_sha256 = %s
+             AND canary_manifest_sha256 = %s AND capture_bundle_sha256 = %s""",
+        _receipt_identity(evidence, audit, policy_sha256),
+    ).fetchall()
+    return any(plan_sha256 is None or row[0] == plan_sha256 for row in rows)
+
+
+def _audit_pointer(conn, evidence: dict, audit: dict, policy_sha256: str | None) -> bool:
+    """The pointer is the audited previous version, or the target as a replay.
+
+    A pointer already at the target is accepted ONLY as an exact replay: every
+    document fact persisted exactly AND a publication receipt of this exact
+    governed operation. Anything else at the target (new evidence, another
+    generation or audit of the same version) is ``target_policy_not_exact_replay``.
+    Returns True for an exact replay: no write may follow.
+    """
+    pointer = _pointer_identity(conn)
+    target = [evidence["policy_id"], evidence["policy_version"],
+              policy_content_digest(evidence)]
+    if pointer == target:
+        if _policy_facts_exact(conn, evidence) and _publication_receipt_exact(
+            conn, evidence, audit, policy_sha256
+        ):
+            return True
+        raise ValueError("target_policy_not_exact_replay")
+    if pointer != audit["previous_policy_identity"]:
+        raise ValueError("current_pointer_not_previous")
+    return False
+
+
+def _record_publication(
+    conn, evidence: dict, audit: dict, policy_sha256: str, plan_sha256: str
+) -> None:
+    """Append the publication receipt in the publication transaction."""
+    previous = audit["previous_policy_identity"] or [None, None, None]
+    identity = _receipt_identity(evidence, audit, policy_sha256)
+    conn.execute(
+        """INSERT INTO nav_policy_publication_receipts
+           (readiness_profile, policy_id, policy_version, policy_hash, plan_version,
+            plan_sha256, policy_artifact_sha256, policy_document_digest,
+            audit_receipt_sha256, audit_dossier_sha256, canary_manifest_sha256,
+            capture_bundle_sha256, previous_policy_id, previous_policy_version,
+            previous_policy_hash, captured_at, sec_valid_until)
+           VALUES ('current_daily_nav_v1', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   %s, %s, %s, %s, %s, %s)""",
+        (
+            *identity[:3],
+            PLAN_VERSION,
+            plan_sha256,
+            *identity[3:],
+            *previous,
+            audit["captured_at"],
+            audit["sec_valid_until"],
+        ),
+    )
 
 
 def _emit(payload: dict) -> None:
@@ -1758,6 +2586,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-sql-sha256", required=True)
     parser.add_argument("--plan-sha256")
     parser.add_argument("--policy-file")
+    parser.add_argument("--policy-sha256")
+    parser.add_argument("--audit-dossier-file")
+    parser.add_argument("--audit-dossier-sha256")
+    parser.add_argument("--canary-manifest-file")
+    parser.add_argument("--canary-manifest-sha256")
+    parser.add_argument("--capture-file")
+    parser.add_argument("--capture-sha256")
+    parser.add_argument("--custody-root")
     parser.add_argument("--instrument-id", action="append", default=[])
     parser.add_argument("--start")
     parser.add_argument("--end")
@@ -1779,6 +2615,7 @@ def main(argv: list[str] | None = None) -> int:
         "retryable": False,
         "maintenance_run_id": None,
         "changed_rows": 0,
+        "audit": None,
         "code": None,
     }
 
@@ -1796,7 +2633,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("ddl_hash_mismatch")
         manifest = load_manifest(ddl)
         out["catalog_sha256"] = manifest["signature_sha256"]
-        evidence, raw = _policy(args.policy_file)
+        evidence, raw, audit = _governed_policy(args)
+        out["audit"] = audit  # hashes, previous identity and validity only
         ids = [str(uuid.UUID(value)) for value in args.instrument_id]
         if len(ids) > MAX_MAINTENANCE_INSTRUMENTS or len(set(ids)) != len(ids):
             raise ValueError("backfill_allowlist_invalid")
@@ -1830,17 +2668,25 @@ def main(argv: list[str] | None = None) -> int:
                 sql.Identifier(args.schema)))
             if ids and evidence is None and not state["ready"]:
                 return finish(EXIT_BLOCKED, code="schema_not_ready_for_maintenance_plan")
+            policy_sha = hashlib.sha256(raw).hexdigest() if raw else None
             conn.execute("BEGIN TRANSACTION READ ONLY")
             try:
                 conn.execute("SET LOCAL statement_timeout = '30s'")
                 conn.execute("SET LOCAL lock_timeout = '2s'")
+                if audit is not None:
+                    # The time window never needs W1 relations; the pointer
+                    # rule runs whenever the policy relations exist (an
+                    # absent schema has no pointer) and again under locks.
+                    _audit_window(conn, evidence, audit)
+                    if state["compatibility"] in ("exact", "repairable"):
+                        _audit_pointer(conn, evidence, audit, policy_sha)
                 dml_state = _dml_state(conn, evidence, ids, start, end)
             finally:
                 conn.execute("ROLLBACK")
             plan, digest = build_plan(
                 ddl=ddl, manifest=manifest, schema=args.schema, policy_raw=raw,
                 evidence=evidence, ids=ids, start=args.start, end=args.end,
-                dml_state=dml_state,
+                dml_state=dml_state, audit=audit,
             )
             out["plan_sha256"] = digest
             if args.mode == "check":
@@ -1855,11 +2701,16 @@ def main(argv: list[str] | None = None) -> int:
             if supplied and supplied in (
                 plan_hash(ddl, args.schema, raw, ids, args.start, args.end),
                 previous_version_digest(plan),
+                v2_version_digest(plan),
             ):
                 return finish(EXIT_BLOCKED, code="plan_version_mismatch")
             stale = not hmac.compare_digest(digest, supplied)
             if stale and not (
-                supplied and _plan_already_committed(conn, supplied, evidence, ids, start, end)
+                supplied
+                and _plan_already_committed(
+                    conn, supplied, evidence, ids, start, end,
+                    audit=audit, policy_sha256=policy_sha,
+                )
             ):
                 return finish(EXIT_BLOCKED, code="PLAN_STALE" if supplied else "plan_hash_required")
             if state["compatibility"] == "exact" and state["access"] == "exact":
@@ -1877,7 +2728,7 @@ def main(argv: list[str] | None = None) -> int:
             if not evidence and not ids:
                 return finish(0, status="applied" if out["ddl"] == "applied" else "unchanged")
             return _apply_dml(conn, out, finish, evidence, ids, start, end, digest,
-                              plan, supplied, stale)
+                              plan, supplied, stale, audit=audit)
     except psycopg.Error as exc:
         return finish(EXIT_BLOCKED, code="database_error", sqlstate=exc.sqlstate)
     except (ValueError, TypeError, KeyError) as exc:
@@ -1887,18 +2738,26 @@ def main(argv: list[str] | None = None) -> int:
         return finish(EXIT_BLOCKED, code=code)
 
 
-def _plan_already_committed(conn, supplied: str, evidence, ids, start, end) -> bool:
+def _plan_already_committed(
+    conn, supplied: str, evidence, ids, start, end, *, audit=None, policy_sha256=None
+) -> bool:
     """Read-only pre-DDL screen; ``_apply_dml`` decides again under the locks."""
     conn.execute("BEGIN TRANSACTION READ ONLY")
     try:
-        return _already_applied(conn, supplied, evidence, ids, start, end)
+        return _already_applied(
+            conn, supplied, evidence, ids, start, end,
+            audit=audit, policy_sha256=policy_sha256,
+        )
     finally:
         conn.execute("ROLLBACK")
 
 
-def _apply_dml(conn, out, finish, evidence, ids, start, end, digest, plan, supplied, stale):
+def _apply_dml(conn, out, finish, evidence, ids, start, end, digest, plan, supplied,
+               stale, *, audit=None):
     """One DML transaction: locks INGESTION->READINESS before any write."""
     requested = {"policy": evidence is not None, "maintenance": bool(ids)}
+    if evidence is not None and audit is None:
+        raise ValueError("audit_receipt_required")
     conn.execute("BEGIN")
     try:
         conn.execute("SET LOCAL statement_timeout = '60s'")
@@ -1907,13 +2766,22 @@ def _apply_dml(conn, out, finish, evidence, ids, start, end, digest, plan, suppl
             conn.execute("ROLLBACK")
             return finish(EXIT_LOCK_BUSY, status="lock_busy", retryable=True,
                           code="nav_writer_lock_busy")
-        # A current plan always executes: publishing is idempotent and reports
-        # no change for identical facts, so a same-pointer document with new
-        # lifecycle evidence is published. Only a stale plan may be a replay,
-        # and only when this exact operation is persisted (re-decided here,
-        # under the locks).
+        replay = False
+        if audit is not None:
+            # Re-decided under the locks by the DB clock: the full receipt
+            # window (capture <= now <= policy expiry, SEC deadline), then the
+            # pointer: the audited previous version, or already the target
+            # only as an exact replay of a recorded publication (no write).
+            _audit_window(conn, evidence, audit)
+            replay = _audit_pointer(conn, evidence, audit, plan["policy_sha256"])
+        # Only a stale plan may be a replay, and only when this exact
+        # operation (policy facts + publication receipt of the supplied plan
+        # digest and audit identity; maintenance receipt) is persisted.
         if stale or _dml_state(conn, evidence, ids, start, end) != plan["before"]:
-            if _already_applied(conn, supplied, evidence, ids, start, end):
+            if _already_applied(
+                conn, supplied, evidence, ids, start, end,
+                audit=audit, policy_sha256=plan["policy_sha256"],
+            ):
                 conn.execute("ROLLBACK")
                 return finish(
                     0, status="unchanged", published=evidence is not None,
@@ -1921,8 +2789,10 @@ def _apply_dml(conn, out, finish, evidence, ids, start, end, digest, plan, suppl
                 )
             raise ValueError("PLAN_STALE")
         policy_changed = False
-        if evidence is not None:
+        if evidence is not None and not replay:
             _policy_hash, policy_changed = _publish_policy(conn, evidence)
+            if policy_changed:
+                _record_publication(conn, evidence, audit, plan["policy_sha256"], digest)
         maintenance = None
         if ids:
             maintenance = _apply_calendar_maintenance_tx(

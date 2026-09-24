@@ -144,6 +144,34 @@ def canonical_json(value: dict) -> bytes:
     ).encode("ascii")
 
 
+def _unique_object(pairs: list) -> dict:
+    keys = [key for key, _value in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate_key")
+    return dict(pairs)
+
+
+def _reject_constant(_name: str):
+    raise ValueError("non_finite_constant")
+
+
+def load_json_object(raw: bytes, code: str) -> dict:
+    """Strict JSON object: no duplicate keys, NaN/Infinity or non-object root.
+
+    Any violation raises ``PolicyGenerationError(code)``; nothing of the
+    payload reaches the error.
+    """
+    try:
+        value = json.loads(
+            raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant
+        )
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise PolicyGenerationError(code) from exc
+    if not isinstance(value, dict):
+        raise PolicyGenerationError(code)
+    return value
+
+
 def _calendar():
     try:
         installed_version = importlib.metadata.version("exchange_calendars")
@@ -867,47 +895,122 @@ def build_source_snapshot(
     }
 
 
+SOURCE_SNAPSHOT_KEYS = frozenset(
+    {
+        "kind",
+        "generator_version",
+        "decision_at",
+        "source_query_version",
+        "source_query_sha256",
+        "source_snapshot_sha256",
+        "row_counts",
+        "policy_id",
+        "policy_version",
+        "policy_hash",
+        "policy_generation_sha256",
+        "policy_artifact_sha256",
+        "sources",
+    }
+)
+_SNAPSHOT_SOURCE_LABELS = {
+    "funds": "funds",
+    "identity": "identity",
+    "instruments": "instruments",
+}
+
+
+def _snapshot_rows(rows: object, source: str) -> list[dict]:
+    """Rows must already be the exact canonical projection of their label."""
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise PolicyGenerationError("source_snapshot_contract_invalid")
+    fields = set(SOURCE_FIELDS[source])
+    if any(set(row) != fields for row in rows):
+        raise PolicyGenerationError("source_snapshot_contract_invalid")
+    try:
+        canonical = canonical_source_rows(rows, source)
+    except PolicyGenerationError as exc:
+        raise PolicyGenerationError("source_snapshot_contract_invalid") from exc
+    if canonical != rows:
+        raise PolicyGenerationError("source_snapshot_contract_invalid")
+    return rows
+
+
 def verify_source_snapshot(
-    snapshot: dict, policy: dict, *, raw: bytes | None = None
+    snapshot: object, policy: object, *, raw: bytes | None = None
 ) -> dict:
-    """Offline hash-link check between a source export and its policy (no DB)."""
+    """Offline hash-link check between a source export and its policy (no DB).
+
+    Shapes are validated before any lookup, iteration or canonicalization;
+    every failure is one of the static codes ``source_snapshot_requires_policy``,
+    ``source_snapshot_not_canonical``, ``source_snapshot_contract_invalid`` or
+    ``source_snapshot_link_invalid``.
+    """
+    if not isinstance(policy, dict) or not isinstance(policy.get("generation"), dict):
+        raise PolicyGenerationError("source_snapshot_requires_policy")
+    if not isinstance(snapshot, dict) or set(snapshot) != SOURCE_SNAPSHOT_KEYS:
+        raise PolicyGenerationError("source_snapshot_contract_invalid")
     if raw is not None and raw != canonical_json(snapshot):
         raise PolicyGenerationError("source_snapshot_not_canonical")
     generation = policy["generation"]
-    sources = snapshot.get("sources")
+    sources = snapshot["sources"]
+    row_counts = snapshot["row_counts"]
     if (
-        snapshot.get("kind") != SOURCE_SNAPSHOT_KIND
-        or snapshot.get("generator_version") != GENERATOR_VERSION
-        or snapshot.get("source_query_version") != CURRENT_CATALOG_QUERY_VERSION
-        or snapshot.get("source_query_sha256") != SOURCE_QUERY_SHA256
+        snapshot["kind"] != SOURCE_SNAPSHOT_KIND
+        or snapshot["generator_version"] != GENERATOR_VERSION
+        or snapshot["source_query_version"] != CURRENT_CATALOG_QUERY_VERSION
+        or snapshot["source_query_sha256"] != SOURCE_QUERY_SHA256
         or not isinstance(sources, dict)
-        or set(sources) != {"funds", "identity", "instruments"}
+        or set(sources) != set(_SNAPSHOT_SOURCE_LABELS)
+        or not isinstance(row_counts, dict)
+        or set(row_counts) != set(_SNAPSHOT_SOURCE_LABELS)
+        or any(type(count) is not int or count < 0 for count in row_counts.values())
     ):
         raise PolicyGenerationError("source_snapshot_contract_invalid")
-    digest = source_snapshot_sha256(
-        sources["instruments"], sources["funds"], sources["identity"]
-    )
+    checked = {
+        label: _snapshot_rows(sources[label], source)
+        for label, source in _SNAPSHOT_SOURCE_LABELS.items()
+    }
+    digest = hashlib.sha256(
+        canonical_json(
+            source_snapshot_content(
+                checked["instruments"], checked["funds"], checked["identity"]
+            )
+        )
+    ).hexdigest()
     if (
-        digest != snapshot.get("source_snapshot_sha256")
-        or digest != generation["source_snapshot_sha256"]
-        or snapshot.get("decision_at") != generation["generated_at"]
-        or snapshot.get("policy_hash") != generation["policy_hash"]
-        or snapshot.get("policy_generation_sha256") != generation["generation_sha256"]
-        or snapshot.get("policy_artifact_sha256")
+        digest != snapshot["source_snapshot_sha256"]
+        or digest != generation.get("source_snapshot_sha256")
+        or snapshot["policy_id"] != policy.get("policy_id")
+        or snapshot["policy_version"] != policy.get("policy_version")
+        or generation.get("generator_version") != GENERATOR_VERSION
+        or generation.get("source_query_version") != CURRENT_CATALOG_QUERY_VERSION
+        or generation.get("source_query_sha256") != SOURCE_QUERY_SHA256
+        or snapshot["decision_at"] != generation.get("generated_at")
+        or snapshot["policy_hash"] != generation.get("policy_hash")
+        or snapshot["policy_generation_sha256"] != generation.get("generation_sha256")
+        or snapshot["policy_artifact_sha256"]
         != hashlib.sha256(canonical_json(policy)).hexdigest()
-        or snapshot.get("row_counts")
-        != {name: len(rows) for name, rows in sorted(sources.items())}
+        or row_counts != {label: len(rows) for label, rows in checked.items()}
+        or [checked[label] for label in sorted(checked)]
+        != [sorted(checked[label], key=_row_key) for label in sorted(checked)]
     ):
         raise PolicyGenerationError("source_snapshot_link_invalid")
     return {"source_snapshot_sha256": digest}
 
 
-def verify_artifact(artifact: dict, *, raw: bytes | None = None) -> dict:
+def verify_artifact(artifact: object, *, raw: bytes | None = None) -> dict:
+    if not isinstance(artifact, dict):
+        raise PolicyGenerationError("artifact_not_object")
     if raw is not None and raw != canonical_json(artifact):
         raise PolicyGenerationError("artifact_not_canonical")
     generation = artifact.get("generation", artifact)
-    requested_start = dt.date.fromisoformat(generation["requested_coverage_start"])
-    requested_end = dt.date.fromisoformat(generation["requested_coverage_end"])
+    if not isinstance(generation, dict):
+        raise PolicyGenerationError("artifact_generation_invalid")
+    try:
+        requested_start = dt.date.fromisoformat(generation["requested_coverage_start"])
+        requested_end = dt.date.fromisoformat(generation["requested_coverage_end"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PolicyGenerationError("artifact_generation_invalid") from exc
     expected = build_calendar(requested_start, requested_end)
     fields = (
         "calendar_id",
@@ -939,10 +1042,14 @@ def verify_artifact(artifact: dict, *, raw: bytes | None = None) -> dict:
         }
     if artifact.get("publication_state") != "approved":
         raise PolicyGenerationError("policy_not_approved")
-    _policy(artifact)
-    evidence = artifact["instrument_evidence"]
-    if any(set(row) != EVIDENCE_FIELDS for row in evidence):
+    evidence = artifact.get("instrument_evidence")
+    if not isinstance(evidence, list) or any(
+        not isinstance(row, dict) or set(row) != EVIDENCE_FIELDS for row in evidence
+    ):
         raise PolicyGenerationError("instrument_evidence_shape_invalid")
+    if not isinstance(artifact.get("generation"), dict):
+        raise PolicyGenerationError("artifact_generation_invalid")
+    _policy(artifact)
     if [row["instrument_id"] for row in evidence] != sorted(
         row["instrument_id"] for row in evidence
     ):
@@ -1194,7 +1301,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mode == "verify":
             raw = args.policy_file.read_bytes()
-            artifact = json.loads(raw)
+            artifact = load_json_object(raw, "artifact_not_object")
             report = verify_artifact(artifact, raw=raw)
             report["artifact_sha256"] = hashlib.sha256(raw).hexdigest()
             if args.source_snapshot_file is not None:
@@ -1203,7 +1310,11 @@ def main(argv: list[str] | None = None) -> int:
                 snapshot_raw = args.source_snapshot_file.read_bytes()
                 report.update(
                     verify_source_snapshot(
-                        json.loads(snapshot_raw), artifact, raw=snapshot_raw
+                        load_json_object(
+                            snapshot_raw, "source_snapshot_contract_invalid"
+                        ),
+                        artifact,
+                        raw=snapshot_raw,
                     )
                 )
                 report["source_snapshot_file_sha256"] = hashlib.sha256(

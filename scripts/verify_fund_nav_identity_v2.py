@@ -61,22 +61,47 @@ import os
 import re
 import sys
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from fractions import Fraction
 from pathlib import Path
+
+# Declarative contract leaf (pure data; no decision logic is shared).
+from scripts.nav_identity_audit_contract import (
+    A4_DETAIL_KEYS,
+    A8_OUTCOMES,
+    AUDIT_CONFIG_VERSION,
+    AUDIT_CONTRACT,
+    AUDIT_CONTRACT_SHA256,
+    AUDIT_CONTRACT_VERSION,
+    AUDIT_VERSION,
+    CANARY_KIND,
+    CANARY_MAX,
+    CANARY_SELECTION_KEYS,
+    CAPTURE_KIND,
+    DEFAULT_STRUCTURAL_DAILY_CEILING,
+    FETCH_BATCH,
+    GATE_CHECKS,
+    RETIRED_CEILING_KEYS,
+    ROW_CEILING,
+    SEC_CLASS_PATTERN,
+    SEC_LINEAGE_SQL,
+    SEC_MAX_SYNCED_AGE_DAYS,
+    SEC_QUERY_CONTRACT_SHA256,
+    SEC_RELATION,
+    SEC_SERIES_PATTERN,
+    SEC_SOURCE_CONTRACT,
+    SEC_SQL,
+    SEC_TIMESTAMP_COLUMN,
+    STAGE1_MARGIN_TEXT,
+    STRUCTURAL_DAILY_CEILING_KEY,
+)
 
 # Custody writer only: private POSIX no-overwrite publication, no domain logic.
 from scripts.generate_fund_nav_policy_v1 import PolicyGenerationError, write_artifact
 
-AUDIT_VERSION = "nav-identity-audit-v2"
-AUDIT_CONFIG_VERSION = "nav-identity-audit-config-v2"
-# Governed audit semantics. Changing any of them (margin, freshness rule,
-# ceilings, canary rules, capture format) requires a new contract version.
-AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v2"
-CAPTURE_KIND = "nav-identity-audit-capture-v2"
-CANARY_KIND = "nav-policy-v2-canary-manifest"
-STAGE1_MARGIN_TEXT = "1/10"
 STAGE1_MARGIN = Fraction(1, 10)
+SEC_CLASS_RE = re.compile(SEC_CLASS_PATTERN)
+SEC_SERIES_RE = re.compile(SEC_SERIES_PATTERN)
 # Contract texts the audited artifact must carry (independent literal copies).
 EXPECTED_GENERATOR = "fund-nav-policy-generator-v2"
 RETIRED_GENERATORS = ("fund-nav-policy-generator-v1",)
@@ -121,18 +146,9 @@ QUERY_SHA256 = hashlib.sha256(
         "utf-8"
     )
 ).hexdigest()
-SEC_SQL = (
-    "SELECT class_id,series_id,ticker FROM public.fund_classes_latest_mv "
-    "ORDER BY class_id,series_id,ticker LIMIT 100001"
-)
-SEC_LINEAGE_SQL = (
-    "SELECT count(*) AS row_count, max(synced_at) AS max_synced_at, "
-    "max(source_period_end) AS max_source_period_end FROM public.fund_classes_latest_mv"
-)
-ROW_CEILING = 100_000
-# Rollout ceiling supplied by the parent (structural daily potential before the
-# registry/claim checks); a target ceiling, never a goal, and never auto-raised.
-DEFAULT_ACTIVE_CEILING = 5103
+SEC_QUERY_SHA256 = hashlib.sha256(SEC_SQL.encode("utf-8")).hexdigest()
+SEC_LINEAGE_QUERY_SHA256 = hashlib.sha256(SEC_LINEAGE_SQL.encode("utf-8")).hexdigest()
+PRE_CLAIM_FAMILIES = frozenset({"cardinality", "registry", "ticker", "series"})
 # Precedence (index = rank). A first failure is the lowest-ranked failing code.
 GATE_CODES = (
     "cardinality.iu_missing",
@@ -180,7 +196,6 @@ KNOWN_TYPES = ("etf", "mutual_fund", "mmf")
 DAILY_TYPES = ("etf", "mutual_fund")
 ISIN_CLASSES = ("both", "iu_only", "registry_only", "neither")
 CANARY_TYPES = ("etf", "mutual_fund")
-CANARY_MAX = 20
 LOWER_UUID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -206,7 +221,6 @@ EVIDENCE_KEYS = frozenset(
 # DECLARE/FETCH; it is not a cardinality limit, and the LIMIT is not a time limit.
 COHORT_WRAPPER_PREFIX = "SELECT * FROM ("
 COHORT_WRAPPER_SUFFIX = f") AS nav_identity_audit_cohort LIMIT {ROW_CEILING + 1}"
-FETCH_BATCH = 5000
 _SELECT_START = re.compile(r"\A\s*select\s", re.IGNORECASE)
 # Defense in depth on the OPS-authored cohort query; READ ONLY still blocks
 # writes. Rejects statement separators, comments, write/DDL/transaction/locking
@@ -233,6 +247,30 @@ def _compact(value, *, sort_keys: bool = True) -> str:
     return json.dumps(
         value, sort_keys=sort_keys, separators=(",", ":"), ensure_ascii=True
     )
+
+
+def _unique_pairs(pairs: list) -> dict:
+    keys = [key for key, _value in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate_key")
+    return dict(pairs)
+
+
+def _no_constant(_name: str):
+    raise ValueError("non_finite_constant")
+
+
+def _strict_json(raw: bytes, code: str, *, require_object: bool = True):
+    """Hostile-input JSON: duplicate keys, NaN/Infinity and non-objects block."""
+    try:
+        value = json.loads(
+            raw, object_pairs_hook=_unique_pairs, parse_constant=_no_constant
+        )
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise AuditBlocked(code) from exc
+    if require_object and not isinstance(value, dict):
+        raise AuditBlocked(code)
+    return value
 
 
 def _sha(data: bytes) -> str:
@@ -278,32 +316,33 @@ def _set_digest(ids) -> str:
     return _sha(json.dumps(sorted(ids), separators=(",", ":")).encode("utf-8"))
 
 
+def selection_digest(selection: dict) -> str:
+    """SHA-256 of the canonical canary selection object (contract rule)."""
+    return _sha(_document_bytes(selection))
+
+
 def _rows_sha(rows: list) -> str:
     """Digest of an already canonically ordered row list (multiplicity kept)."""
     return _sha(_document_bytes(rows))
 
 
-AUDIT_CONTRACT = {
-    "audit_contract_version": AUDIT_CONTRACT_VERSION,
-    "audit_version": AUDIT_VERSION,
-    "audit_config_version": AUDIT_CONFIG_VERSION,
-    "capture_kind": CAPTURE_KIND,
-    "canary_kind": CANARY_KIND,
-    "canary_max": CANARY_MAX,
-    "canary_strata": [f"{c}|{t}" for c in ISIN_CLASSES for t in CANARY_TYPES],
-    "cohort_wrapper": COHORT_WRAPPER_PREFIX + "<cohort_query>" + COHORT_WRAPPER_SUFFIX,
-    "fetch_batch": FETCH_BATCH,
-    "row_ceiling": ROW_CEILING,
-    "sec_freshness": (
-        "sec.max_synced_age_days required positive int; absent/null or "
-        "unverifiable lineage => NOT_EVALUATED; future or older than the limit "
-        "relative to the capture decision timestamp => FAIL"
-    ),
-    "sec_query_sha256": _sha(SEC_SQL.encode("utf-8")),
-    "source_query_sha256": QUERY_SHA256,
-    "stage1_margin": f"max(1, ceil({STAGE1_MARGIN_TEXT} * quota)) for quota > 0",
-}
-AUDIT_CONTRACT_SHA256 = _sha(_compact(AUDIT_CONTRACT).encode("utf-8"))
+def _contract_consistent() -> bool:
+    """The frozen leaf literal must describe this auditor's runtime semantics."""
+    return (
+        _sha(_compact(AUDIT_CONTRACT).encode("utf-8")) == AUDIT_CONTRACT_SHA256
+        and AUDIT_CONTRACT["catalog_source_query_sha256"] == QUERY_SHA256
+        and AUDIT_CONTRACT["cohort_wrapper"]
+        == COHORT_WRAPPER_PREFIX + "<cohort_query>" + COHORT_WRAPPER_SUFFIX
+        and AUDIT_CONTRACT["canary"]["strata"]
+        == [f"{c}|{t}" for c in ISIN_CLASSES for t in CANARY_TYPES]
+        and _sha((SEC_SQL + "\n" + SEC_LINEAGE_SQL).encode("utf-8"))
+        == SEC_QUERY_CONTRACT_SHA256
+        and AUDIT_CONTRACT["a8"]["max_synced_age_days"] == SEC_MAX_SYNCED_AGE_DAYS
+    )
+
+
+if not _contract_consistent():  # pragma: no cover - import-time guard
+    raise RuntimeError("audit_contract_literal_mismatch")
 
 
 # ── source typing and normalization (own implementation) ─────────────────────
@@ -620,7 +659,12 @@ class Catalog:
         return "registry_only" if reg else "neither"
 
     def v1_structural_daily(self) -> tuple[int, int]:
-        """v1 rule without the mandatory ISIN (baseline recount), total and daily."""
+        """Counts derived from ``v1_structural_sets`` (kept for consumers)."""
+        total, daily = self.v1_structural_sets()
+        return len(total), len(daily)
+
+    def v1_structural_sets(self) -> tuple[set, set]:
+        """v1 rule without the mandatory ISIN (baseline B): total and daily sets."""
         iu_tickers, fv_tickers, fv_pairs = (
             defaultdict(int),
             defaultdict(int),
@@ -637,7 +681,7 @@ class Catalog:
                     fv_tickers[t] += 1
                 if t and s:
                     fv_pairs[(s, t)] += 1
-        total = daily = 0
+        total, daily = set(), set()
         for uid in self.universe():
             iu, fv = self.rows["iu"].get(uid, []), self.rows["fv"].get(uid, [])
             if len(iu) != 1 or len(fv) != 1:
@@ -658,8 +702,9 @@ class Catalog:
                 and _clean(f["fund_type"]) in KNOWN_TYPES
                 and i["is_active"] is True
             ):
-                total += 1
-                daily += _clean(f["fund_type"]) in DAILY_TYPES
+                total.add(uid)
+                if _clean(f["fund_type"]) in DAILY_TYPES:
+                    daily.add(uid)
         return total, daily
 
 
@@ -698,7 +743,11 @@ def classify(catalog: Catalog) -> dict:
 def _gate(checks: dict, *, evaluated: bool = True, code: str | None = None) -> dict:
     if not evaluated:
         return {"status": "NOT_EVALUATED", "code": code, "checks": checks}
-    return {"status": "PASS" if all(checks.values()) else "FAIL", "checks": checks}
+    return {
+        "status": "PASS" if all(value is True for value in checks.values()) else "FAIL",
+        "code": None,
+        "checks": checks,
+    }
 
 
 def _count_dict(values) -> dict:
@@ -726,10 +775,7 @@ def cohort_query_problem(query: object) -> str | None:
 def _load_config(raw: bytes | None) -> dict:
     if raw is None:
         return {}
-    try:
-        config = json.loads(raw)
-    except ValueError as exc:
-        raise AuditBlocked("audit_config_not_json") from exc
+    config = _strict_json(raw, "audit_config_not_json", require_object=False)
     if (
         not isinstance(config, dict)
         or config.get("audit_config_version") != AUDIT_CONFIG_VERSION
@@ -737,8 +783,12 @@ def _load_config(raw: bytes | None) -> dict:
         raise AuditBlocked("audit_config_version_invalid")
     if config.get("audit_contract_version") != AUDIT_CONTRACT_VERSION:
         raise AuditBlocked("audit_contract_version_invalid")
-    ceiling = config.get("active_ceiling")
-    if ceiling is not None and (type(ceiling) is not int or ceiling < 0):
+    # The ceiling applies to P (structural daily pre-claims); the retired key
+    # named the wrong population and blocks even next to the new one.
+    if any(key in config for key in RETIRED_CEILING_KEYS):
+        raise AuditBlocked("audit_config_ceiling_key_retired")
+    ceiling = config.get(STRUCTURAL_DAILY_CEILING_KEY)
+    if type(ceiling) is not int or ceiling < 0:
         raise AuditBlocked("audit_config_ceiling_invalid")
     for key in (
         "structural_baseline",
@@ -751,9 +801,18 @@ def _load_config(raw: bytes | None) -> dict:
     sec = config.get("sec")
     if sec is not None and not isinstance(sec, dict):
         raise AuditBlocked("audit_config_sec_invalid")
-    max_age = (sec or {}).get("max_synced_age_days")
-    if max_age is not None and (type(max_age) is not int or max_age <= 0):
-        raise AuditBlocked("audit_config_sec_freshness_invalid")
+    if sec is not None:
+        if (
+            sec.get("source_contract") != SEC_SOURCE_CONTRACT
+            or sec.get("relation") != SEC_RELATION
+            or sec.get("timestamp_column") != SEC_TIMESTAMP_COLUMN
+            or sec.get("query_contract_sha256") != SEC_QUERY_CONTRACT_SHA256
+        ):
+            raise AuditBlocked("audit_config_sec_source_invalid")
+        max_age = sec.get("max_synced_age_days")
+        # Exactly the contract value: no runtime override (bool/0/8 all block).
+        if type(max_age) is not int or max_age != SEC_MAX_SYNCED_AGE_DAYS:
+            raise AuditBlocked("audit_config_sec_freshness_invalid")
     salt = config.get("canary_salt")
     if salt is not None and (not isinstance(salt, str) or not salt):
         raise AuditBlocked("audit_config_canary_salt_invalid")
@@ -854,58 +913,116 @@ def _canonical_cohort(cohort: object, builder: dict | None) -> dict:
     }
 
 
+SEC_SOURCE_PINS = {
+    "source_contract": SEC_SOURCE_CONTRACT,
+    "relation": SEC_RELATION,
+    "timestamp_column": SEC_TIMESTAMP_COLUMN,
+    "query_sha256": SEC_QUERY_SHA256,
+    "lineage_query_sha256": SEC_LINEAGE_QUERY_SHA256,
+    "query_contract_sha256": SEC_QUERY_CONTRACT_SHA256,
+}
+
+
+def _aware_text(value) -> str | None:
+    """Timestamp as ISO text; a naive or non-timestamp value is not accepted."""
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise AuditBlocked("sec_timestamp_not_aware")
+        return value.isoformat()
+    if isinstance(value, str) and _aware(value) is not None:
+        return value
+    raise AuditBlocked("sec_timestamp_not_aware")
+
+
+def _sec_unavailable(state: object) -> dict:
+    """Explicit unavailability: pins kept, no fabricated rows or lineage."""
+    code = state.get("code") if isinstance(state, dict) else None
+    name = state.get("state") if isinstance(state, dict) else None
+    return {
+        **SEC_SOURCE_PINS,
+        "state": name
+        if isinstance(name, str) and name != "captured"
+        else "not_captured",
+        "code": code if isinstance(code, str) else "sec_not_captured",
+    }
+
+
 def _canonical_sec(sec: object) -> dict:
-    base = {"query_sha256": _sha(SEC_SQL.encode("utf-8"))}
+    """Canonical SEC capture: exact row shape, aware timestamps, lineage match.
+
+    A malformed row TYPE makes the whole capture invalid (NOT_EVALUATED). A
+    textual but malformed VALUE (empty text, S.../series:ticker class ids) is
+    kept verbatim: it is counted, hashed and judged by A8, never repaired.
+    """
     if not isinstance(sec, dict) or sec.get("state") != "captured":
-        return _not_captured(sec, base, lineage=None)
-    rows = []
-    for row in sec.get("rows") or []:
-        if not isinstance(row, dict) or not {"class_id", "series_id", "ticker"} <= set(
-            row
-        ):
-            return _not_captured(
-                {"state": "invalid", "code": "sec_source_type_invalid"},
-                base,
-                lineage=None,
-            )
-        record = {k: row[k] for k in ("class_id", "series_id", "ticker")}
-        if any(v is not None and not isinstance(v, str) for v in record.values()):
-            return _not_captured(
-                {"state": "invalid", "code": "sec_source_type_invalid"},
-                base,
-                lineage=None,
-            )
-        rows.append(record)
+        return _sec_unavailable(sec)
+    raw_rows = sec.get("rows")
     lineage = sec.get("lineage")
-    if (
-        not isinstance(lineage, dict)
-        or type(lineage.get("row_count")) is not int
-        or lineage["row_count"] < 0
-    ):
-        return _not_captured(
-            {"state": "invalid", "code": "sec_lineage_invalid"}, base, lineage=None
+    if not isinstance(raw_rows, list) or not isinstance(lineage, dict):
+        return _sec_unavailable(
+            {"state": "invalid", "code": "sec_source_shape_invalid"}
         )
+    rows = []
+    try:
+        for row in raw_rows:
+            if not isinstance(row, dict) or set(row) != {
+                "class_id",
+                "series_id",
+                "ticker",
+                "synced_at",
+            }:
+                raise AuditBlocked("sec_source_shape_invalid")
+            if any(
+                row[k] is not None and not isinstance(row[k], str)
+                for k in ("class_id", "series_id", "ticker")
+            ):
+                raise AuditBlocked("sec_source_shape_invalid")
+            rows.append(
+                {
+                    "class_id": row["class_id"],
+                    "series_id": row["series_id"],
+                    "ticker": row["ticker"],
+                    "synced_at": _aware_text(row["synced_at"]),
+                }
+            )
+        count = lineage.get("row_count")
+        if set(lineage) != {"row_count", "min_synced_at", "max_synced_at"} or (
+            type(count) is not int or count < 0
+        ):
+            raise AuditBlocked("sec_lineage_invalid")
+        low = (
+            None
+            if lineage["min_synced_at"] is None
+            else _aware_text(lineage["min_synced_at"])
+        )
+        high = (
+            None
+            if lineage["max_synced_at"] is None
+            else _aware_text(lineage["max_synced_at"])
+        )
+    except AuditBlocked as exc:
+        return _sec_unavailable({"state": "invalid", "code": str(exc)})
     if len(rows) > ROW_CEILING:
-        return _not_captured(
-            {"state": "invalid", "code": "sec_row_ceiling_exceeded"},
-            base,
-            lineage=None,
+        return _sec_unavailable(
+            {"state": "invalid", "code": "sec_row_ceiling_exceeded"}
         )
+    instants = [_aware(row["synced_at"]) for row in rows]
+    if (
+        count != len(rows)
+        or (low is None) != (not rows)
+        or (high is None) != (not rows)
+        or (rows and (_aware(low) != min(instants) or _aware(high) != max(instants)))
+    ):
+        # The lineage aggregate must describe exactly the captured rows.
+        return _sec_unavailable({"state": "invalid", "code": "sec_lineage_mismatch"})
     rows.sort(key=_compact)
     return {
-        **base,
+        **SEC_SOURCE_PINS,
         "state": "captured",
-        "code": None,
         "rows": rows,
         "row_count": len(rows),
         "rows_sha256": _rows_sha(rows),
-        "lineage": {
-            "row_count": lineage["row_count"],
-            "max_synced_at": _as_text_time(lineage.get("max_synced_at")),
-            "max_source_period_end": _as_text_time(
-                lineage.get("max_source_period_end")
-            ),
-        },
+        "lineage": {"row_count": count, "min_synced_at": low, "max_synced_at": high},
     }
 
 
@@ -937,11 +1054,11 @@ def capture_bytes(live: dict, config: dict) -> bytes:
 
 
 def load_capture(raw: bytes, config: dict) -> dict:
-    """Re-derive a persisted bundle from its rows; any mismatch blocks."""
-    try:
-        bundle = json.loads(raw)
-    except ValueError as exc:
-        raise AuditBlocked("capture_not_json") from exc
+    """Re-derive a persisted bundle from its rows; any mismatch blocks.
+
+    A bundle of an older capture kind is rejected, never reinterpreted.
+    """
+    bundle = _strict_json(raw, "capture_not_json", require_object=False)
     if not isinstance(bundle, dict) or raw != _document_bytes(bundle):
         raise AuditBlocked("capture_not_canonical")
     if (
@@ -971,6 +1088,8 @@ def load_capture(raw: bytes, config: dict) -> dict:
         != _canonical_cohort(None, config.get("builder"))["parameters_sha256"]
     ):
         raise AuditBlocked("capture_cohort_query_mismatch")
+    if any(sec.get(key) != value for key, value in SEC_SOURCE_PINS.items()):
+        raise AuditBlocked("capture_sec_contract_invalid")
     rebuilt = canonical_capture(
         {
             "captured_at": bundle.get("captured_at"),
@@ -1084,108 +1203,258 @@ def _aware(value) -> dt.datetime | None:
     return parsed
 
 
+def _sec_value_valid(row: dict) -> bool:
+    """A usable correspondence row: exact class/series patterns, non-empty ticker."""
+    class_id, series_id, ticker = (
+        _upper(row["class_id"]),
+        _upper(row["series_id"]),
+        _upper(row["ticker"]),
+    )
+    return bool(
+        class_id is not None
+        and SEC_CLASS_RE.fullmatch(class_id)
+        and series_id is not None
+        and SEC_SERIES_RE.fullmatch(series_id)
+        and ticker is not None
+    )
+
+
+def _sec_class_valid(row: dict) -> bool:
+    class_id = _upper(row["class_id"])
+    return class_id is not None and SEC_CLASS_RE.fullmatch(class_id) is not None
+
+
+def _sec_row_poisoned(row: dict) -> bool:
+    """A malformed POPULATED identifier: invalid/empty class or invalid series.
+
+    An empty series or ticker is incompleteness (partial), not poison.
+    """
+    series_id = _upper(row["series_id"])
+    return not _sec_class_valid(row) or (
+        series_id is not None and SEC_SERIES_RE.fullmatch(series_id) is None
+    )
+
+
 def _a8(sec, verdict: dict, catalog: Catalog, config: dict, decision_at):
+    """SEC class/series/ticker corroboration of EVERY ACTIVE (MMF included).
+
+    Returns ``(gate, detail, private_differences)``. Every related row of an
+    ACTIVE (same ticker, same series+ticker, or its declared class) is
+    classified BEFORE a match is declared, so a valid companion never hides a
+    malformed, contradicting or incomplete related row. Per ACTIVE:
+    poison (malformed populated class/series) > contradiction (a populated
+    identifier differing from the ACTIVE) > ambiguous (duplicates or more than
+    one valid mapping) > partial (an incomplete related row) > matched
+    (exactly one valid complete related row) > missing. Failures dominate
+    gaps: poison/contradiction/ambiguity/duplicate/future/stale → FAIL;
+    otherwise any missing/partial → NOT_EVALUATED; only a complete, fresh,
+    unique valid mapping of every ACTIVE → PASS. Never vacuously PASS.
+    Unrelated poison is counted and excluded, never fatal.
+    """
+    unavailable = {"source_contract": SEC_SOURCE_CONTRACT, "relation": SEC_RELATION}
     if not isinstance(sec, dict) or sec.get("state") != "captured":
-        code = (sec or {}).get("code") if isinstance(sec, dict) else None
-        return _gate({}, evaluated=False, code=code or "sec_not_captured"), {}, []
-    lineage = sec["lineage"]
-    base_detail = {
-        "lineage": lineage,
-        "sec_query_sha256": sec["query_sha256"],
-        "sec_rows_sha256": sec["rows_sha256"],
-        "sec_row_count": sec["row_count"],
-    }
-    max_age = (config.get("sec") or {}).get("max_synced_age_days")
-    if max_age is None:
+        code = sec.get("code") if isinstance(sec, dict) else None
+        return (
+            _gate({}, evaluated=False, code=code or "sec_not_captured"),
+            unavailable,
+            {},
+        )
+    if (config.get("sec") or {}).get("max_synced_age_days") != SEC_MAX_SYNCED_AGE_DAYS:
         return (
             _gate({}, evaluated=False, code="sec_freshness_criterion_absent"),
-            base_detail,
-            [],
+            unavailable,
+            {},
         )
     decided = _aware(decision_at)
     if decided is None:
         return (
             _gate({}, evaluated=False, code="sec_decision_time_unverifiable"),
-            base_detail,
-            [],
+            unavailable,
+            {},
         )
-    synced = _aware(lineage.get("max_synced_at"))
-    if synced is None:
-        return (
-            _gate({}, evaluated=False, code="sec_lineage_unverifiable"),
-            base_detail,
-            [],
-        )
-    by_class, by_ticker = {}, defaultdict(list)
-    for row in sec["rows"]:
-        record = (
+    rows = sec["rows"]
+    lineage = sec["lineage"]
+    max_age = dt.timedelta(days=SEC_MAX_SYNCED_AGE_DAYS)
+    raw_keys = Counter(
+        (row["class_id"], row["series_id"], row["ticker"], row["synced_at"])
+        for row in rows
+    )
+    duplicate_source_rows = sum(count - 1 for count in raw_keys.values() if count > 1)
+    invalid_rows = [row for row in rows if not _sec_value_valid(row)]
+    by_ticker, by_class, by_pair = (
+        defaultdict(list),
+        defaultdict(list),
+        defaultdict(list),
+    )
+    for position, row in enumerate(rows):
+        ticker, class_id, series_id = (
+            _upper(row["ticker"]),
             _upper(row["class_id"]),
             _upper(row["series_id"]),
-            _upper(row["ticker"]),
         )
-        if record[0] is not None:
-            by_class.setdefault(record[0], []).append(record)
-        if record[2] is not None:
-            by_ticker[record[2]].append(record)
-    outcome = defaultdict(int)
-    contradictions = []
-    for uid in sorted(u for u, e in verdict.items() if e["status"] == "ACTIVE"):
-        reg = catalog.rows["reg"][uid][0]
-        series, ticker, class_id = (
-            _upper(reg["sec_series_id"]),
-            _upper(reg["ticker"]),
-            _upper(reg["sec_class_id"]),
-        )
-        # A NULL SEC field never proves a contradiction; only a present,
-        # different value does (series, ticker, or class for this ticker).
-        ticker_rows = by_ticker.get(ticker, [])
-        foreign = any(r[1] is not None and r[1] != series for r in ticker_rows) or (
-            class_id is not None
-            and any(r[0] is not None and r[0] != class_id for r in ticker_rows)
-        )
+        if ticker is not None:
+            by_ticker[ticker].append(position)
         if class_id is not None:
-            rows = by_class.get(class_id, [])
-            conflicting = foreign or any(
-                (r[1] is not None and r[1] != series)
-                or (r[2] is not None and r[2] != ticker)
-                for r in rows
+            by_class[class_id].append(position)
+        if ticker is not None and series_id is not None:
+            by_pair[(series_id, ticker)].append(position)
+    future_rows = sum(
+        1
+        for row in rows
+        if _aware(row["synced_at"]) is not None and _aware(row["synced_at"]) > decided
+    )
+    outcome = Counter()
+    per_uid: dict[str, str] = {}
+    matched_times: list[dt.datetime] = []
+    related_invalid: set[int] = set()
+    active_duplicates = 0
+    stale_uids, future_uids = [], []
+    active = sorted(u for u, e in verdict.items() if e["status"] == "ACTIVE")
+    for uid in active:
+        reg = catalog.rows["reg"][uid][0]
+        series = _upper(reg["sec_series_id"])
+        ticker = _upper(reg["ticker"])
+        declared = _upper(reg["sec_class_id"])
+        related = set(by_ticker.get(ticker, [])) | set(
+            by_pair.get((series, ticker), [])
+        )
+        if declared is not None:
+            related |= set(by_class.get(declared, []))
+        related = sorted(related)
+        # Every related row is classified before any match is declared.
+        poisoned = [p for p in related if _sec_row_poisoned(rows[p])]
+        usable = [p for p in related if not _sec_row_poisoned(rows[p])]
+        valid_related = [p for p in usable if _sec_value_valid(rows[p])]
+        incomplete_related = [p for p in usable if not _sec_value_valid(rows[p])]
+        # Exact-duplicate related rows are duplicates even when identical.
+        related_keys = Counter(
+            (
+                rows[p]["class_id"],
+                rows[p]["series_id"],
+                rows[p]["ticker"],
+                rows[p]["synced_at"],
             )
-            if conflicting:
-                result = "contradiction"
-            elif not rows:
-                result = "missing"
-            elif any(r[1] is None or r[2] is None for r in rows):
-                result = "partial"
-            else:
-                result = "matched" if len(rows) == 1 else "ambiguous_consistent"
-        elif foreign:
+            for p in related
+        )
+        duplicated = any(count > 1 for count in related_keys.values())
+
+        def _differs(value, expected) -> bool:
+            # Only a POPULATED identifier can contradict; empty is partial.
+            return value is not None and value != expected
+
+        contradiction = (
+            declared is not None and SEC_CLASS_RE.fullmatch(declared) is None
+        ) or any(
+            _differs(_upper(rows[p]["series_id"]), series)
+            or _differs(_upper(rows[p]["ticker"]), ticker)
+            or (declared is not None and _upper(rows[p]["class_id"]) != declared)
+            for p in usable
+        )
+        pair_classes = {
+            _upper(rows[p]["class_id"])
+            for p in by_pair.get((series, ticker), [])
+            if p in valid_related
+        }
+        if poisoned:
+            result = "poisoned_active_mapping"
+            related_invalid.update(poisoned)
+        elif contradiction:
             result = "contradiction"
-        elif not ticker_rows:
-            result = "missing"
-        elif any(r[1] is None for r in ticker_rows):
+        elif duplicated or len(pair_classes) > 1 or len(valid_related) > 1:
+            result = "ambiguous"
+        elif incomplete_related:
             result = "partial"
+        elif len(valid_related) == 1:
+            result = "matched"
         else:
-            result = "matched" if len(ticker_rows) == 1 else "ambiguous_consistent"
+            result = "missing"
+        if duplicated:
+            active_duplicates += 1
+        if result == "matched":
+            synced = _aware(rows[valid_related[0]]["synced_at"])
+            matched_times.append(synced)
+            if synced > decided:
+                future_uids.append(uid)
+            elif decided - synced > max_age:
+                stale_uids.append(uid)
         outcome[result] += 1
-        if result == "contradiction":
-            contradictions.append(uid)
-    age = decided - synced
+        per_uid[uid] = result
+    excluded_poisoned = sum(
+        1
+        for position, row in enumerate(rows)
+        if _sec_row_poisoned(row) and position not in related_invalid
+    )
+    # An empty source leaves every ACTIVE "missing" (NOT_EVALUATED), never PASS.
+    lineage_ok = lineage["row_count"] == len(rows) and sec["row_count"] == len(rows)
+    min_matched = min(matched_times) if matched_times else None
+    max_matched = max(matched_times) if matched_times else None
+    freshness = {
+        "decision_at": decided.isoformat(),
+        "max_synced_age_days": SEC_MAX_SYNCED_AGE_DAYS,
+        "min_matched_synced_at": None
+        if min_matched is None
+        else min_matched.isoformat(),
+        "max_matched_synced_at": None
+        if max_matched is None
+        else max_matched.isoformat(),
+        "valid_until": None
+        if min_matched is None
+        else (min_matched + max_age).isoformat(),
+        "lineage_max_synced_at": lineage["max_synced_at"],
+    }
     detail = {
-        **base_detail,
-        "freshness": {
-            "decision_at": decided.isoformat(),
-            "max_synced_at": synced.isoformat(),
-            "age_seconds": int(age.total_seconds()),
-            "max_synced_age_days": max_age,
-        },
-        "outcomes": dict(sorted(outcome.items())),
+        "source_contract": SEC_SOURCE_CONTRACT,
+        "relation": SEC_RELATION,
+        "timestamp_column": SEC_TIMESTAMP_COLUMN,
+        "sec_query_sha256": sec["query_sha256"],
+        "sec_lineage_query_sha256": sec["lineage_query_sha256"],
+        "sec_query_contract_sha256": sec["query_contract_sha256"],
+        "sec_rows_sha256": sec["rows_sha256"],
+        "sec_row_count": sec["row_count"],
+        "lineage": lineage,
+        "invalid_source_rows": len(invalid_rows),
+        "excluded_poisoned_count": excluded_poisoned,
+        "duplicate_source_rows": duplicate_source_rows,
+        "active_poisoned_count": outcome.get("poisoned_active_mapping", 0),
+        "outcomes": {name: outcome.get(name, 0) for name in A8_OUTCOMES},
+        "freshness": freshness,
     }
     checks = {
-        "synced_not_in_future": synced <= decided,
-        "fresh_within_max_age": age <= dt.timedelta(days=max_age),
-        "zero_contradictions": not contradictions,
+        "source_lineage_verified": lineage_ok,
+        "active_nonempty": bool(active),
+        "all_active_matched": bool(active) and outcome.get("matched", 0) == len(active),
+        "zero_contradictions": outcome.get("contradiction", 0) == 0
+        and outcome.get("ambiguous", 0) == 0,
+        "zero_active_poisoned": outcome.get("poisoned_active_mapping", 0) == 0,
+        "zero_active_duplicates": active_duplicates == 0,
+        "synced_not_in_future": not future_uids and future_rows == 0,
+        "fresh_within_max_age": not stale_uids,
     }
-    return _gate(checks), detail, contradictions
+    private = {
+        "per_active_outcome": {u: r for u, r in per_uid.items() if r != "matched"},
+        "stale_matched": stale_uids,
+        "future_matched": future_uids,
+    }
+    demonstrated_failure = not all(
+        checks[name]
+        for name in (
+            "source_lineage_verified",
+            "active_nonempty",
+            "zero_contradictions",
+            "zero_active_poisoned",
+            "zero_active_duplicates",
+            "synced_not_in_future",
+            "fresh_within_max_age",
+        )
+    )
+    gaps = outcome.get("missing", 0) + outcome.get("partial", 0)
+    if not demonstrated_failure and gaps:
+        return (
+            _gate(checks, evaluated=False, code="sec_active_mapping_incomplete"),
+            detail,
+            private,
+        )
+    return _gate(checks), detail, private
 
 
 def _canary(usable: list, catalog: Catalog, builder: dict, salt: str) -> dict:
@@ -1273,6 +1542,111 @@ def _expected_counts(
     }
 
 
+SNAPSHOT_KEYS = frozenset(
+    {
+        "kind",
+        "generator_version",
+        "decision_at",
+        "source_query_version",
+        "source_query_sha256",
+        "source_snapshot_sha256",
+        "row_counts",
+        "policy_id",
+        "policy_version",
+        "policy_hash",
+        "policy_generation_sha256",
+        "policy_artifact_sha256",
+        "sources",
+    }
+)
+CALENDAR_CONTINUITY_FIELDS = (
+    "calendar_id",
+    "calendar_version",
+    "calendar_source",
+    "calendar_digest",
+    "calendar_session_count",
+    "coverage_start",
+    "coverage_end",
+    "sessions",
+    "timezone",
+    "source_reference",
+    "valid_through",
+)
+PREVIOUS_STATUSES = frozenset({"ACTIVE", "INACTIVE", "UNKNOWN"})
+
+
+def _load_snapshot(raw: bytes) -> tuple[dict, dict]:
+    """Hostile snapshot: object/labels/rows validated before any lookup."""
+    snapshot = _strict_json(raw, "source_snapshot_contract_invalid")
+    sources = snapshot.get("sources")
+    counts = snapshot.get("row_counts")
+    if (
+        set(snapshot) != SNAPSHOT_KEYS
+        or not isinstance(sources, dict)
+        or set(sources) != {"funds", "identity", "instruments"}
+        or not isinstance(counts, dict)
+        or set(counts) != {"funds", "identity", "instruments"}
+        or any(type(v) is not int or v < 0 for v in counts.values())
+        or any(not isinstance(rows, list) for rows in sources.values())
+    ):
+        raise AuditBlocked("source_snapshot_contract_invalid")
+    try:
+        rows = {
+            name: _source_rows(sources[name], name, from_database=False)
+            for name in ("instruments", "funds", "identity")
+        }
+    except AuditBlocked as exc:
+        raise AuditBlocked("source_snapshot_contract_invalid") from exc
+    return snapshot, rows
+
+
+def _load_previous(raw: bytes) -> tuple[dict, list]:
+    """Hostile previous artifact; identity is computed, never trusted."""
+    previous = _strict_json(raw, "previous_policy_invalid")
+    evidence = previous.get("instrument_evidence")
+    generation = previous.get("generation")
+    if (
+        not isinstance(previous.get("policy_id"), str)
+        or not previous["policy_id"].strip()
+        or not isinstance(previous.get("policy_version"), str)
+        or not previous["policy_version"].strip()
+        or not isinstance(evidence, list)
+        or ("generation" in previous and not isinstance(generation, dict))
+        or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("instrument_id"), str)
+            or not LOWER_UUID.match(row["instrument_id"])
+            or row.get("fund_status") not in PREVIOUS_STATUSES
+            for row in evidence
+        )
+        or len({row["instrument_id"] for row in evidence}) != len(evidence)
+    ):
+        raise AuditBlocked("previous_policy_invalid")
+    computed = _policy_hash(previous)
+    if (
+        isinstance(generation, dict)
+        and "policy_hash" in generation
+        and (generation["policy_hash"] != computed)
+    ):
+        raise AuditBlocked("previous_policy_invalid")
+    return previous, [previous["policy_id"], previous["policy_version"], computed]
+
+
+def _deadline_check(policy: dict) -> bool:
+    """valid_through is aware and equals the latest session nav_due_at instant."""
+    valid = _aware(policy.get("valid_through"))
+    sessions = policy.get("sessions")
+    if valid is None or not isinstance(sessions, list) or not sessions:
+        return False
+    dues = []
+    for session in sessions:
+        due = _aware(session.get("nav_due_at")) if isinstance(session, dict) else None
+        if due is None:
+            return False
+        dues.append(due)
+    return valid == max(dues)
+
+
 def audit(
     policy_raw: bytes,
     *,
@@ -1294,11 +1668,10 @@ def audit(
     if live is not None:
         capture_raw = capture_bytes(live, config)
     capture = None if capture_raw is None else load_capture(capture_raw, config)
-    try:
-        policy = json.loads(policy_raw)
-    except ValueError as exc:
-        raise AuditBlocked("policy_not_json") from exc
-    if not isinstance(policy, dict) or not isinstance(policy.get("generation"), dict):
+    policy = _strict_json(policy_raw, "policy_not_json", require_object=False)
+    if not isinstance(policy, dict):
+        raise AuditBlocked("artifact_not_object")
+    if not isinstance(policy.get("generation"), dict):
         raise AuditBlocked("policy_generation_missing")
     generation = policy["generation"]
     evidence = policy.get("instrument_evidence")
@@ -1309,25 +1682,15 @@ def audit(
         or generation.get("generator_version") in RETIRED_GENERATORS
     ):
         raise AuditBlocked("retired_generator_version")
+    previous, previous_identity = (
+        (None, None) if previous_raw is None else _load_previous(previous_raw)
+    )
     differences: dict = {}
 
     # Sources: snapshot export and/or the capture bundle (same canonical form).
     snapshot = None
     if snapshot_raw is not None:
-        try:
-            snapshot = json.loads(snapshot_raw)
-        except ValueError as exc:
-            raise AuditBlocked("source_snapshot_invalid") from exc
-        if not isinstance(snapshot, dict) or not isinstance(
-            snapshot.get("sources"), dict
-        ):
-            raise AuditBlocked("source_snapshot_invalid")
-        file_sources = {
-            name: _source_rows(
-                snapshot["sources"].get(name, []), name, from_database=False
-            )
-            for name in ("instruments", "funds", "identity")
-        }
+        snapshot, file_sources = _load_snapshot(snapshot_raw)
     capture_sources = None if capture is None else capture["sources"]
     if snapshot is None and capture_sources is None:
         raise AuditBlocked("source_input_required")
@@ -1361,7 +1724,7 @@ def audit(
         daily_ids=daily_ids,
     )
 
-    # A1 integrity (offline parts; the operator check v3 is a separate command).
+    # A1 integrity, continuity, state and deadline.
     evidence_ids = [row.get("instrument_id") for row in evidence]
     generated_at = generation.get("generated_at")
     a1 = {
@@ -1392,42 +1755,49 @@ def audit(
         == _generation_digest(generation),
         "source_snapshot_sha256": generation.get("source_snapshot_sha256")
         == source_sha,
+        "publication_state_approved": policy.get("publication_state") == "approved",
+        "timezone_new_york": policy.get("timezone") == "America/New_York",
+        "source_reference_present": isinstance(policy.get("source_reference"), str)
+        and bool(policy["source_reference"].strip()),
+        "valid_through_equals_last_deadline": _deadline_check(policy),
     }
     if snapshot is not None:
         a1["snapshot_link"] = (
-            snapshot.get("kind") == SNAPSHOT_KIND
-            and snapshot.get("source_query_sha256") == QUERY_SHA256
-            and snapshot.get("source_snapshot_sha256") == source_sha
-            and snapshot.get("policy_hash") == generation.get("policy_hash")
-            and snapshot.get("policy_generation_sha256")
+            snapshot["kind"] == SNAPSHOT_KIND
+            and snapshot["generator_version"] == EXPECTED_GENERATOR
+            and snapshot["source_query_version"] == EXPECTED_QUERY_VERSION
+            and snapshot["source_query_sha256"] == QUERY_SHA256
+            and snapshot["source_snapshot_sha256"] == source_sha
+            and snapshot["policy_id"] == policy.get("policy_id")
+            and snapshot["policy_version"] == policy.get("policy_version")
+            and snapshot["policy_hash"] == generation.get("policy_hash")
+            and snapshot["policy_generation_sha256"]
             == generation.get("generation_sha256")
-            and snapshot.get("policy_artifact_sha256") == _sha(policy_raw)
-            and snapshot.get("decision_at") == generated_at
+            and snapshot["policy_artifact_sha256"] == _sha(policy_raw)
+            and snapshot["decision_at"] == generated_at
+            and snapshot["row_counts"]
+            == {name: len(rows) for name, rows in file_sources.items()}
+            and all(
+                snapshot["sources"][name]
+                == sorted(snapshot["sources"][name], key=_compact)
+                for name in ("funds", "identity", "instruments")
+            )
         )
-    previous = None
-    if previous_raw is not None:
-        previous = json.loads(previous_raw)
-        prev_generation = previous.get("generation") or {}
-        calendar_fields = (
-            "calendar_id",
-            "calendar_version",
-            "calendar_source",
-            "calendar_digest",
-            "calendar_session_count",
-            "coverage_start",
-            "coverage_end",
-            "sessions",
+    if previous is not None:
+        a1["hash_distinct_from_previous"] = (
+            generation.get("policy_hash") != previous_identity[2]
         )
-        a1["hash_distinct_from_previous"] = generation.get(
-            "policy_hash"
-        ) != prev_generation.get("policy_hash", _policy_hash(previous))
+        # Exact string equality (an equivalent instant spelled differently fails).
         a1["calendar_identical_to_previous"] = all(
-            policy.get(field) == previous.get(field) for field in calendar_fields
+            field in previous and policy.get(field) == previous.get(field)
+            for field in CALENDAR_CONTINUITY_FIELDS
         )
 
     # A2 partition, first-failure closure and EVERY declared generation count.
     counts = generation.get("counts")
     counts = counts if isinstance(counts, dict) else {}
+    declared_first = counts.get("identity_first_failure")
+    declared_first = declared_first if isinstance(declared_first, dict) else {}
     statuses = _count_dict(row.get("fund_status") for row in evidence)
     independent_status = expected_counts["fund_status"]
     independent_first = expected_counts["identity_first_failure"]
@@ -1445,9 +1815,7 @@ def audit(
         "partition_sum": sum(statuses.values()) == len(evidence) == len(verdict),
         "reported_status_counts": counts.get("fund_status") == statuses,
         "first_failure_sum_equals_unknown": sum(
-            v
-            for v in (counts.get("identity_first_failure") or {}).values()
-            if type(v) is int
+            v for v in declared_first.values() if type(v) is int
         )
         == statuses.get("UNKNOWN", 0),
         "first_failure_equals_independent": counts.get("identity_first_failure")
@@ -1462,8 +1830,7 @@ def audit(
     if previous is not None:
         prev_status = {
             row["instrument_id"]: row["fund_status"]
-            for row in previous.get("instrument_evidence", [])
-            if isinstance(row, dict)
+            for row in previous["instrument_evidence"]
         }
         prev_inactive = {u for u, s in prev_status.items() if s == "INACTIVE"}
         cur_inactive = {u for u, e in verdict.items() if e["status"] == "INACTIVE"}
@@ -1533,39 +1900,70 @@ def audit(
         differences["previous_active_explained"] = explained
         differences["previous_active_unexplained"] = unexplained
 
-    # A4 ceiling and structural reconciliation.
-    v1_total, v1_daily = catalog.v1_structural_daily()
-    ceiling = config.get("active_ceiling", DEFAULT_ACTIVE_CEILING)
+    # A4: the ceiling bounds P (structural daily pre-claims), B is the drift
+    # baseline (v1 structural daily without ISIN) and D the ACTIVE daily set.
+    # D ⊆ P ⊆ B with B∖P explained by pre-claim and P∖D by claim failures.
+    _b_total, baseline_set = catalog.v1_structural_sets()
+    p_set, d_set = set(structural_daily), set(daily_ids)
+    b_minus_p, p_minus_d = baseline_set - p_set, p_set - d_set
+    pre_claim_first = _count_dict(
+        verdict[u]["first"] if u in verdict else "absent" for u in b_minus_p
+    )
+    claim_first = _count_dict(
+        verdict[u]["first"] if u in verdict else "absent" for u in p_minus_d
+    )
+    if config_raw is None:
+        ceiling = DEFAULT_STRUCTURAL_DAILY_CEILING
+    else:
+        ceiling = config[STRUCTURAL_DAILY_CEILING_KEY]
     baseline = config.get("structural_baseline")
-    delta = None if baseline is None else v1_daily - baseline
+    delta = None if baseline is None else len(baseline_set) - baseline
+    accepted = config.get("accepted_structural_delta")
+
+    def _family(uid, families):
+        entry = verdict.get(uid)
+        return (
+            entry is not None
+            and entry["status"] == "UNKNOWN"
+            and entry["first"] is not None
+            and entry["first"].split(".", 1)[0] in families
+        )
+
     a4 = {
-        "active_within_ceiling": ceiling is not None and len(active_ids) <= ceiling,
-        "daily_within_active": len(daily_ids) <= len(active_ids),
-        "active_subset_of_structural": set(active_ids) <= set(structural),
+        "structural_baseline_accepted": delta in (None, 0) or accepted == delta,
+        # An accepted baseline delta never raises the ceiling on P.
+        "structural_daily_within_ceiling": len(p_set) <= ceiling,
+        "active_daily_subset_of_structural_daily": d_set <= p_set,
+        "structural_daily_subset_of_baseline": p_set <= baseline_set,
+        "baseline_first_failure_closure": all(
+            _family(u, PRE_CLAIM_FAMILIES) for u in b_minus_p
+        )
+        and all(_family(u, CLAIM_FAMILIES) for u in p_minus_d)
+        and not (b_minus_p & p_minus_d)
+        and not (b_minus_p & d_set)
+        and not (p_minus_d & d_set)
+        and len(baseline_set) == len(d_set) + len(b_minus_p) + len(p_minus_d),
         "structural_reconciled_by_claim_failures": len(structural) - len(active_ids)
         == len(structural_unknown)
         and all(
             verdict[u]["first"].split(".")[0] in CLAIM_FAMILIES
             for u in structural_unknown
         ),
-        "reported_structural_counts": counts.get("structural_pre_claims")
-        == len(structural)
-        and counts.get("structural_pre_claims_daily") == len(structural_daily)
-        and counts.get("structural_claim_failures") == len(structural_unknown),
-        "structural_baseline_delta_acknowledged": delta in (None, 0)
-        or config.get("accepted_structural_delta") == delta,
     }
     a4_detail = {
-        "active": len(active_ids),
-        "active_daily": len(daily_ids),
-        "ceiling": ceiling,
-        "structural_pre_claims": len(structural),
-        "structural_pre_claims_daily": len(structural_daily),
-        "structural_v1_without_isin": v1_total,
-        "structural_v1_without_isin_daily": v1_daily,
+        "ceiling_population": "structural_pre_claims_daily",
+        "baseline_count": len(baseline_set),
+        "structural_daily_count": len(p_set),
+        "active_daily_count": len(d_set),
+        "structural_daily_ceiling": ceiling,
         "structural_baseline": baseline,
-        "structural_baseline_delta": delta,
+        "structural_delta": delta,
+        "accepted_structural_delta": accepted,
+        "pre_claim_first_failure": pre_claim_first,
+        "claim_first_failure": claim_first,
     }
+    if set(a4_detail) != set(A4_DETAIL_KEYS):  # pragma: no cover - contract guard
+        raise AuditBlocked("audit_contract_literal_mismatch")
 
     # A5 independence: exact sets, digests, per-UUID lifecycle/frequency, reasons.
     policy_active = sorted(
@@ -1586,6 +1984,8 @@ def audit(
         or policy_status[u].get("valuation_frequency")
         != ("daily" if verdict[u]["daily"] else "unknown")
     )
+    generated_instant = _aware(generated_at)
+    captured_instant = None if capture is None else _aware(capture["captured_at"])
     a5 = {
         "active_set_equal": policy_active == active_ids,
         "active_daily_set_equal": policy_daily == daily_ids,
@@ -1604,6 +2004,13 @@ def audit(
         == expected_counts["isin_presence_active_daily"],
         "no_source_drift": live_sha is None
         or live_sha == generation.get("source_snapshot_sha256"),
+        # The audit clock is the capture's DB clock; generation must precede it.
+        "generation_precedes_capture": capture is None
+        or (
+            generated_instant is not None
+            and captured_instant is not None
+            and generated_instant <= captured_instant
+        ),
     }
     differences["lifecycle_mismatch"] = lifecycle_mismatch
 
@@ -1657,14 +2064,21 @@ def audit(
     cohort = capture["cohort"] if same_snapshot else drifted
     sec = capture["sec"] if same_snapshot else drifted
     a7_gate, a7_detail, usable = _a7(cohort, builder, verdict, catalog)
-    a8_gate, a8_detail, contradictions = _a8(
+    a8_gate, a8_detail, sec_private = _a8(
         sec,
         verdict,
         catalog,
         config,
         None if capture is None else capture["captured_at"],
     )
-    differences["sec_contradictions"] = contradictions
+    differences["sec"] = sec_private
+
+    # Deterministic canary selection, fixed BEFORE the dossier is serialized;
+    # the dossier carries only its digest (no manifest hash, no cycle).
+    selection = None
+    salt = config.get("canary_salt")
+    if builder is not None and isinstance(salt, str) and salt and a7_detail:
+        selection = _canary(usable, catalog, builder, salt)
 
     gates = {
         "A1": _gate(a1),
@@ -1704,13 +2118,18 @@ def audit(
                 )
             },
             "sec": {
-                k: capture["sec"][k]
+                k: capture["sec"].get(k)
                 for k in (
                     "state",
                     "code",
+                    "source_contract",
+                    "relation",
+                    "timestamp_column",
+                    "query_sha256",
+                    "lineage_query_sha256",
+                    "query_contract_sha256",
                     "row_count",
                     "rows_sha256",
-                    "query_sha256",
                     "lineage",
                 )
             },
@@ -1734,9 +2153,12 @@ def audit(
             "previous_policy_sha256": None
             if previous_raw is None
             else _sha(previous_raw),
+            "previous_policy_identity": previous_identity,
             "audit_config_sha256": None if config_raw is None else _sha(config_raw),
             "verifier_source_sha256": _sha(Path(__file__).read_bytes()),
             "source_query_sha256": QUERY_SHA256,
+            "sec_source_contract": SEC_SOURCE_CONTRACT,
+            "sec_query_contract_sha256": SEC_QUERY_CONTRACT_SHA256,
         },
         "gates": gates,
         "details": {
@@ -1755,6 +2177,9 @@ def audit(
             },
             "A7": a7_detail,
             "A8": a8_detail,
+            "canary_selection_sha256": None
+            if selection is None
+            else selection_digest(selection),
         },
         "counts": {
             "evidence": len(evidence),
@@ -1767,15 +2192,21 @@ def audit(
         "differences": differences,
     }
     # Private, never serialized: needed only to derive a canary manifest.
-    report["_canary_pool"] = usable
+    report["_canary_selection"] = selection
     report["_catalog"] = catalog
     return report
 
 
 def verdict_of(report: dict, *, strict: bool) -> bool:
+    """Strict: every gate PASS with exactly the contract's check set, all True."""
     gates = report["gates"]
     if strict:
-        return all(gate["status"] == "PASS" for gate in gates.values())
+        return set(gates) == set(GATE_CHECKS) and all(
+            gates[name]["status"] == "PASS"
+            and set(gates[name]["checks"]) == set(GATE_CHECKS[name])
+            and all(value is True for value in gates[name]["checks"].values())
+            for name in GATE_CHECKS
+        )
     core = all(
         gates[name]["status"] == "PASS" for name in ("A1", "A2", "A4", "A5", "A6")
     )
@@ -1810,24 +2241,35 @@ def report_bytes(report: dict) -> bytes:
 def build_canary(
     report: dict, policy_raw: bytes, config: dict, *, audit_report_sha256: str
 ) -> dict:
-    """Manifest bound to the persisted dossier, capture and eligible cohort."""
+    """Manifest bound to the persisted dossier, capture and audited selection."""
     if not verdict_of(report, strict=True):
         raise AuditBlocked("canary_requires_strict_audit_pass")
     if not isinstance(audit_report_sha256, str) or not HEX64.match(audit_report_sha256):
         raise AuditBlocked("canary_report_digest_invalid")
-    builder = config["builder"]
     salt = config.get("canary_salt")
-    if not isinstance(salt, str) or not salt:
+    selection = report.get("_canary_selection")
+    if not isinstance(salt, str) or not salt or selection is None:
         raise AuditBlocked("canary_salt_missing")
+    digest = selection_digest(selection)
+    if digest != report["details"]["canary_selection_sha256"]:
+        raise AuditBlocked("canary_selection_mismatch")
+    if not 1 <= selection["size"] <= CANARY_MAX or set(selection) != set(
+        CANARY_SELECTION_KEYS
+    ):
+        raise AuditBlocked("canary_selection_empty")
     policy = json.loads(policy_raw)
-    selection = _canary(report["_canary_pool"], report["_catalog"], builder, salt)
     a7 = report["details"]["A7"]
+    inputs = report["inputs"]
     return {
         "kind": CANARY_KIND,
         "audit_contract_version": AUDIT_CONTRACT_VERSION,
         "audit_contract_sha256": AUDIT_CONTRACT_SHA256,
         "audit_report_sha256": audit_report_sha256,
-        "capture_bundle_sha256": report["inputs"]["capture"]["capture_bundle_sha256"],
+        "audit_config_sha256": inputs["audit_config_sha256"],
+        "verifier_source_sha256": inputs["verifier_source_sha256"],
+        "sec_source_contract": SEC_SOURCE_CONTRACT,
+        "sec_query_contract_sha256": SEC_QUERY_CONTRACT_SHA256,
+        "capture_bundle_sha256": inputs["capture"]["capture_bundle_sha256"],
         "eligible_cohort_sha256": a7["eligible_cohort_sha256"],
         "eligible_cohort_size": a7["eligible_cohort_size"],
         "light_revision": a7["light_revision"],
@@ -1839,6 +2281,7 @@ def build_canary(
         "active_daily_set_sha256": policy["generation"]["active_daily_set_sha256"],
         "salt": salt,
         "max_size": CANARY_MAX,
+        "selection_sha256": digest,
         **selection,
     }
 
@@ -1927,20 +2370,27 @@ def capture_live(dsn: str, config: dict) -> dict:
                             "state": "failed",
                             "code": f"cohort_query_failed:{exc.sqlstate}",
                         }
+                # A8 source: exactly SEC_RELATION; absence, missing privilege,
+                # missing column or truncation is explicit unavailability and
+                # never triggers a switch to another relation.
                 sec = {"state": "unavailable", "code": "sec_relation_missing"}
                 cur.execute(
-                    "SELECT to_regclass('public.fund_classes_latest_mv') IS NOT NULL AS present"
+                    "SELECT to_regclass(%s) IS NOT NULL AS present", (SEC_RELATION,)
                 )
                 if cur.fetchone()["present"]:
                     cur.execute(
-                        "SELECT has_table_privilege(current_user, 'public.fund_classes_latest_mv', 'SELECT') AS ok"
+                        "SELECT has_table_privilege(current_user, %s, 'SELECT') AS ok",
+                        (SEC_RELATION,),
                     )
                     if cur.fetchone()["ok"] is not True:
                         sec = {"state": "unavailable", "code": "sec_privilege_missing"}
                     else:
                         cur.execute("SAVEPOINT audit_sec")
                         try:
-                            rows = fetch(cur, SEC_SQL)
+                            cur.execute(SEC_SQL)
+                            rows = cur.fetchall()  # the pinned SQL carries LIMIT 100001
+                            if len(rows) > ROW_CEILING:
+                                raise _RowCeilingExceeded
                             cur.execute(SEC_LINEAGE_SQL)
                             lineage = cur.fetchone()
                             cur.execute("RELEASE SAVEPOINT audit_sec")
@@ -1949,11 +2399,15 @@ def capture_live(dsn: str, config: dict) -> dict:
                                 "rows": rows,
                                 "lineage": {
                                     "row_count": lineage["row_count"],
+                                    "min_synced_at": lineage["min_synced_at"],
                                     "max_synced_at": lineage["max_synced_at"],
-                                    "max_source_period_end": lineage[
-                                        "max_source_period_end"
-                                    ],
                                 },
+                            }
+                        except _RowCeilingExceeded:
+                            cur.execute("ROLLBACK TO SAVEPOINT audit_sec")
+                            sec = {
+                                "state": "failed",
+                                "code": "sec_row_ceiling_exceeded",
                             }
                         except psycopg.Error as exc:
                             cur.execute("ROLLBACK TO SAVEPOINT audit_sec")
