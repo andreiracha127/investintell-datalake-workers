@@ -7,17 +7,26 @@ import hashlib
 import json
 import math
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from psycopg.rows import dict_row
 
 from src.db import LOCK_FUND_NAV_READINESS, advisory_lock, connect
-from src.workers._nav_policy import calendar_digest
-from src.workers.risk_metrics import FEATURE_DEFINITION_VERSION
+from src.workers._nav_policy import (
+    ENDPOINTS,
+    FEATURE_DEFINITION_VERSION,
+    PROFILE,
+    CalendarKey,
+    CalendarSessionProof,
+    calendar_equivalence_digest,
+    equivalence_mapping_digest,
+    load_calendar_equivalence,
+    resolve_policy_and_grid,
+)
 
-PROFILE = "current_daily_nav_v1"
-INTERVALS = 400
-ENDPOINTS = INTERVALS + 1
+SUCCESS_ATTEMPTS = ("success_new", "success_no_new")
+INTERVALS = ENDPOINTS - 1
 _NAV_FIELDS = """nav_date, nav, return_1d, return_type, source, source_nav, source_nav_kind,
     nav_repair_kind, return_start_date, return_source_boundary,
     return_uses_repaired_nav, return_semantics, return_verification_status,
@@ -65,6 +74,7 @@ _ROW_FIELDS = (
     "reason_code",
     "input_fingerprint",
     "sample_id",
+    "calendar_equivalence_digest",
 )
 
 
@@ -85,7 +95,22 @@ def sample_id(policy: dict, grid: list[dt.date]) -> str:
     )
 
 
-def _valid_interval(previous: dict, current: dict, policy: dict) -> bool:
+Equivalence = Mapping[CalendarKey, CalendarSessionProof]
+
+
+def _calendar_valid(row: dict, equivalence: Equivalence) -> bool:
+    stamp = (row["calendar_id"], row["calendar_version"], row["calendar_source"])
+    return None not in stamp and (row["nav_date"], *stamp) in equivalence
+
+
+def _valid_interval(
+    previous: dict, current: dict, policy: dict, equivalence: Equivalence
+) -> bool:
+    """One declared interval; each level's stamp must have a session proof.
+
+    ``equivalence`` is the immutable mapping from ``load_calendar_equivalence``
+    (or its pure core); there is no literal current-stamp fallback.
+    """
     if (
         current["return_start_date"] != previous["nav_date"]
         or current["return_semantics"] != policy["required_return_semantics"]
@@ -101,9 +126,7 @@ def _valid_interval(previous: dict, current: dict, policy: dict) -> bool:
             or row["nav_repair_kind"] != "none"
             or row["source_nav"] is None
             or row["nav"] is None
-            or row["calendar_id"] != policy["calendar_id"]
-            or row["calendar_version"] != policy["calendar_version"]
-            or row["calendar_source"] != policy["calendar_source"]
+            or not _calendar_valid(row, equivalence)
             or row["currency"] != policy["modeling_currency"]
         ):
             return False
@@ -145,8 +168,16 @@ def assess_instrument(
     nav_revision_id: int = 0,
     reexpression_hold: bool = False,
     revision_source_verified: bool = True,
+    *,
+    equivalence: Equivalence,
+    lineage: list | None = None,
 ) -> dict[str, Any]:
-    """Exact 401 observed levels / 400 declared intervals, not tail/dropna."""
+    """Exact 401 observed levels / 400 declared intervals, not tail/dropna.
+
+    ``equivalence`` validates each level's calendar stamp per date (rollover);
+    ``lineage`` is the per-date revision attribution proof from
+    ``_input_evidence`` and is bound into the evidence fingerprint.
+    """
     status = lifecycle["fund_status"] if lifecycle else "UNKNOWN"
     frequency = lifecycle["valuation_frequency"] if lifecycle else "unknown"
     by_date = {row["nav_date"]: row for row in nav_rows}
@@ -155,11 +186,12 @@ def assess_instrument(
     missed_due = sum(latest_nav is None or date > latest_nav for date in grid)
     current = latest_nav is not None and latest_nav >= grid[-1] and grid[-1] in present
     compatible = len(present) == ENDPOINTS and len(by_date) == ENDPOINTS
+    equivalence_digest = calendar_equivalence_digest(grid, by_date, equivalence)
     valid_returns = 0
     last_return = None
     if compatible:
         for start, end in zip(grid, grid[1:]):
-            if _valid_interval(by_date[start], by_date[end], policy):
+            if _valid_interval(by_date[start], by_date[end], policy, equivalence):
                 valid_returns += 1
                 last_return = end
             else:
@@ -173,10 +205,7 @@ def assess_instrument(
         and risk_end == grid[-1]
         and feature_as_of == grid[-1]
     )
-    attempted = attempt is not None and attempt["status"] in (
-        "success_new",
-        "success_no_new",
-    )
+    attempted = attempt is not None and attempt["status"] in SUCCESS_ATTEMPTS
     identity = bool(lifecycle and lifecycle["identity_verified"])
     basis = bool(lifecycle and lifecycle["return_basis_verified"])
     currency = bool(lifecycle and lifecycle["currency_verified"])
@@ -267,6 +296,7 @@ def assess_instrument(
         "cohort": "current_daily" if frequency == "daily" else None,
         "admissible": reason is None,
         "reason_code": reason,
+        "calendar_equivalence_digest": equivalence_digest,
     }
     result["input_fingerprint"] = digest(
         {
@@ -282,84 +312,183 @@ def assess_instrument(
             "nav_revision_id": nav_revision_id,
             "reexpression_hold": reexpression_hold,
             "revision_source_verified": revision_source_verified,
+            "lineage": lineage,
+            "calendar_equivalence_digest": equivalence_digest,
         }
     )
     return result
 
 
-def _policy_and_grid(
-    conn, decision_at: dt.datetime
-) -> tuple[dict, list[dt.date], dt.date]:
-    with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            """SELECT policy.* FROM nav_policy_current current_policy
-               JOIN nav_policy_versions policy USING (policy_id, policy_version)
-               WHERE current_policy.readiness_profile = %s
-                 AND policy.published_at <= %s AND current_policy.published_at <= %s""",
-            (PROFILE, decision_at, decision_at),
-        )
-        policy = cur.fetchone()
-        if not policy:
-            raise RuntimeError("NAV_POLICY_UNAVAILABLE: no published policy")
-        if decision_at > policy["valid_through"]:
-            raise RuntimeError("NAV_POLICY_UNAVAILABLE: calendar coverage expired")
-        cur.execute(
-            """SELECT session_date,valuation_close_at,nav_due_at,source_reference
-               FROM nav_valuation_schedules WHERE calendar_id=%s AND calendar_version=%s
-               ORDER BY session_date""",
-            (policy["calendar_id"], policy["calendar_version"]),
-        )
-        catalog = cur.fetchall()
-        if (
-            len(catalog) != policy["calendar_session_count"]
-            or not catalog
-            or catalog[0]["session_date"] != policy["coverage_start"]
-            or catalog[-1]["session_date"] != policy["coverage_end"]
-            or calendar_digest(
-                [
-                    (
-                        s["session_date"],
-                        s["valuation_close_at"],
-                        s["nav_due_at"],
-                        s["source_reference"],
-                    )
-                    for s in catalog
-                ]
-            )
-            != policy["calendar_digest"]
-        ):
-            raise RuntimeError("NAV_POLICY_UNAVAILABLE: calendar digest mismatch")
-        cur.execute(
-            """SELECT session_date, calendar_source FROM nav_valuation_schedules
-               WHERE calendar_id = %s AND calendar_version = %s AND nav_due_at <= %s
-               ORDER BY session_date DESC LIMIT %s""",
-            (policy["calendar_id"], policy["calendar_version"], decision_at, ENDPOINTS),
-        )
-        sessions = cur.fetchall()
-        if (
-            len(sessions) != ENDPOINTS
-            or sessions[0]["session_date"] < policy["coverage_start"]
-            or sessions[0]["session_date"] > policy["coverage_end"]
-            or any(s["calendar_source"] != policy["calendar_source"] for s in sessions)
-        ):
-            raise RuntimeError("NAV_POLICY_UNAVAILABLE: incomplete calendar window")
-        cur.execute(
-            """SELECT session_date FROM nav_valuation_schedules
-               WHERE calendar_id=%s AND calendar_version=%s
-                 AND valuation_close_at <= %s
-               ORDER BY session_date DESC LIMIT 1""",
-            (policy["calendar_id"], policy["calendar_version"], decision_at),
-        )
-        closed = cur.fetchone()
-        if not closed:
-            raise RuntimeError("NAV_POLICY_UNAVAILABLE: no closed session")
-        if closed["session_date"] > policy["coverage_end"]:
-            raise RuntimeError("NAV_POLICY_UNAVAILABLE: closed session beyond coverage")
-    return (
-        policy,
-        list(reversed([r["session_date"] for r in sessions])),
-        closed["session_date"],
+# Shared with risk and the chain through the leaf module (no readiness<->risk
+# import); kept under this name for existing callers.
+_policy_and_grid = resolve_policy_and_grid
+
+# W2: contention is a retry, never a success (normalized for the runner).
+LOCK_BUSY_RESULT = {
+    "status": "lock_busy",
+    "state": "lock_busy",
+    "published": False,
+    "retryable": True,
+}
+
+
+_LINEAGE_REVISIONS_SQL = """
+WITH latest AS (
+    SELECT r.nav_date,
+           (array_agg(r.revision_id ORDER BY r.revision_id DESC)
+               FILTER (WHERE r.data_changed))[1] AS data_revision_id,
+           (array_agg(r.revision_id ORDER BY r.revision_id DESC)
+               FILTER (WHERE r.calendar_changed))[1] AS calendar_revision_id
+    FROM fund_nav_data_revisions r
+    WHERE r.instrument_id = %(iid)s AND r.nav_date BETWEEN %(start)s AND %(end)s
+    GROUP BY r.nav_date
+)
+SELECT l.nav_date, l.data_revision_id, l.calendar_revision_id,
+       d.source_run_id AS data_run_id,
+       c.source_run_id AS calendar_run_id,
+       c.maintenance_run_id AS calendar_maintenance_id,
+       m.status AS maintenance_status, m.completed_at AS maintenance_completed_at,
+       m.calendar_id AS maintenance_calendar_id,
+       m.calendar_version AS maintenance_calendar_version,
+       m.calendar_source AS maintenance_calendar_source,
+       (l.nav_date BETWEEN m.window_start AND m.window_end
+        AND %(iid)s = ANY(m.instrument_ids)) AS maintenance_in_scope
+FROM latest l
+LEFT JOIN fund_nav_data_revisions d ON d.revision_id = l.data_revision_id
+LEFT JOIN fund_nav_data_revisions c ON c.revision_id = l.calendar_revision_id
+LEFT JOIN nav_calendar_maintenance_runs m ON m.maintenance_run_id = c.maintenance_run_id
+ORDER BY l.nav_date
+"""
+
+
+def _per_date_lineage(
+    cur,
+    instrument_id: Any,
+    grid: list[dt.date],
+    end: dt.date,
+    decision_at: dt.datetime,
+) -> tuple[bool, list]:
+    """Prove economic and calendar lineage for every persisted/revised date.
+
+    Each date needs its latest *data* revision attributed to a completed provider
+    run with a successful, covering attempt of the row's provider, and each
+    stamped level needs its latest *calendar* revision attributed to such a
+    provider run or to a completed, in-scope maintenance run with the same tuple.
+    A later metadata revision never hides an unknown data revision; a datum with
+    no revision is unavailable even if maintenance could stamp it.
+    """
+    cur.execute(
+        """SELECT nav_date, source, calendar_id, calendar_version, calendar_source
+           FROM nav_timeseries WHERE instrument_id=%s AND nav_date BETWEEN %s AND %s""",
+        (instrument_id, grid[0], end),
     )
+    rows = {row["nav_date"]: row for row in cur.fetchall()}
+    cur.execute(
+        _LINEAGE_REVISIONS_SQL, {"iid": instrument_id, "start": grid[0], "end": end}
+    )
+    revisions = {row["nav_date"]: row for row in cur.fetchall()}
+    run_ids = sorted(
+        {
+            str(value)
+            for rev in revisions.values()
+            for value in (rev["data_run_id"], rev["calendar_run_id"])
+            if value is not None
+        }
+    )
+    runs: dict[str, dict] = {}
+    if run_ids:
+        cur.execute(
+            """SELECT run.run_id, run.status, run.completed_at, a.provider,
+                      a.status AS attempt_status, a.requested_start, a.requested_end,
+                      a.finished_at
+               FROM nav_ingestion_runs run
+               LEFT JOIN nav_ingestion_attempts a
+                 ON a.run_id = run.run_id AND a.instrument_id = %s
+               WHERE run.run_id = ANY(%s::uuid[])""",
+            (instrument_id, run_ids),
+        )
+        for row in cur.fetchall():
+            entry = runs.setdefault(
+                str(row["run_id"]),
+                {"status": row["status"], "completed_at": row["completed_at"], "attempts": []},
+            )
+            if row["provider"] is not None:
+                entry["attempts"].append(row)
+
+    def provider_ok(run_id: Any, day: dt.date, provider: str | None) -> bool:
+        run = runs.get(str(run_id))
+        if (
+            run is None
+            or run["status"] != "completed"
+            or run["completed_at"] is None
+            or run["completed_at"] > decision_at
+        ):
+            return False
+        return any(
+            attempt["attempt_status"] in SUCCESS_ATTEMPTS
+            and (provider is None or attempt["provider"] == provider)
+            and attempt["requested_start"] <= day <= attempt["requested_end"]
+            and attempt["finished_at"] is not None
+            and attempt["finished_at"] <= decision_at
+            for attempt in run["attempts"]
+        )
+
+    # A revision from another day cannot stand in for a missing grid level.
+    verified = set(grid).issubset(rows)
+    lineage = []
+    for day in sorted(set(rows) | set(revisions)):
+        row = rows.get(day)
+        rev = revisions.get(day)
+        data_ok = bool(
+            rev is not None
+            and rev["data_revision_id"] is not None
+            and rev["data_run_id"] is not None
+            and provider_ok(rev["data_run_id"], day, row["source"] if row else None)
+        )
+        stamp = (
+            (row["calendar_id"], row["calendar_version"], row["calendar_source"])
+            if row is not None and row["calendar_id"] is not None
+            else None
+        )
+        calendar_ok = True
+        calendar_attribution = None
+        if stamp is not None:
+            if rev is None or rev["calendar_revision_id"] is None:
+                calendar_ok = False
+            elif rev["calendar_run_id"] is not None:
+                calendar_attribution = ["provider", str(rev["calendar_run_id"])]
+                calendar_ok = provider_ok(rev["calendar_run_id"], day, row["source"])
+            elif rev["calendar_maintenance_id"] is not None:
+                calendar_attribution = [
+                    "maintenance",
+                    str(rev["calendar_maintenance_id"]),
+                ]
+                calendar_ok = bool(
+                    rev["maintenance_status"] == "completed"
+                    and rev["maintenance_completed_at"] is not None
+                    and rev["maintenance_completed_at"] <= decision_at
+                    and rev["maintenance_in_scope"]
+                    and (
+                        rev["maintenance_calendar_id"],
+                        rev["maintenance_calendar_version"],
+                        rev["maintenance_calendar_source"],
+                    )
+                    == stamp
+                )
+            else:
+                calendar_ok = False
+        verified = verified and data_ok and calendar_ok
+        lineage.append(
+            [
+                day.isoformat(),
+                rev["data_revision_id"] if rev else None,
+                str(rev["data_run_id"]) if rev and rev["data_run_id"] else None,
+                rev["calendar_revision_id"] if rev else None,
+                calendar_attribution,
+                data_ok and calendar_ok,
+            ]
+        )
+    return verified, lineage
 
 
 def _input_evidence(
@@ -392,24 +521,10 @@ def _input_evidence(
         )
         nav_head = cur.fetchone()
         nav_revision_id = nav_head["revision_id"] if nav_head else 0
-        cur.execute(
-            """SELECT 1 FROM (
-                 SELECT DISTINCT ON (nav_date) nav_date,source_run_id
-                 FROM fund_nav_data_revisions
-                 WHERE instrument_id=%s AND nav_date BETWEEN %s AND %s
-                 ORDER BY nav_date,revision_id DESC
-               ) latest
-               LEFT JOIN nav_ingestion_runs run ON run.run_id=latest.source_run_id
-               WHERE latest.source_run_id IS NULL
-                  OR run.status IS DISTINCT FROM 'completed'
-                  OR NOT EXISTS (
-                    SELECT 1 FROM nav_ingestion_attempts a
-                    WHERE a.instrument_id=%s AND a.run_id=latest.source_run_id
-                      AND a.status IN ('success_new','success_no_new'))
-               LIMIT 1""",
-            (instrument_id, grid[0], closed_session, instrument_id),
+        lineage_verified, lineage = _per_date_lineage(
+            cur, instrument_id, grid, closed_session, decision_at
         )
-        revision_source_verified = nav_revision_id > 0 and cur.fetchone() is None
+        revision_source_verified = nav_revision_id > 0 and lineage_verified
         cur.execute(
             "SELECT 1 FROM fund_nav_reexpression_holds WHERE instrument_id=%s",
             (instrument_id,),
@@ -440,30 +555,31 @@ def _input_evidence(
             (instrument_id, decision_at),
         )
         attempt = cur.fetchone()
+        # Identity is (published risk_run_id, instrument_id, definition): never the
+        # latest evidence by date, which could belong to a later diagnostic run.
         cur.execute(
             """SELECT e.*, risk.completed_at AS risk_completed_at
                FROM fund_nav_feature_evidence e
                JOIN fund_nav_risk_runs risk ON risk.risk_run_id=e.risk_run_id
-                WHERE e.instrument_id=%s AND e.definition_version=%s
-                  AND e.calc_date <= %s AND risk.status='complete'
-                  AND e.risk_run_id=%s
-               ORDER BY e.calc_date DESC, risk.completed_at DESC LIMIT 1""",
+               WHERE e.risk_run_id=%s AND e.instrument_id=%s
+                 AND e.definition_version=%s
+                 AND risk.feature_definition_version=e.definition_version
+                 AND e.calc_date <= %s AND risk.status='complete'
+                 AND risk.run_scope='current_full'""",
             (
+                published_risk_run_id,
                 instrument_id,
                 FEATURE_DEFINITION_VERSION,
                 grid[-1],
-                published_risk_run_id,
             ),
         )
         feature = cur.fetchone()
         cur.execute(
             """SELECT ex.calc_date, risk.completed_at FROM fund_nav_risk_exclusions ex
                JOIN fund_nav_risk_runs risk ON risk.risk_run_id=ex.risk_run_id
-                WHERE ex.instrument_id=%s AND ex.calc_date <= %s
-                  AND ex.risk_run_id=%s
-                 AND risk.status='complete'
-               ORDER BY ex.calc_date DESC, risk.completed_at DESC LIMIT 1""",
-            (instrument_id, grid[-1], published_risk_run_id),
+               WHERE ex.risk_run_id=%s AND ex.instrument_id=%s
+                 AND ex.calc_date <= %s AND risk.status='complete'""",
+            (published_risk_run_id, instrument_id, grid[-1]),
         )
         exclusion = cur.fetchone()
         if exclusion and (
@@ -506,7 +622,24 @@ def _input_evidence(
         nav_revision_id,
         reexpression_hold,
         revision_source_verified,
+        lineage,
     )
+
+
+def _observed_stamps(
+    conn, instrument_ids: list, grid: list[dt.date]
+) -> list[tuple[str, str, str]]:
+    """Distinct stamps on the cohort's grid rows: one batched catalogue read."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT calendar_id, calendar_version, calendar_source
+               FROM nav_timeseries
+               WHERE instrument_id = ANY(%s) AND nav_date = ANY(%s::date[])
+                 AND calendar_id IS NOT NULL AND calendar_version IS NOT NULL
+                 AND calendar_source IS NOT NULL""",
+            (instrument_ids, list(grid)),
+        )
+        return [tuple(row) for row in cur.fetchall()]
 
 
 def run(dsn: str) -> dict[str, Any]:
@@ -514,7 +647,7 @@ def run(dsn: str) -> dict[str, Any]:
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_FUND_NAV_READINESS) as got:
             if not got:
-                return {"state": "locked", "published": False}
+                return dict(LOCK_BUSY_RESULT)
             conn.commit()  # session lock survives; begin a fresh repeatable-read txn
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
@@ -549,6 +682,11 @@ def run(dsn: str) -> dict[str, Any]:
                     )
                 cur.execute("SELECT max(nav_date) AS watermark FROM nav_timeseries")
                 watermark = cur.fetchone()["watermark"]
+                stamps = _observed_stamps(conn, instrument_ids, grid)
+                equivalence = load_calendar_equivalence(
+                    conn, policy, grid, stamps, decision_at
+                )
+                equivalence_digest = equivalence_mapping_digest(equivalence)
                 cur.execute(
                     """INSERT INTO fund_nav_readiness_runs
                         (run_id, readiness_profile, readiness_version, policy_id,
@@ -599,6 +737,7 @@ def run(dsn: str) -> dict[str, Any]:
                         revision_id,
                         hold,
                         revision_verified,
+                        lineage,
                     ) = _input_evidence(
                         conn,
                         instrument_id,
@@ -623,6 +762,8 @@ def run(dsn: str) -> dict[str, Any]:
                         nav_revision_id=revision_id,
                         reexpression_hold=hold,
                         revision_source_verified=revision_verified,
+                        equivalence=equivalence,
+                        lineage=lineage,
                     )
                     row.update(run_id=run_id, sample_id=sid)
                     cur.execute(insert_sql, tuple(row[name] for name in _ROW_FIELDS))
@@ -646,6 +787,14 @@ def run(dsn: str) -> dict[str, Any]:
                     raise RuntimeError(
                         "NAV_POLICY_UNAVAILABLE: due session advanced during build"
                     )
+                # The final re-read must reproduce the same calendar proof.
+                reread = load_calendar_equivalence(
+                    conn, policy, grid, stamps, decision_at
+                )
+                if equivalence_mapping_digest(reread) != equivalence_digest:
+                    raise RuntimeError(
+                        "NAV_POLICY_UNAVAILABLE: calendar equivalence changed during build"
+                    )
                 cur.execute(
                     """UPDATE fund_nav_readiness_runs
                        SET state='complete', completed_at=clock_timestamp(),
@@ -656,6 +805,7 @@ def run(dsn: str) -> dict[str, Any]:
                             {
                                 "rows": fingerprints,
                                 "calendar_digest": policy["calendar_digest"],
+                                "calendar_equivalence": equivalence_digest,
                                 "latest_closed_session": closed,
                                 "risk_publication_revision": risk_publication[
                                     "revision_id"

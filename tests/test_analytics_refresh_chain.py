@@ -72,6 +72,38 @@ def test_risk_failure_blocks_momentum(monkeypatch, risk_stats, message):
     assert called is False
 
 
+@pytest.mark.parametrize(
+    "reason",
+    ["LIMITED_RUN", "LOCK_BUSY", "SUPERSEDED", "POLICY_CHANGED", "MV_RUN_MISMATCH", None],
+)
+def test_nav_publication_outcome_never_blocks_analytics(monkeypatch, reason):
+    """W3: analytics depends on computed metrics + MV, not on NAV publication."""
+    _wire(monkeypatch)
+    risk_stats = {
+        "processed": 2,
+        "upserted": 2,
+        "calc_date": "2026-08-07",
+        "workers": 1,
+        "risk_run_id": "r",
+        "mv_refreshed": True,
+        "risk_publication": {
+            "eligible": reason is None,
+            "published": False,
+            "reason": reason,
+            "risk_run_id": "r",
+            "as_of_session": None,
+            "retryable": reason != "LIMITED_RUN",
+        },
+    }
+    result = chain.run(
+        "db",
+        risk_runner=lambda *_a, **_k: risk_stats,
+        momentum_runner=lambda *_a, **_k: {"calc_date": "2026-08-07", "upserted": 2},
+    )
+    assert result["published"] is True
+    assert result["stages"][0]["stats"]["risk_publication"]["published"] is False
+
+
 def test_stale_momentum_watermark_blocks_catalogue_publication(monkeypatch):
     _wire(monkeypatch)
 

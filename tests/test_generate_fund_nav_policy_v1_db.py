@@ -17,6 +17,11 @@ from scripts import generate_fund_nav_policy_v1 as generator
 from src.workers import fund_nav_readiness as readiness
 from src.workers import instrument_ingestion as ingestion
 from src.workers import risk_metrics as risk
+from src.workers._nav_policy import (
+    FEATURE_DEFINITION_VERSION,
+    load_calendar_equivalence,
+    risk_universe_digest,
+)
 from src.workers._tiingo import NavObservation
 
 ROOT = Path(__file__).parents[1]
@@ -282,11 +287,35 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
         assert (
             len(grid) == 401 and pinned["calendar_digest"] == policy["calendar_digest"]
         )
-        # XNYS has a real close before the 18:05 ET due on this date.
-        not_due = dt.datetime(2026, 9, 23, 21, 0, tzinfo=dt.timezone.utc)
+        # A real XNYS session closes before its 18:05 ET due. The instant must
+        # follow the policy publication (a fixed past instant is a time bomb), so
+        # use the next session after the DB clock, between its close and due.
+        session, close_at, due_at, prior = conn.execute(
+            """SELECT s.session_date, s.valuation_close_at, s.nav_due_at,
+                      (SELECT max(p.session_date) FROM nav_valuation_schedules p
+                       WHERE p.calendar_id=s.calendar_id
+                         AND p.calendar_version=s.calendar_version
+                         AND p.session_date < s.session_date)
+               FROM nav_valuation_schedules s
+               WHERE s.calendar_id=%s AND s.calendar_version=%s
+                 AND s.valuation_close_at > clock_timestamp()
+               ORDER BY s.session_date LIMIT 1""",
+            (pinned["calendar_id"], pinned["calendar_version"]),
+        ).fetchone()
+        assert close_at < due_at
+        not_due = close_at + (due_at - close_at) / 2
         _, previous_grid, extra_closed = readiness._policy_and_grid(conn, not_due)
-        assert previous_grid[-1] == dt.date(2026, 9, 22)
-        assert extra_closed == dt.date(2026, 9, 23)
+        assert previous_grid[-1] == prior
+        assert extra_closed == session
+        # Real published-session proof for the earlier grid (no literal shortcut).
+        early_proof = load_calendar_equivalence(
+            conn,
+            pinned,
+            previous_grid,
+            [(pinned["calendar_id"], pinned["calendar_version"], pinned["calendar_source"])],
+            not_due,
+        )
+        assert len(early_proof) == 401
 
     early_observations = tuple(
         NavObservation(day, round(100.0 + index * 0.01, 6), "adjusted")
@@ -331,8 +360,10 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
             "input_fingerprint": "f" * 64,
         },
         True,
+        equivalence=early_proof,
     )
     assert early["admissible"] is True and early["is_current"] is True
+    assert len(early["calendar_equivalence_digest"]) == 64
 
     run_id, risk_run = uuid.uuid4(), uuid.uuid4()
     with psycopg.connect(dsn) as conn:
@@ -367,11 +398,19 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
             },
         )
         ingestion.upsert_nav_timeseries(conn, rows, run_id=run_id)
+        # Explicit P1 fixture registration (no W3 worker classification).
         conn.execute(
-            "INSERT INTO fund_nav_risk_runs "
-            "(risk_run_id,calc_date,status,expected_rows,persisted_rows,completed_at) "
-            "VALUES (%s,%s,'complete',1,1,clock_timestamp())",
-            (risk_run, grid[-1]),
+            "INSERT INTO fund_nav_risk_runs (risk_run_id,calc_date,run_scope,"
+            "policy_id,policy_version,policy_hash,due_session,universe_digest,"
+            "feature_definition_version,status,expected_rows) "
+            "VALUES (%s,%s,'current_full',%s,%s,%s,%s,%s,%s,'running',1)",
+            (risk_run, grid[-1], pinned["policy_id"], pinned["policy_version"],
+             pinned["policy_hash"], grid[-1],
+             risk_universe_digest([catalog["active"]]), FEATURE_DEFINITION_VERSION),
+        )
+        conn.execute(
+            "INSERT INTO fund_nav_risk_run_members VALUES (%s,%s)",
+            (risk_run, catalog["active"]),
         )
         nav_rows = conn.execute(
             "SELECT nav_date,nav FROM nav_timeseries "
@@ -390,12 +429,23 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
             {},
             [],
         )
+        conn.commit()
+        risk._finish_risk_run(conn, risk_run, 1, 1)
         conn.execute(
             "INSERT INTO fund_nav_risk_publication "
             "(readiness_profile,revision_id,state,published_risk_run_id) "
             "VALUES ('current_daily_nav_v1',1,'idle',%s)",
             (risk_run,),
         )
+        conn.execute(
+            "UPDATE fund_nav_risk_runs SET status='complete',"
+            "completed_at=clock_timestamp() WHERE risk_run_id=%s",
+            (risk_run,),
+        )
+        assert conn.execute(
+            "SELECT run_scope FROM fund_nav_risk_runs WHERE risk_run_id=%s",
+            (risk_run,),
+        ).fetchone() == ("current_full",)
         conn.commit()
     outcome = readiness.run(dsn)
     assert outcome["ready_count"] == 1

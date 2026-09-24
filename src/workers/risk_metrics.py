@@ -22,7 +22,12 @@ Recipe (README §"Receita validada", proven on Lean 2026-06-11):
 All windows are deterministic (252 trading days/year, ddof=1). ``calc_date`` is a
 parameter — no implicit ``date.today()`` in window logic.
 
-Contract:  run(dsn, *, calc_date=None, limit=None) -> {"processed", "upserted"}
+Contract:  run(dsn, *, calc_date=None, limit=None) -> {"processed", "upserted",
+           "calc_date", "workers", "risk_run_id", "mv_refreshed",
+           "risk_publication": {eligible, published, reason, risk_run_id,
+                                as_of_session, retryable}}
+NAV publication (W3) is decided by ``_begin_risk_generation``/``RiskRunPlan``
+before any write and by the CAS in ``_mark_risk_published`` after the MV.
 """
 
 from __future__ import annotations
@@ -33,14 +38,27 @@ import json
 import os
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import psycopg
+from psycopg import sql as pgsql
 
 from src.db import LOCK_FUND_NAV_READINESS, LOCK_RISK_METRICS, advisory_lock, connect
 from src.workers import manager_score as _ms
+from src.workers._nav_policy import (
+    FEATURE_DEFINITION_VERSION,
+    PolicyUnavailable,
+    resolve_policy_and_grid,
+    risk_universe_digest,
+)
+from src.workers._nav_policy import PROFILE as NAV_PROFILE
 from src.workers._nav_sanitize import GLITCH_LOG, sanitize_nav_series
-from src.workers.risk_metric_ownership import RISK_METRICS_UPSERT_COLUMNS
+from src.workers.risk_metric_ownership import (
+    RISK_METRICS_POST_STEP_COLUMNS,
+    RISK_METRICS_UPSERT_COLUMNS,
+)
 
 TRADING_DAYS = 252
 
@@ -1123,9 +1141,6 @@ def _upsert(conn, instrument_id, calc_date: _dt.date, metrics: dict[str, Any]) -
         cur.execute(sql, vals)
 
 
-FEATURE_DEFINITION_VERSION = "risk_metrics_nav_v1"
-
-
 def _input_series_evidence(series: list[tuple[_dt.date, float]]) -> dict[str, Any]:
     normalized = [(d.isoformat(), float(value)) for d, value in series]
     return {
@@ -1163,6 +1178,8 @@ def _persist_feature_evidence(
     nav = np.array([float(v) for _d, v in rows], dtype=float)
     raw_returns = nav[1:] / nav[:-1] - 1.0
     rejected = int((~np.isfinite(raw_returns) | (np.abs(raw_returns) > MAX_DAILY_RETURN_ABS)).sum())
+    # Plain INSERT: identity is (risk_run_id, instrument_id). A duplicate is an
+    # error, never an upsert that would hide it or rewrite another run's proof.
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO fund_nav_feature_evidence
@@ -1170,17 +1187,7 @@ def _persist_feature_evidence(
                 input_max_date, nav_start, nav_end, nav_count, input_fingerprint,
                 nav_input_fingerprint,
                 benchmark_evidence, factor_evidence, exclusion_reason)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s)
-               ON CONFLICT (instrument_id, calc_date, definition_version) DO UPDATE SET
-                 risk_run_id=EXCLUDED.risk_run_id, feature_as_of=EXCLUDED.feature_as_of,
-                 input_max_date=EXCLUDED.input_max_date, nav_start=EXCLUDED.nav_start,
-                 nav_end=EXCLUDED.nav_end, nav_count=EXCLUDED.nav_count,
-                 input_fingerprint=EXCLUDED.input_fingerprint,
-                 nav_input_fingerprint=EXCLUDED.nav_input_fingerprint,
-                 benchmark_evidence=EXCLUDED.benchmark_evidence,
-                 factor_evidence=EXCLUDED.factor_evidence,
-                 exclusion_reason=EXCLUDED.exclusion_reason,
-                 computed_at=clock_timestamp()""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s)""",
             (instrument_id, calc_date, FEATURE_DEFINITION_VERSION, risk_run_id,
              rows[-1][0], rows[-1][0], rows[0][0], rows[-1][0], len(rows),
              fingerprint, nav_fingerprint, json.dumps(benchmark, sort_keys=True),
@@ -1189,22 +1196,243 @@ def _persist_feature_evidence(
         )
 
 
-def _start_risk_run(conn, risk_run_id: uuid.UUID, calc_date: _dt.date, count: int) -> None:
+@dataclass(frozen=True)
+class RiskRunPlan:
+    """Immutable pre-write plan of one risk generation (W3).
+
+    Frozen before any metric, peer, manager-score or shard write: the canonical
+    universe is read *before* ``limit`` is applied and the scope/reason follow
+    ``RISK_NONPUBLISHING_REASONS`` precedence. Only ``current_full`` (no limit,
+    current unexpired published policy, ``calc_date`` equal to its due session,
+    full target set) may ever be promoted; a diagnostic plan never is.
+    """
+
+    risk_run_id: uuid.UUID
+    calc_date: _dt.date
+    requested_calc_date: _dt.date | None
+    requested_limit: int | None
+    universe: tuple
+    members: tuple
+    universe_digest: str
+    run_scope: str
+    nonpublishing_reason: str | None
+    definition_version: str
+    policy_id: str | None
+    policy_version: str | None
+    policy_hash: str | None
+    due_session: _dt.date | None
+    decision_at: _dt.datetime
+
+    @property
+    def eligible(self) -> bool:
+        return self.run_scope == "current_full"
+
+
+def _plan_risk_run(
+    conn, calc_date: str | None, limit: int | None, decision_at: _dt.datetime
+) -> RiskRunPlan:
+    """Resolve calc_date, the canonical universe (before limit) and the scope."""
+    cdate = _resolve_calc_date(conn, calc_date)
+    universe = tuple(_fetch_fund_ids(conn, cdate, None))
+    if len({str(value) for value in universe}) != len(universe):
+        raise RuntimeError("risk universe contains duplicate instruments")
+    members = universe if limit is None else universe[: max(int(limit), 0)]
+    policy: dict | None = None
+    due_session: _dt.date | None = None
+    unavailable: str | None = None
+    try:
+        policy, grid, _closed = resolve_policy_and_grid(conn, decision_at)
+        due_session = grid[-1]
+    except PolicyUnavailable as exc:
+        policy = exc.policy
+        unavailable = exc.reason
+    if limit is not None:
+        reason: str | None = "LIMITED_RUN"  # includes limit >= len(universe)
+    elif unavailable is not None:
+        reason = unavailable
+    elif cdate != due_session:
+        reason = "NON_CURRENT_SESSION"
+    else:
+        reason = None
+    return RiskRunPlan(
+        risk_run_id=uuid.uuid4(),
+        calc_date=cdate,
+        requested_calc_date=_dt.date.fromisoformat(calc_date) if calc_date else None,
+        requested_limit=limit,
+        universe=universe,
+        members=members,
+        universe_digest=risk_universe_digest(universe),
+        run_scope="current_full" if reason is None else "diagnostic",
+        nonpublishing_reason=reason,
+        definition_version=FEATURE_DEFINITION_VERSION,
+        policy_id=policy["policy_id"] if policy else None,
+        policy_version=policy["policy_version"] if policy else None,
+        policy_hash=policy["policy_hash"] if policy else None,
+        due_session=due_session,
+        decision_at=decision_at,
+    )
+
+
+def _start_risk_run(conn, plan: RiskRunPlan) -> None:
+    """Register the parent with its pinned plan and freeze the exact member set.
+
+    Does not touch the publication singleton and does not commit: registration
+    and invalidation are one transaction (``_begin_risk_generation``).
+    """
+    if len({str(value) for value in plan.members}) != len(plan.members):
+        raise ValueError("duplicate risk run member")
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO fund_nav_risk_runs
-               (risk_run_id, calc_date, status, expected_rows)
-               VALUES (%s,%s,'running',%s)""", (risk_run_id, calc_date, count),
+               (risk_run_id, calc_date, run_scope, nonpublishing_reason, policy_id,
+                policy_version, policy_hash, due_session, requested_calc_date,
+                requested_limit, universe_digest, feature_definition_version,
+                status, expected_rows)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'running',%s)""",
+            (
+                plan.risk_run_id,
+                plan.calc_date,
+                plan.run_scope,
+                plan.nonpublishing_reason,
+                plan.policy_id,
+                plan.policy_version,
+                plan.policy_hash,
+                plan.due_session,
+                plan.requested_calc_date,
+                plan.requested_limit,
+                plan.universe_digest,
+                plan.definition_version,
+                len(plan.members),
+            ),
         )
+        if plan.members:
+            cur.execute(
+                """INSERT INTO fund_nav_risk_run_members (risk_run_id, instrument_id)
+                   SELECT %s, member FROM unnest(%s::uuid[]) AS member""",
+                (plan.risk_run_id, list(plan.members)),
+            )
+
+
+_HISTORICAL_IMPACT_SQL = """
+SELECT
+  (SELECT count(*) FROM unnest(%(members)s::uuid[]) AS m(instrument_id)
+   WHERE NOT EXISTS (
+       SELECT 1 FROM fund_risk_metrics r
+       WHERE r.instrument_id = m.instrument_id AND r.organization_id IS NULL
+         AND r.calc_date > %(calc_date)s)) AS members_without_newer_row,
+  (SELECT count(*) FROM (
+       SELECT instrument_id FROM fund_risk_metrics
+       WHERE organization_id IS NULL
+       GROUP BY instrument_id HAVING max(calc_date) = %(calc_date)s) latest
+  ) AS funds_served_at_date
+"""
+
+
+def _historical_write_is_inert(cur, plan: RiskRunPlan) -> bool:
+    """Prove a strictly-historical diagnostic cannot change any served row.
+
+    Metric upserts touch only members at ``calc_date``; peer percentiles and
+    manager scores touch every row at ``calc_date``. ``fund_risk_latest_mv``
+    serves each fund's latest row. The write is inert only if every member
+    already has a newer row and no fund's latest row is at ``calc_date``.
+    Anything unprovable (e.g. the metrics table is absent) is not inert.
+    """
+    cur.execute("SELECT to_regclass('fund_risk_metrics') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return False
+    cur.execute(
+        _HISTORICAL_IMPACT_SQL,
+        {"members": list(plan.members), "calc_date": plan.calc_date},
+    )
+    without_newer, served_at_date = cur.fetchone()
+    return without_newer == 0 and served_at_date == 0
+
+
+def _invalidate_publication(conn, plan: RiskRunPlan) -> int | None:
+    """Invalidate the served generation before the first potentially served write.
+
+    Must run under ``LOCK_FUND_NAV_READINESS`` in the registration transaction.
+    Eligible: revision+1, ``running``, active=this run, published pointer NULL;
+    the returned revision is the CAS token. Diagnostic: never becomes active;
+    it invalidates (revision+1, ``idle``, active/published NULL) unless nothing
+    is published or the write is strictly historical and provably inert.
+    """
+    with conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO fund_nav_risk_publication
-               (readiness_profile, revision_id, state, active_risk_run_id)
-               VALUES ('current_daily_nav_v1',0,'running',%s)
-               ON CONFLICT (readiness_profile) DO UPDATE SET
-                 state='running', active_risk_run_id=EXCLUDED.active_risk_run_id""",
-            (risk_run_id,),
+            """SELECT pub.state, pub.published_risk_run_id, published.calc_date
+               FROM fund_nav_risk_publication pub
+               LEFT JOIN fund_nav_risk_runs published
+                 ON published.risk_run_id = pub.published_risk_run_id
+               WHERE pub.readiness_profile = %s
+               FOR UPDATE OF pub""",
+            (NAV_PROFILE,),
         )
-    conn.commit()  # shards need the parent FK visible on their own connections
+        current = cur.fetchone()
+        if plan.eligible:
+            cur.execute(
+                """INSERT INTO fund_nav_risk_publication
+                   (readiness_profile, revision_id, state, active_risk_run_id,
+                    published_risk_run_id)
+                   VALUES (%s, 1, 'running', %s, NULL)
+                   ON CONFLICT (readiness_profile) DO UPDATE SET
+                     revision_id = fund_nav_risk_publication.revision_id + 1,
+                     state = 'running',
+                     active_risk_run_id = EXCLUDED.active_risk_run_id,
+                     published_risk_run_id = NULL
+                   RETURNING revision_id""",
+                (NAV_PROFILE, plan.risk_run_id),
+            )
+            return int(cur.fetchone()[0])
+        if current is None:
+            return None
+        state, published_id, published_date = current
+        if state == "idle" and published_id is None:
+            return None
+        if (
+            state == "idle"
+            and published_date is not None
+            and plan.calc_date < published_date
+            and _historical_write_is_inert(cur, plan)
+        ):
+            return None
+        cur.execute(
+            """UPDATE fund_nav_risk_publication
+               SET revision_id = revision_id + 1, state = 'idle',
+                   active_risk_run_id = NULL, published_risk_run_id = NULL
+               WHERE readiness_profile = %s""",
+            (NAV_PROFILE,),
+        )
+    return None
+
+
+def _begin_risk_generation(
+    conn, calc_date: str | None, limit: int | None
+) -> tuple[RiskRunPlan, int | None] | None:
+    """Plan, register and invalidate atomically under risk -> readiness locks.
+
+    Caller holds the session ``LOCK_RISK_METRICS``. The readiness lock is a
+    bounded transaction-level try: busy means rollback and ``None`` (no run,
+    member, singleton or metric write). Committed before any shard starts.
+    """
+    conn.commit()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (LOCK_FUND_NAV_READINESS,)
+            )
+            if not cur.fetchone()[0]:
+                conn.rollback()
+                return None
+            cur.execute("SELECT clock_timestamp()")
+            decision_at = cur.fetchone()[0]
+        plan = _plan_risk_run(conn, calc_date, limit, decision_at)
+        _start_risk_run(conn, plan)
+        token = _invalidate_publication(conn, plan)
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+    return plan, token
 
 
 def _record_risk_exclusion(conn, risk_run_id: uuid.UUID, instrument_id,
@@ -1219,55 +1447,359 @@ def _record_risk_exclusion(conn, risk_run_id: uuid.UUID, instrument_id,
         )
 
 
+_EXACT_SET_SQL = """
+WITH parent AS (
+    SELECT calc_date, feature_definition_version, expected_rows
+    FROM fund_nav_risk_runs WHERE risk_run_id = %(run)s
+),
+members AS (
+    SELECT instrument_id FROM fund_nav_risk_run_members WHERE risk_run_id = %(run)s
+),
+features AS (
+    SELECT instrument_id, calc_date, definition_version
+    FROM fund_nav_feature_evidence WHERE risk_run_id = %(run)s
+),
+exclusions AS (
+    SELECT instrument_id, calc_date FROM fund_nav_risk_exclusions
+    WHERE risk_run_id = %(run)s
+),
+covered AS (
+    SELECT instrument_id FROM features UNION ALL SELECT instrument_id FROM exclusions
+)
+SELECT
+  (SELECT count(*) FROM members) AS members,
+  (SELECT expected_rows FROM parent) AS parent_expected,
+  (SELECT count(*) FROM members m
+   WHERE NOT EXISTS (SELECT 1 FROM covered c
+                     WHERE c.instrument_id = m.instrument_id)) AS missing,
+  (SELECT count(*) FROM covered c
+   WHERE NOT EXISTS (SELECT 1 FROM members m
+                     WHERE m.instrument_id = c.instrument_id)) AS extra,
+  (SELECT count(*) FROM features f JOIN exclusions x USING (instrument_id)) AS overlap,
+  (SELECT count(*) FROM features) AS features,
+  (SELECT count(*) FROM features f CROSS JOIN parent p
+   WHERE f.calc_date <> p.calc_date
+      OR f.definition_version <> p.feature_definition_version)
+  + (SELECT count(*) FROM exclusions x CROSS JOIN parent p
+     WHERE x.calc_date <> p.calc_date) AS foreign_evidence
+"""
+
+
+def _exact_set_violations(cur, risk_run_id: uuid.UUID) -> dict[str, int]:
+    """Anti-joins both ways, empty intersection and parent date/definition."""
+    cur.execute(_EXACT_SET_SQL, {"run": risk_run_id})
+    members, parent_expected, missing, extra, overlap, features, foreign = cur.fetchone()
+    return {
+        "members": members,
+        "parent_expected": parent_expected,
+        "missing": missing,
+        "extra": extra,
+        "overlap": overlap,
+        "features": features,
+        "foreign": foreign,
+    }
+
+
 def _finish_risk_run(conn, risk_run_id: uuid.UUID, expected: int, persisted: int) -> None:
+    """Prove features ∪ exclusions = members, disjoint, on the parent's date/definition.
+
+    Counts alone are insufficient: missing/extra members are anti-joined in both
+    directions and the DB trigger re-verifies the exact sets on the single
+    running -> metrics_complete transition.
+    """
     with conn.cursor() as cur:
-        cur.execute(
-            """SELECT (SELECT count(*) FROM fund_nav_feature_evidence
-                       WHERE risk_run_id=%s) +
-                      (SELECT count(*) FROM fund_nav_risk_exclusions
-                       WHERE risk_run_id=%s)""",
-            (risk_run_id, risk_run_id),
-        )
-        covered = cur.fetchone()[0]
-        if covered != expected or persisted > covered:
+        sets = _exact_set_violations(cur, risk_run_id)
+        if (
+            sets["members"] != expected
+            or sets["parent_expected"] != expected
+            or sets["missing"]
+            or sets["extra"]
+            or sets["overlap"]
+            or sets["foreign"]
+            or persisted != sets["features"]
+        ):
             raise RuntimeError("risk evidence incomplete: no MV refresh or readiness promotion")
         cur.execute(
             """UPDATE fund_nav_risk_runs SET status='metrics_complete',
                  persisted_rows=%s
                WHERE risk_run_id=%s AND status='running' AND expected_rows=%s""",
-            (covered, risk_run_id, expected),
+            (sets["members"], risk_run_id, expected),
         )
         if getattr(cur, "rowcount", 1) != 1:
             raise RuntimeError("risk run completion lost its expected row set")
     conn.commit()
 
 
-def _mark_risk_published(dsn: str, risk_run_id: uuid.UUID) -> None:
-    """Commit the MV-verified generation under the readiness publication lock."""
-    with connect(dsn) as conn:
-        with advisory_lock(conn, LOCK_FUND_NAV_READINESS) as acquired:
-            if not acquired:
-                raise RuntimeError("risk publication deferred: readiness lock busy")
-            with conn.cursor() as cur:
-                cur.execute(
-                    """UPDATE fund_nav_risk_publication
-                       SET revision_id=revision_id+1, state='idle',
-                           published_risk_run_id=%s, active_risk_run_id=NULL
-                       WHERE readiness_profile='current_daily_nav_v1'
-                         AND state='running' AND active_risk_run_id=%s""",
-                    (risk_run_id, risk_run_id),
+def _complete_risk_run(conn, risk_run_id: uuid.UUID) -> None:
+    """metrics_complete -> complete after a real MV refresh; never a promotion."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE fund_nav_risk_runs SET status='complete',
+                 completed_at=clock_timestamp()
+               WHERE risk_run_id=%s AND status='metrics_complete'""",
+            (risk_run_id,),
+        )
+        if getattr(cur, "rowcount", 1) != 1:
+            raise RuntimeError("risk run is not metrics_complete after MV refresh")
+    conn.commit()
+
+
+def _publication(
+    plan: RiskRunPlan | None, *, published: bool, reason: str | None, retryable: bool
+) -> dict[str, Any]:
+    return {
+        "eligible": bool(plan and plan.eligible),
+        "published": published,
+        "reason": reason,
+        "risk_run_id": str(plan.risk_run_id) if plan else None,
+        "as_of_session": (
+            plan.due_session.isoformat() if plan and plan.due_session else None
+        ),
+        "retryable": retryable,
+    }
+
+
+def _release_publication(cur, plan: RiskRunPlan, token: int) -> None:
+    """Drop this run's active claim; the published pointer stays NULL."""
+    cur.execute(
+        """UPDATE fund_nav_risk_publication
+           SET revision_id = revision_id + 1, state = 'idle',
+               active_risk_run_id = NULL, published_risk_run_id = NULL
+           WHERE readiness_profile = %s AND state = 'running'
+             AND active_risk_run_id = %s AND revision_id = %s""",
+        (NAV_PROFILE, plan.risk_run_id, token),
+    )
+
+
+# Risk-worker-owned columns that, when projected by fund_risk_latest_mv, must
+# equal the base row this generation wrote. Active-share/momentum columns are
+# owned by other workers (and the Light full MV backfills active share), so
+# they never take part in the proof.
+_MV_CORRESPONDENCE_COLUMNS = (*RISK_METRICS_UPSERT_COLUMNS, *RISK_METRICS_POST_STEP_COLUMNS)
+# Projected by every known fund_risk_latest_mv definition (W risk_metrics.sql
+# and the Light full read model); their absence is a broken read-model contract.
+_MV_REQUIRED_COLUMNS = (
+    "return_1y", "volatility_1y", "max_drawdown_1y", "sharpe_1y", "sortino_1y",
+    "cvar_95_1m", "nav_quality_ok", "nav_glitch_count",
+)
+
+_RELATION_COLUMNS_SQL = """
+SELECT a.attname FROM pg_attribute a
+WHERE a.attrelid = to_regclass(%s) AND a.attnum > 0 AND NOT a.attisdropped
+"""
+
+
+def _mv_correspondence(cur, plan: RiskRunPlan) -> dict[str, Any]:
+    """Prove ``fund_risk_latest_mv`` serves this generation for every feature member.
+
+    For every member with a feature in this run (exclusions need no MV row):
+      * its sidecar is this run's evidence at the plan ``calc_date`` (= pinned
+        due session) and definition, with hex64 input and NAV fingerprints and
+        inputs that end on or before ``calc_date``;
+      * the base row ``fund_risk_metrics(instrument_id, calc_date, org NULL)``
+        exists — the row written in the same transaction as that sidecar;
+      * the MV row exists, its ``calc_date`` is exactly ``calc_date`` (a later
+        row, e.g. a future diagnostic, or an older one is a mismatch), and every
+        projected risk-owned column is ``IS NOT DISTINCT FROM`` the base row, so
+        the MV reflects the base content refreshed after this run's writes.
+    No writer other than this generation touches those columns at that date while
+    the generation holds ``LOCK_RISK_METRICS``. Returns per-member counts; a
+    count alone never passes because each member row is checked individually.
+    A run whose members are all exclusions needs no MV row (vacuously true).
+    """
+    cur.execute(
+        "SELECT count(*) FROM fund_nav_feature_evidence WHERE risk_run_id = %s",
+        (plan.risk_run_id,),
+    )
+    if cur.fetchone()[0] == 0:
+        return {
+            "features": 0,
+            "corresponding": 0,
+            "date_mismatch": 0,
+            "content_mismatch": 0,
+            "evidence_mismatch": 0,
+            "columns": 0,
+        }
+    columns: dict[str, set[str]] = {}
+    for relation in ("fund_risk_latest_mv", "fund_risk_metrics"):
+        cur.execute(_RELATION_COLUMNS_SQL, (relation,))
+        columns[relation] = {row[0] for row in cur.fetchall()}
+        if not columns[relation]:
+            raise RuntimeError(f"{relation} unavailable for publication proof")
+    projected = [
+        name
+        for name in _MV_CORRESPONDENCE_COLUMNS
+        if name in columns["fund_risk_latest_mv"] and name in columns["fund_risk_metrics"]
+    ]
+    missing = set(_MV_REQUIRED_COLUMNS) - set(projected)
+    if missing or "calc_date" not in columns["fund_risk_latest_mv"]:
+        raise RuntimeError(
+            "fund_risk_latest_mv does not project the risk contract: "
+            + ", ".join(sorted(missing | ({"calc_date"} - columns["fund_risk_latest_mv"])))
+        )
+    content_matches = pgsql.SQL("ROW({}) IS NOT DISTINCT FROM ROW({})").format(
+        pgsql.SQL(", ").join(pgsql.SQL("mv.{}").format(pgsql.Identifier(n)) for n in projected),
+        pgsql.SQL(", ").join(pgsql.SQL("base.{}").format(pgsql.Identifier(n)) for n in projected),
+    )
+    query = pgsql.SQL(
+        """
+        WITH feature AS (
+            SELECT instrument_id, calc_date, definition_version, input_fingerprint,
+                   nav_input_fingerprint, input_max_date, feature_as_of
+            FROM fund_nav_feature_evidence WHERE risk_run_id = %(run)s
+        ),
+        judged AS (
+            SELECT f.instrument_id,
+                   COALESCE(
+                       f.calc_date = %(calc_date)s
+                       AND f.definition_version = %(definition)s
+                       AND f.input_fingerprint ~ '^[0-9a-f]{{64}}$'
+                       AND f.nav_input_fingerprint ~ '^[0-9a-f]{{64}}$'
+                       AND f.input_max_date <= %(calc_date)s
+                       AND f.feature_as_of <= %(calc_date)s,
+                       false) AS evidence_ok,
+                   base.instrument_id IS NOT NULL AS base_present,
+                   mv.instrument_id IS NOT NULL AS mv_present,
+                   COALESCE(mv.calc_date = %(calc_date)s, false) AS mv_date_ok,
+                   COALESCE(base.instrument_id IS NOT NULL AND mv.instrument_id IS NOT NULL
+                            AND {content}, false) AS mv_content_ok
+            FROM feature f
+            LEFT JOIN fund_risk_metrics base
+              ON base.instrument_id = f.instrument_id
+             AND base.calc_date = %(calc_date)s AND base.organization_id IS NULL
+            LEFT JOIN fund_risk_latest_mv mv ON mv.instrument_id = f.instrument_id
+        )
+        SELECT count(*),
+               count(*) FILTER (WHERE evidence_ok AND base_present AND mv_present
+                                  AND mv_date_ok AND mv_content_ok),
+               count(*) FILTER (WHERE NOT mv_date_ok),
+               count(*) FILTER (WHERE mv_date_ok AND NOT mv_content_ok),
+               count(*) FILTER (WHERE NOT evidence_ok OR NOT base_present)
+        FROM judged
+        """
+    ).format(content=content_matches)
+    cur.execute(
+        query,
+        {
+            "run": plan.risk_run_id,
+            "calc_date": plan.calc_date,
+            "definition": plan.definition_version,
+        },
+    )
+    features, corresponding, date_mismatch, content_mismatch, evidence_mismatch = (
+        cur.fetchone()
+    )
+    return {
+        "features": features,
+        "corresponding": corresponding,
+        "date_mismatch": date_mismatch,
+        "content_mismatch": content_mismatch,
+        "evidence_mismatch": evidence_mismatch,
+        "columns": len(projected),
+    }
+
+
+def _mark_risk_published(conn, plan: RiskRunPlan, token: int | None) -> dict[str, Any]:
+    """Promote an eligible, MV-verified generation by CAS; typed, never raised.
+
+    Diagnostic plans return their pinned reason without taking any lock. Under a
+    bounded ``LOCK_FUND_NAV_READINESS`` (order risk -> readiness) the current DB
+    clock, policy pins/hash and due session, the run's scope/status/definition
+    and exact sets are revalidated, then ``fund_risk_latest_mv`` must serve this
+    generation for every feature member (``_mv_correspondence``), and only then
+    is the singleton updated if both the active run ID and the revision token
+    still match. Busy/superseded/policy, due or MV-correspondence changes are
+    ``published=false`` results; unexpected SQL or integrity errors propagate.
+    """
+    if not plan.eligible or token is None:
+        return _publication(
+            plan, published=False, reason=plan.nonpublishing_reason, retryable=False
+        )
+    conn.commit()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (LOCK_FUND_NAV_READINESS,)
+            )
+            if not cur.fetchone()[0]:
+                conn.rollback()
+                return _publication(plan, published=False, reason="LOCK_BUSY",
+                                    retryable=True)
+            cur.execute("SELECT clock_timestamp()")
+            now = cur.fetchone()[0]
+            cur.execute(
+                """SELECT revision_id, state, active_risk_run_id
+                   FROM fund_nav_risk_publication WHERE readiness_profile=%s
+                   FOR UPDATE""",
+                (NAV_PROFILE,),
+            )
+            singleton = cur.fetchone()
+            if singleton is None or tuple(singleton) != (token, "running", plan.risk_run_id):
+                conn.rollback()
+                return _publication(plan, published=False, reason="SUPERSEDED",
+                                    retryable=True)
+            reason = None
+            try:
+                policy, grid, _closed = resolve_policy_and_grid(conn, now)
+            except PolicyUnavailable:
+                reason = "POLICY_CHANGED"
+            else:
+                if (policy["policy_id"], policy["policy_version"], policy["policy_hash"]) != (
+                    plan.policy_id, plan.policy_version, plan.policy_hash
+                ):
+                    reason = "POLICY_CHANGED"
+                elif grid[-1] != plan.due_session or plan.calc_date != grid[-1]:
+                    reason = "DUE_SESSION_CHANGED"
+            if reason is not None:
+                _release_publication(cur, plan, token)
+                conn.commit()
+                return _publication(plan, published=False, reason=reason, retryable=True)
+            cur.execute(
+                """SELECT run_scope, status, feature_definition_version, calc_date,
+                          policy_id, policy_version, policy_hash, due_session
+                   FROM fund_nav_risk_runs WHERE risk_run_id=%s""",
+                (plan.risk_run_id,),
+            )
+            row = cur.fetchone()
+            sets = _exact_set_violations(cur, plan.risk_run_id)
+            if (
+                row is None
+                or tuple(row) != (
+                    "current_full", "complete", plan.definition_version, plan.calc_date,
+                    plan.policy_id, plan.policy_version, plan.policy_hash,
+                    plan.due_session,
                 )
-                if getattr(cur, "rowcount", 1) != 1:
-                    raise RuntimeError("risk publication superseded by another run")
-                cur.execute(
-                    """UPDATE fund_nav_risk_runs SET status='complete',
-                         completed_at=clock_timestamp()
-                       WHERE risk_run_id=%s AND status='metrics_complete'""",
-                    (risk_run_id,),
+                or sets["members"] != len(plan.members)
+                or sets["missing"] or sets["extra"] or sets["overlap"] or sets["foreign"]
+            ):
+                raise RuntimeError("risk publication integrity check failed")
+            correspondence = _mv_correspondence(cur, plan)
+            if correspondence["corresponding"] != correspondence["features"] or (
+                correspondence["features"] != sets["features"]
+            ):
+                # The read model serves another generation (e.g. a later
+                # diagnostic calc_date): release our claim, pointer stays NULL.
+                _release_publication(cur, plan, token)
+                conn.commit()
+                return _publication(
+                    plan, published=False, reason="MV_RUN_MISMATCH", retryable=True
                 )
-                if getattr(cur, "rowcount", 1) != 1:
-                    raise RuntimeError("risk publication state changed before completion")
-            conn.commit()
+            cur.execute(
+                """UPDATE fund_nav_risk_publication
+                   SET revision_id = revision_id + 1, state = 'idle',
+                       published_risk_run_id = %s, active_risk_run_id = NULL
+                   WHERE readiness_profile = %s AND state = 'running'
+                     AND active_risk_run_id = %s AND revision_id = %s
+                   RETURNING revision_id""",
+                (plan.risk_run_id, NAV_PROFILE, plan.risk_run_id, token),
+            )
+            if cur.fetchone() is None:
+                raise RuntimeError("risk publication CAS lost under the readiness lock")
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+    return _publication(plan, published=True, reason=None, retryable=False)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1659,15 +2191,59 @@ def _refresh_fund_risk_latest_mv(dsn: str) -> None:
 
     The Light's FastAPI serves the fund catalogue from this MATERIALIZED VIEW
     over ``fund_risk_metrics`` (latest calc per fund); it is stale until
-    refreshed. Per docs/INGESTION_DESIGN.md, matview refreshes run
-    ``REFRESH … CONCURRENTLY`` in a **fresh connection outside the advisory
-    lock**: CONCURRENTLY cannot run inside a transaction block (needs
-    autocommit) and requires the MV's UNIQUE index (``fund_risk_latest_mv_pk``)
-    — both hold here. Called by ``run()`` only after the lock is released.
+    refreshed. ``REFRESH … CONCURRENTLY`` cannot run inside a transaction block,
+    so it uses a **fresh autocommit connection**; it requires the MV's UNIQUE
+    index (``fund_risk_latest_mv_pk``). ``run()`` calls it while the parent
+    still holds ``LOCK_RISK_METRICS`` (W3): the generation is not released to a
+    concurrent run until its MV is proven and its publication decided.
     """
     with connect(dsn, autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY fund_risk_latest_mv")
+
+
+def _busy_result() -> dict[str, Any]:
+    """Contention before any registration: nothing was written or computed."""
+    return {
+        "processed": 0,
+        "upserted": 0,
+        "calc_date": None,
+        "workers": 0,
+        "risk_run_id": None,
+        "mv_refreshed": False,
+        "skipped": "lock_busy",
+        "risk_publication": _publication(
+            None, published=False, reason="LOCK_BUSY", retryable=True
+        ),
+    }
+
+
+def _finalize_generation(
+    dsn: str, conn, plan: RiskRunPlan, token: int | None
+) -> dict[str, Any]:
+    """MV refresh, completion and publication decision — under the risk lock.
+
+    ``mv_refreshed`` reflects only the refresh. A known operational DB failure
+    of the refresh leaves the run ``metrics_complete`` and the publication
+    invalidated (no pointer restore); programming/SQL errors propagate. The
+    publication step is never inside the refresh error handling.
+    """
+    conn.commit()  # no open transaction on the parent while the MV refreshes
+    try:
+        _refresh_fund_risk_latest_mv(dsn)
+    except psycopg.OperationalError as exc:
+        return {
+            "mv_refreshed": False,
+            "mv_refresh_error": type(exc).__name__,
+            "risk_publication": _publication(
+                plan,
+                published=False,
+                reason="MV_REFRESH_FAILED" if plan.eligible else plan.nonpublishing_reason,
+                retryable=plan.eligible,
+            ),
+        }
+    _complete_risk_run(conn, plan.risk_run_id)
+    return {"mv_refreshed": True, "risk_publication": _mark_risk_published(conn, plan, token)}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1682,28 +2258,35 @@ def run(
 ) -> dict:
     """Recompute fund_risk_metrics from raw NAV and upsert into the cloud.
 
-    The MAIN process takes the LOCK_RISK_METRICS advisory lock ONCE, resolves
-    ``calc_date``, reads the shared risk-free rate, and lists the target funds.
-    It then splits the funds into shards and dispatches them to a pool of worker
-    processes (``min(cpu_count, 24)``), each opening its OWN connection and
-    upserting its shard idempotently. Results are identical to the serial path —
-    same math, just distributed. Pass ``serial=True`` to force the single-process
-    path (used for benchmarking / equivalence checks).
+    The MAIN process takes the session ``LOCK_RISK_METRICS`` ONCE and keeps it
+    until the generation's final decision (W3):
 
-    Returns ``{"processed", "upserted", "calc_date", "workers"}``.
+    1. ``_begin_risk_generation`` — under the bounded readiness lock (order
+       risk -> readiness) freeze the canonical universe before ``limit``,
+       classify scope, register run/members and invalidate the served
+       publication, committed before any metric write.
+    2. Serial path or shards (``min(cpu_count, 24)`` processes, own
+       connections) — same math; each metric upsert commits with its sidecar.
+    3. Peers/manager scores, exact-set finalization.
+    4. MV refresh on a separate autocommit connection, completion and the CAS
+       publication decision, all still under the risk lock.
+
+    Every normal return carries ``processed, upserted, calc_date, workers,
+    risk_run_id, mv_refreshed`` and ``risk_publication`` (``eligible,
+    published, reason, risk_run_id, as_of_session, retryable``).
     """
-    # The MAIN process holds the advisory lock for the WHOLE run (children never
-    # lock). We dispatch the pool INSIDE this context so the lock spans the run.
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_RISK_METRICS) as got:
             if not got:
-                return {"processed": 0, "upserted": 0, "skipped": "lock_busy"}
-
-            cdate = _resolve_calc_date(conn, calc_date)
+                return _busy_result()
+            generation = _begin_risk_generation(conn, calc_date, limit)
+            if generation is None:
+                return _busy_result()
+            plan, token = generation
+            cdate = plan.calc_date
+            fund_ids = list(plan.members)
+            risk_run_id = plan.risk_run_id
             rf = _risk_free_rate(conn, cdate)
-            fund_ids = _fetch_fund_ids(conn, cdate, limit)
-            risk_run_id = uuid.uuid4()
-            _start_risk_run(conn, risk_run_id, cdate, len(fund_ids))
             cdate_iso = cdate.isoformat()
             # Benchmark wiring: lido UMA vez no main e passado aos shards.
             bench_returns = _fetch_benchmark_returns(conn, cdate)
@@ -1817,16 +2400,7 @@ def run(
                     "risk_run_id": str(risk_run_id),
                 }
 
-    # Lock released and the main connection is closed. Refresh the API read-model
-    # MV in a FRESH autocommit connection, OUTSIDE the advisory lock. The metrics
-    # are already committed and idempotent, so a refresh hiccup must not discard
-    # them — surface it in the stats (printed as JSON by the runner) instead of
-    # silently swallowing or failing the committed run.
-    try:
-        _refresh_fund_risk_latest_mv(dsn)
-        _mark_risk_published(dsn, risk_run_id)
-        result["mv_refreshed"] = True
-    except Exception as exc:  # noqa: BLE001 — surface, don't discard committed work
-        result["mv_refreshed"] = False
-        result["mv_refresh_error"] = type(exc).__name__
+            # Still inside LOCK_RISK_METRICS: MV proof and publication decision
+            # belong to this generation; a second generation cannot start first.
+            result.update(_finalize_generation(dsn, conn, plan, token))
     return result

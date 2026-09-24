@@ -45,7 +45,12 @@ from typing import Any
 from psycopg.rows import dict_row
 
 from src.db import LOCK_FUND_NAV_READINESS, LOCK_INSTRUMENT_INGESTION, advisory_lock, connect
-from src.workers._nav_policy import ADJUSTED_OVERLAP_ABS_TOL, ADJUSTED_OVERLAP_REL_TOL
+from src.workers._nav_policy import (
+    ADJUSTED_OVERLAP_ABS_TOL,
+    ADJUSTED_OVERLAP_REL_TOL,
+    CALENDAR_FIELDS,
+    effective_calendar_tuple,
+)
 from src.workers._nav_sanitize import REPAIRED_NAV_KINDS, sanitize_nav_series
 from src.workers._tiingo import (
     DEFAULT_RATE_PER_S, NavFetchResult, NavObservation, TiingoBudgetExceeded, TiingoClient,
@@ -213,7 +218,11 @@ def _fetch_watermarks(conn) -> dict[str, _dt.date]:
 
 
 def _published_calendar(conn, dates: list[_dt.date]) -> dict[_dt.date, tuple[str, str, str]]:
-    """Only an already-published policy may identify a due session."""
+    """Only the current, published, unexpired policy may identify a due session.
+
+    An unmapped date is *no new assertion*: ``upsert_nav_timeseries`` then keeps
+    whatever tuple is already persisted instead of overwriting it with NULL.
+    """
     if not dates:
         return {}
     with conn.cursor() as cur:
@@ -222,7 +231,8 @@ def _published_calendar(conn, dates: list[_dt.date]) -> dict[_dt.date, tuple[str
                FROM nav_policy_current current_policy
                JOIN nav_policy_versions policy USING (policy_id, policy_version)
                WHERE current_policy.readiness_profile = 'current_daily_nav_v1'
-                 AND policy.published_at IS NOT NULL"""
+                 AND policy.published_at IS NOT NULL
+                 AND policy.valid_through >= clock_timestamp()"""
         )
         policies = cur.fetchall()
         if len(policies) != 1:
@@ -317,6 +327,7 @@ def upsert_nav_timeseries(conn, rows: list[dict[str, Any]], *,
                      "calendar_version", "calendar_source")
     grouped: dict[Any, list[dict[str, Any]]] = {}
     for row in rows:
+        effective_calendar_tuple(row, None)  # partial incoming tuples are invalid
         grouped.setdefault(row["instrument_id"], []).append(row)
     upserted = 0
     with conn.cursor(row_factory=dict_row) as cur:
@@ -338,6 +349,14 @@ def upsert_nav_timeseries(conn, rows: list[dict[str, Any]], *,
                     (instrument_id, chunk[0]["nav_date"], chunk[-1]["nav_date"]),
                 )
                 old = {r["nav_date"]: r for r in cur.fetchall()}
+                # The three calendar columns move together: a missing mapping keeps
+                # the persisted tuple (no NULL overwrite, no spurious revision).
+                chunk = [
+                    {**row, **dict(zip(CALENDAR_FIELDS,
+                                       effective_calendar_tuple(row, old.get(row["nav_date"]))
+                                       or (None, None, None)))}
+                    for row in chunk
+                ]
                 changed = {row["nav_date"] for row in chunk if row["nav_date"] not in old
                            or any((float(old[row["nav_date"]][field]) != float(row[field])
                                    if field in ("nav", "source_nav")

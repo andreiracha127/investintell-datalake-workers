@@ -1,4 +1,9 @@
-"""Governed NAV readiness schema/policy operator. Check is the default; no live action implicit."""
+"""Governed NAV readiness schema/policy operator. Check is the default; no live action implicit.
+
+Exit codes: 0 success/ready/dry-run, 2 blocked (invalid input, prerequisite,
+DB error), 3 ``upgrade_required`` with an incompatible existing schema (no DDL
+or maintenance is executed), 4 maintenance lock busy (retryable, no writes).
+"""
 
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 from psycopg import sql
 
+from src.db import LOCK_FUND_NAV_READINESS, LOCK_INSTRUMENT_INGESTION
 from src.workers._nav_policy import (
     ADJUSTED_OVERLAP_ABS_TOL,
     ADJUSTED_OVERLAP_REL_TOL,
@@ -26,6 +32,7 @@ from src.workers._nav_policy import (
     PROVIDER_CONTRACT_VERSION,
     SOURCE_QUERY_SHA256,
     calendar_digest,
+    canonical_digest,
     generation_metadata_digest,
     instrument_evidence_digest,
     policy_content_digest,
@@ -34,6 +41,11 @@ from src.workers._nav_sanitize import REPAIRED_NAV_KINDS
 
 ROOT = Path(__file__).resolve().parents[1]
 DDL = ROOT / "schemas" / "fund_nav_readiness_v1.sql"
+CATALOG_MANIFEST = ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json"
+EXIT_INCOMPATIBLE = 3
+EXIT_LOCK_BUSY = 4
+MAX_MAINTENANCE_INSTRUMENTS = 20
+MAX_MAINTENANCE_WINDOW_DAYS = 600
 TABLES = (
     "nav_policy_versions",
     "nav_valuation_schedules",
@@ -41,10 +53,12 @@ TABLES = (
     "nav_instrument_policy_evidence",
     "nav_ingestion_runs",
     "nav_ingestion_attempts",
+    "nav_calendar_maintenance_runs",
     "fund_nav_data_heads",
     "fund_nav_data_revisions",
     "fund_nav_reexpression_holds",
     "fund_nav_risk_runs",
+    "fund_nav_risk_run_members",
     "fund_nav_risk_publication",
     "fund_nav_risk_exclusions",
     "fund_nav_feature_evidence",
@@ -52,74 +66,27 @@ TABLES = (
     "fund_nav_readiness_v1",
     "fund_nav_readiness_current",
 )
-CRITICAL_COLUMNS = {
-    "nav_policy_versions": {
-        "policy_id": "text",
-        "policy_version": "text",
-        "policy_hash": "character(64)",
-        "required_nav_kind": "text",
-        "required_return_semantics": "text",
-        "modeling_currency": "character varying(3)",
-        "currency_treatment": "text",
-        "published_at": "timestamp with time zone",
-        "coverage_start": "date",
-        "coverage_end": "date",
-        "valid_through": "timestamp with time zone",
-        "calendar_session_count": "integer",
-        "calendar_digest": "character(64)",
-    },
-    "nav_valuation_schedules": {
-        "session_date": "date",
-        "nav_due_at": "timestamp with time zone",
-    },
-    "nav_policy_current": {"policy_id": "text", "policy_version": "text"},
-    "nav_instrument_policy_evidence": {
-        "evidence_id": "uuid",
-        "instrument_id": "uuid",
-        "recorded_at": "timestamp with time zone",
-    },
-    "nav_ingestion_attempts": {
-        "instrument_id": "uuid",
-        "run_id": "uuid",
-        "status": "text",
-        "persisted_at": "timestamp with time zone",
-    },
-    "fund_nav_data_heads": {"instrument_id": "uuid", "revision_id": "bigint"},
-    "fund_nav_data_revisions": {"revision_id": "bigint", "source_run_id": "uuid"},
-    "fund_nav_reexpression_holds": {"instrument_id": "uuid", "reason_code": "text"},
-    "fund_nav_risk_runs": {"risk_run_id": "uuid", "status": "text"},
-    "fund_nav_risk_publication": {
-        "revision_id": "bigint",
-        "state": "text",
-        "published_risk_run_id": "uuid",
-    },
-    "fund_nav_risk_exclusions": {"risk_run_id": "uuid", "reason_code": "text"},
-    "fund_nav_feature_evidence": {
-        "input_max_date": "date",
-        "nav_input_fingerprint": "character(64)",
-    },
-    "fund_nav_readiness_runs": {
-        "run_id": "uuid",
-        "as_of_session": "date",
-        "latest_closed_session": "date",
-        "risk_publication_revision": "bigint",
-        "sample_id": "character(64)",
-        "state": "text",
-    },
-    "fund_nav_readiness_v1": {
-        "run_id": "uuid",
-        "instrument_id": "uuid",
-        "admissible": "boolean",
-        "window_end": "date",
-        "missing_session_count": "integer",
-        "reason_code": "text",
-        "lifecycle_evidence_id": "uuid",
-        "nav_revision_id": "bigint",
-        "risk_run_id": "uuid",
-        "risk_input_fingerprint": "character(64)",
-    },
-    "fund_nav_readiness_current": {"run_id": "uuid", "state": "text"},
-}
+VIEWS = ("fund_nav_readiness_current_v1",)
+# Owned tables plus the external NAV hypertable whose W1 trigger is contract.
+TRIGGER_RELATIONS = (*TABLES, "nav_timeseries")
+FUNCTIONS = (
+    "nav_policy_freeze_v1",
+    "nav_instrument_evidence_append_only_v1",
+    "nav_uuid_array_unique_v1",
+    "nav_calendar_maintenance_guard_v1",
+    "fund_nav_revision_append_only_v1",
+    "fund_nav_stamp_revision_v1",
+    "fund_nav_risk_run_guard_v1",
+    "fund_nav_risk_evidence_guard_v1",
+    "fund_nav_readiness_freeze_v1",
+    "fund_nav_snapshot_current_at_v1",
+)
+
+
+class MaintenanceBusy(RuntimeError):
+    """A NAV writer/publisher holds a lock; retry later, nothing was written."""
+
+
 SCHEMA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_$]{0,62}\Z")
 
 
@@ -311,102 +278,294 @@ def plan_hash(
     ).hexdigest()
 
 
+SCHEMA_TOKEN = "@schema@"
+
+
+def _canonical_text(text: str | None, schema: str) -> str | None:
+    """Replace qualifiers of the *target* schema by a stable token.
+
+    ``catalog_signature`` pins ``search_path`` to the target schema, so owned
+    objects print unqualified; any remaining qualifier names another schema and
+    is kept verbatim (a cross-schema reference is a real difference).
+    """
+    if text is None:
+        return None
+    pattern = rf'(?<![\w$."])(?:"{re.escape(schema)}"|{re.escape(schema)})\.'
+    return re.sub(pattern, SCHEMA_TOKEN + ".", text)
+
+
+def _canonical_config(config: list[str] | None, schema: str) -> list[str] | None:
+    """Full proconfig; the target schema inside ``search_path`` becomes a token.
+
+    Every other element (``public``, ``pg_temp``, ``$user``...) and every other
+    setting is preserved, so an appended path or new setting is a mismatch.
+    """
+    if config is None:
+        return None
+    canonical = []
+    for entry in config:
+        name, _, value = entry.partition("=")
+        if name == "search_path":
+            parts = []
+            for part in value.split(","):
+                element = part.strip()
+                bare = element[1:-1] if element.startswith('"') and element.endswith('"') else element
+                parts.append(SCHEMA_TOKEN if bare == schema else element)
+            entry = "search_path=" + ", ".join(parts)
+        canonical.append(entry)
+    return canonical
+
+
+def _function_key(name: str, args: str, schema: str) -> str:
+    return f"{name}({_canonical_text(args, schema)})"
+
+
+def catalog_signature(conn, schema: str) -> dict:
+    """The one catalog extractor used by ``_check`` and the tracked generator.
+
+    Covers owned relations (kind), column type/nullability/default/generated/
+    identity, constraint kind+definition (PK/FK/UNIQUE/CHECK), index
+    definitions, view definitions, owned functions keyed ``name(identity args)``
+    with body hash and semantic attributes, and *every* non-internal trigger on
+    ``TRIGGER_RELATIONS`` of the target schema (owned tables plus the external
+    ``nav_timeseries``), including the schema-qualified function it executes.
+    Constraint names are excluded (auto-names are not semantics).
+
+    Must run inside an open transaction: ``search_path`` is pinned locally.
+    """
+    conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema)))
+    owned = [*TABLES, *VIEWS]
+    relations = {
+        name: kind
+        for name, kind in conn.execute(
+            """SELECT c.relname, c.relkind::text FROM pg_class c
+               JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE n.nspname=%s AND c.relname=ANY(%s)
+               ORDER BY c.relname""",
+            (schema, owned),
+        ).fetchall()
+    }
+    columns: dict[str, list] = {}
+    for table, name, data_type, not_null, default, generated, identity in conn.execute(
+        """SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod),
+                  a.attnotnull, pg_get_expr(d.adbin, d.adrelid),
+                  a.attgenerated::text, a.attidentity::text
+           FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+           JOIN pg_attribute a ON a.attrelid=c.oid
+           LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+           WHERE n.nspname=%s AND c.relname=ANY(%s)
+             AND a.attnum>0 AND NOT a.attisdropped
+           ORDER BY c.relname, a.attnum""",
+        (schema, owned),
+    ).fetchall():
+        columns.setdefault(table, []).append(
+            [name, data_type, not_null, _canonical_text(default, schema), generated, identity]
+        )
+    constraints: dict[str, list] = {}
+    for table, kind, definition in conn.execute(
+        """SELECT c.relname, con.contype::text, pg_get_constraintdef(con.oid, true)
+           FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
+           JOIN pg_namespace n ON n.oid=c.relnamespace
+           WHERE n.nspname=%s AND c.relname=ANY(%s)""",
+        (schema, list(TABLES)),
+    ).fetchall():
+        constraints.setdefault(table, []).append([kind, _canonical_text(definition, schema)])
+    indexes: dict[str, list] = {}
+    for table, definition in conn.execute(
+        """SELECT c.relname, pg_get_indexdef(i.indexrelid)
+           FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid
+           JOIN pg_namespace n ON n.oid=c.relnamespace
+           WHERE n.nspname=%s AND c.relname=ANY(%s)""",
+        (schema, list(TABLES)),
+    ).fetchall():
+        indexes.setdefault(table, []).append(_canonical_text(definition, schema))
+    views = {
+        name: _canonical_text(definition, schema)
+        for name, definition in conn.execute(
+            """SELECT c.relname, pg_get_viewdef(c.oid, true) FROM pg_class c
+               JOIN pg_namespace n ON n.oid=c.relnamespace
+               WHERE n.nspname=%s AND c.relname=ANY(%s) AND c.relkind='v'""",
+            (schema, list(VIEWS)),
+        ).fetchall()
+    }
+    functions: dict[str, dict] = {}
+    for (
+        name, args, result, language, volatility, strict, definer, leakproof,
+        parallel, kind, source, config, public_execute,
+    ) in conn.execute(
+        """SELECT p.proname, pg_get_function_identity_arguments(p.oid),
+                  pg_get_function_result(p.oid), l.lanname, p.provolatile::text,
+                  p.proisstrict, p.prosecdef, p.proleakproof, p.proparallel::text,
+                  p.prokind::text, p.prosrc, p.proconfig,
+                  has_function_privilege('public', p.oid, 'EXECUTE')
+           FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+           JOIN pg_language l ON l.oid=p.prolang
+           WHERE n.nspname=%s AND p.proname=ANY(%s)""",
+        (schema, list(FUNCTIONS)),
+    ).fetchall():
+        functions[_function_key(name, args, schema)] = {
+            "result": _canonical_text(result, schema),
+            "language": language,
+            "volatility": volatility,
+            "strict": strict,
+            "security_definer": definer,
+            "leakproof": leakproof,
+            "parallel": parallel,
+            "kind": kind,
+            "body_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            "config": _canonical_config(config, schema),
+            "public_execute": public_execute,
+        }
+    triggers: dict[str, list] = {}
+    for table, name, definition, enabled, fn_schema, fn_name, fn_args in conn.execute(
+        """SELECT c.relname, t.tgname, pg_get_triggerdef(t.oid, true),
+                  t.tgenabled::text, fn_ns.nspname, fn.proname,
+                  pg_get_function_identity_arguments(fn.oid)
+           FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+           JOIN pg_namespace n ON n.oid=c.relnamespace
+           JOIN pg_proc fn ON fn.oid=t.tgfoid
+           JOIN pg_namespace fn_ns ON fn_ns.oid=fn.pronamespace
+           WHERE n.nspname=%s AND c.relname=ANY(%s) AND NOT t.tgisinternal""",
+        (schema, list(TRIGGER_RELATIONS)),
+    ).fetchall():
+        target = SCHEMA_TOKEN if fn_schema == schema else fn_schema
+        triggers.setdefault(table, []).append(
+            [name, _canonical_text(definition, schema), enabled,
+             f"{target}.{fn_name}({_canonical_text(fn_args, schema)})"]
+        )
+    for bucket in (constraints, indexes, triggers):
+        for values in bucket.values():
+            values.sort(key=lambda value: json.dumps(value))
+    return {
+        "relations": relations,
+        "columns": columns,
+        "constraints": constraints,
+        "indexes": indexes,
+        "views": views,
+        "functions": dict(sorted(functions.items())),
+        "triggers": triggers,
+    }
+
+
+def load_manifest(ddl: bytes) -> dict:
+    """The pinned fresh-DDL manifest, rejected when stale or tampered."""
+    manifest = json.loads(CATALOG_MANIFEST.read_text(encoding="utf-8"))
+    if manifest.get("ddl_sha256") != hashlib.sha256(ddl).hexdigest():
+        raise ValueError("catalog_manifest_stale")
+    if manifest.get("signature_sha256") != canonical_digest(manifest.get("signature")):
+        raise ValueError("catalog_manifest_tampered")
+    return manifest
+
+
+def _recreatable(trigger: list) -> bool:
+    """Triggers the idempotent DDL recreates: those executing an owned function."""
+    target = trigger[3]
+    return target.startswith(SCHEMA_TOKEN + ".") and target.split(".", 1)[1].split("(")[0] in FUNCTIONS
+
+
+def classify_catalog(expected: dict, actual: dict) -> tuple[str, list[str]]:
+    """``exact`` | ``absent`` | ``repairable`` | ``incompatible`` (pure).
+
+    * absent: no owned relation or function, and the external relations carry
+      exactly the expected non-W1 triggers (an orphan W1 trigger is not clean).
+    * repairable: every non-trigger section is exact and, per trigger relation,
+      actual triggers are a subset of expected with only W1-recreatable ones
+      missing. Extra, disabled, redefined or foreign-schema triggers are not.
+    * incompatible: anything else; no DDL or maintenance may run.
+    """
+    mismatches = sorted(
+        section
+        for section in set(expected) | set(actual)
+        if actual.get(section) != expected.get(section)
+    )
+    if not mismatches:
+        return "exact", mismatches
+    expected_triggers = expected.get("triggers", {})
+    actual_triggers = actual.get("triggers", {})
+    if not actual.get("relations") and not actual.get("functions"):
+        external_clean = all(
+            sorted(actual_triggers.get(relation, []), key=json.dumps)
+            == sorted(
+                (t for t in expected_triggers.get(relation, []) if not _recreatable(t)),
+                key=json.dumps,
+            )
+            for relation in TRIGGER_RELATIONS
+        )
+        return ("absent" if external_clean else "incompatible"), mismatches
+    if mismatches == ["triggers"]:
+        repairable = True
+        for relation in TRIGGER_RELATIONS:
+            wanted = expected_triggers.get(relation, [])
+            present = actual_triggers.get(relation, [])
+            if any(trigger not in wanted for trigger in present):
+                repairable = False
+            elif any(t not in present and not _recreatable(t) for t in wanted):
+                repairable = False
+        if set(actual_triggers) - set(TRIGGER_RELATIONS):
+            repairable = False
+        if repairable:
+            return "repairable", mismatches
+    return "incompatible", mismatches
+
+
+def apply_ddl(conn, schema: str, ddl: bytes) -> None:
+    """Apply the readiness DDL exactly as the operator does in production.
+
+    The DDL owns its BEGIN/COMMIT, so the connection must be autocommit. The
+    session ``search_path`` is the target schema only: SECURITY DEFINER
+    functions capture it via ``SET search_path FROM CURRENT``.
+    """
+    if not conn.autocommit:
+        raise ValueError("autocommit_connection_required_for_ddl")
+    conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
+    conn.execute(ddl.decode("utf-8"))
+
+
 def _check(conn, schema: str) -> dict:
+    """Read-only catalog comparison against the pinned fresh-DDL manifest.
+
+    ``compatibility`` from ``classify_catalog``; only ``exact`` is ready.
+    ``CREATE ... IF NOT EXISTS`` is never treated as an upgrade path.
+    """
+    manifest = load_manifest(DDL.read_bytes())
     conn.execute("BEGIN TRANSACTION READ ONLY")
     try:
         conn.execute("SET LOCAL statement_timeout = '5s'")
         conn.execute("SET LOCAL lock_timeout = '1s'")
-        conn.execute(
-            sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema))
-        )
-        if conn.execute("SELECT current_schema()").fetchone()[0] != schema:
+        if not conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname=%s)", (schema,)
+        ).fetchone()[0]:
             raise ValueError("target_schema_missing")
-        rows = conn.execute(
-            """SELECT relname, relkind FROM pg_class c JOIN pg_namespace n
-               ON c.relnamespace=n.oid WHERE n.nspname=%s AND relname=ANY(%s)""",
-            (schema, list(TABLES)),
-        ).fetchall()
-        kinds = dict(rows)
-        if any(kind != "r" for kind in kinds.values()):
-            raise ValueError("schema_relation_kind_mismatch")
-        columns = conn.execute(
-            """SELECT c.relname,a.attname,format_type(a.atttypid,a.atttypmod)
-               FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid
-               JOIN pg_attribute a ON a.attrelid=c.oid
-               WHERE n.nspname=%s AND c.relname=ANY(%s)
-                 AND a.attnum>0 AND NOT a.attisdropped""",
-            (schema, ["nav_timeseries", *TABLES]),
-        ).fetchall()
-        by_table = {}
-        for table, name, data_type in columns:
-            by_table.setdefault(table, {})[name] = data_type
-        from scripts.nav_timeseries_provenance_schema import EXPECTED_COLUMNS
-
-        if any(
-            by_table.get("nav_timeseries", {}).get(name) != data_type
-            for name, data_type in EXPECTED_COLUMNS
-        ):
-            raise ValueError("nav_provenance_pr132_missing")
-        if any(
-            by_table.get(table, {}).get(name) != data_type
-            for table, expected in CRITICAL_COLUMNS.items()
-            if table in kinds
-            for name, data_type in expected.items()
-        ):
-            raise ValueError("readiness_schema_contract_mismatch")
-        view = conn.execute(
-            """SELECT relkind FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid
-               WHERE n.nspname=%s AND c.relname='fund_nav_readiness_current_v1'""",
-            (schema,),
-        ).fetchone()
-        if view is not None and view[0] != "v":
-            raise ValueError("readiness_view_contract_mismatch")
-        present_triggers = set(
+        nav_columns = dict(
             conn.execute(
-                """SELECT c.relname,t.tgname FROM pg_trigger t
-               JOIN pg_class c ON c.oid=t.tgrelid
-               JOIN pg_namespace n ON n.oid=c.relnamespace
-               WHERE n.nspname=%s AND NOT t.tgisinternal""",
+                """SELECT a.attname, format_type(a.atttypid,a.atttypmod)
+                   FROM pg_class c JOIN pg_namespace n ON c.relnamespace=n.oid
+                   JOIN pg_attribute a ON a.attrelid=c.oid
+                   WHERE n.nspname=%s AND c.relname='nav_timeseries'
+                     AND a.attnum>0 AND NOT a.attisdropped""",
                 (schema,),
             ).fetchall()
         )
-        required_triggers = {
-            ("nav_timeseries", "fund_nav_stamp_revision"),
-            ("fund_nav_data_revisions", "fund_nav_revision_append_only"),
-            ("nav_policy_versions", "nav_policy_freeze"),
-            ("nav_valuation_schedules", "nav_schedule_freeze"),
-            ("nav_instrument_policy_evidence", "nav_instrument_evidence_append_only"),
-            ("fund_nav_readiness_runs", "fund_nav_readiness_run_freeze"),
-            ("fund_nav_readiness_v1", "fund_nav_readiness_row_freeze"),
-        }
-        resolver = conn.execute(
-            """SELECT prosecdef,proconfig FROM pg_proc f
-               JOIN pg_namespace n ON n.oid=f.pronamespace
-               WHERE n.nspname=%s AND f.proname='fund_nav_snapshot_current_at_v1'""",
-            (schema,),
-        ).fetchone()
-        secured_resolver = bool(
-            resolver
-            and resolver[0]
-            and resolver[1]
-            and any(
-                setting.startswith(f"search_path={schema}") for setting in resolver[1]
-            )
-        )
+        from scripts.nav_timeseries_provenance_schema import EXPECTED_COLUMNS
+
+        if any(nav_columns.get(name) != data_type for name, data_type in EXPECTED_COLUMNS):
+            raise ValueError("nav_provenance_pr132_missing")
+        actual = catalog_signature(conn, schema)
+        compatibility, mismatches = classify_catalog(manifest["signature"], actual)
         return {
-            "status": "ready"
-            if (
-                len(kinds) == len(TABLES)
-                and view is not None
-                and required_triggers <= present_triggers
-                and secured_resolver
-            )
-            else "upgrade_required",
-            "tables_present": len(kinds),
+            "status": "ready" if compatibility == "exact" else "upgrade_required",
+            "compatibility": compatibility,
+            "mismatches": mismatches,
+            "tables_present": sum(
+                1 for kind in actual["relations"].values() if kind == "r"
+            ),
             "tables_expected": len(TABLES),
+            "catalog_sha256": canonical_digest(actual),
+            "reference_catalog_sha256": manifest["signature_sha256"],
             "postgres_version": conn.execute(
                 "SELECT current_setting('server_version_num')"
             ).fetchone()[0],
+            "reference_postgres_version": manifest["postgres_version_num"],
         }
     finally:
         conn.execute("ROLLBACK")
@@ -558,48 +717,219 @@ def _publish_policy(conn, evidence: dict) -> str:
     return policy_hash
 
 
-def _backfill(conn, instrument_ids: list[str], start: dt.date, end: dt.date) -> int:
-    """Mark only proven calendar dates on already-typed, unmodified source NAV.
+_SCOPE_ROWS_SQL = """
+SELECT instrument_id::text, nav_date, nav::text, source_nav::text, source_nav_kind,
+       currency, nav_repair_kind, calendar_id, calendar_version, calendar_source
+FROM nav_timeseries
+WHERE instrument_id = ANY(%s::uuid[]) AND nav_date BETWEEN %s AND %s
+ORDER BY instrument_id, nav_date
+"""
+_CANDIDATES_SQL = """
+WITH life AS (
+    SELECT DISTINCT ON (e.instrument_id) e.instrument_id, e.valuation_frequency,
+           e.identity_verified, e.return_basis_verified, e.currency_verified
+    FROM nav_instrument_policy_evidence e
+    WHERE e.instrument_id = ANY(%(ids)s::uuid[])
+      AND e.policy_id = %(policy_id)s AND e.policy_version = %(policy_version)s
+      AND e.known_at <= clock_timestamp() AND e.effective_at <= clock_timestamp()
+    ORDER BY e.instrument_id, e.effective_at DESC, e.known_at DESC
+)
+SELECT n.instrument_id::text, n.nav_date
+FROM nav_timeseries n
+JOIN life ON life.instrument_id = n.instrument_id
+JOIN nav_valuation_schedules s
+  ON s.calendar_id = %(calendar_id)s AND s.calendar_version = %(calendar_version)s
+ AND s.session_date = n.nav_date AND s.calendar_source = %(calendar_source)s
+WHERE n.instrument_id = ANY(%(ids)s::uuid[])
+  AND n.nav_date BETWEEN %(start)s AND %(end)s
+  AND n.calendar_id IS NULL AND n.calendar_version IS NULL AND n.calendar_source IS NULL
+  AND n.source_nav IS NOT NULL AND n.source_nav_kind = 'adjusted'
+  AND n.currency = 'USD' AND n.nav_repair_kind = 'none' AND n.source_nav = n.nav
+  AND life.valuation_frequency = 'daily' AND life.identity_verified
+  AND life.return_basis_verified AND life.currency_verified
+ORDER BY n.instrument_id, n.nav_date
+"""
 
-    Legacy NULL kind/source_nav remains NULL. No NAV/return values or PIT flags
-    are created here; existing provenance is never overwritten with conflict.
-    """
-    policy = conn.execute(
-        """SELECT p.policy_id,p.policy_version,p.calendar_id,p.calendar_version,p.calendar_source
-           FROM nav_policy_current c JOIN nav_policy_versions p USING(policy_id,policy_version)
-           WHERE c.readiness_profile='current_daily_nav_v1' AND p.published_at IS NOT NULL"""
+
+def _pinned_policy(conn, *, lock: bool) -> dict:
+    """The current, published, unexpired policy; FOR SHARE pins it in apply."""
+    row = conn.execute(
+        """SELECT p.policy_id, p.policy_version, p.policy_hash, p.calendar_id,
+                  p.calendar_version, p.calendar_source
+           FROM nav_policy_current c
+           JOIN nav_policy_versions p USING (policy_id, policy_version)
+           WHERE c.readiness_profile = 'current_daily_nav_v1'
+             AND p.published_at IS NOT NULL AND p.valid_through >= clock_timestamp()"""
+        + (" FOR SHARE OF c, p" if lock else "")
     ).fetchone()
-    if not policy:
+    if row is None:
         raise ValueError("published_policy_required_for_backfill")
-    count = 0
-    for instrument_id in instrument_ids:
-        verified = conn.execute(
-            """SELECT 1 FROM nav_instrument_policy_evidence
-               WHERE instrument_id=%s AND policy_id=%s AND policy_version=%s
-                 AND known_at<=clock_timestamp() AND effective_at<=clock_timestamp()
-                 AND valuation_frequency='daily' AND identity_verified
-                 AND return_basis_verified AND currency_verified
-               ORDER BY known_at DESC LIMIT 1""",
-            (instrument_id, policy[0], policy[1]),
-        ).fetchone()
-        if not verified:
-            continue
+    return dict(
+        zip(
+            (
+                "policy_id",
+                "policy_version",
+                "policy_hash",
+                "calendar_id",
+                "calendar_version",
+                "calendar_source",
+            ),
+            row,
+        )
+    )
+
+
+def _scope_rows(conn, ids: list[str], start: dt.date, end: dt.date, *, lock: bool) -> list:
+    return [
+        list(row)
+        for row in conn.execute(
+            _SCOPE_ROWS_SQL + (" FOR UPDATE" if lock else ""), (ids, start, end)
+        ).fetchall()
+    ]
+
+
+def _candidates(conn, policy: dict, ids: list[str], start: dt.date, end: dt.date) -> list:
+    return [
+        (iid, day)
+        for iid, day in conn.execute(
+            _CANDIDATES_SQL, {**policy, "ids": ids, "start": start, "end": end}
+        ).fetchall()
+    ]
+
+
+def _stamped(rows: list, candidates: list, policy: dict) -> list:
+    wanted = set(candidates)
+    tuple_ = [policy["calendar_id"], policy["calendar_version"], policy["calendar_source"]]
+    return [row[:7] + tuple_ if (row[0], row[1]) in wanted else row for row in rows]
+
+
+def _maintenance_plan(conn, ids: list[str], start: dt.date, end: dt.date) -> dict:
+    """Dry run: read-only, no locks, no writes; reports what apply would stamp."""
+    conn.execute("BEGIN TRANSACTION READ ONLY")
+    try:
+        conn.execute("SET LOCAL statement_timeout = '30s'")
+        policy = _pinned_policy(conn, lock=False)
+        before = _scope_rows(conn, ids, start, end, lock=False)
+        candidates = _candidates(conn, policy, ids, start, end)
+        return {
+            "status": "dry_run",
+            "operation": "calendar_stamp",
+            "policy": {k: policy[k] for k in ("policy_id", "policy_version", "policy_hash")},
+            "calendar": [
+                policy["calendar_id"],
+                policy["calendar_version"],
+                policy["calendar_source"],
+            ],
+            "scope_rows": len(before),
+            "eligible_rows": len(candidates),
+            "before_digest": canonical_digest(before),
+            "expected_after_digest": canonical_digest(_stamped(before, candidates, policy)),
+            "candidate_digest": canonical_digest(candidates),
+        }
+    finally:
+        conn.execute("ROLLBACK")
+
+
+def _apply_calendar_maintenance(
+    conn, ids: list[str], start: dt.date, end: dt.date, plan_sha256: str
+) -> dict:
+    """One maintenance transaction: locks, pins, run, stamp, verify, complete.
+
+    Any failure rolls back levels, revisions and the run together. A replay with
+    nothing left to stamp is a no-op without a run or revision. No provider run
+    or attempt is created and nothing is fetched.
+    """
+    conn.execute("BEGIN")
+    try:
+        conn.execute("SET LOCAL statement_timeout = '60s'")
+        conn.execute("SET LOCAL lock_timeout = '2s'")
+        for key in (LOCK_INSTRUMENT_INGESTION, LOCK_FUND_NAV_READINESS):
+            if not conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (key,)).fetchone()[0]:
+                raise MaintenanceBusy("nav_writer_lock_busy")
+        policy = _pinned_policy(conn, lock=True)
+        before = _scope_rows(conn, ids, start, end, lock=True)
+        candidates = _candidates(conn, policy, ids, start, end)
+        before_digest = canonical_digest(before)
+        if not candidates:
+            conn.execute("ROLLBACK")
+            return {"status": "no_op", "eligible_rows": 0, "before_digest": before_digest}
+        run_id = uuid.uuid4()
+        conn.execute(
+            """INSERT INTO nav_calendar_maintenance_runs
+               (maintenance_run_id, operation, policy_id, policy_version, policy_hash,
+                calendar_id, calendar_version, calendar_source, plan_sha256,
+                instrument_ids, window_start, window_end, status, before_digest)
+               VALUES (%s,'calendar_stamp',%s,%s,%s,%s,%s,%s,%s,%s::uuid[],%s,%s,
+                       'running',%s)""",
+            (
+                run_id,
+                policy["policy_id"],
+                policy["policy_version"],
+                policy["policy_hash"],
+                policy["calendar_id"],
+                policy["calendar_version"],
+                policy["calendar_source"],
+                plan_sha256,
+                ids,
+                start,
+                end,
+                before_digest,
+            ),
+        )
+        conn.execute("SELECT set_config('nav.ingestion_run_id', '', true)")
+        conn.execute(
+            "SELECT set_config('nav.maintenance_run_id', %s, true)", (str(run_id),)
+        )
         updated = conn.execute(
-            """UPDATE nav_timeseries n SET calendar_id=s.calendar_id,
-                 calendar_version=s.calendar_version, calendar_source=s.calendar_source
-               FROM nav_valuation_schedules s
-               WHERE n.instrument_id=%s AND n.nav_date BETWEEN %s AND %s
-                 AND n.nav_date=s.session_date AND s.calendar_id=%s
-                 AND s.calendar_version=%s AND s.calendar_source=%s
-                  AND n.source_nav IS NOT NULL AND n.source_nav_kind='adjusted'
-                  AND n.currency='USD'
-                 AND n.nav_repair_kind='none' AND n.source_nav=n.nav
+            """UPDATE nav_timeseries n
+               SET calendar_id=%s, calendar_version=%s, calendar_source=%s
+               FROM unnest(%s::uuid[], %s::date[]) AS c(instrument_id, nav_date)
+               WHERE n.instrument_id = c.instrument_id AND n.nav_date = c.nav_date
                  AND n.calendar_id IS NULL AND n.calendar_version IS NULL
                  AND n.calendar_source IS NULL""",
-            (instrument_id, start, end, policy[2], policy[3], policy[4]),
+            (
+                policy["calendar_id"],
+                policy["calendar_version"],
+                policy["calendar_source"],
+                [iid for iid, _ in candidates],
+                [day for _, day in candidates],
+            ),
+        ).rowcount
+        conn.execute("SELECT set_config('nav.maintenance_run_id', '', true)")
+        after = _scope_rows(conn, ids, start, end, lock=False)
+        after_digest = canonical_digest(after)
+        revisions = conn.execute(
+            "SELECT count(*) FROM fund_nav_data_revisions WHERE maintenance_run_id=%s",
+            (run_id,),
+        ).fetchone()[0]
+        if (
+            updated != len(candidates)
+            or revisions != updated
+            or after_digest != canonical_digest(_stamped(before, candidates, policy))
+        ):
+            raise ValueError("maintenance_verification_failed")
+        conn.execute(
+            """UPDATE nav_calendar_maintenance_runs
+               SET status='completed', completed_at=clock_timestamp(),
+                   changed_rows=%s, after_digest=%s
+               WHERE maintenance_run_id=%s AND status='running'""",
+            (updated, after_digest, run_id),
         )
-        count += updated.rowcount
-    return count
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    return {
+        "status": "completed",
+        "maintenance_run_id": str(run_id),
+        "changed_rows": updated,
+        "before_digest": before_digest,
+        "after_digest": after_digest,
+    }
+
+
+def _emit(payload: dict) -> None:
+    print(json.dumps(payload, sort_keys=True, default=str))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -622,13 +952,13 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("ddl_hash_mismatch")
         policy, raw = _policy(args.policy_file)
         ids = [str(uuid.UUID(value)) for value in args.instrument_id]
-        if len(ids) > 20 or len(set(ids)) != len(ids):
+        if len(ids) > MAX_MAINTENANCE_INSTRUMENTS or len(set(ids)) != len(ids):
             raise ValueError("backfill_allowlist_invalid")
         if ids and (not args.start or not args.end):
             raise ValueError("bounded_dates_required")
         start = dt.date.fromisoformat(args.start) if args.start else None
         end = dt.date.fromisoformat(args.end) if args.end else None
-        if ids and (end < start or (end - start).days > 600):
+        if ids and (end < start or (end - start).days > MAX_MAINTENANCE_WINDOW_DAYS):
             raise ValueError("backfill_window_invalid")
         digest = plan_hash(ddl, args.schema, raw, ids, args.start, args.end)
         if args.mode == "apply" and not hmac.compare_digest(
@@ -636,51 +966,63 @@ def main(argv: list[str] | None = None) -> int:
         ):
             raise ValueError("plan_hash_required")
         dsn = os.environ["NAV_READINESS_DATABASE_URL"]
+        header = {
+            "mode": args.mode,
+            "schema": args.schema,
+            "sql_sha256": sql_hash,
+            "plan_sha256": digest,
+        }
         with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
             state = _check(conn, args.schema)
+            if state["compatibility"] == "incompatible":
+                # Old/incompatible shape: no DDL, policy or maintenance mutation.
+                _emit({**header, **state})
+                return EXIT_INCOMPATIBLE
+            conn.execute(
+                sql.SQL("SET search_path TO {}").format(sql.Identifier(args.schema))
+            )
             if args.mode == "apply":
-                conn.execute(
-                    sql.SQL("SET search_path TO {}").format(sql.Identifier(args.schema))
+                apply_ddl(conn, args.schema, ddl)
+                if _check(conn, args.schema)["status"] != "ready":
+                    raise ValueError("schema_not_ready_after_apply")
+                policy_hash = None
+                if policy:
+                    conn.execute("BEGIN")
+                    try:
+                        conn.execute("SET LOCAL statement_timeout='30s'")
+                        policy_hash = _publish_policy(conn, policy)
+                        conn.execute("COMMIT")
+                    except BaseException:
+                        conn.execute("ROLLBACK")
+                        raise
+                maintenance = (
+                    _apply_calendar_maintenance(conn, ids, start, end, digest)
+                    if ids
+                    else None
                 )
-                conn.execute(ddl.decode("utf-8"))
-                conn.execute("BEGIN")
-                try:
-                    conn.execute("SET LOCAL statement_timeout='30s'")
-                    policy_hash = _publish_policy(conn, policy) if policy else None
-                    changed = _backfill(conn, ids, start, end) if ids else 0
-                    conn.execute("COMMIT")
-                except Exception:
-                    conn.execute("ROLLBACK")
-                    raise
                 state = {
                     "status": "applied",
                     "policy_hash": policy_hash,
-                    "backfill_calendar_rows": changed,
+                    "maintenance": maintenance,
+                    "backfill_calendar_rows": (maintenance or {}).get("changed_rows", 0),
                 }
-        print(
-            json.dumps(
-                {
-                    "mode": args.mode,
-                    "schema": args.schema,
-                    "sql_sha256": sql_hash,
-                    "plan_sha256": digest,
-                    **state,
-                },
-                sort_keys=True,
-            )
-        )
+            elif ids:
+                if state["status"] != "ready":
+                    raise ValueError("schema_not_ready_for_maintenance_plan")
+                state = {**state, "maintenance_plan": _maintenance_plan(conn, ids, start, end)}
+        _emit({**header, **state})
         return 0
+    except MaintenanceBusy:
+        _emit({"status": "lock_busy", "state": "lock_busy", "retryable": True, "published": False})
+        return EXIT_LOCK_BUSY
     except (ValueError, TypeError, OSError, KeyError, psycopg.Error) as exc:
-        print(
-            json.dumps(
-                {
-                    "status": "blocked",
-                    "reason": type(exc).__name__,
-                    "sqlstate": exc.sqlstate
-                    if isinstance(exc, psycopg.Error)
-                    else None,
-                }
-            )
+        _emit(
+            {
+                "status": "blocked",
+                "reason": type(exc).__name__,
+                "code": str(exc) if isinstance(exc, ValueError) else None,
+                "sqlstate": exc.sqlstate if isinstance(exc, psycopg.Error) else None,
+            }
         )
         return 2
 

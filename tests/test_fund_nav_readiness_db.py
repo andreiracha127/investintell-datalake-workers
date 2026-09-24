@@ -10,17 +10,22 @@ import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import psycopg
 import pytest
 from psycopg import sql
 
 from scripts import fund_nav_readiness_schema as operator
-from src.db import LOCK_FUND_NAV_READINESS, advisory_lock
+from src.db import LOCK_FUND_NAV_READINESS, LOCK_INSTRUMENT_INGESTION, advisory_lock
 from src.workers import fund_nav_readiness as readiness
 from src.workers import instrument_ingestion as ingest
 from src.workers import nav_current_daily_chain as chain
 from src.workers import risk_metrics as risk
-from src.workers._nav_policy import calendar_digest
+from src.workers._nav_policy import (
+    FEATURE_DEFINITION_VERSION,
+    calendar_digest,
+    risk_universe_digest,
+)
 from src.workers._nav_sanitize import REPAIRED_NAV_KINDS
 from src.workers._tiingo import NavObservation
 from src.workers._tiingo import NavFetchResult
@@ -88,15 +93,29 @@ def _grid(end=None):
     return list(reversed(dates))
 
 
+def _install(conn, schema):
+    """Apply the readiness DDL exactly like the operator (target-only search_path)."""
+    operator.apply_ddl(conn, schema, SCHEMA_SQL.encode("utf-8"))
+    conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+
+
 def _bootstrap(dsn, schema):
     with _connect(dsn, schema, autocommit=True) as conn:
         conn.execute(NAV_SQL)
-        conn.execute(SCHEMA_SQL)
-        conn.execute(SCHEMA_SQL)  # additive, rerunnable, no MV replacement
+        _install(conn, schema)
+        _install(conn, schema)  # additive, rerunnable, no MV replacement
         conn.execute("CREATE TABLE funds_profile_mv (instrument_id uuid PRIMARY KEY)")
 
 
-def _seed(dsn, schema, *, with_policy=True, extra_closed=False):
+def _seed(
+    dsn,
+    schema,
+    *,
+    with_policy=True,
+    extra_closed=False,
+    stamp=True,
+    valid_for=dt.timedelta(days=1),
+):
     _bootstrap(dsn, schema)
     iid = uuid.uuid4()
     grid = _grid()
@@ -127,7 +146,7 @@ def _seed(dsn, schema, *, with_policy=True, extra_closed=False):
         )
         sessions.append((closed_date, now, now + dt.timedelta(hours=1), source))
     digest = calendar_digest(sessions)
-    valid_through = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)
+    valid_through = dt.datetime.now(dt.timezone.utc) + valid_for
     with _connect(dsn, schema) as conn:
         conn.execute("INSERT INTO funds_profile_mv VALUES (%s)", (iid,))
         if with_policy:
@@ -206,32 +225,92 @@ def _seed(dsn, schema, *, with_policy=True, extra_closed=False):
             for i, d in enumerate(grid)
         )
         calendar = (
-            {d: ("NYSE-TEST", "v1", source) for d in grid} if with_policy else None
+            {d: ("NYSE-TEST", "v1", source) for d in grid}
+            if with_policy and stamp
+            else None
         )
         rows = ingest.build_rows(observations, [(iid, "USD")], calendar=calendar)
         ingest.upsert_nav_timeseries(conn, rows, run_id=ing_run)
-        risk_run = uuid.uuid4()
-        conn.execute(
-            """INSERT INTO fund_nav_risk_runs
-               (risk_run_id,calc_date,status,expected_rows,persisted_rows,completed_at)
-               VALUES (%s,%s,'complete',1,1,clock_timestamp())""",
-            (risk_run, grid[-1]),
-        )
         nav_rows = conn.execute(
             "SELECT nav_date, nav FROM nav_timeseries WHERE instrument_id=%s ORDER BY nav_date",
             (iid,),
         ).fetchall()
-        risk._persist_feature_evidence(
-            conn, iid, grid[-1], nav_rows, 0.04, risk_run, None, {}, {}, []
-        )
-        conn.execute(
-            """INSERT INTO fund_nav_risk_publication
-               (readiness_profile,revision_id,state,published_risk_run_id)
-               VALUES ('current_daily_nav_v1',1,'idle',%s)""",
-            (risk_run,),
-        )
-        conn.commit()
+        _publish_risk_run(conn, grid[-1], {iid: nav_rows})
     return iid, grid, ing_run
+
+
+def _register_risk_run(conn, run_id, calc_date, members, *, scope, reason=None):
+    """Explicit P1 fixture: parent + frozen members, no W3 worker classification.
+
+    ``scope`` and ``reason`` are asserted by the fixture itself (diagnostic by
+    default in P1 persistence tests); ``current_full`` pins the current policy
+    and requires ``calc_date`` to be its due session, as the DB CHECK demands.
+    """
+    policy = conn.execute(
+        "SELECT p.policy_id,p.policy_version,p.policy_hash FROM nav_policy_current c "
+        "JOIN nav_policy_versions p USING (policy_id,policy_version)"
+    ).fetchone()
+    pins = policy if policy is not None else (None, None, None)
+    conn.execute(
+        """INSERT INTO fund_nav_risk_runs
+           (risk_run_id,calc_date,run_scope,nonpublishing_reason,policy_id,
+            policy_version,policy_hash,due_session,requested_calc_date,
+            requested_limit,universe_digest,feature_definition_version,status,
+            expected_rows)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL,%s,%s,'running',%s)""",
+        (run_id, calc_date, scope, reason, *pins,
+         calc_date if scope == "current_full" else None,
+         risk_universe_digest(members), FEATURE_DEFINITION_VERSION, len(members)),
+    )
+    if members:
+        conn.execute(
+            "INSERT INTO fund_nav_risk_run_members "
+            "SELECT %s, m FROM unnest(%s::uuid[]) AS m",
+            (run_id, list(members)),
+        )
+
+
+def _publish_risk_run(conn, calc_date, features, exclusions=()):
+    """Fixture DB state for a published run (not the W3 worker).
+
+    With a current policy the run is ``current_full``; without one the schema
+    only admits ``diagnostic``/POLICY_UNAVAILABLE, which the snapshot never uses.
+    """
+    run_id = uuid.uuid4()
+    has_policy = conn.execute("SELECT count(*) FROM nav_policy_current").fetchone()[0]
+    _register_risk_run(
+        conn,
+        run_id,
+        calc_date,
+        [*features, *exclusions],
+        scope="current_full" if has_policy else "diagnostic",
+        reason=None if has_policy else "POLICY_UNAVAILABLE",
+    )
+    for iid, nav_rows in features.items():
+        risk._persist_feature_evidence(
+            conn, iid, calc_date, nav_rows, 0.04, run_id, None, {}, {}, []
+        )
+    for iid in exclusions:
+        risk._record_risk_exclusion(conn, run_id, iid, calc_date, "METRICS_UNAVAILABLE", [])
+    conn.commit()
+    risk._finish_risk_run(conn, run_id, len(features) + len(exclusions), len(features))
+    conn.execute(
+        """INSERT INTO fund_nav_risk_publication
+           (readiness_profile,revision_id,state,published_risk_run_id)
+           VALUES ('current_daily_nav_v1',1,'idle',%s)
+           ON CONFLICT (readiness_profile) DO UPDATE SET
+             revision_id=fund_nav_risk_publication.revision_id+1, state='idle',
+             published_risk_run_id=EXCLUDED.published_risk_run_id,
+             active_risk_run_id=NULL""",
+        (run_id,),
+    )
+    conn.execute(
+        "UPDATE fund_nav_risk_runs SET status='complete',completed_at=clock_timestamp() "
+        "WHERE risk_run_id=%s",
+        (run_id,),
+    )
+    conn.commit()
+    return run_id
 
 
 def test_real_db_run_replay_and_dynamic_due(test_dsn, schema, monkeypatch):
@@ -370,7 +449,12 @@ def test_real_db_absent_policy_and_lock_busy_never_publish(
     with _connect(test_dsn, schema) as first:
         with advisory_lock(first, LOCK_FUND_NAV_READINESS) as locked:
             assert locked
-            assert readiness.run(test_dsn)["state"] == "locked"
+            assert readiness.run(test_dsn) == {
+                "status": "lock_busy",
+                "state": "lock_busy",
+                "published": False,
+                "retryable": True,
+            }
 
 
 def test_chain_preflight_blocks_provider_without_policy(test_dsn, schema, monkeypatch):
@@ -411,11 +495,19 @@ def test_real_db_stale_feature_and_legacy_unknown(test_dsn, schema, monkeypatch)
     iid, grid, _ = _seed(test_dsn, schema)
     monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
     with _connect(test_dsn, schema) as conn:
-        conn.execute(
-            """UPDATE fund_nav_feature_evidence SET feature_as_of=%s
-               WHERE instrument_id=%s""",
-            (grid[-2], iid),
-        )
+        with pytest.raises(psycopg.Error, match="append-only"):
+            conn.execute(
+                "UPDATE fund_nav_feature_evidence SET feature_as_of=%s "
+                "WHERE instrument_id=%s",
+                (grid[-2], iid),
+            )
+        conn.rollback()
+        stale_rows = conn.execute(
+            "SELECT nav_date, nav FROM nav_timeseries WHERE instrument_id=%s "
+            "AND nav_date < %s ORDER BY nav_date",
+            (iid, grid[-1]),
+        ).fetchall()
+        _publish_risk_run(conn, grid[-1], {iid: stale_rows})  # feature_as_of = grid[-2]
     assert readiness.run(test_dsn)["ready_count"] == 0
     with _connect(test_dsn, schema) as conn:
         assert conn.execute(
@@ -476,8 +568,9 @@ def test_operator_rejects_wrong_existing_schema_without_mutation(test_dsn, schem
     with _connect(test_dsn, schema, autocommit=True) as conn:
         conn.execute(NAV_SQL)
         conn.execute("CREATE TABLE nav_policy_versions (policy_id integer)")
-        with pytest.raises(ValueError, match="readiness_schema_contract_mismatch"):
-            operator._check(conn, schema)
+        report = operator._check(conn, schema)
+        assert report["status"] == "upgrade_required"
+        assert report["compatibility"] == "incompatible"
         assert (
             conn.execute("SELECT count(*) FROM nav_policy_versions").fetchone()[0] == 0
         )
@@ -527,8 +620,7 @@ def test_operator_rejects_precoverage_w1_shape_without_altering_policy(
             "('synthetic','old',%s,clock_timestamp())",
             ("a" * 64,),
         )
-        with pytest.raises(ValueError, match="readiness_schema_contract_mismatch"):
-            operator._check(conn, schema)
+        assert operator._check(conn, schema)["compatibility"] == "incompatible"
         assert (
             conn.execute("SELECT policy_hash FROM nav_policy_versions").fetchone()[0]
             == "a" * 64
@@ -542,8 +634,12 @@ def test_operator_detects_missing_nav_revision_trigger_and_repairs_idempotently(
     _bootstrap(test_dsn, schema)
     with _connect(test_dsn, schema, autocommit=True) as conn:
         conn.execute("DROP TRIGGER fund_nav_stamp_revision ON nav_timeseries")
-        assert operator._check(conn, schema)["status"] == "upgrade_required"
-        conn.execute(SCHEMA_SQL)
+        report = operator._check(conn, schema)
+        assert (report["status"], report["compatibility"]) == (
+            "upgrade_required",
+            "repairable",
+        )
+        _install(conn, schema)
         assert operator._check(conn, schema)["status"] == "ready"
 
 
@@ -817,7 +913,18 @@ def test_backfill_does_not_promote_legacy_nulls(test_dsn, schema):
             "clock_timestamp()-interval '1 day','ACTIVE','daily',true,true,true,'synthetic')",
             (old_id,),
         )
-        assert operator._backfill(conn, [str(old_id)], grid[-1], grid[-1]) == 0
+        conn.commit()
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        plan = operator._maintenance_plan(conn, [str(old_id)], grid[-1], grid[-1])
+        assert plan["eligible_rows"] == 0 and plan["scope_rows"] == 1
+        applied = operator._apply_calendar_maintenance(
+            conn, [str(old_id)], grid[-1], grid[-1], "c" * 64
+        )
+        assert applied["status"] == "no_op"
+        assert (
+            conn.execute("SELECT count(*) FROM nav_calendar_maintenance_runs").fetchone()[0]
+            == 0
+        )
         assert conn.execute(
             "SELECT source_nav,source_nav_kind,calendar_id FROM nav_timeseries "
             "WHERE instrument_id=%s",
@@ -861,8 +968,8 @@ def test_revision_trigger_applies_to_precompressed_hypertable_without_rewriting_
         conn.execute(
             "SELECT compress_chunk(%s::regclass,if_not_compressed=>true)", (chunk,)
         )
-        conn.execute(SCHEMA_SQL)
-        conn.execute(SCHEMA_SQL)
+        _install(conn, schema)
+        _install(conn, schema)
         assert (
             conn.execute(
                 "SELECT count(*) FROM timescaledb_information.chunks "
@@ -923,11 +1030,11 @@ def test_excluded_risk_fund_is_accounted_but_never_uses_old_feature(
 ):
     iid, grid, _run = _seed(test_dsn, schema)
     monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
-    monkeypatch.setattr(risk, "connect", lambda dsn: _connect(dsn, schema))
     assert readiness.run(test_dsn)["ready_count"] == 1
-    new_run = uuid.uuid4()
     with _connect(test_dsn, schema) as conn:
-        risk._start_risk_run(conn, new_run, grid[-1], 1)
+        plan, token = risk._begin_risk_generation(conn, grid[-1].isoformat(), None)
+        assert plan.eligible and plan.members == (iid,)
+        new_run = plan.risk_run_id
         risk._record_risk_exclusion(
             conn, new_run, iid, grid[-1], "METRICS_UNAVAILABLE", []
         )
@@ -937,7 +1044,8 @@ def test_excluded_risk_fund_is_accounted_but_never_uses_old_feature(
             "SELECT status,persisted_rows FROM fund_nav_risk_runs WHERE risk_run_id=%s",
             (new_run,),
         ).fetchone() == ("metrics_complete", 1)
-    risk._mark_risk_published(test_dsn, new_run)
+        risk._complete_risk_run(conn, new_run)
+        assert risk._mark_risk_published(conn, plan, token)["published"] is True
     with _connect(test_dsn, schema) as conn:
         assert (
             conn.execute(
@@ -959,14 +1067,15 @@ def test_two_connections_risk_recalc_blocks_pointer_until_mv_verified_revision(
 ):
     iid, grid, _run = _seed(test_dsn, schema)
     monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
-    monkeypatch.setattr(risk, "connect", lambda dsn: _connect(dsn, schema))
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute(RISK_READ_MODEL_SQL)
     first = readiness.run(test_dsn)
-    replacement = uuid.uuid4()
     with _connect(test_dsn, schema) as publisher, _connect(test_dsn, schema) as reader:
         assert reader.execute(
             "SELECT snapshot_current FROM fund_nav_readiness_current_v1"
         ).fetchone()[0]
-        risk._start_risk_run(publisher, replacement, grid[-1], 1)
+        plan, token = risk._begin_risk_generation(publisher, grid[-1].isoformat(), None)
+        replacement = plan.risk_run_id
         assert (
             reader.execute(
                 "SELECT snapshot_current FROM fund_nav_readiness_current_v1"
@@ -980,11 +1089,19 @@ def test_two_connections_risk_recalc_blocks_pointer_until_mv_verified_revision(
             "ORDER BY nav_date",
             (iid,),
         ).fetchall()
+        risk._upsert(
+            publisher,
+            iid,
+            grid[-1],
+            risk.compute_metrics(np.array([float(v) for _d, v in nav]), 0.04),
+        )
         risk._persist_feature_evidence(
             publisher, iid, grid[-1], nav, 0.04, replacement, None, {}, {}, []
         )
         publisher.commit()
         risk._finish_risk_run(publisher, replacement, 1, 1)
+        risk._refresh_fund_risk_latest_mv(_schema_dsn(test_dsn, schema))
+        risk._complete_risk_run(publisher, replacement)
         assert (
             reader.execute(
                 "SELECT snapshot_current FROM fund_nav_readiness_current_v1"
@@ -994,13 +1111,16 @@ def test_two_connections_risk_recalc_blocks_pointer_until_mv_verified_revision(
         with _connect(test_dsn, schema) as blocker:
             with advisory_lock(blocker, LOCK_FUND_NAV_READINESS) as acquired:
                 assert acquired
-                with pytest.raises(RuntimeError, match="readiness lock busy"):
-                    risk._mark_risk_published(test_dsn, replacement)
-        assert (
-            reader.execute("SELECT state FROM fund_nav_risk_publication").fetchone()[0]
-            == "running"
-        )
-    risk._mark_risk_published(test_dsn, replacement)
+                busy = risk._mark_risk_published(publisher, plan, token)
+                assert (busy["published"], busy["reason"], busy["retryable"]) == (
+                    False,
+                    "LOCK_BUSY",
+                    True,
+                )
+        assert reader.execute(
+            "SELECT state, active_risk_run_id FROM fund_nav_risk_publication"
+        ).fetchone() == ("running", replacement)
+        assert risk._mark_risk_published(publisher, plan, token)["published"] is True
     with _connect(test_dsn, schema) as conn:
         assert (
             conn.execute(
@@ -1008,11 +1128,12 @@ def test_two_connections_risk_recalc_blocks_pointer_until_mv_verified_revision(
             ).fetchone()[0]
             is False
         )
+        # fixture publication 1 -> invalidation 2 -> CAS publication 3
         assert (
             conn.execute(
                 "SELECT revision_id FROM fund_nav_risk_publication"
             ).fetchone()[0]
-            == 2
+            == 3
         )
     second = readiness.run(test_dsn)
     assert second["ready_count"] == 1 and second["run_id"] != first["run_id"]
@@ -1029,7 +1150,11 @@ def test_incomplete_risk_run_cannot_be_marked_complete(test_dsn, schema):
     _bootstrap(test_dsn, schema)
     run_id = uuid.uuid4()
     with _connect(test_dsn, schema) as conn:
-        risk._start_risk_run(conn, run_id, dt.date.today(), 1)
+        _register_risk_run(
+            conn, run_id, dt.date.today(), [uuid.uuid4()], scope="diagnostic",
+            reason="POLICY_UNAVAILABLE",
+        )
+        conn.commit()
         with pytest.raises(RuntimeError, match="risk evidence incomplete"):
             risk._finish_risk_run(conn, run_id, 1, 0)
         assert conn.execute(
@@ -1420,7 +1545,7 @@ def test_new_completed_head_does_not_hide_older_unverified_window_revision(
             (iid, grid[-2]),
         )
         conn.execute(
-            "UPDATE nav_timeseries SET calendar_source='temporary' "
+            "UPDATE nav_timeseries SET source='temporary' "
             "WHERE instrument_id=%s AND nav_date=%s",
             (iid, grid[-1]),
         )
@@ -1659,3 +1784,2093 @@ def test_shared_ticker_one_missing_instrument_does_not_hide_due_attempt(
             current,
             missing,
         }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase A: W1 maintenance lineage, W4 calendar tuple/rollover, W5 risk identity
+# ──────────────────────────────────────────────────────────────────────────────
+SOURCE = "fixture:NYSE-valuation-due"
+STAMP = ("NYSE-TEST", "v1", SOURCE)
+
+
+def _reason(conn, iid):
+    return conn.execute(
+        "SELECT reason_code FROM fund_nav_readiness_current_v1 WHERE instrument_id=%s",
+        (iid,),
+    ).fetchone()[0]
+
+
+def _head(conn, iid):
+    return conn.execute(
+        "SELECT revision_id FROM fund_nav_data_heads WHERE instrument_id=%s", (iid,)
+    ).fetchone()[0]
+
+
+def _completed_run(conn, iid, start, end, *, status="completed"):
+    run_id = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO nav_ingestion_runs (run_id,started_at,completed_at,requested_end,"
+        "status) VALUES (%s,clock_timestamp(),"
+        "CASE WHEN %s='completed' THEN clock_timestamp() END,%s,%s)",
+        (run_id, status, end, status),
+    )
+    conn.execute(
+        "INSERT INTO nav_ingestion_attempts (run_id,instrument_id,ticker,provider,"
+        "requested_start,requested_end,attempted_at,finished_at,status,"
+        "newest_observed_date,row_count) VALUES (%s,%s,'SYN','tiingo',%s,%s,"
+        "clock_timestamp(),clock_timestamp(),'success_new',%s,1)",
+        (run_id, iid, start, end, end),
+    )
+    conn.commit()
+    return run_id
+
+
+def _begin_maintenance(conn, ids, start, end):
+    """Register a running maintenance run inside the caller's transaction."""
+    run_id = uuid.uuid4()
+    pins = conn.execute(
+        "SELECT p.policy_id,p.policy_version,p.policy_hash,p.calendar_id,"
+        "p.calendar_version,p.calendar_source FROM nav_policy_current c "
+        "JOIN nav_policy_versions p USING (policy_id,policy_version)"
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO nav_calendar_maintenance_runs (maintenance_run_id,operation,"
+        "policy_id,policy_version,policy_hash,calendar_id,calendar_version,"
+        "calendar_source,plan_sha256,instrument_ids,window_start,window_end,status,"
+        "before_digest) VALUES (%s,'calendar_stamp',%s,%s,%s,%s,%s,%s,%s,%s::uuid[],"
+        "%s,%s,'running',%s)",
+        (run_id, *pins, "d" * 64, ids, start, end, "e" * 64),
+    )
+    conn.execute("SELECT set_config('nav.maintenance_run_id', %s, true)", (str(run_id),))
+    return run_id
+
+
+def test_maintenance_stamps_provider_data_and_preserves_economic_lineage(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, ing_run = _seed(test_dsn, schema, stamp=False)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    assert readiness.run(test_dsn)["ready_count"] == 0
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        assert _reason(conn, iid) == "RETURN_INTERVAL_INCOMPATIBLE"
+        runs_before = conn.execute(
+            "SELECT (SELECT count(*) FROM nav_ingestion_runs),"
+            "(SELECT count(*) FROM nav_ingestion_attempts)"
+        ).fetchone()
+        plan = operator._maintenance_plan(conn, [str(iid)], grid[0], grid[-1])
+        assert plan["eligible_rows"] == 401 and plan["scope_rows"] == 401
+        result = operator._apply_calendar_maintenance(
+            conn, [str(iid)], grid[0], grid[-1], "d" * 64
+        )
+        assert result["status"] == "completed" and result["changed_rows"] == 401
+        assert result["after_digest"] == plan["expected_after_digest"]
+        assert conn.execute(
+            "SELECT count(*), bool_and(NOT data_changed AND calendar_changed "
+            "AND source_run_id IS NULL) FROM fund_nav_data_revisions "
+            "WHERE maintenance_run_id=%s",
+            (result["maintenance_run_id"],),
+        ).fetchone() == (401, True)
+        assert conn.execute(
+            "SELECT status,changed_rows FROM nav_calendar_maintenance_runs"
+        ).fetchone() == ("completed", 401)
+        # Maintenance never fabricates provider runs or attempts.
+        assert (
+            conn.execute(
+                "SELECT (SELECT count(*) FROM nav_ingestion_runs),"
+                "(SELECT count(*) FROM nav_ingestion_attempts)"
+            ).fetchone()
+            == runs_before
+        )
+        head = _head(conn, iid)
+        replay = operator._apply_calendar_maintenance(
+            conn, [str(iid)], grid[0], grid[-1], "d" * 64
+        )
+        assert replay["status"] == "no_op" and _head(conn, iid) == head
+        assert (
+            conn.execute("SELECT count(*) FROM nav_calendar_maintenance_runs").fetchone()[0]
+            == 1
+        )
+    assert readiness.run(test_dsn)["ready_count"] == 1
+    with _connect(test_dsn, schema) as conn:
+        row = conn.execute(
+            "SELECT ingestion_run_id, calendar_equivalence_digest, snapshot_current "
+            "FROM fund_nav_readiness_current_v1 WHERE instrument_id=%s",
+            (iid,),
+        ).fetchone()
+        assert row[0] == ing_run and len(row[1]) == 64 and row[2] is True
+
+
+def test_datum_without_revision_stays_unavailable_after_maintenance_stamp(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, ing_run = _seed(test_dsn, schema, stamp=False)
+    legacy = uuid.uuid4()
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    with _connect(test_dsn, schema) as conn:
+        conn.execute("INSERT INTO funds_profile_mv VALUES (%s)", (legacy,))
+        conn.execute(
+            """INSERT INTO nav_instrument_policy_evidence
+               (instrument_id,policy_id,policy_version,known_at,effective_at,
+                fund_status,valuation_frequency,identity_verified,
+                return_basis_verified,currency_verified,evidence_reference)
+               VALUES (%s,'synthetic','v1',clock_timestamp()-interval '1 day',
+                       clock_timestamp()-interval '1 day','ACTIVE','daily',
+                       true,true,true,'legacy-history')""",
+            (legacy,),
+        )
+        conn.execute(
+            "INSERT INTO nav_ingestion_attempts (run_id,instrument_id,ticker,provider,"
+            "requested_start,requested_end,attempted_at,finished_at,status,"
+            "newest_observed_date,row_count) VALUES (%s,%s,'LEG','tiingo',%s,%s,"
+            "clock_timestamp()-interval '1 hour',clock_timestamp()-interval '1 minute',"
+            "'success_new',%s,401)",
+            (ing_run, legacy, grid[0], grid[-1], grid[-1]),
+        )
+        # Pre-DDL history: rows exist with full provenance but no revision.
+        conn.execute("SET LOCAL session_replication_role = replica")
+        columns = (
+            "nav_date, nav, return_1d, currency, source, return_type, source_nav,"
+            " source_nav_kind, nav_repair_kind, return_start_date,"
+            " return_source_boundary, return_uses_repaired_nav, return_semantics,"
+            " return_verification_status, calendar_id, calendar_version, calendar_source"
+        )
+        conn.execute(
+            f"INSERT INTO nav_timeseries (instrument_id, {columns}) "
+            f"SELECT %s, {columns} FROM nav_timeseries WHERE instrument_id=%s",
+            (legacy, iid),
+        )
+        conn.commit()
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM fund_nav_data_revisions WHERE instrument_id=%s",
+                (legacy,),
+            ).fetchone()[0]
+            == 0
+        )
+        applied = operator._apply_calendar_maintenance(
+            conn, [str(iid), str(legacy)], grid[0], grid[-1], "d" * 64
+        )
+        assert applied["changed_rows"] == 802
+    assert readiness.run(test_dsn)["ready_count"] == 1
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, legacy) == "NAV_DATA_UNAVAILABLE"
+        assert _reason(conn, iid) is None
+
+
+def test_metadata_revision_never_hides_unknown_data_revision(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, _ = _seed(test_dsn, schema, stamp=False)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    with _connect(test_dsn, schema) as conn:
+        conn.execute(
+            "UPDATE nav_timeseries SET aum_usd=42 WHERE instrument_id=%s AND nav_date=%s",
+            (iid, grid[-3]),
+        )
+        conn.commit()
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        operator._apply_calendar_maintenance(conn, [str(iid)], grid[0], grid[-1], "d" * 64)
+        latest = conn.execute(
+            "SELECT maintenance_run_id IS NOT NULL, data_changed FROM "
+            "fund_nav_data_revisions WHERE instrument_id=%s AND nav_date=%s "
+            "ORDER BY revision_id DESC LIMIT 1",
+            (iid, grid[-3]),
+        ).fetchone()
+        assert latest == (True, False)
+    assert readiness.run(test_dsn)["ready_count"] == 0
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, iid) == "NAV_DATA_UNAVAILABLE"
+
+
+def test_incomplete_or_uncovering_provider_run_fails_data_lineage(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    with _connect(test_dsn, schema) as conn:
+        running = _completed_run(conn, iid, grid[0], grid[-1], status="running")
+        price = float(
+            conn.execute(
+                "SELECT nav FROM nav_timeseries WHERE instrument_id=%s AND nav_date=%s",
+                (iid, grid[-1]),
+            ).fetchone()[0]
+        )
+        ingest.upsert_nav_timeseries(
+            conn,
+            ingest.build_rows(
+                (NavObservation(grid[-1], price + 0.000001, "adjusted"),),
+                [(iid, "USD")],
+                calendar={grid[-1]: STAMP},
+            ),
+            run_id=running,
+        )
+    readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, iid) == "NAV_DATA_UNAVAILABLE"
+        conn.execute(
+            "UPDATE nav_ingestion_runs SET status='completed',"
+            "completed_at=clock_timestamp() WHERE run_id=%s",
+            (running,),
+        )
+        conn.commit()
+    readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, iid) != "NAV_DATA_UNAVAILABLE"
+        narrow = _completed_run(conn, iid, grid[-1], grid[-1])
+        ingest.upsert_nav_timeseries(
+            conn,
+            ingest.build_rows(
+                (NavObservation(grid[-2], 50.0, "adjusted"),),
+                [(iid, "USD")],
+                calendar={grid[-2]: STAMP},
+            ),
+            run_id=narrow,
+        )
+    readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        assert _reason(conn, iid) == "NAV_DATA_UNAVAILABLE"
+
+
+def test_maintenance_contexts_scope_and_tampering_fail_closed(test_dsn, schema):
+    iid, grid, ing_run = _seed(test_dsn, schema, stamp=False)
+    other = uuid.uuid4()
+    stamp_sql = (
+        "UPDATE nav_timeseries SET calendar_id=%s,calendar_version=%s,"
+        "calendar_source=%s{extra} WHERE instrument_id=%s AND nav_date=%s"
+    )
+    with _connect(test_dsn, schema) as conn:
+        conn.execute(
+            "SELECT set_config('nav.ingestion_run_id', %s, true)", (str(ing_run),)
+        )
+        _begin_maintenance(conn, [iid], grid[-5], grid[-1])
+        with pytest.raises(psycopg.Error, match="mutually exclusive"):
+            conn.execute(stamp_sql.format(extra=""), (*STAMP, iid, grid[-1]))
+        conn.rollback()
+        cases = [
+            (stamp_sql.format(extra=",nav=nav+1"), (*STAMP, iid, grid[-1]), "metadata"),
+            (stamp_sql.format(extra=""), (*STAMP, iid, grid[0]), "pinned scope"),
+            (stamp_sql.format(extra=""), ("NYSE-TEST", "v9", SOURCE, iid, grid[-1]),
+             "current published policy"),
+            ("DELETE FROM nav_timeseries WHERE instrument_id=%s AND nav_date=%s",
+             (iid, grid[-1]), "only update"),
+        ]
+        for statement, params, message in cases:
+            _begin_maintenance(conn, [iid], grid[-5], grid[-1])
+            with pytest.raises(psycopg.Error, match=message):
+                conn.execute(statement, params)
+            conn.rollback()
+        with pytest.raises(psycopg.Error, match="not running"):
+            conn.execute(
+                "SELECT set_config('nav.maintenance_run_id', %s, true)",
+                (str(uuid.uuid4()),),
+            )
+            conn.execute(stamp_sql.format(extra=""), (*STAMP, iid, grid[-1]))
+        conn.rollback()
+        # Completion must match the attributed revisions exactly.
+        run_id = _begin_maintenance(conn, [iid], grid[-5], grid[-1])
+        conn.execute(stamp_sql.format(extra=""), (*STAMP, iid, grid[-1]))
+        with pytest.raises(psycopg.Error, match="does not match"):
+            conn.execute(
+                "UPDATE nav_calendar_maintenance_runs SET status='completed',"
+                "completed_at=clock_timestamp(),changed_rows=2,after_digest=%s "
+                "WHERE maintenance_run_id=%s",
+                ("f" * 64, run_id),
+            )
+        conn.rollback()
+        with pytest.raises(psycopg.Error, match="stamp trigger"):
+            conn.execute(
+                "INSERT INTO fund_nav_data_revisions (instrument_id,nav_date,"
+                "mutation_kind,data_changed,calendar_changed) "
+                "VALUES (%s,%s,'UPDATE',true,false)",
+                (iid, grid[-1]),
+            )
+        conn.rollback()
+        for ids, start in (([uuid.uuid4() for _ in range(21)], grid[-5]),
+                           ([iid], grid[-1] - dt.timedelta(days=601)),
+                           ([iid, iid], grid[-5])):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                _begin_maintenance(conn, ids, start, grid[-1])
+            conn.rollback()
+        # A newer, unverified lifecycle fact wins over an older verified one.
+        conn.execute(
+            """INSERT INTO nav_instrument_policy_evidence
+               (instrument_id,policy_id,policy_version,known_at,effective_at,
+                fund_status,valuation_frequency,identity_verified,
+                return_basis_verified,currency_verified,evidence_reference)
+               VALUES (%s,'synthetic','v1',clock_timestamp(),clock_timestamp(),
+                       'ACTIVE','daily',true,true,false,'currency-unverified')""",
+            (iid,),
+        )
+        conn.commit()
+        _begin_maintenance(conn, [iid], grid[-5], grid[-1])
+        with pytest.raises(psycopg.Error, match="lifecycle"):
+            conn.execute(stamp_sql.format(extra=""), (*STAMP, iid, grid[-1]))
+        conn.rollback()
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        plan = operator._maintenance_plan(conn, [str(iid), str(other)], grid[-5], grid[-1])
+        assert plan["eligible_rows"] == 0
+        assert conn.execute(
+            "SELECT count(*) FROM nav_calendar_maintenance_runs"
+        ).fetchone()[0] == 0
+
+
+def test_completed_maintenance_is_immutable(test_dsn, schema):
+    iid, grid, _ = _seed(test_dsn, schema, stamp=False)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        done = operator._apply_calendar_maintenance(
+            conn, [str(iid)], grid[-2], grid[-1], "d" * 64
+        )
+        with pytest.raises(psycopg.Error, match="immutable"):
+            conn.execute(
+                "UPDATE nav_calendar_maintenance_runs SET plan_sha256=%s "
+                "WHERE maintenance_run_id=%s",
+                ("0" * 64, done["maintenance_run_id"]),
+            )
+        with pytest.raises(psycopg.Error, match="immutable"):
+            conn.execute(
+                "DELETE FROM nav_calendar_maintenance_runs WHERE maintenance_run_id=%s",
+                (done["maintenance_run_id"],),
+            )
+
+
+def test_maintenance_failure_rolls_back_levels_revisions_and_run(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, _ = _seed(test_dsn, schema, stamp=False)
+    monkeypatch.setattr(operator, "_stamped", lambda *_a: [])
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        head = _head(conn, iid)
+        with pytest.raises(ValueError, match="maintenance_verification_failed"):
+            operator._apply_calendar_maintenance(
+                conn, [str(iid)], grid[0], grid[-1], "d" * 64
+            )
+        assert conn.execute(
+            "SELECT (SELECT count(*) FROM nav_calendar_maintenance_runs),"
+            "(SELECT count(*) FROM fund_nav_data_revisions WHERE maintenance_run_id "
+            "IS NOT NULL),(SELECT count(*) FROM nav_timeseries WHERE calendar_id "
+            "IS NOT NULL)"
+        ).fetchone() == (0, 0, 0)
+        assert _head(conn, iid) == head
+
+
+def test_maintenance_and_ingestion_locks_exclude_each_other(
+    test_dsn, schema, monkeypatch, capsys
+):
+    iid, grid, _ = _seed(test_dsn, schema, stamp=False)
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    ids = [str(iid)]
+    plan = operator.plan_hash(ddl, schema, b"", ids, grid[0].isoformat(),
+                              grid[-1].isoformat())
+    cli = ["--schema", schema, "--expected-sql-sha256",
+           hashlib.sha256(ddl).hexdigest(), "--instrument-id", ids[0],
+           "--start", grid[0].isoformat(), "--end", grid[-1].isoformat()]
+    assert operator.main(cli) == 0
+    dry = json.loads(capsys.readouterr().out)
+    assert dry["maintenance_plan"]["eligible_rows"] == 401
+    with _connect(test_dsn, schema) as holder:
+        with advisory_lock(holder, LOCK_INSTRUMENT_INGESTION) as got:
+            assert got
+            assert operator.main([*cli, "--mode", "apply", "--plan-sha256", plan]) == 4
+            busy = json.loads(capsys.readouterr().out)
+            assert busy["status"] == "lock_busy" and busy["retryable"] is True
+    with _connect(test_dsn, schema) as holder:
+        holder.execute("SELECT pg_advisory_xact_lock(%s)", (LOCK_INSTRUMENT_INGESTION,))
+        monkeypatch.setattr(ingest, "connect", lambda dsn: _connect(dsn, schema))
+        stats = ingest.run(test_dsn, calc_date=dt.date.today().isoformat(), limit=0)
+        assert stats["skipped"] == "lock_busy"
+        holder.rollback()
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM nav_timeseries WHERE calendar_id IS NOT NULL"
+        ).fetchone()[0] == 0
+    assert operator.main([*cli, "--mode", "apply", "--plan-sha256", plan]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["maintenance"]["changed_rows"] == 401
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT plan_sha256 FROM nav_calendar_maintenance_runs"
+        ).fetchone()[0] == plan
+    too_many = [a for i in range(21) for a in ("--instrument-id", str(uuid.uuid4()))]
+    assert operator.main(["--schema", schema, "--expected-sql-sha256",
+                          hashlib.sha256(ddl).hexdigest(), *too_many,
+                          "--start", grid[0].isoformat(),
+                          "--end", grid[-1].isoformat()]) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "backfill_allowlist_invalid"
+
+
+def test_overlap_without_mapping_preserves_tuple_and_head(test_dsn, schema, monkeypatch):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    with _connect(test_dsn, schema) as conn:
+        head = _head(conn, iid)
+        overlap = _completed_run(conn, iid, grid[-5], grid[-1])
+        same = tuple(
+            NavObservation(d, round(100.0 + (401 - 5 + i) * 0.01, 6), "adjusted")
+            for i, d in enumerate(grid[-5:])
+        )
+        ingest.upsert_nav_timeseries(
+            conn, ingest.build_rows(same, [(iid, "USD")]), run_id=overlap
+        )
+        assert _head(conn, iid) == head
+        assert conn.execute(
+            "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s AND "
+            "(calendar_id,calendar_version,calendar_source)=(%s,%s,%s)",
+            (iid, *STAMP),
+        ).fetchone()[0] == 401
+    assert readiness.run(test_dsn)["ready_count"] == 1
+    with _connect(test_dsn, schema) as conn:
+        changed = (NavObservation(grid[-1], 150.0, "adjusted"),)
+        ingest.upsert_nav_timeseries(
+            conn, ingest.build_rows(changed, [(iid, "USD")]), run_id=overlap
+        )
+        assert _head(conn, iid) > head
+        assert conn.execute(
+            "SELECT calendar_id,calendar_version,calendar_source FROM nav_timeseries "
+            "WHERE instrument_id=%s AND nav_date=%s",
+            (iid, grid[-1]),
+        ).fetchone() == STAMP
+        assert conn.execute(
+            "SELECT data_changed,calendar_changed,source_run_id FROM "
+            "fund_nav_data_revisions WHERE instrument_id=%s AND nav_date=%s "
+            "ORDER BY revision_id DESC LIMIT 1",
+            (iid, grid[-1]),
+        ).fetchone() == (True, False, overlap)
+
+
+def test_db_rejects_partial_reset_unattributed_and_ungoverned_stamps(test_dsn, schema):
+    iid, grid, ing_run = _seed(test_dsn, schema)
+    fresh = uuid.uuid4()
+    with _connect(test_dsn, schema) as conn:
+        for statement, params, message in (
+            ("UPDATE nav_timeseries SET calendar_version=NULL WHERE instrument_id=%s "
+             "AND nav_date=%s", (iid, grid[-1]), "indivisible"),
+            ("UPDATE nav_timeseries SET calendar_id=NULL,calendar_version=NULL,"
+             "calendar_source=NULL WHERE instrument_id=%s AND nav_date=%s",
+             (iid, grid[-1]), "reset"),
+            ("INSERT INTO nav_timeseries (instrument_id,nav_date,nav,calendar_id,"
+             "calendar_version,calendar_source) VALUES (%s,%s,1,%s,%s,%s)",
+             (fresh, grid[-1], *STAMP), "attribution"),
+        ):
+            with pytest.raises(psycopg.Error, match=message):
+                conn.execute(statement, params)
+            conn.rollback()
+        for day, stamp in ((grid[-1], ("NYSE-TEST", "v9", SOURCE)),
+                           (dt.date(2026, 9, 7), STAMP)):
+            conn.execute(
+                "SELECT set_config('nav.ingestion_run_id', %s, true)", (str(ing_run),)
+            )
+            with pytest.raises(psycopg.Error, match="current published policy"):
+                conn.execute(
+                    "INSERT INTO nav_timeseries (instrument_id,nav_date,nav,calendar_id,"
+                    "calendar_version,calendar_source) VALUES (%s,%s,1,%s,%s,%s)",
+                    (fresh, day, *stamp),
+                )
+            conn.rollback()
+        partial = ingest.build_rows(
+            (NavObservation(grid[-1], 1.0, "adjusted"),), [(fresh, "USD")]
+        )
+        partial[0]["calendar_version"] = "v1"
+        with pytest.raises(ValueError, match="partial"):
+            ingest.upsert_nav_timeseries(conn, partial, run_id=ing_run)
+        assert conn.execute(
+            "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s", (fresh,)
+        ).fetchone()[0] == 0
+
+
+def _publish_rollover(conn, iid, grid, *, version="v2", tweak_index=None):
+    sessions = []
+    for index, day in enumerate(grid):
+        close = dt.datetime.combine(day, dt.time(20), dt.timezone.utc)
+        due = dt.datetime.combine(day, dt.time(23), dt.timezone.utc)
+        if index == tweak_index:
+            due += dt.timedelta(minutes=30)
+        sessions.append((day, close, due, SOURCE))
+    conn.execute(
+        """INSERT INTO nav_policy_versions
+           (policy_id,policy_version,policy_hash,readiness_profile,
+            valuation_frequency,calendar_id,calendar_version,calendar_source,
+            timezone,coverage_start,coverage_end,valid_through,
+            calendar_session_count,calendar_digest,sample_intervals,
+            annualization_sessions,required_nav_kind,required_return_semantics,
+            modeling_currency,currency_treatment,source_reference,published_at)
+           VALUES ('synthetic',%s,%s,'current_daily_nav_v1','daily','NYSE-TEST',%s,
+                   %s,'America/New_York',%s,%s,clock_timestamp()+interval '1 day',
+                   %s,%s,400,252,'adjusted','observed_interval_log_ratio','USD',
+                   'native_only',%s,NULL)""",
+        (version, "b" * 64, version, SOURCE, grid[0], grid[-1], len(sessions),
+         calendar_digest(sessions), SOURCE),
+    )
+    for day, close, due, _ in sessions:
+        conn.execute(
+            "INSERT INTO nav_valuation_schedules VALUES ('NYSE-TEST',%s,%s,%s,%s,%s,%s)",
+            (version, day, close, due, SOURCE, SOURCE),
+        )
+    conn.execute(
+        "UPDATE nav_policy_versions SET published_at=clock_timestamp() "
+        "WHERE policy_version=%s",
+        (version,),
+    )
+    conn.execute(
+        "UPDATE nav_policy_current SET policy_version=%s,published_at=clock_timestamp()",
+        (version,),
+    )
+    conn.execute(
+        """INSERT INTO nav_instrument_policy_evidence
+           (instrument_id,policy_id,policy_version,known_at,effective_at,
+            fund_status,valuation_frequency,identity_verified,
+            return_basis_verified,currency_verified,evidence_reference)
+           VALUES (%s,'synthetic',%s,clock_timestamp()-interval '1 minute',
+                   clock_timestamp()-interval '1 minute','ACTIVE','daily',
+                   true,true,true,'rollover-fixture')""",
+        (iid, version),
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize("tweak_index", [None, 0, 200])
+def test_rollover_accepts_equivalent_old_stamps_without_restamp(
+    test_dsn, schema, monkeypatch, tweak_index
+):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    with _connect(test_dsn, schema) as conn:
+        head = _head(conn, iid)
+        _publish_rollover(conn, iid, grid, tweak_index=tweak_index)
+    report = readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        row = conn.execute(
+            "SELECT calendar_version, reason_code, calendar_equivalence_digest, "
+            "snapshot_current FROM fund_nav_readiness_current_v1 WHERE instrument_id=%s",
+            (iid,),
+        ).fetchone()
+        assert row[0] == "v2" and len(row[2]) == 64
+        if tweak_index is None:
+            assert report["ready_count"] == 1 and row[1] is None and row[3] is True
+        else:
+            # One different due instant (first predecessor or middle) is not
+            # equivalent; string equality of dates alone is never enough.
+            assert report["ready_count"] == 0
+            assert row[1] == "RETURN_INTERVAL_INCOMPATIBLE"
+        assert _head(conn, iid) == head
+        assert conn.execute(
+            "SELECT count(*) FROM nav_timeseries WHERE instrument_id=%s "
+            "AND calendar_version='v1'",
+            (iid,),
+        ).fetchone()[0] == 401
+
+
+def test_two_risk_runs_same_date_keep_both_evidences(test_dsn, schema, monkeypatch):
+    iid, grid, _ = _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    first = readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        first_risk = conn.execute(
+            "SELECT risk_run_id FROM fund_nav_readiness_v1 WHERE run_id=%s",
+            (first["run_id"],),
+        ).fetchone()[0]
+        nav = conn.execute(
+            "SELECT nav_date,nav FROM nav_timeseries WHERE instrument_id=%s "
+            "ORDER BY nav_date",
+            (iid,),
+        ).fetchall()
+        second_risk = _publish_risk_run(conn, grid[-1], {iid: nav})
+        assert conn.execute(
+            "SELECT count(*) FROM fund_nav_feature_evidence WHERE instrument_id=%s "
+            "AND calc_date=%s",
+            (iid, grid[-1]),
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT snapshot_current FROM fund_nav_readiness_current_v1"
+        ).fetchone()[0] is False
+    second = readiness.run(test_dsn)
+    with _connect(test_dsn, schema) as conn:
+        joined = conn.execute(
+            "SELECT r.run_id::text, f.risk_run_id FROM fund_nav_readiness_v1 r "
+            "JOIN fund_nav_readiness_runs run USING (run_id) "
+            "JOIN fund_nav_feature_evidence f ON f.risk_run_id=r.risk_run_id "
+            "AND f.instrument_id=r.instrument_id ORDER BY run.evaluated_at"
+        ).fetchall()
+        assert joined == [(first["run_id"], first_risk), (second["run_id"], second_risk)]
+        assert first_risk != second_risk and second["ready_count"] == 1
+
+
+def test_risk_evidence_append_only_and_exact_member_sets(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    day = dt.date.today() - dt.timedelta(days=1)
+    rows = [(day - dt.timedelta(days=n), 100.0 + n) for n in range(30, -1, -1)]
+    a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    run = uuid.uuid4()
+
+    def feature(conn, iid, calc=day):
+        risk._persist_feature_evidence(conn, iid, calc, rows, 0.04, run, None, {}, {}, [])
+
+    with _connect(test_dsn, schema) as conn:
+        _register_risk_run(
+            conn, run, day, [a, b], scope="diagnostic", reason="POLICY_UNAVAILABLE"
+        )
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                "INSERT INTO fund_nav_risk_run_members VALUES (%s,%s)", (run, a)
+            )
+        conn.rollback()
+        _register_risk_run(
+            conn, run, day, [a, b], scope="diagnostic", reason="POLICY_UNAVAILABLE"
+        )
+        conn.commit()
+        feature(conn, a)
+        conn.commit()
+        for action, error in (
+            (lambda: feature(conn, a), psycopg.errors.UniqueViolation),
+            (lambda: feature(conn, c), psycopg.errors.ForeignKeyViolation),
+        ):
+            with pytest.raises(error):
+                action()
+            conn.rollback()
+        for statement, message in (
+            (f"INSERT INTO fund_nav_risk_run_members VALUES ('{run}','{c}')", "frozen"),
+            ("UPDATE fund_nav_feature_evidence SET nav_count=99", "append-only"),
+            ("DELETE FROM fund_nav_feature_evidence", "append-only"),
+            ("DELETE FROM fund_nav_risk_run_members", "append-only"),
+            ("DELETE FROM fund_nav_risk_runs", "append-only"),
+            ("UPDATE fund_nav_risk_runs SET run_scope='current_full'", "immutable"),
+        ):
+            with pytest.raises(psycopg.Error, match=message):
+                conn.execute(statement)
+            conn.rollback()
+        with pytest.raises(psycopg.Error, match="calc_date differs"):
+            feature(conn, b, day - dt.timedelta(days=1))
+        conn.rollback()
+        # Count-equal but set-wrong: a has feature+exclusion, b uncovered.
+        risk._record_risk_exclusion(conn, run, a, day, "METRICS_UNAVAILABLE", [])
+        with pytest.raises(RuntimeError, match="incomplete"):
+            risk._finish_risk_run(conn, run, 2, 1)
+        conn.rollback()
+        risk._record_risk_exclusion(conn, run, a, day, "METRICS_UNAVAILABLE", [])
+        with pytest.raises(psycopg.Error, match="exact member set"):
+            conn.execute(
+                "UPDATE fund_nav_risk_runs SET status='metrics_complete',"
+                "persisted_rows=2 WHERE risk_run_id=%s",
+                (run,),
+            )
+        conn.rollback()
+        risk._record_risk_exclusion(conn, run, b, day, "NAV_WINDOW_TOO_SHORT", [])
+        conn.commit()
+        risk._finish_risk_run(conn, run, 2, 1)
+        with pytest.raises(psycopg.Error, match="no longer accepting"):
+            risk._record_risk_exclusion(conn, run, b, day, "METRICS_UNAVAILABLE", [])
+        conn.rollback()
+        with pytest.raises(psycopg.Error, match="not permitted"):
+            conn.execute(
+                "UPDATE fund_nav_risk_runs SET status='running',persisted_rows=NULL "
+                "WHERE risk_run_id=%s",
+                (run,),
+            )
+        conn.rollback()
+
+
+_RISK_RUN_INSERT = (
+    "INSERT INTO fund_nav_risk_runs (risk_run_id,calc_date,run_scope,"
+    "nonpublishing_reason,policy_id,policy_version,policy_hash,due_session,"
+    "requested_calc_date,requested_limit,universe_digest,feature_definition_version,"
+    "status,expected_rows) VALUES "
+    "(%(id)s,%(calc)s,%(scope)s,%(reason)s,%(pid)s,%(pver)s,%(phash)s,%(due)s,"
+    "%(req)s,%(limit)s,%(universe)s,%(definition)s,%(status)s,0)"
+)
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        ({}, None),
+        ({"scope": "diagnostic", "reason": "LIMITED_RUN", "limit": 5}, None),
+        ({"scope": "diagnostic", "reason": "POLICY_UNAVAILABLE", "pid": None,
+          "pver": None, "phash": None, "due": None}, None),
+        ({"scope": "current_full", "pid": None, "pver": None, "phash": None},
+         psycopg.errors.CheckViolation),
+        ({"pver": None}, psycopg.errors.CheckViolation),
+        ({"limit": 5}, psycopg.errors.CheckViolation),
+        ({"reason": "LIMITED_RUN"}, psycopg.errors.CheckViolation),
+        ({"due": "calc-1"}, psycopg.errors.CheckViolation),
+        ({"due": None}, psycopg.errors.CheckViolation),
+        ({"scope": "diagnostic"}, psycopg.errors.CheckViolation),
+        ({"scope": "diagnostic", "reason": "BUSY"}, psycopg.errors.CheckViolation),
+        ({"scope": "published"}, psycopg.errors.CheckViolation),
+        ({"universe": "X" * 64}, psycopg.errors.CheckViolation),
+        ({"definition": " "}, psycopg.errors.CheckViolation),
+        ({"pver": "missing"}, psycopg.errors.ForeignKeyViolation),
+        ({"status": "metrics_complete"}, psycopg.Error),
+    ],
+)
+def test_risk_run_scope_and_pins_are_schema_enforced(test_dsn, schema, override, error):
+    """W5 schema only: explicit rows, no worker classification (that is W3/B)."""
+    _iid, grid, _ = _seed(test_dsn, schema)
+    values = {
+        "id": uuid.uuid4(), "calc": grid[-1], "scope": "current_full",
+        "reason": None, "pid": "synthetic", "pver": "v1", "phash": None,
+        "due": grid[-1], "req": None, "limit": None, "universe": "c" * 64,
+        "definition": FEATURE_DEFINITION_VERSION, "status": "running",
+    }
+    with _connect(test_dsn, schema) as conn:
+        values["phash"] = conn.execute(
+            "SELECT policy_hash FROM nav_policy_versions WHERE policy_version='v1'"
+        ).fetchone()[0]
+        values.update(override)
+        if values["due"] == "calc-1":
+            values["due"] = grid[-2]
+        if error is None:
+            conn.execute(_RISK_RUN_INSERT, values)
+            assert conn.execute(
+                "SELECT status FROM fund_nav_risk_runs WHERE risk_run_id=%s",
+                (values["id"],),
+            ).fetchone() == ("running",)
+        else:
+            with pytest.raises(error):
+                conn.execute(_RISK_RUN_INSERT, values)
+        conn.rollback()
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        (None, None),
+        ("ingestion_run_id", None),
+        ("feature_evidence_id", " "),
+        ("risk_input_max_date", None),
+        ("feature_as_of", None),
+        ("calendar_equivalence_digest", None),
+        ("risk_input_fingerprint", None),
+        ("return_semantics", None),
+    ],
+)
+def test_admissible_row_check_never_passes_unknown(
+    test_dsn, schema, monkeypatch, column, value
+):
+    _seed(test_dsn, schema)
+    monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    report = readiness.run(test_dsn)
+    run_columns = (
+        "readiness_profile,readiness_version,policy_id,policy_version,policy_hash,"
+        "calendar_id,calendar_version,decision_at,as_of_session,latest_closed_session,"
+        "window_start,window_end,sample_id,input_watermark,risk_publication_revision,"
+        "published_risk_run_id,expected_rows"
+    )
+    with _connect(test_dsn, schema) as conn:
+        building = uuid.uuid4()
+        conn.execute(
+            f"INSERT INTO fund_nav_readiness_runs (run_id,{run_columns},state) "
+            f"SELECT %s,{run_columns},'building' FROM fund_nav_readiness_runs "
+            "WHERE run_id=%s",
+            (building, report["run_id"]),
+        )
+        selected = ",".join(
+            "%(run)s" if name == "run_id" else name for name in readiness._ROW_FIELDS
+        )
+        conn.execute(
+            f"INSERT INTO fund_nav_readiness_v1 ({','.join(readiness._ROW_FIELDS)}) "
+            f"SELECT {selected} FROM fund_nav_readiness_v1 WHERE run_id=%(old)s "
+            "AND admissible",
+            {"run": building, "old": report["run_id"]},
+        )
+        if column is not None:
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute(
+                    sql.SQL("UPDATE fund_nav_readiness_v1 SET {}=%s WHERE run_id=%s")
+                    .format(sql.Identifier(column)),
+                    (value, building),
+                )
+        conn.rollback()
+
+
+def test_operator_old_contract_shape_is_upgrade_required_without_mutation(
+    test_dsn, schema, monkeypatch, capsys
+):
+    _bootstrap(test_dsn, schema)
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        assert operator._check(conn, schema)["compatibility"] == "exact"
+        # Deliberate pre-remediation shape: feature identity by instrument/date.
+        conn.execute(
+            "ALTER TABLE fund_nav_feature_evidence "
+            "DROP CONSTRAINT fund_nav_feature_evidence_pkey, "
+            "ADD PRIMARY KEY (instrument_id, calc_date, definition_version)"
+        )
+        conn.execute("ALTER TABLE fund_nav_risk_runs DROP COLUMN run_scope")
+        report = operator._check(conn, schema)
+        assert report["status"] == "upgrade_required"
+        assert report["compatibility"] == "incompatible"
+        assert {"columns", "constraints"} <= set(report["mismatches"])
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    assert operator.main(base) == 3
+    assert json.loads(capsys.readouterr().out)["compatibility"] == "incompatible"
+    plan = operator.plan_hash(ddl, schema, b"", [], None, None)
+    assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 3
+    capsys.readouterr()
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname='fund_nav_feature_evidence_pkey' "
+            "AND connamespace=%s::regnamespace",
+            (schema,),
+        ).fetchone()[0] == "PRIMARY KEY (instrument_id, calc_date, definition_version)"
+        assert conn.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema=%s "
+            "AND table_name='fund_nav_risk_runs' AND column_name='run_scope'",
+            (schema,),
+        ).fetchone()[0] == 0
+
+
+def test_operator_absent_schema_installs_fresh(test_dsn, schema, monkeypatch, capsys):
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute(NAV_SQL)
+        report = operator._check(conn, schema)
+        assert (report["status"], report["compatibility"]) == ("upgrade_required", "absent")
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    assert operator.main(base) == 0
+    capsys.readouterr()
+    plan = operator.plan_hash(ddl, schema, b"", [], None, None)
+    assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "applied"
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        assert operator._check(conn, schema)["status"] == "ready"
+
+
+def test_catalog_manifest_is_pinned_to_the_ddl():
+    manifest = json.loads(
+        (ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["ddl_sha256"] == hashlib.sha256(
+        (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    ).hexdigest()
+    assert set(manifest["signature"]["relations"]) == {
+        *operator.TABLES,
+        *operator.VIEWS,
+    }
+    # The external NAV hypertable trigger and its owned function are contract.
+    assert manifest["signature"]["triggers"]["nav_timeseries"] == [
+        [
+            "fund_nav_stamp_revision",
+            "CREATE TRIGGER fund_nav_stamp_revision AFTER INSERT OR DELETE OR UPDATE "
+            "ON nav_timeseries FOR EACH ROW EXECUTE FUNCTION fund_nav_stamp_revision_v1()",
+            "O",
+            "@schema@.fund_nav_stamp_revision_v1()",
+        ]
+    ]
+    snapshot = manifest["signature"]["functions"][
+        "fund_nav_snapshot_current_at_v1(subject_id uuid, selected_run_id uuid, "
+        "evaluated_at timestamp with time zone)"
+    ]
+    assert snapshot["security_definer"] is True
+    assert snapshot["config"] == ["search_path=@schema@"]
+    assert snapshot["public_execute"] is False
+
+
+def test_generator_reproduces_committed_manifest_byte_identical(test_dsn):
+    from scripts import generate_fund_nav_readiness_catalog as generator
+
+    committed = (ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json").read_bytes()
+    regenerated = generator.manifest_bytes(
+        generator.fresh_signature(test_dsn), (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    )
+    assert regenerated == committed
+
+
+def test_catalog_classifier_rejects_tampered_or_stale_manifest(tmp_path, monkeypatch):
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    manifest = json.loads(operator.CATALOG_MANIFEST.read_text(encoding="utf-8"))
+    tampered = dict(manifest)
+    tampered["signature"] = {**manifest["signature"], "views": {}}
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps(tampered), encoding="utf-8")
+    monkeypatch.setattr(operator, "CATALOG_MANIFEST", path)
+    with pytest.raises(ValueError, match="catalog_manifest_tampered"):
+        operator.load_manifest(ddl)
+    with pytest.raises(ValueError, match="catalog_manifest_stale"):
+        operator.load_manifest(ddl + b"\n-- edited")
+
+
+def _catalog_state(conn):
+    return conn.execute(
+        """SELECT (SELECT count(*) FROM nav_policy_versions),
+                  (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+                   JOIN pg_namespace n ON n.oid=c.relnamespace
+                   WHERE n.nspname=current_schema() AND NOT t.tgisinternal),
+                  (SELECT count(*) FROM pg_proc p JOIN pg_namespace n
+                   ON n.oid=p.pronamespace WHERE n.nspname=current_schema())"""
+    ).fetchone()
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "wrong_ext_trigger_events",
+        "extra_ext_trigger",
+        "disabled_ext_trigger",
+        "foreign_namespace_trigger_function",
+        "function_body",
+        "function_search_path",
+        "function_public_execute",
+        "extra_owned_function_overload",
+    ],
+)
+def test_catalog_divergence_is_upgrade_required_without_writes(
+    test_dsn, schema, monkeypatch, capsys, tamper
+):
+    _bootstrap(test_dsn, schema)
+    other = schema + "_x"
+    statements = {
+        "wrong_ext_trigger_events": [
+            "DROP TRIGGER fund_nav_stamp_revision ON nav_timeseries",
+            "CREATE TRIGGER fund_nav_stamp_revision AFTER INSERT OR UPDATE ON "
+            "nav_timeseries FOR EACH ROW EXECUTE FUNCTION fund_nav_stamp_revision_v1()",
+        ],
+        "extra_ext_trigger": [
+            "CREATE TRIGGER zz_extra AFTER DELETE ON nav_timeseries FOR EACH ROW "
+            "EXECUTE FUNCTION fund_nav_stamp_revision_v1()",
+        ],
+        "disabled_ext_trigger": [
+            "ALTER TABLE nav_timeseries DISABLE TRIGGER fund_nav_stamp_revision",
+        ],
+        "foreign_namespace_trigger_function": [
+            f'CREATE SCHEMA "{other}"',
+            f'CREATE FUNCTION "{other}".fund_nav_stamp_revision_v1() RETURNS trigger '
+            "LANGUAGE plpgsql AS $$BEGIN RETURN NULL; END$$",
+            "DROP TRIGGER fund_nav_stamp_revision ON nav_timeseries",
+            "CREATE TRIGGER fund_nav_stamp_revision AFTER INSERT OR DELETE OR UPDATE "
+            f'ON nav_timeseries FOR EACH ROW EXECUTE FUNCTION "{other}".'
+            "fund_nav_stamp_revision_v1()",
+        ],
+        "function_body": [
+            "CREATE OR REPLACE FUNCTION fund_nav_revision_append_only_v1() "
+            "RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NEW; END$$",
+        ],
+        "function_search_path": [
+            "ALTER FUNCTION fund_nav_snapshot_current_at_v1(uuid,uuid,timestamptz) "
+            f'SET search_path = "{schema}", public',
+        ],
+        "function_public_execute": [
+            "GRANT EXECUTE ON FUNCTION "
+            "fund_nav_snapshot_current_at_v1(uuid,uuid,timestamptz) TO PUBLIC",
+        ],
+        "extra_owned_function_overload": [
+            "CREATE FUNCTION nav_uuid_array_unique_v1(ids text[]) RETURNS boolean "
+            "LANGUAGE sql IMMUTABLE AS $$SELECT true$$",
+        ],
+    }[tamper]
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    plan = operator.plan_hash(ddl, schema, b"", [], None, None)
+    try:
+        with _connect(test_dsn, schema, autocommit=True) as conn:
+            for statement in statements:
+                conn.execute(statement)
+            report = operator._check(conn, schema)
+            assert (report["status"], report["compatibility"]) == (
+                "upgrade_required",
+                "incompatible",
+            ), report
+            before = _catalog_state(conn)
+            signature_before = report["catalog_sha256"]
+        assert operator.main(base) == operator.EXIT_INCOMPATIBLE
+        capsys.readouterr()
+        assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == (
+            operator.EXIT_INCOMPATIBLE
+        )
+        assert json.loads(capsys.readouterr().out)["compatibility"] == "incompatible"
+        with _connect(test_dsn, schema, autocommit=True) as conn:
+            assert _catalog_state(conn) == before
+            assert operator._check(conn, schema)["catalog_sha256"] == signature_before
+    finally:
+        with psycopg.connect(test_dsn, autocommit=True) as conn:
+            conn.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(other))
+            )
+
+
+def test_orphan_ext_trigger_without_owned_objects_is_not_absent(test_dsn, schema):
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute(NAV_SQL)
+        conn.execute(
+            "CREATE FUNCTION stray() RETURNS trigger LANGUAGE plpgsql "
+            "AS $$BEGIN RETURN NULL; END$$"
+        )
+        conn.execute(
+            "CREATE TRIGGER fund_nav_stamp_revision AFTER INSERT ON nav_timeseries "
+            "FOR EACH ROW EXECUTE FUNCTION stray()"
+        )
+        report = operator._check(conn, schema)
+        assert (report["status"], report["compatibility"]) == (
+            "upgrade_required",
+            "incompatible",
+        )
+
+
+def test_homonymous_relations_in_other_schema_do_not_affect_check(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    other = schema + "_homonym"
+    try:
+        with psycopg.connect(test_dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(other)))
+            conn.execute(
+                sql.SQL("SET search_path TO {}, public").format(sql.Identifier(other))
+            )
+            conn.execute(NAV_SQL)
+            conn.execute("CREATE TABLE fund_nav_risk_runs (x int)")
+            conn.execute(
+                "CREATE FUNCTION fund_nav_stamp_revision_v1() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$BEGIN RETURN NULL; END$$"
+            )
+            conn.execute(
+                "CREATE TRIGGER fund_nav_stamp_revision AFTER INSERT ON nav_timeseries "
+                "FOR EACH ROW EXECUTE FUNCTION fund_nav_stamp_revision_v1()"
+            )
+            conn.execute(
+                "CREATE TRIGGER zz_extra AFTER DELETE ON nav_timeseries "
+                "FOR EACH ROW EXECUTE FUNCTION fund_nav_stamp_revision_v1()"
+            )
+        with _connect(test_dsn, schema, autocommit=True) as conn:
+            report = operator._check(conn, schema)
+            assert (report["status"], report["compatibility"]) == ("ready", "exact")
+        with psycopg.connect(test_dsn, autocommit=True) as conn:
+            other_report = operator._check(conn, other)
+            assert other_report["compatibility"] == "incompatible"
+    finally:
+        with psycopg.connect(test_dsn, autocommit=True) as conn:
+            conn.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(other))
+            )
+
+
+def test_concurrent_evidence_and_finalization_serialize_on_parent(test_dsn, schema):
+    """Two connections: finalize waits for in-flight evidence, then late writes fail."""
+    _bootstrap(test_dsn, schema)
+    day = dt.date.today() - dt.timedelta(days=1)
+    rows = [(day - dt.timedelta(days=n), 100.0 + n) for n in range(30, -1, -1)]
+    a, b = uuid.uuid4(), uuid.uuid4()
+    run = uuid.uuid4()
+    with _connect(test_dsn, schema) as writer, _connect(test_dsn, schema) as finisher:
+        _register_risk_run(
+            writer, run, day, [a, b], scope="diagnostic", reason="LIMITED_RUN"
+        )
+        risk._persist_feature_evidence(writer, a, day, rows, 0.04, run, None, {}, {}, [])
+        writer.commit()
+        risk._record_risk_exclusion(writer, run, b, day, "METRICS_UNAVAILABLE", [])
+        # writer holds FOR SHARE on the parent: finalization must wait.
+        finisher.execute("SET lock_timeout = '300ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            finisher.execute(
+                "UPDATE fund_nav_risk_runs SET status='metrics_complete',"
+                "persisted_rows=2 WHERE risk_run_id=%s",
+                (run,),
+            )
+        finisher.rollback()
+        writer.commit()
+        risk._finish_risk_run(finisher, run, 2, 1)
+        assert finisher.execute(
+            "SELECT status FROM fund_nav_risk_runs WHERE risk_run_id=%s", (run,)
+        ).fetchone() == ("metrics_complete",)
+        with pytest.raises(psycopg.Error, match="no longer accepting"):
+            risk._record_risk_exclusion(writer, run, a, day, "METRICS_UNAVAILABLE", [])
+        writer.rollback()
+        # Rollback of a failed finalization leaves the parent running and intact.
+        second = uuid.uuid4()
+        _register_risk_run(
+            writer, second, day, [a], scope="diagnostic", reason="LIMITED_RUN"
+        )
+        writer.commit()
+        with pytest.raises(RuntimeError, match="incomplete"):
+            risk._finish_risk_run(finisher, second, 1, 0)
+        finisher.rollback()
+        assert finisher.execute(
+            "SELECT status,persisted_rows FROM fund_nav_risk_runs WHERE risk_run_id=%s",
+            (second,),
+        ).fetchone() == ("running", None)
+
+
+def test_fresh_install_reapply_is_exact_and_catalog_stable(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        first = operator._check(conn, schema)
+        _install(conn, schema)
+        second = operator._check(conn, schema)
+    assert first["compatibility"] == second["compatibility"] == "exact"
+    assert first["catalog_sha256"] == second["catalog_sha256"] == (
+        first["reference_catalog_sha256"]
+    )
+
+
+def test_identity_and_lineage_lookups_are_index_backed(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    run, iid = uuid.uuid4(), uuid.uuid4()
+    with _connect(test_dsn, schema) as conn:
+        conn.execute("SET LOCAL enable_seqscan = off")
+        # Each lookup must be served by one of the contract indexes (the planner
+        # may pick either covering index on an empty table); never a Seq Scan.
+        for statement, indexes in (
+            (sql.SQL(
+                "SELECT * FROM fund_nav_feature_evidence WHERE risk_run_id={} "
+                "AND instrument_id={}").format(sql.Literal(run), sql.Literal(iid)),
+             ("fund_nav_feature_evidence_pkey", "fund_nav_feature_evidence_identity_idx")),
+            (sql.SQL(
+                "SELECT * FROM fund_nav_feature_evidence WHERE instrument_id={} "
+                "AND calc_date<=DATE '2026-09-01' AND definition_version='x' "
+                "ORDER BY calc_date DESC").format(sql.Literal(iid)),
+             ("fund_nav_feature_evidence_identity_idx",)),
+            (sql.SQL(
+                "SELECT * FROM fund_nav_data_revisions WHERE instrument_id={} AND "
+                "nav_date BETWEEN DATE '2025-01-01' AND DATE '2026-09-01'"
+             ).format(sql.Literal(iid)),
+             ("fund_nav_data_revisions_window_idx",)),
+            (sql.SQL(
+                "SELECT * FROM fund_nav_risk_run_members WHERE risk_run_id={}"
+             ).format(sql.Literal(run)),
+             ("fund_nav_risk_run_members_pkey",)),
+        ):
+            plan = "\n".join(
+                row[0] for row in conn.execute(sql.SQL("EXPLAIN ") + statement)
+            )
+            assert "Seq Scan" not in plan, plan
+            assert any(index in plan for index in indexes), plan
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase B: W3 eligibility/invalidation/CAS through the real risk worker, W2
+# busy/exit contract and W5 same-date evidence, on PostgreSQL 18 / Timescale.
+# Benchmark/macro/peer/manager inputs need unrelated catalogue tables and are
+# replaced by neutral values; NAV, metrics math, persistence, MV and
+# publication are real.
+# ──────────────────────────────────────────────────────────────────────────────
+import dataclasses  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+from src.db import (  # noqa: E402
+    LOCK_FUND_NAV_CURRENT_CHAIN,
+    LOCK_RISK_METRICS,
+)
+from src.workers import analytics_refresh_chain  # noqa: E402
+
+RISK_SQL = (ROOT / "schemas" / "risk_metrics.sql").read_text(encoding="utf-8")
+RISK_READ_MODEL_SQL = RISK_SQL[
+    RISK_SQL.index("CREATE TABLE IF NOT EXISTS fund_risk_metrics") : RISK_SQL.index(
+        "CREATE MATERIALIZED VIEW funds_list_mv"
+    )
+]
+
+
+def _schema_dsn(dsn, schema):
+    return psycopg.conninfo.make_conninfo(dsn, options=f"-csearch_path={schema},public")
+
+
+def _offline_risk_inputs(monkeypatch):
+    for name, value in {
+        "_risk_free_rate": lambda _c, _d: 0.04,
+        "_fetch_benchmark_returns": lambda _c, _d: {},
+        "_fetch_fund_benchmarks": lambda _c: {},
+        "_fetch_macro_changes": lambda _c, _d: {},
+        "_fetch_fund_asset_classes": lambda _c: {},
+        "_update_peer_percentiles": lambda _c, _d: 0,
+        "_update_manager_scores": lambda _c, _d: 0,
+    }.items():
+        monkeypatch.setattr(risk, name, value)
+
+
+def _add_fund(conn, ing_run, dates, *, base, step):
+    fid = uuid.uuid4()
+    observations = tuple(
+        NavObservation(d, round(base + i * step + (i % 5) * 0.07, 6), "adjusted")
+        for i, d in enumerate(dates)
+    )
+    ingest.upsert_nav_timeseries(
+        conn, ingest.build_rows(observations, [(fid, "USD")]), run_id=ing_run
+    )
+    return fid
+
+
+def _risk_env(test_dsn, schema, monkeypatch, *, extra=2, stale=1, **seed):
+    """Seeded policy/NAV/fixture publication plus the real risk read model."""
+    iid, grid, ing_run = _seed(test_dsn, schema, **seed)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute(RISK_READ_MODEL_SQL)
+    with _connect(test_dsn, schema) as conn:
+        extras = [
+            _add_fund(conn, ing_run, grid[-300:], base=50.0 + n, step=0.02 + 0.01 * n)
+            for n in range(extra)
+        ]
+        old = [grid[0] - dt.timedelta(days=12 * 366 + k) for k in range(30, 0, -1)]
+        stales = [_add_fund(conn, ing_run, old, base=10.0, step=0.01) for _ in range(stale)]
+        conn.commit()
+    _offline_risk_inputs(monkeypatch)
+    return iid, grid, [iid, *extras], stales, _schema_dsn(test_dsn, schema)
+
+
+def _singleton(conn):
+    return conn.execute(
+        "SELECT revision_id, state, active_risk_run_id, published_risk_run_id "
+        "FROM fund_nav_risk_publication"
+    ).fetchone()
+
+
+def _run_row(conn, run_id):
+    return conn.execute(
+        "SELECT run_scope, nonpublishing_reason, status, due_session, requested_limit,"
+        " expected_rows, universe_digest FROM fund_nav_risk_runs WHERE risk_run_id=%s",
+        (uuid.UUID(str(run_id)),),
+    ).fetchone()
+
+
+def _publication(result):
+    return result["risk_publication"]
+
+
+_RESULT_KEYS = {
+    "processed", "upserted", "calc_date", "workers", "risk_run_id",
+    "mv_refreshed", "risk_publication",
+}
+_PUBLICATION_KEYS = {
+    "eligible", "published", "reason", "risk_run_id", "as_of_session", "retryable",
+}
+
+
+def _assert_shape(result):
+    assert _RESULT_KEYS <= set(result)
+    assert set(_publication(result)) == _PUBLICATION_KEYS
+
+
+def test_full_due_run_invalidates_before_first_write_then_publishes(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    assert readiness.run(dsn)["ready_count"] == 1
+    with _connect(test_dsn, schema) as conn:
+        before = _singleton(conn)
+    observed = []
+    real_upsert = risk._upsert
+
+    def _observing_upsert(conn, instrument_id, calc_date, metrics):
+        if not observed:
+            with _connect(test_dsn, schema) as reader:
+                observed.append(
+                    (
+                        _singleton(reader),
+                        reader.execute(
+                            "SELECT snapshot_current FROM fund_nav_readiness_current_v1"
+                        ).fetchone()[0],
+                        reader.execute(
+                            "SELECT count(*) FROM fund_nav_risk_runs WHERE status='running'"
+                        ).fetchone()[0],
+                    )
+                )
+        return real_upsert(conn, instrument_id, calc_date, metrics)
+
+    monkeypatch.setattr(risk, "_upsert", _observing_upsert)
+    result = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    _assert_shape(result)
+    run_id = uuid.UUID(result["risk_run_id"])
+    # Before the first metric write another connection already saw the
+    # committed invalidation: revision+1, running, active=this, pointer NULL.
+    (revision, state, active, published), snapshot_current, running = observed[0]
+    assert (revision, state, active, published) == (before[0] + 1, "running", run_id, None)
+    assert snapshot_current is False and running == 1
+    assert result["mv_refreshed"] is True
+    assert _publication(result) == {
+        "eligible": True,
+        "published": True,
+        "reason": None,
+        "risk_run_id": str(run_id),
+        "as_of_session": grid[-1].isoformat(),
+        "retryable": False,
+    }
+    assert (result["upserted"], result["processed"]) == (len(funds), len(funds))
+    with _connect(test_dsn, schema) as conn:
+        assert _singleton(conn) == (before[0] + 2, "idle", None, run_id)
+        scope, reason, status, due, limit, expected, digest = _run_row(conn, run_id)
+        assert (scope, reason, status, due, limit) == (
+            "current_full", None, "complete", grid[-1], None
+        )
+        assert expected == len(funds) + len(stales)
+        assert digest == risk_universe_digest([*funds, *stales])
+        assert conn.execute(
+            "SELECT (SELECT count(*) FROM fund_nav_feature_evidence WHERE risk_run_id=%s),"
+            "(SELECT array_agg(instrument_id) FROM fund_nav_risk_exclusions "
+            " WHERE risk_run_id=%s AND reason_code='NAV_WINDOW_TOO_SHORT'),"
+            "(SELECT count(*) FROM fund_risk_latest_mv WHERE calc_date=%s)",
+            (run_id, run_id, grid[-1]),
+        ).fetchone() == (len(funds), stales, len(funds))
+    snapshot = readiness.run(dsn)
+    assert snapshot["ready_count"] == 1
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT snapshot_current, risk_run_id FROM fund_nav_readiness_current_v1 "
+            "WHERE instrument_id=%s",
+            (iid,),
+        ).fetchone() == (True, run_id)
+
+
+@pytest.mark.parametrize("limit", [1, 50])
+def test_limited_runs_are_diagnostic_invalidate_and_never_promote(
+    test_dsn, schema, monkeypatch, limit
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    universe = [*funds, *stales]
+    assert limit == 1 or limit >= len(universe)
+    with _connect(test_dsn, schema) as conn:
+        before = _singleton(conn)
+    result = risk.run(dsn, calc_date=grid[-1].isoformat(), limit=limit, serial=True)
+    _assert_shape(result)
+    assert result["mv_refreshed"] is True
+    assert _publication(result) == {
+        "eligible": False,
+        "published": False,
+        "reason": "LIMITED_RUN",
+        "risk_run_id": result["risk_run_id"],
+        "as_of_session": grid[-1].isoformat(),
+        "retryable": False,
+    }
+    with _connect(test_dsn, schema) as conn:
+        scope, reason, status, due, requested, expected, digest = _run_row(
+            conn, result["risk_run_id"]
+        )
+        assert (scope, reason, status, requested) == (
+            "diagnostic", "LIMITED_RUN", "complete", limit
+        )
+        assert expected == min(limit, len(universe))
+        # The frozen universe is the canonical pre-limit set, not the members.
+        assert digest == risk_universe_digest(universe)
+        # Same date as the served generation: invalidated before any write,
+        # never replaced by the diagnostic run.
+        assert _singleton(conn) == (before[0] + 1, "idle", None, None)
+    with pytest.raises(RuntimeError, match="risk run not published"):
+        readiness.run(dsn)
+
+
+@pytest.mark.parametrize(
+    ("case", "reason", "as_of"),
+    [
+        ("historical", "NON_CURRENT_SESSION", True),
+        ("future", "NON_CURRENT_SESSION", True),
+        ("policy_absent", "POLICY_UNAVAILABLE", False),
+        ("policy_expired", "POLICY_EXPIRED", False),
+    ],
+)
+def test_non_current_or_policy_less_runs_never_promote(
+    test_dsn, schema, monkeypatch, case, reason, as_of
+):
+    seed = {
+        "policy_absent": {"with_policy": False},
+        # An expired policy cannot stamp new rows (A trigger), so NAV is unstamped.
+        "policy_expired": {"valid_for": -dt.timedelta(minutes=1), "stamp": False},
+    }.get(case, {})
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch, **seed)
+    calc = {
+        "historical": grid[-2],
+        "future": grid[-1] + dt.timedelta(days=1),
+    }.get(case, grid[-1])
+    with _connect(test_dsn, schema) as conn:
+        before = _singleton(conn)
+    result = risk.run(dsn, calc_date=calc.isoformat(), serial=True)
+    _assert_shape(result)
+    publication = _publication(result)
+    assert (publication["eligible"], publication["published"], publication["reason"]) == (
+        False, False, reason
+    )
+    assert publication["retryable"] is False
+    assert publication["as_of_session"] == (grid[-1].isoformat() if as_of else None)
+    assert result["mv_refreshed"] is True
+    with _connect(test_dsn, schema) as conn:
+        scope, stored_reason, status, due, *_ = _run_row(conn, result["risk_run_id"])
+        assert (scope, stored_reason, status) == ("diagnostic", reason, "complete")
+        pins = conn.execute(
+            "SELECT policy_version FROM fund_nav_risk_runs WHERE risk_run_id=%s",
+            (uuid.UUID(result["risk_run_id"]),),
+        ).fetchone()[0]
+        assert pins == (None if case == "policy_absent" else "v1")
+        after = _singleton(conn)
+        assert after[3] != uuid.UUID(result["risk_run_id"])
+        assert after[:4] == (before[0] + 1, "idle", None, None)
+
+
+def test_strictly_historical_inert_diagnostic_preserves_pointer_else_invalidates(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch, stale=0)
+    full = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert _publication(full)["published"] is True
+    assert readiness.run(dsn)["ready_count"] == 1
+    with _connect(test_dsn, schema) as conn:
+        served = _singleton(conn)
+    historical = risk.run(dsn, calc_date=grid[-2].isoformat(), serial=True)
+    assert _publication(historical)["reason"] == "NON_CURRENT_SESSION"
+    with _connect(test_dsn, schema) as conn:
+        # Every member has a newer row and no fund is served at grid[-2].
+        assert _singleton(conn) == served
+        assert conn.execute(
+            "SELECT bool_and(snapshot_current) FROM fund_nav_readiness_current_v1"
+        ).fetchone()[0] is True
+        # A fund without any newer row makes the same historical write impactful.
+        ing_run = conn.execute("SELECT run_id FROM nav_ingestion_runs LIMIT 1").fetchone()[0]
+        _add_fund(conn, ing_run, grid[-40:-1], base=70.0, step=0.03)
+        conn.commit()
+    impactful = risk.run(dsn, calc_date=grid[-2].isoformat(), serial=True)
+    assert _publication(impactful)["published"] is False
+    with _connect(test_dsn, schema) as conn:
+        assert _singleton(conn) == (served[0] + 1, "idle", None, None)
+        assert conn.execute(
+            "SELECT bool_or(snapshot_current) FROM fund_nav_readiness_current_v1"
+        ).fetchone()[0] is False
+
+
+def test_shard_failure_keeps_invalidation_and_next_full_run_replaces(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    with _connect(test_dsn, schema) as conn:
+        before = _singleton(conn)
+    calls = []
+    real_upsert = risk._upsert
+
+    def _failing_upsert(*args):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("shard crashed")
+        return real_upsert(*args)
+
+    monkeypatch.setattr(risk, "_upsert", _failing_upsert)
+    with pytest.raises(RuntimeError, match="shard crashed"):
+        risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    with _connect(test_dsn, schema) as conn:
+        revision, state, active, published = _singleton(conn)
+        failed = conn.execute(
+            "SELECT risk_run_id, status FROM fund_nav_risk_runs "
+            "WHERE risk_run_id=%s",
+            (active,),
+        ).fetchone()
+        # No pointer restore: the old published run is not current again.
+        assert (revision, state, published) == (before[0] + 1, "running", None)
+        assert failed[1] == "running"
+        assert conn.execute(
+            "SELECT count(*) FROM fund_nav_feature_evidence WHERE risk_run_id=%s",
+            (active,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT pg_try_advisory_lock(%s)", (LOCK_RISK_METRICS,)
+        ).fetchone()[0] is True  # released after the failure
+        conn.execute("SELECT pg_advisory_unlock(%s)", (LOCK_RISK_METRICS,))
+    with pytest.raises(RuntimeError, match="risk run not published"):
+        readiness.run(dsn)
+    monkeypatch.setattr(risk, "_upsert", real_upsert)
+    retry = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert _publication(retry)["published"] is True
+    assert retry["risk_run_id"] != str(active)
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT status FROM fund_nav_risk_runs WHERE risk_run_id=%s", (active,)
+        ).fetchone()[0] == "running"  # interrupted run stays explicitly incomplete
+
+
+def test_mv_operational_failure_is_typed_and_programming_error_propagates(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        before = _singleton(conn)
+        conn.execute("DROP INDEX fund_risk_latest_mv_pk")  # CONCURRENTLY now impossible
+    result = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    _assert_shape(result)
+    assert result["mv_refreshed"] is False
+    assert result["mv_refresh_error"] == "ObjectNotInPrerequisiteState"
+    assert _publication(result) == {
+        "eligible": True,
+        "published": False,
+        "reason": "MV_REFRESH_FAILED",
+        "risk_run_id": result["risk_run_id"],
+        "as_of_session": grid[-1].isoformat(),
+        "retryable": True,
+    }
+    run_id = uuid.UUID(result["risk_run_id"])
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        assert _run_row(conn, run_id)[2] == "metrics_complete"
+        assert _singleton(conn) == (before[0] + 1, "running", run_id, None)
+        conn.execute("DROP MATERIALIZED VIEW fund_risk_latest_mv")
+    with pytest.raises(psycopg.errors.UndefinedTable):
+        risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    with _connect(test_dsn, schema) as conn:
+        revision, state, active, published = _singleton(conn)
+        assert (state, published) == ("running", None) and active != run_id
+
+
+def test_generation_lock_is_held_through_mv_refresh_and_blocks_second_generation(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    real_refresh = risk._refresh_fund_risk_latest_mv
+    seen = {}
+
+    def _barrier_refresh(refresh_dsn):
+        with _connect(test_dsn, schema) as probe:
+            seen["risk_lock_free"] = probe.execute(
+                "SELECT pg_try_advisory_lock(%s)", (LOCK_RISK_METRICS,)
+            ).fetchone()[0]
+            seen["runs_before"] = probe.execute(
+                "SELECT count(*) FROM fund_nav_risk_runs"
+            ).fetchone()[0]
+        seen["second"] = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+        with _connect(test_dsn, schema) as probe:
+            seen["runs_after"] = probe.execute(
+                "SELECT count(*) FROM fund_nav_risk_runs"
+            ).fetchone()[0]
+        with pytest.raises(RuntimeError, match="risk run not published"):
+            readiness.run(dsn)
+        real_refresh(refresh_dsn)
+
+    monkeypatch.setattr(risk, "_refresh_fund_risk_latest_mv", _barrier_refresh)
+    result = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert seen["risk_lock_free"] is False
+    assert seen["second"]["skipped"] == "lock_busy"
+    assert _publication(seen["second"])["reason"] == "LOCK_BUSY"
+    assert seen["runs_after"] == seen["runs_before"]
+    assert _publication(result)["published"] is True
+
+
+def test_readiness_lock_busy_at_registration_writes_nothing(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    with _connect(test_dsn, schema) as conn:
+        before = (
+            _singleton(conn),
+            conn.execute("SELECT count(*) FROM fund_nav_risk_runs").fetchone()[0],
+            conn.execute("SELECT count(*) FROM fund_risk_metrics").fetchone()[0],
+        )
+    with _connect(test_dsn, schema) as holder:
+        with advisory_lock(holder, LOCK_FUND_NAV_READINESS) as held:
+            assert held
+            result = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert result == risk._busy_result()
+    with _connect(test_dsn, schema) as conn:
+        assert (
+            _singleton(conn),
+            conn.execute("SELECT count(*) FROM fund_nav_risk_runs").fetchone()[0],
+            conn.execute("SELECT count(*) FROM fund_risk_metrics").fetchone()[0],
+        ) == before
+
+
+def _shift_clock(monkeypatch, delta):
+    real = risk.resolve_policy_and_grid
+    monkeypatch.setattr(
+        risk, "resolve_policy_and_grid", lambda conn, now: real(conn, now + delta)
+    )
+
+
+@pytest.mark.parametrize(
+    "interference", ["busy", "superseded", "policy_rollover", "clock_due", "clock_expired"]
+)
+def test_publication_cas_revalidation_never_publishes_on_change(
+    test_dsn, schema, monkeypatch, interference
+):
+    iid, grid, funds, stales, dsn = _risk_env(
+        test_dsn, schema, monkeypatch, extra_closed=interference == "clock_due"
+    )
+    real_refresh = risk._refresh_fund_risk_latest_mv
+    holder = _connect(test_dsn, schema)
+
+    def _interfering_refresh(refresh_dsn):
+        real_refresh(refresh_dsn)
+        if interference == "busy":
+            holder.execute("SELECT pg_advisory_lock(%s)", (LOCK_FUND_NAV_READINESS,))
+        elif interference == "superseded":
+            holder.execute(
+                "UPDATE fund_nav_risk_publication SET revision_id=revision_id+1"
+            )
+            holder.commit()
+        elif interference == "policy_rollover":
+            _publish_rollover(holder, iid, grid)
+        elif interference == "clock_due":
+            _shift_clock(monkeypatch, dt.timedelta(hours=2))
+        else:
+            _shift_clock(monkeypatch, dt.timedelta(days=2))
+
+    monkeypatch.setattr(risk, "_refresh_fund_risk_latest_mv", _interfering_refresh)
+    try:
+        result = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    finally:
+        holder.close()  # also releases the busy session lock
+    expected = {
+        "busy": "LOCK_BUSY",
+        "superseded": "SUPERSEDED",
+        "policy_rollover": "POLICY_CHANGED",
+        "clock_due": "DUE_SESSION_CHANGED",
+        "clock_expired": "POLICY_CHANGED",
+    }[interference]
+    publication = _publication(result)
+    assert result["mv_refreshed"] is True
+    assert (publication["eligible"], publication["published"]) == (True, False)
+    assert (publication["reason"], publication["retryable"]) == (expected, True)
+    run_id = uuid.UUID(result["risk_run_id"])
+    with _connect(test_dsn, schema) as conn:
+        revision, state, active, published = _singleton(conn)
+        assert published is None
+        assert _run_row(conn, run_id)[2] == "complete"  # computed, never promoted
+        if interference == "busy":
+            assert (state, active) == ("running", run_id)  # left invalidated
+        elif interference == "superseded":
+            assert (state, active) == ("running", run_id)  # other owner untouched
+        else:
+            assert (state, active) == ("idle", None)  # own claim released
+
+
+def test_same_date_worker_runs_keep_both_evidences_and_snapshots_join_their_run(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    first = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    snapshot_one = readiness.run(dsn)
+    second = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    snapshot_two = readiness.run(dsn)
+    assert _publication(first)["published"] and _publication(second)["published"]
+    with _connect(test_dsn, schema) as conn:
+        counts = conn.execute(
+            "SELECT risk_run_id, count(*) FROM fund_nav_feature_evidence "
+            "WHERE calc_date=%s AND risk_run_id = ANY(%s) GROUP BY 1",
+            (grid[-1], [uuid.UUID(first["risk_run_id"]), uuid.UUID(second["risk_run_id"])]),
+        ).fetchall()
+        assert sorted(n for _run, n in counts) == [len(funds), len(funds)]
+        joined = conn.execute(
+            "SELECT r.run_id::text, f.risk_run_id::text FROM fund_nav_readiness_v1 r "
+            "JOIN fund_nav_feature_evidence f ON f.risk_run_id=r.risk_run_id "
+            "AND f.instrument_id=r.instrument_id WHERE r.instrument_id=%s "
+            "AND r.run_id = ANY(%s)",
+            (iid, [uuid.UUID(snapshot_one["run_id"]), uuid.UUID(snapshot_two["run_id"])]),
+        ).fetchall()
+        assert sorted(joined) == sorted(
+            [
+                (snapshot_one["run_id"], first["risk_run_id"]),
+                (snapshot_two["run_id"], second["risk_run_id"]),
+            ]
+        )
+
+
+def test_serial_and_sharded_runs_are_equivalent(test_dsn, schema, monkeypatch):
+    iid, grid, funds, stales, dsn = _risk_env(
+        test_dsn, schema, monkeypatch, extra=3, stale=1
+    )
+    monkeypatch.setattr(risk, "_resolve_max_workers", lambda: 2)
+
+    def _snapshot(run_id):
+        with _connect(test_dsn, schema) as conn:
+            metrics = conn.execute(
+                "SELECT to_jsonb(m) FROM fund_risk_metrics m WHERE calc_date=%s "
+                "ORDER BY instrument_id",
+                (grid[-1],),
+            ).fetchall()
+            features = conn.execute(
+                "SELECT instrument_id, input_fingerprint, nav_input_fingerprint, nav_count "
+                "FROM fund_nav_feature_evidence WHERE risk_run_id=%s ORDER BY 1",
+                (uuid.UUID(run_id),),
+            ).fetchall()
+            exclusions = conn.execute(
+                "SELECT instrument_id, reason_code, nav_count FROM fund_nav_risk_exclusions "
+                "WHERE risk_run_id=%s ORDER BY 1",
+                (uuid.UUID(run_id),),
+            ).fetchall()
+        return metrics, features, exclusions
+
+    serial = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    serial_state = _snapshot(serial["risk_run_id"])
+    sharded = risk.run(dsn, calc_date=grid[-1].isoformat())
+    sharded_state = _snapshot(sharded["risk_run_id"])
+    assert (serial["workers"], sharded["workers"]) == (1, 2)
+    assert serial_state == sharded_state
+    assert len(serial_state[1]) == len(funds) and len(serial_state[2]) == len(stales)
+    for result in (serial, sharded):
+        assert (result["processed"], result["upserted"]) == (len(funds), len(funds))
+        assert _publication(result)["published"] is True
+
+
+def test_mv_success_with_unpublished_nav_keeps_analytics_green_and_nav_chain_blocked(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    limited = risk.run(dsn, calc_date=grid[-1].isoformat(), limit=1, serial=True)
+    assert limited["mv_refreshed"] is True
+    assert _publication(limited)["published"] is False
+    analytics = analytics_refresh_chain.run(
+        dsn,
+        risk_runner=lambda *_a, **_k: limited,
+        momentum_runner=lambda *_a, **kw: {"calc_date": kw["calc_date"], "upserted": 1},
+    )
+    assert analytics["published"] is True
+    monkeypatch.setattr(
+        chain.matview_refresh, "_refresh_all", lambda *_a: ["fund_nav_coverage_mv"]
+    )
+    readiness_calls = []
+    nav = chain.run(
+        dsn,
+        ingestion_runner=lambda *_a, **_k: {"ingestion_run_id": "stub"},
+        risk_runner=lambda *_a, **_k: limited,
+        readiness_runner=lambda *_a: readiness_calls.append(1),
+    )
+    assert nav == {
+        "status": "blocked",
+        "state": "blocked",
+        "published": False,
+        "retryable": False,
+        "reason": "LIMITED_RUN",
+        "blocked_stage": "risk_metrics",
+    }
+    assert readiness_calls == []
+
+
+def test_finish_rejects_persisted_count_that_differs_from_features(test_dsn, schema):
+    _bootstrap(test_dsn, schema)
+    day = dt.date.today() - dt.timedelta(days=1)
+    rows = [(day - dt.timedelta(days=n), 100.0 + n) for n in range(30, -1, -1)]
+    a, b = uuid.uuid4(), uuid.uuid4()
+    run = uuid.uuid4()
+    with _connect(test_dsn, schema) as conn:
+        _register_risk_run(conn, run, day, [a, b], scope="diagnostic", reason="LIMITED_RUN")
+        risk._persist_feature_evidence(conn, a, day, rows, 0.04, run, None, {}, {}, [])
+        risk._record_risk_exclusion(conn, run, b, day, "METRICS_UNAVAILABLE", [])
+        conn.commit()
+        for persisted in (0, 2):
+            with pytest.raises(RuntimeError, match="incomplete"):
+                risk._finish_risk_run(conn, run, 2, persisted)
+            conn.rollback()
+        with pytest.raises(RuntimeError, match="incomplete"):
+            risk._finish_risk_run(conn, run, 3, 1)
+        conn.rollback()
+        risk._finish_risk_run(conn, run, 2, 1)
+
+
+def test_diagnostic_plan_never_calls_publication_lock(test_dsn, schema, monkeypatch):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    with _connect(test_dsn, schema) as conn:
+        plan, token = risk._begin_risk_generation(conn, grid[-1].isoformat(), 1)
+        assert (plan.eligible, token) == (False, None)
+        with _connect(test_dsn, schema) as holder:
+            with advisory_lock(holder, LOCK_FUND_NAV_READINESS):
+                decision = risk._mark_risk_published(conn, plan, token)
+        assert decision["reason"] == "LIMITED_RUN" and decision["published"] is False
+        eligible, token = risk._begin_risk_generation(conn, grid[-1].isoformat(), None)
+        forged = dataclasses.replace(eligible, run_scope="current_full", risk_run_id=plan.risk_run_id)
+        risk._record_risk_exclusion(conn, plan.risk_run_id, plan.members[0], grid[-1],
+                                    "METRICS_UNAVAILABLE", [])
+        conn.commit()
+        risk._finish_risk_run(conn, plan.risk_run_id, 1, 0)
+        risk._complete_risk_run(conn, plan.risk_run_id)
+        # A diagnostic run can never win the CAS even with a stolen token.
+        assert risk._mark_risk_published(conn, forged, token)["reason"] == "SUPERSEDED"
+
+
+def _runner(worker, dsn, secret):
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("DB_TLS_", "WORKER"))
+    }
+    env.update(WORKER=worker, DATABASE_URL=dsn, PYTHONDONTWRITEBYTECODE="1")
+    flags = ["-s"] if sys.flags.no_user_site else []
+    proc = subprocess.run(
+        [sys.executable, *flags, "-m", "src.run_worker"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert secret not in proc.stdout + proc.stderr
+    lines = [line for line in proc.stdout.splitlines() if line.startswith("{")]
+    assert len(lines) == 1, (proc.stdout[-2000:], proc.stderr[-2000:])
+    return proc.returncode, json.loads(lines[0])
+
+
+def test_runner_end_to_end_for_readiness_and_chain_lanes(test_dsn, schema):
+    _seed(test_dsn, schema)
+    dsn = _schema_dsn(test_dsn, schema)
+    secret = psycopg.conninfo.conninfo_to_dict(test_dsn).get("password") or "<none>"
+    busy = {"status": "lock_busy", "state": "lock_busy", "published": False,
+            "retryable": True}
+    with _connect(test_dsn, schema) as holder:
+        with advisory_lock(holder, LOCK_FUND_NAV_READINESS) as held:
+            assert held
+            code, payload = _runner("fund_nav_readiness", dsn, secret)
+    assert code == 1 and payload == {"worker": "fund_nav_readiness", **busy}
+    code, payload = _runner("fund_nav_readiness", dsn, secret)
+    assert code == 0
+    assert (payload["state"], payload["published"], payload["ready_count"]) == (
+        "complete", True, 1
+    )
+    with _connect(test_dsn, schema) as holder:
+        with advisory_lock(holder, LOCK_FUND_NAV_CURRENT_CHAIN) as held:
+            assert held
+            code, payload = _runner("nav_current_daily_chain", dsn, secret)
+    assert code == 1
+    assert payload == {
+        "worker": "nav_current_daily_chain",
+        **busy,
+        "blocked_stage": "nav_current_daily_chain",
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Finding 1 (final review): the read model must serve the publishing generation.
+# ──────────────────────────────────────────────────────────────────────────────
+# Light-equivalent read model: latest global row per fund with every base
+# column (the Light full MV projects risk columns from the same latest row).
+LIGHT_EQUIVALENT_MV_SQL = """
+DROP MATERIALIZED VIEW fund_risk_latest_mv;
+CREATE MATERIALIZED VIEW fund_risk_latest_mv AS
+WITH latest_global AS (
+    SELECT DISTINCT ON (instrument_id) *
+    FROM fund_risk_metrics
+    WHERE organization_id IS NULL
+    ORDER BY instrument_id, calc_date DESC
+)
+SELECT * FROM latest_global;
+CREATE UNIQUE INDEX fund_risk_latest_mv_pk ON fund_risk_latest_mv (instrument_id);
+"""
+
+
+def _capture_correspondence(monkeypatch):
+    seen = []
+    real = risk._mv_correspondence
+
+    def _capturing(cur, plan):
+        result = real(cur, plan)
+        seen.append(result)
+        return result
+
+    monkeypatch.setattr(risk, "_mv_correspondence", _capturing)
+    return seen
+
+
+def _publish_policy_with_due(conn, version, sessions):
+    """Publish ``version`` as current with explicit (date, close, due) sessions."""
+    rows = [(day, close, due, SOURCE) for day, close, due in sessions]
+    conn.execute(
+        """INSERT INTO nav_policy_versions
+           (policy_id,policy_version,policy_hash,readiness_profile,
+            valuation_frequency,calendar_id,calendar_version,calendar_source,
+            timezone,coverage_start,coverage_end,valid_through,
+            calendar_session_count,calendar_digest,sample_intervals,
+            annualization_sessions,required_nav_kind,required_return_semantics,
+            modeling_currency,currency_treatment,source_reference,published_at)
+           VALUES ('synthetic',%s,%s,'current_daily_nav_v1','daily','NYSE-TEST',%s,
+                   %s,'America/New_York',%s,%s,clock_timestamp()+interval '1 day',
+                   %s,%s,400,252,'adjusted','observed_interval_log_ratio','USD',
+                   'native_only',%s,NULL)""",
+        (version, "c" * 64, version, SOURCE, rows[0][0], rows[-1][0], len(rows),
+         calendar_digest(rows), SOURCE),
+    )
+    for day, close, due, _ in rows:
+        conn.execute(
+            "INSERT INTO nav_valuation_schedules VALUES ('NYSE-TEST',%s,%s,%s,%s,%s,%s)",
+            (version, day, close, due, SOURCE, SOURCE),
+        )
+    conn.execute(
+        "UPDATE nav_policy_versions SET published_at=clock_timestamp() "
+        "WHERE policy_version=%s",
+        (version,),
+    )
+    conn.execute(
+        "UPDATE nav_policy_current SET policy_version=%s,published_at=clock_timestamp()",
+        (version,),
+    )
+    conn.commit()
+
+
+def _served_by_published_run(conn):
+    """Light-equivalent current read: MV rows backed by the published run's features."""
+    return conn.execute(
+        """SELECT count(*) FROM fund_risk_latest_mv mv
+           JOIN fund_nav_risk_publication pub
+             ON pub.readiness_profile = 'current_daily_nav_v1'
+           JOIN fund_nav_feature_evidence f
+             ON f.risk_run_id = pub.published_risk_run_id
+            AND f.instrument_id = mv.instrument_id AND f.calc_date = mv.calc_date"""
+    ).fetchone()[0]
+
+
+@pytest.mark.parametrize("mv_shape", ["worker", "light_full"])
+def test_future_diagnostic_served_by_mv_blocks_current_publication_until_recovery(
+    test_dsn, schema, monkeypatch, mv_shape
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    if mv_shape == "light_full":
+        with _connect(test_dsn, schema, autocommit=True) as conn:
+            conn.execute(LIGHT_EQUIVALENT_MV_SQL)
+    seen = _capture_correspondence(monkeypatch)
+    future_day = grid[-1] + dt.timedelta(days=1)
+
+    future = risk.run(dsn, calc_date=future_day.isoformat(), serial=True)
+    assert _publication(future)["reason"] == "NON_CURRENT_SESSION"
+    assert future["mv_refreshed"] is True and seen == []  # diagnostic: no CAS path
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT array_agg(DISTINCT calc_date) FROM fund_risk_latest_mv"
+        ).fetchone()[0] == [future_day]
+
+    current = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert current["mv_refreshed"] is True
+    assert _publication(current) == {
+        "eligible": True,
+        "published": False,
+        "reason": "MV_RUN_MISMATCH",
+        "risk_run_id": current["risk_run_id"],
+        "as_of_session": grid[-1].isoformat(),
+        "retryable": True,
+    }
+    assert seen[-1]["features"] == len(funds)
+    assert seen[-1]["date_mismatch"] == len(funds)  # MV still serves the future rows
+    assert seen[-1]["corresponding"] == 0
+    current_run = uuid.UUID(current["risk_run_id"])
+    with _connect(test_dsn, schema) as conn:
+        revision, state, active, published = _singleton(conn)
+        assert (state, active, published) == ("idle", None, None)  # claim released
+        assert _run_row(conn, current_run)[2] == "complete"  # computed, never promoted
+        assert conn.execute(
+            "SELECT count(*) FROM fund_risk_metrics WHERE calc_date=%s", (grid[-1],)
+        ).fetchone()[0] == len(funds)
+        assert _served_by_published_run(conn) == 0
+    with pytest.raises(RuntimeError, match="risk run not published"):
+        readiness.run(dsn)
+    monkeypatch.setattr(
+        chain.matview_refresh, "_refresh_all", lambda *_a: ["fund_nav_coverage_mv"]
+    )
+    assert chain.run(
+        dsn,
+        ingestion_runner=lambda *_a, **_k: {"ingestion_run_id": "stub"},
+        risk_runner=lambda *_a, **_k: current,
+        readiness_runner=lambda *_a: pytest.fail("readiness must not run"),
+    ) == {
+        "status": "blocked",
+        "state": "blocked",
+        "published": False,
+        "retryable": True,
+        "reason": "MV_RUN_MISMATCH",
+        "blocked_stage": "risk_metrics",
+    }
+    assert analytics_refresh_chain.run(
+        dsn,
+        risk_runner=lambda *_a, **_k: current,
+        momentum_runner=lambda *_a, **kw: {"calc_date": kw["calc_date"], "upserted": 1},
+    )["published"] is True
+
+    # Governed recovery: the calendar reaches the future date as its due
+    # session. The next full run at that session supersedes the future
+    # diagnostic rows through the normal upsert; nothing is deleted.
+    now = dt.datetime.now(dt.timezone.utc)
+    sessions = [
+        (
+            day,
+            dt.datetime.combine(day, dt.time(20), dt.timezone.utc),
+            dt.datetime.combine(day, dt.time(23), dt.timezone.utc),
+        )
+        for day in grid[1:]
+    ] + [(future_day, now - dt.timedelta(hours=2), now - dt.timedelta(hours=1))]
+    with _connect(test_dsn, schema) as conn:
+        _publish_policy_with_due(conn, "v2", sessions)
+    recovered = risk.run(dsn, calc_date=future_day.isoformat(), serial=True)
+    assert _publication(recovered) == {
+        "eligible": True,
+        "published": True,
+        "reason": None,
+        "risk_run_id": recovered["risk_run_id"],
+        "as_of_session": future_day.isoformat(),
+        "retryable": False,
+    }
+    assert seen[-1]["corresponding"] == seen[-1]["features"] == len(funds)
+    recovered_run = uuid.UUID(recovered["risk_run_id"])
+    with _connect(test_dsn, schema) as conn:
+        assert _singleton(conn)[1:] == ("idle", None, recovered_run)
+        assert _served_by_published_run(conn) == len(funds)
+        # Every generation keeps its append-only evidence.
+        assert conn.execute(
+            "SELECT risk_run_id, count(*) FROM fund_nav_feature_evidence "
+            "WHERE risk_run_id = ANY(%s) GROUP BY 1 ORDER BY 1",
+            ([uuid.UUID(future["risk_run_id"]), current_run, recovered_run],),
+        ).fetchall() == sorted(
+            [
+                (uuid.UUID(future["risk_run_id"]), len(funds)),
+                (current_run, len(funds)),
+                (recovered_run, len(funds)),
+            ]
+        )
+        assert conn.execute(
+            "SELECT count(*) FROM fund_nav_risk_exclusions WHERE risk_run_id=%s",
+            (recovered_run,),
+        ).fetchone()[0] == len(stales)
+
+
+def test_missing_or_stale_mv_content_is_mismatch_even_with_matching_date(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    seen = _capture_correspondence(monkeypatch)
+    real_refresh = risk._refresh_fund_risk_latest_mv
+    monkeypatch.setattr(risk, "_refresh_fund_risk_latest_mv", lambda _dsn: None)
+    never_refreshed = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert _publication(never_refreshed)["reason"] == "MV_RUN_MISMATCH"
+    assert (seen[-1]["corresponding"], seen[-1]["date_mismatch"]) == (0, len(funds))
+
+    monkeypatch.setattr(risk, "_refresh_fund_risk_latest_mv", real_refresh)
+    first = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert _publication(first)["published"] is True
+    second = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)  # same date
+    assert _publication(second)["published"] is True
+    assert seen[-1]["corresponding"] == seen[-1]["features"] == len(funds)
+
+    # Same calc_date in the MV, but its content predates this generation.
+    changed = funds[1]
+    with _connect(test_dsn, schema) as conn:
+        run_id = _completed_run(conn, changed, grid[-1], grid[-1])
+        ingest.upsert_nav_timeseries(
+            conn,
+            ingest.build_rows(
+                (NavObservation(grid[-1], 175.0, "adjusted"),), [(changed, "USD")]
+            ),
+            run_id=run_id,
+        )
+    monkeypatch.setattr(risk, "_refresh_fund_risk_latest_mv", lambda _dsn: None)
+    stale = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert _publication(stale)["reason"] == "MV_RUN_MISMATCH"
+    assert seen[-1]["date_mismatch"] == 0
+    assert seen[-1]["content_mismatch"] == 1
+    assert seen[-1]["corresponding"] == len(funds) - 1
+    with _connect(test_dsn, schema) as conn:
+        assert _singleton(conn)[1:] == ("idle", None, None)
+
+    monkeypatch.setattr(risk, "_refresh_fund_risk_latest_mv", real_refresh)
+    fresh = risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    assert _publication(fresh)["published"] is True
+    with _connect(test_dsn, schema) as conn:
+        assert _served_by_published_run(conn) == len(funds)
+
+
+def test_read_model_without_risk_contract_columns_fails_loud(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, funds, stales, dsn = _risk_env(test_dsn, schema, monkeypatch)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute("DROP MATERIALIZED VIEW fund_risk_latest_mv")
+        conn.execute(
+            "CREATE MATERIALIZED VIEW fund_risk_latest_mv AS "
+            "SELECT DISTINCT ON (instrument_id) instrument_id, calc_date, return_1y "
+            "FROM fund_risk_metrics WHERE organization_id IS NULL "
+            "ORDER BY instrument_id, calc_date DESC"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX fund_risk_latest_mv_pk ON fund_risk_latest_mv (instrument_id)"
+        )
+    with pytest.raises(RuntimeError, match="does not project the risk contract"):
+        risk.run(dsn, calc_date=grid[-1].isoformat(), serial=True)
+    with _connect(test_dsn, schema) as conn:
+        revision, state, active, published = _singleton(conn)
+        assert (state, published) == ("running", None)  # invalidated, never promoted
