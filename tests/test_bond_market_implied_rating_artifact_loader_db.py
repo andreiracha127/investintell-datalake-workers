@@ -3467,8 +3467,12 @@ def test_secondary_index_drift_refuses_without_a_new_publication(
                         "CREATE UNIQUE INDEX CONCURRENTLY {} "
                         "ON bond_market_implied_rating_v1 (month)"
                     ).format(sql.Identifier(index)))
+                # The duplicates predate the build, so PG 18.1 and 18.4 fail its
+                # initial phase and leave the same-named index invalid (and not yet
+                # ready).  Either flag alone refuses; the mocked-catalog test below
+                # isolates each of them with an otherwise unchanged definition.
                 assert conn.execute(
-                    "SELECT indisvalid, indisready FROM pg_index "
+                    "SELECT indisvalid, indislive FROM pg_index "
                     "WHERE indexrelid=%s::regclass",
                     (index,),
                 ).fetchone() == (False, True)
@@ -3726,3 +3730,1188 @@ def test_postcommit_receipt_fsync_failure_reports_evidence_incomplete(
             artifact, contract=contract, connection_factory=factory, require_published=True
         )
         assert recovered.outcome == "already_published_verified"
+
+
+# === PR #133 review 5297288467 ==========================================================
+# --- r4087730842 (P1): ADMIN OPTION held by, or reachable from, a reader ---------------
+
+
+def _membership_rows() -> set[tuple[object, ...]]:
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        return set(admin.execute(
+            "SELECT roleid::regrole::text, member::regrole::text, grantor::regrole::text, "
+            "admin_option, inherit_option, set_option FROM pg_catalog.pg_auth_members"
+        ).fetchall())
+
+
+def _grant_membership(
+    role: str, member: str, *, inherit: bool, set_: bool, admin: bool
+) -> None:
+    _admin_execute(sql.SQL("GRANT {} TO {} WITH INHERIT {}, SET {}, ADMIN {}").format(
+        sql.Identifier(role), sql.Identifier(member),
+        *(sql.SQL("TRUE" if flag else "FALSE") for flag in (inherit, set_, admin)),
+    ))
+
+
+def _revoke_memberships_added_since(before: set[tuple[object, ...]]) -> None:
+    # Every row added since ``before`` -- including one a reader granted itself
+    # through an ADMIN OPTION -- is revoked as recorded; CASCADE also drops grants
+    # that depended on it.
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        for role, member, grantor, *_ in sorted(_membership_rows() - before):
+            admin.execute(sql.SQL("REVOKE {} FROM {} GRANTED BY {} CASCADE").format(
+                sql.Identifier(role), sql.Identifier(member), sql.Identifier(grantor)
+            ))
+
+
+@contextmanager
+def _restored_memberships() -> Iterator[None]:
+    """Undo every cluster-level membership change made inside the block.
+
+    Memberships are cluster-wide, so these cases run serially on the disposable
+    cluster, and the membership catalog must afterwards equal its prior state.
+    """
+    before = _membership_rows()
+    try:
+        yield
+    finally:
+        _revoke_memberships_added_since(before)
+        assert _membership_rows() == before
+
+
+class _RoleGraph:
+    def __init__(self, names: tuple[str, ...]) -> None:
+        tag = uuid4().hex[:10]
+        self.roles = {name: f"acl_{name}_{tag}" for name in names}
+        self.login = f"acl_login_{tag}"
+        self.password = uuid4().hex
+
+
+@contextmanager
+def _role_graph(*names: str) -> Iterator[_RoleGraph]:
+    """Disposable NOLOGIN roles plus one genuine LOGIN role, all dropped afterwards.
+
+    Added memberships are revoked before the roles are dropped (a role that granted
+    memberships cannot be dropped first), then the catalog must equal its prior state.
+    """
+    graph = _RoleGraph(names)
+    before = _membership_rows()
+    for role in graph.roles.values():
+        _admin_execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
+    _admin_execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+        sql.Identifier(graph.login), sql.Literal(graph.password)
+    ))
+    try:
+        yield graph
+    finally:
+        _revoke_memberships_added_since(before)
+        for role in (graph.login, *graph.roles.values()):
+            _admin_execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
+            _admin_execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+        assert _membership_rows() == before
+
+
+class _RolledBack(Exception):
+    pass
+
+
+def _login_connection(graph: _RoleGraph, schema: str) -> psycopg.Connection:
+    base = psycopg.conninfo.conninfo_to_dict(_worker_dsn())
+    return psycopg.connect(
+        **{**base, "user": graph.login, "password": graph.password},
+        autocommit=True, connect_timeout=5, options=f"-c search_path={schema},public",
+    )
+
+
+def _escalate_through_admin_option(
+    graph: _RoleGraph,
+    schema: str,
+    *,
+    switch_path: tuple[str, ...],
+    privileged: str,
+    privilege: str,
+) -> None:
+    """Prove the refused graph really lets the reader reach ledger writes.
+
+    A genuine LOGIN that may only switch to the reader switches along
+    ``switch_path``; the current role then uses the ADMIN OPTION it holds or
+    inherits to give itself a SET-enabled membership in ``privileged``, switches to
+    it and exercises the privilege (an INSERT for pg_write_all_data, rolled back).
+    Disposable cluster only; the fixture teardown revokes the self-grant.
+    """
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        admin.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        relation = admin.execute(
+            "SELECT 'sec_derived_pointer_tokens'::regclass::oid"
+        ).fetchone()[0]
+    with _login_connection(graph, schema) as conn:
+        for role in switch_path:
+            conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+        assert conn.execute(
+            "SELECT has_table_privilege(current_user, %s::oid, %s)", (relation, privilege)
+        ).fetchone()[0] is False
+        conn.execute(sql.SQL("GRANT {} TO {} WITH SET TRUE").format(
+            sql.Identifier(privileged), sql.Identifier(switch_path[-1])
+        ))
+        conn.execute("RESET ROLE")
+        conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(privileged)))
+        assert conn.execute(
+            "SELECT has_table_privilege(current_user, %s::oid, %s)", (relation, privilege)
+        ).fetchone()[0] is True
+        if privileged == "pg_write_all_data":
+            with pytest.raises(_RolledBack), conn.transaction():
+                conn.execute(
+                    "INSERT INTO sec_derived_pointer_tokens(product, backend_pid) "
+                    "VALUES ('acl_escalation_probe', 1)"
+                )
+                raise _RolledBack
+
+
+_Edge = tuple[str, str, bool, bool, bool]
+
+# Edges (role, member, inherit, set, admin) from the reader R to the privileged role
+# P; the switch path is what a login that may only switch to R must traverse
+# before the reachable ADMIN OPTION can be used.
+_ADMIN_TOPOLOGIES: dict[str, tuple[tuple[_Edge, ...], tuple[str, ...]]] = {
+    "direct": ((("P", "R", False, False, True),), ("R",)),
+    "set_intermediate": (
+        (("I1", "R", False, True, False), ("P", "I1", False, False, True)), ("R", "I1"),
+    ),
+    "inherit_intermediate": (
+        (("I1", "R", True, False, False), ("P", "I1", False, False, True)), ("R",),
+    ),
+    "inherit_chain": (
+        (
+            ("I1", "R", True, False, False), ("I2", "I1", True, False, False),
+            ("P", "I2", False, False, True),
+        ),
+        ("R",),
+    ),
+    "set_then_inherit": (
+        (
+            ("I1", "R", False, True, False), ("I2", "I1", True, False, False),
+            ("P", "I2", False, False, True),
+        ),
+        ("R", "I1"),
+    ),
+    "both_flags_then_set": (
+        (
+            ("I1", "R", True, True, False), ("I2", "I1", False, True, False),
+            ("P", "I2", False, False, True),
+        ),
+        ("R", "I1", "I2"),
+    ),
+    "long_mixed": (
+        (
+            ("I1", "R", False, True, False), ("I2", "I1", False, True, False),
+            ("I3", "I2", True, False, False), ("P", "I3", False, False, True),
+        ),
+        ("R", "I1", "I2"),
+    ),
+}
+
+
+def _grant_topology(
+    graph: _RoleGraph, reader: str, privileged: str, edges: tuple[_Edge, ...]
+) -> dict[str, str]:
+    """Grant ``edges`` plus ``reader`` to the disposable login (SET only)."""
+    names = {
+        "R": reader, "P": privileged,
+        **{label.upper(): role for label, role in graph.roles.items()},
+    }
+    for role, member, inherit, set_, admin in edges:
+        _grant_membership(names[role], names[member], inherit=inherit, set_=set_, admin=admin)
+    _grant_membership(reader, graph.login, inherit=False, set_=True, admin=False)
+    return names
+
+
+def _apply_topology(graph: _RoleGraph, reader: str, privileged: str, topology: str) -> tuple[str, ...]:
+    edges, switch_path = _ADMIN_TOPOLOGIES[topology]
+    names = _grant_topology(graph, reader, privileged, edges)
+    return tuple(names[step] for step in switch_path)
+
+
+@pytest.mark.parametrize("topology", sorted(_ADMIN_TOPOLOGIES))
+@pytest.mark.parametrize(
+    ("privileged", "privilege"), [("pg_write_all_data", "INSERT"), ("pg_maintain", "MAINTAIN")]
+)
+@pytest.mark.parametrize("reader", loader._READER_ROLES)
+def test_reader_reachable_admin_option_is_refused_before_ddl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader: str, privileged: str,
+    privilege: str, topology: str,
+) -> None:
+    with (
+        _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir),
+        _role_graph("i1", "i2", "i3") as graph,
+    ):
+        _install_production_ledger(factory, schema)
+        switch_path = _apply_topology(graph, reader, privileged, topology)
+        with factory() as conn:
+            # The posture the SET-only walk admitted: no effective, inherited or
+            # SET-reachable write privilege anywhere yet.
+            assert conn.execute(
+                "SELECT has_table_privilege(%s, 'sec_derived_publications'::regclass, %s), "
+                "pg_has_role(%s, %s, 'SET'), pg_has_role(%s, %s, 'USAGE')",
+                (reader, privilege, reader, privileged, reader, privileged),
+            ).fetchone() == (False, False, False)
+            before = _relation_acls(conn)
+            with monkeypatch.context() as unguarded:
+                unguarded.setattr(loader, "_verify_reader_memberships", lambda _: None)
+                assert loader._schema_state(conn) == "shared_only"
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": f"schema.reader_role.{reader}"}
+        for operation in (
+            lambda: loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory,
+                require_published=False,
+            ),
+            lambda: loader._ensure_schema(contract, factory),
+            lambda: loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            ),
+        ):
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                operation()
+            assert exc.value.details == {"field": f"schema.reader_role.{reader}"}
+        _assert_nothing_published(factory)
+        with factory() as conn:
+            assert _relation_acls(conn) == before
+        # Not a false positive: the graph really lets the reader obtain the privilege.
+        _escalate_through_admin_option(
+            graph, schema, switch_path=switch_path, privileged=privileged, privilege=privilege,
+        )
+
+
+@pytest.mark.parametrize("stage", ["absent", "shared_only", "compatible"])
+def test_reader_admin_option_refuses_at_every_stage_before_any_ddl(
+    tmp_path: Path, stage: str
+) -> None:
+    with (
+        _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir),
+        _restored_memberships(),
+    ):
+        if stage != "absent":
+            _install_production_ledger(factory, schema)
+        if stage == "compatible":
+            assert loader._ensure_schema_profile(contract, factory)[0] is True
+        _grant_membership("pg_write_all_data", "app_runtime", inherit=False, set_=False, admin=True)
+        with factory() as conn:
+            regclasses = conn.execute(
+                "SELECT to_regclass('sec_derived_publications'), "
+                "to_regclass('bond_market_implied_rating_v1')"
+            ).fetchone()
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.details == {"field": "schema.reader_role.app_runtime"}
+        assert exc.value.phase == "schema_install"
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT to_regclass('sec_derived_publications'), "
+                "to_regclass('bond_market_implied_rating_v1')"
+            ).fetchone() == regclasses
+        if stage == "compatible":
+            _assert_nothing_published_rows(factory)
+
+
+def test_admin_option_outside_reader_reach_and_read_only_memberships_are_admitted(
+    tmp_path: Path,
+) -> None:
+    with (
+        _database(tmp_path) as (contract, artifact, factory, schema, _),
+        _role_graph("holder", "plain") as graph,
+    ):
+        _install_production_ledger(factory, schema)
+        assert loader._ensure_schema_profile(contract, factory)[0] is True
+        holder, plain = graph.roles["holder"], graph.roles["plain"]
+        # ADMIN OPTIONs elsewhere in the cluster -- on a write role, and even on a
+        # reader itself (an incoming edge) -- are not held by any reader principal.
+        _grant_membership("pg_write_all_data", holder, inherit=False, set_=False, admin=True)
+        _grant_membership("app_analytics_ro", holder, inherit=False, set_=False, admin=True)
+        # Innocuous non-administrative memberships of both readers.
+        _grant_membership(plain, "app_runtime", inherit=True, set_=True, admin=False)
+        _grant_membership(plain, "app_analytics_ro", inherit=False, set_=True, admin=False)
+        with factory() as conn:
+            for relation in _ALL_RELATIONS:
+                conn.execute(sql.SQL("GRANT SELECT ON {} TO app_analytics_ro").format(
+                    sql.Identifier(relation)
+                ))
+        _grant_membership("app_analytics_ro", "app_runtime", inherit=True, set_=True, admin=False)
+        with factory() as conn:
+            assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)
+        result = loader._read_only_operation(
+            artifact, contract=contract, connection_factory=factory, require_published=False,
+        )
+        assert result.outcome == "dry_run_verified"
+
+
+# ADMIN OPTION held beyond a membership the reader cannot use: an edge with neither
+# INHERIT nor SET, or a SET edge behind an INHERIT-only edge (PG18 SET ROLE needs an
+# unbroken SET chain from the session user).  Each entry is (edges, the roles a
+# login that may only switch to R can SET ROLE to, the ADMIN holder).
+_UNUSABLE_ADMIN_TOPOLOGIES: dict[str, tuple[tuple[_Edge, ...], tuple[str, ...], str]] = {
+    "bare_direct": (
+        (("I1", "R", False, False, False), ("P", "I1", False, False, True)), ("R",), "I1",
+    ),
+    "set_then_bare": (
+        (
+            ("I1", "R", False, True, False), ("I2", "I1", False, False, False),
+            ("P", "I2", False, False, True),
+        ),
+        ("R", "I1"), "I2",
+    ),
+    "inherit_then_bare": (
+        (
+            ("I1", "R", True, False, False), ("I2", "I1", False, False, False),
+            ("P", "I2", False, False, True),
+        ),
+        ("R",), "I2",
+    ),
+    "bare_then_set": (
+        (
+            ("I1", "R", False, False, False), ("I2", "I1", False, True, False),
+            ("P", "I2", False, False, True),
+        ),
+        ("R",), "I2",
+    ),
+    "bare_then_inherit": (
+        (
+            ("I1", "R", False, False, False), ("I2", "I1", True, False, False),
+            ("P", "I2", False, False, True),
+        ),
+        ("R",), "I2",
+    ),
+    "inherit_then_set": (
+        (
+            ("I1", "R", True, False, False), ("I2", "I1", False, True, False),
+            ("P", "I2", False, False, True),
+        ),
+        ("R",), "I2",
+    ),
+    "set_inherit_set": (
+        (
+            ("I1", "R", False, True, False), ("I2", "I1", True, False, False),
+            ("I3", "I2", False, True, False), ("P", "I3", False, False, True),
+        ),
+        ("R", "I1"), "I3",
+    ),
+}
+
+
+def _ledger_relation_oid(schema: str) -> int:
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        admin.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        return admin.execute("SELECT 'sec_derived_pointer_tokens'::regclass::oid").fetchone()[0]
+
+
+def _assert_admin_option_unusable(
+    graph: _RoleGraph,
+    schema: str,
+    names: dict[str, str],
+    *,
+    settable: tuple[str, ...],
+    holder: str,
+    privilege: str,
+    target: str = "P",
+    alterable: bool = False,
+) -> None:
+    """A genuine login that may only switch to R cannot reach or use the ADMIN OPTION.
+
+    From the login every topology role is tried with SET ROLE: exactly ``settable``
+    (never the holder, never the target) succeeds.  At R and at each settable role
+    (none of which has CREATEROLE) the target is granted neither by plain GRANT nor
+    GRANTED BY the holder, the holder's privileges are not inherited and the ledger
+    privilege is absent.  ``alterable`` targets (ordinary roles, not reserved
+    predefined ones) also refuse ALTER ROLE.  ``pg_has_role(..., 'MEMBER WITH ADMIN
+    OPTION')`` is still true: it walks every membership edge, whatever its flags,
+    so it is not the capability predicate.  Every attempt is rolled back.
+    """
+    administered, holder_role = names[target], names[holder]
+    relation = _ledger_relation_oid(schema)
+    with _login_connection(graph, schema) as conn:
+        reachable = []
+        for label in sorted(names):
+            try:
+                with conn.transaction():
+                    conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(names[label])))
+                reachable.append(label)
+            except psycopg.errors.InsufficientPrivilege:
+                pass
+        assert tuple(sorted(reachable)) == tuple(sorted(settable))
+        for label in settable:
+            conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(names[label])))
+            assert conn.execute(
+                "SELECT has_table_privilege(current_user, %s::oid, %s), "
+                "pg_has_role(current_user, %s, 'USAGE'), "
+                "(SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user), "
+                "pg_has_role(current_user, %s, 'MEMBER WITH ADMIN OPTION')",
+                (relation, privilege, holder_role, administered),
+            ).fetchone() == (False, False, False, True)
+            statements = [
+                sql.SQL("GRANT {} TO {} WITH SET TRUE").format(
+                    sql.Identifier(administered), sql.Identifier(names[label])
+                ),
+                sql.SQL("GRANT {} TO {} WITH SET TRUE GRANTED BY {}").format(
+                    sql.Identifier(administered), sql.Identifier(names[label]),
+                    sql.Identifier(holder_role),
+                ),
+            ]
+            if alterable:
+                statements.append(sql.SQL("ALTER ROLE {} CONNECTION LIMIT 7").format(
+                    sql.Identifier(administered)
+                ))
+            for statement in statements:
+                # PG18 reports "no possible grantors" (XX000) when no role the
+                # current user inherits holds the ADMIN OPTION, 42501 otherwise.
+                with pytest.raises(
+                    (psycopg.errors.InsufficientPrivilege, psycopg.errors.InternalError_)
+                ), conn.transaction():
+                    conn.execute(statement)
+            conn.execute("RESET ROLE")
+
+
+@pytest.mark.parametrize("topology", sorted(_UNUSABLE_ADMIN_TOPOLOGIES))
+@pytest.mark.parametrize(
+    ("privileged", "privilege"), [("pg_write_all_data", "INSERT"), ("pg_maintain", "MAINTAIN")]
+)
+@pytest.mark.parametrize("reader", loader._READER_ROLES)
+def test_admin_option_behind_an_unusable_membership_is_admitted(
+    tmp_path: Path, reader: str, privileged: str, privilege: str, topology: str,
+) -> None:
+    with (
+        _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir),
+        _role_graph("i1", "i2", "i3") as graph,
+    ):
+        _install_production_ledger(factory, schema)
+        assert loader._ensure_schema_profile(contract, factory)[0] is True
+        edges, settable, holder = _UNUSABLE_ADMIN_TOPOLOGIES[topology]
+        names = _grant_topology(graph, reader, privileged, edges)
+        with factory() as conn:
+            acls = _relation_acls(conn)
+        memberships = _membership_rows()
+        # Denied from a genuine login at every principal it can act as ...
+        _assert_admin_option_unusable(
+            graph, schema, names, settable=settable, holder=holder, privilege=privilege,
+        )
+        # ... with no membership, ACL or ledger change left behind.
+        assert _membership_rows() == memberships
+        with factory() as conn:
+            assert _relation_acls(conn) == acls
+            assert loader._schema_state_and_profile(conn) == ("compatible", loader.PROFILE_RR1)
+        _assert_nothing_published_rows(factory)
+        assert loader._read_only_operation(
+            artifact, contract=contract, connection_factory=factory, require_published=False,
+        ).outcome == "dry_run_verified"
+        assert loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir,
+        ).outcome == "published_verified"
+        assert _membership_rows() == memberships
+
+
+@contextmanager
+def _createrole(roles: tuple[str, ...]) -> Iterator[None]:
+    """Give ``roles`` CREATEROLE for the block (disposable cluster), then restore it."""
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        prior = dict(admin.execute(
+            "SELECT rolname, rolcreaterole FROM pg_roles WHERE rolname=ANY(%s)", (list(roles),)
+        ).fetchall())
+    assert set(prior) == set(roles) and not any(prior.values())
+    for role in roles:
+        _admin_execute(sql.SQL("ALTER ROLE {} CREATEROLE").format(sql.Identifier(role)))
+    try:
+        yield
+    finally:
+        for role in roles:
+            _admin_execute(sql.SQL("ALTER ROLE {} NOCREATEROLE").format(sql.Identifier(role)))
+
+
+# CREATEROLE lets the current role ALTER every role it administers through ANY
+# membership path.  X is an ordinary role that inherits pg_write_all_data; each
+# entry is (edges, CREATEROLE roles, SET path to the CREATEROLE principal) for the
+# exploitable shapes, (edges, CREATEROLE roles, settable roles) for the others.
+_X_WRITES: _Edge = ("P", "X", True, False, False)
+_CREATEROLE_ADMIN_TOPOLOGIES: dict[str, tuple[tuple[_Edge, ...], tuple[str, ...], tuple[str, ...]]] = {
+    "reader_createrole_bare": (
+        (("I1", "R", False, False, False), ("X", "I1", False, False, True), _X_WRITES),
+        ("R",), ("R",),
+    ),
+    "set_to_createrole_then_bare": (
+        (
+            ("C", "R", False, True, False), ("I1", "C", False, False, False),
+            ("X", "I1", False, False, True), _X_WRITES,
+        ),
+        ("C",), ("R", "C"),
+    ),
+}
+_CREATEROLE_UNUSABLE_TOPOLOGIES: dict[str, tuple[tuple[_Edge, ...], tuple[str, ...], tuple[str, ...]]] = {
+    "inherit_to_createrole_then_bare": (
+        (
+            ("C", "R", True, False, False), ("I1", "C", False, False, False),
+            ("X", "I1", False, False, True), _X_WRITES,
+        ),
+        ("C",), ("R",),
+    ),
+    "createrole_behind_bare_then_set": (
+        (
+            ("I1", "R", False, False, False), ("C", "I1", False, True, False),
+            ("I2", "C", False, False, False), ("X", "I2", False, False, True), _X_WRITES,
+        ),
+        ("C",), ("R",),
+    ),
+}
+
+
+def _take_over_through_createrole(
+    graph: _RoleGraph, schema: str, names: dict[str, str], switch_path: tuple[str, ...]
+) -> None:
+    """Prove the refused graph is exploitable: take X over, then write as X (rolled back).
+
+    The genuine login switches to the CREATEROLE principal, makes the administered
+    X a LOGIN role with a password it chooses, connects as X and inserts into the
+    ledger through X's inherited pg_write_all_data.  X is disposable and dropped by
+    the fixture.
+    """
+    relation = _ledger_relation_oid(schema)
+    password = uuid4().hex
+    with _login_connection(graph, schema) as conn:
+        for label in switch_path:
+            conn.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(names[label])))
+        assert conn.execute(
+            "SELECT has_table_privilege(current_user, %s::oid, 'INSERT')", (relation,)
+        ).fetchone()[0] is False
+        with pytest.raises(
+            (psycopg.errors.InsufficientPrivilege, psycopg.errors.InternalError_)
+        ), conn.transaction():
+            conn.execute(sql.SQL("GRANT {} TO {} WITH SET TRUE").format(
+                sql.Identifier(names["X"]), sql.Identifier(names[switch_path[-1]])
+            ))
+        conn.execute(sql.SQL("ALTER ROLE {} LOGIN PASSWORD {}").format(
+            sql.Identifier(names["X"]), sql.Literal(password)
+        ))
+    base = psycopg.conninfo.conninfo_to_dict(_worker_dsn())
+    with psycopg.connect(
+        **{**base, "user": names["X"], "password": password},
+        autocommit=True, connect_timeout=5, options=f"-c search_path={schema},public",
+    ) as taken:
+        with pytest.raises(_RolledBack), taken.transaction():
+            taken.execute(
+                "INSERT INTO sec_derived_pointer_tokens(product, backend_pid) "
+                "VALUES ('acl_createrole_probe', 1)"
+            )
+            raise _RolledBack
+
+
+@pytest.mark.parametrize("topology", sorted(_CREATEROLE_ADMIN_TOPOLOGIES))
+@pytest.mark.parametrize("reader", loader._READER_ROLES)
+def test_createrole_principal_administers_through_any_membership_and_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader: str, topology: str,
+) -> None:
+    edges, createrole, switch_path = _CREATEROLE_ADMIN_TOPOLOGIES[topology]
+    with (
+        _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir),
+        _role_graph("i1", "c", "x") as graph,
+    ):
+        _install_production_ledger(factory, schema)
+        names = _grant_topology(graph, reader, "pg_write_all_data", edges)
+        with _createrole(tuple(names[label] for label in createrole)):
+            with factory() as conn:
+                before = _relation_acls(conn)
+                with monkeypatch.context() as unguarded:
+                    unguarded.setattr(loader, "_verify_reader_memberships", lambda _: None)
+                    assert loader._schema_state(conn) == "shared_only"
+                with pytest.raises(loader.ArtifactLoaderError) as exc:
+                    loader._schema_state(conn)
+            assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+            assert exc.value.details == {"field": f"schema.reader_role.{reader}"}
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._publish_verified_artifact(
+                    artifact, contract=contract, connection_factory=factory,
+                    evidence_dir=evidence_dir,
+                )
+            assert exc.value.details == {"field": f"schema.reader_role.{reader}"}
+            assert exc.value.phase == "schema_install"
+            _assert_nothing_published(factory)
+            with factory() as conn:
+                assert _relation_acls(conn) == before
+            _take_over_through_createrole(graph, schema, names, switch_path)
+
+
+@pytest.mark.parametrize("topology", sorted(_CREATEROLE_UNUSABLE_TOPOLOGIES))
+@pytest.mark.parametrize("reader", loader._READER_ROLES)
+def test_createrole_principal_the_reader_cannot_become_is_admitted(
+    tmp_path: Path, reader: str, topology: str,
+) -> None:
+    edges, createrole, settable = _CREATEROLE_UNUSABLE_TOPOLOGIES[topology]
+    with (
+        _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir),
+        _role_graph("i1", "i2", "c", "x") as graph,
+    ):
+        _install_production_ledger(factory, schema)
+        assert loader._ensure_schema_profile(contract, factory)[0] is True
+        names = _grant_topology(graph, reader, "pg_write_all_data", edges)
+        with _createrole(tuple(names[label] for label in createrole)):
+            with factory() as conn:
+                acls = _relation_acls(conn)
+            memberships = _membership_rows()
+            holder = next(member for role, member, *_, admin in edges if role == "X" and admin)
+            _assert_admin_option_unusable(
+                graph, schema, names, settable=settable, holder=holder, privilege="INSERT",
+                target="X", alterable=True,
+            )
+            assert _membership_rows() == memberships
+            with factory() as conn:
+                assert _relation_acls(conn) == acls
+                assert loader._schema_state_and_profile(conn) == (
+                    "compatible", loader.PROFILE_RR1
+                )
+            _assert_nothing_published_rows(factory)
+            assert loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            ).outcome == "published_verified"
+            assert _membership_rows() == memberships
+
+
+# --- r4087730848: the owner's ordinary privileges survive only as owner ACL entries -------
+
+
+def test_pg18_owner_default_is_the_pinned_privilege_set_and_both_acl_forms_admit(
+    tmp_path: Path,
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        assert loader._ensure_schema_profile(contract, factory)[0] is True
+        with factory() as conn:
+            default = conn.execute(
+                "SELECT array_agg(privilege_type ORDER BY privilege_type), "
+                "bool_and(grantor=grantee), bool_or(is_grantable) "
+                "FROM aclexplode(acldefault('r', "
+                "(SELECT oid FROM pg_roles WHERE rolname='worker_writer')))"
+            ).fetchone()
+            assert (tuple(default[0]), default[1], default[2]) == (
+                loader._OWNER_RELATION_PRIVILEGES, True, False
+            )
+            explicit = dict(_relation_acls(conn))
+            assert all(
+                acl is None or "worker_writer=arwdDxtm/worker_writer" in acl
+                for acl in explicit.values()
+            ), explicit
+            assert any(acl is not None for acl in explicit.values())
+            assert loader._schema_state(conn) == "compatible"
+        # The canonical NULL form (normalized in the disposable catalog only) is the
+        # same owner default and must admit exactly like the explicit form.
+        with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+            admin.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+            admin.execute(
+                "UPDATE pg_catalog.pg_class SET relacl=NULL "
+                "WHERE relnamespace=current_schema()::regnamespace AND relname=ANY(%s)",
+                (list(_ALL_RELATIONS),),
+            )
+        with factory() as conn:
+            assert all(acl is None for _, acl in _relation_acls(conn))
+            assert loader._schema_state(conn) == "compatible"
+        result = loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir,
+        )
+        assert result.outcome == "published_verified"
+
+
+@pytest.mark.parametrize("privilege", loader._OWNER_RELATION_PRIVILEGES)
+@pytest.mark.parametrize("relation", _ALL_RELATIONS)
+def test_owner_self_revoke_of_an_ordinary_privilege_is_refused(
+    tmp_path: Path, relation: str, privilege: str
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            conn.execute(sql.SQL("REVOKE {} ON {} FROM worker_writer").format(
+                sql.SQL(privilege), sql.Identifier(relation)
+            ))
+            assert conn.execute(
+                "SELECT pg_get_userbyid(relowner), "
+                "has_table_privilege('worker_writer', oid, %s) "
+                "FROM pg_class WHERE oid=%s::regclass",
+                (privilege, relation),
+            ).fetchone() == ("worker_writer", False)
+            before = _relation_acls(conn)
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": f"schema.owner_acl.{relation}"}
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+        assert exc.value.details == {"field": f"schema.owner_acl.{relation}"}
+        assert exc.value.phase == "schema_install"
+        # Read back as the administrator: a SELECT self-revoke also blocks the owner.
+        _assert_nothing_published_rows(lambda: psycopg.connect(
+            os.environ["SEC_TEST_DATABASE_URL"], autocommit=True,
+            options=f"-c search_path={schema},public",
+        ))
+        with factory() as conn:
+            assert _relation_acls(conn) == before
+
+
+def test_inherited_write_role_cannot_mask_an_owner_self_revoke(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, _, _), _restored_memberships():
+        assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            conn.execute("REVOKE INSERT ON bond_market_implied_rating_v1 FROM worker_writer")
+        _grant_membership("pg_write_all_data", "worker_writer", inherit=True, set_=False, admin=False)
+        with factory() as conn:
+            loader._verify_worker_session(conn)
+            assert conn.execute(
+                "SELECT has_table_privilege(current_user, "
+                "'bond_market_implied_rating_v1'::regclass, 'INSERT')"
+            ).fetchone()[0] is True
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+        assert exc.value.details == {"field": "schema.owner_acl.bond_market_implied_rating_v1"}
+
+
+# --- r4087730853: exact type modifiers -----------------------------------------------
+
+_DIGEST_COLUMNS = (
+    ("sec_derived_publications", "build_fingerprint"),
+    ("bond_market_implied_rating_v1_builds", "policy_digest"),
+    ("bond_market_implied_rating_v1_builds", "input_fingerprint"),
+    ("bond_market_implied_rating_v1_builds", "rows_digest"),
+    ("bond_market_implied_rating_v1", "policy_digest"),
+)
+_DRIFTED_WIDTHS = {"1": 5, "63": 67, "65": 69, "unbounded": -1}
+
+
+def test_clean_install_typmods_match_the_pinned_modifiers(tmp_path: Path) -> None:
+    with _database(tmp_path) as (contract, _, factory, schema, _):
+        _install_production_ledger(factory, schema)
+        assert loader._ensure_schema_profile(contract, factory)[0] is True
+        with factory() as conn:
+            observed = {
+                (row[0], row[1]): (row[2], row[3])
+                for row in conn.execute(
+                    "SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod), "
+                    "a.atttypmod FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid "
+                    "WHERE c.relnamespace=current_schema()::regnamespace "
+                    "AND c.relname=ANY(%s) AND a.attnum>0 AND NOT a.attisdropped",
+                    (list(loader._PHYSICAL_TABLES),),
+                ).fetchall()
+            }
+        for relation in loader._PHYSICAL_TABLES:
+            for column, type_name, _ in loader._EXPECTED_COLUMNS[relation]:
+                rendered, typmod = observed[(relation, column)]
+                if (relation, column) in _DIGEST_COLUMNS:
+                    assert (type_name, rendered, typmod) == ("bpchar", "character(64)", 68)
+                else:
+                    assert type_name != "bpchar" and typmod == -1, (relation, column)
+                assert loader._EXPECTED_COLUMN_TYPMODS[relation].get(column, -1) == typmod
+
+
+@pytest.mark.parametrize("width", sorted(_DRIFTED_WIDTHS))
+@pytest.mark.parametrize(("relation", "column"), _DIGEST_COLUMNS)
+def test_digest_column_width_drift_is_refused_before_any_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relation: str, column: str, width: str,
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        product = relation.startswith("bond_market_")
+        if product:
+            assert loader._ensure_schema_profile(contract, factory)[0] is True
+        type_sql = sql.SQL("bpchar" if width == "unbounded" else f"char({width})")
+        # Views over the column block ALTER TYPE; the reviewed view definitions are
+        # recreated verbatim afterwards (a preserved-name drift).
+        views = (
+            ("bond_market_implied_rating_v1_current", "bond_market_implied_rating_publications")
+            if product else ("sec_current_derived_publications",)
+        )
+        with factory() as conn, conn.transaction():
+            acls_before = _relation_acls(conn)
+            saved = [
+                conn.execute(
+                    "SELECT pg_get_viewdef(%s::regclass, true), relacl::text FROM pg_class "
+                    "WHERE oid=%s::regclass", (view, view),
+                ).fetchone()
+                for view in views
+            ]
+            for view in views:
+                conn.execute(sql.SQL("DROP VIEW {}").format(sql.Identifier(view)))
+            conn.execute(sql.SQL("ALTER TABLE {} ALTER COLUMN {} TYPE {}").format(
+                sql.Identifier(relation), sql.Identifier(column), type_sql
+            ))
+            for view, (definition, _) in zip(views, saved):
+                conn.execute(sql.SQL("CREATE VIEW {} AS {}").format(
+                    sql.Identifier(view), sql.SQL(definition.rstrip().rstrip(";"))
+                ))
+        # Restore each recreated view's exact prior ACL (disposable catalog only), so
+        # the modifier is the one remaining difference.
+        with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+            admin.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+            for view, (_, acl) in zip(views, saved):
+                admin.execute(
+                    "UPDATE pg_catalog.pg_class SET relacl=%s::aclitem[] WHERE oid=%s::regclass",
+                    (acl, view),
+                )
+        with factory() as conn:
+            assert _relation_acls(conn) == acls_before
+        expected_state = "compatible" if product else "shared_only"
+        with factory() as conn:
+            observed = loader._relation_columns(conn, relation)
+            expected = loader._expected_relation_columns(relation)
+            drifted = [(seen, pinned) for seen, pinned in zip(observed, expected) if seen != pinned]
+            assert len(observed) == len(expected) and len(drifted) == 1
+            seen, pinned = drifted[0]
+            # Same name, type name, nullability and expression semantics: only the
+            # modifier differs.
+            assert seen[0] == column and seen[1] == "bpchar"
+            assert seen[2] == _DRIFTED_WIDTHS[width] and pinned[2] == 68
+            assert seen[:2] + seen[3:] == pinned[:2] + pinned[3:]
+            # Typmod-blind admission (the pre-fix column contract) would have admitted
+            # this schema: constraints, views, indexes, triggers and ACLs all match.
+            original = loader._expected_relation_columns
+
+            def typmod_blind(name: str) -> tuple[tuple[object, ...], ...]:
+                rows = original(name)
+                if name != relation:
+                    return rows
+                return tuple(
+                    (*row[:2], seen[2], *row[3:]) if row[0] == column else row for row in rows
+                )
+
+            with monkeypatch.context() as blind:
+                blind.setattr(loader, "_expected_relation_columns", typmod_blind)
+                assert loader._schema_state(conn) == expected_state
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._schema_state(conn)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": f"schema.columns.{relation}"}
+        for operation in (
+            lambda: loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory,
+                require_published=product,
+            ),
+            lambda: loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            ),
+        ):
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                operation()
+            assert exc.value.details == {"field": f"schema.columns.{relation}"}
+        with factory() as conn:
+            assert loader._relation_columns(conn, relation) == observed
+        if product:
+            _assert_nothing_published_rows(factory)
+        else:
+            _assert_nothing_published(factory)
+
+
+# --- r4087730863: parent recheck before every early read-only return -------------------
+
+
+def _mutate_parent(schema: str, contract: loader.FrozenArtifactContract, mutation: str) -> str:
+    """Commit a parent change from a second (administrator) connection; returns the field."""
+    pins = contract.parent
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        admin.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        if mutation == "pointer_touch":
+            admin.execute(
+                "UPDATE bond_panel_app_pointer SET changed_at=changed_at + interval '1 second' "
+                "WHERE product=%s", (loader.PANEL_PRODUCT,),
+            )
+            return "parent.race"
+        if mutation == "pointer_moved":
+            moved = uuid4()
+            admin.execute(
+                "INSERT INTO bond_panel_publications (publication_id, product, "
+                "parent_publication_id, publication_status, failure_reason, config_hash, "
+                "input_fingerprint, code_revision, first_month, last_closed_month, open_month, "
+                "snapshot_rows, rv_signal_rows, returns_rows, ratings_pit_rows, source_lineage, "
+                "gate_evidence, validated_at) SELECT %s::uuid, product, parent_publication_id, "
+                "publication_status, failure_reason, config_hash, input_fingerprint, "
+                "code_revision, first_month, last_closed_month, open_month, snapshot_rows, "
+                "rv_signal_rows, returns_rows, ratings_pit_rows, source_lineage, gate_evidence, "
+                "validated_at FROM bond_panel_publications WHERE publication_id=%s",
+                (moved, pins.publication_id),
+            )
+            admin.execute(
+                "UPDATE bond_panel_app_pointer SET publication_id=%s WHERE product=%s",
+                (moved, loader.PANEL_PRODUCT),
+            )
+            return "parent.pointer"
+        target = pins.publication_id if mutation == "child_header" else pins.parent_publication_id
+        admin.execute(
+            "UPDATE bond_panel_publications SET gate_evidence=gate_evidence || %s "
+            "WHERE publication_id=%s",
+            (Jsonb({"admission_race_probe": True}), target),
+        )
+        return "parent.header_sha256"
+
+
+def _parent_barrier(
+    monkeypatch: pytest.MonkeyPatch, action: Callable[[], None] | None
+) -> dict[str, int]:
+    """Run ``action`` exactly once, right after the first parent read returns."""
+    original = loader._verify_parent
+    seen = {"reads": 0}
+
+    def barrier(conn: psycopg.Connection, **kwargs: object) -> loader.ParentEvidence:
+        seen["reads"] += 1
+        evidence = original(conn, **kwargs)  # type: ignore[arg-type]
+        if seen["reads"] == 1 and action is not None:
+            action()
+        return evidence
+
+    monkeypatch.setattr(loader, "_verify_parent", barrier)
+    return seen
+
+
+_EARLY_RETURN_ENTRYPOINTS = ("dry_run", "recover", "private_absent_dry_run", "private_absent_recover")
+
+
+def _run_early_return(
+    entrypoint: str,
+    contract: loader.FrozenArtifactContract,
+    artifact: loader.VerifiedArtifact,
+    factory: Callable[[], psycopg.Connection],
+    evidence_dir: Path,
+) -> loader.OperationResult:
+    if entrypoint == "dry_run":
+        return loader.dry_run_verified_artifact(
+            artifact, evidence_dir=evidence_dir, connection_factory=factory,
+        )
+    if entrypoint == "recover":
+        return loader.recover_published_artifact(
+            artifact, evidence_dir=evidence_dir, connection_factory=factory,
+        )
+    return loader._read_only_operation(
+        artifact, contract=contract, connection_factory=factory,
+        require_published=entrypoint.endswith("recover"),
+    )
+
+
+def _prepare_early_return(
+    entrypoint: str, factory: Callable[[], psycopg.Connection], schema: str,
+    monkeypatch: pytest.MonkeyPatch, contract: loader.FrozenArtifactContract,
+) -> str:
+    if entrypoint.startswith("private_absent"):
+        return "absent"
+    _install_production_ledger(factory, schema)
+    monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
+    return "shared_only"
+
+
+def _assert_no_product_state(factory: Callable[[], psycopg.Connection], stage: str) -> None:
+    if stage == "absent":
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT to_regclass('sec_derived_publications'), "
+                "to_regclass('bond_market_implied_rating_v1')"
+            ).fetchone() == (None, None)
+    else:
+        _assert_nothing_published(factory)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["pointer_touch", "pointer_moved", "child_header", "predecessor_header"]
+)
+@pytest.mark.parametrize("entrypoint", _EARLY_RETURN_ENTRYPOINTS)
+def test_parent_change_before_an_early_read_only_return_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str, mutation: str,
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        stage = _prepare_early_return(entrypoint, factory, schema, monkeypatch, contract)
+        expected_field: dict[str, str] = {}
+
+        def race() -> None:
+            expected_field["field"] = _mutate_parent(schema, contract, mutation)
+
+        seen = _parent_barrier(monkeypatch, race)
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            _run_early_return(entrypoint, contract, artifact, factory, evidence_dir)
+        assert exc.value.code == loader.ErrorCode.PARENT_MISMATCH.value
+        assert exc.value.details == {"field": expected_field["field"]}
+        assert seen["reads"] == 2
+        receipts = sorted(evidence_dir.glob("*.json"))
+        if entrypoint in {"dry_run", "recover"}:
+            assert len(receipts) == 1 and "-failure-" in receipts[0].name
+            receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+            assert receipt["code"] == loader.ErrorCode.PARENT_MISMATCH.value
+            assert receipt["mode"] == ("dry-run" if entrypoint == "dry_run" else "verify-published")
+            assert receipt["failure_phase"] == (
+                "dry_run_read" if entrypoint == "dry_run" else "verify_published_read"
+            )
+            assert receipt["transaction_outcome"] == "read_only"
+            assert receipt["schema_installed"] is False
+            assert receipt["publication_id"] == artifact.publication.publication_id
+        else:
+            assert receipts == []
+        _assert_no_product_state(factory, stage)
+
+
+@pytest.mark.parametrize("entrypoint", _EARLY_RETURN_ENTRYPOINTS)
+def test_unchanged_parent_early_returns_keep_their_outcomes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str,
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        stage = _prepare_early_return(entrypoint, factory, schema, monkeypatch, contract)
+        seen = _parent_barrier(monkeypatch, None)
+        result = _run_early_return(entrypoint, contract, artifact, factory, evidence_dir)
+        assert result.outcome == (
+            "not_published" if entrypoint.endswith("recover")
+            else "dry_run_verified_schema_install_required"
+        )
+        assert result.schema_installed is False and result.stored is None
+        assert seen["reads"] == 2
+        receipts = sorted(evidence_dir.glob("*.json"))
+        if entrypoint in {"dry_run", "recover"}:
+            assert [receipt.phase for receipt in result.receipts] == [
+                "dry-run" if entrypoint == "dry_run" else "recovery-readback"
+            ]
+            assert [path.name for path in receipts] == [result.receipts[0].basename]
+            document = json.loads(receipts[0].read_text(encoding="utf-8"))
+            assert document["outcome"] == result.outcome
+            assert document["parent"]["header_sha256"] == contract.parent.header_sha256
+        else:
+            assert receipts == []
+        _assert_no_product_state(factory, stage)
+
+
+# --- r4087730866: recovery receipt failure after a completed read-only verification ------
+
+
+class _RecordingConnection:
+    """Pass-through connection that records every statement text it executes."""
+
+    def __init__(self, conn: psycopg.Connection, statements: list[str]) -> None:
+        self._conn = conn
+        self._statements = statements
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._conn.close()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+    def execute(self, statement: object, params: object = None) -> object:
+        text = statement if isinstance(statement, str) else statement.as_string(self._conn)  # type: ignore[attr-defined]
+        self._statements.append(text)
+        return self._conn.execute(statement, params)  # type: ignore[arg-type]
+
+
+def _publication_snapshot(factory: Callable[[], psycopg.Connection]) -> tuple[object, ...]:
+    with factory() as conn:
+        return (
+            conn.execute(
+                "SELECT product, publication_id, set_at FROM sec_derived_current_pointers "
+                "ORDER BY product"
+            ).fetchall(),
+            conn.execute(
+                "SELECT publication_id, lifecycle_state, prepared_at, validated_at "
+                "FROM sec_derived_publications ORDER BY publication_id"
+            ).fetchall(),
+            conn.execute("SELECT count(*) FROM bond_market_implied_rating_v1").fetchone(),
+            conn.execute("SELECT count(*) FROM bond_market_implied_rating_v1_builds").fetchone(),
+            conn.execute(
+                "SELECT product, publication_id, changed_at FROM bond_panel_app_pointer"
+            ).fetchall(),
+        )
+
+
+@pytest.mark.parametrize("fault", ["injected", "fsync_dir", "evidence_unavailable"])
+def test_verified_current_recovery_receipt_failure_requires_recovery_without_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
+) -> None:
+    with _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir):
+        _install_production_ledger(factory, schema)
+        assert loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir,
+        ).outcome == "published_verified"
+        before = _publication_snapshot(factory)
+        monkeypatch.setattr(loader, "_contract_from_artifact", lambda _: contract)
+        recovery = tmp_path / "recovery-evidence"
+        if fault == "evidence_unavailable":
+            recovery = tmp_path / "missing-parent" / "recovery-evidence"
+        else:
+            recovery.mkdir()
+        original_persist = loader._persist_receipt
+        original_fsync = loader._DurableFs.fsync
+        state = {"phase": ""}
+
+        def persist(evidence: Path, *, phase: str, payload: bytes) -> loader.ReceiptRef:
+            state["phase"] = phase
+            try:
+                if fault == "injected" and phase == "recovery-readback":
+                    raise loader.ArtifactLoaderError(
+                        loader.ErrorCode.RECEIPT_FAILURE, field="receipt.injected"
+                    )
+                return original_persist(evidence, phase=phase, payload=payload)
+            finally:
+                state["phase"] = ""
+
+        def fsync(fd: int) -> None:
+            if (
+                fault == "fsync_dir" and state["phase"] == "recovery-readback"
+                and stat.S_ISDIR(os.fstat(fd).st_mode)
+                and os.path.samestat(os.fstat(fd), os.stat(recovery))
+            ):
+                raise OSError("injected recovery directory fsync failure")
+            original_fsync(fd)
+
+        statements: list[str] = []
+        with monkeypatch.context() as faults, pytest.raises(loader.ArtifactLoaderError) as exc:
+            faults.setattr(loader, "_persist_receipt", persist)
+            faults.setattr(loader._DurableFs, "fsync", staticmethod(fsync))
+            loader.recover_published_artifact(
+                artifact, evidence_dir=recovery,
+                connection_factory=lambda: _RecordingConnection(factory(), statements),
+                operation_id="recovery-receipt-loss",
+                operation_started_at_utc=datetime.now(timezone.utc).isoformat(),
+            )
+        error = exc.value
+        assert error.code == loader.ErrorCode.COMMITTED_EVIDENCE_INCOMPLETE.value
+        assert error.details == {"field": "receipt.recovery_readback"}
+        assert error.phase == "recovery_receipt"
+        assert error.schema_installed is False
+        assert error.transaction_outcome == "read_only"
+        assert error.outcome == "recovery_required"
+        assert isinstance(error.__cause__, loader.ArtifactLoaderError)
+        assert error.__cause__.code == loader.ErrorCode.RECEIPT_FAILURE.value
+        # One read-only transaction, nothing but reads.
+        assert statements[0].startswith("SELECT pg_catalog.current_setting('role')")
+        assert "SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY" in statements
+        for statement in statements:
+            assert statement.lstrip().split(None, 1)[0].upper() in {
+                "SELECT", "SHOW", "SET", "WITH"
+            }, statement
+            assert not statement.startswith("SET ") or statement.startswith("SET TRANSACTION")
+        assert _publication_snapshot(factory) == before
+        if fault == "evidence_unavailable":
+            assert error.receipt_written is False
+            assert not recovery.exists()
+        else:
+            assert error.receipt_written is True
+            [failure] = recovery.glob("*-failure-*.json")
+            document = json.loads(failure.read_text(encoding="utf-8"))
+            assert document["operation_id"] == "recovery-receipt-loss"
+            assert document["mode"] == "verify-published"
+            assert document["code"] == loader.ErrorCode.COMMITTED_EVIDENCE_INCOMPLETE.value
+            assert document["failure_phase"] == "recovery_receipt"
+            assert document["transaction_outcome"] == "read_only"
+            assert document["schema_installed"] is False
+            assert document["outcome"] == "recovery_required"
+            assert document["publication_id"] == artifact.publication.publication_id
+        # A later bounded recovery with durable evidence still verifies the same state.
+        again = loader.recover_published_artifact(
+            artifact, evidence_dir=evidence_dir, connection_factory=factory,
+        )
+        assert again.outcome == "already_published_verified"
+        assert _publication_snapshot(factory) == before

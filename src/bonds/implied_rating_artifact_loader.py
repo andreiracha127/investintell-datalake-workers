@@ -1621,12 +1621,39 @@ _SECONDARY_INDEXES = {
     "bond_market_implied_rating_v1_cusip_month_idx": ("cusip_id", "month"),
 }
 
+# Exact PG18 ``pg_attribute.atttypmod`` of the physical columns.  The reviewed DDL
+# declares every digest/fingerprint as ``char(64)``, which PG18 stores as the
+# bpchar modifier 64 + VARHDRSZ = 68; every other pinned column is an
+# unconstrained type whose modifier is -1.  The type name alone cannot tell
+# ``char(64)`` from ``char(32)`` or unbounded ``bpchar``, and the unchanged CHECK
+# text keeps the constraint hash equal, so the modifier is compared explicitly.
+# A malformed width is refused, never padded or normalized.
+_UNCONSTRAINED_TYPMOD = -1
+_CHAR64_TYPMOD = 68
+_EXPECTED_COLUMN_TYPMODS: dict[str, dict[str, int]] = {
+    "sec_derived_publications": {"build_fingerprint": _CHAR64_TYPMOD},
+    "sec_derived_current_pointers": {},
+    "sec_derived_publication_tokens": {},
+    "sec_derived_pointer_tokens": {},
+    "bond_market_implied_rating_v1_builds": {
+        "policy_digest": _CHAR64_TYPMOD,
+        "input_fingerprint": _CHAR64_TYPMOD,
+        "rows_digest": _CHAR64_TYPMOD,
+    },
+    "bond_market_implied_rating_v1": {"policy_digest": _CHAR64_TYPMOD},
+}
+
 
 def _expected_relation_columns(name: str) -> tuple[tuple[Any, ...], ...]:
+    """(name, type, typmod, nullable, hasdef, default, identity, generated) per column."""
     expressions = _EXPECTED_COLUMN_EXPRESSIONS[name]
+    typmods = _EXPECTED_COLUMN_TYPMODS[name]
     return tuple(
-        (*column, *expressions.get(column[0], _NO_COLUMN_EXPRESSION))
-        for column in _EXPECTED_COLUMNS[name]
+        (
+            column_name, type_name, typmods.get(column_name, _UNCONSTRAINED_TYPMOD), nullable,
+            *expressions.get(column_name, _NO_COLUMN_EXPRESSION),
+        )
+        for column_name, type_name, nullable in _EXPECTED_COLUMNS[name]
     )
 
 
@@ -1819,6 +1846,14 @@ _READER_FORBIDDEN_TABLE_PRIVILEGES = (
     "INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN"
 )
 _READER_FORBIDDEN_COLUMN_PRIVILEGES = "INSERT, UPDATE, REFERENCES"
+# The owner's complete ordinary privilege set on every admitted table and view:
+# exactly ``aclexplode(acldefault('r', owner))`` on PG18 (a NULL ACL means this
+# default; the reviewed DDL's REVOKE-from-PUBLIC materializes it as the explicit
+# ``arwdDxtm``).  Ownership only confers the right to grant, not ordinary access,
+# so every one of these must remain an owner-issued entry of the relation's own ACL.
+_OWNER_RELATION_PRIVILEGES = (
+    "DELETE", "INSERT", "MAINTAIN", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE",
+)
 
 
 def _acl_item_admitted(
@@ -1864,6 +1899,69 @@ def _verify_schema_privileges(conn: psycopg.Connection) -> None:
             _fail(ErrorCode.SCHEMA_MISMATCH, field)
 
 
+def _verify_reader_memberships(conn: psycopg.Connection) -> None:
+    """No reader holds, or can act as a principal holding, any ADMIN OPTION.
+
+    An ADMIN OPTION lets its holder add memberships -- including its own, with SET
+    or INHERIT enabled -- so a reader whose membership edge is ``INHERIT FALSE,
+    SET FALSE, ADMIN TRUE`` on ``pg_write_all_data`` shows no effective write
+    privilege yet can obtain one at will.  Any ADMIN OPTION edge held by a principal
+    the reader can act as therefore refuses, whatever that edge's own INHERIT/SET
+    flags and whatever the administered role grants today; admission never tries
+    to prove an administered role will stay harmless, and it never edits
+    memberships.
+
+    Where an ADMIN OPTION can be exercised follows PG18 membership semantics:
+
+    * each reader itself is a principal sessions may run as (a LOGIN session user,
+      or a role its login may switch to);
+    * switching the current role needs an unbroken chain of ``SET TRUE`` edges from
+      the session user, so a role reached through an ``INHERIT``-only edge
+      contributes its inherited roles but never extends the SET chain;
+    * granting or revoking a membership uses the ADMIN OPTION of the current role
+      and of every role it inherits -- an unbroken chain of ``INHERIT TRUE`` edges
+      from a role the session can be (also what ``GRANTED BY`` requires of the
+      grantor);
+    * a current role with CREATEROLE may ALTER, RENAME or DROP every role it is
+      admin of through ANY membership path: PG18 ``is_admin_of_role`` walks every
+      edge, whatever its INHERIT/SET flags.  Making an administered role LOGIN and
+      setting its password takes it over, so ADMIN held anywhere below a
+      SET-reachable CREATEROLE principal refuses;
+    * otherwise an edge with neither INHERIT nor SET conveys nothing, so ADMIN held
+      beyond it is not reader capability and does not refuse.
+
+    ``principal`` carries whether a SET chain is still unbroken: from a
+    SET-reachable role it follows INHERIT and SET edges, from an inherit-only role
+    INHERIT edges alone.  ``createrole_member`` follows every edge from each
+    SET-reachable CREATEROLE principal.  The states are finite and UNION bounds
+    both recursions, cyclic graphs included.  Checked for every schema state,
+    before any DDL.
+    """
+    rows = conn.execute(
+        "WITH RECURSIVE principal(reader_oid,role_oid,can_set) AS ("
+        "SELECT oid,oid,true FROM pg_catalog.pg_roles WHERE rolname=ANY(%s) "
+        "UNION SELECT p.reader_oid,m.roleid,p.can_set AND m.set_option "
+        "FROM principal p JOIN pg_catalog.pg_auth_members m ON m.member=p.role_oid "
+        "WHERE m.inherit_option OR (p.can_set AND m.set_option)), "
+        "createrole_member(reader_oid,role_oid) AS ("
+        "SELECT p.reader_oid,p.role_oid FROM principal p "
+        "JOIN pg_catalog.pg_roles c ON c.oid=p.role_oid WHERE p.can_set AND c.rolcreaterole "
+        "UNION SELECT o.reader_oid,m.roleid FROM createrole_member o "
+        "JOIN pg_catalog.pg_auth_members m ON m.member=o.role_oid), "
+        "administrator(reader_oid,role_oid) AS ("
+        "SELECT reader_oid,role_oid FROM principal "
+        "UNION SELECT reader_oid,role_oid FROM createrole_member) "
+        "SELECT r.rolname,EXISTS (SELECT 1 FROM administrator a "
+        "JOIN pg_catalog.pg_auth_members m ON m.member=a.role_oid "
+        "WHERE a.reader_oid=r.oid AND m.admin_option) "
+        "FROM pg_catalog.pg_roles r WHERE r.rolname=ANY(%s) ORDER BY r.rolname",
+        (list(_READER_ROLES), list(_READER_ROLES)),
+    ).fetchall()
+    for reader, administers in rows:
+        if administers:
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.reader_role.{reader}")
+
+
 def _verify_relation_acls(conn: psycopg.Connection, relation_names: Sequence[str]) -> None:
     names = list(relation_names)
     owners = conn.execute(
@@ -1887,6 +1985,27 @@ def _verify_relation_acls(conn: psycopg.Connection, relation_names: Sequence[str
     for relname, owner_oid, grantee_oid, grantee, privilege, grantable in relation_acl:
         if not _acl_item_admitted(owner_oid, grantee_oid, grantee, privilege, grantable):
             _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.acl.{relname}")
+    # Ownership is not ordinary access: PostgreSQL lets an owner revoke its own
+    # table privileges.  Each relation's own ACL (NULL is the owner default) must
+    # still carry the owner's complete ordinary set as owner-issued entries -- a
+    # grant reaching the owner through another role cannot mask a self-revoke --
+    # and the genuine worker session must effectively hold every one of them.
+    # Nothing is repaired; a missing owner entry refuses.
+    owner_privileges = conn.execute(
+        "SELECT c.relname, ARRAY(SELECT acl.privilege_type "
+        "FROM aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) acl "
+        "WHERE acl.grantee=c.relowner AND acl.grantor=c.relowner), "
+        "ARRAY(SELECT p.privilege FROM unnest(%s::text[]) AS p(privilege) "
+        "WHERE NOT has_table_privilege(current_user, c.oid, p.privilege)) "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=current_schema() AND c.relname=ANY(%s) ORDER BY c.relname",
+        (list(_OWNER_RELATION_PRIVILEGES), names),
+    ).fetchall()
+    if len(owner_privileges) != len(names):
+        _fail(ErrorCode.SCHEMA_MISMATCH, "schema.owners")
+    for relname, held, not_effective in owner_privileges:
+        if tuple(sorted(set(held))) != _OWNER_RELATION_PRIVILEGES or not_effective:
+            _fail(ErrorCode.SCHEMA_MISMATCH, f"schema.owner_acl.{relname}")
     column_acl = conn.execute(
         "SELECT c.relname, c.relowner, acl.grantee, "
         "CASE WHEN acl.grantee = 0 THEN NULL ELSE pg_get_userbyid(acl.grantee) END, "
@@ -1937,14 +2056,17 @@ def _verify_relation_acls(conn: psycopg.Connection, relation_names: Sequence[str
 
 
 def _relation_columns(conn: psycopg.Connection, name: str) -> tuple[tuple[Any, ...], ...]:
-    """Name, type, nullability plus exact default/identity/generated semantics.
+    """Name, type, exact type modifier, nullability plus default/identity/generated.
 
     Reads ``pg_attribute`` of the schema-resolved relation (not the search_path)
     with a LEFT JOIN on ``pg_attrdef``; dropped and system columns are excluded.
-    The default is the PG18 deparser's exact text, NULL when there is none.
+    ``atttypmod`` is the raw PG18 modifier (68 for ``char(64)``, -1 when the type is
+    unconstrained).  The default is the PG18 deparser's exact text, NULL when there
+    is none.
     """
     rows = conn.execute(
-        "SELECT a.attname, t.typname, CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, "
+        "SELECT a.attname, t.typname, a.atttypmod, "
+        "CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, "
         "a.atthasdef, pg_catalog.pg_get_expr(d.adbin, d.adrelid, false), "
         "a.attidentity::text, a.attgenerated::text "
         "FROM pg_catalog.pg_attribute a "
@@ -2190,6 +2312,7 @@ def _verify_relation_contracts(conn: psycopg.Connection, *, include_product: boo
 def _schema_state_and_profile(conn: psycopg.Connection) -> tuple[str, str | None]:
     """Schema state plus the admitted shared-ledger extension profile (None if absent)."""
     _verify_schema_privileges(conn)
+    _verify_reader_memberships(conn)
     shared = [
         conn.execute("SELECT to_regclass(%s)", (name,)).fetchone()[0] is not None
         for name in _SHARED_SCHEMA_OBJECTS
@@ -3036,21 +3159,32 @@ def _read_only_operation(
                 _fail(ErrorCode.SCHEMA_MISMATCH, "schema.profile_changed")
             _verify_worker_session(conn)
 
+        def verdict(outcome: str, stored: StoredEvidence | None) -> OperationResult:
+            # The one exit of every successful read-only outcome, the early
+            # absent/shared-only returns included: the parent is read again in this
+            # READ COMMITTED read-only transaction and must equal the first read
+            # exactly (pointer, header digest, server), then the admitted schema,
+            # profile and genuine session must still hold.  This bounds the verdict
+            # to the read; it reserves nothing for a later apply, which keeps its
+            # own locks and rechecks.
+            second_parent = _verify_parent(conn, contract=contract, lock_pointer=False)
+            if first_parent != second_parent:
+                _fail(ErrorCode.PARENT_MISMATCH, "parent.race")
+            recheck_schema()
+            return OperationResult(
+                outcome, artifact.publication.publication_id, False, stored, first_parent, ()
+            )
+
         if schema in {"absent", "shared_only"}:
             if (
                 schema == "shared_only"
                 and _publication_state(conn, artifact.publication) is not PublicationState.ABSENT
             ):
                 _fail(ErrorCode.PUBLICATION_CONFLICT, "publication.partial_state")
-            recheck_schema()
-            if require_published:
-                return OperationResult(
-                    "not_published", artifact.publication.publication_id,
-                    False, None, first_parent, (),
-                )
-            return OperationResult(
-                "dry_run_verified_schema_install_required", artifact.publication.publication_id,
-                False, None, first_parent, (),
+            return verdict(
+                "not_published" if require_published
+                else "dry_run_verified_schema_install_required",
+                None,
             )
         state = _publication_state(conn, artifact.publication)
         stored = None
@@ -3066,13 +3200,7 @@ def _read_only_operation(
             outcome = "validated_not_current" if require_published else "dry_run_replay_verified"
         else:
             outcome = "not_published" if require_published else "dry_run_verified"
-        second_parent = _verify_parent(conn, contract=contract, lock_pointer=False)
-        if first_parent != second_parent:
-            _fail(ErrorCode.PARENT_MISMATCH, "parent.race")
-        recheck_schema()
-        return OperationResult(
-            outcome, artifact.publication.publication_id, False, stored, first_parent, ()
-        )
+        return verdict(outcome, stored)
 
 
 def _ensure_schema_profile(
@@ -3757,16 +3885,47 @@ def recover_published_artifact(
             publication_id=publication_id,
         )
         raise primary from exc
-    receipt = _persist_receipt(
-        evidence_dir,
-        phase="recovery-readback",
-        payload=_receipt_payload(
-            phase="recovery-readback", artifact=artifact, outcome=result.outcome,
-            stored=result.stored, operation_id=operation_id, contract=contract,
-            parent=result.parent, schema_installed=False,
+    # The read-only verification is complete; only its durable evidence is left.
+    # If that receipt cannot be made durable, the refusal still reports what the
+    # read observed.  An exact current publication is committed state with
+    # incomplete evidence (recovery required -- never a reason to apply again);
+    # this reports what was observed, not a commit made here.  Any other verdict
+    # (not published, validated but unpointed) is a read-only receipt failure and
+    # never claims a current publication.  Either way recovery wrote nothing to
+    # the database, and no success is returned without the durable receipt.
+    try:
+        receipt = _persist_receipt(
+            evidence_dir,
+            phase="recovery-readback",
+            payload=_receipt_payload(
+                phase="recovery-readback", artifact=artifact, outcome=result.outcome,
+                stored=result.stored, operation_id=operation_id, contract=contract,
+                parent=result.parent, schema_installed=False,
+                operation_started_at_utc=operation_started_at_utc,
+            ),
+        )
+    except (ArtifactLoaderError, OSError) as exc:
+        verified_current = result.outcome == "already_published_verified"
+        primary = ArtifactLoaderError(
+            ErrorCode.COMMITTED_EVIDENCE_INCOMPLETE if verified_current
+            else ErrorCode.RECEIPT_FAILURE,
+            field="receipt.recovery_readback",
+            phase="recovery_receipt",
+            schema_installed=False,
+            transaction_outcome="read_only",
+            outcome="recovery_required" if verified_current else "failed",
+        )
+        # A failure-receipt failure only clears ``receipt_written``; the primary
+        # classification above is what is raised.
+        _best_effort_failure_receipt(
+            primary,
+            evidence_dir,
+            operation_id=operation_id,
             operation_started_at_utc=operation_started_at_utc,
-        ),
-    )
+            mode="verify-published",
+            publication_id=publication_id,
+        )
+        raise primary from exc
     return OperationResult(
         result.outcome, result.publication_id, False, result.stored, result.parent, (receipt,)
     )

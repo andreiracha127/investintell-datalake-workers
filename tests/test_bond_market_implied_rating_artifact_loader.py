@@ -2086,3 +2086,247 @@ def test_loader_has_no_rebuild_worker_or_hand_written_publication_dml() -> None:
         "COPY bond_market_implied_rating_v1",
     ):
         assert forbidden not in source
+
+
+# === PR #133 review 5297288467 ==========================================================
+# --- r4087730853: type modifiers derived independently from the reviewed DDL ----------
+
+
+def _declared_char_widths(path: str) -> dict[str, dict[str, int]]:
+    tables = re.findall(
+        r"^CREATE TABLE IF NOT EXISTS (\w+) \((.*?)^\);", _sql_statements(path), re.M | re.S
+    )
+    return {
+        table: {
+            column: int(width)
+            for column, width in re.findall(r"^\s+(\w+) char\((\d+)\)", body, re.M)
+        }
+        for table, body in tables
+    }
+
+
+def test_column_typmod_pins_are_the_reviewed_ddl_char_widths() -> None:
+    declared = {
+        **_declared_char_widths("sec_derived_publications.sql"),
+        **_declared_char_widths("bond_market_implied_rating_v1.sql"),
+    }
+    assert set(declared) == set(loader._PHYSICAL_TABLES)
+    assert declared["sec_derived_publications"] == {"build_fingerprint": 64}
+    assert declared["bond_market_implied_rating_v1_builds"] == {
+        "policy_digest": 64, "input_fingerprint": 64, "rows_digest": 64,
+    }
+    assert declared["bond_market_implied_rating_v1"] == {"policy_digest": 64}
+    for table in loader._PHYSICAL_TABLES:
+        # PG18 stores char(n) as the modifier n + VARHDRSZ (4).
+        pinned = {column: width + 4 for column, width in declared[table].items()}
+        assert loader._EXPECTED_COLUMN_TYPMODS[table] == pinned, table
+        bpchar = {name for name, type_name, _ in loader._EXPECTED_COLUMNS[table] if type_name == "bpchar"}
+        assert bpchar == set(pinned), table
+        for row in loader._expected_relation_columns(table):
+            assert row[2] == pinned.get(row[0], -1), (table, row)
+            assert len(row) == 8
+
+
+# --- r4087730866: recovery receipt failure after a completed read-only verification ----
+
+
+def _stub_recovery_read(
+    monkeypatch: pytest.MonkeyPatch, artifact: loader.VerifiedArtifact, outcome: str
+) -> list[dict[str, Any]]:
+    """Replace the read-only DB verification with a completed verdict (no database)."""
+    calls: list[dict[str, Any]] = []
+    verified_at = datetime(2026, 9, 23, tzinfo=timezone.utc)
+    stored = None if outcome == "not_published" else loader.StoredEvidence(
+        state=(
+            loader.PublicationState.EXACT_CURRENT if outcome == "already_published_verified"
+            else loader.PublicationState.EXACT_VALIDATED_UNPOINTED
+        ),
+        publication_id=artifact.publication.publication_id,
+        source_run_id="44444444-4444-4444-8444-444444444444",
+        source_package_id="55555555-5555-4555-8555-555555555555",
+        summary=artifact.summary,
+        pointer_id=(
+            artifact.publication.publication_id if outcome == "already_published_verified"
+            else None
+        ),
+        prepared_at=verified_at,
+        validated_at=verified_at,
+    )
+    parent = loader.ParentEvidence(PANEL_ID, verified_at, "b" * 64, 180004)
+
+    def read_only(*_: object, **kwargs: Any) -> loader.OperationResult:
+        calls.append(kwargs)
+        return loader.OperationResult(
+            outcome, artifact.publication.publication_id, False, stored, parent, ()
+        )
+
+    monkeypatch.setattr(loader, "_read_only_operation", read_only)
+    return calls
+
+
+def _fault_recovery_receipt_only(monkeypatch: pytest.MonkeyPatch, spy: _FsSpy, fault: str) -> None:
+    """Arm ``fault`` only while the recovery-readback receipt itself is written."""
+    original = loader._persist_receipt
+
+    def persist(evidence: Path, *, phase: str, payload: bytes) -> loader.ReceiptRef:
+        spy.fail = fault if phase == "recovery-readback" else None
+        try:
+            return original(evidence, phase=phase, payload=payload)
+        finally:
+            spy.fail = None
+
+    def write(fd: int, data: Any) -> int:
+        if spy.fail == "write":
+            raise OSError("injected write failure")
+        if spy.fail == "short_write":
+            return 0
+        return os.write(fd, data)
+
+    monkeypatch.setattr(loader, "_persist_receipt", persist)
+    monkeypatch.setattr(loader._DurableFs, "write", staticmethod(write))
+
+
+_RECOVERY_OUTCOMES = ("already_published_verified", "validated_not_current", "not_published")
+# The writer never renames: it creates the receipt exclusively in place, so every
+# step between pinning the directory and the byte readback is faulted instead.
+_RECOVERY_RECEIPT_FAULTS = (
+    "open_dir", "fsync_parent", "open_file", "write", "short_write", "fsync_file",
+    "fsync_dir", "readback",
+)
+
+
+def _expected_recovery_refusal(outcome: str) -> tuple[str, str]:
+    if outcome == "already_published_verified":
+        return loader.ErrorCode.COMMITTED_EVIDENCE_INCOMPLETE.value, "recovery_required"
+    return loader.ErrorCode.RECEIPT_FAILURE.value, "failed"
+
+
+@requires_directory_fsync
+@pytest.mark.parametrize("fault", _RECOVERY_RECEIPT_FAULTS)
+@pytest.mark.parametrize("outcome", _RECOVERY_OUTCOMES)
+def test_recovery_receipt_failure_keeps_the_completed_read_only_classification(
+    outcome: str, fault: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    calls = _stub_recovery_read(monkeypatch, artifact, outcome)
+    evidence = tmp_path / "recovery-evidence"
+    evidence.mkdir()
+    spy = _FsSpy(monkeypatch, evidence=evidence)
+    _fault_recovery_receipt_only(monkeypatch, spy, fault)
+    _NoDatabase.calls = 0
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader.recover_published_artifact(
+            artifact, evidence_dir=evidence, connection_factory=_NoDatabase(),
+            operation_id="recovery-op", operation_started_at_utc=_started_at(),
+        )
+    code, refusal_outcome = _expected_recovery_refusal(outcome)
+    error = exc.value
+    assert error.code == code
+    assert error.details == {"field": "receipt.recovery_readback"}
+    assert error.phase == "recovery_receipt"
+    assert error.schema_installed is False
+    assert error.transaction_outcome == "read_only"
+    assert error.outcome == refusal_outcome
+    assert error.receipt_written is True
+    assert isinstance(error.__cause__, loader.ArtifactLoaderError)
+    assert error.__cause__.code == loader.ErrorCode.RECEIPT_FAILURE.value
+    assert len(calls) == 1 and calls[0]["require_published"] is True
+    assert _NoDatabase.calls == 0
+    [failure] = evidence.glob("*-failure-*.json")
+    document = json.loads(failure.read_text(encoding="utf-8"))
+    assert document["operation_id"] == "recovery-op"
+    assert document["mode"] == "verify-published"
+    assert document["code"] == code
+    assert document["outcome"] == refusal_outcome
+    assert document["failure_phase"] == "recovery_receipt"
+    assert document["schema_installed"] is False
+    assert document["transaction_outcome"] == "read_only"
+    assert document["publication_id"] == artifact.publication.publication_id
+    if fault in {"open_dir", "fsync_parent", "open_file"}:
+        assert not list(evidence.glob("*-recovery-readback-*.json"))
+    assert spy.open_fds == set()
+
+
+@requires_directory_fsync
+@pytest.mark.parametrize("unavailable", ["missing_parent", "not_a_directory"])
+@pytest.mark.parametrize("outcome", _RECOVERY_OUTCOMES)
+def test_recovery_classification_survives_total_evidence_unavailability(
+    outcome: str, unavailable: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    _stub_recovery_read(monkeypatch, artifact, outcome)
+    if unavailable == "missing_parent":
+        evidence = tmp_path / "absent-parent" / "evidence"
+    else:
+        evidence = tmp_path / "evidence"
+        evidence.write_text("occupied", encoding="utf-8")
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader.recover_published_artifact(
+            artifact, evidence_dir=evidence, connection_factory=_NoDatabase(),
+        )
+    code, refusal_outcome = _expected_recovery_refusal(outcome)
+    # The secondary failure-receipt failure clears only ``receipt_written``.
+    assert (exc.value.code, exc.value.outcome) == (code, refusal_outcome)
+    assert exc.value.phase == "recovery_receipt"
+    assert exc.value.schema_installed is False
+    assert exc.value.transaction_outcome == "read_only"
+    assert exc.value.receipt_written is False
+    assert not (tmp_path / "absent-parent").exists()
+
+
+@requires_directory_fsync
+@pytest.mark.parametrize("availability", ["failure_receipt_durable", "evidence_unavailable"])
+@pytest.mark.parametrize(
+    ("outcome", "exit_code", "state"),
+    [
+        ("already_published_verified", 5, "recovery_required"),
+        ("validated_not_current", 3, "refused"),
+        ("not_published", 3, "refused"),
+    ],
+)
+def test_cli_verify_published_propagates_recovery_receipt_failure(
+    outcome: str, exit_code: int, state: str, availability: str, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact, _ = _genuine(tmp_path, monkeypatch)
+    cli = _load_cli()
+    monkeypatch.setattr(cli.loader, "load_verified_artifact", lambda _: artifact)
+    monkeypatch.setattr(cli, "resolve_dsn", lambda: pytest.fail("DB must not be opened"))
+    _stub_recovery_read(monkeypatch, artifact, outcome)
+    if availability == "evidence_unavailable":
+        evidence = tmp_path / "absent-parent" / "evidence"
+    else:
+        evidence = tmp_path / "cli-recovery-evidence"
+        evidence.mkdir()
+        spy = _FsSpy(monkeypatch, evidence=evidence)
+        _fault_recovery_receipt_only(monkeypatch, spy, "fsync_dir")
+    fallback: list[dict[str, Any]] = []
+    original_failure_receipt = cli.loader.persist_failure_receipt
+
+    def record_fallback(*args: Any, **kwargs: Any) -> loader.ReceiptRef:
+        fallback.append(kwargs)
+        return original_failure_receipt(*args, **kwargs)
+
+    monkeypatch.setattr(cli.loader, "persist_failure_receipt", record_fallback)
+    code, refusal_outcome = _expected_recovery_refusal(outcome)
+    assert cli.main([
+        "--artifact-root", str(tmp_path), "--evidence-dir", str(evidence), "--verify-published",
+    ]) == exit_code
+    captured = capsys.readouterr()
+    assert captured.out == ""  # no success result is ever printed
+    assert json.loads(captured.err) == {"code": code, "state": state}
+    # Loader receipt attempt first, then (only when that failed) the CLI fallback;
+    # both carry the completed read-only recovery metadata, never "not_started".
+    assert len(fallback) == (1 if availability == "failure_receipt_durable" else 2)
+    for attempt in fallback:
+        assert attempt["code"] == code
+        assert attempt["mode"] == "verify-published"
+        assert attempt["failure_phase"] == "recovery_receipt"
+        assert attempt["schema_installed"] is False
+        assert attempt["transaction_outcome"] == "read_only"
+        assert attempt["outcome"] == refusal_outcome
+    if availability == "failure_receipt_durable":
+        [failure] = evidence.glob("*-failure-*.json")
+        assert json.loads(failure.read_text(encoding="utf-8"))["transaction_outcome"] == "read_only"
+    else:
+        assert not (tmp_path / "absent-parent").exists()
