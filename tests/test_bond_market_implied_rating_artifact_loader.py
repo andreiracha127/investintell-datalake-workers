@@ -1920,6 +1920,280 @@ def test_function_acl_item_rule(
     ) is admitted
 
 
+# --- Retained app_runtime CREATE on public: exact provenance predicate ------------------
+
+_ANALYTICS, _WORKER, _GRANTOR, _INHERITED = 16410, 16420, 16430, 16440
+
+
+def _ns_item(
+    grantor: int, grantee: int, privilege: str, grantable: bool = False,
+    reaches: bool | None = None,
+) -> Any:
+    # ``reaches`` defaults to what PG18 reports: PUBLIC and app_runtime itself reach it.
+    if reaches is None:
+        reaches = grantee in (_PUBLIC, _RUNTIME)
+    return loader._SchemaAclItem(grantor, grantee, privilege, grantable, reaches)
+
+
+# The required retained posture (a supplied capture, not a live read):
+# owner=UC, runtime=UC, worker=UC, analytics=U, PUBLIC=U.
+_PRODUCTION_PUBLIC_ACL = (
+    _ns_item(_OWNER, _OWNER, "USAGE"), _ns_item(_OWNER, _OWNER, "CREATE"),
+    _ns_item(_OWNER, _PUBLIC, "USAGE"),
+    _ns_item(_OWNER, _RUNTIME, "USAGE"), _ns_item(_OWNER, _RUNTIME, "CREATE"),
+    _ns_item(_OWNER, _WORKER, "USAGE"), _ns_item(_OWNER, _WORKER, "CREATE"),
+    _ns_item(_OWNER, _ANALYTICS, "USAGE"),
+)
+
+
+def _without(*removed: Any) -> tuple[Any, ...]:
+    return tuple(item for item in _PRODUCTION_PUBLIC_ACL if item not in removed)
+
+
+def _public_admitted(acl: tuple[Any, ...], *, acl_is_null: object = False) -> bool:
+    return loader._public_runtime_create_admitted(
+        owner_oid=_OWNER, runtime_oid=_RUNTIME, analytics_oid=_ANALYTICS,
+        acl_is_null=acl_is_null, acl=acl,  # type: ignore[arg-type]
+    )
+
+
+_RUNTIME_USAGE = _ns_item(_OWNER, _RUNTIME, "USAGE")
+_RUNTIME_CREATE = _ns_item(_OWNER, _RUNTIME, "CREATE")
+
+_REFUSED_PUBLIC_ACLS: dict[str, tuple[Any, ...]] = {
+    "public_create": (*_PRODUCTION_PUBLIC_ACL, _ns_item(_OWNER, _PUBLIC, "CREATE")),
+    "analytics_create": (*_PRODUCTION_PUBLIC_ACL, _ns_item(_OWNER, _ANALYTICS, "CREATE")),
+    "analytics_create_other_grantor": (
+        *_PRODUCTION_PUBLIC_ACL, _ns_item(_GRANTOR, _ANALYTICS, "CREATE"),
+    ),
+    "runtime_create_grantable": (
+        *_without(_RUNTIME_CREATE), _ns_item(_OWNER, _RUNTIME, "CREATE", True),
+    ),
+    "runtime_usage_grantable": (
+        *_without(_RUNTIME_USAGE), _ns_item(_OWNER, _RUNTIME, "USAGE", True),
+    ),
+    "runtime_create_other_grantor": (
+        *_without(_RUNTIME_CREATE), _ns_item(_GRANTOR, _RUNTIME, "CREATE"),
+    ),
+    "runtime_usage_other_grantor": (
+        *_without(_RUNTIME_USAGE), _ns_item(_GRANTOR, _RUNTIME, "USAGE"),
+    ),
+    "extra_runtime_create_other_grantor": (
+        *_PRODUCTION_PUBLIC_ACL, _ns_item(_GRANTOR, _RUNTIME, "CREATE"),
+    ),
+    "extra_runtime_usage_other_grantor": (
+        *_PRODUCTION_PUBLIC_ACL, _ns_item(_GRANTOR, _RUNTIME, "USAGE"),
+    ),
+    "missing_runtime_usage": _without(_RUNTIME_USAGE),
+    "missing_runtime_create": _without(_RUNTIME_CREATE),
+    "missing_runtime_entries": _without(_RUNTIME_USAGE, _RUNTIME_CREATE),
+    "duplicate_runtime_create": (*_without(_RUNTIME_USAGE), _RUNTIME_CREATE),
+    "duplicate_runtime_rows": (*_PRODUCTION_PUBLIC_ACL, _RUNTIME_CREATE),
+    "unknown_runtime_privilege": (*_PRODUCTION_PUBLIC_ACL, _ns_item(_OWNER, _RUNTIME, "TEMPORARY")),
+    "inherited_create_role": (
+        *_PRODUCTION_PUBLIC_ACL, _ns_item(_OWNER, _INHERITED, "CREATE", reaches=True),
+    ),
+    "inherited_worker_create": (
+        *_without(_ns_item(_OWNER, _WORKER, "CREATE")),
+        _ns_item(_OWNER, _WORKER, "CREATE", reaches=True),
+    ),
+    "inherited_owner_create": (
+        *_without(_ns_item(_OWNER, _OWNER, "CREATE")),
+        _ns_item(_OWNER, _OWNER, "CREATE", reaches=True),
+    ),
+    "inherited_only_create": (
+        *_without(_RUNTIME_CREATE), _ns_item(_OWNER, _INHERITED, "CREATE", reaches=True),
+    ),
+    # A reach that is neither True nor False (e.g. an SQL NULL) is never read as False.
+    "undetermined_reach": (
+        *_PRODUCTION_PUBLIC_ACL,
+        loader._SchemaAclItem(_OWNER, _INHERITED, "CREATE", False, None),  # type: ignore[arg-type]
+    ),
+    "empty_explicit_acl": (),
+}
+
+
+def test_production_public_runtime_create_is_admitted() -> None:
+    assert _public_admitted(_PRODUCTION_PUBLIC_ACL)
+    # Order is irrelevant; a non-reaching CREATE (the owner, worker_writer, an
+    # unrelated role) and non-CREATE rows of anyone stay admitted.
+    assert _public_admitted(tuple(reversed(_PRODUCTION_PUBLIC_ACL)))
+    assert _public_admitted((
+        *_PRODUCTION_PUBLIC_ACL,
+        _ns_item(_OWNER, _INHERITED, "CREATE", True, reaches=False),
+        _ns_item(_GRANTOR, _INHERITED, "USAGE", reaches=False),
+    ))
+    # Only the two runtime rows are required of the rest of the ACL.
+    assert _public_admitted((_RUNTIME_USAGE, _RUNTIME_CREATE))
+
+
+@pytest.mark.parametrize("case", sorted(_REFUSED_PUBLIC_ACLS))
+def test_public_runtime_create_provenance_refusals(case: str) -> None:
+    assert not _public_admitted(_REFUSED_PUBLIC_ACLS[case]), case
+
+
+def test_public_runtime_create_null_acl_is_never_fabricated() -> None:
+    # NULL is the owner-only default (acldefault), not an explicit runtime grant:
+    # even rows that would otherwise admit are refused when the ACL is NULL, and an
+    # explicit empty ACL is its own (grant-free) state rather than NULL.
+    assert not _public_admitted(_PRODUCTION_PUBLIC_ACL, acl_is_null=True)
+    default_rows = (_ns_item(_OWNER, _OWNER, "USAGE"), _ns_item(_OWNER, _OWNER, "CREATE"))
+    assert not _public_admitted(default_rows, acl_is_null=True)
+    assert not _public_admitted((), acl_is_null=False)
+    assert not _public_admitted(_PRODUCTION_PUBLIC_ACL, acl_is_null=None)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        loader._SchemaAclItem(_OWNER, _RUNTIME, "CREATE", 0, True),  # type: ignore[arg-type]
+        loader._SchemaAclItem(_OWNER, _RUNTIME, "CREATE", None, True),  # type: ignore[arg-type]
+        loader._SchemaAclItem(str(_OWNER), _RUNTIME, "CREATE", False, True),  # type: ignore[arg-type]
+        loader._SchemaAclItem(_OWNER, True, "CREATE", False, True),  # type: ignore[arg-type]
+    ],
+)
+def test_public_runtime_create_malformed_rows_refuse(malformed: Any) -> None:
+    assert not _public_admitted((*_without(_RUNTIME_CREATE), malformed))
+
+
+def test_public_runtime_create_requires_the_resolved_owner_and_runtime() -> None:
+    # Provenance is by OID: the same tuples under another owner or runtime refuse.
+    for owner, runtime in ((_GRANTOR, _RUNTIME), (_OWNER, _INHERITED)):
+        assert not loader._public_runtime_create_admitted(
+            owner_oid=owner, runtime_oid=runtime, analytics_oid=_ANALYTICS,
+            acl_is_null=False, acl=_PRODUCTION_PUBLIC_ACL,
+        )
+    # app_runtime owning public: its self-issued UC is not an owner-issued grant.
+    assert not loader._public_runtime_create_admitted(
+        owner_oid=_RUNTIME, runtime_oid=_RUNTIME, analytics_oid=_ANALYTICS,
+        acl_is_null=False,
+        acl=(
+            _ns_item(_RUNTIME, _RUNTIME, "USAGE"), _ns_item(_RUNTIME, _RUNTIME, "CREATE"),
+            _ns_item(_RUNTIME, _PUBLIC, "USAGE"),
+        ),
+    )
+
+
+def test_schema_privilege_exception_is_confined_to_public_runtime() -> None:
+    assert (loader._PUBLIC_SCHEMA, loader._RUNTIME_READER, loader._ANALYTICS_READER) == (
+        "public", "app_runtime", "app_analytics_ro",
+    )
+    assert set(loader._READER_ROLES) == {loader._RUNTIME_READER, loader._ANALYTICS_READER}
+    source = (ROOT / "src" / "bonds" / "implied_rating_artifact_loader.py").read_text()
+    # No bypass: the exception is not configurable from the environment or the CLI.
+    body = source[source.index("def _public_runtime_create_admitted("):]
+    body = body[:body.index("\ndef _verify_reader_memberships(")]
+    for forbidden in ("os.environ", "getenv", "argparse", "sys.argv"):
+        assert forbidden not in body, forbidden
+
+
+# --- Loader-owned bootstrap builtins: catalog-qualified, exactly typed -----------------
+# public keeps app_runtime CREATE, so an unqualified builtin whose catalog candidate
+# needs an implicit cast (the former hashtextextended(%s, 0)) or that a search path
+# listing pg_catalog after public reaches (set_config) could resolve to a planted
+# overload.  The real planted-overload evidence is in the PG18 suite.
+
+_SQL_NON_FUNCTIONS = frozenset({
+    "AND", "ANY", "ARRAY", "AS", "COALESCE", "ELSE", "EXISTS", "FROM", "IN", "JOIN", "NOT",
+    "ON", "OR", "SELECT", "THEN", "UNION", "VALUES", "WHEN", "WHERE",
+})
+
+
+def _unqualified_sql_calls(statement: str, *, ctes: frozenset[str] = frozenset()) -> set[str]:
+    called = {m.group(1) for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", statement)}
+    return {name for name in called if name.upper() not in _SQL_NON_FUNCTIONS} - ctes
+
+
+class _RecordingBootstrapConnection:
+    """Records every statement; answers ``SHOW server_version_num`` like PG18.4."""
+
+    def __init__(self, *, lock_error: Exception | None = None) -> None:
+        self.statements: list[tuple[str, object]] = []
+        self._lock_error = lock_error
+
+    def execute(self, statement: str, params: object = None) -> Any:
+        self.statements.append((statement, params))
+        if self._lock_error is not None and "advisory" in statement:
+            raise self._lock_error
+        return self
+
+    def fetchone(self) -> tuple[str]:
+        return ("180004",)
+
+    def fetchall(self) -> list[object]:
+        return []
+
+
+_QUALIFIED_BOOTSTRAP = [
+    ("SHOW server_version_num", None),
+    ("SELECT pg_catalog.set_config('lock_timeout', %s::pg_catalog.text, true)", ("5000",)),
+    (
+        "SELECT pg_catalog.set_config('statement_timeout', %s::pg_catalog.text, true)",
+        ("7200000",),
+    ),
+    (
+        "SELECT pg_catalog.set_config("
+        "'idle_in_transaction_session_timeout', %s::pg_catalog.text, true)",
+        ("7200000",),
+    ),
+    (
+        "SELECT pg_catalog.pg_advisory_xact_lock("
+        "pg_catalog.hashtextextended(%s::pg_catalog.text, 0::pg_catalog.int8))",
+        ("bond_market_implied_rating_v1",),
+    ),
+]
+
+
+def test_bootstrap_builtins_are_catalog_qualified_and_exactly_typed() -> None:
+    conn = _RecordingBootstrapConnection()
+    loader._set_local_timeouts(conn)  # type: ignore[arg-type]
+    loader._acquire_product_lock(conn)  # type: ignore[arg-type]
+    # Same values and key input as before; only the resolution is pinned.
+    assert conn.statements == _QUALIFIED_BOOTSTRAP
+    assert (loader.PRODUCT, loader.LOCK_TIMEOUT_MS, loader.SQL_TIMEOUT_MS) == (
+        "bond_market_implied_rating_v1", 5_000, 7_200_000,
+    )
+    assert loader.IDLE_TRANSACTION_TIMEOUT_MS == 7_200_000
+    for statement, _ in conn.statements:
+        assert _unqualified_sql_calls(statement) == set(), statement
+        assert not re.findall(r"::(?!pg_catalog\.)\w+", statement), statement
+
+
+def test_product_lock_timeout_mapping_is_unchanged() -> None:
+    conn = _RecordingBootstrapConnection(
+        lock_error=loader.psycopg.errors.LockNotAvailable("lock not available")
+    )
+    with pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._acquire_product_lock(conn)  # type: ignore[arg-type]
+    assert exc.value.code == loader.ErrorCode.LOCK_TIMEOUT.value
+    assert exc.value.details == {"field": "transaction.lock_timeout"}
+    assert isinstance(exc.value.__cause__, loader.psycopg.errors.LockNotAvailable)
+
+
+def test_public_create_exception_query_qualifies_functions_and_types() -> None:
+    """The exception's own statement qualifies its functions and types with pg_catalog.
+
+    Checked: no unqualified function call, every cast type pg_catalog-qualified
+    except ``bigint`` (a grammar keyword, not a search-path lookup), and no integer
+    literal compared untyped with an oid operand -- which removes the OID-vs-integer
+    overload opportunity (a planted ``public.=(oid, integer)`` beating the catalog
+    ``=(oid, oid)`` that needs an implicit cast).
+
+    Not checked and not protected: the operators themselves stay unqualified
+    (``target.oid<>r.oid``, ``n.oid=d.public_oid``, ``acl.grantee=0::pg_catalog.oid``),
+    so an identical-signature operator planted in public would shadow the catalog
+    one whenever the search path lists public before pg_catalog.  Operator
+    resolution remains an accepted residual per user decision 2026-09-24.
+    """
+    conn = _RecordingBootstrapConnection()
+    with pytest.raises(loader.ArtifactLoaderError):
+        loader._verify_schema_privileges(conn)  # type: ignore[arg-type]
+    [(statement, _)] = conn.statements
+    assert _unqualified_sql_calls(statement, ctes=frozenset({"assumable"})) == set()
+    assert set(re.findall(r"::(?!pg_catalog\.)(\w+)", statement)) == {"bigint"}
+    assert not re.search(r"[=<>]\s*-?\d+(?![\d:])", statement)
+
+
 def _plpgsql_body(source: str, name: str) -> str:
     start = source.index(f"CREATE OR REPLACE FUNCTION {name}()")
     body_start = source.index("AS $$", start) + len("AS $$")

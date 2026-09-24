@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
+from itertools import groupby
 from pathlib import Path
 from typing import Self
 from uuid import UUID, uuid4
@@ -4915,3 +4916,931 @@ def test_verified_current_recovery_receipt_failure_requires_recovery_without_wri
         )
         assert again.outcome == "already_published_verified"
         assert _publication_snapshot(factory) == before
+
+
+# === Retained app_runtime CREATE on public (macro/funds) ================================
+# The required retained public ACL (a supplied capture, not a live read) keeps
+# owner-issued app_runtime=UC, worker_writer=UC and app_analytics_ro=U beside the PG18
+# default owner UC and PUBLIC U; the loader must admit it and must equally admit its
+# absence (the no-CREATE baseline), never granting it.  The public
+# ACL, the database owner, role attributes and memberships are shared by the whole
+# disposable cluster, so these cases run serially and restore every change in
+# ``finally``; the loader itself never changes any of them.
+
+_PRODUCTION_PUBLIC_GRANTS = (
+    "GRANT USAGE, CREATE ON SCHEMA public TO app_runtime",
+    "GRANT USAGE, CREATE ON SCHEMA public TO worker_writer",
+    "GRANT USAGE ON SCHEMA public TO app_analytics_ro",
+)
+_DB_OWNER = "pg_database_owner"
+_PRODUCTION_PUBLIC_ROWS = frozenset({
+    (_DB_OWNER, _DB_OWNER, "USAGE", False), (_DB_OWNER, _DB_OWNER, "CREATE", False),
+    (_DB_OWNER, "PUBLIC", "USAGE", False),
+    (_DB_OWNER, "app_runtime", "USAGE", False), (_DB_OWNER, "app_runtime", "CREATE", False),
+    (_DB_OWNER, "worker_writer", "USAGE", False), (_DB_OWNER, "worker_writer", "CREATE", False),
+    (_DB_OWNER, "app_analytics_ro", "USAGE", False),
+})
+
+_AclRow = tuple[str, str, str, bool]
+_PublicAcl = tuple[str, str | None, tuple[_AclRow, ...]]
+
+
+def _public_acl_state(conn: psycopg.Connection) -> _PublicAcl:
+    """(owner, nspacl text, exploded rows in array order) of the ``public`` namespace."""
+    owner, text = conn.execute(
+        "SELECT pg_catalog.pg_get_userbyid(nspowner), nspacl::text "
+        "FROM pg_catalog.pg_namespace WHERE nspname='public'"
+    ).fetchone()
+    rows = conn.execute(
+        "SELECT pg_catalog.pg_get_userbyid(acl.grantor), CASE WHEN acl.grantee=0 "
+        "THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, "
+        "acl.privilege_type, acl.is_grantable FROM pg_catalog.pg_namespace n "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(n.nspacl, "
+        "pg_catalog.acldefault('n', n.nspowner))) WITH ORDINALITY "
+        "acl(grantor, grantee, privilege_type, is_grantable, ord) "
+        "WHERE n.nspname='public' ORDER BY acl.ord"
+    ).fetchall()
+    return owner, text, tuple(rows)
+
+
+def _admin_public_acl() -> _PublicAcl:
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        return _public_acl_state(admin)
+
+
+def _grantee_sql(grantee: str) -> sql.Composable:
+    return sql.SQL("PUBLIC") if grantee == "PUBLIC" else sql.Identifier(grantee)
+
+
+def _execute_as(
+    admin: psycopg.Connection, role: str | None, statement: str | sql.Composable
+) -> None:
+    """Run ``statement`` in the admin session, as ``role`` when given.
+
+    A superuser acts as the object owner; switching to a role records it as the
+    grantor of what it issues (its own grant option is required, as for any role).
+    """
+    if role is not None:
+        admin.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+    try:
+        admin.execute(statement)
+    finally:
+        if role is not None:
+            admin.execute("RESET ROLE")
+
+
+def _restore_public_acl(snapshot: _PublicAcl) -> None:
+    """Put the owner and exact ACL array of ``public`` back (disposable cluster only)."""
+    owner, text, rows = snapshot
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        if _public_acl_state(admin)[0] != owner:
+            admin.execute(sql.SQL("ALTER SCHEMA public OWNER TO {}").format(
+                sql.Identifier(owner)
+            ))
+        if _public_acl_state(admin)[1] != text:
+            for _ in range(64):
+                current = _public_acl_state(admin)[2]
+                if not current:
+                    break
+                # Dependent entries (issued by a non-owner grantor) go first, while
+                # their grantor still holds the grant option they were issued under.
+                grantor, grantee = next(
+                    ((g, e) for g, e, *_ in current if g != owner), current[0][:2]
+                )
+                _execute_as(
+                    admin, None if grantor == owner else grantor,
+                    sql.SQL("REVOKE ALL ON SCHEMA public FROM {} CASCADE").format(
+                        _grantee_sql(grantee)
+                    ),
+                )
+            else:
+                pytest.fail("public ACL restore did not converge")
+            for (grantor, grantee), items in groupby(rows, key=lambda row: row[:2]):
+                entries = list(items)
+                for grantable in (False, True):
+                    privileges = [p for *_, p, g in entries if g is grantable]
+                    if privileges:
+                        _execute_as(
+                            admin, None if grantor == owner else grantor,
+                            sql.SQL("GRANT {} ON SCHEMA public TO {}{}").format(
+                                sql.SQL(", ").join(sql.SQL(p) for p in privileges),
+                                _grantee_sql(grantee),
+                                sql.SQL(" WITH GRANT OPTION" if grantable else ""),
+                            ),
+                        )
+        assert _public_acl_state(admin) == snapshot
+
+
+@contextmanager
+def _public_acl(*grants: str | sql.Composable) -> Iterator[_PublicAcl]:
+    """Apply ``grants`` to the shared ``public`` ACL; restore it exactly afterwards."""
+    snapshot = _admin_public_acl()
+    try:
+        for grant in grants:
+            _admin_execute(grant)
+        yield _admin_public_acl()
+    finally:
+        _restore_public_acl(snapshot)
+
+
+def _live_public_runtime_create(conn: psycopg.Connection) -> tuple[bool, bool]:
+    """(effective app_runtime CREATE on public, the loader predicate on the live ACL).
+
+    Reads the real ``aclexplode``/``pg_has_role`` output of the fixture catalog --
+    nothing is fabricated -- and evaluates the loader's pure provenance predicate.
+    """
+    owner, runtime, analytics, acl_is_null, create = conn.execute(
+        "SELECT n.nspowner, r.oid, a.oid, n.nspacl IS NULL, "
+        "pg_catalog.has_schema_privilege(r.oid, n.oid, 'CREATE') "
+        "FROM pg_catalog.pg_namespace n, pg_catalog.pg_roles r, pg_catalog.pg_roles a "
+        "WHERE n.nspname='public' AND r.rolname='app_runtime' "
+        "AND a.rolname='app_analytics_ro'"
+    ).fetchone()
+    items = [
+        loader._SchemaAclItem(int(grantor), int(grantee), privilege, grantable, reaches)
+        for grantor, grantee, privilege, grantable, reaches in conn.execute(
+            "SELECT acl.grantor, acl.grantee, acl.privilege_type, acl.is_grantable, "
+            "CASE WHEN acl.grantee=0 THEN true "
+            "ELSE pg_catalog.pg_has_role(%s::oid, acl.grantee, 'USAGE') END "
+            "FROM pg_catalog.pg_namespace n CROSS JOIN LATERAL pg_catalog.aclexplode("
+            "COALESCE(n.nspacl, pg_catalog.acldefault('n', n.nspowner))) acl "
+            "WHERE n.nspname='public'",
+            (runtime,),
+        ).fetchall()
+    ]
+    return create, loader._public_runtime_create_admitted(
+        owner_oid=owner, runtime_oid=runtime, analytics_oid=analytics,
+        acl_is_null=acl_is_null, acl=items,
+    )
+
+
+def _assert_production_public_posture(conn: psycopg.Connection, state: _PublicAcl) -> None:
+    owner, text, rows = state
+    assert owner == _DB_OWNER and text is not None
+    assert frozenset(rows) == _PRODUCTION_PUBLIC_ROWS
+    assert len(rows) == len(_PRODUCTION_PUBLIC_ROWS)
+    # The exact direct grant is the runtime's only CREATE and the loader admits it.
+    assert _live_public_runtime_create(conn) == (True, True)
+    assert conn.execute(
+        "SELECT pg_catalog.has_schema_privilege('app_analytics_ro', 'public', 'CREATE')"
+    ).fetchone()[0] is False
+
+
+@pytest.mark.parametrize("stage", ["absent", "shared_only", "compatible"])
+def test_production_public_runtime_create_is_admitted_through_every_operation(
+    tmp_path: Path, stage: str
+) -> None:
+    with (
+        _database(tmp_path) as (contract, artifact, factory, _, evidence_dir),
+        _public_acl(*_PRODUCTION_PUBLIC_GRANTS) as posture,
+    ):
+        with factory() as conn:
+            _assert_production_public_posture(conn, posture)
+        if stage == "shared_only":
+            _install_shared_only(factory)
+        elif stage == "compatible":
+            assert loader._ensure_schema(contract, factory)
+        with factory() as conn:
+            assert loader._schema_state(conn) == stage
+
+        def read_only(require_published: bool) -> str:
+            return loader._read_only_operation(
+                artifact, contract=contract, connection_factory=factory,
+                require_published=require_published,
+            ).outcome
+
+        assert read_only(False) == (
+            "dry_run_verified" if stage == "compatible"
+            else "dry_run_verified_schema_install_required"
+        )
+        assert read_only(True) == "not_published"
+        first = loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir,
+        )
+        assert first.outcome == "published_verified"
+        assert first.schema_installed is (stage != "compatible")
+        replay = loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir,
+        )
+        assert replay.outcome == "already_published_verified"
+        assert not replay.schema_installed
+        assert read_only(True) == "already_published_verified"
+        with factory() as conn:
+            assert loader._schema_state(conn) == "compatible"
+            assert conn.execute(
+                "SELECT count(*) FROM bond_market_implied_rating_v1 WHERE publication_id=%s",
+                (artifact.publication.publication_id,),
+            ).fetchone()[0] == 13
+            assert str(conn.execute(
+                "SELECT publication_id FROM sec_derived_current_pointers WHERE product=%s",
+                (loader.PRODUCT,),
+            ).fetchone()[0]) == artifact.publication.publication_id
+        # Admission never repairs: the retained grant is byte-for-byte untouched.
+        assert _admin_public_acl() == posture
+
+
+def test_production_public_create_admits_memberships_conveying_no_create(
+    tmp_path: Path,
+) -> None:
+    with (
+        _role_graph("inert", "unusable", "creator") as graph,
+        _database(tmp_path) as (contract, artifact, factory, _, evidence_dir),
+        _public_acl(
+            *_PRODUCTION_PUBLIC_GRANTS,
+            sql.SQL("GRANT USAGE, CREATE ON SCHEMA public TO {} WITH GRANT OPTION").format(
+                sql.Identifier(graph.roles["creator"])
+            ),
+        ) as posture,
+    ):
+        roles = graph.roles
+        # A privilege-free inherited role, SET-only read-only analytics, and a schema
+        # creator (holding ADMIN) reachable only behind an edge with neither INHERIT,
+        # SET nor ADMIN: none gives app_runtime another CREATE or a usable ADMIN.
+        _grant_membership(roles["inert"], "app_runtime", inherit=True, set_=True, admin=False)
+        _grant_membership(
+            "app_analytics_ro", "app_runtime", inherit=False, set_=True, admin=False
+        )
+        _grant_membership(roles["unusable"], "app_runtime", inherit=False, set_=False, admin=False)
+        _grant_membership(roles["creator"], roles["unusable"], inherit=True, set_=True, admin=True)
+        with factory() as conn:
+            assert conn.execute(
+                "SELECT pg_has_role('app_runtime', %s, 'MEMBER'), "
+                "pg_has_role('app_runtime', %s, 'USAGE'), pg_has_role('app_runtime', %s, 'SET'), "
+                "has_schema_privilege(%s, 'public', 'CREATE')",
+                (roles["creator"],) * 4,
+            ).fetchone() == (True, False, False, True)
+            assert _live_public_runtime_create(conn) == (True, True)
+            assert loader._schema_state(conn) == "absent"
+        result = loader._publish_verified_artifact(
+            artifact, contract=contract, connection_factory=factory, evidence_dir=evidence_dir,
+        )
+        assert result.outcome == "published_verified"
+        assert _admin_public_acl() == posture
+
+
+def test_default_and_explicit_empty_schema_acls_keep_their_real_semantics(
+    tmp_path: Path,
+) -> None:
+    defaulted = f"schema_default_{uuid4().hex[:12]}"
+    with _database(tmp_path) as (_, _, factory, schema, _):
+        _install_shared_only(factory)
+        # Worker-owned and never granted: a NULL ACL is the owner-only default.
+        _admin_execute(sql.SQL("CREATE SCHEMA {} AUTHORIZATION worker_writer").format(
+            sql.Identifier(defaulted)
+        ))
+        try:
+            searched = _searched_factory(schema, defaulted, "public")
+            with searched() as conn:
+                assert conn.execute(
+                    "SELECT nspacl IS NULL, has_schema_privilege('app_runtime', oid, 'CREATE') "
+                    "FROM pg_namespace WHERE nspname=%s", (defaulted,)
+                ).fetchone() == (True, False)
+                assert conn.execute("SELECT current_schemas(false)").fetchone()[0] == [
+                    schema, defaulted, "public",
+                ]
+                assert loader._schema_state(conn) == "shared_only"
+            # An explicit empty ACL is not NULL: nothing is granted to anyone, so
+            # public is not even searchable for the worker and nothing is fabricated.
+            # Every current grantee is revoked, whatever posture the cluster carries.
+            grantees = dict.fromkeys(grantee for _, grantee, *_ in _admin_public_acl()[2])
+            with (
+                _public_acl(*(
+                    sql.SQL("REVOKE ALL ON SCHEMA public FROM {} CASCADE").format(
+                        _grantee_sql(grantee)
+                    )
+                    for grantee in grantees
+                )) as emptied,
+                searched() as conn,
+            ):
+                assert emptied[1:] == ("{}", ())
+                assert conn.execute(
+                    "SELECT has_schema_privilege('app_runtime', 'public', 'CREATE')"
+                ).fetchone()[0] is False
+                assert conn.execute("SELECT current_schemas(false)").fetchone()[0] == [
+                    schema, defaulted,
+                ]
+                assert loader._schema_state(conn) == "shared_only"
+        finally:
+            _admin_execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(defaulted)))
+
+
+def _searched_factory(*schemas: str) -> Callable[[], psycopg.Connection]:
+    """Genuine worker sessions searching exactly ``schemas`` (quoted identifiers)."""
+
+    def factory() -> psycopg.Connection:
+        conn = psycopg.connect(_worker_dsn(), autocommit=True, connect_timeout=5)
+        conn.execute(sql.SQL("SET search_path TO {}").format(
+            sql.SQL(", ").join(sql.Identifier(name) for name in schemas)
+        ))
+        return conn
+
+    return factory
+
+
+_Step = tuple[str | None, str]
+_RUNTIME_FIELD = "schema.runtime_create"
+_ANALYTICS_FIELD = "schema.reader_role.app_analytics_ro"
+_GRANTOR_SETUP: tuple[_Step, ...] = (
+    (None, "GRANT USAGE, CREATE ON SCHEMA public TO {grantor} WITH GRANT OPTION"),
+)
+
+# Each case starts from the admitted retained posture (so the retained grant can
+# never mask it) and adds one additional capability.  Steps run as the admin
+# superuser, or as the named disposable role to record that role as grantor.
+_PUBLIC_CREATE_REFUSALS: dict[str, tuple[str, tuple[_Step, ...]]] = {
+    "public_create": (_ANALYTICS_FIELD, ((None, "GRANT CREATE ON SCHEMA public TO PUBLIC"),)),
+    "analytics_exact_create": (
+        _ANALYTICS_FIELD, ((None, "GRANT CREATE ON SCHEMA public TO app_analytics_ro"),),
+    ),
+    "analytics_inherits_runtime": (
+        _ANALYTICS_FIELD,
+        ((None, "GRANT app_runtime TO app_analytics_ro WITH INHERIT TRUE, SET FALSE"),),
+    ),
+    "analytics_sets_runtime": (
+        _ANALYTICS_FIELD,
+        ((None, "GRANT app_runtime TO app_analytics_ro WITH INHERIT FALSE, SET TRUE"),),
+    ),
+    "runtime_create_grant_option": (
+        _RUNTIME_FIELD,
+        ((None, "GRANT CREATE ON SCHEMA public TO app_runtime WITH GRANT OPTION"),),
+    ),
+    "runtime_usage_grant_option": (
+        _RUNTIME_FIELD,
+        ((None, "GRANT USAGE ON SCHEMA public TO app_runtime WITH GRANT OPTION"),),
+    ),
+    "runtime_missing_direct_usage": (
+        _RUNTIME_FIELD, ((None, "REVOKE USAGE ON SCHEMA public FROM app_runtime"),),
+    ),
+    "runtime_extra_create_other_grantor": (
+        _RUNTIME_FIELD,
+        (*_GRANTOR_SETUP, ("grantor", "GRANT CREATE ON SCHEMA public TO app_runtime")),
+    ),
+    "runtime_create_only_from_other_grantor": (
+        _RUNTIME_FIELD,
+        (
+            *_GRANTOR_SETUP, (None, "REVOKE CREATE ON SCHEMA public FROM app_runtime"),
+            ("grantor", "GRANT CREATE ON SCHEMA public TO app_runtime"),
+        ),
+    ),
+    "runtime_extra_usage_other_grantor": (
+        _RUNTIME_FIELD,
+        (*_GRANTOR_SETUP, ("grantor", "GRANT USAGE ON SCHEMA public TO app_runtime")),
+    ),
+    "inherited_create": (
+        _RUNTIME_FIELD,
+        (
+            (None, "GRANT CREATE ON SCHEMA public TO {creator}"),
+            (None, "GRANT {creator} TO app_runtime WITH INHERIT TRUE, SET FALSE"),
+        ),
+    ),
+    "inherited_create_multi_hop": (
+        _RUNTIME_FIELD,
+        (
+            (None, "GRANT CREATE ON SCHEMA public TO {creator}"),
+            (None, "GRANT {creator} TO {hop} WITH INHERIT TRUE, SET FALSE"),
+            (None, "GRANT {hop} TO app_runtime WITH INHERIT TRUE, SET FALSE"),
+        ),
+    ),
+    "inherited_worker_writer_create": (
+        _RUNTIME_FIELD,
+        ((None, "GRANT worker_writer TO app_runtime WITH INHERIT TRUE, SET FALSE"),),
+    ),
+    "inherited_only_create": (
+        _RUNTIME_FIELD,
+        (
+            (None, "REVOKE USAGE, CREATE ON SCHEMA public FROM app_runtime"),
+            (None, "GRANT CREATE ON SCHEMA public TO {creator}"),
+            (None, "GRANT {creator} TO app_runtime WITH INHERIT TRUE, SET FALSE"),
+        ),
+    ),
+    "set_only_create_role": (
+        _RUNTIME_FIELD,
+        (
+            (None, "GRANT CREATE ON SCHEMA public TO {creator}"),
+            (None, "GRANT {creator} TO app_runtime WITH INHERIT FALSE, SET TRUE"),
+        ),
+    ),
+    "indirect_set_chain_create_role": (
+        _RUNTIME_FIELD,
+        (
+            (None, "GRANT CREATE ON SCHEMA public TO {creator}"),
+            (None, "GRANT {creator} TO {hop} WITH INHERIT FALSE, SET TRUE"),
+            (None, "GRANT {hop} TO app_runtime WITH INHERIT FALSE, SET TRUE"),
+        ),
+    ),
+    "admin_only_create_role": (
+        _RUNTIME_FIELD,
+        (
+            (None, "GRANT CREATE ON SCHEMA public TO {creator}"),
+            (None, "GRANT {creator} TO app_runtime WITH INHERIT FALSE, SET FALSE, ADMIN TRUE"),
+        ),
+    ),
+    "runtime_superuser": (_RUNTIME_FIELD, ((None, "ALTER ROLE app_runtime SUPERUSER"),)),
+    "runtime_sets_superuser_role": (
+        _RUNTIME_FIELD,
+        (
+            (None, "ALTER ROLE {hop} SUPERUSER"),
+            (None, "GRANT {hop} TO app_runtime WITH INHERIT FALSE, SET TRUE"),
+        ),
+    ),
+    "analytics_superuser": (_ANALYTICS_FIELD, ((None, "ALTER ROLE app_analytics_ro SUPERUSER"),)),
+    "runtime_owns_public": (_RUNTIME_FIELD, ((None, "ALTER SCHEMA public OWNER TO app_runtime"),)),
+    "runtime_inherits_owner_role": (
+        _RUNTIME_FIELD,
+        (
+            (None, "ALTER SCHEMA public OWNER TO {owner}"),
+            (None, "GRANT {owner} TO app_runtime WITH INHERIT TRUE, SET FALSE"),
+        ),
+    ),
+    "runtime_sets_owner_role_indirectly": (
+        _RUNTIME_FIELD,
+        (
+            (None, "ALTER SCHEMA public OWNER TO {owner}"),
+            (None, "GRANT {owner} TO {hop} WITH INHERIT FALSE, SET TRUE"),
+            (None, "GRANT {hop} TO app_runtime WITH INHERIT FALSE, SET TRUE"),
+        ),
+    ),
+    "runtime_admins_owner_role": (
+        _RUNTIME_FIELD,
+        (
+            (None, "ALTER SCHEMA public OWNER TO {owner}"),
+            (None, "GRANT {owner} TO app_runtime WITH INHERIT FALSE, SET FALSE, ADMIN TRUE"),
+        ),
+    ),
+    "runtime_createrole_reaches_owner_role": (
+        _RUNTIME_FIELD,
+        (
+            (None, "ALTER SCHEMA public OWNER TO {owner}"),
+            (None, "ALTER ROLE app_runtime CREATEROLE"),
+            (None, "GRANT {owner} TO {hop} WITH INHERIT FALSE, SET FALSE, ADMIN TRUE"),
+            (None, "GRANT {hop} TO app_runtime WITH INHERIT FALSE, SET FALSE"),
+        ),
+    ),
+    "runtime_owns_database": (_RUNTIME_FIELD, ((None, "ALTER DATABASE {db} OWNER TO app_runtime"),)),
+    "analytics_owns_database": (
+        _ANALYTICS_FIELD, ((None, "ALTER DATABASE {db} OWNER TO app_analytics_ro"),),
+    ),
+}
+
+# Whether the loader's provenance predicate still admits the live public ACL once
+# the case is applied.  False: the ACL itself breaks the exact-direct-grant proof.
+# True: the ACL proof holds, yet the independent superuser, owner-membership or
+# assumable-role checks -- never relaxed by the exception -- refuse.
+_LIVE_PROVENANCE_ADMITTED = {
+    "public_create": False,
+    "analytics_exact_create": False,
+    "analytics_inherits_runtime": True,
+    "analytics_sets_runtime": True,
+    "runtime_create_grant_option": False,
+    "runtime_usage_grant_option": False,
+    "runtime_missing_direct_usage": False,
+    "runtime_extra_create_other_grantor": False,
+    "runtime_create_only_from_other_grantor": False,
+    "runtime_extra_usage_other_grantor": False,
+    "inherited_create": False,
+    "inherited_create_multi_hop": False,
+    "inherited_worker_writer_create": False,
+    "inherited_only_create": False,
+    "set_only_create_role": True,
+    "indirect_set_chain_create_role": True,
+    "admin_only_create_role": True,
+    # A superuser holds the privileges of every role (pg_has_role USAGE is true for
+    # all), so every other CREATE entry reaches it as well.
+    "runtime_superuser": False,
+    "runtime_sets_superuser_role": True,
+    "analytics_superuser": True,
+    "runtime_owns_public": False,
+    "runtime_inherits_owner_role": False,
+    "runtime_sets_owner_role_indirectly": True,
+    "runtime_admins_owner_role": True,
+    "runtime_createrole_reaches_owner_role": True,
+    "runtime_owns_database": False,
+    "analytics_owns_database": True,
+}
+
+
+def _refusal_names(graph: _RoleGraph) -> dict[str, sql.Composable]:
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        database = admin.execute("SELECT current_database()").fetchone()[0]
+    return {
+        **{label: sql.Identifier(role) for label, role in graph.roles.items()},
+        "db": sql.Identifier(database),
+    }
+
+
+@contextmanager
+def _restored_role_attributes_and_database_owner() -> Iterator[None]:
+    """Undo SUPERUSER/CREATEROLE on the readers and any database owner change."""
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        database, owner = admin.execute(
+            "SELECT current_database(), pg_get_userbyid(datdba) FROM pg_database "
+            "WHERE datname=current_database()"
+        ).fetchone()
+        attributes = admin.execute(
+            "SELECT rolname, rolsuper, rolcreaterole FROM pg_roles "
+            "WHERE rolname IN ('app_runtime', 'app_analytics_ro') ORDER BY rolname"
+        ).fetchall()
+    try:
+        yield
+    finally:
+        with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+            admin.execute(sql.SQL("ALTER DATABASE {} OWNER TO {}").format(
+                sql.Identifier(database), sql.Identifier(owner)
+            ))
+            for rolname, superuser, createrole in attributes:
+                admin.execute(sql.SQL("ALTER ROLE {} {} {}").format(
+                    sql.Identifier(rolname),
+                    sql.SQL("SUPERUSER" if superuser else "NOSUPERUSER"),
+                    sql.SQL("CREATEROLE" if createrole else "NOCREATEROLE"),
+                ))
+            assert admin.execute(
+                "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname=%s", (database,)
+            ).fetchone()[0] == owner
+            assert admin.execute(
+                "SELECT rolname, rolsuper, rolcreaterole FROM pg_roles "
+                "WHERE rolname IN ('app_runtime', 'app_analytics_ro') ORDER BY rolname"
+            ).fetchall() == attributes
+
+
+def _apply_steps(
+    graph: _RoleGraph, steps: tuple[_Step, ...], names: dict[str, sql.Composable]
+) -> None:
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        # A fault injected while a loader transaction is open must never wait on it.
+        admin.execute("SET lock_timeout TO '10s'")
+        for role, statement in steps:
+            _execute_as(
+                admin, None if role is None else graph.roles[role],
+                sql.SQL(statement).format(**names),
+            )
+
+
+def _assert_refused_everywhere(
+    field: str,
+    artifact: loader.VerifiedArtifact,
+    contract: loader.FrozenArtifactContract,
+    factory: Callable[[], psycopg.Connection],
+) -> None:
+    with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as exc:
+        loader._schema_state(conn)
+    assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+    assert exc.value.details == {"field": field}
+    for operation in (
+        lambda: loader._ensure_schema(contract, factory),
+        lambda: loader._read_only_operation(
+            artifact, contract=contract, connection_factory=factory, require_published=False,
+        ),
+    ):
+        with pytest.raises(loader.ArtifactLoaderError) as exc:
+            operation()
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": field}
+
+
+def test_every_public_refusal_case_declares_its_live_provenance() -> None:
+    assert set(_LIVE_PROVENANCE_ADMITTED) == set(_PUBLIC_CREATE_REFUSALS)
+
+
+@pytest.mark.parametrize("case", sorted(_PUBLIC_CREATE_REFUSALS))
+def test_additional_public_create_or_owner_reach_is_refused_despite_retained_grant(
+    tmp_path: Path, case: str
+) -> None:
+    field, steps = _PUBLIC_CREATE_REFUSALS[case]
+    with (
+        _role_graph("creator", "hop", "grantor", "owner") as graph,
+        _restored_role_attributes_and_database_owner(),
+        _database(tmp_path) as (contract, artifact, factory, _, _),
+        _public_acl(*_PRODUCTION_PUBLIC_GRANTS) as posture,
+    ):
+        _install_shared_only(factory)
+        with factory() as conn:
+            _assert_production_public_posture(conn, posture)
+            assert loader._schema_state(conn) == "shared_only"
+        _apply_steps(graph, steps, _refusal_names(graph))
+        drifted = _admin_public_acl()
+        with factory() as conn:
+            # app_runtime keeps effective CREATE on public in every case; the real
+            # catalog decides whether the exact-grant proof alone still holds.
+            assert _live_public_runtime_create(conn) == (True, _LIVE_PROVENANCE_ADMITTED[case])
+        if case.startswith("runtime_") and "other_grantor" in case:
+            # A real alternate grantor issued the runtime entry, not the owner.
+            with factory() as conn:
+                assert conn.execute(
+                    "SELECT count(*) FROM pg_namespace n, aclexplode(n.nspacl) acl "
+                    "WHERE n.nspname='public' AND acl.grantee='app_runtime'::regrole::oid "
+                    "AND acl.grantor=%s::regrole::oid AND acl.grantor<>n.nspowner",
+                    (graph.roles["grantor"],),
+                ).fetchone()[0] == 1
+        _assert_refused_everywhere(field, artifact, contract, factory)
+        _assert_nothing_published(factory)
+        # Refusal repairs nothing: the injected state is still in place.
+        assert _admin_public_acl() == drifted
+
+
+@pytest.mark.parametrize("target", ["fixture", "later_public_prefixed", "case_variant_public"])
+def test_non_public_searched_schema_create_is_refused_despite_retained_public_grant(
+    tmp_path: Path, target: str
+) -> None:
+    shadow = {
+        "fixture": None,
+        "later_public_prefixed": f"public_{uuid4().hex[:12]}",
+        "case_variant_public": "Public",
+    }[target]
+    with (
+        _database(tmp_path) as (contract, artifact, factory, schema, _),
+        _public_acl(*_PRODUCTION_PUBLIC_GRANTS),
+    ):
+        _install_shared_only(factory)
+        searched = factory
+        if shadow is not None:
+            _admin_execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(shadow)))
+        try:
+            if shadow is None:
+                granted = schema
+            else:
+                granted = shadow
+                _admin_execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO worker_writer").format(
+                    sql.Identifier(shadow)
+                ))
+                searched = _searched_factory(schema, shadow, "public")
+            with searched() as conn:
+                assert loader._schema_state(conn) == "shared_only"
+            # Exactly the owner-issued, non-grantable UC admitted on public.
+            _admin_execute(sql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO app_runtime").format(
+                sql.Identifier(granted)
+            ))
+            with searched() as conn:
+                assert conn.execute(
+                    "SELECT count(*) FROM pg_namespace n, aclexplode(n.nspacl) acl "
+                    "WHERE n.nspname=%s AND acl.grantee='app_runtime'::regrole::oid "
+                    "AND acl.grantor=n.nspowner AND NOT acl.is_grantable",
+                    (granted,),
+                ).fetchone()[0] == 2
+                assert _live_public_runtime_create(conn) == (True, True)
+            _assert_refused_everywhere(_RUNTIME_FIELD, artifact, contract, searched)
+            _assert_nothing_published(factory)
+        finally:
+            if shadow is not None:
+                _admin_execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(shadow)))
+
+
+# Drift injected after a successful admission, by an independently committed admin
+# connection, must be refused at the next existing checkpoint.
+_PUBLIC_CREATE_DRIFTS: dict[str, tuple[str, tuple[_Step, ...]]] = {
+    "grant_option_promotion": _PUBLIC_CREATE_REFUSALS["runtime_create_grant_option"],
+    "redundant_inherited_create": _PUBLIC_CREATE_REFUSALS["inherited_create"],
+    "analytics_create": _PUBLIC_CREATE_REFUSALS["analytics_exact_create"],
+    "public_create": _PUBLIC_CREATE_REFUSALS["public_create"],
+    "set_create_role": _PUBLIC_CREATE_REFUSALS["set_only_create_role"],
+    "admin_create_role": _PUBLIC_CREATE_REFUSALS["admin_only_create_role"],
+    "owner_role_reach": _PUBLIC_CREATE_REFUSALS["runtime_sets_owner_role_indirectly"],
+    "runtime_superuser": _PUBLIC_CREATE_REFUSALS["runtime_superuser"],
+}
+
+
+@pytest.mark.parametrize("checkpoint", ["schema_recheck", "schema_precommit", "read_only"])
+@pytest.mark.parametrize("drift", sorted(_PUBLIC_CREATE_DRIFTS))
+def test_public_create_drift_after_admission_is_refused_at_the_next_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str, checkpoint: str
+) -> None:
+    field, steps = _PUBLIC_CREATE_DRIFTS[drift]
+    with (
+        _role_graph("creator", "hop", "grantor", "owner") as graph,
+        _restored_role_attributes_and_database_owner(),
+        _database(tmp_path) as (contract, artifact, factory, _, evidence_dir),
+        _public_acl(*_PRODUCTION_PUBLIC_GRANTS) as posture,
+    ):
+        names = _refusal_names(graph)
+        injected: dict[str, _PublicAcl] = {}
+
+        def inject() -> None:
+            if not injected:
+                _apply_steps(graph, steps, names)
+                injected["acl"] = _admin_public_acl()
+
+        if checkpoint == "read_only":
+            published = loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            )
+            assert published.outcome == "published_verified"
+            before = _publication_snapshot(factory)
+            original_parent = loader._verify_parent
+            calls = {"parent": 0}
+
+            def parent_then_drift(*args: object, **kwargs: object) -> loader.ParentEvidence:
+                result = original_parent(*args, **kwargs)  # type: ignore[arg-type]
+                calls["parent"] += 1
+                if calls["parent"] == 1:
+                    # Admitted already; the verdict's recheck must see the drift.
+                    inject()
+                return result
+
+            monkeypatch.setattr(loader, "_verify_parent", parent_then_drift)
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._read_only_operation(
+                    artifact, contract=contract, connection_factory=factory,
+                    require_published=True,
+                )
+            assert calls["parent"] == 2
+            assert _publication_snapshot(factory) == before
+        else:
+            if checkpoint == "schema_recheck":
+                original_ensure = loader._ensure_schema_profile
+
+                def ensure_then_drift(*args: object, **kwargs: object) -> tuple[bool, str]:
+                    result = original_ensure(*args, **kwargs)  # type: ignore[arg-type]
+                    inject()
+                    return result
+
+                monkeypatch.setattr(loader, "_ensure_schema_profile", ensure_then_drift)
+            else:
+                original_materialize = loader.materialize
+
+                def materialize_then_drift(
+                    conn: psycopg.Connection, *args: object, **kwargs: object
+                ) -> None:
+                    original_materialize(conn, *args, **kwargs)  # type: ignore[arg-type]
+                    inject()
+
+                monkeypatch.setattr(loader, "materialize", materialize_then_drift)
+            with pytest.raises(loader.ArtifactLoaderError) as exc:
+                loader._publish_verified_artifact(
+                    artifact, contract=contract, connection_factory=factory,
+                    evidence_dir=evidence_dir,
+                )
+            assert exc.value.phase == checkpoint
+            assert not list(evidence_dir.glob("*precommit*"))
+            _assert_nothing_published_rows(factory)
+        assert exc.value.code == loader.ErrorCode.SCHEMA_MISMATCH.value
+        assert exc.value.details == {"field": field}
+        # The external fault persists until fixture cleanup; nothing was repaired.
+        assert _admin_public_acl() == injected["acl"]
+        with factory() as conn, pytest.raises(loader.ArtifactLoaderError) as again:
+            loader._schema_state(conn)
+        assert again.value.details == {"field": field}
+        if drift != "runtime_superuser":
+            assert injected["acl"] != posture
+
+
+# === Loader bootstrap builtins under the retained public CREATE =========================
+# app_runtime may create objects in public, so it can plant overloads of builtins
+# there.  Each plant raises a WARNING -- delivered to the client at once, whatever the
+# transaction outcome or read-only mode -- and otherwise delegates to the catalog.
+
+_BOOTSTRAP_PLANTS = (
+    "CREATE FUNCTION public.hashtextextended(text, integer) RETURNS bigint "
+    "LANGUAGE plpgsql AS $$ BEGIN RAISE WARNING 'planted:hashtextextended'; "
+    "RETURN pg_catalog.hashtextextended($1, $2::pg_catalog.int8); END $$",
+    "CREATE FUNCTION public.pg_advisory_xact_lock(bigint) RETURNS void "
+    "LANGUAGE plpgsql AS $$ BEGIN RAISE WARNING 'planted:pg_advisory_xact_lock'; "
+    "PERFORM pg_catalog.pg_advisory_xact_lock($1); END $$",
+    "CREATE FUNCTION public.set_config(text, text, boolean) RETURNS text "
+    "LANGUAGE plpgsql AS $$ BEGIN RAISE WARNING 'planted:set_config'; "
+    "RETURN pg_catalog.set_config($1, $2, $3); END $$",
+)
+_BOOTSTRAP_PLANT_ROWS = [
+    ("hashtextextended", "text, integer", "app_runtime"),
+    ("pg_advisory_xact_lock", "bigint", "app_runtime"),
+    ("set_config", "text, text, boolean", "app_runtime"),
+]
+# The former unqualified statement forms, used here only as harness controls that
+# prove each plant is live for the search path under test.
+_UNQUALIFIED_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
+_UNQUALIFIED_TIMEOUT = "SELECT set_config('lock_timeout', %s, true)"
+# hashtextextended('bond_market_implied_rating_v1', 0) on PG18.4: the key of the former
+# unqualified lock call, re-derived below before anything is planted.
+_PRODUCT_LOCK_KEY = 1763056350147218616
+
+
+@contextmanager
+def _planted_bootstrap_overloads() -> Iterator[None]:
+    """Plant the overloads as app_runtime (its retained CREATE); drop them afterwards."""
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as admin:
+        try:
+            for statement in _BOOTSTRAP_PLANTS:
+                _execute_as(admin, "app_runtime", statement)
+            assert admin.execute(
+                "SELECT p.proname, pg_get_function_identity_arguments(p.oid), "
+                "pg_get_userbyid(p.proowner) FROM pg_proc p "
+                "WHERE p.pronamespace='public'::regnamespace ORDER BY p.proname"
+            ).fetchall() == _BOOTSTRAP_PLANT_ROWS
+            yield
+        finally:
+            admin.execute("DROP FUNCTION IF EXISTS public.hashtextextended(text, integer)")
+            admin.execute("DROP FUNCTION IF EXISTS public.pg_advisory_xact_lock(bigint)")
+            admin.execute("DROP FUNCTION IF EXISTS public.set_config(text, text, boolean)")
+
+
+def _signalling(
+    factory: Callable[[], psycopg.Connection], signals: list[str]
+) -> Callable[[], psycopg.Connection]:
+    def signalled() -> psycopg.Connection:
+        conn = factory()
+        conn.add_notice_handler(
+            lambda diagnostic: signals.append(diagnostic.message_primary or "")
+        )
+        return conn
+
+    return signalled
+
+
+@pytest.mark.parametrize("stage", ["absent", "published"])
+@pytest.mark.parametrize("path", ["loader_default", "catalog_last"])
+def test_loader_bootstrap_builtins_never_run_planted_public_overloads(
+    tmp_path: Path, path: str, stage: str
+) -> None:
+    """The loader's own lock and timeout calls never run these three planted overloads.
+
+    Those calls contain only pg_catalog-qualified functions and casts, no operators.
+    With the retained exact public UC, app_runtime plants overloads of
+    hashtextextended, pg_advisory_xact_lock and set_config that the former
+    unqualified statements do execute (the controls below).  The qualified
+    bootstrap, the advisory lock (same bigint key as before, contention still mapped
+    to LOCK_TIMEOUT) and the dry-run and verify-published read-only paths execute
+    none of these three plants, both on the loader's search path (pg_catalog
+    implicitly first) and with pg_catalog listed after public.
+
+    Accepted residuals (user decision 2026-09-24), about which this test makes no
+    claim either way: the shared ledger pointer function in the frozen
+    ``schemas/sec_derived_publications.sql`` still calls
+    ``pg_advisory_xact_lock(hashtextextended(target_product, 0))`` unqualified on the
+    publish path, so publish runs before anything is planted; and operator
+    resolution in the loader's queries stays unqualified.  The loader's other
+    admission-query functions are not covered either: no overload of them, and no
+    operator, is planted here.
+    """
+    with (
+        _database(tmp_path) as (contract, artifact, factory, schema, evidence_dir),
+        _public_acl(*_PRODUCTION_PUBLIC_GRANTS) as posture,
+    ):
+        with factory() as conn:
+            _assert_production_public_posture(conn, posture)
+            assert conn.execute(
+                "SELECT hashtextextended(%s, 0)", (loader.PRODUCT,)
+            ).fetchone()[0] == _PRODUCT_LOCK_KEY
+        if stage == "published":
+            assert loader._publish_verified_artifact(
+                artifact, contract=contract, connection_factory=factory,
+                evidence_dir=evidence_dir,
+            ).outcome == "published_verified"
+        searched = (
+            factory if path == "loader_default"
+            else _searched_factory(schema, "public", "pg_catalog")
+        )
+        signals: list[str] = []
+        signalled = _signalling(searched, signals)
+        with _planted_bootstrap_overloads():
+            controls = {
+                "loader_default": (["planted:hashtextextended"], []),
+                "catalog_last": (
+                    ["planted:hashtextextended", "planted:pg_advisory_xact_lock"],
+                    ["planted:set_config"],
+                ),
+            }[path]
+            for (statement, param), expected in zip(
+                ((_UNQUALIFIED_LOCK, loader.PRODUCT), (_UNQUALIFIED_TIMEOUT, "5000")), controls
+            ):
+                signals.clear()
+                with signalled() as conn, conn.transaction():
+                    conn.execute(statement, (param,))
+                assert sorted(signals) == expected, statement
+
+            signals.clear()
+            with signalled() as conn, conn.transaction():
+                loader._set_local_timeouts(conn)
+                loader._acquire_product_lock(conn)
+                assert conn.execute(
+                    "SELECT pg_catalog.current_setting('lock_timeout'), "
+                    "pg_catalog.current_setting('statement_timeout'), "
+                    "pg_catalog.current_setting('idle_in_transaction_session_timeout')"
+                ).fetchone() == ("5s", "2h", "2h")
+                # A bigint advisory key: high half in classid, low half in objid.
+                assert conn.execute(
+                    "SELECT l.classid::bigint, l.objid::bigint, l.objsubid, l.mode, l.granted "
+                    "FROM pg_catalog.pg_locks l WHERE l.locktype='advisory' "
+                    "AND l.pid=pg_catalog.pg_backend_pid()"
+                ).fetchall() == [
+                    (_PRODUCT_LOCK_KEY >> 32, _PRODUCT_LOCK_KEY & 0xFFFFFFFF, 1,
+                     "ExclusiveLock", True),
+                ]
+                with signalled() as second, second.transaction():
+                    second.execute("SET LOCAL lock_timeout='200ms'")
+                    with pytest.raises(loader.ArtifactLoaderError) as exc:
+                        loader._acquire_product_lock(second)
+                    assert exc.value.code == loader.ErrorCode.LOCK_TIMEOUT.value
+                    assert exc.value.details == {"field": "transaction.lock_timeout"}
+            assert signals == []
+
+            outcomes = {
+                "absent": ("dry_run_verified_schema_install_required", "not_published"),
+                "published": ("already_published_verified", "already_published_verified"),
+            }[stage]
+            for require_published, outcome in zip((False, True), outcomes):
+                signals.clear()
+                assert loader._read_only_operation(
+                    artifact, contract=contract, connection_factory=signalled,
+                    require_published=require_published,
+                ).outcome == outcome
+                assert signals == [], require_published
+        assert _admin_public_acl() == posture

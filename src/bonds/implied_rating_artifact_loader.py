@@ -1478,10 +1478,19 @@ def _set_local_timeouts(conn: psycopg.Connection) -> None:
     server_version = int(conn.execute("SHOW server_version_num").fetchone()[0])
     if not 180_000 <= server_version < 190_000:
         _fail(ErrorCode.RUNTIME_MISMATCH, "postgres_major")
-    conn.execute("SELECT set_config('lock_timeout', %s, true)", (str(LOCK_TIMEOUT_MS),))
-    conn.execute("SELECT set_config('statement_timeout', %s, true)", (str(SQL_TIMEOUT_MS),))
+    # Catalog-qualified with exact argument types: public keeps app_runtime CREATE
+    # (macro/funds), so an unqualified builtin could resolve to a planted overload.
     conn.execute(
-        "SELECT set_config('idle_in_transaction_session_timeout', %s, true)",
+        "SELECT pg_catalog.set_config('lock_timeout', %s::pg_catalog.text, true)",
+        (str(LOCK_TIMEOUT_MS),),
+    )
+    conn.execute(
+        "SELECT pg_catalog.set_config('statement_timeout', %s::pg_catalog.text, true)",
+        (str(SQL_TIMEOUT_MS),),
+    )
+    conn.execute(
+        "SELECT pg_catalog.set_config("
+        "'idle_in_transaction_session_timeout', %s::pg_catalog.text, true)",
         (str(IDLE_TRANSACTION_TIMEOUT_MS),),
     )
 
@@ -1535,8 +1544,16 @@ def _worker_connection(
 
 
 def _acquire_product_lock(conn: psycopg.Connection) -> None:
+    # Exactly pg_catalog.pg_advisory_xact_lock(bigint) over
+    # pg_catalog.hashtextextended(text, bigint): the same key as the former
+    # unqualified call, but a planted public overload (e.g. (text, integer)) can
+    # never be a better match than the catalog function.
     try:
-        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (PRODUCT,))
+        conn.execute(
+            "SELECT pg_catalog.pg_advisory_xact_lock("
+            "pg_catalog.hashtextextended(%s::pg_catalog.text, 0::pg_catalog.int8))",
+            (PRODUCT,),
+        )
     except psycopg.errors.LockNotAvailable as exc:
         raise ArtifactLoaderError(
             ErrorCode.LOCK_TIMEOUT, field="transaction.lock_timeout"
@@ -1869,31 +1886,151 @@ def _acl_item_admitted(
     )
 
 
+# The one retained schema CREATE: app_runtime's own direct CREATE on the catalog
+# namespace named exactly ``public`` (kept for macro/funds), admitted only with
+# the exact explicit owner-issued, non-grantable USAGE and CREATE entries below.
+_PUBLIC_SCHEMA = "public"
+_RUNTIME_READER = "app_runtime"
+_ANALYTICS_READER = "app_analytics_ro"
+
+
+@dataclass(frozen=True)
+class _SchemaAclItem:
+    """One ``aclexplode`` row of a namespace ACL, OIDs as integers.
+
+    ``reaches_runtime`` is whether app_runtime holds the privileges of the grantee:
+    true for PUBLIC (grantee 0) and otherwise ``pg_has_role(app_runtime, grantee,
+    'USAGE')`` -- itself included -- i.e. whether the entry contributes to its
+    effective privilege.
+    """
+
+    grantor: int
+    grantee: int
+    privilege: str
+    grantable: bool
+    reaches_runtime: bool
+
+
+def _public_runtime_create_admitted(
+    *,
+    owner_oid: int,
+    runtime_oid: int,
+    analytics_oid: int | None,
+    acl_is_null: bool,
+    acl: Sequence[_SchemaAclItem],
+) -> bool:
+    """Whether app_runtime's effective CREATE on ``public`` is exactly its direct grant.
+
+    PG18 derives effective namespace CREATE from superuser status (refused
+    separately) or from ACL entries whose grantee is PUBLIC, the role itself, or a
+    role whose privileges it inherits; ownership contributes only grant options.
+    Admission therefore requires an explicit ACL (NULL is the owner-only default,
+    never fabricated runtime entries) whose app_runtime entries are exactly the
+    two non-grantable owner-issued USAGE and CREATE rows -- counted, not only
+    compared -- and no other CREATE row reaching app_runtime, issued to PUBLIC or
+    issued to app_analytics_ro.  A redundant inherited or differently granted
+    CREATE is never masked by the direct grant.  An owner-issued grant is not
+    provenance when app_runtime is itself the owner.
+    """
+    if acl_is_null is not False or runtime_oid == owner_oid:
+        return False
+    # Well-formed rows only: an undetermined grant option or reach refuses.
+    if any(
+        type(item.grantor) is not int or type(item.grantee) is not int
+        or type(item.privilege) is not str or type(item.grantable) is not bool
+        or type(item.reaches_runtime) is not bool
+        for item in acl
+    ):
+        return False
+    runtime_items = [
+        (item.grantor, item.privilege, item.grantable)
+        for item in acl
+        if item.grantee == runtime_oid
+    ]
+    expected = {(owner_oid, "USAGE", False), (owner_oid, "CREATE", False)}
+    if len(runtime_items) != len(expected) or set(runtime_items) != expected:
+        return False
+    for item in acl:
+        if item.privilege != "CREATE":
+            continue
+        if (
+            item.grantor == owner_oid and item.grantee == runtime_oid
+            and item.grantable is False
+        ):
+            continue
+        if item.grantee == 0 or item.grantee == analytics_oid or item.reaches_runtime:
+            return False
+    return True
+
+
 def _verify_schema_privileges(conn: psycopg.Connection) -> None:
-    """Readers cannot create in, or assume the owner of, any searched schema."""
+    """Readers cannot create in, or assume the owner of, any searched schema.
+
+    For every searched schema and reader, every role the reader can assume through
+    SET or ADMIN edges -- the reader itself included -- is refused when it is a
+    superuser or a member of the schema owner, and every such role other than the
+    reader itself is refused when it holds effective CREATE.  The reader's own
+    effective CREATE is refused too, with one exception: app_runtime on the
+    namespace named exactly ``public`` when ``_public_runtime_create_admitted``
+    proves that CREATE is only its exact direct owner-issued grant.  The exception
+    never applies to app_analytics_ro, to any other searched schema, or to any
+    other assumable role.  OIDs are resolved from the catalog in the same
+    statement as the effective privileges, so ACL provenance and capability are
+    read from one snapshot.  Nothing is repaired.
+    """
     rows = conn.execute(
         "WITH RECURSIVE assumable(reader_oid,role_oid) AS ("
         "SELECT oid,oid FROM pg_catalog.pg_roles WHERE rolname=ANY(%s) "
         "UNION SELECT a.reader_oid,m.roleid FROM assumable a "
         "JOIN pg_catalog.pg_auth_members m ON m.member=a.role_oid "
-        "WHERE m.set_option OR m.admin_option) "
-        "SELECT n.nspname,r.rolname,EXISTS ("
+        "WHERE m.set_option OR m.admin_option), "
+        "designated AS (SELECT "
+        "(SELECT p.oid FROM pg_catalog.pg_namespace p WHERE p.nspname=%s) AS public_oid, "
+        "(SELECT x.oid FROM pg_catalog.pg_roles x WHERE x.rolname=%s) AS runtime_oid, "
+        "(SELECT x.oid FROM pg_catalog.pg_roles x WHERE x.rolname=%s) AS analytics_oid) "
+        "SELECT r.rolname,EXISTS ("
         "SELECT 1 FROM assumable a JOIN pg_catalog.pg_roles target ON target.oid=a.role_oid "
         "WHERE a.reader_oid=r.oid AND (target.rolsuper "
         "OR pg_catalog.pg_has_role(target.oid,n.nspowner,'MEMBER') "
-        "OR pg_catalog.has_schema_privilege(target.oid,n.oid,'CREATE'))) "
-        "FROM pg_catalog.pg_namespace n "
+        "OR (target.oid<>r.oid "
+        "AND pg_catalog.has_schema_privilege(target.oid,n.oid,'CREATE')))), "
+        "pg_catalog.has_schema_privilege(r.oid,n.oid,'CREATE'), "
+        "n.oid=d.public_oid AND r.oid=d.runtime_oid, "
+        "n.nspacl IS NULL, n.nspowner, r.oid, d.analytics_oid, "
+        "CASE WHEN n.oid=d.public_oid AND r.oid=d.runtime_oid THEN ("
+        "SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_array("
+        "acl.grantor::bigint,acl.grantee::bigint,acl.privilege_type,acl.is_grantable,"
+        "CASE WHEN acl.grantee=0::pg_catalog.oid THEN true "
+        "ELSE pg_catalog.pg_has_role(r.oid,acl.grantee,'USAGE') END)),"
+        "'[]'::pg_catalog.jsonb) "
+        "FROM pg_catalog.aclexplode(COALESCE(n.nspacl,"
+        "pg_catalog.acldefault('n',n.nspowner))) acl) END "
+        "FROM pg_catalog.pg_namespace n CROSS JOIN designated d "
         "LEFT JOIN pg_catalog.pg_roles r ON r.rolname=ANY(%s) "
         "WHERE n.nspname=ANY(pg_catalog.current_schemas(false)) "
         "ORDER BY n.nspname,r.rolname",
-        (list(_READER_ROLES), list(_READER_ROLES)),
+        (
+            list(_READER_ROLES), _PUBLIC_SCHEMA, _RUNTIME_READER, _ANALYTICS_READER,
+            list(_READER_ROLES),
+        ),
     ).fetchall()
     if not rows:
         _fail(ErrorCode.SCHEMA_MISMATCH, "schema.runtime_create")
-    for _, reader, can_create in rows:
-        if can_create:
+    for (
+        reader, assumable_refused, own_create, public_runtime, acl_is_null, owner_oid,
+        reader_oid, analytics_oid, acl,
+    ) in rows:
+        if own_create and not assumable_refused and public_runtime is True:
+            own_create = not _public_runtime_create_admitted(
+                owner_oid=owner_oid,
+                runtime_oid=reader_oid,
+                analytics_oid=analytics_oid,
+                acl_is_null=acl_is_null,
+                acl=[_SchemaAclItem(*item) for item in acl],
+            )
+        if assumable_refused or own_create:
             field = (
-                "schema.runtime_create" if reader == "app_runtime"
+                "schema.runtime_create" if reader == _RUNTIME_READER
                 else f"schema.reader_role.{reader}"
             )
             _fail(ErrorCode.SCHEMA_MISMATCH, field)
