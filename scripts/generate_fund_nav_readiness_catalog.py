@@ -10,7 +10,8 @@ pinned PostgreSQL/TimescaleDB version, reached on loopback in a
 ``nav_readiness_w1*`` database, with the fixture role ``app_runtime`` already
 present and safe (non-superuser, no CREATEROLE/BYPASSRLS/REPLICATION, no
 memberships): no permissive baseline is generated without it, and no role is
-created here. A random schema is created, applied like production, granted
+created here. The pgcrypto extension must already provide ``digest(bytea,
+text)`` (verified with the operator's resolver, never installed here). A random schema is created, applied like production, granted
 USAGE for the fixture role and dropped in ``finally``. No existing schema,
 production connection or provider is touched.
 """
@@ -91,6 +92,11 @@ def _require_reference_server(dsn: str) -> None:
         raise ValueError("fixture_role_missing:app_runtime")
     if role[0] or role[1]:
         raise ValueError("fixture_role_unsafe:app_runtime")
+    with psycopg.connect(dsn, connect_timeout=5) as conn:
+        crypto = operator.pgcrypto_digest(conn)
+    if crypto["issues"]:
+        # Same verified resolution as the operator; never installed here.
+        raise ValueError("pgcrypto_digest_unavailable:" + ",".join(crypto["issues"]))
 
 
 def fresh_signatures(dsn: str) -> tuple[dict, dict]:

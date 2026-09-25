@@ -194,6 +194,251 @@ CREATE TRIGGER nav_instrument_evidence_append_only
 BEFORE INSERT OR UPDATE OR DELETE ON nav_instrument_policy_evidence
 FOR EACH ROW EXECUTE FUNCTION nav_instrument_evidence_append_only_v1();
 
+-- Canonical digest of the WHOLE lifecycle partition (policy_id, policy_version):
+-- every row, all 13 columns including the server identities evidence_id and
+-- recorded_at, as one JSON array per row (fixed field order, JSON escaping,
+-- JSON booleans) joined by LF without a terminator, ordered by native
+-- uuid/timestamptz values (never text/collation), instants rendered in UTC
+-- with six fractional digits and an explicit AD/BC era (infinities as explicit
+-- tokens), so TimeZone/DateStyle/lc_time never change it. An empty partition
+-- is the SHA-256 of zero bytes. Private and SECURITY INVOKER: pinned
+-- search_path (<schema>, pg_temp), the table qualified by the target schema and
+-- digest() qualified by the namespace of the pgcrypto extension, resolved and
+-- verified (extension membership) here. pgcrypto is a prerequisite: never
+-- installed or moved by this file.
+DO $do$
+DECLARE
+    crypto_schema name;
+BEGIN
+    SELECT n.nspname INTO crypto_schema
+      FROM pg_catalog.pg_extension x
+      JOIN pg_catalog.pg_namespace n ON n.oid = x.extnamespace
+      JOIN pg_catalog.pg_proc p
+        ON p.pronamespace = n.oid AND p.proname = 'digest'
+       AND pg_catalog.oidvectortypes(p.proargtypes) = 'bytea, text'
+      JOIN pg_catalog.pg_depend d
+        ON d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid = p.oid
+       AND d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass
+       AND d.refobjid = x.oid AND d.deptype = 'e'
+     WHERE x.extname = 'pgcrypto';
+    IF crypto_schema IS NULL THEN
+        RAISE EXCEPTION 'pgcrypto digest(bytea, text) is a required prerequisite';
+    END IF;
+    EXECUTE pg_catalog.format($fmt$
+CREATE OR REPLACE FUNCTION nav_policy_evidence_digest_v1(text, text) RETURNS text
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path FROM CURRENT AS $body$
+SELECT pg_catalog.encode(%1$I.digest(pg_catalog.convert_to(
+  COALESCE(pg_catalog.string_agg(
+    pg_catalog.jsonb_build_array(
+      e.evidence_id::text, e.instrument_id::text,
+      e.policy_id, e.policy_version,
+      CASE WHEN pg_catalog.isfinite(e.known_at) THEN
+        pg_catalog.to_char(e.known_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z" AD')
+        WHEN e.known_at = 'infinity'::timestamptz THEN 'infinity' ELSE '-infinity' END,
+      CASE WHEN pg_catalog.isfinite(e.effective_at) THEN
+        pg_catalog.to_char(e.effective_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z" AD')
+        WHEN e.effective_at = 'infinity'::timestamptz THEN 'infinity' ELSE '-infinity' END,
+      e.fund_status, e.valuation_frequency,
+      e.identity_verified, e.return_basis_verified, e.currency_verified,
+      e.evidence_reference,
+      CASE WHEN pg_catalog.isfinite(e.recorded_at) THEN
+        pg_catalog.to_char(e.recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z" AD')
+        WHEN e.recorded_at = 'infinity'::timestamptz THEN 'infinity' ELSE '-infinity' END
+    )::text, E'\n'
+    ORDER BY e.instrument_id, e.known_at, e.effective_at, e.evidence_id
+  ), ''), 'UTF8'), 'sha256'), 'hex')
+FROM %2$I.nav_instrument_policy_evidence e
+WHERE e.policy_id = $1 AND e.policy_version = $2
+$body$
+$fmt$, crypto_schema, pg_catalog.current_schema());
+END$do$;
+
+-- Governed publication receipt (operator plan v4): one private, append-only
+-- row per committed publication, written in the same transaction as the
+-- pointer move. It binds the normalized plan digest, the policy bytes and
+-- document, and the audit receipt, AND the publication event: the current
+-- pointer instant it certifies and the server digest of the whole lifecycle
+-- partition as persisted at that instant (the transaction's own writes
+-- included). The server stamps the instant, xid, pointer instant and digest;
+-- the row must describe the current, published, unexpired pointer, and the
+-- instant must lie inside the audited capture/SEC-freshness window. At most
+-- one receipt per pointer event. Additive: absent on older W1 schemas.
+--
+-- Admission of an existing ledger, BEFORE anything below touches it, decided
+-- under ACCESS EXCLUSIVE and inside this file's single transaction (the
+-- shared DDL itself refuses; the operator's check is not the only guard).
+-- Three fingerprints: the table (columns, defaults, constraints, indexes), the
+-- guard function semantics (language, security, volatility, strictness,
+-- leakproof, parallel, result, pinned search_path, body, no EXECUTE beyond the
+-- owner) and the trigger. Admitted: no ledger (fresh creation below); the
+-- exact Round4 ledger (trigger present or recreatable, no ALTER); the exact
+-- Round3 ledger (local/dev) while EMPTY, upgraded in place. Anything else, or
+-- any Round3 receipt, raises SQLSTATE NV409 and the whole transaction rolls
+-- back: receipts are never truncated, backfilled or weakened.
+DO $do$
+DECLARE
+    receipts regclass := pg_catalog.to_regclass(pg_catalog.format(
+        '%I.nav_policy_publication_receipts', pg_catalog.current_schema()));
+    guard regprocedure := pg_catalog.to_regprocedure(pg_catalog.format(
+        '%I.nav_policy_publication_receipt_guard_v1()', pg_catalog.current_schema()));
+    table_fp text;
+    guard_fp text;
+    trigger_fp text;
+BEGIN
+    IF receipts IS NULL THEN
+        RETURN;
+    END IF;
+    EXECUTE pg_catalog.format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE', receipts);
+    -- fingerprint:begin
+    table_fp := pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+        pg_catalog.concat_ws(E'\n#\n',
+            COALESCE((SELECT pg_catalog.string_agg(pg_catalog.concat_ws(' ', a.attname,
+                        pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull,
+                        pg_catalog.pg_get_expr(d.adbin, d.adrelid)), E'\n' ORDER BY a.attnum)
+               FROM pg_catalog.pg_attribute a
+               LEFT JOIN pg_catalog.pg_attrdef d
+                 ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+              WHERE a.attrelid = receipts AND a.attnum > 0 AND NOT a.attisdropped), '-'),
+            COALESCE((SELECT pg_catalog.string_agg(k.def, E'\n' ORDER BY k.def COLLATE "C")
+               FROM (SELECT c.contype::text || ' '
+                            || pg_catalog.pg_get_constraintdef(c.oid, true) AS def
+                       FROM pg_catalog.pg_constraint c WHERE c.conrelid = receipts) k), '-'),
+            COALESCE((SELECT pg_catalog.string_agg(k.def, E'\n' ORDER BY k.def COLLATE "C")
+               FROM (SELECT pg_catalog.replace(pg_catalog.pg_get_indexdef(i.indexrelid),
+                            ' ON ' || pg_catalog.quote_ident(pg_catalog.current_schema()) || '.',
+                            ' ON ') AS def
+                       FROM pg_catalog.pg_index i WHERE i.indrelid = receipts) k), '-')
+        ), 'UTF8')), 'hex');
+    guard_fp := COALESCE((
+        SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+            pg_catalog.concat_ws(E'\n', l.lanname, p.prosecdef::text, p.provolatile::text,
+                p.proisstrict::text, p.proleakproof::text, p.proparallel::text,
+                pg_catalog.format_type(p.prorettype, NULL),
+                COALESCE(pg_catalog.array_to_string(ARRAY(
+                    SELECT pg_catalog.replace(setting,
+                               'search_path=' || pg_catalog.quote_ident(pg_catalog.current_schema()) || ',',
+                               'search_path=@schema@,')
+                      FROM pg_catalog.unnest(p.proconfig) AS setting), E'\x1f'), '-'),
+                pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(p.prosrc, 'UTF8')), 'hex'),
+                (NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(
+                     COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))) g
+                   WHERE g.grantee <> p.proowner))::text),
+            'UTF8')), 'hex')
+          FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid = p.prolang
+         WHERE p.oid = guard), 'none');
+    trigger_fp := COALESCE((
+        SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+            pg_catalog.string_agg(k.def, E'\n' ORDER BY k.def COLLATE "C"), 'UTF8')), 'hex')
+          FROM (SELECT t.tgname::text || ' ' || t.tgenabled::text || ' '
+                       || pg_catalog.pg_get_triggerdef(t.oid, true) AS def
+                  FROM pg_catalog.pg_trigger t
+                 WHERE t.tgrelid = receipts AND NOT t.tgisinternal) k), 'none');
+    -- fingerprint:end
+    IF table_fp = '156431a42f90b7d77adea6a11332a9b88601f49e709a527bae1e0ee491055fa0'
+       AND guard_fp = '4bb299b36b8871336072a578936e9812f665b6d30181e0a6b2ec271ba8c5f4f8'
+       AND trigger_fp IN ('18c21954c9d3bcc74a5f60120cffc7689a2903bdf89ada3f5d3946a9d4f0b239',
+                          'none') THEN
+        RETURN;
+    END IF;
+    IF table_fp IS DISTINCT FROM '0191bc90ee1cb1bd5612717db5cc51c396644ba0b3fd13c50cfca98231b33432'
+       OR guard_fp IS DISTINCT FROM '7e7db3ddc00e27892a1d2578d3f812b5259d90a652fb824d158851bd764f70cb'
+       OR trigger_fp IS DISTINCT FROM '18c21954c9d3bcc74a5f60120cffc7689a2903bdf89ada3f5d3946a9d4f0b239' THEN
+        RAISE EXCEPTION USING ERRCODE = 'NV409',
+            MESSAGE = 'nav_policy_publication_receipts is not an admissible ledger';
+    END IF;
+    IF EXISTS (SELECT 1 FROM nav_policy_publication_receipts) THEN
+        RAISE EXCEPTION USING ERRCODE = 'NV409',
+            MESSAGE = 'Round3 publication receipts are not empty; no upgrade';
+    END IF;
+    ALTER TABLE nav_policy_publication_receipts
+        ADD COLUMN pointer_published_at timestamptz NOT NULL,
+        ADD COLUMN evidence_partition_digest char(64) NOT NULL
+            CHECK (evidence_partition_digest ~ '^[0-9a-f]{64}$'),
+        ADD CONSTRAINT nav_policy_publication_receipts_event_key
+            UNIQUE (readiness_profile, policy_id, policy_version, pointer_published_at),
+        ADD CHECK (pointer_published_at <= published_at);
+END$do$;
+CREATE TABLE IF NOT EXISTS nav_policy_publication_receipts (
+    receipt_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    readiness_profile text NOT NULL CHECK (readiness_profile = 'current_daily_nav_v1'),
+    policy_id text NOT NULL,
+    policy_version text NOT NULL,
+    policy_hash char(64) NOT NULL CHECK (policy_hash ~ '^[0-9a-f]{64}$'),
+    plan_version text NOT NULL CHECK (plan_version = 'nav-schema-plan-v4'),
+    plan_sha256 char(64) NOT NULL CHECK (plan_sha256 ~ '^[0-9a-f]{64}$'),
+    policy_artifact_sha256 char(64) NOT NULL
+        CHECK (policy_artifact_sha256 ~ '^[0-9a-f]{64}$'),
+    policy_document_digest char(64) NOT NULL
+        CHECK (policy_document_digest ~ '^[0-9a-f]{64}$'),
+    audit_receipt_sha256 char(64) NOT NULL CHECK (audit_receipt_sha256 ~ '^[0-9a-f]{64}$'),
+    audit_dossier_sha256 char(64) NOT NULL CHECK (audit_dossier_sha256 ~ '^[0-9a-f]{64}$'),
+    canary_manifest_sha256 char(64) NOT NULL
+        CHECK (canary_manifest_sha256 ~ '^[0-9a-f]{64}$'),
+    capture_bundle_sha256 char(64) NOT NULL
+        CHECK (capture_bundle_sha256 ~ '^[0-9a-f]{64}$'),
+    previous_policy_id text,
+    previous_policy_version text,
+    previous_policy_hash char(64) CHECK (previous_policy_hash ~ '^[0-9a-f]{64}$'),
+    captured_at timestamptz NOT NULL,
+    sec_valid_until timestamptz NOT NULL,
+    published_at timestamptz NOT NULL,
+    commit_xid xid8 NOT NULL,
+    pointer_published_at timestamptz NOT NULL,
+    evidence_partition_digest char(64) NOT NULL
+        CHECK (evidence_partition_digest ~ '^[0-9a-f]{64}$'),
+    UNIQUE (plan_sha256),
+    CONSTRAINT nav_policy_publication_receipts_event_key
+        UNIQUE (readiness_profile, policy_id, policy_version, pointer_published_at),
+    FOREIGN KEY (policy_id, policy_version) REFERENCES nav_policy_versions,
+    CHECK ((previous_policy_id IS NULL) = (previous_policy_version IS NULL)
+           AND (previous_policy_id IS NULL) = (previous_policy_hash IS NULL)),
+    CHECK (captured_at <= published_at AND published_at <= sec_valid_until),
+    CHECK (pointer_published_at <= published_at)
+);
+CREATE INDEX IF NOT EXISTS nav_policy_publication_receipts_policy_idx
+    ON nav_policy_publication_receipts (policy_id, policy_version, published_at DESC);
+-- The guard reads the target pointer + published version (FOR SHARE OF the
+-- pointer, compatible with the operator's own write lock), requires the
+-- submitted identity/profile/hash to be the current published unexpired
+-- policy at the final server stamp greatest(clock, pointer instant), and
+-- ALWAYS overwrites the four server fields (never COALESCEs a caller value).
+-- The capture/SEC window is enforced against that stamp by the table CHECKs.
+CREATE OR REPLACE FUNCTION nav_policy_publication_receipt_guard_v1() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE
+    pointer_stamp timestamptz;
+    target_hash char(64);
+    target_published timestamptz;
+    target_valid_through timestamptz;
+    stamp timestamptz;
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'NAV policy publication receipts are append-only';
+    END IF;
+    SELECT c.published_at, p.policy_hash, p.published_at, p.valid_through
+      INTO pointer_stamp, target_hash, target_published, target_valid_through
+      FROM nav_policy_current c
+      JOIN nav_policy_versions p
+        ON p.policy_id = c.policy_id AND p.policy_version = c.policy_version
+     WHERE c.readiness_profile = NEW.readiness_profile
+       AND c.policy_id = NEW.policy_id AND c.policy_version = NEW.policy_version
+       FOR SHARE OF c;
+    stamp := greatest(clock_timestamp(), pointer_stamp);
+    IF pointer_stamp IS NULL OR target_hash IS DISTINCT FROM NEW.policy_hash
+       OR target_published IS NULL OR target_valid_through < stamp THEN
+        RAISE EXCEPTION 'NAV publication receipt must describe the current published unexpired policy';
+    END IF;
+    NEW.pointer_published_at := pointer_stamp;
+    NEW.evidence_partition_digest := nav_policy_evidence_digest_v1(NEW.policy_id, NEW.policy_version);
+    NEW.published_at := stamp;
+    NEW.commit_xid := pg_current_xact_id();
+    RETURN NEW;
+END$$;
+DROP TRIGGER IF EXISTS nav_policy_publication_receipt_guard ON nav_policy_publication_receipts;
+CREATE TRIGGER nav_policy_publication_receipt_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nav_policy_publication_receipts
+FOR EACH ROW EXECUTE FUNCTION nav_policy_publication_receipt_guard_v1();
+
 -- A run is a batch envelope, not economic evidence: per-instrument success is
 -- proven by the attempt committed in the same transaction as its NAV writes.
 CREATE TABLE IF NOT EXISTS nav_ingestion_runs (
@@ -1475,7 +1720,9 @@ WHERE p.readiness_profile = 'current_daily_nav_v1' AND run.state = 'complete';
 -- on the snapshot, without grant option. Roles and memberships are never
 -- created or altered here; a missing role is reported by the operator.
 REVOKE ALL ON FUNCTION nav_policy_freeze_v1(), nav_policy_pointer_stamp_v1(),
-    nav_instrument_evidence_append_only_v1(), nav_ingestion_run_guard_v1(),
+    nav_instrument_evidence_append_only_v1(), nav_policy_publication_receipt_guard_v1(),
+    nav_policy_evidence_digest_v1(text,text),
+    nav_ingestion_run_guard_v1(),
     nav_ingestion_attempt_guard_v1(),
     nav_level_evidence_digest_v1(date,numeric,numeric,text,text,text,text),
     nav_uuid_array_unique_v1(uuid[]), nav_calendar_maintenance_guard_v1(),

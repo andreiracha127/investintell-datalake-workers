@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -27,24 +28,83 @@ RISK_NONPUBLISHING_REASONS = (
 )
 ADJUSTED_OVERLAP_ABS_TOL = 0.0000005
 ADJUSTED_OVERLAP_REL_TOL = 0.00000001
-CURRENT_CATALOG_QUERY_VERSION = "nav-current-catalog-snapshot-v1"
-GENERATOR_VERSION = "fund-nav-policy-generator-v1"
+# Identity v2 (registry + ticker + series + optional strict claims). The v1
+# generator/query contract is retired: v2 code recognises it only to reject it,
+# so v1 artifacts stay immutable and are never re-applied or re-audited here.
+CURRENT_CATALOG_QUERY_VERSION = "nav-current-catalog-snapshot-v2"
+GENERATOR_VERSION = "fund-nav-policy-generator-v2"
 PROVIDER_CONTRACT_VERSION = "w1-tiingo-adjusted-daily-v1"
+IDENTITY_CONTRACT_VERSION = "registry-ticker-series-claims-v2"
+RETIRED_GENERATOR_VERSIONS = frozenset({"fund-nav-policy-generator-v1"})
+RETIRED_CATALOG_QUERY_VERSIONS = frozenset({"nav-current-catalog-snapshot-v1"})
 CATALOG_EVIDENCE_REFERENCE = (
-    f"{CURRENT_CATALOG_QUERY_VERSION}:public.instruments_universe+public.funds_v:"
-    f"{PROVIDER_CONTRACT_VERSION}:current_only"
+    f"{CURRENT_CATALOG_QUERY_VERSION}:public.instruments_universe+public.funds_v+"
+    f"public.instrument_identity:{PROVIDER_CONTRACT_VERSION}:current_only_not_pit:"
+    f"identity={IDENTITY_CONTRACT_VERSION}"
 )
 INSTRUMENTS_QUERY = (
     "SELECT instrument_id,instrument_type,ticker,isin,currency,is_active "
     "FROM public.instruments_universe ORDER BY instrument_id LIMIT 100001"
 )
 FUNDS_QUERY = (
-    "SELECT instrument_id,series_id,ticker,isin,currency,fund_type "
+    "SELECT instrument_id,series_id,ticker,isin,cusip,currency,fund_type "
     "FROM public.funds_v ORDER BY instrument_id,series_id LIMIT 100001"
 )
+IDENTITY_QUERY = (
+    "SELECT instrument_id,sec_series_id,sec_class_id,ticker,isin,cusip_9,figi,"
+    "resolution_status,conflict_state "
+    "FROM public.instrument_identity ORDER BY instrument_id LIMIT 100001"
+)
+CATALOG_SOURCE_RELATIONS = (
+    "public.instruments_universe",
+    "public.funds_v",
+    "public.instrument_identity",
+)
 SOURCE_QUERY_SHA256 = hashlib.sha256(
-    (INSTRUMENTS_QUERY + "\n" + FUNDS_QUERY).encode()
+    (INSTRUMENTS_QUERY + "\n" + FUNDS_QUERY + "\n" + IDENTITY_QUERY).encode("utf-8")
 ).hexdigest()
+# Exactly one first failure per UNKNOWN, in this precedence order (families:
+# cardinality → registry → instrument_type → ticker → series → ISIN → CUSIP →
+# FIGI → currency → fund_type → activity). INACTIVE/ACTIVE are not reasons.
+IDENTITY_FAILURE_CODES = (
+    "cardinality.iu_missing",
+    "cardinality.iu_duplicate",
+    "cardinality.funds_v_missing",
+    "cardinality.funds_v_duplicate",
+    "cardinality.registry_missing",
+    "cardinality.registry_duplicate",
+    "registry.status_not_canonical",
+    "registry.conflict_state_not_empty",
+    "instrument_type.not_fund",
+    "ticker.missing",
+    "ticker.mismatch",
+    "ticker.global_conflict",
+    "series.missing",
+    "series.mismatch",
+    "series.global_conflict",
+    "isin.unsupported_prefix",
+    "isin.invalid_format",
+    "isin.checksum",
+    "isin.mismatch",
+    "isin.global_conflict",
+    "cusip.invalid_format",
+    "cusip.checksum",
+    "cusip.mismatch",
+    "cusip.global_conflict",
+    "figi.invalid_format",
+    "figi.reserved_prefix",
+    "figi.checksum",
+    "figi.global_conflict",
+    "currency.iu_not_usd",
+    "currency.funds_v_not_usd",
+    "fund_type.unsupported",
+    "activity.not_active",
+    "activity.unknown",
+)
+CLAIM_FAILURE_FAMILIES = ("isin", "cusip", "figi")
+INACTIVE_REASONS = ("inactive_without_funds_v",)
+ISIN_PRESENCE_CATEGORIES = ("both", "iu_only", "registry_only", "neither")
+_V2_SOURCE_COUNT_KEYS = ("instruments_universe", "funds_v", "instrument_identity")
 
 
 def policy_content_digest(policy: dict) -> str:
@@ -81,6 +141,144 @@ def generation_metadata_digest(generation: dict) -> str:
     return hashlib.sha256(
         json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def uuid_set_digest(instrument_ids: Iterable[str]) -> str:
+    """SHA256 of UTF-8 compact JSON of the sorted canonical UUID strings.
+
+    No whitespace, no trailing newline; the empty set is ``[]``. Callers pass
+    canonical lowercase UUID strings (validated by ``validate_generation_v2``).
+    """
+    return hashlib.sha256(
+        json.dumps(
+            sorted(instrument_ids), separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _nonnegative_int(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _count_map(value: Any, allowed: Iterable[str]) -> dict[str, int]:
+    allowed = set(allowed)
+    if not isinstance(value, dict) or any(
+        key not in allowed or not _nonnegative_int(count)
+        for key, count in value.items()
+    ):
+        raise ValueError("generation_count_map_invalid")
+    return value
+
+
+def validate_generation_v2(policy: Mapping[str, Any]) -> None:
+    """Recount the v2 identity diagnostics from the document itself.
+
+    Verifies lifecycle partition, one evidence row per canonical UUID, flag
+    consistency, closed first-failure codes summing to UNKNOWN, INACTIVE
+    reasons, ISIN presence sums and the ACTIVE / ACTIVE-daily set digests.
+    Causal counts (structural potential, reasons) can only be revalidated
+    against the source snapshot, which the independent verifier does.
+    Raises ``ValueError`` with a static code; never returns identifiers.
+    """
+    generation = policy["generation"]
+    counts = generation["counts"]
+    evidence = policy["instrument_evidence"]
+    if not isinstance(counts, dict) or not isinstance(evidence, list):
+        raise ValueError("generation_counts_invalid")
+    for key in (
+        *_V2_SOURCE_COUNT_KEYS,
+        "instrument_evidence",
+        "active",
+        "active_daily",
+        "structural_pre_claims",
+        "structural_pre_claims_daily",
+        "structural_claim_failures",
+    ):
+        if not _nonnegative_int(counts.get(key)):
+            raise ValueError("generation_count_invalid")
+    ids = [row["instrument_id"] for row in evidence]
+    if any(
+        type(value) is not str or str(uuid.UUID(value)) != value for value in ids
+    ) or len(set(ids)) != len(ids):
+        raise ValueError("evidence_uuid_not_canonical_or_duplicate")
+    statuses: dict[str, int] = {}
+    frequencies: dict[str, int] = {}
+    active: list[str] = []
+    active_daily: list[str] = []
+    for row in evidence:
+        status, frequency = row["fund_status"], row["valuation_frequency"]
+        flags = (
+            row["identity_verified"],
+            row["currency_verified"],
+            row["return_basis_verified"],
+        )
+        if status == "ACTIVE":
+            if frequency not in ("daily", "unknown") or flags != (
+                True,
+                True,
+                frequency == "daily",
+            ):
+                raise ValueError("active_evidence_flags_invalid")
+            active.append(row["instrument_id"])
+            if frequency == "daily":
+                active_daily.append(row["instrument_id"])
+        elif status in ("INACTIVE", "UNKNOWN"):
+            if frequency != "unknown" or flags != (False, False, False):
+                raise ValueError("nonactive_evidence_flags_invalid")
+        else:
+            raise ValueError("evidence_status_invalid")
+        statuses[status] = statuses.get(status, 0) + 1
+        frequencies[frequency] = frequencies.get(frequency, 0) + 1
+    if (
+        _count_map(counts.get("fund_status"), ("ACTIVE", "INACTIVE", "UNKNOWN"))
+        != dict(sorted(statuses.items()))
+        or _count_map(counts.get("valuation_frequency"), ("daily", "unknown"))
+        != dict(sorted(frequencies.items()))
+        or counts["instrument_evidence"] != len(evidence)
+        or counts["active"] != len(active)
+        or counts["active_daily"] != len(active_daily)
+    ):
+        raise ValueError("lifecycle_partition_invalid")
+    first_failure = _count_map(
+        counts.get("identity_first_failure"), IDENTITY_FAILURE_CODES
+    )
+    inactive_reason = _count_map(counts.get("inactive_reason"), INACTIVE_REASONS)
+    if (
+        sum(first_failure.values()) != statuses.get("UNKNOWN", 0)
+        or sum(inactive_reason.values()) != statuses.get("INACTIVE", 0)
+        or list(first_failure) != sorted(first_failure)
+        or list(inactive_reason) != sorted(inactive_reason)
+    ):
+        raise ValueError("first_failure_closure_invalid")
+    presence = counts.get("isin_presence_active")
+    presence_daily = counts.get("isin_presence_active_daily")
+    for mapping, total in ((presence, len(active)), (presence_daily, len(active_daily))):
+        if (
+            not isinstance(mapping, dict)
+            or set(mapping) != set(ISIN_PRESENCE_CATEGORIES)
+            or sum(_count_map(mapping, ISIN_PRESENCE_CATEGORIES).values()) != total
+        ):
+            raise ValueError("isin_presence_invalid")
+    claim_first_failures = sum(
+        count
+        for code, count in first_failure.items()
+        if code.split(".", 1)[0] in CLAIM_FAILURE_FAMILIES
+    )
+    if (
+        any(presence_daily[key] > presence[key] for key in ISIN_PRESENCE_CATEGORIES)
+        or counts["structural_pre_claims_daily"] < counts["active_daily"]
+        or counts["structural_pre_claims"] < counts["structural_pre_claims_daily"]
+        # Structural potential minus ACTIVE is exactly the structural UNKNOWNs,
+        # all of which fail first on an ISIN/CUSIP/FIGI family.
+        or counts["structural_pre_claims"] - counts["active"]
+        != counts["structural_claim_failures"]
+        or counts["structural_claim_failures"] > claim_first_failures
+    ):
+        raise ValueError("structural_counts_invalid")
+    if generation.get("active_set_sha256") != uuid_set_digest(active) or generation.get(
+        "active_daily_set_sha256"
+    ) != uuid_set_digest(active_daily):
+        raise ValueError("active_set_digest_invalid")
 
 
 def calendar_digest(
