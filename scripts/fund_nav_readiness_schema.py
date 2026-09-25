@@ -6,8 +6,11 @@ profile (role missing/unsafe) or external dependency; 4 lock busy with
 ``dml_committed=false`` (the separate DDL step may still have been applied).
 
 Policy publication (``--policy-file``) is governed: the policy must be a
-generator-v2 catalog artifact and must come with a strict all-PASS audit
-dossier and the canary manifest of that same audit, all read once from a
+generator-v3 catalog artifact (v1/v2 are rejected even when consistently
+rehashed) and must come with a strict all-PASS audit dossier of contract
+``nav-identity-audit-contract-v3-round6`` (SEC exclusions equal to the policy's
+SEC first failures and within the fixed gap/conflict ceilings) and the canary
+manifest of that same audit, all read once from a
 private POSIX custody root (``--custody-root``, 0700; files 0600, regular, no
 symlink/escape) and pinned by SHA-256 on the command line. The receipt is
 validated against the leaf contract only (never by importing the auditor or
@@ -66,6 +69,7 @@ from psycopg import sql
 from scripts.nav_identity_audit_contract import (
     A4_DETAIL_KEYS,
     A8_DETAIL_KEYS,
+    A8_EXCLUSION_KEYS,
     A8_FRESHNESS_KEYS,
     A8_OUTCOMES,
     AUDIT_CONTRACT_SHA256,
@@ -86,6 +90,11 @@ from scripts.nav_identity_audit_contract import (
     GATE_CHECKS,
     GATE_NAMES,
     PUBLICATION_RECEIPT_RELATION,
+    SEC_CONFLICT_CEILING,
+    SEC_CONFLICT_CODES,
+    SEC_FAILURE_CODES,
+    SEC_GAP_CEILING,
+    SEC_GAP_CODES,
     SEC_MAX_SYNCED_AGE_DAYS,
     SEC_QUERY_CONTRACT_SHA256,
     SEC_RELATION,
@@ -109,15 +118,16 @@ from src.workers._nav_policy import (
     generation_metadata_digest,
     instrument_evidence_digest,
     policy_content_digest,
-    validate_generation_v2,
+    validate_generation_v3,
 )
 from src.workers._nav_sanitize import REPAIRED_NAV_KINDS
 
 ROOT = Path(__file__).resolve().parents[1]
 DDL = ROOT / "schemas" / "fund_nav_readiness_v1.sql"
 # Versioned audit code/config pinned by the receipt (repository files, not 0600).
+# The verifier keeps its v2 filename; it implements nav-identity-audit-v3.
 AUDIT_VERIFIER = ROOT / "scripts" / "verify_fund_nav_identity_v2.py"
-AUDIT_CONFIG = ROOT / "configs" / "nav_identity_audit_v2.json"
+AUDIT_CONFIG = ROOT / "configs" / "nav_identity_audit_v3.json"
 MAX_CUSTODY_BYTES = 512 * 1024 * 1024
 CATALOG_MANIFEST = ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json"
 EXIT_INCOMPATIBLE = 3
@@ -430,9 +440,10 @@ def _policy(path: str | dict | bytes | None) -> tuple[dict | None, bytes]:
         ):
             raise ValueError("identity_evidence_missing")
     generation = policy.get("generation")
-    # Retired (v1) and generator-owned catalog references can never be applied
-    # by this operator without full current-generator metadata: a v1 artifact
-    # stays immutable and is never re-published or re-audited by v2 code.
+    # Retired (v1, v2) and generator-owned catalog references can never be
+    # applied by this operator without full current-generator metadata: v1/v2
+    # artifacts stay immutable and are never re-published or re-audited by v3
+    # code (a v2 artifact rehashed consistently is still rejected).
     catalog_prefixes = tuple(
         f"{version}:"
         for version in (*RETIRED_CATALOG_QUERY_VERSIONS, CURRENT_CATALOG_QUERY_VERSION)
@@ -497,9 +508,10 @@ def _policy(path: str | dict | bytes | None) -> tuple[dict | None, bytes]:
                 )
             ):
                 raise ValueError("generator_metadata_invalid")
-            # v2 identity diagnostics: partition, first-failure closure, flags
-            # and ACTIVE digests are recounted from the document itself.
-            validate_generation_v2(policy)
+            # v3 identity diagnostics: partition, first-failure closure (SEC
+            # codes included), structural conservation, flags and ACTIVE
+            # digests are recounted from the document itself.
+            validate_generation_v3(policy)
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("generator_metadata_invalid") from exc
     return policy, raw
@@ -2391,6 +2403,12 @@ def _validate_dossier(dossier: dict, policy: dict, policy_sha: str) -> None:
         or not _hex64(a7.get("cohort_rows_sha256"))
     ):
         raise ValueError("audit_dossier_invalid")
+    # SEC exclusions the POLICY declares (generation first failures) must be
+    # exactly the dossier's (recomputed by the auditor at generated_at) and
+    # within the reviewed fixed ceilings of this contract.
+    declared_first = generation["counts"]["identity_first_failure"]
+    declared_sec = {code: declared_first.get(code, 0) for code in SEC_FAILURE_CODES}
+    exclusions = a8.get("exclusions") if isinstance(a8, dict) else None
     if (
         not isinstance(a4, dict)
         or set(a4) != set(A4_DETAIL_KEYS)
@@ -2401,6 +2419,16 @@ def _validate_dossier(dossier: dict, policy: dict, policy_sha: str) -> None:
         or a8["relation"] != SEC_RELATION
         or a8["timestamp_column"] != SEC_TIMESTAMP_COLUMN
         or a8["sec_query_contract_sha256"] != SEC_QUERY_CONTRACT_SHA256
+        or a8["gap_ceiling"] != SEC_GAP_CEILING
+        or a8["conflict_ceiling"] != SEC_CONFLICT_CEILING
+        or not isinstance(exclusions, dict)
+        or set(exclusions) != set(A8_EXCLUSION_KEYS)
+        or exclusions["by_code"] != declared_sec
+        or exclusions["gap"] != sum(declared_sec[code] for code in SEC_GAP_CODES)
+        or exclusions["conflict"]
+        != sum(declared_sec[code] for code in SEC_CONFLICT_CODES)
+        or exclusions["gap"] > SEC_GAP_CEILING
+        or exclusions["conflict"] > SEC_CONFLICT_CEILING
         or not isinstance(a8["freshness"], dict)
         or set(a8["freshness"]) != set(A8_FRESHNESS_KEYS)
         or a8["freshness"]["max_synced_age_days"] != SEC_MAX_SYNCED_AGE_DAYS

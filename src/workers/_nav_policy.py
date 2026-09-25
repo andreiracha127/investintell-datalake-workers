@@ -28,19 +28,26 @@ RISK_NONPUBLISHING_REASONS = (
 )
 ADJUSTED_OVERLAP_ABS_TOL = 0.0000005
 ADJUSTED_OVERLAP_REL_TOL = 0.00000001
-# Identity v2 (registry + ticker + series + optional strict claims). The v1
-# generator/query contract is retired: v2 code recognises it only to reject it,
-# so v1 artifacts stay immutable and are never re-applied or re-audited here.
-CURRENT_CATALOG_QUERY_VERSION = "nav-current-catalog-snapshot-v2"
-GENERATOR_VERSION = "fund-nav-policy-generator-v2"
+# Identity v3 (registry + ticker + series + optional strict claims + current SEC
+# class/series/ticker corroboration). The v1 and v2 generator/query contracts
+# are retired: v3 code recognises them only to reject them, so v1/v2 artifacts
+# stay immutable and are never re-applied or re-audited here (a v1 artifact is
+# still readable as the audited PREVIOUS policy by the independent auditor).
+CURRENT_CATALOG_QUERY_VERSION = "nav-current-catalog-snapshot-v3"
+GENERATOR_VERSION = "fund-nav-policy-generator-v3"
 PROVIDER_CONTRACT_VERSION = "w1-tiingo-adjusted-daily-v1"
-IDENTITY_CONTRACT_VERSION = "registry-ticker-series-claims-v2"
-RETIRED_GENERATOR_VERSIONS = frozenset({"fund-nav-policy-generator-v1"})
-RETIRED_CATALOG_QUERY_VERSIONS = frozenset({"nav-current-catalog-snapshot-v1"})
+IDENTITY_CONTRACT_VERSION = "registry-ticker-series-claims-sec-v3"
+RETIRED_GENERATOR_VERSIONS = frozenset(
+    {"fund-nav-policy-generator-v1", "fund-nav-policy-generator-v2"}
+)
+RETIRED_CATALOG_QUERY_VERSIONS = frozenset(
+    {"nav-current-catalog-snapshot-v1", "nav-current-catalog-snapshot-v2"}
+)
+SEC_RELATION = "public.sec_company_tickers_mf"
 CATALOG_EVIDENCE_REFERENCE = (
     f"{CURRENT_CATALOG_QUERY_VERSION}:public.instruments_universe+public.funds_v+"
-    f"public.instrument_identity:{PROVIDER_CONTRACT_VERSION}:current_only_not_pit:"
-    f"identity={IDENTITY_CONTRACT_VERSION}"
+    f"public.instrument_identity+{SEC_RELATION}:{PROVIDER_CONTRACT_VERSION}:"
+    f"current_only_not_pit:identity={IDENTITY_CONTRACT_VERSION}"
 )
 INSTRUMENTS_QUERY = (
     "SELECT instrument_id,instrument_type,ticker,isin,currency,is_active "
@@ -55,17 +62,56 @@ IDENTITY_QUERY = (
     "resolution_status,conflict_state "
     "FROM public.instrument_identity ORDER BY instrument_id LIMIT 100001"
 )
+# Fourth source: the SEC class/series/ticker crosswalk. updated_at is refreshed
+# on every upsert (fetched_at is not), so it is the freshness column. Same
+# projection, order and cap as the audit contract's SEC query (a test pins the
+# bytes against the leaf); the lineage aggregate is read in the same snapshot.
+SEC_QUERY = (
+    "SELECT class_id,series_id,ticker,updated_at AS synced_at "
+    "FROM public.sec_company_tickers_mf "
+    "ORDER BY class_id,series_id,ticker,updated_at LIMIT 100001"
+)
+SEC_LINEAGE_QUERY = (
+    "SELECT count(*) AS row_count,min(updated_at) AS min_synced_at,"
+    "max(updated_at) AS max_synced_at FROM public.sec_company_tickers_mf"
+)
+SEC_MAX_SYNCED_AGE = dt.timedelta(days=7)
+SEC_CLASS_PATTERN = "^C[0-9]{9}$"
+SEC_SERIES_PATTERN = "^S[0-9]{9}$"
 CATALOG_SOURCE_RELATIONS = (
     "public.instruments_universe",
     "public.funds_v",
     "public.instrument_identity",
+    SEC_RELATION,
 )
+# Ordered digest of the four source SQLs (IU, funds_v, registry, SEC).
+_SOURCE_QUERIES = (INSTRUMENTS_QUERY, FUNDS_QUERY, IDENTITY_QUERY, SEC_QUERY)
 SOURCE_QUERY_SHA256 = hashlib.sha256(
-    (INSTRUMENTS_QUERY + "\n" + FUNDS_QUERY + "\n" + IDENTITY_QUERY).encode("utf-8")
+    "\n".join(_SOURCE_QUERIES).encode("utf-8")
 ).hexdigest()
+# SEC corroboration first failures, evaluated only for a candidate that passes
+# every internal gate (so always after activity), in this precedence order.
+SEC_FAILURE_CODES = (
+    "sec.declared_class_invalid",
+    "sec.poisoned_mapping",
+    "sec.contradiction",
+    "sec.ambiguous",
+    "sec.incomplete",
+    "sec.stale",
+    "sec.missing",
+)
+SEC_FAILURE_FAMILY = "sec"
+# Governed ceilings count FUNDS by first failure (never source rows).
+SEC_GAP_CODES = ("sec.incomplete", "sec.stale", "sec.missing")
+SEC_CONFLICT_CODES = (
+    "sec.declared_class_invalid",
+    "sec.poisoned_mapping",
+    "sec.contradiction",
+    "sec.ambiguous",
+)
 # Exactly one first failure per UNKNOWN, in this precedence order (families:
 # cardinality → registry → instrument_type → ticker → series → ISIN → CUSIP →
-# FIGI → currency → fund_type → activity). INACTIVE/ACTIVE are not reasons.
+# FIGI → currency → fund_type → activity → SEC). INACTIVE/ACTIVE are not reasons.
 IDENTITY_FAILURE_CODES = (
     "cardinality.iu_missing",
     "cardinality.iu_duplicate",
@@ -100,11 +146,25 @@ IDENTITY_FAILURE_CODES = (
     "fund_type.unsupported",
     "activity.not_active",
     "activity.unknown",
+    *SEC_FAILURE_CODES,
 )
 CLAIM_FAILURE_FAMILIES = ("isin", "cusip", "figi")
 INACTIVE_REASONS = ("inactive_without_funds_v",)
 ISIN_PRESENCE_CATEGORIES = ("both", "iu_only", "registry_only", "neither")
-_V2_SOURCE_COUNT_KEYS = ("instruments_universe", "funds_v", "instrument_identity")
+SOURCE_COUNT_KEYS = (
+    "instruments_universe",
+    "funds_v",
+    "instrument_identity",
+    "sec_company_tickers_mf",
+)
+STRUCTURAL_COUNT_KEYS = (
+    "structural_pre_claims",
+    "structural_pre_claims_daily",
+    "structural_claim_failures",
+    "structural_sec_failures",
+    "structural_daily_claim_failures",
+    "structural_daily_sec_failures",
+)
 
 
 def policy_content_digest(policy: dict) -> str:
@@ -147,7 +207,7 @@ def uuid_set_digest(instrument_ids: Iterable[str]) -> str:
     """SHA256 of UTF-8 compact JSON of the sorted canonical UUID strings.
 
     No whitespace, no trailing newline; the empty set is ``[]``. Callers pass
-    canonical lowercase UUID strings (validated by ``validate_generation_v2``).
+    canonical lowercase UUID strings (validated by ``validate_generation_v3``).
     """
     return hashlib.sha256(
         json.dumps(
@@ -170,15 +230,18 @@ def _count_map(value: Any, allowed: Iterable[str]) -> dict[str, int]:
     return value
 
 
-def validate_generation_v2(policy: Mapping[str, Any]) -> None:
-    """Recount the v2 identity diagnostics from the document itself.
+def validate_generation_v3(policy: Mapping[str, Any]) -> None:
+    """Recount the v3 identity diagnostics from the document itself.
 
     Verifies lifecycle partition, one evidence row per canonical UUID, flag
-    consistency, closed first-failure codes summing to UNKNOWN, INACTIVE
-    reasons, ISIN presence sums and the ACTIVE / ACTIVE-daily set digests.
-    Causal counts (structural potential, reasons) can only be revalidated
-    against the source snapshot, which the independent verifier does.
-    Raises ``ValueError`` with a static code; never returns identifiers.
+    consistency, closed first-failure codes (SEC codes included) summing to
+    UNKNOWN, INACTIVE reasons, ISIN presence sums, the structural
+    conservation identities (total: ``structural_pre_claims - active =
+    claim + SEC failures``; daily population P: ``P - D = daily claim + daily
+    SEC failures``, MMF outside it), every SEC first failure being structural,
+    and the ACTIVE / ACTIVE-daily set digests. Causal counts can only be
+    revalidated against the source snapshot, which the independent verifier
+    does. Raises ``ValueError`` with a static code; never returns identifiers.
     """
     generation = policy["generation"]
     counts = generation["counts"]
@@ -186,13 +249,11 @@ def validate_generation_v2(policy: Mapping[str, Any]) -> None:
     if not isinstance(counts, dict) or not isinstance(evidence, list):
         raise ValueError("generation_counts_invalid")
     for key in (
-        *_V2_SOURCE_COUNT_KEYS,
+        *SOURCE_COUNT_KEYS,
         "instrument_evidence",
         "active",
         "active_daily",
-        "structural_pre_claims",
-        "structural_pre_claims_daily",
-        "structural_claim_failures",
+        *STRUCTURAL_COUNT_KEYS,
     ):
         if not _nonnegative_int(counts.get(key)):
             raise ValueError("generation_count_invalid")
@@ -264,15 +325,30 @@ def validate_generation_v2(policy: Mapping[str, Any]) -> None:
         for code, count in first_failure.items()
         if code.split(".", 1)[0] in CLAIM_FAILURE_FAMILIES
     )
+    sec_first_failures = sum(
+        count
+        for code, count in first_failure.items()
+        if code.split(".", 1)[0] == SEC_FAILURE_FAMILY
+    )
     if (
         any(presence_daily[key] > presence[key] for key in ISIN_PRESENCE_CATEGORIES)
         or counts["structural_pre_claims_daily"] < counts["active_daily"]
         or counts["structural_pre_claims"] < counts["structural_pre_claims_daily"]
         # Structural potential minus ACTIVE is exactly the structural UNKNOWNs,
-        # all of which fail first on an ISIN/CUSIP/FIGI family.
+        # each failing first on an ISIN/CUSIP/FIGI family or on SEC.
         or counts["structural_pre_claims"] - counts["active"]
-        != counts["structural_claim_failures"]
+        != counts["structural_claim_failures"] + counts["structural_sec_failures"]
+        # Same identity inside the daily population P (MMF outside it).
+        or counts["structural_pre_claims_daily"] - counts["active_daily"]
+        != counts["structural_daily_claim_failures"]
+        + counts["structural_daily_sec_failures"]
+        or counts["structural_daily_claim_failures"]
+        > counts["structural_claim_failures"]
+        or counts["structural_daily_sec_failures"] > counts["structural_sec_failures"]
         or counts["structural_claim_failures"] > claim_first_failures
+        # SEC is evaluated only after every internal gate: every SEC first
+        # failure belongs to the structural population.
+        or counts["structural_sec_failures"] != sec_first_failures
     ):
         raise ValueError("structural_counts_invalid")
     if generation.get("active_set_sha256") != uuid_set_digest(active) or generation.get(

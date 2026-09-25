@@ -1,33 +1,51 @@
-"""Independent audit (A1–A8) of a fund-nav-policy-generator-v2 artifact.
+"""Independent audit (A1–A8) of a fund-nav-policy-generator-v3 artifact.
+
+The CLI keeps its v2 filename to avoid duplicating the implementation; it
+implements the current audit ``nav-identity-audit-v3`` (contract
+``nav-identity-audit-contract-v3-round6``). Generator v1/v2 artifacts are
+rejected; a v2 artifact is never accepted as the previous policy either.
 
 Deliberately NOT a reuse of the generator: this module re-implements, from the
 written contract, the source typing, normalization, claim checksums, global
-claim ownership, projection check, INACTIVE rule and gate precedence, and it
-never imports the classifier, normalizers, checksum helpers or decision
-constants of ``scripts.generate_fund_nav_policy_v1`` / ``src.workers._nav_policy``.
-The only generator import is the POSIX custody writer (no domain decision).
+claim ownership, projection check, INACTIVE rule, gate precedence and the SEC
+corroboration rule (fresh/historical rows, poison/contradiction/ambiguity/
+incompleteness/stale/missing precedence), and it never imports the
+classifier, normalizers, checksum helpers or decision constants of
+``scripts.generate_fund_nav_policy_v1`` / ``src.workers._nav_policy``. The
+only generator import is the POSIX custody writer (no domain decision).
 
-Inputs: the policy artifact, its private source-snapshot export, and either a
-new READ ONLY REPEATABLE READ capture (``--dsn-env``: the three sources, the
-builder cohort and the SEC classes in ONE snapshot) or a previously persisted
-capture bundle (``--capture-file``, fully offline), an optional hash-pinned v1
-artifact (read as data, never re-verified) and an audit config pinning the
-audit contract version, the ceiling, the SEC freshness criterion, the Light
-revision/cohort query/strategy→sleeve map/Stage-1 quotas and the canary salt.
+Inputs: the policy artifact, its private source-snapshot export (four
+sources: IU, funds_v, registry and SEC), and either a new READ ONLY
+REPEATABLE READ capture (``--dsn-env``: the four sources and the builder cohort
+in ONE snapshot) or a previously persisted capture bundle (``--capture-file``,
+fully offline), an optional hash-pinned v1 artifact (read as data, never
+re-verified) and an audit config pinning the audit contract version, the
+ceilings (structural daily 5103, SEC gap 23 / conflict 0), the SEC freshness
+criterion, the Light revision/cohort query/strategy→sleeve map/Stage-1 quotas
+and the canary salt.
+
+The SEC rule is judged twice, independently of the generator: at the
+policy's ``generated_at`` (the lifecycle, reasons and counts must be exactly
+recomputed, and the SEC exclusions must stay within the reviewed ceilings)
+and at the capture instant (A8: every ACTIVE, MMF included, must still be
+matched by exactly one fresh complete row; ageing between generation and
+audit fails A8, it never rewrites the policy). Any SEC ``updated_at`` change
+between generation and capture is source drift (A5 FAIL, A7/A8 not
+evaluated).
 
 Outputs, all through the private POSIX custody writer (root 0700, files 0600,
 atomic, never overwritten, never inside a Git checkout):
 
 1. ``--capture-output`` (required with ``--dsn-env``): the canonical capture
-   bundle ``nav-identity-audit-capture-v2`` — every captured row, multiplicity
-   preserved, with per-input digests. Written BEFORE the audit runs.
-2. ``--output``: the dossier ``nav-identity-audit-v2``. Always written once an
+   bundle ``nav-identity-audit-capture-v3-round6`` — every captured row,
+   multiplicity preserved, with per-input digests. Written BEFORE the audit.
+2. ``--output``: the dossier ``nav-identity-audit-v3``. Always written once an
    audit result exists (PASS or FAIL), before any canary decision; it pins the
    hashes/counts of every input (policy, snapshots, capture, cohort, SEC,
    config, audit contract, verifier source) and may list identifiers.
 3. ``--canary-output``: only when every A1–A8 gate is PASS (a canary request
    implies ``--strict``); bound to the dossier SHA, the capture SHA and the
-   eligible-cohort digest.
+   eligible-cohort digest (SEC-excluded funds are never eligible).
 
 stdout carries aggregate counts/codes/digests only (never identifiers, DSNs or
 provider payloads). No provider call and no database write is ever performed.
@@ -68,6 +86,7 @@ from pathlib import Path
 # Declarative contract leaf (pure data; no decision logic is shared).
 from scripts.nav_identity_audit_contract import (
     A4_DETAIL_KEYS,
+    A8_DETAIL_KEYS,
     A8_OUTCOMES,
     AUDIT_CONFIG_VERSION,
     AUDIT_CONTRACT,
@@ -84,6 +103,10 @@ from scripts.nav_identity_audit_contract import (
     RETIRED_CEILING_KEYS,
     ROW_CEILING,
     SEC_CLASS_PATTERN,
+    SEC_CONFLICT_CEILING,
+    SEC_CONFLICT_CEILING_KEY,
+    SEC_GAP_CEILING,
+    SEC_GAP_CEILING_KEY,
     SEC_LINEAGE_SQL,
     SEC_MAX_SYNCED_AGE_DAYS,
     SEC_QUERY_CONTRACT_SHA256,
@@ -102,18 +125,25 @@ from scripts.generate_fund_nav_policy_v1 import PolicyGenerationError, write_art
 STAGE1_MARGIN = Fraction(1, 10)
 SEC_CLASS_RE = re.compile(SEC_CLASS_PATTERN)
 SEC_SERIES_RE = re.compile(SEC_SERIES_PATTERN)
+SEC_MAX_AGE = dt.timedelta(days=SEC_MAX_SYNCED_AGE_DAYS)
 # Contract texts the audited artifact must carry (independent literal copies).
-EXPECTED_GENERATOR = "fund-nav-policy-generator-v2"
-RETIRED_GENERATORS = ("fund-nav-policy-generator-v1",)
-EXPECTED_QUERY_VERSION = "nav-current-catalog-snapshot-v2"
+EXPECTED_GENERATOR = "fund-nav-policy-generator-v3"
+RETIRED_GENERATORS = ("fund-nav-policy-generator-v1", "fund-nav-policy-generator-v2")
+EXPECTED_QUERY_VERSION = "nav-current-catalog-snapshot-v3"
+RETIRED_QUERY_VERSIONS = (
+    "nav-current-catalog-snapshot-v1",
+    "nav-current-catalog-snapshot-v2",
+)
 EXPECTED_PROVIDER = "w1-tiingo-adjusted-daily-v1"
 EXPECTED_CALENDAR_PACKAGE = "exchange_calendars==4.13.2"
+EXPECTED_IDENTITY_CONTRACT = "registry-ticker-series-claims-sec-v3"
 EXPECTED_REFERENCE = (
-    "nav-current-catalog-snapshot-v2:public.instruments_universe+public.funds_v+"
-    "public.instrument_identity:w1-tiingo-adjusted-daily-v1:current_only_not_pit:"
-    "identity=registry-ticker-series-claims-v2"
+    "nav-current-catalog-snapshot-v3:public.instruments_universe+public.funds_v+"
+    "public.instrument_identity+public.sec_company_tickers_mf:"
+    "w1-tiingo-adjusted-daily-v1:current_only_not_pit:"
+    "identity=registry-ticker-series-claims-sec-v3"
 )
-SNAPSHOT_KIND = "nav_policy_source_snapshot_v2"
+SNAPSHOT_KIND = "nav-current-catalog-source-snapshot-v3"
 SOURCE_SQL = {
     "instruments": (
         "SELECT instrument_id,instrument_type,ticker,isin,currency,is_active "
@@ -128,7 +158,14 @@ SOURCE_SQL = {
         "resolution_status,conflict_state "
         "FROM public.instrument_identity ORDER BY instrument_id LIMIT 100001"
     ),
+    "sec": (
+        "SELECT class_id,series_id,ticker,updated_at AS synced_at "
+        "FROM public.sec_company_tickers_mf "
+        "ORDER BY class_id,series_id,ticker,updated_at LIMIT 100001"
+    ),
 }
+CATALOG_NAMES = ("instruments", "funds", "identity")
+SOURCE_NAMES = ("funds", "identity", "instruments", "sec")
 SOURCE_RELATION = {
     "instruments": "public.instruments_universe",
     "funds": "public.funds_v",
@@ -136,19 +173,35 @@ SOURCE_RELATION = {
 }
 SOURCE_COLUMNS = {
     name: tuple(
-        column.strip()
+        column.strip().split(" AS ")[-1]
         for column in sql.split("SELECT ", 1)[1].split(" FROM ", 1)[0].split(",")
     )
     for name, sql in SOURCE_SQL.items()
 }
 QUERY_SHA256 = hashlib.sha256(
-    "\n".join(SOURCE_SQL[name] for name in ("instruments", "funds", "identity")).encode(
-        "utf-8"
-    )
+    "\n".join(
+        SOURCE_SQL[name] for name in ("instruments", "funds", "identity", "sec")
+    ).encode("utf-8")
 ).hexdigest()
 SEC_QUERY_SHA256 = hashlib.sha256(SEC_SQL.encode("utf-8")).hexdigest()
 SEC_LINEAGE_QUERY_SHA256 = hashlib.sha256(SEC_LINEAGE_SQL.encode("utf-8")).hexdigest()
 PRE_CLAIM_FAMILIES = frozenset({"cardinality", "registry", "ticker", "series"})
+# SEC corroboration outcomes, in precedence order (own copy of the contract).
+SEC_CODES = (
+    "sec.declared_class_invalid",
+    "sec.poisoned_mapping",
+    "sec.contradiction",
+    "sec.ambiguous",
+    "sec.incomplete",
+    "sec.stale",
+    "sec.missing",
+)
+SEC_GAPS = frozenset({"sec.incomplete", "sec.stale", "sec.missing"})
+SEC_CONFLICTS = frozenset(SEC_CODES) - SEC_GAPS
+# Canonical instant text shared by snapshots and captures (UTC, microseconds).
+UTC_TEXT = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}\+00:00$"
+)
 # Precedence (index = rank). A first failure is the lowest-ranked failing code.
 GATE_CODES = (
     "cardinality.iu_missing",
@@ -184,9 +237,11 @@ GATE_CODES = (
     "fund_type.unsupported",
     "activity.not_active",
     "activity.unknown",
+    *SEC_CODES,
 )
 RANK = {code: position for position, code in enumerate(GATE_CODES)}
 CLAIM_FAMILIES = frozenset({"isin", "cusip", "figi"})
+SEC_FAMILY = "sec"
 DIGITS = "0123456789"
 ALNUM = DIGITS + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 CUSIP_EXTRA = {"*": 36, "@": 37, "#": 38}
@@ -328,6 +383,8 @@ def _rows_sha(rows: list) -> str:
 
 def _contract_consistent() -> bool:
     """The frozen leaf literal must describe this auditor's runtime semantics."""
+    generation = AUDIT_CONTRACT["generation"]
+    classification = AUDIT_CONTRACT["sec_classification"]
     return (
         _sha(_compact(AUDIT_CONTRACT).encode("utf-8")) == AUDIT_CONTRACT_SHA256
         and AUDIT_CONTRACT["catalog_source_query_sha256"] == QUERY_SHA256
@@ -337,7 +394,20 @@ def _contract_consistent() -> bool:
         == [f"{c}|{t}" for c in ISIN_CLASSES for t in CANARY_TYPES]
         and _sha((SEC_SQL + "\n" + SEC_LINEAGE_SQL).encode("utf-8"))
         == SEC_QUERY_CONTRACT_SHA256
+        and SOURCE_SQL["sec"] == SEC_SQL
         and AUDIT_CONTRACT["a8"]["max_synced_age_days"] == SEC_MAX_SYNCED_AGE_DAYS
+        and generation["generator_version"] == EXPECTED_GENERATOR
+        and generation["catalog_query_version"] == EXPECTED_QUERY_VERSION
+        and generation["identity_contract_version"] == EXPECTED_IDENTITY_CONTRACT
+        and generation["source_snapshot_kind"] == SNAPSHOT_KIND
+        and generation["retired_generator_versions"] == list(RETIRED_GENERATORS)
+        and generation["retired_catalog_query_versions"] == list(RETIRED_QUERY_VERSIONS)
+        and classification["failure_codes"] == list(SEC_CODES)
+        and set(classification["gap_codes"]) == SEC_GAPS
+        and set(classification["conflict_codes"]) == SEC_CONFLICTS
+        and AUDIT_CONTRACT["a8"]["gap_ceiling"] == SEC_GAP_CEILING
+        and AUDIT_CONTRACT["a8"]["conflict_ceiling"] == SEC_CONFLICT_CEILING
+        and set(A8_OUTCOMES) == {"matched", *SEC_CODES}
     )
 
 
@@ -346,7 +416,58 @@ if not _contract_consistent():  # pragma: no cover - import-time guard
 
 
 # ── source typing and normalization (own implementation) ─────────────────────
+def _utc_text(value: dt.datetime) -> str:
+    """Canonical instant text: explicit UTC fields, six fractional digits."""
+    u = value.astimezone(dt.timezone.utc)
+    return (
+        f"{u.year:04d}-{u.month:02d}-{u.day:02d}T{u.hour:02d}:{u.minute:02d}:"
+        f"{u.second:02d}.{u.microsecond:06d}+00:00"
+    )
+
+
+def _sec_time(value, *, from_database: bool) -> str:
+    """Database: an aware timestamp. File: its exact canonical text only."""
+    if from_database and isinstance(value, dt.datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise AuditBlocked("sec_timestamp_not_aware")
+        return _utc_text(value)
+    if isinstance(value, str) and UTC_TEXT.match(value):
+        try:
+            parsed = dt.datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise AuditBlocked("sec_timestamp_not_canonical") from exc
+        if _utc_text(parsed) == value:
+            return value
+    raise AuditBlocked("sec_timestamp_not_canonical")
+
+
+def _sec_source_rows(rows, *, from_database: bool) -> list[dict]:
+    """SEC rows: text-or-NULL identifiers kept verbatim, canonical UTC instant."""
+    typed = []
+    for row in rows:
+        if not isinstance(row, dict) or (
+            not from_database and set(row) != set(SOURCE_COLUMNS["sec"])
+        ):
+            raise AuditBlocked("sec_source_shape_invalid")
+        try:
+            record = {column: row[column] for column in SOURCE_COLUMNS["sec"]}
+        except KeyError as exc:
+            raise AuditBlocked("sec_source_shape_invalid") from exc
+        if any(
+            record[k] is not None and not isinstance(record[k], str)
+            for k in ("class_id", "series_id", "ticker")
+        ):
+            raise AuditBlocked("sec_source_shape_invalid")
+        record["synced_at"] = _sec_time(
+            record["synced_at"], from_database=from_database
+        )
+        typed.append(record)
+    return typed
+
+
 def _source_rows(rows, source: str, *, from_database: bool) -> list[dict]:
+    if source == "sec":
+        return _sec_source_rows(rows, from_database=from_database)
     columns = SOURCE_COLUMNS[source]
     typed = []
     for row in rows:
@@ -383,10 +504,8 @@ def _source_rows(rows, source: str, *, from_database: bool) -> list[dict]:
 
 
 def _snapshot_sha(sources: dict) -> str:
-    ordered = {
-        name: sorted(sources[name], key=_compact)
-        for name in ("funds", "identity", "instruments")
-    }
+    """Digest of the FOUR canonical sources (IU, funds_v, registry, SEC)."""
+    ordered = {name: sorted(sources[name], key=_compact) for name in SOURCE_NAMES}
     return _sha(_document_bytes(ordered))
 
 
@@ -708,8 +827,87 @@ class Catalog:
         return total, daily
 
 
-def classify(catalog: Catalog) -> dict:
-    """Independent lifecycle per UUID with first failure and every failure."""
+class SecJudge:
+    """Independent SEC corroboration over canonical rows (text instants).
+
+    A row is identified by its position: reaching it through the ticker and
+    the class index is one row, while two positions with equal content are a
+    real duplicate. Freshness is decided against the instant passed to
+    ``judge`` (the policy's generated_at, or the capture's decision instant).
+    """
+
+    def __init__(self, rows: list[dict]):
+        self.instants = [dt.datetime.fromisoformat(r["synced_at"]) for r in rows]
+        self.keys = [
+            (_upper(r["class_id"]), _upper(r["series_id"]), _upper(r["ticker"]))
+            for r in rows
+        ]
+        self.by_ticker: dict = defaultdict(set)
+        self.by_class: dict = defaultdict(set)
+        for position, (class_id, _series, ticker) in enumerate(self.keys):
+            if ticker is not None:
+                self.by_ticker[ticker].add(position)
+            if class_id is not None:
+                self.by_class[class_id].add(position)
+
+    def source_problem(self, at: dt.datetime) -> str | None:
+        """Systemic defect at ``at``: empty, oversized, future or stale source."""
+        if not self.instants:
+            return "sec_source_empty"
+        if len(self.instants) > ROW_CEILING:
+            return "sec_source_row_limit_exceeded"
+        newest = max(self.instants)
+        if newest > at:
+            return "sec_source_future"
+        if at - newest > SEC_MAX_AGE:
+            return "sec_source_stale"
+        return None
+
+    def judge(self, ticker, series, declared, at: dt.datetime):
+        """``(first SEC failure or None, matched instant or None)``."""
+        if declared is not None and not SEC_CLASS_RE.fullmatch(declared):
+            return "sec.declared_class_invalid", None
+        related = set(self.by_ticker.get(ticker, set()))
+        if declared is not None:
+            related |= self.by_class.get(declared, set())
+        fresh = [p for p in related if _fresh_age(at - self.instants[p])]
+        historical = [p for p in related if at - self.instants[p] > SEC_MAX_AGE]
+        keys = [self.keys[p] for p in fresh]
+        complete = [k for k in keys if all(part is not None for part in k)]
+        verdicts = {
+            "sec.poisoned_mapping": any(
+                (c is not None and SEC_CLASS_RE.fullmatch(c) is None)
+                or (s is not None and SEC_SERIES_RE.fullmatch(s) is None)
+                for c, s, _t in keys
+            ),
+            "sec.contradiction": any(
+                (s is not None and s != series)
+                or (t is not None and t != ticker)
+                or (declared is not None and c is not None and c != declared)
+                for c, s, t in keys
+            ),
+            "sec.ambiguous": len(complete) > 1 or len(set(keys)) != len(keys),
+            "sec.incomplete": len(complete) != len(keys),
+        }
+        failing = [code for code, hit in verdicts.items() if hit]
+        if failing:
+            return min(failing, key=SEC_CODES.index), None
+        if len(keys) == 1:
+            return None, self.instants[fresh[0]]
+        return ("sec.stale" if historical else "sec.missing"), None
+
+
+def _fresh_age(age: dt.timedelta) -> bool:
+    """Fresh: not in the future and at most the maximum age (7d exactly is fresh)."""
+    return dt.timedelta(0) <= age <= SEC_MAX_AGE
+
+
+def classify(catalog: Catalog, judge: SecJudge, at: dt.datetime) -> dict:
+    """Independent lifecycle per UUID with first failure and every failure.
+
+    SEC corroboration is judged at ``at`` only for a candidate that passes
+    every internal gate; its failure is the candidate's only failure.
+    """
     result = {}
     for uid in sorted(catalog.universe()):
         if catalog.inactive(uid):
@@ -721,6 +919,15 @@ def classify(catalog: Catalog) -> dict:
             }
             continue
         failing = catalog.failures(uid)
+        if not failing:
+            reg = catalog.rows["reg"][uid][0]
+            code, _instant = judge.judge(
+                _upper(reg["ticker"]),
+                _upper(reg["sec_series_id"]),
+                _upper(reg["sec_class_id"]),
+                at,
+            )
+            failing = {code} if code is not None else set()
         if failing:
             first = min(failing, key=RANK.__getitem__)
             result[uid] = {
@@ -798,21 +1005,30 @@ def _load_config(raw: bytes | None) -> dict:
         value = config.get(key)
         if value is not None and type(value) is not int:
             raise AuditBlocked("audit_config_count_invalid")
+    # The SEC block is mandatory in v3: SEC changes generation, the evidence
+    # universe and A4/A5/A8, so its source pins, the 7-day criterion and the
+    # reviewed fund ceilings are exact contract values (no runtime override,
+    # no default, bool/null/other integers all block; never auto-raised).
     sec = config.get("sec")
-    if sec is not None and not isinstance(sec, dict):
+    if not isinstance(sec, dict):
         raise AuditBlocked("audit_config_sec_invalid")
-    if sec is not None:
-        if (
-            sec.get("source_contract") != SEC_SOURCE_CONTRACT
-            or sec.get("relation") != SEC_RELATION
-            or sec.get("timestamp_column") != SEC_TIMESTAMP_COLUMN
-            or sec.get("query_contract_sha256") != SEC_QUERY_CONTRACT_SHA256
-        ):
-            raise AuditBlocked("audit_config_sec_source_invalid")
-        max_age = sec.get("max_synced_age_days")
-        # Exactly the contract value: no runtime override (bool/0/8 all block).
-        if type(max_age) is not int or max_age != SEC_MAX_SYNCED_AGE_DAYS:
-            raise AuditBlocked("audit_config_sec_freshness_invalid")
+    if (
+        sec.get("source_contract") != SEC_SOURCE_CONTRACT
+        or sec.get("relation") != SEC_RELATION
+        or sec.get("timestamp_column") != SEC_TIMESTAMP_COLUMN
+        or sec.get("query_contract_sha256") != SEC_QUERY_CONTRACT_SHA256
+    ):
+        raise AuditBlocked("audit_config_sec_source_invalid")
+    max_age = sec.get("max_synced_age_days")
+    if type(max_age) is not int or max_age != SEC_MAX_SYNCED_AGE_DAYS:
+        raise AuditBlocked("audit_config_sec_freshness_invalid")
+    for key, expected in (
+        (SEC_GAP_CEILING_KEY, SEC_GAP_CEILING),
+        (SEC_CONFLICT_CEILING_KEY, SEC_CONFLICT_CEILING),
+    ):
+        value = sec.get(key)
+        if type(value) is not int or value != expected:
+            raise AuditBlocked("audit_config_sec_ceiling_invalid")
     salt = config.get("canary_salt")
     if salt is not None and (not isinstance(salt, str) or not salt):
         raise AuditBlocked("audit_config_canary_salt_invalid")
@@ -923,17 +1139,6 @@ SEC_SOURCE_PINS = {
 }
 
 
-def _aware_text(value) -> str | None:
-    """Timestamp as ISO text; a naive or non-timestamp value is not accepted."""
-    if isinstance(value, dt.datetime):
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise AuditBlocked("sec_timestamp_not_aware")
-        return value.isoformat()
-    if isinstance(value, str) and _aware(value) is not None:
-        return value
-    raise AuditBlocked("sec_timestamp_not_aware")
-
-
 def _sec_unavailable(state: object) -> dict:
     """Explicit unavailability: pins kept, no fabricated rows or lineage."""
     code = state.get("code") if isinstance(state, dict) else None
@@ -947,12 +1152,15 @@ def _sec_unavailable(state: object) -> dict:
     }
 
 
-def _canonical_sec(sec: object) -> dict:
-    """Canonical SEC capture: exact row shape, aware timestamps, lineage match.
+def _canonical_sec(sec: object, *, from_database: bool) -> dict:
+    """Canonical SEC capture: exact row shape, canonical instants, lineage match.
 
-    A malformed row TYPE makes the whole capture invalid (NOT_EVALUATED). A
-    textual but malformed VALUE (empty text, S.../series:ticker class ids) is
-    kept verbatim: it is counted, hashed and judged by A8, never repaired.
+    Rows use exactly the source-snapshot projection (identifiers verbatim,
+    ``synced_at`` as canonical UTC microsecond text), so the capture and the
+    policy's snapshot are comparable byte for byte. A malformed row TYPE or
+    timestamp makes the whole capture invalid (A7/A8 NOT_EVALUATED, A5 drift).
+    A textual but malformed VALUE is kept verbatim: counted, hashed and judged,
+    never repaired.
     """
     if not isinstance(sec, dict) or sec.get("state") != "captured":
         return _sec_unavailable(sec)
@@ -962,43 +1170,18 @@ def _canonical_sec(sec: object) -> dict:
         return _sec_unavailable(
             {"state": "invalid", "code": "sec_source_shape_invalid"}
         )
-    rows = []
     try:
-        for row in raw_rows:
-            if not isinstance(row, dict) or set(row) != {
-                "class_id",
-                "series_id",
-                "ticker",
-                "synced_at",
-            }:
-                raise AuditBlocked("sec_source_shape_invalid")
-            if any(
-                row[k] is not None and not isinstance(row[k], str)
-                for k in ("class_id", "series_id", "ticker")
-            ):
-                raise AuditBlocked("sec_source_shape_invalid")
-            rows.append(
-                {
-                    "class_id": row["class_id"],
-                    "series_id": row["series_id"],
-                    "ticker": row["ticker"],
-                    "synced_at": _aware_text(row["synced_at"]),
-                }
-            )
+        rows = _sec_source_rows(raw_rows, from_database=from_database)
         count = lineage.get("row_count")
         if set(lineage) != {"row_count", "min_synced_at", "max_synced_at"} or (
             type(count) is not int or count < 0
         ):
             raise AuditBlocked("sec_lineage_invalid")
-        low = (
+        low, high = (
             None
-            if lineage["min_synced_at"] is None
-            else _aware_text(lineage["min_synced_at"])
-        )
-        high = (
-            None
-            if lineage["max_synced_at"] is None
-            else _aware_text(lineage["max_synced_at"])
+            if lineage[key] is None
+            else _sec_time(lineage[key], from_database=from_database)
+            for key in ("min_synced_at", "max_synced_at")
         )
     except AuditBlocked as exc:
         return _sec_unavailable({"state": "invalid", "code": str(exc)})
@@ -1006,14 +1189,15 @@ def _canonical_sec(sec: object) -> dict:
         return _sec_unavailable(
             {"state": "invalid", "code": "sec_row_ceiling_exceeded"}
         )
-    instants = [_aware(row["synced_at"]) for row in rows]
+    instants = [row["synced_at"] for row in rows]
     if (
         count != len(rows)
         or (low is None) != (not rows)
         or (high is None) != (not rows)
-        or (rows and (_aware(low) != min(instants) or _aware(high) != max(instants)))
+        or (rows and (low != min(instants) or high != max(instants)))
     ):
-        # The lineage aggregate must describe exactly the captured rows.
+        # The lineage aggregate must describe exactly the captured rows
+        # (canonical fixed-width UTC text orders like the instants).
         return _sec_unavailable({"state": "invalid", "code": "sec_lineage_mismatch"})
     rows.sort(key=_compact)
     return {
@@ -1026,16 +1210,29 @@ def _canonical_sec(sec: object) -> dict:
     }
 
 
-def canonical_capture(live: dict, config: dict) -> dict:
-    """Canonical bundle of one live capture (sources + cohort + SEC)."""
+def canonical_capture(live: dict, config: dict, *, from_database: bool = True) -> dict:
+    """Canonical bundle of one capture (three catalog sources + SEC + cohort).
+
+    ``source_snapshot_sha256`` covers the FOUR sources exactly like the policy
+    snapshot; it is null when the SEC part was not captured (which is source
+    drift, never a match).
+    """
     if not isinstance(live, dict) or not isinstance(live.get("sources"), dict):
         raise AuditBlocked("capture_invalid")
     sources = {}
     for name in ("funds", "identity", "instruments"):
-        rows = _source_rows(live["sources"].get(name, []), name, from_database=True)
+        rows = _source_rows(
+            live["sources"].get(name, []), name, from_database=from_database
+        )
         if len(rows) > ROW_CEILING:
             raise AuditBlocked("source_row_ceiling_exceeded")
         sources[name] = sorted(rows, key=_compact)
+    sec = _canonical_sec(live.get("sec"), from_database=from_database)
+    snapshot = (
+        _snapshot_sha({**sources, "sec": sec["rows"]})
+        if sec["state"] == "captured"
+        else None
+    )
     return {
         "kind": CAPTURE_KIND,
         "audit_contract_version": AUDIT_CONTRACT_VERSION,
@@ -1043,9 +1240,9 @@ def canonical_capture(live: dict, config: dict) -> dict:
         "source_query_sha256": QUERY_SHA256,
         "sources": sources,
         "source_row_counts": {name: len(rows) for name, rows in sources.items()},
-        "source_snapshot_sha256": _snapshot_sha(sources),
+        "source_snapshot_sha256": snapshot,
         "cohort": _canonical_cohort(live.get("cohort"), config.get("builder")),
-        "sec": _canonical_sec(live.get("sec")),
+        "sec": sec,
     }
 
 
@@ -1098,6 +1295,7 @@ def load_capture(raw: bytes, config: dict) -> dict:
             "sec": {k: sec.get(k) for k in ("state", "code", "rows", "lineage")},
         },
         config,
+        from_database=False,
     )
     if rebuilt != bundle:
         raise AuditBlocked("capture_bundle_invalid")
@@ -1203,65 +1401,54 @@ def _aware(value) -> dt.datetime | None:
     return parsed
 
 
-def _sec_value_valid(row: dict) -> bool:
-    """A usable correspondence row: exact class/series patterns, non-empty ticker."""
+def _sec_row_state(row: dict) -> str:
+    """Source-row quality, for counting only (never a per-fund verdict)."""
     class_id, series_id, ticker = (
-        _upper(row["class_id"]),
-        _upper(row["series_id"]),
-        _upper(row["ticker"]),
+        _upper(row[key]) for key in ("class_id", "series_id", "ticker")
     )
-    return bool(
-        class_id is not None
-        and SEC_CLASS_RE.fullmatch(class_id)
-        and series_id is not None
-        and SEC_SERIES_RE.fullmatch(series_id)
-        and ticker is not None
-    )
-
-
-def _sec_class_valid(row: dict) -> bool:
-    class_id = _upper(row["class_id"])
-    return class_id is not None and SEC_CLASS_RE.fullmatch(class_id) is not None
-
-
-def _sec_row_poisoned(row: dict) -> bool:
-    """A malformed POPULATED identifier: invalid/empty class or invalid series.
-
-    An empty series or ticker is incompleteness (partial), not poison.
-    """
-    series_id = _upper(row["series_id"])
-    return not _sec_class_valid(row) or (
+    if (class_id is not None and SEC_CLASS_RE.fullmatch(class_id) is None) or (
         series_id is not None and SEC_SERIES_RE.fullmatch(series_id) is None
-    )
+    ):
+        return "poisoned"
+    if class_id is None or series_id is None or ticker is None:
+        return "incomplete"
+    return "valid"
 
 
-def _a8(sec, verdict: dict, catalog: Catalog, config: dict, decision_at):
-    """SEC class/series/ticker corroboration of EVERY ACTIVE (MMF included).
+def _sec_exclusions(verdict: dict) -> dict:
+    """FUNDS excluded by a SEC first failure (recomputed at generated_at)."""
+    by_code = dict.fromkeys(SEC_CODES, 0)
+    for entry in verdict.values():
+        if entry["status"] == "UNKNOWN" and entry["first"] in by_code:
+            by_code[entry["first"]] += 1
+    return {
+        "by_code": by_code,
+        "gap": sum(count for code, count in by_code.items() if code in SEC_GAPS),
+        "conflict": sum(
+            count for code, count in by_code.items() if code in SEC_CONFLICTS
+        ),
+    }
 
-    Returns ``(gate, detail, private_differences)``. Every related row of an
-    ACTIVE (same ticker, same series+ticker, or its declared class) is
-    classified BEFORE a match is declared, so a valid companion never hides a
-    malformed, contradicting or incomplete related row. Per ACTIVE:
-    poison (malformed populated class/series) > contradiction (a populated
-    identifier differing from the ACTIVE) > ambiguous (duplicates or more than
-    one valid mapping) > partial (an incomplete related row) > matched
-    (exactly one valid complete related row) > missing. Failures dominate
-    gaps: poison/contradiction/ambiguity/duplicate/future/stale → FAIL;
-    otherwise any missing/partial → NOT_EVALUATED; only a complete, fresh,
-    unique valid mapping of every ACTIVE → PASS. Never vacuously PASS.
-    Unrelated poison is counted and excluded, never fatal.
+
+def _a8(sec, verdict: dict, catalog: Catalog, decision_at):
+    """SEC corroboration of EVERY ACTIVE (MMF included) at the capture instant.
+
+    Returns ``(gate, detail, private_differences)``. The capture must be of
+    the policy's exact four-source snapshot (the caller passes a not-captured
+    state otherwise): A8 then re-judges every ACTIVE at the capture's database
+    instant with the independent SEC rule — ageing between generation and
+    capture withdraws corroboration and FAILs, it never rewrites the policy —
+    and bounds the SEC exclusions recomputed at generated_at by the reviewed
+    fund ceilings (gap: incomplete+stale+missing, conflict: declared class
+    invalid+poison+contradiction+ambiguity). An individual gap is a FAIL;
+    only an unavailable/drifted capture is NOT_EVALUATED. Never vacuously
+    PASS: an empty ACTIVE set or an empty source fails.
     """
     unavailable = {"source_contract": SEC_SOURCE_CONTRACT, "relation": SEC_RELATION}
     if not isinstance(sec, dict) or sec.get("state") != "captured":
         code = sec.get("code") if isinstance(sec, dict) else None
         return (
             _gate({}, evaluated=False, code=code or "sec_not_captured"),
-            unavailable,
-            {},
-        )
-    if (config.get("sec") or {}).get("max_synced_age_days") != SEC_MAX_SYNCED_AGE_DAYS:
-        return (
-            _gate({}, evaluated=False, code="sec_freshness_criterion_absent"),
             unavailable,
             {},
         )
@@ -1274,120 +1461,32 @@ def _a8(sec, verdict: dict, catalog: Catalog, config: dict, decision_at):
         )
     rows = sec["rows"]
     lineage = sec["lineage"]
-    max_age = dt.timedelta(days=SEC_MAX_SYNCED_AGE_DAYS)
-    raw_keys = Counter(
-        (row["class_id"], row["series_id"], row["ticker"], row["synced_at"])
-        for row in rows
-    )
-    duplicate_source_rows = sum(count - 1 for count in raw_keys.values() if count > 1)
-    invalid_rows = [row for row in rows if not _sec_value_valid(row)]
-    by_ticker, by_class, by_pair = (
-        defaultdict(list),
-        defaultdict(list),
-        defaultdict(list),
-    )
-    for position, row in enumerate(rows):
-        ticker, class_id, series_id = (
-            _upper(row["ticker"]),
-            _upper(row["class_id"]),
-            _upper(row["series_id"]),
-        )
-        if ticker is not None:
-            by_ticker[ticker].append(position)
-        if class_id is not None:
-            by_class[class_id].append(position)
-        if ticker is not None and series_id is not None:
-            by_pair[(series_id, ticker)].append(position)
-    future_rows = sum(
-        1
-        for row in rows
-        if _aware(row["synced_at"]) is not None and _aware(row["synced_at"]) > decided
-    )
-    outcome = Counter()
+    judge = SecJudge(rows)
+    instants = judge.instants
+    outcome: Counter = Counter()
     per_uid: dict[str, str] = {}
     matched_times: list[dt.datetime] = []
-    related_invalid: set[int] = set()
-    active_duplicates = 0
-    stale_uids, future_uids = [], []
     active = sorted(u for u, e in verdict.items() if e["status"] == "ACTIVE")
     for uid in active:
         reg = catalog.rows["reg"][uid][0]
-        series = _upper(reg["sec_series_id"])
-        ticker = _upper(reg["ticker"])
-        declared = _upper(reg["sec_class_id"])
-        related = set(by_ticker.get(ticker, [])) | set(
-            by_pair.get((series, ticker), [])
+        code, instant = judge.judge(
+            _upper(reg["ticker"]),
+            _upper(reg["sec_series_id"]),
+            _upper(reg["sec_class_id"]),
+            decided,
         )
-        if declared is not None:
-            related |= set(by_class.get(declared, []))
-        related = sorted(related)
-        # Every related row is classified before any match is declared.
-        poisoned = [p for p in related if _sec_row_poisoned(rows[p])]
-        usable = [p for p in related if not _sec_row_poisoned(rows[p])]
-        valid_related = [p for p in usable if _sec_value_valid(rows[p])]
-        incomplete_related = [p for p in usable if not _sec_value_valid(rows[p])]
-        # Exact-duplicate related rows are duplicates even when identical.
-        related_keys = Counter(
-            (
-                rows[p]["class_id"],
-                rows[p]["series_id"],
-                rows[p]["ticker"],
-                rows[p]["synced_at"],
-            )
-            for p in related
-        )
-        duplicated = any(count > 1 for count in related_keys.values())
-
-        def _differs(value, expected) -> bool:
-            # Only a POPULATED identifier can contradict; empty is partial.
-            return value is not None and value != expected
-
-        contradiction = (
-            declared is not None and SEC_CLASS_RE.fullmatch(declared) is None
-        ) or any(
-            _differs(_upper(rows[p]["series_id"]), series)
-            or _differs(_upper(rows[p]["ticker"]), ticker)
-            or (declared is not None and _upper(rows[p]["class_id"]) != declared)
-            for p in usable
-        )
-        pair_classes = {
-            _upper(rows[p]["class_id"])
-            for p in by_pair.get((series, ticker), [])
-            if p in valid_related
-        }
-        if poisoned:
-            result = "poisoned_active_mapping"
-            related_invalid.update(poisoned)
-        elif contradiction:
-            result = "contradiction"
-        elif duplicated or len(pair_classes) > 1 or len(valid_related) > 1:
-            result = "ambiguous"
-        elif incomplete_related:
-            result = "partial"
-        elif len(valid_related) == 1:
-            result = "matched"
-        else:
-            result = "missing"
-        if duplicated:
-            active_duplicates += 1
-        if result == "matched":
-            synced = _aware(rows[valid_related[0]]["synced_at"])
-            matched_times.append(synced)
-            if synced > decided:
-                future_uids.append(uid)
-            elif decided - synced > max_age:
-                stale_uids.append(uid)
+        result = code or "matched"
         outcome[result] += 1
         per_uid[uid] = result
-    excluded_poisoned = sum(
-        1
-        for position, row in enumerate(rows)
-        if _sec_row_poisoned(row) and position not in related_invalid
-    )
-    # An empty source leaves every ACTIVE "missing" (NOT_EVALUATED), never PASS.
-    lineage_ok = lineage["row_count"] == len(rows) and sec["row_count"] == len(rows)
+        if instant is not None:
+            matched_times.append(instant)
+    exclusions = _sec_exclusions(verdict)
+    states = Counter(_sec_row_state(row) for row in rows)
+    newest = max(instants) if instants else None
     min_matched = min(matched_times) if matched_times else None
     max_matched = max(matched_times) if matched_times else None
+    # decision_at keeps the capture's own text (the receipt compares it with
+    # captured_at); every other instant is an aware ISO text of the same value.
     freshness = {
         "decision_at": decided.isoformat(),
         "max_synced_age_days": SEC_MAX_SYNCED_AGE_DAYS,
@@ -1399,7 +1498,7 @@ def _a8(sec, verdict: dict, catalog: Catalog, config: dict, decision_at):
         else max_matched.isoformat(),
         "valid_until": None
         if min_matched is None
-        else (min_matched + max_age).isoformat(),
+        else (min_matched + SEC_MAX_AGE).isoformat(),
         "lineage_max_synced_at": lineage["max_synced_at"],
     }
     detail = {
@@ -1412,48 +1511,40 @@ def _a8(sec, verdict: dict, catalog: Catalog, config: dict, decision_at):
         "sec_rows_sha256": sec["rows_sha256"],
         "sec_row_count": sec["row_count"],
         "lineage": lineage,
-        "invalid_source_rows": len(invalid_rows),
-        "excluded_poisoned_count": excluded_poisoned,
-        "duplicate_source_rows": duplicate_source_rows,
-        "active_poisoned_count": outcome.get("poisoned_active_mapping", 0),
+        "invalid_source_rows": {
+            "incomplete": states.get("incomplete", 0),
+            "poisoned": states.get("poisoned", 0),
+        },
         "outcomes": {name: outcome.get(name, 0) for name in A8_OUTCOMES},
+        "exclusions": exclusions,
+        "gap_ceiling": SEC_GAP_CEILING,
+        "conflict_ceiling": SEC_CONFLICT_CEILING,
         "freshness": freshness,
     }
+    if set(detail) != set(A8_DETAIL_KEYS):  # pragma: no cover - contract guard
+        raise AuditBlocked("audit_contract_literal_mismatch")
     checks = {
-        "source_lineage_verified": lineage_ok,
+        "source_lineage_verified": lineage["row_count"]
+        == len(rows)
+        == sec["row_count"],
+        "source_fresh_within_max_age": newest is not None
+        and newest <= decided
+        and decided - newest <= SEC_MAX_AGE,
+        "synced_not_in_future": bool(instants)
+        and all(instant <= decided for instant in instants),
         "active_nonempty": bool(active),
         "all_active_matched": bool(active) and outcome.get("matched", 0) == len(active),
-        "zero_contradictions": outcome.get("contradiction", 0) == 0
-        and outcome.get("ambiguous", 0) == 0,
-        "zero_active_poisoned": outcome.get("poisoned_active_mapping", 0) == 0,
-        "zero_active_duplicates": active_duplicates == 0,
-        "synced_not_in_future": not future_uids and future_rows == 0,
-        "fresh_within_max_age": not stale_uids,
+        "sec_gap_within_ceiling": exclusions["gap"] <= SEC_GAP_CEILING,
+        "sec_conflict_within_ceiling": exclusions["conflict"] <= SEC_CONFLICT_CEILING,
     }
     private = {
         "per_active_outcome": {u: r for u, r in per_uid.items() if r != "matched"},
-        "stale_matched": stale_uids,
-        "future_matched": future_uids,
+        "excluded_at_generation": {
+            u: e["first"]
+            for u, e in sorted(verdict.items())
+            if e["status"] == "UNKNOWN" and e["first"] in SEC_CODES
+        },
     }
-    demonstrated_failure = not all(
-        checks[name]
-        for name in (
-            "source_lineage_verified",
-            "active_nonempty",
-            "zero_contradictions",
-            "zero_active_poisoned",
-            "zero_active_duplicates",
-            "synced_not_in_future",
-            "fresh_within_max_age",
-        )
-    )
-    gaps = outcome.get("missing", 0) + outcome.get("partial", 0)
-    if not demonstrated_failure and gaps:
-        return (
-            _gate(checks, evaluated=False, code="sec_active_mapping_incomplete"),
-            detail,
-            private,
-        )
     return _gate(checks), detail, private
 
 
@@ -1508,7 +1599,6 @@ def _expected_counts(
     *,
     structural: list,
     structural_daily: list,
-    structural_unknown: list,
     active_ids: list,
     daily_ids: list,
 ) -> dict:
@@ -1517,10 +1607,26 @@ def _expected_counts(
     inactive = status.get("INACTIVE", 0)
     presence = _count_dict(catalog.isin_class(u) for u in active_ids)
     presence_daily = _count_dict(catalog.isin_class(u) for u in daily_ids)
+
+    def failed(population, family_test):
+        return sum(
+            1
+            for u in population
+            if verdict[u]["status"] == "UNKNOWN"
+            and family_test(verdict[u]["first"].split(".", 1)[0])
+        )
+
+    def is_claim(family):
+        return family in CLAIM_FAMILIES
+
+    def is_sec(family):
+        return family == SEC_FAMILY
+
     return {
         "instruments_universe": len(sources["instruments"]),
         "funds_v": len(sources["funds"]),
         "instrument_identity": len(sources["identity"]),
+        "sec_company_tickers_mf": len(sources["sec"]),
         "instrument_evidence": len(verdict),
         "fund_status": status,
         "valuation_frequency": _count_dict(
@@ -1532,7 +1638,10 @@ def _expected_counts(
         "inactive_reason": {"inactive_without_funds_v": inactive} if inactive else {},
         "structural_pre_claims": len(structural),
         "structural_pre_claims_daily": len(structural_daily),
-        "structural_claim_failures": len(structural_unknown),
+        "structural_claim_failures": failed(structural, is_claim),
+        "structural_sec_failures": failed(structural, is_sec),
+        "structural_daily_claim_failures": failed(structural_daily, is_claim),
+        "structural_daily_sec_failures": failed(structural_daily, is_sec),
         "active": len(active_ids),
         "active_daily": len(daily_ids),
         "isin_presence_active": {k: presence.get(k, 0) for k in ISIN_CLASSES},
@@ -1583,9 +1692,9 @@ def _load_snapshot(raw: bytes) -> tuple[dict, dict]:
     if (
         set(snapshot) != SNAPSHOT_KEYS
         or not isinstance(sources, dict)
-        or set(sources) != {"funds", "identity", "instruments"}
+        or set(sources) != set(SOURCE_NAMES)
         or not isinstance(counts, dict)
-        or set(counts) != {"funds", "identity", "instruments"}
+        or set(counts) != set(SOURCE_NAMES)
         or any(type(v) is not int or v < 0 for v in counts.values())
         or any(not isinstance(rows, list) for rows in sources.values())
     ):
@@ -1593,18 +1702,48 @@ def _load_snapshot(raw: bytes) -> tuple[dict, dict]:
     try:
         rows = {
             name: _source_rows(sources[name], name, from_database=False)
-            for name in ("instruments", "funds", "identity")
+            for name in SOURCE_NAMES
         }
     except AuditBlocked as exc:
         raise AuditBlocked("source_snapshot_contract_invalid") from exc
     return snapshot, rows
 
 
+V1_PREVIOUS_GENERATOR = "fund-nav-policy-generator-v1"
+# Evidence references written by a post-v1 generator (v2 / v3 catalog query).
+POST_V1_REFERENCE_PREFIXES = tuple(
+    f"{version}:" for version in (RETIRED_QUERY_VERSIONS[1], EXPECTED_QUERY_VERSION)
+)
+
+
 def _load_previous(raw: bytes) -> tuple[dict, list]:
-    """Hostile previous artifact; identity is computed, never trusted."""
+    """Hostile previous artifact; identity is computed, never trusted.
+
+    Continuity is measured against the PUBLISHED v1 (generator v1, or the
+    hand-authored pre-generator pointer that preceded it) only: an artifact of
+    a later generator (a retired, never-published v2, or another v3) is not a
+    previous policy and blocks (``previous_policy_retired``), whether its
+    generator label or its catalog evidence reference gives it away.
+    """
     previous = _strict_json(raw, "previous_policy_invalid")
     evidence = previous.get("instrument_evidence")
     generation = previous.get("generation")
+    versions = [previous.get("generator_version")]
+    if isinstance(generation, dict):
+        versions.append(generation.get("generator_version"))
+    present = [version for version in versions if version is not None]
+    if any(not isinstance(version, str) for version in present):
+        raise AuditBlocked("previous_policy_invalid")
+    if any(version != V1_PREVIOUS_GENERATOR for version in present) or (
+        isinstance(evidence, list)
+        and any(
+            isinstance(row, dict)
+            and isinstance(row.get("evidence_reference"), str)
+            and row["evidence_reference"].startswith(POST_V1_REFERENCE_PREFIXES)
+            for row in evidence
+        )
+    ):
+        raise AuditBlocked("previous_policy_retired")
     if (
         not isinstance(previous.get("policy_id"), str)
         or not previous["policy_id"].strip()
@@ -1680,6 +1819,7 @@ def audit(
     if (
         policy.get("generator_version") in RETIRED_GENERATORS
         or generation.get("generator_version") in RETIRED_GENERATORS
+        or generation.get("source_query_version") in RETIRED_QUERY_VERSIONS
     ):
         raise AuditBlocked("retired_generator_version")
     previous, previous_identity = (
@@ -1694,15 +1834,36 @@ def audit(
     capture_sources = None if capture is None else capture["sources"]
     if snapshot is None and capture_sources is None:
         raise AuditBlocked("source_input_required")
-    sources = file_sources if snapshot is not None else capture_sources
+    if snapshot is not None:
+        sources = file_sources
+    elif capture["sec"]["state"] == "captured":
+        sources = {**capture_sources, "sec": capture["sec"]["rows"]}
+    else:
+        # Without the SEC rows the lifecycle cannot be recomputed at all.
+        raise AuditBlocked("sec_source_not_captured")
     for name, rows in sources.items():
         if len(rows) > ROW_CEILING:
             raise AuditBlocked("source_row_ceiling_exceeded")
     source_sha = _snapshot_sha(sources)
     live_sha = None if capture is None else capture["source_snapshot_sha256"]
 
+    # The lifecycle is recomputed at the policy's own decision instant tau: the
+    # generator judged SEC freshness against it, so must the auditor.
+    generated_at = generation.get("generated_at")
+    tau = (
+        _aware(generated_at)
+        if isinstance(generated_at, str) and UTC_TEXT.match(generated_at)
+        else None
+    )
+    if tau is None:
+        raise AuditBlocked("policy_generated_at_invalid")
+    judge = SecJudge(sources["sec"])
+    source_problem = judge.source_problem(tau)
+    if source_problem is not None:
+        # A generator v3 never emits a policy over such a source.
+        raise AuditBlocked(source_problem)
     catalog = Catalog(sources)
-    verdict = classify(catalog)
+    verdict = classify(catalog, judge, tau)
     divergent = catalog.projection_divergent()
     active_ids = sorted(u for u, e in verdict.items() if e["status"] == "ACTIVE")
     daily_ids = sorted(u for u in active_ids if verdict[u]["daily"])
@@ -1719,14 +1880,12 @@ def audit(
         catalog,
         structural=structural,
         structural_daily=structural_daily,
-        structural_unknown=structural_unknown,
         active_ids=active_ids,
         daily_ids=daily_ids,
     )
 
     # A1 integrity, continuity, state and deadline.
     evidence_ids = [row.get("instrument_id") for row in evidence]
-    generated_at = generation.get("generated_at")
     a1 = {
         "canonical_bytes": policy_raw == _document_bytes(policy),
         "generator_version": policy.get("generator_version") == EXPECTED_GENERATOR
@@ -1780,7 +1939,7 @@ def audit(
             and all(
                 snapshot["sources"][name]
                 == sorted(snapshot["sources"][name], key=_compact)
-                for name in ("funds", "identity", "instruments")
+                for name in SOURCE_NAMES
             )
         )
     if previous is not None:
@@ -1902,16 +2061,24 @@ def audit(
 
     # A4: the ceiling bounds P (structural daily pre-claims), B is the drift
     # baseline (v1 structural daily without ISIN) and D the ACTIVE daily set.
-    # D ⊆ P ⊆ B with B∖P explained by pre-claim and P∖D by claim failures.
+    # D ⊆ P ⊆ B with B∖P explained by pre-claim and P∖D by claim or SEC
+    # failures; |P|-|D| and structural-|A| reconcile by claim + SEC failures.
     _b_total, baseline_set = catalog.v1_structural_sets()
     p_set, d_set = set(structural_daily), set(daily_ids)
     b_minus_p, p_minus_d = baseline_set - p_set, p_set - d_set
     pre_claim_first = _count_dict(
         verdict[u]["first"] if u in verdict else "absent" for u in b_minus_p
     )
-    claim_first = _count_dict(
+    p_minus_d_first = [
         verdict[u]["first"] if u in verdict else "absent" for u in p_minus_d
+    ]
+    claim_first = _count_dict(
+        code for code in p_minus_d_first if code.split(".", 1)[0] != SEC_FAMILY
     )
+    sec_first = _count_dict(
+        code for code in p_minus_d_first if code.split(".", 1)[0] == SEC_FAMILY
+    )
+    after_internal = CLAIM_FAMILIES | {SEC_FAMILY}
     if config_raw is None:
         ceiling = DEFAULT_STRUCTURAL_DAILY_CEILING
     else:
@@ -1938,17 +2105,26 @@ def audit(
         "baseline_first_failure_closure": all(
             _family(u, PRE_CLAIM_FAMILIES) for u in b_minus_p
         )
-        and all(_family(u, CLAIM_FAMILIES) for u in p_minus_d)
+        and all(_family(u, after_internal) for u in p_minus_d)
         and not (b_minus_p & p_minus_d)
         and not (b_minus_p & d_set)
         and not (p_minus_d & d_set)
         and len(baseline_set) == len(d_set) + len(b_minus_p) + len(p_minus_d),
-        "structural_reconciled_by_claim_failures": len(structural) - len(active_ids)
+        # Total domain (MMF included): structural - |A| = claim + SEC failures.
+        "structural_reconciled_by_claim_and_sec_failures": len(structural)
+        - len(active_ids)
         == len(structural_unknown)
+        == expected_counts["structural_claim_failures"]
+        + expected_counts["structural_sec_failures"]
         and all(
-            verdict[u]["first"].split(".")[0] in CLAIM_FAMILIES
+            verdict[u]["first"].split(".")[0] in after_internal
             for u in structural_unknown
         ),
+        # Daily population P (MMF outside): |P| - |D| = daily claim + SEC.
+        "structural_daily_reconciled_by_claim_and_sec_failures": len(p_set) - len(d_set)
+        == len(p_minus_d)
+        == expected_counts["structural_daily_claim_failures"]
+        + expected_counts["structural_daily_sec_failures"],
     }
     a4_detail = {
         "ceiling_population": "structural_pre_claims_daily",
@@ -1961,6 +2137,7 @@ def audit(
         "accepted_structural_delta": accepted,
         "pre_claim_first_failure": pre_claim_first,
         "claim_first_failure": claim_first,
+        "sec_first_failure": sec_first,
     }
     if set(a4_detail) != set(A4_DETAIL_KEYS):  # pragma: no cover - contract guard
         raise AuditBlocked("audit_contract_literal_mismatch")
@@ -2002,7 +2179,9 @@ def audit(
         == expected_counts["isin_presence_active"]
         and counts.get("isin_presence_active_daily")
         == expected_counts["isin_presence_active_daily"],
-        "no_source_drift": live_sha is None
+        # A capture whose SEC part is unavailable has no four-source digest:
+        # that is drift (never "no capture"), so A7/A8 are not evaluated.
+        "no_source_drift": capture is None
         or live_sha == generation.get("source_snapshot_sha256"),
         # The audit clock is the capture's DB clock; generation must precede it.
         "generation_precedes_capture": capture is None
@@ -2068,7 +2247,6 @@ def audit(
         sec,
         verdict,
         catalog,
-        config,
         None if capture is None else capture["captured_at"],
     )
     differences["sec"] = sec_private
@@ -2304,7 +2482,13 @@ def drain_bounded(fetchmany, *, ceiling: int = ROW_CEILING, batch: int = FETCH_B
 
 
 def capture_live(dsn: str, config: dict) -> dict:
-    """One REPEATABLE READ READ ONLY snapshot: sources, cohort and SEC classes."""
+    """One REPEATABLE READ READ ONLY snapshot: the four sources and the cohort.
+
+    ``captured_at`` is the database clock inside the snapshot (the A8 decision
+    instant). The SEC relation is captured with its own savepoint so its
+    unavailability is recorded explicitly (the audit then blocks or reports
+    NOT_EVALUATED; no other relation is ever substituted).
+    """
     import psycopg
     from psycopg.rows import dict_row
 
@@ -2335,7 +2519,7 @@ def capture_live(dsn: str, config: dict) -> dict:
                     )
                     if cur.fetchone()["ok"] is not True:
                         raise AuditBlocked("capture_source_privilege_missing")
-                sources = {name: fetch(cur, SOURCE_SQL[name]) for name in SOURCE_SQL}
+                sources = {name: fetch(cur, SOURCE_SQL[name]) for name in CATALOG_NAMES}
                 cohort = {"state": "not_configured", "code": "builder_config_absent"}
                 builder = config.get("builder")
                 if builder is not None:

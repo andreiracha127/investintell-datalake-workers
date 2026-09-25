@@ -1,9 +1,18 @@
 """Generate and verify a governed XNYS current-daily NAV policy without applying it.
 
 The CLI keeps its v1 filename so existing invocations do not break, but it
-implements the current contract ``fund-nav-policy-generator-v2``: identity is
+implements the current contract ``fund-nav-policy-generator-v3``: identity is
 registry + ticker + series with optional, strictly validated ISIN/CUSIP/FIGI
-claims (``registry-ticker-series-claims-v2``). v1 artifacts are rejected.
+claims, plus current SEC class/series/ticker corroboration from
+``public.sec_company_tickers_mf`` read in the SAME REPEATABLE READ snapshot
+(``registry-ticker-series-claims-sec-v3``). v1 and v2 artifacts are rejected.
+
+The SEC source is a systemic prerequisite: an absent/unreadable/empty/truncated
+relation, an inconsistent lineage aggregate, an invalid timestamp, any row
+after the decision instant or a newest row older than 7 days aborts the whole
+build (never a partial policy). Per fund, SEC is evaluated only after every
+internal gate passes; a failure makes it UNKNOWN (never sticky: the next
+generation re-evaluates it) and is not a legal statement of closure.
 
 Run from the repository root as ``python -m scripts.generate_fund_nav_policy_v1
 {calendar,build,verify} ...`` so the package root is importable.
@@ -47,6 +56,13 @@ from src.workers._nav_policy import (
     INSTRUMENTS_QUERY,
     ISIN_PRESENCE_CATEGORIES,
     PROVIDER_CONTRACT_VERSION,
+    SEC_CLASS_PATTERN,
+    SEC_FAILURE_FAMILY,
+    SEC_LINEAGE_QUERY,
+    SEC_MAX_SYNCED_AGE,
+    SEC_QUERY,
+    SEC_RELATION,
+    SEC_SERIES_PATTERN,
     SOURCE_QUERY_SHA256,
     calendar_digest,
     generation_metadata_digest,
@@ -87,7 +103,7 @@ EVIDENCE_FIELDS = frozenset(
         "evidence_reference",
     }
 )
-# Exact projections of the three canonical queries (same column order).
+# Exact projections of the four canonical queries (same column order).
 SOURCE_FIELDS = {
     "instruments": (
         "instrument_id",
@@ -117,10 +133,18 @@ SOURCE_FIELDS = {
         "resolution_status",
         "conflict_state",
     ),
+    "sec": ("class_id", "series_id", "ticker", "synced_at"),
 }
 BOOLEAN_SOURCE_FIELDS = frozenset({"is_active"})
 JSON_SOURCE_FIELDS = frozenset({"conflict_state"})
-SOURCE_SNAPSHOT_KIND = "nav_policy_source_snapshot_v2"
+SOURCE_SNAPSHOT_KIND = "nav-current-catalog-source-snapshot-v3"
+# Canonical instant text: UTC, microseconds, explicit +00:00 (fixed width).
+_UTC_TEXT = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}\+00:00\Z"
+)
+# Always applied with fullmatch (a trailing newline never matches).
+_SEC_CLASS = re.compile(SEC_CLASS_PATTERN)
+_SEC_SERIES = re.compile(SEC_SERIES_PATTERN)
 _UUID_TEXT = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z"
 )
@@ -272,39 +296,103 @@ def _fetch_source(cursor, query: str) -> list[dict]:
     return rows
 
 
-def _catalog_rows(cursor) -> tuple[list[dict], list[dict], list[dict]]:
+def _reconcile_sec_lineage(rows: list[dict], lineage: dict | None) -> None:
+    """The lineage aggregate read in the same snapshot must describe the rows.
+
+    Every ``synced_at`` must be an aware timestamp (NULL/naive is a source
+    defect), ``count(*)`` must equal the rows read and min/max must equal the
+    extremes of those rows. Violations abort the build.
+    """
+    instants = []
+    for row in rows:
+        value = row.get("synced_at") if isinstance(row, dict) else None
+        if (
+            not isinstance(value, dt.datetime)
+            or value.tzinfo is None
+            or value.utcoffset() is None
+        ):
+            raise PolicyGenerationError("sec_source_timestamp_invalid")
+        instants.append(value)
+    if not isinstance(lineage, dict):
+        raise PolicyGenerationError("sec_source_lineage_mismatch")
+    count = lineage.get("row_count")
+    low, high = lineage.get("min_synced_at"), lineage.get("max_synced_at")
+    if type(count) is not int or count != len(rows):
+        raise PolicyGenerationError("sec_source_lineage_mismatch")
+    if not rows:
+        if low is not None or high is not None:
+            raise PolicyGenerationError("sec_source_lineage_mismatch")
+        return
+    if (
+        not isinstance(low, dt.datetime)
+        or not isinstance(high, dt.datetime)
+        or low.tzinfo is None
+        or high.tzinfo is None
+        or low != min(instants)
+        or high != max(instants)
+    ):
+        raise PolicyGenerationError("sec_source_lineage_mismatch")
+
+
+def _fetch_sec(cursor) -> list[dict]:
+    """SEC rows (LIMIT 100001 sentinel) reconciled with their lineage aggregate."""
+    cursor.execute(SEC_QUERY)
+    rows = cursor.fetchall()
+    if len(rows) > MAX_SOURCE_ROWS:
+        raise PolicyGenerationError("sec_source_row_limit_exceeded")
+    cursor.execute(SEC_LINEAGE_QUERY)
+    _reconcile_sec_lineage(rows, cursor.fetchone())
+    return rows
+
+
+def _catalog_rows(cursor) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     return (
         _fetch_source(cursor, INSTRUMENTS_QUERY),
         _fetch_source(cursor, FUNDS_QUERY),
         _fetch_source(cursor, IDENTITY_QUERY),
+        _fetch_sec(cursor),
     )
 
 
 def _require_source_privileges(cursor) -> None:
     """SELECT on a view does not imply SELECT on the registry base table.
 
-    A missing relation raises (psycopg UndefinedTable); a missing privilege is
-    a static blocked reason. Nothing is granted automatically.
+    A missing catalog relation raises (psycopg UndefinedTable); the SEC source
+    is checked for presence first (static ``sec_source_relation_missing``). A
+    missing privilege is a static blocked reason. Nothing is granted
+    automatically and no other relation is ever substituted for the SEC one.
     """
+    catalog = CATALOG_SOURCE_RELATIONS[:3]
     cursor.execute(
         "SELECT "
         + ",".join(
             f"has_table_privilege(current_user, %s, 'SELECT') AS p{index}"
-            for index in range(len(CATALOG_SOURCE_RELATIONS))
+            for index in range(len(catalog))
         ),
-        CATALOG_SOURCE_RELATIONS,
+        catalog,
     )
     row = cursor.fetchone()
-    if not all(
-        row[f"p{index}"] is True for index in range(len(CATALOG_SOURCE_RELATIONS))
-    ):
+    if not all(row[f"p{index}"] is True for index in range(len(catalog))):
         raise PolicyGenerationError("catalog_source_privilege_missing")
+    cursor.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (SEC_RELATION,))
+    if cursor.fetchone()["present"] is not True:
+        raise PolicyGenerationError("sec_source_relation_missing")
+    cursor.execute(
+        "SELECT has_table_privilege(current_user, %s, 'SELECT') AS ok",
+        (SEC_RELATION,),
+    )
+    if cursor.fetchone()["ok"] is not True:
+        raise PolicyGenerationError("sec_source_privilege_missing")
 
 
 def read_catalog_snapshot(
     dsn: str,
-) -> tuple[dt.datetime, list[dict], list[dict], list[dict]]:
-    """Pin the three current catalog sources to one snapshot, never assign an xid."""
+) -> tuple[dt.datetime, list[dict], list[dict], list[dict], list[dict]]:
+    """Pin the four current sources (IU, funds_v, registry, SEC) to ONE snapshot.
+
+    REPEATABLE READ READ ONLY, never assigns an xid; the decision instant is
+    the database clock inside that transaction.
+    """
     with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
         with conn.cursor(row_factory=dict_row) as cursor:
             cursor.execute(
@@ -322,11 +410,11 @@ def read_catalog_snapshot(
                 if meta["read_only"] != "on" or meta["xid"] is not None:
                     raise PolicyGenerationError("catalog_transaction_not_read_only")
                 _require_source_privileges(cursor)
-                instruments, funds, identity = _catalog_rows(cursor)
+                instruments, funds, identity, sec = _catalog_rows(cursor)
                 cursor.execute("SELECT txid_current_if_assigned() AS xid")
                 if cursor.fetchone()["xid"] is not None:
                     raise PolicyGenerationError("catalog_transaction_assigned_xid")
-                return meta["decision_at"], instruments, funds, identity
+                return meta["decision_at"], instruments, funds, identity, sec
             finally:
                 cursor.execute("ROLLBACK")
 
@@ -347,14 +435,65 @@ def _check_json_value(value: object) -> None:
         raise PolicyGenerationError("catalog_source_type_invalid") from exc
 
 
+def utc_text(instant: dt.datetime) -> str:
+    """Canonical instant text: UTC, always six fractional digits, ``+00:00``."""
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise PolicyGenerationError("timestamp_not_aware")
+    return instant.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def _sec_instant(value: object) -> dt.datetime:
+    """An aware timestamp, or its exact canonical text; anything else aborts."""
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise PolicyGenerationError("sec_source_timestamp_invalid")
+        return value
+    if type(value) is str and _UTC_TEXT.fullmatch(value):
+        try:
+            parsed = dt.datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise PolicyGenerationError("sec_source_timestamp_invalid") from exc
+        if utc_text(parsed) == value:
+            return parsed
+    raise PolicyGenerationError("sec_source_timestamp_invalid")
+
+
+def _canonical_sec_rows(rows: list[dict]) -> list[dict]:
+    """SEC projection: text columns ``str`` or NULL, ``synced_at`` canonical UTC.
+
+    Values are NOT normalized or repaired: malformed identifiers are kept
+    verbatim (hashed, then judged per fund). A non-text value or a NULL/naive/
+    malformed timestamp is a source defect and aborts the build.
+    """
+    fields = SOURCE_FIELDS["sec"]
+    result = []
+    for row in rows:
+        try:
+            values = {field: row[field] for field in fields}
+        except (KeyError, TypeError) as exc:
+            raise PolicyGenerationError("sec_source_schema_invalid") from exc
+        if any(
+            values[field] is not None and type(values[field]) is not str
+            for field in fields[:3]
+        ):
+            raise PolicyGenerationError("sec_source_type_invalid")
+        values["synced_at"] = utc_text(_sec_instant(values["synced_at"]))
+        result.append(values)
+    return result
+
+
 def canonical_source_rows(rows: list[dict], source: str) -> list[dict]:
     """Exact query projection with strict value types; values are NOT normalized.
 
     ``instrument_id`` becomes canonical lowercase UUID text; text columns must
     be ``str`` or NULL (never ``str()`` of another object); ``is_active`` a real
     boolean or NULL; ``conflict_state`` any JSON value (classified later, a
-    non-object is not an empty conflict). Violations abort the whole build.
+    non-object is not an empty conflict). SEC rows keep their identifiers
+    verbatim and carry ``synced_at`` as canonical UTC text. Violations abort
+    the whole build.
     """
+    if source == "sec":
+        return _canonical_sec_rows(rows)
     fields = SOURCE_FIELDS[source]
     result = []
     for row in rows:
@@ -381,13 +520,14 @@ def _row_key(row: dict) -> str:
 
 
 def source_snapshot_content(
-    instruments: list[dict], funds: list[dict], identity: list[dict]
+    instruments: list[dict], funds: list[dict], identity: list[dict], sec: list[dict]
 ) -> dict:
     """Canonically ordered source rows, multiplicity preserved (no dedup)."""
     return {
         "funds": sorted(funds, key=_row_key),
         "identity": sorted(identity, key=_row_key),
         "instruments": sorted(instruments, key=_row_key),
+        "sec": sorted(sec, key=_row_key),
     }
 
 
@@ -669,17 +809,114 @@ def _isin_presence(index: _CatalogIndex, owner: str) -> str:
     }[(iu, registry)]
 
 
+class _SecIndex:
+    """Positional indexes of the canonical SEC rows, judged at ``observed_at``.
+
+    Every row keeps its own position: a row found through several indexes is
+    ONE related row (no duplicates fabricated by the union), and two distinct
+    rows with the same content are two rows (a real duplicate).
+    """
+
+    def __init__(self, rows: list[dict], observed_at: dt.datetime):
+        if not rows:
+            raise PolicyGenerationError("sec_source_empty")
+        if len(rows) > MAX_SOURCE_ROWS:
+            raise PolicyGenerationError("sec_source_row_limit_exceeded")
+        self.rows: list[tuple] = []
+        self.fresh: list[bool] = []
+        self.by_ticker: dict[str, list[int]] = defaultdict(list)
+        self.by_class: dict[str, list[int]] = defaultdict(list)
+        instants = []
+        for position, row in enumerate(rows):
+            instant = _sec_instant(row["synced_at"])
+            instants.append(instant)
+            class_id = _identifier(row["class_id"])
+            series_id = _identifier(row["series_id"])
+            ticker = _identifier(row["ticker"])
+            self.rows.append((class_id, series_id, ticker))
+            # Exactly 7 days is fresh; 7 days + 1 microsecond is stale.
+            self.fresh.append(observed_at - instant <= SEC_MAX_SYNCED_AGE)
+            if ticker is not None:
+                self.by_ticker[ticker].append(position)
+            if class_id is not None:
+                self.by_class[class_id].append(position)
+        # Systemic source defects abort before any fund is classified.
+        if max(instants) > observed_at:
+            raise PolicyGenerationError("sec_source_future")
+        if observed_at - max(instants) > SEC_MAX_SYNCED_AGE:
+            raise PolicyGenerationError("sec_source_stale")
+
+    def first_failure(
+        self, ticker: str, series: str, declared: str | None
+    ) -> str | None:
+        """First SEC failure of one candidate, or None for exactly one fresh match.
+
+        Related rows: same ticker θ, or the declared class κ when present (the
+        series+ticker pair is a subset of the ticker rows). Historical rows
+        neither corroborate nor contradict fresh rows; they only turn a
+        missing mapping into a stale one.
+        """
+        if declared is not None and not _SEC_CLASS.fullmatch(declared):
+            return "sec.declared_class_invalid"
+        related = set(self.by_ticker.get(ticker, ()))
+        if declared is not None:
+            related |= set(self.by_class.get(declared, ()))
+        fresh = [self.rows[p] for p in sorted(related) if self.fresh[p]]
+        historical = any(not self.fresh[p] for p in related)
+        if any(
+            (class_id is not None and not _SEC_CLASS.fullmatch(class_id))
+            or (series_id is not None and not _SEC_SERIES.fullmatch(series_id))
+            for class_id, series_id, _ticker in fresh
+        ):
+            return "sec.poisoned_mapping"
+        if any(
+            (series_id is not None and series_id != series)
+            or (row_ticker is not None and row_ticker != ticker)
+            or (declared is not None and class_id is not None and class_id != declared)
+            for class_id, series_id, row_ticker in fresh
+        ):
+            return "sec.contradiction"
+        complete = [row for row in fresh if None not in row]
+        if len(complete) > 1 or any(count > 1 for count in Counter(fresh).values()):
+            return "sec.ambiguous"
+        if len(complete) != len(fresh):
+            return "sec.incomplete"
+        if fresh:
+            return None
+        return "sec.stale" if historical else "sec.missing"
+
+
+def _sec_first_failure(
+    index: _CatalogIndex, sec_index: _SecIndex, owner: str
+) -> str | None:
+    registry = index.registry[owner][0]
+    return sec_index.first_failure(
+        _identifier(registry["ticker"]),
+        _identifier(registry["sec_series_id"]),
+        _identifier(registry["sec_class_id"]),
+    )
+
+
 def classify_catalog(
     instruments: list[dict],
     funds: list[dict],
     identity: list[dict],
+    sec: list[dict],
     observed_at: dt.datetime,
 ) -> tuple[list[dict], dict, dict]:
     """Lifecycle evidence, aggregate counts and ACTIVE digests for one snapshot.
 
-    Returns ``(evidence, counts, digests)``; counts/digests never carry IDs.
+    ``observed_at`` is the database decision instant τ of the snapshot; SEC
+    freshness is judged against it. Returns ``(evidence, counts, digests)``;
+    counts/digests never carry IDs.
     """
-    if observed_at.tzinfo is None or not instruments or not funds or not identity:
+    if (
+        observed_at.tzinfo is None
+        or observed_at.utcoffset() is None
+        or not instruments
+        or not funds
+        or not identity
+    ):
         raise PolicyGenerationError("catalog_snapshot_unavailable")
     if max(len(instruments), len(funds), len(identity)) > MAX_SOURCE_ROWS:
         raise PolicyGenerationError("catalog_row_limit_exceeded")
@@ -689,7 +926,8 @@ def classify_catalog(
         canonical_source_rows(identity, "identity"),
     )
     _assert_projection_consistent(index)
-    instant = observed_at.astimezone(UTC).isoformat()
+    sec_index = _SecIndex(canonical_source_rows(sec, "sec"), observed_at)
+    instant = utc_text(observed_at)
     result = []
     statuses: Counter[str] = Counter()
     frequency: Counter[str] = Counter()
@@ -697,7 +935,9 @@ def classify_catalog(
     inactive_reasons: Counter[str] = Counter()
     presence = dict.fromkeys(ISIN_PRESENCE_CATEGORIES, 0)
     presence_daily = dict.fromkeys(ISIN_PRESENCE_CATEGORIES, 0)
-    structural = structural_daily = structural_claim_failures = 0
+    structural = structural_daily = 0
+    structural_claim_failures = structural_sec_failures = 0
+    daily_claim_failures = daily_sec_failures = 0
     active: list[str] = []
     active_daily: list[str] = []
     for instrument_id in index.universe():
@@ -707,19 +947,30 @@ def classify_catalog(
             inactive_reasons["inactive_without_funds_v"] += 1
         else:
             failure = _first_failure(index, instrument_id)
+            if failure is None:
+                # SEC last: only a candidate passing every internal gate.
+                failure = _sec_first_failure(index, sec_index, instrument_id)
             status = "UNKNOWN" if failure is not None else "ACTIVE"
             if failure is not None:
                 first_failures[failure] += 1
             if _first_failure(index, instrument_id, claims=False) is None:
-                # Passing every non-claim gate: the only possible first failure
-                # is an ISIN/CUSIP/FIGI family, so structural - ACTIVE reconciles.
+                # Passing every non-claim internal gate: the only possible first
+                # failure is an ISIN/CUSIP/FIGI family or SEC, so structural -
+                # ACTIVE reconciles (in total and inside the daily population).
                 structural += 1
                 fund_type = _text(index.funds[instrument_id][0]["fund_type"])
-                structural_daily += fund_type in SUPPORTED_DAILY_FUND_TYPES
+                is_daily = fund_type in SUPPORTED_DAILY_FUND_TYPES
+                structural_daily += is_daily
                 if failure is not None:
-                    if failure.split(".", 1)[0] not in CLAIM_FAILURE_FAMILIES:
+                    family = failure.split(".", 1)[0]
+                    if family in CLAIM_FAILURE_FAMILIES:
+                        structural_claim_failures += 1
+                        daily_claim_failures += is_daily
+                    elif family == SEC_FAILURE_FAMILY:
+                        structural_sec_failures += 1
+                        daily_sec_failures += is_daily
+                    else:
                         raise PolicyGenerationError("structural_reconciliation_invalid")
-                    structural_claim_failures += 1
         daily = status == "ACTIVE" and (
             _text(index.funds[instrument_id][0]["fund_type"])
             in SUPPORTED_DAILY_FUND_TYPES
@@ -754,6 +1005,7 @@ def classify_catalog(
         "instruments_universe": len(instruments),
         "funds_v": len(funds),
         "instrument_identity": len(identity),
+        "sec_company_tickers_mf": len(sec),
         "instrument_evidence": len(result),
         "fund_status": dict(sorted(statuses.items())),
         "valuation_frequency": dict(sorted(frequency.items())),
@@ -762,6 +1014,9 @@ def classify_catalog(
         "structural_pre_claims": structural,
         "structural_pre_claims_daily": structural_daily,
         "structural_claim_failures": structural_claim_failures,
+        "structural_sec_failures": structural_sec_failures,
+        "structural_daily_claim_failures": daily_claim_failures,
+        "structural_daily_sec_failures": daily_sec_failures,
         "active": len(active),
         "active_daily": len(active_daily),
         "isin_presence_active": presence,
@@ -779,6 +1034,7 @@ def build_policy(
     instruments: list[dict],
     funds: list[dict],
     identity: list[dict],
+    sec: list[dict],
     observed_at: dt.datetime,
     policy_id: str,
     policy_version: str,
@@ -791,7 +1047,7 @@ def build_policy(
     ):
         raise PolicyGenerationError("policy_identity_invalid")
     evidence, counts, digests = classify_catalog(
-        instruments, funds, identity, observed_at
+        instruments, funds, identity, sec, observed_at
     )
     if not evidence:
         raise PolicyGenerationError("catalog_snapshot_empty")
@@ -827,10 +1083,10 @@ def build_policy(
         "sessions": calendar["sessions"],
         "instrument_evidence": evidence,
     }
-    snapshot_digest = source_snapshot_sha256(instruments, funds, identity)
+    snapshot_digest = source_snapshot_sha256(instruments, funds, identity, sec)
     policy["generation"] = {
         "generator_version": GENERATOR_VERSION,
-        "generated_at": observed_at.astimezone(UTC).isoformat(),
+        "generated_at": utc_text(observed_at),
         "requested_coverage_start": calendar["requested_coverage_start"],
         "requested_coverage_end": calendar["requested_coverage_end"],
         "calendar_package": f"exchange_calendars=={PACKAGE_VERSION}",
@@ -852,18 +1108,23 @@ def build_policy(
 
 
 def source_snapshot_sha256(
-    instruments: list[dict], funds: list[dict], identity: list[dict]
+    instruments: list[dict], funds: list[dict], identity: list[dict], sec: list[dict]
 ) -> str:
     content = source_snapshot_content(
         canonical_source_rows(instruments, "instruments"),
         canonical_source_rows(funds, "funds"),
         canonical_source_rows(identity, "identity"),
+        canonical_source_rows(sec, "sec"),
     )
     return hashlib.sha256(canonical_json(content)).hexdigest()
 
 
 def build_source_snapshot(
-    policy: dict, instruments: list[dict], funds: list[dict], identity: list[dict]
+    policy: dict,
+    instruments: list[dict],
+    funds: list[dict],
+    identity: list[dict],
+    sec: list[dict],
 ) -> dict:
     """Private export of the exact projections classified, hash-linked to the policy.
 
@@ -873,6 +1134,7 @@ def build_source_snapshot(
         canonical_source_rows(instruments, "instruments"),
         canonical_source_rows(funds, "funds"),
         canonical_source_rows(identity, "identity"),
+        canonical_source_rows(sec, "sec"),
     )
     generation = policy["generation"]
     digest = hashlib.sha256(canonical_json(content)).hexdigest()
@@ -916,6 +1178,7 @@ _SNAPSHOT_SOURCE_LABELS = {
     "funds": "funds",
     "identity": "identity",
     "instruments": "instruments",
+    "sec": "sec",
 }
 
 
@@ -973,7 +1236,10 @@ def verify_source_snapshot(
     digest = hashlib.sha256(
         canonical_json(
             source_snapshot_content(
-                checked["instruments"], checked["funds"], checked["identity"]
+                checked["instruments"],
+                checked["funds"],
+                checked["identity"],
+                checked["sec"],
             )
         )
     ).hexdigest()
@@ -1291,7 +1557,8 @@ def main(argv: list[str] | None = None) -> int:
             cmd.add_argument(
                 "--source-snapshot-output",
                 type=Path,
-                help="private custody export of the three classified projections",
+                help="private custody export of the four classified projections "
+                "(IU, funds_v, registry, SEC)",
             )
     verify = sub.add_parser("verify")
     verify.add_argument("--policy-file", type=Path, required=True)
@@ -1335,7 +1602,7 @@ def main(argv: list[str] | None = None) -> int:
                     == args.output.expanduser().absolute()
                 ):
                     raise PolicyGenerationError("source_snapshot_output_collides")
-                instant, instruments, funds, identity = read_catalog_snapshot(
+                instant, instruments, funds, identity, sec = read_catalog_snapshot(
                     os.environ[args.dsn_env]
                 )
                 artifact = build_policy(
@@ -1343,13 +1610,14 @@ def main(argv: list[str] | None = None) -> int:
                     instruments,
                     funds,
                     identity,
+                    sec,
                     instant,
                     args.policy_id,
                     args.policy_version,
                 )
                 if args.source_snapshot_output is not None:
                     snapshot = build_source_snapshot(
-                        artifact, instruments, funds, identity
+                        artifact, instruments, funds, identity, sec
                     )
             report = verify_artifact(artifact)
             content = canonical_json(artifact)

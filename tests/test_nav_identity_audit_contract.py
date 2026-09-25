@@ -54,12 +54,31 @@ def test_operator_never_imports_auditor_or_classifier():
 
 
 def test_contract_constants_agree_across_auditor_operator_and_generator():
-    from src.workers._nav_policy import SOURCE_QUERY_SHA256
+    from src.workers import _nav_policy as policy
 
     assert (
         contract.CATALOG_SOURCE_QUERY_SHA256
-        == SOURCE_QUERY_SHA256
+        == policy.SOURCE_QUERY_SHA256
         == verifier.QUERY_SHA256
+    )
+    # Own SQL literals, byte-identical projections (generator vs leaf).
+    assert policy.SEC_QUERY == contract.SEC_SQL
+    assert policy.SEC_LINEAGE_QUERY == contract.SEC_LINEAGE_SQL
+    assert policy.SEC_RELATION == contract.SEC_RELATION
+    assert policy.SEC_CLASS_PATTERN == contract.SEC_CLASS_PATTERN
+    assert policy.SEC_SERIES_PATTERN == contract.SEC_SERIES_PATTERN
+    assert policy.SEC_MAX_SYNCED_AGE.days == contract.SEC_MAX_SYNCED_AGE_DAYS
+    assert policy.SEC_FAILURE_CODES == contract.SEC_FAILURE_CODES
+    assert policy.SEC_GAP_CODES == contract.SEC_GAP_CODES
+    assert policy.SEC_CONFLICT_CODES == contract.SEC_CONFLICT_CODES
+    assert policy.GENERATOR_VERSION == contract.GENERATOR_VERSION
+    assert policy.CURRENT_CATALOG_QUERY_VERSION == contract.CATALOG_QUERY_VERSION
+    assert policy.IDENTITY_CONTRACT_VERSION == contract.IDENTITY_CONTRACT_VERSION
+    assert sorted(policy.RETIRED_GENERATOR_VERSIONS) == list(
+        contract.RETIRED_GENERATOR_VERSIONS
+    )
+    assert sorted(policy.RETIRED_CATALOG_QUERY_VERSIONS) == list(
+        contract.RETIRED_CATALOG_QUERY_VERSIONS
     )
     assert operator.PLAN_VERSION == contract.PLAN_VERSION == "nav-schema-plan-v4"
     assert set(contract.GATE_CHECKS) == set(contract.GATE_NAMES)
@@ -82,17 +101,36 @@ def test_sec_source_is_only_company_tickers_mf():
         assert "fetched_at" not in text
 
 
-def test_round5_contract_is_frozen_and_round3_round4_are_retired():
-    """T9/A14: new version and literal; Round3 and Round4 pins never match."""
-    assert contract.AUDIT_CONTRACT_VERSION == "nav-identity-audit-contract-v2-round5"
+def test_round6_contract_is_frozen_and_round3_to_round5_are_retired():
+    """Identity v3: new audit version and literal; Round3-5 pins never match."""
+    assert contract.AUDIT_CONTRACT_VERSION == "nav-identity-audit-contract-v3-round6"
     assert contract.AUDIT_CONTRACT_SHA256 == (
-        "0d237212e1e95a6e1e0494e071170d174481c29662a27b7bf9e7ac0bca3ec2c7"
+        "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff"
+    )
+    assert contract.CATALOG_SOURCE_QUERY_SHA256 == (
+        "47cd5565cad722bd2ca7377f5206ea39d9460861394b7d09f87c113d5b39b2b5"
     )
     for retired in (
         "1ef74c426526f5308223921c8297516c9fa4ac4034737fad59cad668f73b0001",  # round3
         "64c75b3db696132e435523e0f3d072309fc78c72069c2d8942bf7ef89bfd68db",  # round4
+        "0d237212e1e95a6e1e0494e071170d174481c29662a27b7bf9e7ac0bca3ec2c7",  # round5
     ):
         assert contract.AUDIT_CONTRACT_SHA256 != retired
+    # The v2 three-source digest is retired with the v2 generator.
+    assert contract.CATALOG_SOURCE_QUERY_SHA256 != (
+        "39ca1c5d3f09d989abb8c7fdfd652ef3832683d99486ad006610a37fb0cb97f7"
+    )
+    assert contract.AUDIT_VERSION == "nav-identity-audit-v3"
+    assert contract.AUDIT_CONFIG_VERSION == "nav-identity-audit-config-v3"
+    assert contract.GENERATOR_VERSION == "fund-nav-policy-generator-v3"
+    assert contract.SOURCE_SNAPSHOT_KIND == "nav-current-catalog-source-snapshot-v3"
+    assert "fund-nav-policy-generator-v2" in contract.RETIRED_GENERATOR_VERSIONS
+    assert "nav-current-catalog-snapshot-v2" in contract.RETIRED_CATALOG_QUERY_VERSIONS
+    assert (contract.SEC_GAP_CEILING, contract.SEC_CONFLICT_CEILING) == (23, 0)
+    assert set(contract.SEC_GAP_CODES) | set(contract.SEC_CONFLICT_CODES) == set(
+        contract.SEC_FAILURE_CODES
+    )
+    assert not set(contract.SEC_GAP_CODES) & set(contract.SEC_CONFLICT_CODES)
     rule = contract.AUDIT_CONTRACT["publication_receipt"]["rule"]
     for phrase in (
         # Round4 replay semantics, preserved.
@@ -114,7 +152,8 @@ def test_round5_contract_is_frozen_and_round3_round4_are_retired():
         assert phrase in rule
     # plan-v4 shape unchanged: no new plan field, same version literal and kinds.
     assert contract.PLAN_VERSION == operator.PLAN_VERSION == "nav-schema-plan-v4"
-    assert contract.CAPTURE_KIND == "nav-identity-audit-capture-v2-round2"
+    assert contract.CAPTURE_KIND == "nav-identity-audit-capture-v3-round6"
+    # Manifest shape unchanged: the v3-round6 contract/hash it carries binds it.
     assert contract.CANARY_KIND == "nav-policy-v2-canary-manifest-round2"
     assert "evidence_partition_digest" not in contract.AUDIT_RECEIPT_KEYS
     assert "pointer_published_at" not in contract.AUDIT_RECEIPT_KEYS
@@ -122,8 +161,8 @@ def test_round5_contract_is_frozen_and_round3_round4_are_retired():
         assert operator._SAFE_CODES.fullmatch(code)
 
 
-def test_round5_leaves_ddl_and_catalog_unchanged():
-    """A14: Round5 is runtime-only; the Round4 schema artifacts are pinned."""
+def test_round6_leaves_ddl_and_catalog_unchanged():
+    """Round5/Round6 are runtime-only; the Round4 schema artifacts are pinned."""
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     catalog = (ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json").read_bytes()
     assert hashlib.sha256(ddl).hexdigest() == (
@@ -135,8 +174,19 @@ def test_round5_leaves_ddl_and_catalog_unchanged():
 
 
 def test_repository_config_is_pinned_to_the_leaf():
-    config = json.loads((ROOT / "configs" / "nav_identity_audit_v2.json").read_bytes())
+    config = json.loads((ROOT / "configs" / "nav_identity_audit_v3.json").read_bytes())
     assert config["audit_contract_version"] == contract.AUDIT_CONTRACT_VERSION
+    assert config["audit_config_version"] == contract.AUDIT_CONFIG_VERSION
+    assert config["sec"]["gap_ceiling"] == contract.SEC_GAP_CEILING
+    assert config["sec"]["conflict_ceiling"] == contract.SEC_CONFLICT_CEILING
+    assert operator.AUDIT_CONFIG == ROOT / "configs" / "nav_identity_audit_v3.json"
+    # The v2 config is kept byte-for-byte as the historical blocked-audit record.
+    historical = json.loads(
+        (ROOT / "configs" / "nav_identity_audit_v2.json").read_bytes()
+    )
+    assert historical["audit_contract_version"] == (
+        "nav-identity-audit-contract-v2-round5"
+    )
     assert config["sec"]["relation"] == contract.SEC_RELATION
     assert config["sec"]["query_contract_sha256"] == contract.SEC_QUERY_CONTRACT_SHA256
     assert (
