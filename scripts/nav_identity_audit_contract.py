@@ -1,4 +1,4 @@
-"""Declarative NAV identity audit contract, Round6 / identity v3 (shared leaf).
+"""Declarative NAV identity audit contract, Round7 / identity v3 (shared leaf).
 
 Pure data. This module imports nothing: not the generator/classifier, the
 independent auditor, the operator, a database driver or the custody writer.
@@ -7,18 +7,25 @@ The auditor (``scripts.verify_fund_nav_identity_v2``) and the operator
 imports the auditor or the classifier to validate a publication receipt.
 
 ``AUDIT_CONTRACT`` is the canonical declaration of the governed audit
-semantics (generation identity, SEC corroboration precedence and ceilings, A4
-ceiling population and conservation, A8 source/queries/freshness, required
-checks per gate, dossier/manifest/receipt shapes, Stage-1 margin, canary rule
-and selection digest). ``AUDIT_CONTRACT_SHA256`` is its frozen digest:
-SHA-256 of ``json.dumps(AUDIT_CONTRACT, sort_keys=True, separators=(",", ":"),
+semantics (generation identity, SEC corroboration precedence, the A8 SEC
+exclusion rule, A4 ceiling population and conservation, A8
+source/queries/freshness, required checks per gate, dossier/manifest/receipt
+shapes, Stage-1 margin, canary rule and selection digest).
+``AUDIT_CONTRACT_SHA256`` is its frozen digest: SHA-256 of
+``json.dumps(AUDIT_CONTRACT, sort_keys=True, separators=(",", ":"),
 ensure_ascii=True)`` encoded UTF-8. The auditor recomputes it at import and
 refuses to run on a mismatch; any semantic change requires a new
 ``AUDIT_CONTRACT_VERSION`` and a new literal, never a silent edit.
 
-Round6 is an AUDIT contract bump (the SEC source now changes generation, the
-evidence universe and A4/A5/A8), not a receipt migration: the plan-v4 receipt
-shape and the Round5 publication semantics are unchanged.
+Round6 made the SEC source change generation, the evidence universe and
+A4/A5/A8. Round7 changes ONLY the A8 SEC exclusion semantics: the absolute
+gap ceiling (23 funds) is retired in favour of an integrity ceiling of zero
+(the four conflict codes plus ``sec.incomplete``) and two separate
+proportional bounds, ``sec.stale <= B`` and ``sec.missing <= B`` with
+``B = floor(N * 1 / 10)`` over the ``N`` funds that reach the SEC stage (ACTIVE
+plus SEC first failures, at ``generated_at``). Neither round is a receipt
+migration: the plan-v4 receipt shape and the Round5 publication semantics are
+unchanged; a Round6 config, capture, dossier or manifest is never Round7.
 
 ``SEC_QUERY_CONTRACT_SHA256`` is SHA-256 of ``SEC_SQL + "\\n" + SEC_LINEAGE_SQL``.
 """
@@ -27,9 +34,9 @@ from __future__ import annotations
 
 AUDIT_VERSION = "nav-identity-audit-v3"
 AUDIT_CONFIG_VERSION = "nav-identity-audit-config-v3"
-AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v3-round6"
-CAPTURE_KIND = "nav-identity-audit-capture-v3-round6"
-# Manifest SHAPE is unchanged; the v3-round6 contract version/hash it carries
+AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v3-round7"
+CAPTURE_KIND = "nav-identity-audit-capture-v3-round7"
+# Manifest SHAPE is unchanged; the v3-round7 contract version/hash it carries
 # is the binding, never compatibility with a v2 audit.
 CANARY_KIND = "nav-policy-v2-canary-manifest-round2"
 PLAN_VERSION = "nav-schema-plan-v4"
@@ -111,19 +118,31 @@ SEC_FAILURE_CODES = (
     "sec.stale",
     "sec.missing",
 )
-SEC_GAP_CODES = ("sec.incomplete", "sec.stale", "sec.missing")
 SEC_CONFLICT_CODES = (
     "sec.declared_class_invalid",
     "sec.poisoned_mapping",
     "sec.contradiction",
     "sec.ambiguous",
 )
-# Reviewed, fixed ceilings on FUNDS excluded by a SEC first failure (never
-# source rows); the config must carry exactly these values; never auto-raised.
-SEC_GAP_CEILING = 23
+# Integrity exclusions: any fund whose SEC first failure is one of these fails
+# A8 (ceiling 0). Stronger than the Round6 conflict ceiling (incomplete added).
+SEC_INTEGRITY_CODES = (*SEC_CONFLICT_CODES, "sec.incomplete")
+SEC_INTEGRITY_CEILING = 0
+SEC_STALE_CODE = "sec.stale"
+SEC_MISSING_CODE = "sec.missing"
+# The conflict ceiling stays an explicit, strict config value (exactly 0).
 SEC_CONFLICT_CEILING = 0
-SEC_GAP_CEILING_KEY = "gap_ceiling"
 SEC_CONFLICT_CEILING_KEY = "conflict_ceiling"
+# Reviewed materiality of the proportional bound on FUNDS (never source rows):
+# B = (N * numerator) // denominator, floor, no minimum, no smoothing. The
+# config carries exactly this object of two strict integers; never auto-raised
+# and independent of the Stage-1 margin (A7: ceil with a minimum of 1).
+SEC_EXCLUSION_FRACTION_KEY = "exclusion_fraction"
+SEC_EXCLUSION_FRACTION_KEYS = ("denominator", "numerator")
+SEC_EXCLUSION_FRACTION_NUMERATOR = 1
+SEC_EXCLUSION_FRACTION_DENOMINATOR = 10
+# Round6 key; its presence blocks, even next to the Round7 fraction.
+SEC_RETIRED_CONFIG_KEYS = ("gap_ceiling",)
 # Systemic SEC source defects abort generation (never a per-fund UNKNOWN).
 SEC_SOURCE_ABORT_CODES = (
     "sec_source_empty",
@@ -139,10 +158,8 @@ SEC_SOURCE_ABORT_CODES = (
 )
 A8_OUTCOMES = ("matched", *SEC_FAILURE_CODES)
 A8_DETAIL_KEYS = (
-    "conflict_ceiling",
     "exclusions",
     "freshness",
-    "gap_ceiling",
     "invalid_source_rows",
     "lineage",
     "outcomes",
@@ -155,7 +172,7 @@ A8_DETAIL_KEYS = (
     "source_contract",
     "timestamp_column",
 )
-A8_EXCLUSION_KEYS = ("by_code", "conflict", "gap")
+A8_EXCLUSION_KEYS = ("bound", "by_code", "c_size", "integrity", "missing", "stale")
 A8_FRESHNESS_KEYS = (
     "decision_at",
     "lineage_max_synced_at",
@@ -249,8 +266,9 @@ GATE_CHECKS = {
     "A8": (
         "active_nonempty",
         "all_active_matched",
-        "sec_conflict_within_ceiling",
-        "sec_gap_within_ceiling",
+        "sec_integrity_zero",
+        "sec_missing_within_bound",
+        "sec_stale_within_bound",
         "source_fresh_within_max_age",
         "source_lineage_verified",
         "synced_not_in_future",
@@ -383,7 +401,35 @@ AUDIT_CONTRACT = {
         "conflict_ceiling": SEC_CONFLICT_CEILING,
         "conflict_ceiling_key": SEC_CONFLICT_CEILING_KEY,
         "detail_keys": list(A8_DETAIL_KEYS),
+        "exclusion_fraction": {
+            "denominator": SEC_EXCLUSION_FRACTION_DENOMINATOR,
+            "numerator": SEC_EXCLUSION_FRACTION_NUMERATOR,
+        },
+        "exclusion_fraction_key": SEC_EXCLUSION_FRACTION_KEY,
+        "exclusion_fraction_keys": list(SEC_EXCLUSION_FRACTION_KEYS),
         "exclusion_keys": list(A8_EXCLUSION_KEYS),
+        "exclusion_rule": {
+            "bound": "B = (N * numerator) // denominator (floor, no minimum, "
+            "no smoothing; N in 1..9 gives B = 0)",
+            "by_code": "F[c] for every c in failure_codes, zeros explicit",
+            "c_size": "N = |C| = A + sum(F[c] for c in failure_codes)",
+            "checks": "sec_integrity_zero <=> K == integrity_ceiling; "
+            "sec_stale_within_bound <=> S <= B; sec_missing_within_bound <=> "
+            "M <= B; stale and missing are bounded separately (never summed, "
+            "never compensated, no combined ceiling)",
+            "conservation": "N = A + S + M + K; sum(by_code) = S + M + K = N - A "
+            "= structural_sec_failures; N = structural_pre_claims - "
+            "structural_claim_failures; every count a strict non-negative "
+            "integer (bool is not an integer)",
+            "integrity": "K = sum(F[c] for c in integrity_codes)",
+            "missing": f"M = F['{SEC_MISSING_CODE}']",
+            "population": "at generated_at, one exclusive first failure per "
+            "fund: A = number of ACTIVE (MMF included), F[c] = number of "
+            "UNKNOWN whose first failure is c, C = ACTIVE union {funds whose "
+            "first failure is in failure_codes}; never P, the universe, ACTIVE "
+            "daily, the SEC source row_count or the A7 cohort",
+            "stale": f"S = F['{SEC_STALE_CODE}']",
+        },
         "freshness": "at the capture instant (the A8 decision_at): every ACTIVE, "
         "MMF included, re-classified with the SEC rule has exactly one fresh "
         "complete consistent row (0 <= decision_at - synced_at <= "
@@ -391,22 +437,23 @@ AUDIT_CONTRACT = {
         "max_synced_age_days; any captured row after decision_at fails; "
         "valid_until = min_matched_synced_at + max_synced_age_days",
         "freshness_keys": list(A8_FRESHNESS_KEYS),
-        "gap_ceiling": SEC_GAP_CEILING,
-        "gap_ceiling_key": SEC_GAP_CEILING_KEY,
+        "integrity_ceiling": SEC_INTEGRITY_CEILING,
         "lineage_query": SEC_LINEAGE_SQL,
         "max_synced_age_days": SEC_MAX_SYNCED_AGE_DAYS,
         "outcomes": list(A8_OUTCOMES),
         "query": SEC_SQL,
         "query_contract_sha256": SEC_QUERY_CONTRACT_SHA256,
         "relation": SEC_RELATION,
+        "retired_sec_config_keys": list(SEC_RETIRED_CONFIG_KEYS),
         "rule": "A8 PASS requires a verified lineage, a fresh newest source row, no "
         "future row, a non-empty ACTIVE set whose every member is matched at the "
-        "capture instant, and the SEC exclusions recomputed at generated_at within "
-        "gap_ceiling (incomplete+stale+missing funds) and conflict_ceiling "
-        "(declared_class_invalid+poisoned_mapping+contradiction+ambiguous funds); "
-        "an unavailable or drifted SEC capture is NOT_EVALUATED (A5 FAILs the "
-        "drift); an individual gap is a FAIL, never NOT_EVALUATED; unrelated poison "
-        "is counted, never fatal; no fallback source",
+        "capture instant, and the SEC exclusions recomputed at generated_at with "
+        "zero integrity exclusions (declared_class_invalid+poisoned_mapping+"
+        "contradiction+ambiguous+incomplete funds), stale funds <= B and missing "
+        "funds <= B separately (exclusion_rule); an unavailable or drifted SEC "
+        "capture is NOT_EVALUATED (A5 FAILs the drift); an individual exclusion "
+        "over its bound is a FAIL, never NOT_EVALUATED; unrelated poison is "
+        "counted, never fatal; no fallback source",
         "series_pattern": SEC_SERIES_PATTERN,
         "source_contract": SEC_SOURCE_CONTRACT,
         "timestamp_column": SEC_TIMESTAMP_COLUMN,
@@ -427,7 +474,8 @@ AUDIT_CONTRACT = {
     "sec_classification": {
         "conflict_codes": list(SEC_CONFLICT_CODES),
         "failure_codes": list(SEC_FAILURE_CODES),
-        "gap_codes": list(SEC_GAP_CODES),
+        "integrity_codes": list(SEC_INTEGRITY_CODES),
+        "missing_code": SEC_MISSING_CODE,
         "rule": "only a candidate passing every internal gate (after activity) is "
         "judged; theta = registry ticker, sigma = registry series, kappa = "
         "declared registry class (optional); related rows = union BY ROW of same "
@@ -447,6 +495,7 @@ AUDIT_CONTRACT = {
         f"{ROW_CEILING} rows, lineage count/min/max not equal to the rows, a "
         "NULL/naive/invalid timestamp, any row after tau or a newest row older "
         "than 7 days aborts generation (no partial policy)",
+        "stale_code": SEC_STALE_CODE,
     },
     "audit_config_version": AUDIT_CONFIG_VERSION,
     "audit_contract_version": AUDIT_CONTRACT_VERSION,
@@ -511,5 +560,5 @@ AUDIT_CONTRACT = {
     "stage1_margin": f"max(1, ceil({STAGE1_MARGIN_TEXT} * quota)) for quota > 0",
 }
 AUDIT_CONTRACT_SHA256 = (
-    "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff"
+    "9941902de05c4006882bfb51b2816a357c91f2405e2a9f24c2369d3149ced244"
 )

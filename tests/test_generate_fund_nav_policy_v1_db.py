@@ -953,7 +953,7 @@ SEC_CONFIG = {
     "timestamp_column": "updated_at",
     "query_contract_sha256": verifier.SEC_QUERY_CONTRACT_SHA256,
     "max_synced_age_days": 7,
-    "gap_ceiling": 23,
+    "exclusion_fraction": {"numerator": 1, "denominator": 10},
     "conflict_ceiling": 0,
 }
 
@@ -1036,6 +1036,11 @@ def live_audit(dsn, catalog, tmp_path, monkeypatch, capsys, request):
                 ("C000000012", "S000000012", "T12"),
             ],
         )
+        # Round7: optional legitimate corroborated candidates (outside the
+        # cohort) so that N reaches the proportional floor (N >= 10 -> B >= 1).
+        for n in range(21, 21 + params.get("extra_active", 0)):
+            _seed(conn, _uuid_entity(uuid.uuid4(), n))
+            _sec_insert(conn, [(f"C{n:09d}", f"S{n:09d}", f"T{n}")])
         if params.get("sec_mutation"):
             conn.execute(params["sec_mutation"])
     output, raw, policy = _artifact(
@@ -1200,16 +1205,20 @@ def _sec_case(mutation):
                 "UPDATE public.sec_company_tickers_mf SET updated_at = "
                 "clock_timestamp() - interval '8 days' WHERE ticker='T11'"
             ),
-            {"first": {"sec.stale": 1}, "a8": "PASS", "code": 0},
+            # N = 3 candidates reach the SEC stage: B = 3 // 10 = 0.
+            {"first": {"sec.stale": 1}, "a8": "FAIL", "code": 3,
+             "failed": ["sec_stale_within_bound"]},
         ),
         (
             _sec_case("DELETE FROM public.sec_company_tickers_mf WHERE ticker='T11'"),
-            {"first": {"sec.missing": 1}, "a8": "PASS", "code": 0},
+            {"first": {"sec.missing": 1}, "a8": "FAIL", "code": 3,
+             "failed": ["sec_missing_within_bound"]},
         ),
         # T12 is an equity ETF: excluding it leaves the equity sleeve short (A7).
         (
             _sec_case("UPDATE public.sec_company_tickers_mf SET series_id='' WHERE ticker='T12'"),
-            {"first": {"sec.incomplete": 1}, "a8": "PASS", "a7": "FAIL", "code": 3},
+            {"first": {"sec.incomplete": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
+             "failed": ["sec_integrity_zero"]},
         ),
         (
             _sec_case(
@@ -1217,7 +1226,7 @@ def _sec_case(mutation):
                 "WHERE ticker='T12'"
             ),
             {"first": {"sec.contradiction": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
-             "failed": ["sec_conflict_within_ceiling"]},
+             "failed": ["sec_integrity_zero"]},
         ),
         (
             _sec_case(
@@ -1225,7 +1234,7 @@ def _sec_case(mutation):
                 "VALUES ('S900000001:FAKEA','1','S900000001','FAKEA')"
             ),
             {"first": {"sec.poisoned_mapping": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
-             "failed": ["sec_conflict_within_ceiling"]},
+             "failed": ["sec_integrity_zero"]},
         ),
         (
             _sec_case(
@@ -1233,7 +1242,7 @@ def _sec_case(mutation):
                 "VALUES ('C900000099','1','S900000001','FAKEA')"
             ),
             {"first": {"sec.ambiguous": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
-             "failed": ["sec_conflict_within_ceiling"]},
+             "failed": ["sec_integrity_zero"]},
         ),
         # The valid FAKEA row cannot hide a related malformed or incomplete row.
         (
@@ -1242,14 +1251,15 @@ def _sec_case(mutation):
                 "VALUES ('C900000002','1','SX','FAKEA')"
             ),
             {"first": {"sec.poisoned_mapping": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
-             "failed": ["sec_conflict_within_ceiling"]},
+             "failed": ["sec_integrity_zero"]},
         ),
         (
             _sec_case(
                 "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
                 "VALUES ('C900000003','1','','FAKEA')"
             ),
-            {"first": {"sec.incomplete": 1}, "a8": "PASS", "a7": "FAIL", "code": 3},
+            {"first": {"sec.incomplete": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
+             "failed": ["sec_integrity_zero"]},
         ),
         # Unrelated poison is counted, never fatal.
         (
@@ -1303,6 +1313,7 @@ def test_live_sec_generation_and_a8_company_tickers_mf_matrix(
     assert detail["exclusions"]["by_code"] == {
         name: expected["first"].get(name, 0) for name in verifier.SEC_CODES
     }
+    assert (detail["exclusions"]["c_size"], detail["exclusions"]["bound"]) == (3, 0)
     active = sum(1 for row in policy["instrument_evidence"] if row["fund_status"] == "ACTIVE")
     assert detail["outcomes"]["matched"] == active == 3 - len(expected["first"])
     if "failed" in expected:
@@ -1636,11 +1647,17 @@ def _later(value: str, **delta) -> str:
         ("previous_identity", "audit_previous_policy_invalid"),
         ("a8_valid_until_missing", "audit_dossier_invalid"),
         ("a8_outcomes", "audit_dossier_invalid"),
-        # Round6: SEC exclusions/ceilings bound to the policy and the leaf.
+        # Round7: SEC exclusions bound to the policy and recounted by the operator.
         ("a8_exclusion_not_in_policy", "audit_dossier_invalid"),
-        ("a8_gap_ceiling_raised", "audit_dossier_invalid"),
-        ("a8_conflict_ceiling_raised", "audit_dossier_invalid"),
+        ("a8_bound_raised", "audit_dossier_invalid"),
+        ("a8_c_size_inflated", "audit_dossier_invalid"),
+        ("a8_round6_ceiling_details", "audit_dossier_invalid"),
+        ("a8_round6_exclusion_shape", "audit_dossier_invalid"),
+        ("dossier_counts_active_inflated", "audit_dossier_invalid"),
         ("round5_contract", "audit_contract_mismatch"),
+        ("round6_contract", "audit_contract_mismatch"),
+        ("capture_kind_round6", "audit_capture_mismatch"),
+        ("config_payload_realigned", "audit_config_sec_invalid"),
         ("capture_kind_v2_round2", "audit_capture_mismatch"),
         ("manifest_foreign_uuid", "canary_manifest_invalid"),
         ("manifest_report_sha", "canary_manifest_invalid"),
@@ -1721,14 +1738,45 @@ def test_governed_receipt_tamper_matrix(dsn, catalog, governed, capsys, monkeypa
         dossier(lambda d: d["details"]["A8"]["outcomes"].update({"matched": 2, "sec.missing": 1}))
     elif case == "a8_exclusion_not_in_policy":
         dossier(lambda d: d["details"]["A8"]["exclusions"].update(
-            by_code={**d["details"]["A8"]["exclusions"]["by_code"], "sec.missing": 1}, gap=1))
-    elif case == "a8_gap_ceiling_raised":
-        dossier(lambda d: d["details"]["A8"].update(gap_ceiling=24))
-    elif case == "a8_conflict_ceiling_raised":
-        dossier(lambda d: d["details"]["A8"].update(conflict_ceiling=1))
+            by_code={**d["details"]["A8"]["exclusions"]["by_code"], "sec.missing": 1},
+            missing=1, c_size=d["details"]["A8"]["exclusions"]["c_size"] + 1))
+    elif case == "a8_bound_raised":
+        dossier(lambda d: d["details"]["A8"]["exclusions"].update(bound=1))
+    elif case == "a8_c_size_inflated":
+        dossier(lambda d: d["details"]["A8"]["exclusions"].update(c_size=10, bound=1))
+    elif case == "a8_round6_ceiling_details":
+        dossier(lambda d: d["details"]["A8"].update(gap_ceiling=23, conflict_ceiling=0))
+    elif case == "a8_round6_exclusion_shape":
+        dossier(lambda d: d["details"]["A8"].update(exclusions={
+            "by_code": d["details"]["A8"]["exclusions"]["by_code"], "gap": 0, "conflict": 0}))
+    elif case == "dossier_counts_active_inflated":
+        dossier(lambda d: d["counts"]["fund_status"].update(
+            ACTIVE=d["counts"]["fund_status"]["ACTIVE"] + 7))
     elif case == "round5_contract":
         dossier(lambda d: d["inputs"].update(
             audit_contract_version="nav-identity-audit-contract-v2-round5"))
+    elif case == "round6_contract":
+        dossier(lambda d: d["inputs"].update(
+            audit_contract_version="nav-identity-audit-contract-v3-round6",
+            audit_contract_sha256=(
+                "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff")))
+    elif case == "capture_kind_round6":
+        files.update(_rewrite(env, "capture", "c.json",
+                              lambda c: c.update(kind="nav-identity-audit-capture-v3-round6")))
+    elif case == "config_payload_realigned":
+        # Tampered pinned config whose SHA is realigned in dossier and manifest.
+        config = json.loads(env["config_path"].read_bytes())
+        config["sec"]["exclusion_fraction"] = {"numerator": 1, "denominator": 5}
+        tampered = _put(env["custody"], "config-tampered.json", json.dumps(config).encode())
+        monkeypatch.setattr(operator, "AUDIT_CONFIG", tampered)
+        digest = _sha(tampered)
+        relinked = _relink(env, case, dossier=lambda d: d["inputs"].update(
+            audit_config_sha256=digest))
+        manifest_doc = json.loads(relinked["canary_manifest"].read_bytes())
+        manifest_doc["audit_config_sha256"] = digest
+        relinked["canary_manifest"] = _put(
+            env["custody"], "m-cfg.json", generator.canonical_json(manifest_doc))
+        files.update(relinked)
     elif case == "capture_kind_v2_round2":
         files.update(_rewrite(env, "capture", "c.json",
                               lambda c: c.update(kind="nav-identity-audit-capture-v2-round2")))
@@ -2036,15 +2084,21 @@ def test_governed_target_pointer_is_exact_replay_only(
 
 @pytest.mark.parametrize(
     "live_audit",
-    [_sec_case("DELETE FROM public.sec_company_tickers_mf WHERE ticker='T11'")],
+    [
+        {
+            "sec_mutation": "DELETE FROM public.sec_company_tickers_mf WHERE ticker='T11'",
+            # 3 fixture candidates + 7 legitimate ones: N = 10, B = 1.
+            "extra_active": 7,
+        }
+    ],
     indirect=True,
 )
-def test_governed_publication_with_a_sec_gap_exclusion_end_to_end(
+def test_governed_publication_with_a_sec_missing_exclusion_end_to_end(
     dsn, catalog, live_audit, capsys, monkeypatch
 ):
-    """Generation (4 sources, SEC gap) -> strict audit -> canary -> plan-v4
-    check/apply -> Round4/5 receipt -> exact replay; the excluded fund is
-    published UNKNOWN and never enters the canary."""
+    """Generation (4 sources, one SEC missing within B) -> strict audit ->
+    canary -> plan-v4 check/apply -> Round4/5 receipt -> exact replay; the
+    excluded fund is published UNKNOWN and never enters the canary."""
     policy = live_audit["policy"]
     excluded = str(live_audit["extra"][0][0]["instrument_id"])  # T11
     status = {row["instrument_id"]: row for row in policy["instrument_evidence"]}
@@ -2054,7 +2108,9 @@ def test_governed_publication_with_a_sec_gap_exclusion_end_to_end(
         manifest = json.loads(env["files"]["canary_manifest"].read_bytes())
         assert excluded not in manifest["allowlist"] and manifest["size"] == 2
         dossier = json.loads(env["files"]["audit_dossier"].read_bytes())
-        assert dossier["details"]["A8"]["exclusions"]["gap"] == 1
+        exclusions = dossier["details"]["A8"]["exclusions"]
+        assert (exclusions["missing"], exclusions["stale"], exclusions["integrity"]) == (1, 0, 0)
+        assert (exclusions["c_size"], exclusions["bound"]) == (10, 1)
         code, out, printed = _op(_op_args(env), capsys)
         assert (code, out["status"]) == (0, "ready"), out
         assert excluded not in printed
@@ -2075,3 +2131,230 @@ def test_governed_publication_with_a_sec_gap_exclusion_end_to_end(
         code, replay, _ = _op(_op_args(env, mode="apply", plan=out["plan_sha256"]), capsys)
         assert (code, replay["status"], replay["dml_committed"]) == (0, "unchanged", False)
         assert (_state(dsn, env["schema"]), _ledger(dsn, env["schema"])) == (after, ledger)
+
+
+# ── Round7: upsert-only truncated refresh vs legitimate delisting (real PG) ──
+# The real SEC DDL and an upsert-only history with SYNTHETIC timestamps: no
+# DELETE fabricates staleness, nothing waits 7 days and no production clock is
+# patched. The generator reads the four sources in one real RR snapshot and is
+# given the synthetic decision instant; the auditor captures the SAME database
+# state live and judges A8 at that same synthetic instant.
+SIM_TAU = dt.datetime(2026, 9, 20, 12, 0, tzinfo=dt.timezone.utc)
+SIM_FUNDS = 100
+# Fresh rows of classes no fund maps to: 11 stale rows are ~1.1% of the source
+# rows but 11% of C; A8 bounds FUNDS, never source rows.
+SIM_UNRELATED = 900
+SIM_OMITTED_11 = frozenset(range(5, 100, 9))  # 5, 14, ..., 95
+SIM_OMITTED_9 = frozenset(range(7, 100, 11))  # 7, 18, ..., 95
+SEVEN_DAYS = dt.timedelta(days=7)
+MICRO = dt.timedelta(microseconds=1)
+SIM_UPSERT = (
+    # The production worker's statement shape (sec_company_tickers_mf.py):
+    # insert-or-update by class_id, updated_at refreshed, never a delete.
+    "INSERT INTO public.sec_company_tickers_mf "
+    "(class_id, cik, series_id, ticker, fetched_at, updated_at) "
+    "VALUES (%s, '0000000001', %s, %s, %s, %s) "
+    "ON CONFLICT (class_id) DO UPDATE SET cik = EXCLUDED.cik, "
+    "series_id = EXCLUDED.series_id, ticker = EXCLUDED.ticker, "
+    "updated_at = EXCLUDED.updated_at"
+)
+
+
+@pytest.fixture(scope="module")
+def sim_calendar():
+    return generator.build_calendar(START, END)
+
+
+@pytest.fixture
+def sim_catalog(dsn):
+    """100 corroborable ETF candidates in the cohort, the real SEC DDL, no SEC rows."""
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        for statement in CATALOG_DDL:
+            conn.execute(statement)
+        conn.execute(
+            "TRUNCATE TABLE public.instruments_universe, public.nav_fixture_funds, "
+            "public.instrument_identity"
+        )
+        _seed(conn, *(entity(n) for n in range(1, SIM_FUNDS + 1)))
+        conn.execute("DROP TABLE IF EXISTS public.sec_company_tickers_mf")
+        conn.execute(SEC_TABLE_SQL)
+        conn.execute("DROP TABLE IF EXISTS public.nav_fixture_cohort")
+        conn.execute(
+            "CREATE TABLE public.nav_fixture_cohort (instrument_id uuid, strategy_label text)"
+        )
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO public.nav_fixture_cohort VALUES (%s, 'Large Blend')",
+                [(uuid.UUID(int=n),) for n in range(1, SIM_FUNDS + 1)],
+            )
+    return dsn
+
+
+def _sim_history(dsn, steps) -> None:
+    """``steps``: successive ``(instant, omitted)`` refreshes. Each upserts every
+    fund's mapping except ``omitted`` (plus every unrelated row) at ``instant``."""
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        for at, omitted in steps:
+            rows = [
+                (f"C{n:09d}", f"S{n:09d}", f"T{n}", at, at)
+                for n in range(1, SIM_FUNDS + 1)
+                if n not in omitted
+            ] + [
+                (f"C8{n:08d}", f"S8{n:08d}", f"U{n}", at, at)
+                for n in range(1, SIM_UNRELATED + 1)
+            ]
+            cur.executemany(SIM_UPSERT, rows)
+
+
+def _sim_audit(dsn, calendar):
+    """Generate at SIM_TAU from a real RR snapshot, capture the same state live
+    and audit it at SIM_TAU; returns (policy, report, source_rows)."""
+    _clock, instruments, funds, identity, sec = generator.read_catalog_snapshot(dsn)
+    policy = generator.build_policy(
+        calendar,
+        instruments,
+        funds,
+        identity,
+        sec,
+        SIM_TAU,
+        "synthetic-xnys",
+        POLICY_VERSION,
+    )
+    snapshot = generator.build_source_snapshot(
+        policy, instruments, funds, identity, sec
+    )
+    config_raw = json.dumps(_audit_config(COHORT_QUERY)).encode()
+    live = verifier.capture_live(dsn, verifier._load_config(config_raw))
+    # The captured rows are the real database state; only the decision instant
+    # is the synthetic one (the generation instant itself, an aware datetime
+    # as the database clock would return it).
+    live["captured_at"] = SIM_TAU
+    report = verifier.audit(
+        generator.canonical_json(policy),
+        snapshot_raw=generator.canonical_json(snapshot),
+        live=live,
+        config_raw=config_raw,
+    )
+    for gate in ("A1", "A2", "A4", "A5", "A6", "A7"):
+        assert report["gates"][gate]["status"] == "PASS", (gate, report["gates"][gate])
+    return policy, report, sec
+
+
+def _refreshes(first: dt.datetime, omitted) -> list:
+    """Daily partial refreshes from ``first`` up to SIM_TAU - 1h (fresh source)."""
+    steps, at = [], first
+    while at < SIM_TAU - dt.timedelta(hours=1):
+        steps.append((at, omitted))
+        at += dt.timedelta(days=1)
+    steps.append((SIM_TAU - dt.timedelta(hours=1), omitted))
+    return steps
+
+
+def _assert_upsert_only(dsn, *, stale_rows: int) -> None:
+    with psycopg.connect(dsn) as conn:
+        total, stale, newest = conn.execute(
+            "SELECT count(*), count(*) FILTER (WHERE %s - updated_at > interval '7 days'), "
+            "max(updated_at) FROM public.sec_company_tickers_mf",
+            (SIM_TAU,),
+        ).fetchone()
+    assert total == SIM_FUNDS + SIM_UNRELATED  # nothing was ever deleted
+    assert stale == stale_rows
+    assert newest == SIM_TAU - dt.timedelta(hours=1)  # the newest row is fresh
+
+
+@pytest.mark.parametrize(
+    "last_full,stale",
+    [
+        (SIM_TAU - dt.timedelta(days=6), 0),
+        (SIM_TAU - SEVEN_DAYS, 0),  # exactly 7 days is still fresh
+        (SIM_TAU - SEVEN_DAYS - MICRO, 11),
+    ],
+    ids=["six_days", "exactly_seven_days", "seven_days_plus_1us"],
+)
+def test_pg_truncated_refresh_ages_into_stale_at_exactly_seven_days_plus_1us(
+    sim_catalog, sim_calendar, last_full, stale
+):
+    """Same 11 funds omitted from every refresh after their last full listing."""
+    _sim_history(
+        sim_catalog,
+        [
+            (last_full, frozenset()),
+            *_refreshes(last_full + dt.timedelta(days=1), SIM_OMITTED_11),
+        ],
+    )
+    _assert_upsert_only(sim_catalog, stale_rows=stale)
+    policy, report, sec = _sim_audit(sim_catalog, sim_calendar)
+    counts = policy["generation"]["counts"]
+    assert counts["identity_first_failure"] == ({"sec.stale": stale} if stale else {})
+    assert counts["fund_status"] == {
+        "ACTIVE": SIM_FUNDS - stale,
+        **({"UNKNOWN": stale} if stale else {}),
+    }
+    assert len(sec) == SIM_FUNDS + SIM_UNRELATED
+    a8 = report["details"]["A8"]
+    assert a8["exclusions"]["c_size"] == SIM_FUNDS
+    assert a8["exclusions"]["bound"] == 10
+    assert (
+        a8["exclusions"]["stale"],
+        a8["exclusions"]["missing"],
+        a8["exclusions"]["integrity"],
+    ) == (stale, 0, 0)
+    checks = report["gates"]["A8"]["checks"]
+    assert checks["source_fresh_within_max_age"] and checks["source_lineage_verified"]
+    assert checks["synced_not_in_future"] and checks["all_active_matched"]
+    if stale:
+        # 11 stale funds > B = 10: only the stale bound fails.
+        assert [k for k, ok in checks.items() if not ok] == ["sec_stale_within_bound"]
+    else:
+        assert report["gates"]["A8"]["status"] == "PASS"
+        freshness = a8["freshness"]
+        assert (
+            dt.datetime.fromisoformat(freshness["min_matched_synced_at"]) == last_full
+        )
+        assert (
+            dt.datetime.fromisoformat(freshness["valid_until"])
+            == last_full + SEVEN_DAYS
+        )
+
+
+def test_pg_one_truncated_day_then_full_refresh_passes(sim_catalog, sim_calendar):
+    _sim_history(
+        sim_catalog,
+        [
+            (SIM_TAU - dt.timedelta(days=8), frozenset()),
+            (SIM_TAU - dt.timedelta(days=2), SIM_OMITTED_11),  # truncated
+            (SIM_TAU - dt.timedelta(days=1), frozenset()),  # full refresh
+            (SIM_TAU - dt.timedelta(hours=1), frozenset()),
+        ],
+    )
+    _assert_upsert_only(sim_catalog, stale_rows=0)
+    policy, report, _ = _sim_audit(sim_catalog, sim_calendar)
+    assert policy["generation"]["counts"]["identity_first_failure"] == {}
+    assert report["gates"]["A8"]["status"] == "PASS"
+    assert report["details"]["A8"]["exclusions"]["stale"] == 0
+
+
+def test_pg_nine_percent_legitimate_delisting_passes_within_the_bound(
+    sim_catalog, sim_calendar
+):
+    """9/100 withdrawn (indistinguishable from truncation within B): S9/B10 PASS."""
+    last_full = SIM_TAU - SEVEN_DAYS - MICRO
+    _sim_history(
+        sim_catalog,
+        [
+            (last_full, frozenset()),
+            *_refreshes(last_full + dt.timedelta(days=1), SIM_OMITTED_9),
+        ],
+    )
+    _assert_upsert_only(sim_catalog, stale_rows=9)
+    policy, report, _ = _sim_audit(sim_catalog, sim_calendar)
+    assert policy["generation"]["counts"]["identity_first_failure"] == {"sec.stale": 9}
+    exclusions = report["details"]["A8"]["exclusions"]
+    assert (exclusions["c_size"], exclusions["bound"]) == (100, 10)
+    assert (exclusions["stale"], exclusions["missing"], exclusions["integrity"]) == (
+        9,
+        0,
+        0,
+    )
+    assert report["gates"]["A8"]["status"] == "PASS"
+    assert verifier.verdict_of(report, strict=False) is True

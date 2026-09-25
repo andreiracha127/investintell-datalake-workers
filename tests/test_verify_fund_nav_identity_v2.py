@@ -113,7 +113,7 @@ SEC_CONFIG = {
     "timestamp_column": "updated_at",
     "query_contract_sha256": verifier.SEC_QUERY_CONTRACT_SHA256,
     "max_synced_age_days": 7,
-    "gap_ceiling": 23,
+    "exclusion_fraction": {"numerator": 1, "denominator": 10},
     "conflict_ceiling": 0,
 }
 
@@ -932,13 +932,14 @@ def test_live_capture_same_snapshot_passes_all_gates_and_builds_canary(calendar)
     }
     assert report["details"]["A8"]["exclusions"] == {
         "by_code": {code: 0 for code in verifier.SEC_CODES},
-        "gap": 0,
-        "conflict": 0,
+        "c_size": 9,
+        "bound": 0,
+        "stale": 0,
+        "missing": 0,
+        "integrity": 0,
     }
-    assert (
-        report["details"]["A8"]["gap_ceiling"],
-        report["details"]["A8"]["conflict_ceiling"],
-    ) == (23, 0)
+    assert "gap_ceiling" not in report["details"]["A8"]
+    assert "conflict_ceiling" not in report["details"]["A8"]
     assert set(report["details"]) == set(
         verifier.AUDIT_CONTRACT["dossier"]["detail_keys"]
     )
@@ -1091,8 +1092,11 @@ def test_repository_template_passes_config_validation():
     )
     assert config["builder"]["margin_fraction"] == "1/10"
     assert config["sec"]["max_synced_age_days"] == 7
-    assert (config["sec"]["gap_ceiling"], config["sec"]["conflict_ceiling"]) == (23, 0)
+    assert config["sec"]["exclusion_fraction"] == {"numerator": 1, "denominator": 10}
+    assert config["sec"]["conflict_ceiling"] == 0
+    assert "gap_ceiling" not in config["sec"]
     assert config["audit_contract_version"] == verifier.AUDIT_CONTRACT_VERSION
+    assert config["audit_contract_version"] == "nav-identity-audit-contract-v3-round7"
     assert config["audit_config_version"] == "nav-identity-audit-config-v3"
     assert config["canary_salt"] == "nav-policy-v3-canary-2026-09-25"
     assert operator.AUDIT_CONFIG.name == "nav_identity_audit_v3.json"
@@ -1267,16 +1271,22 @@ def test_sec_exclusions_recomputed_independently_and_bounded_by_ceilings(
     assert policy["generation"]["counts"]["identity_first_failure"] == first
     exclusions = report["details"]["A8"]["exclusions"]
     assert sum(exclusions["by_code"].values()) == (1 if code else 0)
+    # N = subject + control = 2 funds at the SEC stage, B = 2 // 10 = 0.
+    assert (exclusions["c_size"], exclusions["bound"]) == (2, 0)
     if code is None:
         assert gates["A8"] == "PASS" and _outcome(report) == {"matched": 2}
-    elif code in verifier.SEC_GAPS:
-        # One excluded fund is within the reviewed gap ceiling (23).
-        assert exclusions["gap"] == 1 and gates["A8"] == "PASS"
+    elif code == "sec.stale":
+        assert (exclusions["stale"], exclusions["missing"]) == (1, 0)
+        assert _failed_checks(report, "A8") == ["sec_stale_within_bound"]
         assert _outcome(report) == {"matched": 1}
+    elif code == "sec.missing":
+        assert (exclusions["stale"], exclusions["missing"]) == (0, 1)
+        assert _failed_checks(report, "A8") == ["sec_missing_within_bound"]
     else:
-        # Any conflict exceeds the reviewed conflict ceiling (0).
-        assert exclusions["conflict"] == 1 and gates["A8"] == "FAIL"
-        assert _failed_checks(report, "A8") == ["sec_conflict_within_ceiling"]
+        # Any integrity exclusion (incomplete included) fails at ceiling 0.
+        assert code in verifier.SEC_INTEGRITY
+        assert exclusions["integrity"] == 1 and gates["A8"] == "FAIL"
+        assert _failed_checks(report, "A8") == ["sec_integrity_zero"]
     a4 = report["details"]["A4"]
     assert a4["sec_first_failure"] == ({code: 1} if code else {})
     if code:
@@ -1362,18 +1372,290 @@ def test_auditor_sec_mutation_disagrees_with_a_correct_generator(calendar, monke
     )
 
 
-def test_sec_gap_ceiling_is_exactly_23_funds(calendar):
-    def run(missing):
-        extra = [entity(n) for n in range(2, missing + 1)]
-        return _sec_audit(calendar, None, [], extra_entities=extra)[0]
+def _bound_audit(
+    calendar,
+    *,
+    active,
+    stale=0,
+    missing=0,
+    incomplete=0,
+    mmf=0,
+    non_sec_unknown=0,
+    inactive=0,
+):
+    """``active`` corroborated funds (the first ``mmf`` of them MMF) plus
+    ``stale``/``missing``/``incomplete`` SEC exclusions, non-SEC UNKNOWN and
+    INACTIVE funds that never reach the SEC stage. Returns (report, policy)."""
+    entities, sec, n = [], [], 1
+    for index in range(active):
+        entities.append(entity(n, fund_type="mmf" if index < mmf else "etf"))
+        sec.append(sec_row(n, synced=FRESH_AT_TAU))
+        n += 1
+    for _ in range(stale):
+        entities.append(entity(n))
+        sec.append(sec_row(n, synced=OLD_AT_TAU))
+        n += 1
+    for _ in range(missing):
+        entities.append(entity(n))
+        n += 1
+    for _ in range(incomplete):
+        entities.append(entity(n))
+        sec.append(sec_row(n, class_id=None, synced=FRESH_AT_TAU))
+        n += 1
+    for _ in range(non_sec_unknown):
+        entities.append(entity(n, active=None))  # activity.unknown, never SEC
+        sec.append(sec_row(n, synced=OLD_AT_TAU))  # would be stale if judged
+        n += 1
+    for _ in range(inactive):
+        entities.append(only(entity(n, active=False), fund=False, registry=False))
+        n += 1
+    # One fresh row no fund maps to: the newest source row is fresh even with
+    # no ACTIVE, so only A8 decides (a stale source would abort generation).
+    sec.append(sec_row(n + 5000, synced=FRESH_AT_TAU))
+    policy_raw, snapshot_raw, rows = _build(calendar, entities, extra={"sec": sec})
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        live=_live(rows, cohort=[]),
+        config_raw=_config(),
+    )
+    for gate in ("A1", "A2", "A4", "A5", "A6"):
+        if active or gate != "A2":  # A2 needs a non-empty ACTIVE set
+            assert report["gates"][gate]["status"] == "PASS", (
+                gate,
+                report["gates"][gate],
+            )
+    return report, json.loads(policy_raw)
 
-    at_ceiling = run(23)
-    assert at_ceiling["details"]["A8"]["exclusions"]["gap"] == 23
-    assert at_ceiling["gates"]["A8"]["status"] == "PASS"
-    over = run(24)
-    assert over["details"]["A8"]["exclusions"]["gap"] == 24
-    assert _failed_checks(over, "A8") == ["sec_gap_within_ceiling"]
-    assert over["gates"]["A4"]["status"] == "PASS"  # P - D = 24 SEC failures
+
+@pytest.mark.parametrize(
+    "counts,bound,failed",
+    [
+        # N in 1..9: B = 0, one stale or one missing fails; zero passes.
+        ({"active": 9}, 0, []),
+        ({"active": 8, "stale": 1}, 0, ["sec_stale_within_bound"]),
+        ({"active": 8, "missing": 1}, 0, ["sec_missing_within_bound"]),
+        ({"active": 1}, 0, []),
+        # N = 10: B = 1 (exact floor), 1 passes and 2 fails, per family.
+        ({"active": 9, "stale": 1}, 1, []),
+        ({"active": 8, "stale": 2}, 1, ["sec_stale_within_bound"]),
+        ({"active": 9, "missing": 1}, 1, []),
+        ({"active": 8, "missing": 2}, 1, ["sec_missing_within_bound"]),
+        # N = 19: B = 1; N = 20: B = 2.
+        ({"active": 18, "stale": 1}, 1, []),
+        ({"active": 17, "stale": 2}, 1, ["sec_stale_within_bound"]),
+        ({"active": 18, "stale": 2}, 2, []),
+        ({"active": 17, "stale": 3}, 2, ["sec_stale_within_bound"]),
+        # S = B and M = B at once pass (S + M = 2B: no combined ceiling).
+        ({"active": 16, "stale": 2, "missing": 2}, 2, []),
+        # S = B + 1 with M = 0, and M = B + 1 with S = 0, fail independently.
+        ({"active": 17, "stale": 3, "missing": 0}, 2, ["sec_stale_within_bound"]),
+        ({"active": 17, "stale": 0, "missing": 3}, 2, ["sec_missing_within_bound"]),
+        (
+            {"active": 14, "stale": 3, "missing": 3},
+            2,
+            ["sec_missing_within_bound", "sec_stale_within_bound"],
+        ),
+        # Integrity K = 1 fails even with stale and missing within B.
+        (
+            {"active": 16, "stale": 1, "missing": 1, "incomplete": 1},
+            1,
+            ["sec_integrity_zero"],
+        ),
+        # MMF ACTIVE counts in N: N = 10 (1 MMF) gives B = 1.
+        ({"active": 9, "mmf": 1, "stale": 1}, 1, []),
+        # Non-SEC UNKNOWN and INACTIVE never count: N = 9, B = 0.
+        (
+            {"active": 8, "stale": 1, "non_sec_unknown": 3, "inactive": 2},
+            0,
+            ["sec_stale_within_bound"],
+        ),
+        # N not a multiple of 10: N = 13 -> B = 1.
+        ({"active": 12, "missing": 1}, 1, []),
+        ({"active": 11, "missing": 2}, 1, ["sec_missing_within_bound"]),
+        # N = 0 (nobody reaches SEC) never passes active_nonempty.
+        (
+            {"active": 0, "non_sec_unknown": 2},
+            0,
+            ["active_nonempty", "all_active_matched"],
+        ),
+        # ACTIVE = 0 with C > 0 also fails (and the exclusion is over B = 0).
+        (
+            {"active": 0, "stale": 2},
+            0,
+            ["active_nonempty", "all_active_matched", "sec_stale_within_bound"],
+        ),
+        # N = 1000, B = 100: stale and missing are never summed nor offset.
+        (
+            {"active": 799, "stale": 100, "missing": 101},
+            100,
+            ["sec_missing_within_bound"],
+        ),
+        (
+            {"active": 799, "stale": 101, "missing": 100},
+            100,
+            ["sec_stale_within_bound"],
+        ),
+        ({"active": 800, "stale": 100, "missing": 100}, 100, []),
+    ],
+)
+def test_sec_exclusions_proportional_bound_boundaries(calendar, counts, bound, failed):
+    report, policy = _bound_audit(calendar, **counts)
+    exclusions = report["details"]["A8"]["exclusions"]
+    stale, missing = counts.get("stale", 0), counts.get("missing", 0)
+    integrity = counts.get("incomplete", 0)
+    c_size = counts["active"] + stale + missing + integrity
+    assert exclusions == {
+        "by_code": {
+            code: {
+                "sec.stale": stale,
+                "sec.missing": missing,
+                "sec.incomplete": integrity,
+            }.get(code, 0)
+            for code in verifier.SEC_CODES
+        },
+        "c_size": c_size,
+        "bound": bound,
+        "stale": stale,
+        "missing": missing,
+        "integrity": integrity,
+    }
+    assert bound == c_size // 10
+    assert _failed_checks(report, "A8") == failed
+    assert report["gates"]["A8"]["status"] == ("FAIL" if failed else "PASS")
+    # Conservation: N = A + S + M + K and N = structural - claim failures.
+    counts_doc = policy["generation"]["counts"]
+    assert report["counts"]["fund_status"].get("ACTIVE", 0) == counts["active"]
+    assert c_size == counts_doc["active"] + stale + missing + integrity
+    assert (
+        counts_doc["structural_pre_claims"] - counts_doc["structural_claim_failures"]
+        == c_size
+    )
+    assert counts_doc["structural_sec_failures"] == stale + missing + integrity
+
+
+def test_round6_gap_ceiling_semantics_no_longer_pass(calendar):
+    """23 missing funds passed Round6 A8; with N = 24 (B = 2) they now FAIL."""
+    report, _ = _bound_audit(calendar, active=1, missing=23)
+    assert report["details"]["A8"]["exclusions"]["bound"] == 2
+    assert _failed_checks(report, "A8") == ["sec_missing_within_bound"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # missing -> stale and stale -> missing (totals preserved).
+        lambda e: e.update(
+            by_code={**e["by_code"], "sec.missing": 0, "sec.stale": 1},
+            missing=0,
+            stale=1,
+        ),
+        lambda e: e.update(bound=0),
+        lambda e: e.update(c_size=11),
+        lambda e: e.update(integrity=1),
+        lambda e: e.update(missing=True),
+        lambda e: e.update(by_code={**e["by_code"], "sec.unknown_code": 0}),
+        lambda e: e["by_code"].pop("sec.ambiguous"),
+    ],
+    ids=[
+        "missing_to_stale",
+        "bound_zero",
+        "c_size_plus_one",
+        "integrity_one",
+        "missing_bool",
+        "unknown_sec_code",
+        "missing_code_key",
+    ],
+)
+def test_operator_recounts_the_exclusions_from_the_policy(calendar, mutate):
+    """Pure operator recount (N, B, S, M, K, F) against the policy; the dossier's
+    arithmetic and booleans are never trusted."""
+    report, policy = _bound_audit(calendar, active=9, missing=1)
+    assert report["gates"]["A8"]["status"] == "PASS"
+    operator._validate_sec_exclusions(report, policy)
+    broken = copy.deepcopy(report)
+    mutate(broken["details"]["A8"]["exclusions"])
+    with pytest.raises(ValueError, match="audit_dossier_invalid"):
+        operator._validate_sec_exclusions(broken, policy)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # stale -> missing in the POLICY counts only (evidence untouched).
+        lambda c: c["identity_first_failure"].update(
+            {"sec.missing": 1, "sec.stale": 0}
+        ),
+        # Inflate A (the denominator) without evidence behind it.
+        lambda c: c.update(active=c["active"] + 5),
+        lambda c: c["fund_status"].update(ACTIVE=c["fund_status"]["ACTIVE"] + 5),
+        lambda c: c.update(structural_sec_failures=c["structural_sec_failures"] + 1),
+        lambda c: c.update(
+            structural_daily_sec_failures=c["structural_daily_sec_failures"] + 1
+        ),
+        lambda c: c["identity_first_failure"].update({"sec.unknown_code": 1}),
+        lambda c: c.update(active=True),
+    ],
+    ids=[
+        "policy_stale_to_missing",
+        "policy_active_inflated",
+        "policy_status_active_inflated",
+        "policy_sec_total_inconsistent",
+        "policy_daily_sec_inconsistent",
+        "policy_unknown_sec_code",
+        "policy_active_bool",
+    ],
+)
+def test_operator_rejects_incoherent_policy_counts(calendar, mutate):
+    report, policy = _bound_audit(calendar, active=9, stale=1)
+    operator._validate_sec_exclusions(report, policy)
+    broken = copy.deepcopy(policy)
+    counts = broken["generation"]["counts"]
+    counts["identity_first_failure"] = dict(counts["identity_first_failure"])
+    mutate(counts)
+    with pytest.raises(
+        ValueError, match="audit_policy_counts_invalid|audit_dossier_invalid"
+    ):
+        operator._validate_sec_exclusions(report, broken)
+
+
+def test_auditor_rejects_a_policy_reason_swap_against_the_source(calendar):
+    """policy + digests re-derived with stale -> missing: the independent
+    recomputation from the source refuses it (A2/A5), never trusting the policy."""
+    policy_raw, snapshot_raw, rows = _build(
+        calendar,
+        [entity(n) for n in range(1, 10)],
+        extra={
+            "sec": [sec_row(n, synced=FRESH_AT_TAU) for n in range(1, 9)]
+            + [sec_row(9, synced=OLD_AT_TAU)]
+        },
+    )
+    policy = json.loads(policy_raw)
+    assert policy["generation"]["counts"]["identity_first_failure"] == {"sec.stale": 1}
+    policy["generation"]["counts"]["identity_first_failure"] = {"sec.missing": 1}
+    report = verifier.audit(
+        _rehash_counts(policy),
+        snapshot_raw=snapshot_raw,
+        live=_live(rows, cohort=[]),
+        config_raw=_config(),
+    )
+    assert report["gates"]["A1"]["checks"]["generation_digest"] is True
+    assert "generation_counts_exact" in _failed_checks(report, "A2")
+    assert verifier.verdict_of(report, strict=False) is False
+
+
+def test_exclusion_projection_mismatch_is_a_static_block(calendar, monkeypatch):
+    """Two projections of one verdict disagreeing is a defect, never a FAIL."""
+    original = verifier._expected_counts
+
+    def shifted(*args, **kwargs):
+        counts = original(*args, **kwargs)
+        counts["structural_sec_failures"] += 1
+        return counts
+
+    monkeypatch.setattr(verifier, "_expected_counts", shifted)
+    with pytest.raises(verifier.AuditBlocked, match="a8_exclusion_projection_mismatch"):
+        _bound_audit(calendar, active=9, stale=1)
 
 
 def test_sec_ageing_between_generation_and_capture_fails_a8(calendar):
@@ -1623,13 +1905,65 @@ def test_sec_config_block_is_mandatory(calendar):
         ("timestamp_column", "fetched_at", "audit_config_sec_source_invalid"),
         ("source_contract", "other", "audit_config_sec_source_invalid"),
         ("query_contract_sha256", "0" * 64, "audit_config_sec_source_invalid"),
-        ("gap_ceiling", 24, "audit_config_sec_ceiling_invalid"),
-        ("gap_ceiling", 22, "audit_config_sec_ceiling_invalid"),
-        ("gap_ceiling", True, "audit_config_sec_ceiling_invalid"),
-        ("gap_ceiling", 23.0, "audit_config_sec_ceiling_invalid"),
-        ("gap_ceiling", "23", "audit_config_sec_ceiling_invalid"),
-        ("gap_ceiling", None, "audit_config_sec_ceiling_invalid"),
+        ("exclusion_fraction", None, "audit_config_sec_fraction_invalid"),
+        ("exclusion_fraction", "1/10", "audit_config_sec_fraction_invalid"),
+        ("exclusion_fraction", 0.1, "audit_config_sec_fraction_invalid"),
+        ("exclusion_fraction", [1, 10], "audit_config_sec_fraction_invalid"),
+        (
+            "exclusion_fraction",
+            {"numerator": 2, "denominator": 20},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": 1, "denominator": 9},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": 0, "denominator": 10},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": True, "denominator": 10},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": 1.0, "denominator": 10},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": "1", "denominator": "10"},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": 1},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": 1, "denominator": 10, "minimum": 1},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": 1, "denominator": 0},
+            "audit_config_sec_fraction_invalid",
+        ),
+        (
+            "exclusion_fraction",
+            {"numerator": 1, "denominator": 10.0},
+            "audit_config_sec_fraction_invalid",
+        ),
+        ("exclusion_fraction", True, "audit_config_sec_fraction_invalid"),
         ("conflict_ceiling", 1, "audit_config_sec_ceiling_invalid"),
+        ("conflict_ceiling", 0.0, "audit_config_sec_ceiling_invalid"),
+        ("conflict_ceiling", None, "audit_config_sec_ceiling_invalid"),
+        ("conflict_ceiling", "0", "audit_config_sec_ceiling_invalid"),
         ("conflict_ceiling", False, "audit_config_sec_ceiling_invalid"),
         ("conflict_ceiling", None, "audit_config_sec_ceiling_invalid"),
     ],
@@ -1651,6 +1985,71 @@ def test_sec_config_is_pinned_to_the_contract(calendar, field, value, code):
             snapshot_raw=snapshot_raw,
             config_raw=json.dumps(config).encode(),
         )
+
+
+@pytest.mark.parametrize("value", [23, 25, 0, None, "23", True])
+@pytest.mark.parametrize("with_fraction", [True, False])
+def test_round6_gap_ceiling_key_is_retired_and_blocks(calendar, value, with_fraction):
+    """A Round6 config never validates as Round7, even next to the fraction."""
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    config = json.loads(_config())
+    config["sec"]["gap_ceiling"] = value
+    if not with_fraction:
+        config["sec"].pop("exclusion_fraction")
+    with pytest.raises(
+        verifier.AuditBlocked, match="audit_config_sec_gap_ceiling_retired"
+    ):
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            config_raw=json.dumps(config).encode(),
+        )
+    with pytest.raises(ValueError, match="audit_config_sec_invalid"):
+        operator._validate_audit_config(json.dumps(config).encode())
+
+
+def test_round6_repository_config_bytes_are_rejected_by_both(calendar):
+    """The exact Round6 v3 config (contract round6 + gap 23) blocks everywhere."""
+    config = json.loads(_config())
+    config["audit_contract_version"] = "nav-identity-audit-contract-v3-round6"
+    config["sec"].pop("exclusion_fraction")
+    config["sec"]["gap_ceiling"] = 23
+    raw = json.dumps(config).encode()
+    with pytest.raises(verifier.AuditBlocked, match="audit_contract_version_invalid"):
+        verifier._load_config(raw)
+    with pytest.raises(ValueError, match="audit_config_invalid"):
+        operator._validate_audit_config(raw)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda s: s.update(exclusion_fraction={"numerator": 1, "denominator": 9}),
+        lambda s: s.update(exclusion_fraction={"numerator": True, "denominator": 10}),
+        lambda s: s.update(exclusion_fraction={"numerator": 1, "denominator": 10.0}),
+        lambda s: s.update(exclusion_fraction="1/10"),
+        lambda s: s.update(exclusion_fraction=0.1),
+        lambda s: s.update(exclusion_fraction=None),
+        lambda s: s.update(exclusion_fraction={"numerator": 2, "denominator": 20}),
+        lambda s: s.update(exclusion_fraction={"numerator": 1, "denominator": 0}),
+        lambda s: s.update(
+            exclusion_fraction={"numerator": 1, "denominator": 10, "extra": 0}
+        ),
+        lambda s: s.pop("exclusion_fraction"),
+        lambda s: s.update(conflict_ceiling=False),
+        lambda s: s.update(conflict_ceiling=None),
+        lambda s: s.update(conflict_ceiling=1),
+        lambda s: s.update(gap_ceiling=25),
+        lambda s: s.update(max_synced_age_days=8),
+        lambda s: s.update(relation="public.sec_fund_classes"),
+    ],
+)
+def test_operator_validates_the_audit_config_independently(mutate):
+    config = json.loads(_config())
+    operator._validate_audit_config(json.dumps(config).encode())
+    mutate(config["sec"])
+    with pytest.raises(ValueError, match="audit_config_sec_invalid"):
+        operator._validate_audit_config(json.dumps(config).encode())
 
 
 def test_prohibited_sec_sources_are_absent_from_runtime_code():
@@ -1686,7 +2085,7 @@ def test_capture_bundle_is_canonical_order_independent_and_reloadable(calendar):
     assert bundle["cohort"]["row_count"] == 18 and bundle["sec"]["row_count"] == 15
     assert bundle["sec"]["relation"] == "public.sec_company_tickers_mf"
     assert bundle["sec"]["timestamp_column"] == "updated_at"
-    assert bundle["kind"] == "nav-identity-audit-capture-v3-round6"
+    assert bundle["kind"] == "nav-identity-audit-capture-v3-round7"
     assert bundle["sec"]["rows"] == json.loads(snapshot_raw)["sources"]["sec"]
     assert (
         bundle["source_snapshot_sha256"]
@@ -2195,7 +2594,7 @@ def test_cli_strict_failure_persists_dossier_and_refuses_canary(
     config = json.loads(_config())
     extra = None
     if failure == "sec_contradiction":
-        # Excluded at generation (UNKNOWN sec.contradiction): conflict ceiling 0.
+        # Excluded at generation (UNKNOWN sec.contradiction): integrity ceiling 0.
         rich = catalog(*_rich_entities())[3]
         extra = {
             "sec": [
@@ -2244,7 +2643,7 @@ def test_cli_strict_failure_persists_dossier_and_refuses_canary(
             str(uuid.UUID(int=1)): "sec.contradiction"
         }
         assert dossier["differences"]["sec"]["per_active_outcome"] == {}
-        assert dossier["details"]["A8"]["exclusions"]["conflict"] == 1
+        assert dossier["details"]["A8"]["exclusions"]["integrity"] == 1
     if failure == "stale_sec":
         assert set(dossier["differences"]["sec"]["per_active_outcome"].values()) == {
             "sec.stale"
@@ -2547,14 +2946,34 @@ def _shift(value: str, **delta) -> str:
         # Round6 (identity v3): the blocked v2/Round5 audit is never accepted.
         ("round5_contract_version", "audit_contract_mismatch"),
         ("round5_contract_sha256", "audit_contract_mismatch"),
+        # Round7: the Round6 contract (gap ceiling 23) is never accepted.
+        ("round6_contract_version", "audit_contract_mismatch"),
+        ("round6_contract_sha256", "audit_contract_mismatch"),
         # SEC exclusions must equal the policy's SEC first failures and the
-        # fixed ceilings of the contract.
+        # operator's own recount of N, B, S, M and K.
         ("a8_exclusion_not_in_policy", "audit_dossier_invalid"),
-        ("a8_gap_total_inconsistent", "audit_dossier_invalid"),
-        ("a8_gap_ceiling_raised", "audit_dossier_invalid"),
-        ("a8_conflict_ceiling_raised", "audit_dossier_invalid"),
+        ("a8_bound_raised", "audit_dossier_invalid"),
+        ("a8_c_size_inflated", "audit_dossier_invalid"),
+        ("a8_stale_total_inconsistent", "audit_dossier_invalid"),
+        ("a8_integrity_bool", "audit_dossier_invalid"),
+        ("a8_missing_text", "audit_dossier_invalid"),
+        ("a8_by_code_extra_key", "audit_dossier_invalid"),
+        ("a8_round6_exclusion_shape", "audit_dossier_invalid"),
+        ("a8_round6_ceiling_details", "audit_dossier_invalid"),
         ("a8_exclusions_missing", "audit_dossier_invalid"),
         ("a8_v2_detail_shape", "audit_dossier_invalid"),
+        ("dossier_counts_status_mismatch", "audit_dossier_invalid"),
+        ("dossier_counts_first_mismatch", "audit_dossier_invalid"),
+        ("a4_structural_daily_count_mismatch", "audit_dossier_invalid"),
+        ("a4_sec_first_failure_bool", "audit_dossier_invalid"),
+        # A config whose hash was realigned with a tampered payload blocks.
+        ("config_hash_realigned_fraction", "audit_config_sec_invalid"),
+        ("config_hash_realigned_gap_ceiling", "audit_config_sec_invalid"),
+        ("config_hash_realigned_round6", "audit_config_invalid"),
+        ("config_hash_realigned_denominator_zero", "audit_config_sec_invalid"),
+        ("config_hash_realigned_conflict_null", "audit_config_sec_invalid"),
+        # A Round6 manifest (hash-linked to the Round7 dossier) is refused.
+        ("manifest_round6_contract", "canary_manifest_invalid"),
     ],
 )
 def test_operator_receipt_nested_shapes_and_time_window_offline(
@@ -2565,6 +2984,9 @@ def test_operator_receipt_nested_shapes_and_time_window_offline(
 
     def freshness(mutate):
         return lambda d: mutate(d["details"]["A8"]["freshness"])
+
+    def exclusions(mutate):
+        return lambda d: mutate(d["details"]["A8"]["exclusions"])
 
     mutations = {
         "capture_cohort_list": {
@@ -2669,32 +3091,100 @@ def test_operator_receipt_nested_shapes_and_time_window_offline(
                 )
             )
         },
-        "a8_exclusion_not_in_policy": {
-            "dossier": lambda d: d["details"]["A8"]["exclusions"].update(
-                by_code={
-                    **d["details"]["A8"]["exclusions"]["by_code"],
-                    "sec.missing": 1,
-                },
-                gap=1,
+        "round6_contract_version": {
+            "dossier": lambda d: d["inputs"].update(
+                audit_contract_version="nav-identity-audit-contract-v3-round6"
             )
         },
-        "a8_gap_total_inconsistent": {
-            "dossier": lambda d: d["details"]["A8"]["exclusions"].update(gap=1)
+        "round6_contract_sha256": {
+            "dossier": lambda d: d["inputs"].update(
+                audit_contract_sha256=(
+                    "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff"
+                )
+            )
         },
-        "a8_gap_ceiling_raised": {
-            "dossier": lambda d: d["details"]["A8"].update(gap_ceiling=24)
+        "a8_exclusion_not_in_policy": {
+            "dossier": exclusions(
+                lambda e: e.update(
+                    by_code={**e["by_code"], "sec.missing": 1},
+                    missing=1,
+                    c_size=e["c_size"] + 1,
+                )
+            )
         },
-        "a8_conflict_ceiling_raised": {
-            "dossier": lambda d: d["details"]["A8"].update(conflict_ceiling=1)
+        "a8_bound_raised": {"dossier": exclusions(lambda e: e.update(bound=1))},
+        "a8_c_size_inflated": {
+            "dossier": exclusions(lambda e: e.update(c_size=10, bound=1))
+        },
+        "a8_stale_total_inconsistent": {
+            "dossier": exclusions(lambda e: e.update(stale=1))
+        },
+        "a8_integrity_bool": {
+            "dossier": exclusions(lambda e: e.update(integrity=False))
+        },
+        "a8_missing_text": {"dossier": exclusions(lambda e: e.update(missing="0"))},
+        "a8_by_code_extra_key": {
+            "dossier": exclusions(
+                lambda e: e.update(by_code={**e["by_code"], "sec.other": 0})
+            )
+        },
+        "a8_round6_exclusion_shape": {
+            "dossier": lambda d: d["details"]["A8"].update(
+                exclusions={
+                    "by_code": d["details"]["A8"]["exclusions"]["by_code"],
+                    "gap": 0,
+                    "conflict": 0,
+                }
+            )
+        },
+        "a8_round6_ceiling_details": {
+            "dossier": lambda d: d["details"]["A8"].update(
+                gap_ceiling=23, conflict_ceiling=0
+            )
         },
         "a8_exclusions_missing": {
             "dossier": lambda d: d["details"]["A8"].pop("exclusions")
+        },
+        "dossier_counts_status_mismatch": {
+            "dossier": lambda d: d["counts"]["fund_status"].update(
+                ACTIVE=d["counts"]["fund_status"]["ACTIVE"] + 1
+            )
+        },
+        "dossier_counts_first_mismatch": {
+            "dossier": lambda d: d["counts"]["identity_first_failure"].update(
+                {"sec.stale": 1}
+            )
+        },
+        "a4_structural_daily_count_mismatch": {
+            "dossier": lambda d: d["details"]["A4"].update(
+                structural_daily_count=d["details"]["A4"]["structural_daily_count"] + 1
+            )
+        },
+        "a4_sec_first_failure_bool": {
+            "dossier": lambda d: d["details"]["A4"].update(
+                sec_first_failure={"sec.stale": True}
+            )
         },
         "a8_v2_detail_shape": {
             "dossier": lambda d: d["details"]["A8"].update(
                 active_poisoned_count=0, excluded_poisoned_count=0
             )
         },
+    }
+    config_tampering = {
+        "config_hash_realigned_fraction": lambda c: c["sec"].update(
+            exclusion_fraction={"numerator": 1, "denominator": 5}
+        ),
+        "config_hash_realigned_gap_ceiling": lambda c: c["sec"].update(gap_ceiling=23),
+        "config_hash_realigned_round6": lambda c: c.update(
+            audit_contract_version="nav-identity-audit-contract-v3-round6"
+        ),
+        "config_hash_realigned_denominator_zero": lambda c: c["sec"].update(
+            exclusion_fraction={"numerator": 1, "denominator": 0}
+        ),
+        "config_hash_realigned_conflict_null": lambda c: c["sec"].update(
+            conflict_ceiling=None
+        ),
     }
     if case == "capture_before_generation":
         # Consistent capture/dossier/manifest rewrite: the capture (and so the
@@ -2706,6 +3196,38 @@ def test_operator_receipt_nested_shapes_and_time_window_offline(
             capture=lambda c: c.update(captured_at=earlier),
             dossier=freshness(lambda f: f.update(decision_at=earlier)),
             tag=case,
+        )
+    elif case in config_tampering:
+        # The pinned config file itself is tampered and every hash that binds
+        # it (dossier, manifest) is realigned: only the independent operator
+        # validation of the pinned bytes can refuse it.
+        config = json.loads((root / "config.json").read_bytes())
+        config_tampering[case](config)
+        tampered = _private(root, f"config-{case}.json", json.dumps(config).encode())
+        digest = hashlib.sha256(tampered.read_bytes()).hexdigest()
+        monkeypatch.setattr(operator, "AUDIT_CONFIG", tampered)
+        files = _relinked(
+            root,
+            files,
+            dossier=lambda d: d["inputs"].update(audit_config_sha256=digest),
+            tag=case,
+        )
+        manifest = json.loads(files["canary_manifest"].read_bytes())
+        manifest["audit_config_sha256"] = digest
+        files["canary_manifest"] = _private(
+            root, f"canary-{case}-cfg.json", generator.canonical_json(manifest)
+        )
+    elif case == "manifest_round6_contract":
+        manifest = json.loads(files["canary_manifest"].read_bytes())
+        manifest.update(
+            audit_contract_version="nav-identity-audit-contract-v3-round6",
+            audit_contract_sha256=(
+                "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff"
+            ),
+        )
+        files = dict(files)
+        files["canary_manifest"] = _private(
+            root, f"canary-{case}.json", generator.canonical_json(manifest)
         )
     elif case != "valid":
         files = _relinked(root, files, **mutations[case], tag=case)

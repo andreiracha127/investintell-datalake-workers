@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 from pathlib import Path
+
+import pytest
 
 from scripts import fund_nav_readiness_schema as operator
 from scripts import nav_identity_audit_contract as contract
@@ -69,8 +72,18 @@ def test_contract_constants_agree_across_auditor_operator_and_generator():
     assert policy.SEC_SERIES_PATTERN == contract.SEC_SERIES_PATTERN
     assert policy.SEC_MAX_SYNCED_AGE.days == contract.SEC_MAX_SYNCED_AGE_DAYS
     assert policy.SEC_FAILURE_CODES == contract.SEC_FAILURE_CODES
-    assert policy.SEC_GAP_CODES == contract.SEC_GAP_CODES
     assert policy.SEC_CONFLICT_CODES == contract.SEC_CONFLICT_CODES
+    # The generator's (unchanged) gap/conflict partition covers the Round7
+    # integrity/stale/missing partition exactly; the leaf no longer declares
+    # a gap family.
+    assert set(policy.SEC_GAP_CODES) == {
+        "sec.incomplete",
+        contract.SEC_STALE_CODE,
+        contract.SEC_MISSING_CODE,
+    }
+    assert set(contract.SEC_INTEGRITY_CODES) == set(policy.SEC_CONFLICT_CODES) | {
+        "sec.incomplete"
+    }
     assert policy.GENERATOR_VERSION == contract.GENERATOR_VERSION
     assert policy.CURRENT_CATALOG_QUERY_VERSION == contract.CATALOG_QUERY_VERSION
     assert policy.IDENTITY_CONTRACT_VERSION == contract.IDENTITY_CONTRACT_VERSION
@@ -101,11 +114,16 @@ def test_sec_source_is_only_company_tickers_mf():
         assert "fetched_at" not in text
 
 
-def test_round6_contract_is_frozen_and_round3_to_round5_are_retired():
-    """Identity v3: new audit version and literal; Round3-5 pins never match."""
-    assert contract.AUDIT_CONTRACT_VERSION == "nav-identity-audit-contract-v3-round6"
+ROUND6_CONTRACT_SHA256 = (
+    "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff"
+)
+
+
+def test_round7_contract_is_frozen_and_round3_to_round6_are_retired():
+    """Round7 A8 rule: new audit literal; Round3-6 pins never match."""
+    assert contract.AUDIT_CONTRACT_VERSION == "nav-identity-audit-contract-v3-round7"
     assert contract.AUDIT_CONTRACT_SHA256 == (
-        "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff"
+        "9941902de05c4006882bfb51b2816a357c91f2405e2a9f24c2369d3149ced244"
     )
     assert contract.CATALOG_SOURCE_QUERY_SHA256 == (
         "47cd5565cad722bd2ca7377f5206ea39d9460861394b7d09f87c113d5b39b2b5"
@@ -114,6 +132,7 @@ def test_round6_contract_is_frozen_and_round3_to_round5_are_retired():
         "1ef74c426526f5308223921c8297516c9fa4ac4034737fad59cad668f73b0001",  # round3
         "64c75b3db696132e435523e0f3d072309fc78c72069c2d8942bf7ef89bfd68db",  # round4
         "0d237212e1e95a6e1e0494e071170d174481c29662a27b7bf9e7ac0bca3ec2c7",  # round5
+        ROUND6_CONTRACT_SHA256,
     ):
         assert contract.AUDIT_CONTRACT_SHA256 != retired
     # The v2 three-source digest is retired with the v2 generator.
@@ -126,11 +145,6 @@ def test_round6_contract_is_frozen_and_round3_to_round5_are_retired():
     assert contract.SOURCE_SNAPSHOT_KIND == "nav-current-catalog-source-snapshot-v3"
     assert "fund-nav-policy-generator-v2" in contract.RETIRED_GENERATOR_VERSIONS
     assert "nav-current-catalog-snapshot-v2" in contract.RETIRED_CATALOG_QUERY_VERSIONS
-    assert (contract.SEC_GAP_CEILING, contract.SEC_CONFLICT_CEILING) == (23, 0)
-    assert set(contract.SEC_GAP_CODES) | set(contract.SEC_CONFLICT_CODES) == set(
-        contract.SEC_FAILURE_CODES
-    )
-    assert not set(contract.SEC_GAP_CODES) & set(contract.SEC_CONFLICT_CODES)
     rule = contract.AUDIT_CONTRACT["publication_receipt"]["rule"]
     for phrase in (
         # Round4 replay semantics, preserved.
@@ -152,8 +166,8 @@ def test_round6_contract_is_frozen_and_round3_to_round5_are_retired():
         assert phrase in rule
     # plan-v4 shape unchanged: no new plan field, same version literal and kinds.
     assert contract.PLAN_VERSION == operator.PLAN_VERSION == "nav-schema-plan-v4"
-    assert contract.CAPTURE_KIND == "nav-identity-audit-capture-v3-round6"
-    # Manifest shape unchanged: the v3-round6 contract/hash it carries binds it.
+    assert contract.CAPTURE_KIND == "nav-identity-audit-capture-v3-round7"
+    # Manifest shape unchanged: the v3-round7 contract/hash it carries binds it.
     assert contract.CANARY_KIND == "nav-policy-v2-canary-manifest-round2"
     assert "evidence_partition_digest" not in contract.AUDIT_RECEIPT_KEYS
     assert "pointer_published_at" not in contract.AUDIT_RECEIPT_KEYS
@@ -161,8 +175,141 @@ def test_round6_contract_is_frozen_and_round3_to_round5_are_retired():
         assert operator._SAFE_CODES.fullmatch(code)
 
 
-def test_round6_leaves_ddl_and_catalog_unchanged():
-    """Round5/Round6 are runtime-only; the Round4 schema artifacts are pinned."""
+def test_round7_sec_exclusion_rule_is_declared_exactly():
+    """rho = 1/10: integrity 0, stale and missing bounded separately by B."""
+    assert contract.SEC_INTEGRITY_CODES == (
+        "sec.declared_class_invalid",
+        "sec.poisoned_mapping",
+        "sec.contradiction",
+        "sec.ambiguous",
+        "sec.incomplete",
+    )
+    assert (contract.SEC_STALE_CODE, contract.SEC_MISSING_CODE) == (
+        "sec.stale",
+        "sec.missing",
+    )
+    # A partition of the SEC failure codes: integrity | {stale} | {missing}.
+    partition = [*contract.SEC_INTEGRITY_CODES, "sec.stale", "sec.missing"]
+    assert sorted(partition) == sorted(contract.SEC_FAILURE_CODES)
+    assert len(partition) == len(set(partition))
+    assert contract.SEC_INTEGRITY_CEILING == 0
+    assert contract.SEC_CONFLICT_CEILING == 0
+    assert (
+        contract.SEC_EXCLUSION_FRACTION_NUMERATOR,
+        contract.SEC_EXCLUSION_FRACTION_DENOMINATOR,
+    ) == (1, 10)
+    for value in (
+        contract.SEC_EXCLUSION_FRACTION_NUMERATOR,
+        contract.SEC_EXCLUSION_FRACTION_DENOMINATOR,
+        contract.SEC_INTEGRITY_CEILING,
+        contract.SEC_CONFLICT_CEILING,
+    ):
+        assert type(value) is int
+    assert contract.SEC_RETIRED_CONFIG_KEYS == ("gap_ceiling",)
+    for retired in ("SEC_GAP_CEILING", "SEC_GAP_CODES", "SEC_GAP_CEILING_KEY"):
+        assert not hasattr(contract, retired)
+    a8 = contract.AUDIT_CONTRACT["a8"]
+    assert a8["exclusion_fraction"] == {"numerator": 1, "denominator": 10}
+    assert a8["integrity_ceiling"] == 0 and a8["conflict_ceiling"] == 0
+    assert "gap_ceiling" not in a8 and "gap_ceiling_key" not in a8
+    assert a8["exclusion_keys"] == [
+        "bound",
+        "by_code",
+        "c_size",
+        "integrity",
+        "missing",
+        "stale",
+    ]
+    assert "gap_ceiling" not in a8["detail_keys"]
+    assert "conflict_ceiling" not in a8["detail_keys"]
+    assert "gap_codes" not in contract.AUDIT_CONTRACT["sec_classification"]
+    assert contract.GATE_CHECKS["A8"] == (
+        "active_nonempty",
+        "all_active_matched",
+        "sec_integrity_zero",
+        "sec_missing_within_bound",
+        "sec_stale_within_bound",
+        "source_fresh_within_max_age",
+        "source_lineage_verified",
+        "synced_not_in_future",
+    )
+    rule = a8["exclusion_rule"]
+    for phrase in ("(N * numerator) // denominator", "no minimum", "separately"):
+        assert phrase in " ".join(rule.values())
+    assert "structural_pre_claims - structural_claim_failures" in rule["conservation"]
+
+
+def _digest(document) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: c["a8"].update(exclusion_fraction={"numerator": 1, "denominator": 9}),
+        lambda c: c["a8"].update(
+            exclusion_fraction={"numerator": 2, "denominator": 20}
+        ),
+        lambda c: c["a8"].update(
+            exclusion_fraction={"numerator": True, "denominator": 10}
+        ),
+        lambda c: c["a8"].update(
+            exclusion_fraction={"numerator": 1.0, "denominator": 10}
+        ),
+        lambda c: c["a8"].update(integrity_ceiling=1),
+        lambda c: c["a8"].update(integrity_ceiling=False),
+        lambda c: c["a8"].update(conflict_ceiling=1),
+        lambda c: c["a8"].update(gap_ceiling=23),
+        lambda c: c["a8"].update(retired_sec_config_keys=[]),
+        lambda c: c["a8"]["exclusion_keys"].remove("stale"),
+        lambda c: c["sec_classification"].update(
+            integrity_codes=c["sec_classification"]["conflict_codes"]
+        ),
+        lambda c: c["sec_classification"].update(stale_code="sec.missing"),
+        lambda c: c["sec_classification"].update(
+            gap_codes=["sec.incomplete", "sec.stale", "sec.missing"]
+        ),
+    ],
+    ids=[
+        "fraction_1_9",
+        "fraction_equivalent_2_20",
+        "fraction_bool",
+        "fraction_float",
+        "integrity_1",
+        "integrity_bool",
+        "conflict_1",
+        "gap_ceiling_back",
+        "retired_keys_dropped",
+        "exclusion_keys_shrunk",
+        "integrity_without_incomplete",
+        "stale_code_swapped",
+        "gap_codes_back",
+    ],
+)
+def test_realigned_digest_does_not_hide_a_semantic_change(monkeypatch, mutate):
+    """A literal edited AND re-hashed still fails the semantic confrontation."""
+    mutated = copy.deepcopy(contract.AUDIT_CONTRACT)
+    mutate(mutated)
+    monkeypatch.setattr(verifier, "AUDIT_CONTRACT", mutated)
+    monkeypatch.setattr(verifier, "AUDIT_CONTRACT_SHA256", _digest(mutated))
+    assert verifier._contract_consistent() is False
+
+
+def test_auditor_gate_checks_must_be_the_round7_checks(monkeypatch):
+    checks = dict(contract.GATE_CHECKS)
+    checks["A8"] = tuple(
+        name for name in checks["A8"] if name != "sec_missing_within_bound"
+    ) + ("sec_gap_within_ceiling",)
+    monkeypatch.setattr(verifier, "GATE_CHECKS", checks)
+    assert verifier._contract_consistent() is False
+
+
+def test_round7_leaves_ddl_and_catalog_unchanged():
+    """Round5-7 are runtime-only; the Round4 schema artifacts are pinned."""
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     catalog = (ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json").read_bytes()
     assert hashlib.sha256(ddl).hexdigest() == (
@@ -177,9 +324,15 @@ def test_repository_config_is_pinned_to_the_leaf():
     config = json.loads((ROOT / "configs" / "nav_identity_audit_v3.json").read_bytes())
     assert config["audit_contract_version"] == contract.AUDIT_CONTRACT_VERSION
     assert config["audit_config_version"] == contract.AUDIT_CONFIG_VERSION
-    assert config["sec"]["gap_ceiling"] == contract.SEC_GAP_CEILING
+    assert "gap_ceiling" not in config["sec"]
+    assert config["sec"]["exclusion_fraction"] == {
+        "numerator": contract.SEC_EXCLUSION_FRACTION_NUMERATOR,
+        "denominator": contract.SEC_EXCLUSION_FRACTION_DENOMINATOR,
+    }
     assert config["sec"]["conflict_ceiling"] == contract.SEC_CONFLICT_CEILING
     assert operator.AUDIT_CONFIG == ROOT / "configs" / "nav_identity_audit_v3.json"
+    # Independent operator validation of the same repository bytes.
+    operator._validate_audit_config(operator.AUDIT_CONFIG.read_bytes())
     # The v2 config is kept byte-for-byte as the historical blocked-audit record.
     historical = json.loads(
         (ROOT / "configs" / "nav_identity_audit_v2.json").read_bytes()
