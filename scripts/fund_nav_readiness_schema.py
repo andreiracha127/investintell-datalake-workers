@@ -8,8 +8,10 @@ profile (role missing/unsafe) or external dependency; 4 lock busy with
 Policy publication (``--policy-file``) is governed: the policy must be a
 generator-v3 catalog artifact (v1/v2 are rejected even when consistently
 rehashed) and must come with a strict all-PASS audit dossier of contract
-``nav-identity-audit-contract-v3-round6`` (SEC exclusions equal to the policy's
-SEC first failures and within the fixed gap/conflict ceilings) and the canary
+``nav-identity-audit-contract-v3-round7`` (SEC exclusions equal to the policy's
+SEC first failures, recomputed here from the policy: zero integrity failures,
+``sec.stale <= B`` and ``sec.missing <= B`` separately, ``B = floor(N / 10)``
+over ``N`` = ACTIVE + SEC first failures) and the canary
 manifest of that same audit, all read once from a
 private POSIX custody root (``--custody-root``, 0700; files 0600, regular, no
 symlink/escape) and pinned by SHA-256 on the command line. The receipt is
@@ -72,6 +74,7 @@ from scripts.nav_identity_audit_contract import (
     A8_EXCLUSION_KEYS,
     A8_FRESHNESS_KEYS,
     A8_OUTCOMES,
+    AUDIT_CONFIG_VERSION,
     AUDIT_CONTRACT_SHA256,
     AUDIT_CONTRACT_VERSION,
     AUDIT_RECEIPT_KEYS,
@@ -91,14 +94,21 @@ from scripts.nav_identity_audit_contract import (
     GATE_NAMES,
     PUBLICATION_RECEIPT_RELATION,
     SEC_CONFLICT_CEILING,
-    SEC_CONFLICT_CODES,
+    SEC_CONFLICT_CEILING_KEY,
+    SEC_EXCLUSION_FRACTION_DENOMINATOR,
+    SEC_EXCLUSION_FRACTION_KEY,
+    SEC_EXCLUSION_FRACTION_KEYS,
+    SEC_EXCLUSION_FRACTION_NUMERATOR,
     SEC_FAILURE_CODES,
-    SEC_GAP_CEILING,
-    SEC_GAP_CODES,
+    SEC_INTEGRITY_CEILING,
+    SEC_INTEGRITY_CODES,
     SEC_MAX_SYNCED_AGE_DAYS,
+    SEC_MISSING_CODE,
     SEC_QUERY_CONTRACT_SHA256,
     SEC_RELATION,
+    SEC_RETIRED_CONFIG_KEYS,
     SEC_SOURCE_CONTRACT,
+    SEC_STALE_CODE,
     SEC_TIMESTAMP_COLUMN,
 )
 from scripts.nav_identity_audit_contract import PLAN_VERSION as _LEAF_PLAN_VERSION
@@ -2314,6 +2324,209 @@ def _uuid_list(value) -> list[str]:
     return value
 
 
+def _strict_count(value) -> bool:
+    """A non-negative ``int`` (``bool`` is not a count)."""
+    return type(value) is int and value >= 0
+
+
+def _count_map(value, allowed=None) -> bool:
+    return (
+        isinstance(value, dict)
+        and all(
+            isinstance(key, str) and _strict_count(count)
+            for key, count in value.items()
+        )
+        and (allowed is None or set(value) <= set(allowed))
+    )
+
+
+def _validate_audit_config(raw: bytes) -> dict:
+    """Round7 SEC block of the pinned audit config, validated independently.
+
+    The auditor validates the same bytes on its own; the operator repeats the
+    contract checks from the leaf data (never importing the auditor), so a
+    config whose hash was made coherent with a tampered payload still blocks.
+    """
+    config = _strict_object(raw, "audit_config_invalid")
+    if (
+        config.get("audit_config_version") != AUDIT_CONFIG_VERSION
+        or config.get("audit_contract_version") != AUDIT_CONTRACT_VERSION
+    ):
+        raise ValueError("audit_config_invalid")
+    sec = config.get("sec")
+    fraction = sec.get(SEC_EXCLUSION_FRACTION_KEY) if isinstance(sec, dict) else None
+    conflict = sec.get(SEC_CONFLICT_CEILING_KEY) if isinstance(sec, dict) else None
+    if (
+        not isinstance(sec, dict)
+        or any(key in sec for key in SEC_RETIRED_CONFIG_KEYS)
+        or not isinstance(fraction, dict)
+        or set(fraction) != set(SEC_EXCLUSION_FRACTION_KEYS)
+        or type(fraction["numerator"]) is not int
+        or type(fraction["denominator"]) is not int
+        or fraction["numerator"] != SEC_EXCLUSION_FRACTION_NUMERATOR
+        or fraction["denominator"] != SEC_EXCLUSION_FRACTION_DENOMINATOR
+        or type(conflict) is not int
+        or conflict != SEC_CONFLICT_CEILING
+        or sec.get("source_contract") != SEC_SOURCE_CONTRACT
+        or sec.get("relation") != SEC_RELATION
+        or sec.get("timestamp_column") != SEC_TIMESTAMP_COLUMN
+        or sec.get("query_contract_sha256") != SEC_QUERY_CONTRACT_SHA256
+        or type(sec.get("max_synced_age_days")) is not int
+        or sec["max_synced_age_days"] != SEC_MAX_SYNCED_AGE_DAYS
+    ):
+        raise ValueError("audit_config_sec_invalid")
+    return config
+
+
+_POLICY_COUNT_KEYS = (
+    "active",
+    "active_daily",
+    "instrument_evidence",
+    "structural_pre_claims",
+    "structural_pre_claims_daily",
+    "structural_claim_failures",
+    "structural_sec_failures",
+    "structural_daily_claim_failures",
+    "structural_daily_sec_failures",
+)
+
+
+def _validate_sec_exclusions(dossier: dict, policy: dict) -> None:
+    """Round7 A8 exclusions recomputed from the POLICY, compared by code.
+
+    ``A`` must agree three ways (``counts.active``, ``counts.fund_status``
+    ACTIVE and the ACTIVE evidence rows); ``F`` comes from the policy's first
+    failures (zero for an absent SEC code, an unknown ``sec.*`` code blocks);
+    ``N = A + sum(F)``, ``B = (N * 1) // 10``. Every conservation identity of
+    the policy is re-checked (total and daily), then the dossier's
+    exclusions, its counts and the existing A4 fields must match. Shapes and
+    types are checked before any arithmetic (static codes, no traceback).
+    """
+    counts = policy["generation"]["counts"]
+    evidence = policy["instrument_evidence"]
+    declared_status = counts.get("fund_status") if isinstance(counts, dict) else None
+    declared_first = (
+        counts.get("identity_first_failure") if isinstance(counts, dict) else None
+    )
+    if (
+        not isinstance(counts, dict)
+        or not all(_strict_count(counts.get(key)) for key in _POLICY_COUNT_KEYS)
+        or not _count_map(declared_status, ("ACTIVE", "INACTIVE", "UNKNOWN"))
+        or not _count_map(declared_first)
+        or any(
+            code.startswith("sec.") and code not in SEC_FAILURE_CODES
+            for code in declared_first
+        )
+    ):
+        raise ValueError("audit_policy_counts_invalid")
+    evidence_status: dict[str, int] = {}
+    for row in evidence:
+        evidence_status[row["fund_status"]] = (
+            evidence_status.get(row["fund_status"], 0) + 1
+        )
+    evidence_daily = sum(
+        1
+        for row in evidence
+        if row["fund_status"] == "ACTIVE" and row["valuation_frequency"] == "daily"
+    )
+    active = evidence_status.get("ACTIVE", 0)
+    first = {code: declared_first.get(code, 0) for code in SEC_FAILURE_CODES}
+    sec_total = sum(first.values())
+    c_size = active + sec_total
+    bound = (
+        c_size * SEC_EXCLUSION_FRACTION_NUMERATOR
+    ) // SEC_EXCLUSION_FRACTION_DENOMINATOR
+    stale, missing = first[SEC_STALE_CODE], first[SEC_MISSING_CODE]
+    integrity = sum(first[code] for code in SEC_INTEGRITY_CODES)
+    if (
+        declared_status != evidence_status
+        or counts["active"] != declared_status.get("ACTIVE", 0)
+        or counts["active"] != active
+        or sum(declared_status.values()) != len(evidence)
+        or counts["instrument_evidence"] != len(evidence)
+        or sum(declared_first.values()) != declared_status.get("UNKNOWN", 0)
+        or counts["active_daily"] != evidence_daily
+        or sec_total != counts["structural_sec_failures"]
+        or counts["structural_pre_claims"] - active
+        != counts["structural_claim_failures"] + counts["structural_sec_failures"]
+        or c_size
+        != counts["structural_pre_claims"] - counts["structural_claim_failures"]
+        or counts["structural_pre_claims_daily"] - counts["active_daily"]
+        != counts["structural_daily_claim_failures"]
+        + counts["structural_daily_sec_failures"]
+        or counts["structural_pre_claims_daily"] > counts["structural_pre_claims"]
+        or counts["structural_daily_sec_failures"] > counts["structural_sec_failures"]
+        or stale + missing + integrity != sec_total
+    ):
+        raise ValueError("audit_policy_counts_invalid")
+    details = dossier["details"]
+    a4, exclusions, recorded = (
+        details["A4"],
+        details["A8"].get("exclusions"),
+        dossier.get("counts"),
+    )
+    by_code = exclusions.get("by_code") if isinstance(exclusions, dict) else None
+    if (
+        not isinstance(exclusions, dict)
+        or set(exclusions) != set(A8_EXCLUSION_KEYS)
+        or not isinstance(by_code, dict)
+        or set(by_code) != set(SEC_FAILURE_CODES)
+        or not all(_strict_count(value) for value in by_code.values())
+        or not all(
+            _strict_count(exclusions[key])
+            for key in A8_EXCLUSION_KEYS
+            if key != "by_code"
+        )
+        or not isinstance(recorded, dict)
+        or not _count_map(recorded.get("identity_first_failure"))
+        or not _count_map(recorded.get("fund_status"))
+        or not _strict_count(recorded.get("evidence"))
+        or not _strict_count(recorded.get("active_daily"))
+        or not all(
+            _strict_count(a4.get(key))
+            for key in (
+                "baseline_count",
+                "structural_daily_count",
+                "active_daily_count",
+            )
+        )
+        or not _count_map(a4.get("sec_first_failure"), SEC_FAILURE_CODES)
+        or not _count_map(a4.get("claim_first_failure"))
+        or not _count_map(a4.get("pre_claim_first_failure"))
+    ):
+        raise ValueError("audit_dossier_invalid")
+    if (
+        by_code != first
+        or exclusions["c_size"] != c_size
+        or exclusions["bound"] != bound
+        or exclusions["stale"] != stale
+        or exclusions["missing"] != missing
+        or exclusions["integrity"] != integrity
+        or sum(by_code.values()) != stale + missing + integrity
+        or stale + missing + integrity != c_size - active
+        or integrity != SEC_INTEGRITY_CEILING
+        or stale > bound
+        or missing > bound
+        or recorded["identity_first_failure"] != declared_first
+        or recorded["fund_status"] != declared_status
+        or recorded["evidence"] != len(evidence)
+        or recorded["active_daily"] != counts["active_daily"]
+        or a4["structural_daily_count"] != counts["structural_pre_claims_daily"]
+        or a4["active_daily_count"] != counts["active_daily"]
+        or not a4["baseline_count"]
+        >= a4["structural_daily_count"]
+        >= a4["active_daily_count"]
+        or sum(a4["pre_claim_first_failure"].values())
+        != a4["baseline_count"] - a4["structural_daily_count"]
+        or sum(a4["sec_first_failure"].values())
+        != counts["structural_daily_sec_failures"]
+        or sum(a4["claim_first_failure"].values())
+        != counts["structural_daily_claim_failures"]
+        or any(count > first[code] for code, count in a4["sec_first_failure"].items())
+    ):
+        raise ValueError("audit_dossier_invalid")
+
+
 def _validate_dossier(dossier: dict, policy: dict, policy_sha: str) -> None:
     """Strict all-PASS dossier of exactly this policy, contract and code."""
     generation = policy["generation"]
@@ -2366,8 +2579,11 @@ def _validate_dossier(dossier: dict, policy: dict, policy_sha: str) -> None:
         raise ValueError("audit_policy_mismatch")
     if inputs["verifier_source_sha256"] != _sha256(AUDIT_VERIFIER.read_bytes()):
         raise ValueError("audit_verifier_mismatch")
-    if inputs["audit_config_sha256"] != _sha256(AUDIT_CONFIG.read_bytes()):
+    # One read: the pinned bytes are hashed AND validated independently.
+    config_raw = AUDIT_CONFIG.read_bytes()
+    if inputs["audit_config_sha256"] != _sha256(config_raw):
         raise ValueError("audit_config_mismatch")
+    _validate_audit_config(config_raw)
     identity = inputs["previous_policy_identity"]
     if (
         not isinstance(identity, list)
@@ -2403,12 +2619,6 @@ def _validate_dossier(dossier: dict, policy: dict, policy_sha: str) -> None:
         or not _hex64(a7.get("cohort_rows_sha256"))
     ):
         raise ValueError("audit_dossier_invalid")
-    # SEC exclusions the POLICY declares (generation first failures) must be
-    # exactly the dossier's (recomputed by the auditor at generated_at) and
-    # within the reviewed fixed ceilings of this contract.
-    declared_first = generation["counts"]["identity_first_failure"]
-    declared_sec = {code: declared_first.get(code, 0) for code in SEC_FAILURE_CODES}
-    exclusions = a8.get("exclusions") if isinstance(a8, dict) else None
     if (
         not isinstance(a4, dict)
         or set(a4) != set(A4_DETAIL_KEYS)
@@ -2419,16 +2629,6 @@ def _validate_dossier(dossier: dict, policy: dict, policy_sha: str) -> None:
         or a8["relation"] != SEC_RELATION
         or a8["timestamp_column"] != SEC_TIMESTAMP_COLUMN
         or a8["sec_query_contract_sha256"] != SEC_QUERY_CONTRACT_SHA256
-        or a8["gap_ceiling"] != SEC_GAP_CEILING
-        or a8["conflict_ceiling"] != SEC_CONFLICT_CEILING
-        or not isinstance(exclusions, dict)
-        or set(exclusions) != set(A8_EXCLUSION_KEYS)
-        or exclusions["by_code"] != declared_sec
-        or exclusions["gap"] != sum(declared_sec[code] for code in SEC_GAP_CODES)
-        or exclusions["conflict"]
-        != sum(declared_sec[code] for code in SEC_CONFLICT_CODES)
-        or exclusions["gap"] > SEC_GAP_CEILING
-        or exclusions["conflict"] > SEC_CONFLICT_CEILING
         or not isinstance(a8["freshness"], dict)
         or set(a8["freshness"]) != set(A8_FRESHNESS_KEYS)
         or a8["freshness"]["max_synced_age_days"] != SEC_MAX_SYNCED_AGE_DAYS
@@ -2442,6 +2642,10 @@ def _validate_dossier(dossier: dict, policy: dict, policy_sha: str) -> None:
         or not _hex64(details["canary_selection_sha256"])
     ):
         raise ValueError("audit_dossier_invalid")
+    # Round7: the SEC exclusions the POLICY declares are recounted here, the
+    # bound derived locally, and the dossier's exclusions/counts compared by
+    # code (never trusting the auditor's booleans or its arithmetic).
+    _validate_sec_exclusions(dossier, policy)
     # F1 time window, retained and re-derived from the dossier itself: the
     # capture instant IS the A8 decision instant, the SEC deadline is exactly
     # the oldest matched updated_at + max age, every matched/lineage instant

@@ -947,6 +947,35 @@ def replay(
     expected_raw: bytes,
 ) -> tuple[bool, dict]:
     """Pure replay: ``(passed, public_summary)``; per-ID data stays in memory."""
+    passed, summary, _state = replay_state(
+        policy_raw,
+        snapshot_raw,
+        capture_raw,
+        audit_raw,
+        v2_config_raw,
+        config_raw,
+        expected_raw,
+    )
+    return passed, summary
+
+
+def replay_state(
+    policy_raw: bytes,
+    snapshot_raw: bytes,
+    capture_raw: bytes,
+    audit_raw: bytes,
+    v2_config_raw: bytes,
+    config_raw: bytes,
+    expected_raw: bytes,
+) -> tuple[bool, dict, dict]:
+    """Test-only seam: the replay plus its IN-MEMORY per-identifier state.
+
+    Same inputs, checks and public summary as ``replay``. The third value
+    (never serialized, printed or persisted) exposes the reconstruction at the
+    original tau for the Round7 first-release reconciliation sibling: the
+    excluded map E (identifier -> v3 reason), the auditor verdict/catalog/SEC
+    judge, the generator evidence and the expected-counts document.
+    """
     bundle = verify_v2_bundle(
         policy_raw, snapshot_raw, capture_raw, audit_raw, v2_config_raw
     )
@@ -1138,7 +1167,18 @@ def replay(
             "light_revision": builder["light_revision"],
         },
     }
-    return passed, summary
+    state = {
+        "tau": tau,
+        "excluded": excluded,
+        "verdict": verdict,
+        "catalog": catalog,
+        "judge": judge,
+        "evidence": evidence,
+        "counts": counts,
+        "expected": expected_counts,
+        "a7_status": a7_gate["status"],
+    }
+    return passed, summary, state
 
 
 def _code_hashes() -> dict:

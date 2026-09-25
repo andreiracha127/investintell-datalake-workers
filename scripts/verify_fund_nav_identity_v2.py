@@ -2,7 +2,7 @@
 
 The CLI keeps its v2 filename to avoid duplicating the implementation; it
 implements the current audit ``nav-identity-audit-v3`` (contract
-``nav-identity-audit-contract-v3-round6``). Generator v1/v2 artifacts are
+``nav-identity-audit-contract-v3-round7``). Generator v1/v2 artifacts are
 rejected; a v2 artifact is never accepted as the previous policy either.
 
 Deliberately NOT a reuse of the generator: this module re-implements, from the
@@ -20,14 +20,16 @@ REPEATABLE READ capture (``--dsn-env``: the four sources and the builder cohort
 in ONE snapshot) or a previously persisted capture bundle (``--capture-file``,
 fully offline), an optional hash-pinned v1 artifact (read as data, never
 re-verified) and an audit config pinning the audit contract version, the
-ceilings (structural daily 5103, SEC gap 23 / conflict 0), the SEC freshness
-criterion, the Light revision/cohort query/strategy→sleeve map/Stage-1 quotas
-and the canary salt.
+structural daily ceiling (5103), the SEC exclusion fraction (exactly 1/10) and
+conflict ceiling (exactly 0), the SEC freshness criterion, the Light
+revision/cohort query/strategy→sleeve map/Stage-1 quotas and the canary salt.
 
 The SEC rule is judged twice, independently of the generator: at the
 policy's ``generated_at`` (the lifecycle, reasons and counts must be exactly
-recomputed, and the SEC exclusions must stay within the reviewed ceilings)
-and at the capture instant (A8: every ACTIVE, MMF included, must still be
+recomputed; the SEC exclusions must carry zero integrity failures and at most
+``B = floor(N / 10)`` stale funds and, separately, at most ``B`` missing funds,
+``N`` being ACTIVE plus SEC first failures) and at the capture instant (A8:
+every ACTIVE, MMF included, must still be
 matched by exactly one fresh complete row; ageing between generation and
 audit fails A8, it never rewrites the policy). Any SEC ``updated_at`` change
 between generation and capture is source drift (A5 FAIL, A7/A8 not
@@ -37,7 +39,7 @@ Outputs, all through the private POSIX custody writer (root 0700, files 0600,
 atomic, never overwritten, never inside a Git checkout):
 
 1. ``--capture-output`` (required with ``--dsn-env``): the canonical capture
-   bundle ``nav-identity-audit-capture-v3-round6`` — every captured row,
+   bundle ``nav-identity-audit-capture-v3-round7`` — every captured row,
    multiplicity preserved, with per-input digests. Written BEFORE the audit.
 2. ``--output``: the dossier ``nav-identity-audit-v3``. Always written once an
    audit result exists (PASS or FAIL), before any canary decision; it pins the
@@ -87,6 +89,7 @@ from pathlib import Path
 from scripts.nav_identity_audit_contract import (
     A4_DETAIL_KEYS,
     A8_DETAIL_KEYS,
+    A8_EXCLUSION_KEYS,
     A8_OUTCOMES,
     AUDIT_CONFIG_VERSION,
     AUDIT_CONTRACT,
@@ -103,10 +106,8 @@ from scripts.nav_identity_audit_contract import (
     RETIRED_CEILING_KEYS,
     ROW_CEILING,
     SEC_CLASS_PATTERN,
-    SEC_CONFLICT_CEILING,
     SEC_CONFLICT_CEILING_KEY,
-    SEC_GAP_CEILING,
-    SEC_GAP_CEILING_KEY,
+    SEC_EXCLUSION_FRACTION_KEY,
     SEC_LINEAGE_SQL,
     SEC_MAX_SYNCED_AGE_DAYS,
     SEC_QUERY_CONTRACT_SHA256,
@@ -196,8 +197,36 @@ SEC_CODES = (
     "sec.stale",
     "sec.missing",
 )
-SEC_GAPS = frozenset({"sec.incomplete", "sec.stale", "sec.missing"})
-SEC_CONFLICTS = frozenset(SEC_CODES) - SEC_GAPS
+SEC_CONFLICTS = frozenset(
+    {
+        "sec.declared_class_invalid",
+        "sec.poisoned_mapping",
+        "sec.contradiction",
+        "sec.ambiguous",
+    }
+)
+# Round7 A8 exclusion rule (own literal copies, confronted with the leaf):
+# integrity failures must be 0; stale and missing are each bounded by
+# B = (N * 1) // 10 over N = ACTIVE + SEC first failures at generated_at.
+SEC_INTEGRITY = SEC_CONFLICTS | {"sec.incomplete"}
+SEC_STALE = "sec.stale"
+SEC_MISSING = "sec.missing"
+SEC_INTEGRITY_CEILING = 0
+SEC_CONFLICT_CEILING = 0
+SEC_EXCLUSION_NUMERATOR = 1
+SEC_EXCLUSION_DENOMINATOR = 10
+SEC_RETIRED_KEYS = ("gap_ceiling",)
+A8_EXCLUSION_FIELDS = ("bound", "by_code", "c_size", "integrity", "missing", "stale")
+A8_CHECKS = (
+    "active_nonempty",
+    "all_active_matched",
+    "sec_integrity_zero",
+    "sec_missing_within_bound",
+    "sec_stale_within_bound",
+    "source_fresh_within_max_age",
+    "source_lineage_verified",
+    "synced_not_in_future",
+)
 # Canonical instant text shared by snapshots and captures (UTC, microseconds).
 UTC_TEXT = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}\+00:00$"
@@ -381,10 +410,27 @@ def _rows_sha(rows: list) -> str:
     return _sha(_document_bytes(rows))
 
 
+def _exact_fraction(value: object) -> bool:
+    """Exactly {numerator: 1, denominator: 10} as strict ints (no bool/float)."""
+    return (
+        isinstance(value, dict)
+        and set(value) == {"numerator", "denominator"}
+        and type(value["numerator"]) is int
+        and type(value["denominator"]) is int
+        and value["numerator"] == SEC_EXCLUSION_NUMERATOR
+        and value["denominator"] == SEC_EXCLUSION_DENOMINATOR
+    )
+
+
+def _exact_int(value: object, expected: int) -> bool:
+    return type(value) is int and value == expected
+
+
 def _contract_consistent() -> bool:
     """The frozen leaf literal must describe this auditor's runtime semantics."""
     generation = AUDIT_CONTRACT["generation"]
     classification = AUDIT_CONTRACT["sec_classification"]
+    a8 = AUDIT_CONTRACT["a8"]
     return (
         _sha(_compact(AUDIT_CONTRACT).encode("utf-8")) == AUDIT_CONTRACT_SHA256
         and AUDIT_CONTRACT["catalog_source_query_sha256"] == QUERY_SHA256
@@ -403,10 +449,23 @@ def _contract_consistent() -> bool:
         and generation["retired_generator_versions"] == list(RETIRED_GENERATORS)
         and generation["retired_catalog_query_versions"] == list(RETIRED_QUERY_VERSIONS)
         and classification["failure_codes"] == list(SEC_CODES)
-        and set(classification["gap_codes"]) == SEC_GAPS
+        and "gap_codes" not in classification
         and set(classification["conflict_codes"]) == SEC_CONFLICTS
-        and AUDIT_CONTRACT["a8"]["gap_ceiling"] == SEC_GAP_CEILING
-        and AUDIT_CONTRACT["a8"]["conflict_ceiling"] == SEC_CONFLICT_CEILING
+        and classification["integrity_codes"]
+        == [code for code in SEC_CODES if code in SEC_INTEGRITY]
+        and classification["stale_code"] == SEC_STALE
+        and classification["missing_code"] == SEC_MISSING
+        and "gap_ceiling" not in a8
+        and _exact_int(a8["conflict_ceiling"], SEC_CONFLICT_CEILING)
+        and _exact_int(a8["integrity_ceiling"], SEC_INTEGRITY_CEILING)
+        and _exact_fraction(a8["exclusion_fraction"])
+        and a8["exclusion_fraction_key"] == SEC_EXCLUSION_FRACTION_KEY
+        and a8["retired_sec_config_keys"] == list(SEC_RETIRED_KEYS)
+        and a8["exclusion_keys"] == list(A8_EXCLUSION_FIELDS)
+        and list(A8_EXCLUSION_KEYS) == list(A8_EXCLUSION_FIELDS)
+        and list(GATE_CHECKS["A8"]) == list(A8_CHECKS)
+        and "gap_ceiling" not in A8_DETAIL_KEYS
+        and "conflict_ceiling" not in A8_DETAIL_KEYS
         and set(A8_OUTCOMES) == {"matched", *SEC_CODES}
     )
 
@@ -1006,9 +1065,11 @@ def _load_config(raw: bytes | None) -> dict:
         if value is not None and type(value) is not int:
             raise AuditBlocked("audit_config_count_invalid")
     # The SEC block is mandatory in v3: SEC changes generation, the evidence
-    # universe and A4/A5/A8, so its source pins, the 7-day criterion and the
-    # reviewed fund ceilings are exact contract values (no runtime override,
-    # no default, bool/null/other integers all block; never auto-raised).
+    # universe and A4/A5/A8, so its source pins, the 7-day criterion, the
+    # Round7 exclusion fraction (exactly 1/10) and the conflict ceiling
+    # (exactly 0) are exact contract values (no runtime override, no default,
+    # no coercion: bool/null/float/string/other values all block; never
+    # auto-raised). The Round6 absolute gap ceiling is retired and blocks.
     sec = config.get("sec")
     if not isinstance(sec, dict):
         raise AuditBlocked("audit_config_sec_invalid")
@@ -1022,13 +1083,12 @@ def _load_config(raw: bytes | None) -> dict:
     max_age = sec.get("max_synced_age_days")
     if type(max_age) is not int or max_age != SEC_MAX_SYNCED_AGE_DAYS:
         raise AuditBlocked("audit_config_sec_freshness_invalid")
-    for key, expected in (
-        (SEC_GAP_CEILING_KEY, SEC_GAP_CEILING),
-        (SEC_CONFLICT_CEILING_KEY, SEC_CONFLICT_CEILING),
-    ):
-        value = sec.get(key)
-        if type(value) is not int or value != expected:
-            raise AuditBlocked("audit_config_sec_ceiling_invalid")
+    if any(key in sec for key in SEC_RETIRED_KEYS):
+        raise AuditBlocked("audit_config_sec_gap_ceiling_retired")
+    if not _exact_fraction(sec.get(SEC_EXCLUSION_FRACTION_KEY)):
+        raise AuditBlocked("audit_config_sec_fraction_invalid")
+    if not _exact_int(sec.get(SEC_CONFLICT_CEILING_KEY), SEC_CONFLICT_CEILING):
+        raise AuditBlocked("audit_config_sec_ceiling_invalid")
     salt = config.get("canary_salt")
     if salt is not None and (not isinstance(salt, str) or not salt):
         raise AuditBlocked("audit_config_canary_salt_invalid")
@@ -1416,21 +1476,59 @@ def _sec_row_state(row: dict) -> str:
 
 
 def _sec_exclusions(verdict: dict) -> dict:
-    """FUNDS excluded by a SEC first failure (recomputed at generated_at)."""
+    """FUNDS excluded by a SEC first failure, recomputed at generated_at.
+
+    Round7: ``A`` (ACTIVE, MMF included) and ``F`` (UNKNOWN by SEC first
+    failure) come from the same independent verdict; ``N = A + sum(F)`` is the
+    population that reached the SEC stage and ``B = (N * 1) // 10`` (floor,
+    no minimum) bounds stale and missing separately; integrity is the sum of
+    the conflict codes plus ``sec.incomplete``.
+    """
     by_code = dict.fromkeys(SEC_CODES, 0)
+    active = 0
     for entry in verdict.values():
-        if entry["status"] == "UNKNOWN" and entry["first"] in by_code:
+        if entry["status"] == "ACTIVE":
+            active += 1
+        elif entry["status"] == "UNKNOWN" and entry["first"] in by_code:
             by_code[entry["first"]] += 1
+    c_size = active + sum(by_code.values())
     return {
         "by_code": by_code,
-        "gap": sum(count for code, count in by_code.items() if code in SEC_GAPS),
-        "conflict": sum(
-            count for code, count in by_code.items() if code in SEC_CONFLICTS
-        ),
+        "c_size": c_size,
+        "bound": (c_size * SEC_EXCLUSION_NUMERATOR) // SEC_EXCLUSION_DENOMINATOR,
+        "stale": by_code[SEC_STALE],
+        "missing": by_code[SEC_MISSING],
+        "integrity": sum(by_code[code] for code in SEC_CODES if code in SEC_INTEGRITY),
     }
 
 
-def _a8(sec, verdict: dict, catalog: Catalog, decision_at):
+def _exclusions_projection_consistent(exclusions: dict, expected: dict) -> bool:
+    """The verdict histogram against the independent count projection.
+
+    ``_expected_counts`` recounts ACTIVE, first failures and the structural
+    populations; ``N`` must also equal ``structural_pre_claims -
+    structural_claim_failures`` (SEC is judged only after every internal gate).
+    """
+    by_code = exclusions["by_code"]
+    first = expected["identity_first_failure"]
+    sec_total = sum(by_code.values())
+    return (
+        set(exclusions) == set(A8_EXCLUSION_FIELDS)
+        and all(first.get(code, 0) == by_code[code] for code in SEC_CODES)
+        and not {code for code in first if code.startswith("sec.")} - set(SEC_CODES)
+        and expected["active"] + sec_total == exclusions["c_size"]
+        and expected["structural_sec_failures"] == sec_total
+        and expected["structural_pre_claims"] - expected["structural_claim_failures"]
+        == exclusions["c_size"]
+        and exclusions["c_size"]
+        == expected["active"]
+        + exclusions["stale"]
+        + exclusions["missing"]
+        + exclusions["integrity"]
+    )
+
+
+def _a8(sec, verdict: dict, catalog: Catalog, decision_at, expected_counts: dict):
     """SEC corroboration of EVERY ACTIVE (MMF included) at the capture instant.
 
     Returns ``(gate, detail, private_differences)``. The capture must be of
@@ -1438,11 +1536,12 @@ def _a8(sec, verdict: dict, catalog: Catalog, decision_at):
     state otherwise): A8 then re-judges every ACTIVE at the capture's database
     instant with the independent SEC rule — ageing between generation and
     capture withdraws corroboration and FAILs, it never rewrites the policy —
-    and bounds the SEC exclusions recomputed at generated_at by the reviewed
-    fund ceilings (gap: incomplete+stale+missing, conflict: declared class
-    invalid+poison+contradiction+ambiguity). An individual gap is a FAIL;
-    only an unavailable/drifted capture is NOT_EVALUATED. Never vacuously
-    PASS: an empty ACTIVE set or an empty source fails.
+    and bounds the SEC exclusions recomputed at generated_at (Round7): zero
+    integrity exclusions (declared class invalid+poison+contradiction+
+    ambiguity+incomplete), stale funds <= B and missing funds <= B
+    separately. An exclusion over its bound is a FAIL; only an
+    unavailable/drifted capture is NOT_EVALUATED. Never vacuously PASS: an
+    empty ACTIVE set or an empty source fails.
     """
     unavailable = {"source_contract": SEC_SOURCE_CONTRACT, "relation": SEC_RELATION}
     if not isinstance(sec, dict) or sec.get("state") != "captured":
@@ -1481,6 +1580,10 @@ def _a8(sec, verdict: dict, catalog: Catalog, decision_at):
         if instant is not None:
             matched_times.append(instant)
     exclusions = _sec_exclusions(verdict)
+    if not _exclusions_projection_consistent(exclusions, expected_counts):
+        # Two projections of one verdict disagree: an internal defect, never a
+        # data outcome (A2/A4/A5 compare both with the policy).
+        raise AuditBlocked("a8_exclusion_projection_mismatch")
     states = Counter(_sec_row_state(row) for row in rows)
     newest = max(instants) if instants else None
     min_matched = min(matched_times) if matched_times else None
@@ -1517,8 +1620,6 @@ def _a8(sec, verdict: dict, catalog: Catalog, decision_at):
         },
         "outcomes": {name: outcome.get(name, 0) for name in A8_OUTCOMES},
         "exclusions": exclusions,
-        "gap_ceiling": SEC_GAP_CEILING,
-        "conflict_ceiling": SEC_CONFLICT_CEILING,
         "freshness": freshness,
     }
     if set(detail) != set(A8_DETAIL_KEYS):  # pragma: no cover - contract guard
@@ -1534,9 +1635,12 @@ def _a8(sec, verdict: dict, catalog: Catalog, decision_at):
         and all(instant <= decided for instant in instants),
         "active_nonempty": bool(active),
         "all_active_matched": bool(active) and outcome.get("matched", 0) == len(active),
-        "sec_gap_within_ceiling": exclusions["gap"] <= SEC_GAP_CEILING,
-        "sec_conflict_within_ceiling": exclusions["conflict"] <= SEC_CONFLICT_CEILING,
+        "sec_integrity_zero": exclusions["integrity"] == SEC_INTEGRITY_CEILING,
+        "sec_stale_within_bound": exclusions["stale"] <= exclusions["bound"],
+        "sec_missing_within_bound": exclusions["missing"] <= exclusions["bound"],
     }
+    if set(checks) != set(A8_CHECKS):  # pragma: no cover - contract guard
+        raise AuditBlocked("audit_contract_literal_mismatch")
     private = {
         "per_active_outcome": {u: r for u, r in per_uid.items() if r != "matched"},
         "excluded_at_generation": {
@@ -2248,6 +2352,7 @@ def audit(
         verdict,
         catalog,
         None if capture is None else capture["captured_at"],
+        expected_counts,
     )
     differences["sec"] = sec_private
 
