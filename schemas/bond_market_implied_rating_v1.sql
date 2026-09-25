@@ -226,7 +226,7 @@ WHERE product = 'bond_market_implied_rating_v1';
 
 -- ---------------------------------------------------------------------------
 -- Ownership and grants (the app_runtime SELECT grant is applied operationally,
--- like every product relation above it).
+-- like every product relation above it; its write privileges are revoked below).
 -- ---------------------------------------------------------------------------
 ALTER TABLE bond_market_implied_rating_v1_builds OWNER TO worker_writer;
 ALTER TABLE bond_market_implied_rating_v1 OWNER TO worker_writer;
@@ -239,3 +239,29 @@ REVOKE ALL ON TABLE bond_market_implied_rating_v1 FROM PUBLIC;
 REVOKE ALL ON TABLE bond_market_implied_rating_v1_current FROM PUBLIC;
 REVOKE ALL ON TABLE bond_market_implied_rating_publications FROM PUBLIC;
 REVOKE ALL ON TABLE bond_market_implied_rating_app_pointer FROM PUBLIC;
+
+-- The worker_writer default privileges hand app_runtime write privileges on
+-- every relation it creates.  This product's tables and read surfaces -- including
+-- bond_market_implied_rating_app_pointer, which PostgreSQL treats as an
+-- automatically updatable view -- stay read-only for it: exactly these write
+-- privileges are revoked (MAINTAIN exists from PostgreSQL 17), SELECT is kept,
+-- the role is never created, and any other grant is left for the loader's
+-- admission check to refuse rather than silently repaired here.
+DO $$
+DECLARE
+    write_privileges text := CASE
+        WHEN current_setting('server_version_num')::integer >= 170000
+            THEN 'INSERT, UPDATE, DELETE, MAINTAIN'
+        ELSE 'INSERT, UPDATE, DELETE'
+    END;
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_runtime') THEN
+        EXECUTE 'REVOKE ' || write_privileges || ' ON TABLE '
+            || 'bond_market_implied_rating_v1_builds, '
+            || 'bond_market_implied_rating_v1, '
+            || 'bond_market_implied_rating_v1_current, '
+            || 'bond_market_implied_rating_publications, '
+            || 'bond_market_implied_rating_app_pointer '
+            || 'FROM app_runtime RESTRICT';
+    END IF;
+END $$;

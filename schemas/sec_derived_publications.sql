@@ -1,4 +1,30 @@
 -- Immutable, fixture-safe publication metadata.  It never reads raw row tables.
+
+-- Fresh-install marker for the narrow app_runtime revoke at the end of this file.
+-- It records which of the four ledger tables do not exist yet in the creation
+-- schema, so only tables this execution creates are touched: re-running the
+-- protocol (as every derived worker does) never changes the privileges of an
+-- existing ledger.
+DO $$
+BEGIN
+    PERFORM set_config(
+        'sec_derived.fresh_ledger_tables',
+        COALESCE((
+            SELECT string_agg(ledger.name, ',' ORDER BY ledger.name)
+            FROM unnest(ARRAY[
+                'sec_derived_publications', 'sec_derived_current_pointers',
+                'sec_derived_publication_tokens', 'sec_derived_pointer_tokens'
+            ]) AS ledger(name)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = current_schema() AND c.relname = ledger.name
+            )
+        ), ''),
+        false
+    );
+END $$;
+
 CREATE TABLE IF NOT EXISTS sec_derived_publications (
     publication_id uuid PRIMARY KEY,
     product text NOT NULL CHECK (product <> ''),
@@ -176,3 +202,39 @@ END $$;
 
 CREATE OR REPLACE VIEW sec_current_derived_publications AS
 SELECT p.* FROM sec_derived_current_pointers c JOIN sec_derived_publications p ON p.publication_id=c.publication_id;
+
+-- Fresh install / disaster recovery only: the worker_writer default privileges
+-- hand app_runtime write privileges on new tables, and the ledger must stay
+-- read-only for it.  Exactly these write privileges are revoked (MAINTAIN exists
+-- from PostgreSQL 17) on exactly the ledger tables this execution created;
+-- SELECT is kept, the role is never created, and a pre-existing ledger is never
+-- repaired here -- its privileges change only through a separately approved
+-- operation.
+DO $$
+DECLARE
+    fresh_tables text[] := string_to_array(
+        COALESCE(current_setting('sec_derived.fresh_ledger_tables', true), ''), ','
+    );
+    write_privileges text := CASE
+        WHEN current_setting('server_version_num')::integer >= 170000
+            THEN 'INSERT, UPDATE, DELETE, MAINTAIN'
+        ELSE 'INSERT, UPDATE, DELETE'
+    END;
+    ledger_table text;
+BEGIN
+    PERFORM set_config('sec_derived.fresh_ledger_tables', '', false);
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_runtime') THEN
+        RETURN;
+    END IF;
+    FOREACH ledger_table IN ARRAY ARRAY[
+        'sec_derived_publications', 'sec_derived_current_pointers',
+        'sec_derived_publication_tokens', 'sec_derived_pointer_tokens'
+    ] LOOP
+        IF ledger_table = ANY(fresh_tables) THEN
+            EXECUTE format(
+                'REVOKE %s ON TABLE %I FROM app_runtime RESTRICT',
+                write_privileges, ledger_table
+            );
+        END IF;
+    END LOOP;
+END $$;
