@@ -27,7 +27,9 @@ from src.workers import risk_metrics as risk
 from src.workers._nav_policy import (
     FEATURE_DEFINITION_VERSION,
     canonical_digest,
+    generation_metadata_digest,
     load_calendar_equivalence,
+    policy_content_digest,
     risk_universe_digest,
 )
 from src.workers._tiingo import NavObservation
@@ -44,6 +46,10 @@ RISK_READ_MODEL_SQL = _RISK_SQL[
 ]
 START = dt.date(2024, 1, 1)
 END = dt.date(2027, 12, 31)
+POLICY_VERSION = "2026-09-25.3"
+# The real SEC crosswalk DDL (class_id PK, series/ticker NOT NULL, updated_at).
+SEC_TABLE_SQL = (ROOT / "schemas" / "sec_company_tickers_mf.sql").read_text(encoding="utf-8")
+V1_GENERATOR = "fund-nav-policy-generator-v1"
 
 
 @pytest.fixture(scope="module")
@@ -125,10 +131,14 @@ def catalog(dsn):
         active_rows = _uuid_entity(active, 1, ticker="FAKEA", series="S900000001", figi=synthetic_figi(1))
         inactive_rows = _uuid_entity(inactive, 2, ticker="FAKEB", active=False)
         _seed(conn, active_rows, (inactive_rows[0], None, None))
+        # Fourth source (identity v3): the real SEC table, one fresh mapping.
+        conn.execute("DROP TABLE IF EXISTS public.sec_company_tickers_mf")
+        conn.execute(SEC_TABLE_SQL)
+        _sec_insert(conn, [("C900000001", "S900000001", "FAKEA")])
     return {"active": active, "inactive": inactive}
 
 
-def _build_args(dsn_env, root, output, *extra, version="2026-09-24.2", end=END):
+def _build_args(dsn_env, root, output, *extra, version=POLICY_VERSION, end=END):
     return [
         "build",
         "--dsn-env",
@@ -161,8 +171,13 @@ def _artifact(dsn, tmp_path, monkeypatch, *extra, end=END, name="approved-policy
 
 
 def test_read_only_repeatable_snapshot_and_no_xid(dsn, catalog, monkeypatch):
+    """The FOUR sources (SEC and its lineage included) share one RR snapshot."""
     original = generator._catalog_rows
     details = []
+    with psycopg.connect(dsn) as conn:
+        synced_before = conn.execute(
+            "SELECT updated_at FROM public.sec_company_tickers_mf"
+        ).fetchone()[0]
 
     def concurrent_update(cursor):
         cursor.execute(
@@ -181,12 +196,20 @@ def test_read_only_repeatable_snapshot_and_no_xid(dsn, catalog, monkeypatch):
                 "WHERE instrument_id=%s",
                 (catalog["active"],),
             )
+            # A concurrent SEC refresh (new row + moved updated_at) is invisible.
+            writer.execute(
+                "UPDATE public.sec_company_tickers_mf "
+                "SET updated_at = updated_at + interval '1 microsecond'"
+            )
+            _sec_insert(writer, [("C900000077", "S900000077", "T77")])
         return original(cursor)
 
     monkeypatch.setattr(generator, "_catalog_rows", concurrent_update)
-    instant, instruments, funds, identity = generator.read_catalog_snapshot(dsn)
+    instant, instruments, funds, identity, sec = generator.read_catalog_snapshot(dsn)
     assert details[0]["read_only"] == "on" and details[0]["xid"] is None
     assert instant.tzinfo is not None
+    assert [(row["ticker"], row["synced_at"]) for row in sec] == [("FAKEA", synced_before)]
+    assert sec[0]["synced_at"] <= instant
     assert (
         next(row for row in instruments if row["instrument_id"] == catalog["active"])[
             "is_active"
@@ -202,6 +225,9 @@ def test_read_only_repeatable_snapshot_and_no_xid(dsn, catalog, monkeypatch):
             "JOIN public.instrument_identity r USING (instrument_id) WHERE instrument_id=%s",
             (catalog["active"],),
         ).fetchone() == (False, "candidate")
+        assert conn.execute(
+            "SELECT count(*) FROM public.sec_company_tickers_mf"
+        ).fetchone()[0] == 2
 
 
 def test_db_build_rejects_duplicate_and_conflicting_identity_without_network(
@@ -536,7 +562,7 @@ def test_generated_policy_operator_apply_and_readiness_on_local_pg(
         )
 
 
-# ── identity v2: privileges, limits, projection and cardinality in PG ────────
+# ── identity v2/v3: privileges, limits, projection and cardinality in PG ─────
 def _role_dsn(dsn: str, role: str) -> str:
     params = psycopg.conninfo.conninfo_to_dict(dsn)
     params["user"] = role
@@ -628,6 +654,125 @@ def test_duplicate_registry_row_and_non_object_conflict_state(dsn, catalog, tmp_
     }
 
 
+# ── identity v3: the SEC source is a systemic prerequisite of generation ─────
+@pytest.mark.parametrize(
+    "setup,code",
+    [
+        ("DROP TABLE public.sec_company_tickers_mf", "sec_source_relation_missing"),
+        ("DELETE FROM public.sec_company_tickers_mf", "sec_source_empty"),
+        (
+            "UPDATE public.sec_company_tickers_mf "
+            "SET updated_at = clock_timestamp() - interval '8 days'",
+            "sec_source_stale",
+        ),
+        # An unrelated row after the decision instant aborts too.
+        (
+            "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker,updated_at) "
+            "VALUES ('C000000555','1','S000000555','T555', clock_timestamp() + interval '1 hour')",
+            "sec_source_future",
+        ),
+        (
+            "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+            "SELECT 'C8' || lpad(g::text, 8, '0'), '1', 'S8' || lpad(g::text, 8, '0'), 'X' || g "
+            "FROM generate_series(1, 100000) g",
+            "sec_source_row_limit_exceeded",
+        ),
+        (
+            "ALTER TABLE public.sec_company_tickers_mf ALTER COLUMN updated_at DROP NOT NULL; "
+            "UPDATE public.sec_company_tickers_mf SET updated_at = NULL",
+            "sec_source_timestamp_invalid",
+        ),
+        (
+            "ALTER TABLE public.sec_company_tickers_mf "
+            "ALTER COLUMN updated_at TYPE timestamp USING updated_at AT TIME ZONE 'UTC'",
+            "sec_source_timestamp_invalid",
+        ),
+    ],
+    ids=["relation_missing", "empty", "stale", "future", "row_cap", "null_time", "naive_time"],
+)
+def test_sec_source_defect_aborts_the_whole_build(
+    dsn, catalog, tmp_path, monkeypatch, capsys, setup, code
+):
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(setup)
+    monkeypatch.setenv("NAV_POLICY_TEST_DSN", dsn)
+    output = tmp_path / "sec-blocked.json"
+    snapshot = tmp_path / "sec-blocked-source.json"
+    args = _build_args(
+        "NAV_POLICY_TEST_DSN", tmp_path, output, "--source-snapshot-output", str(snapshot)
+    )
+    assert generator.main(args) == 2
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["code"] == code, blocked
+    assert not output.exists() and not snapshot.exists()
+
+
+def test_sec_privilege_missing_is_a_static_block(dsn, catalog, tmp_path, monkeypatch, capsys):
+    role = "nav_policy_sec_reader_" + uuid.uuid4().hex[:12]
+    ident = sql.Identifier(role)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE ROLE {} LOGIN").format(ident))
+        conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(ident))
+        conn.execute(
+            sql.SQL(
+                "GRANT SELECT ON public.instruments_universe, public.funds_v, "
+                "public.instrument_identity TO {}"
+            ).format(ident)
+        )
+    try:
+        reader = _role_dsn(dsn, role)
+        with pytest.raises(generator.PolicyGenerationError, match="sec_source_privilege_missing"):
+            generator.read_catalog_snapshot(reader)
+        monkeypatch.setenv("NAV_POLICY_SEC_READER_DSN", reader)
+        output = tmp_path / "no-sec-privilege.json"
+        assert generator.main(_build_args("NAV_POLICY_SEC_READER_DSN", tmp_path, output)) == 2
+        blocked = json.loads(capsys.readouterr().out)
+        assert blocked["code"] == "sec_source_privilege_missing" and not output.exists()
+        assert role not in json.dumps(blocked)
+        # With SELECT granted the same role builds (nothing else was missing).
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                sql.SQL("GRANT SELECT ON public.sec_company_tickers_mf TO {}").format(ident)
+            )
+        assert len(generator.read_catalog_snapshot(reader)[4]) == 1
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP OWNED BY {}").format(ident))
+            conn.execute(sql.SQL("DROP ROLE {}").format(ident))
+
+
+def test_sec_stale_mapping_excludes_only_that_fund_and_snapshot_hashes_sec(
+    dsn, catalog, tmp_path, monkeypatch
+):
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        other = uuid.uuid4()
+        _seed(conn, _uuid_entity(other, 7))
+        _sec_insert(conn, [("C000000007", "S000000007", "T7")], age="8 days")
+        # A stale row of a reused ticker never hides FAKEA's fresh mapping.
+        _sec_insert(conn, [("C000000099", "S000000099", "FAKEA")], age="30 days")
+    output, _raw, policy = _artifact(
+        dsn, tmp_path, monkeypatch, "--source-snapshot-output", str(tmp_path / "source.json")
+    )
+    status = {row["instrument_id"]: row for row in policy["instrument_evidence"]}
+    assert status[str(catalog["active"])]["fund_status"] == "ACTIVE"
+    excluded = status[str(other)]
+    assert (excluded["fund_status"], excluded["valuation_frequency"]) == ("UNKNOWN", "unknown")
+    counts = policy["generation"]["counts"]
+    assert counts["identity_first_failure"] == {"sec.stale": 1}
+    assert counts["sec_company_tickers_mf"] == 3
+    assert counts["structural_sec_failures"] == counts["structural_daily_sec_failures"] == 1
+    snapshot = json.loads((tmp_path / "source.json").read_bytes())
+    assert snapshot["kind"] == "nav-current-catalog-source-snapshot-v3"
+    assert snapshot["row_counts"]["sec"] == 3
+    assert all(
+        row["synced_at"].endswith("+00:00") and len(row["synced_at"]) == 32
+        for row in snapshot["sources"]["sec"]
+    )
+    assert generator.main(
+        ["verify", "--policy-file", str(output), "--source-snapshot-file", str(tmp_path / "source.json")]
+    ) == 0
+
+
 def _install_w1(dsn: str, schema: str) -> None:
     with psycopg.connect(dsn, autocommit=True, options=f"-csearch_path={schema},public") as conn:
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
@@ -647,7 +792,18 @@ def _hand_authored_previous(policy: dict) -> dict:
     return previous
 
 
-def test_v2_publication_moves_pointer_reuses_calendar_and_v1_stays_immutable(
+def _v1_previous(policy: dict) -> dict:
+    """The published v1 pointer as the auditor reads it (generator v1 label).
+
+    It is seeded with ``_publish_policy`` directly, as v1 code published it:
+    v3 code never re-publishes a v1 artifact.
+    """
+    previous = _hand_authored_previous(policy)
+    previous["generator_version"] = V1_GENERATOR
+    return previous
+
+
+def test_v3_publication_moves_pointer_reuses_calendar_and_v1_stays_immutable(
     dsn, catalog, tmp_path, monkeypatch, capsys
 ):
     output, raw, policy = _artifact(dsn, tmp_path, monkeypatch)
@@ -669,7 +825,7 @@ def test_v2_publication_moves_pointer_reuses_calendar_and_v1_stays_immutable(
             assert conn.execute(
                 "SELECT c.policy_id, c.policy_version, v.policy_hash FROM nav_policy_current c "
                 "JOIN nav_policy_versions v USING (policy_id, policy_version)"
-            ).fetchone() == ("synthetic-xnys", "2026-09-24.2", v2_hash)
+            ).fetchone() == ("synthetic-xnys", POLICY_VERSION, v2_hash)
             assert conn.execute(
                 "SELECT to_jsonb(v) FROM nav_policy_versions v WHERE policy_version='2026-09-23.1'"
             ).fetchone()[0] == before
@@ -680,13 +836,25 @@ def test_v2_publication_moves_pointer_reuses_calendar_and_v1_stays_immutable(
             assert conn.execute(
                 "SELECT policy_version, count(*) FROM nav_instrument_policy_evidence "
                 "GROUP BY 1 ORDER BY 1"
-            ).fetchall() == [("2026-09-23.1", 2), ("2026-09-24.2", 2)]
+            ).fetchall() == [("2026-09-23.1", 2), (POLICY_VERSION, 2)]
             state = conn.execute(
                 "SELECT (SELECT count(*) FROM nav_policy_versions),"
                 "(SELECT count(*) FROM nav_instrument_policy_evidence),"
                 "(SELECT to_jsonb(c) FROM nav_policy_current c)"
             ).fetchone()
-        # A generator-v1 artifact is refused by v2 code before any database work.
+        # Generator-v1 and generator-v2 artifacts (even consistently rehashed)
+        # are refused by v3 code before any database work.
+        for retired_generator, retired_query in (
+            ("fund-nav-policy-generator-v2", "nav-current-catalog-snapshot-v2"),
+            ("fund-nav-policy-generator-v3", "nav-current-catalog-snapshot-v2"),
+        ):
+            v2 = copy.deepcopy(policy)
+            v2["generator_version"] = v2["generation"]["generator_version"] = retired_generator
+            v2["generation"]["source_query_version"] = retired_query
+            v2["generation"]["policy_hash"] = policy_content_digest(v2)
+            v2["generation"]["generation_sha256"] = generation_metadata_digest(v2["generation"])
+            with pytest.raises(ValueError, match="generator_metadata_invalid"):
+                operator._policy(generator.canonical_json(v2))
         v1 = copy.deepcopy(policy)
         v1["generator_version"] = v1["generation"]["generator_version"] = "fund-nav-policy-generator-v1"
         v1["generation"]["source_query_version"] = "nav-current-catalog-snapshot-v1"
@@ -742,7 +910,7 @@ def test_v2_publication_moves_pointer_reuses_calendar_and_v1_stays_immutable(
             )
             params = {
                 "pid": "synthetic-xnys",
-                "expected": "2026-09-24.2",
+                "expected": POLICY_VERSION,
                 "expected_hash": v2_hash,
                 "target": "2026-09-23.1",
                 "target_hash": first_hash,
@@ -770,7 +938,7 @@ def test_v2_publication_moves_pointer_reuses_calendar_and_v1_stays_immutable(
             ).fetchone() == immutable
             # A stale expectation (wrong hash) never moves the pointer.
             assert conn.execute(
-                rollback_sql, {**params, "expected": "2026-09-23.1", "target": "2026-09-24.2",
+                rollback_sql, {**params, "expected": "2026-09-23.1", "target": POLICY_VERSION,
                                "expected_hash": "0" * 64, "target_hash": v2_hash}
             ).rowcount == 0
             conn.rollback()
@@ -779,13 +947,14 @@ def test_v2_publication_moves_pointer_reuses_calendar_and_v1_stays_immutable(
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
 
 
-SEC_TABLE_SQL = (ROOT / "schemas" / "sec_company_tickers_mf.sql").read_text(encoding="utf-8")
 SEC_CONFIG = {
     "source_contract": "sec-company-tickers-mf-class-map-v1",
     "relation": "public.sec_company_tickers_mf",
     "timestamp_column": "updated_at",
     "query_contract_sha256": verifier.SEC_QUERY_CONTRACT_SHA256,
     "max_synced_age_days": 7,
+    "gap_ceiling": 23,
+    "conflict_ceiling": 0,
 }
 
 
@@ -840,40 +1009,41 @@ def _sec_insert(conn, rows, *, age: str = "0 seconds") -> None:
 def live_audit(dsn, catalog, tmp_path, monkeypatch, capsys, request):
     """Catalog + cohort + SEC class map + policy/snapshot + hash-pinned previous.
 
-    Indirect ``{"coverage_end": date}`` builds an already-expired policy.
+    Indirect ``{"coverage_end": date}`` builds an already-expired policy;
+    ``{"sec_mutation": sql}`` changes the SEC table BEFORE generation (so the
+    policy itself reflects it; a change after generation is source drift).
     """
-    coverage_end = getattr(request, "param", {}).get("coverage_end", END)
+    params = getattr(request, "param", {})
+    coverage_end = params.get("coverage_end", END)
     custody = tmp_path / "custody"
     custody.mkdir(mode=0o700)
     with psycopg.connect(dsn, autocommit=True) as conn:
         extra = [_uuid_entity(uuid.uuid4(), n, fund_type=kind) for n, kind in ((11, "mutual_fund"), (12, "etf"))]
         for rows in extra:
             _seed(conn, rows)
-        conn.execute(
-            "DROP TABLE IF EXISTS public.nav_fixture_cohort, public.sec_company_tickers_mf, "
-            "public.nav_fixture_sink"
-        )
+        conn.execute("DROP TABLE IF EXISTS public.nav_fixture_cohort, public.nav_fixture_sink")
         conn.execute("DROP SEQUENCE IF EXISTS public.nav_audit_seq")
         conn.execute("CREATE TABLE public.nav_fixture_cohort (instrument_id uuid, strategy_label text)")
-        conn.execute(SEC_TABLE_SQL)
         members = [catalog["active"], catalog["inactive"], *(rows[0]["instrument_id"] for rows in extra)]
         for identifier, label in zip(members, ("Large Blend", "Large Blend", "Government Bond", "Large Blend")):
             conn.execute("INSERT INTO public.nav_fixture_cohort VALUES (%s,%s)", (identifier, label))
-        # Every ACTIVE (FAKEA etf, #11 mutual fund, #12 etf) has one fresh mapping.
+        # Every ACTIVE (FAKEA etf, #11 mutual fund, #12 etf) has one fresh
+        # mapping (FAKEA's comes from the catalog fixture).
         _sec_insert(
             conn,
             [
-                ("C900000001", "S900000001", "FAKEA"),
                 ("C000000011", "S000000011", "T11"),
                 ("C000000012", "S000000012", "T12"),
             ],
         )
+        if params.get("sec_mutation"):
+            conn.execute(params["sec_mutation"])
     output, raw, policy = _artifact(
         dsn, custody, monkeypatch, "--source-snapshot-output", str(custody / "source.json"),
         end=coverage_end,
     )
     capsys.readouterr()
-    previous_doc = _hand_authored_previous(policy)
+    previous_doc = _v1_previous(policy)
     previous = json.dumps(previous_doc, sort_keys=True).encode()
     _put(custody, "v1.json", previous)
     config_path = _put(custody, "audit-config.json", json.dumps(_audit_config(COHORT_QUERY)).encode())
@@ -1017,70 +1187,168 @@ def test_live_source_drift_fails_a5_and_skips_a7_a8(dsn, catalog, live_audit):
     assert json.loads(capture_path.read_bytes())["source_snapshot_sha256"] == dossier["inputs"]["live_source_snapshot_sha256"]
 
 
-# ── A8 against the real public.sec_company_tickers_mf DDL ───────────────────
+# ── SEC in generation + A8 against the real public.sec_company_tickers_mf DDL ─
+def _sec_case(mutation):
+    return {"sec_mutation": mutation}
+
+
 @pytest.mark.parametrize(
-    "mutation,status,expected",
+    "live_audit,expected",
     [
-        ("UPDATE public.sec_company_tickers_mf SET updated_at = clock_timestamp() - interval '8 days' "
-         "WHERE ticker='T11'", "FAIL", {"failed": ["fresh_within_max_age"]}),
-        ("UPDATE public.sec_company_tickers_mf SET updated_at = clock_timestamp() + interval '1 hour' "
-         "WHERE ticker='T12'", "FAIL", {"failed": ["synced_not_in_future"]}),
-        ("INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
-         "VALUES ('S900000001:FAKEA','1','S900000001','FAKEA')", "FAIL",
-         {"outcome": "poisoned_active_mapping"}),
-        ("INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
-         "VALUES ('C900000099','1','S900000001','FAKEA')", "FAIL", {"outcome": "ambiguous"}),
-        ("UPDATE public.sec_company_tickers_mf SET series_id='S000000099' WHERE ticker='T12'",
-         "FAIL", {"outcome": "contradiction"}),
-        ("UPDATE public.sec_company_tickers_mf SET series_id='' WHERE ticker='T12'",
-         "NOT_EVALUATED", {"outcome": "partial"}),
-        ("DELETE FROM public.sec_company_tickers_mf WHERE ticker='T11'", "NOT_EVALUATED",
-         {"outcome": "missing"}),
-        ("INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
-         "VALUES ('S000000777:T777','1','S000000777','T777')", "PASS",
-         {"excluded_poisoned_count": 1}),
-        ("DROP TABLE public.sec_company_tickers_mf", "NOT_EVALUATED",
-         {"code": "sec_relation_missing"}),
-        ("ALTER TABLE public.sec_company_tickers_mf DROP COLUMN updated_at", "NOT_EVALUATED",
-         {"code": "sec_query_failed:42703"}),
-        ("INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
-         "SELECT 'C8' || lpad(g::text, 8, '0'), '1', 'S8' || lpad(g::text, 8, '0'), 'X' || g "
-         "FROM generate_series(1, 100000) g", "NOT_EVALUATED",
-         {"code": "sec_row_ceiling_exceeded"}),
-        # Round3 F2: the valid FAKEA row cannot hide a related malformed or
-        # incomplete row; unrelated malformed rows stay excluded.
-        ("INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
-         "VALUES ('C900000002','1','SX','FAKEA')", "FAIL",
-         {"outcome": "poisoned_active_mapping"}),
-        ("INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
-         "VALUES ('C900000003','1','','FAKEA')", "NOT_EVALUATED", {"outcome": "partial"}),
-        ("INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
-         "VALUES ('C000000778','1','SX','T778')", "PASS", {"excluded_poisoned_count": 1}),
+        (
+            _sec_case(
+                "UPDATE public.sec_company_tickers_mf SET updated_at = "
+                "clock_timestamp() - interval '8 days' WHERE ticker='T11'"
+            ),
+            {"first": {"sec.stale": 1}, "a8": "PASS", "code": 0},
+        ),
+        (
+            _sec_case("DELETE FROM public.sec_company_tickers_mf WHERE ticker='T11'"),
+            {"first": {"sec.missing": 1}, "a8": "PASS", "code": 0},
+        ),
+        # T12 is an equity ETF: excluding it leaves the equity sleeve short (A7).
+        (
+            _sec_case("UPDATE public.sec_company_tickers_mf SET series_id='' WHERE ticker='T12'"),
+            {"first": {"sec.incomplete": 1}, "a8": "PASS", "a7": "FAIL", "code": 3},
+        ),
+        (
+            _sec_case(
+                "UPDATE public.sec_company_tickers_mf SET series_id='S000000099' "
+                "WHERE ticker='T12'"
+            ),
+            {"first": {"sec.contradiction": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
+             "failed": ["sec_conflict_within_ceiling"]},
+        ),
+        (
+            _sec_case(
+                "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+                "VALUES ('S900000001:FAKEA','1','S900000001','FAKEA')"
+            ),
+            {"first": {"sec.poisoned_mapping": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
+             "failed": ["sec_conflict_within_ceiling"]},
+        ),
+        (
+            _sec_case(
+                "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+                "VALUES ('C900000099','1','S900000001','FAKEA')"
+            ),
+            {"first": {"sec.ambiguous": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
+             "failed": ["sec_conflict_within_ceiling"]},
+        ),
+        # The valid FAKEA row cannot hide a related malformed or incomplete row.
+        (
+            _sec_case(
+                "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+                "VALUES ('C900000002','1','SX','FAKEA')"
+            ),
+            {"first": {"sec.poisoned_mapping": 1}, "a8": "FAIL", "a7": "FAIL", "code": 3,
+             "failed": ["sec_conflict_within_ceiling"]},
+        ),
+        (
+            _sec_case(
+                "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+                "VALUES ('C900000003','1','','FAKEA')"
+            ),
+            {"first": {"sec.incomplete": 1}, "a8": "PASS", "a7": "FAIL", "code": 3},
+        ),
+        # Unrelated poison is counted, never fatal.
+        (
+            _sec_case(
+                "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+                "VALUES ('S000000777:T777','1','S000000777','T777')"
+            ),
+            {"first": {}, "a8": "PASS", "code": 0, "poisoned": 1},
+        ),
+        (
+            _sec_case(
+                "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+                "VALUES ('C000000778','1','SX','T778')"
+            ),
+            {"first": {}, "a8": "PASS", "code": 0, "poisoned": 1},
+        ),
+        # A stale row of a reused ticker next to the fresh correct mapping.
+        (
+            _sec_case(
+                "INSERT INTO public.sec_company_tickers_mf "
+                "(class_id,cik,series_id,ticker,updated_at) VALUES "
+                "('C000000098','1','S000000098','T11', clock_timestamp() - interval '30 days')"
+            ),
+            {"first": {}, "a8": "PASS", "code": 0},
+        ),
     ],
-    ids=["stale", "future", "poison", "duplicate_ticker", "contradiction", "partial",
-         "missing", "unrelated_poison", "table_missing", "column_missing", "ceiling",
-         "valid_plus_malformed", "valid_plus_partial", "unrelated_malformed_series"],
+    indirect=["live_audit"],
+    ids=["stale", "missing", "partial", "contradiction", "poison", "duplicate_ticker",
+         "valid_plus_malformed", "valid_plus_partial", "unrelated_poison",
+         "unrelated_malformed_series", "stale_reused_ticker"],
 )
-def test_live_a8_company_tickers_mf_matrix(dsn, catalog, live_audit, mutation, status, expected):
+def test_live_sec_generation_and_a8_company_tickers_mf_matrix(
+    dsn, catalog, live_audit, expected
+):
+    """SEC judged at generation (policy) and re-judged by the independent audit.
+
+    FAKEA and T12 are the only equity members (quota 1 + margin = 2): excluding
+    either leaves the sleeve short, so A7 also fails; T11 is fixed income.
+    """
+    policy = live_audit["policy"]
+    first = policy["generation"]["counts"]["identity_first_failure"]
+    assert first == expected["first"]
+    code, summary, dossier, capture_path = live_audit["run"](None)
+    gates = dossier["gates"]
+    assert gates["A8"]["status"] == expected["a8"], gates["A8"]
+    assert gates["A7"]["status"] == expected.get("a7", "PASS")
+    for gate in ("A1", "A2", "A4", "A5", "A6"):
+        assert gates[gate]["status"] == "PASS", (gate, gates[gate])
+    assert code == expected["code"]
+    detail = dossier["details"]["A8"]
+    assert detail["exclusions"]["by_code"] == {
+        name: expected["first"].get(name, 0) for name in verifier.SEC_CODES
+    }
+    active = sum(1 for row in policy["instrument_evidence"] if row["fund_status"] == "ACTIVE")
+    assert detail["outcomes"]["matched"] == active == 3 - len(expected["first"])
+    if "failed" in expected:
+        assert sorted(k for k, v in gates["A8"]["checks"].items() if not v) == expected["failed"]
+    if "poisoned" in expected:
+        assert detail["invalid_source_rows"]["poisoned"] == expected["poisoned"]
+    assert json.loads(capture_path.read_bytes())["sec"]["relation"] == (
+        "public.sec_company_tickers_mf"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        # Economically irrelevant: only updated_at moves by one microsecond.
+        "UPDATE public.sec_company_tickers_mf SET updated_at = updated_at "
+        "+ interval '1 microsecond' WHERE ticker='T11'",
+        "DELETE FROM public.sec_company_tickers_mf WHERE ticker='T12'",
+        "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+        "VALUES ('C000000999','1','S000000999','T999')",
+        "DROP TABLE public.sec_company_tickers_mf",
+        "ALTER TABLE public.sec_company_tickers_mf DROP COLUMN updated_at",
+        "INSERT INTO public.sec_company_tickers_mf (class_id,cik,series_id,ticker) "
+        "SELECT 'C8' || lpad(g::text, 8, '0'), '1', 'S8' || lpad(g::text, 8, '0'), 'X' || g "
+        "FROM generate_series(1, 100000) g",
+    ],
+    ids=["updated_at_only", "row_deleted", "row_added", "table_missing", "column_missing",
+         "ceiling"],
+)
+def test_live_sec_change_after_generation_is_drift(dsn, catalog, live_audit, mutation):
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(mutation)
     code, summary, dossier, capture_path = live_audit["run"](None)
-    gate = dossier["gates"]["A8"]
-    assert gate["status"] == status, gate
-    assert code == (0 if status == "PASS" else 3)
-    detail = dossier["details"]["A8"]
-    if "failed" in expected:
-        assert sorted(k for k, v in gate["checks"].items() if not v) == expected["failed"]
-    if "outcome" in expected:
-        assert detail["outcomes"][expected["outcome"]] == 1
-    if "code" in expected:
-        assert gate["code"] == expected["code"]
-        assert json.loads(capture_path.read_bytes())["sec"]["relation"] == "public.sec_company_tickers_mf"
-    if "excluded_poisoned_count" in expected:
-        assert detail["excluded_poisoned_count"] == 1 and detail["active_poisoned_count"] == 0
+    assert code == 3 and summary["gates"]["A5"] == "FAIL"
+    assert [k for k, v in dossier["gates"]["A5"]["checks"].items() if not v] == [
+        "no_source_drift"
+    ]
+    assert summary["gates"]["A7"] == summary["gates"]["A8"] == "NOT_EVALUATED"
+    assert dossier["gates"]["A8"]["code"] == "live_capture_absent_or_drifted"
+    bundle = json.loads(capture_path.read_bytes())
+    assert bundle["source_snapshot_sha256"] != (
+        live_audit["policy"]["generation"]["source_snapshot_sha256"]
+    )
 
 
-def test_live_a8_permission_missing_is_not_evaluated(dsn, catalog, live_audit, monkeypatch):
+def test_live_a8_permission_missing_is_drift_not_evaluated(dsn, catalog, live_audit, monkeypatch):
     role = "nav_audit_reader_" + uuid.uuid4().hex[:12]
     ident = sql.Identifier(role)
     with psycopg.connect(dsn, autocommit=True) as conn:
@@ -1096,12 +1364,15 @@ def test_live_a8_permission_missing_is_not_evaluated(dsn, catalog, live_audit, m
         monkeypatch.setenv("NAV_AUDIT_READER_DSN", _role_dsn(dsn, role))
         code, summary, dossier, capture_path = live_audit["run"](None, dsn_env="NAV_AUDIT_READER_DSN")
         assert code == 3
+        # No SEC rows means no four-source capture digest: drift, never a zero.
+        assert dossier["inputs"]["capture"]["sec"]["code"] == "sec_privilege_missing"
+        assert dossier["inputs"]["capture"]["source_snapshot_sha256"] is None
+        assert dossier["gates"]["A5"]["status"] == "FAIL"
         assert dossier["gates"]["A8"] == {
             "status": "NOT_EVALUATED",
-            "code": "sec_privilege_missing",
+            "code": "live_capture_absent_or_drifted",
             "checks": {},
         }
-        assert dossier["gates"]["A7"]["status"] == "PASS"
     finally:
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(sql.SQL("DROP OWNED BY {}").format(ident))
@@ -1204,7 +1475,8 @@ def _governed_env(dsn, live_audit, monkeypatch, capsys):
     schema = _operator_schema(dsn)
     try:
         with psycopg.connect(dsn, options=f"-csearch_path={schema},public") as conn:
-            operator._publish_policy(conn, operator._policy(live_audit["previous_doc"])[0])
+            # The published v1 (seeded as v1 code published it; never via v3).
+            operator._publish_policy(conn, live_audit["previous_doc"])
             conn.commit()
         # The operator pins the reviewed audit config file; the test pins its own.
         monkeypatch.setattr(operator, "AUDIT_CONFIG", live_audit["config_path"])
@@ -1276,7 +1548,7 @@ def test_governed_publication_check_apply_replay(dsn, catalog, governed, capsys)
     assert (code, applied["status"], applied["policy"], applied["published"]) == (
         0, "applied", "committed", True)
     assert _pointer(dsn, env["schema"]) == (
-        "synthetic-xnys", "2026-09-24.2", env["policy"]["generation"]["policy_hash"])
+        "synthetic-xnys", POLICY_VERSION, env["policy"]["generation"]["policy_hash"])
     after = _state(dsn, env["schema"])
     assert after[0][0] == previous_row  # v1 version row immutable
     # F4: exactly one private ledger row binds the plan and the audit receipt.
@@ -1364,6 +1636,12 @@ def _later(value: str, **delta) -> str:
         ("previous_identity", "audit_previous_policy_invalid"),
         ("a8_valid_until_missing", "audit_dossier_invalid"),
         ("a8_outcomes", "audit_dossier_invalid"),
+        # Round6: SEC exclusions/ceilings bound to the policy and the leaf.
+        ("a8_exclusion_not_in_policy", "audit_dossier_invalid"),
+        ("a8_gap_ceiling_raised", "audit_dossier_invalid"),
+        ("a8_conflict_ceiling_raised", "audit_dossier_invalid"),
+        ("round5_contract", "audit_contract_mismatch"),
+        ("capture_kind_v2_round2", "audit_capture_mismatch"),
         ("manifest_foreign_uuid", "canary_manifest_invalid"),
         ("manifest_report_sha", "canary_manifest_invalid"),
         ("manifest_selection", "canary_manifest_invalid"),
@@ -1409,7 +1687,7 @@ def test_governed_receipt_tamper_matrix(dsn, catalog, governed, capsys, monkeypa
     elif case == "gate_not_evaluated":
         dossier(lambda d: d["gates"]["A7"].update(status="NOT_EVALUATED", code="x"))
     elif case == "check_missing":
-        dossier(lambda d: d["gates"]["A8"]["checks"].pop("fresh_within_max_age"))
+        dossier(lambda d: d["gates"]["A8"]["checks"].pop("source_fresh_within_max_age"))
     elif case == "check_false":
         dossier(lambda d: d["gates"]["A4"]["checks"].update(structural_daily_within_ceiling=False))
     elif case == "result_fail":
@@ -1440,7 +1718,20 @@ def test_governed_receipt_tamper_matrix(dsn, catalog, governed, capsys, monkeypa
     elif case == "a8_valid_until_missing":
         dossier(lambda d: d["details"]["A8"]["freshness"].update(valid_until=None))
     elif case == "a8_outcomes":
-        dossier(lambda d: d["details"]["A8"]["outcomes"].update(matched=2, missing=1))
+        dossier(lambda d: d["details"]["A8"]["outcomes"].update({"matched": 2, "sec.missing": 1}))
+    elif case == "a8_exclusion_not_in_policy":
+        dossier(lambda d: d["details"]["A8"]["exclusions"].update(
+            by_code={**d["details"]["A8"]["exclusions"]["by_code"], "sec.missing": 1}, gap=1))
+    elif case == "a8_gap_ceiling_raised":
+        dossier(lambda d: d["details"]["A8"].update(gap_ceiling=24))
+    elif case == "a8_conflict_ceiling_raised":
+        dossier(lambda d: d["details"]["A8"].update(conflict_ceiling=1))
+    elif case == "round5_contract":
+        dossier(lambda d: d["inputs"].update(
+            audit_contract_version="nav-identity-audit-contract-v2-round5"))
+    elif case == "capture_kind_v2_round2":
+        files.update(_rewrite(env, "capture", "c.json",
+                              lambda c: c.update(kind="nav-identity-audit-capture-v2-round2")))
     elif case == "manifest_foreign_uuid":
         manifest(lambda m: m.update(allowlist=sorted([*m["allowlist"], str(catalog["inactive"])]),
                                     size=m["size"] + 1))
@@ -1587,7 +1878,7 @@ def test_governed_pointer_must_be_previous_or_target(dsn, catalog, governed, cap
     foreign = copy.deepcopy(env["previous_doc"])
     foreign["policy_version"] = "2026-09-23.9"
     with psycopg.connect(dsn, options=f"-csearch_path={env['schema']},public") as conn:
-        operator._publish_policy(conn, operator._policy(foreign)[0])
+        operator._publish_policy(conn, foreign)
         conn.commit()
     before = _state(dsn, env["schema"])
     code, out, _ = _op(_op_args(env), capsys)
@@ -1597,14 +1888,13 @@ def test_governed_pointer_must_be_previous_or_target(dsn, catalog, governed, cap
     assert _state(dsn, env["schema"]) == before
 
 
-def _expiring_sec_window(dsn, seconds: int) -> None:
-    """T11's mapping reaches the 7-day limit ``seconds`` from now (DB clock)."""
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute(
-            "UPDATE public.sec_company_tickers_mf SET updated_at = clock_timestamp() "
-            "- interval '7 days' + make_interval(secs => %s::float8) WHERE ticker='T11'",
-            (seconds,),
-        )
+# T11's mapping reaches the 7-day limit EXPIRY_SECONDS after it is written,
+# BEFORE generation (the policy is generated and audited inside the window).
+EXPIRY_SECONDS = 75
+EXPIRING_T11 = _sec_case(
+    "UPDATE public.sec_company_tickers_mf SET updated_at = clock_timestamp() "
+    f"- interval '7 days' + interval '{EXPIRY_SECONDS} seconds' WHERE ticker='T11'"
+)
 
 
 def _sleep_past(instant: dt.datetime, margin: float = 1.5) -> None:
@@ -1612,12 +1902,12 @@ def _sleep_past(instant: dt.datetime, margin: float = 1.5) -> None:
     time.sleep(max(0.0, remaining) + margin)
 
 
+@pytest.mark.parametrize("live_audit", [EXPIRING_T11], indirect=True)
 def test_governed_window_expires_between_check_and_writer_locks(
     dsn, catalog, live_audit, capsys, monkeypatch
 ):
     """Real time passes after the preliminary check, before the NAV locks:
     sec_valid_until (oldest matched updated_at + 7d) is re-decided under them."""
-    _expiring_sec_window(dsn, 40)
     with _governed_env(dsn, live_audit, monkeypatch, capsys) as env:
         code, out, _ = _op(_op_args(env), capsys)
         assert (code, out["status"]) == (0, "ready"), out
@@ -1641,10 +1931,10 @@ def test_governed_window_expires_between_check_and_writer_locks(
         assert _ledger(dsn, env["schema"]) == []
 
 
+@pytest.mark.parametrize("live_audit", [EXPIRING_T11], indirect=True)
 def test_governed_replay_rechecks_the_receipt_window(
     dsn, catalog, live_audit, capsys, monkeypatch
 ):
-    _expiring_sec_window(dsn, 40)
     with _governed_env(dsn, live_audit, monkeypatch, capsys) as env:
         code, out, _ = _op(_op_args(env), capsys)
         assert code == 0, out
@@ -1742,3 +2032,46 @@ def test_governed_target_pointer_is_exact_replay_only(
     code, replay, _ = _op(_op_args(env, mode="apply", plan=fresh["plan_sha256"]), capsys)
     assert (code, replay["status"], replay["policy"]) == (0, "unchanged", "unchanged")
     assert (_state(dsn, env["schema"]), _ledger(dsn, env["schema"])) == (after, ledger)
+
+
+@pytest.mark.parametrize(
+    "live_audit",
+    [_sec_case("DELETE FROM public.sec_company_tickers_mf WHERE ticker='T11'")],
+    indirect=True,
+)
+def test_governed_publication_with_a_sec_gap_exclusion_end_to_end(
+    dsn, catalog, live_audit, capsys, monkeypatch
+):
+    """Generation (4 sources, SEC gap) -> strict audit -> canary -> plan-v4
+    check/apply -> Round4/5 receipt -> exact replay; the excluded fund is
+    published UNKNOWN and never enters the canary."""
+    policy = live_audit["policy"]
+    excluded = str(live_audit["extra"][0][0]["instrument_id"])  # T11
+    status = {row["instrument_id"]: row for row in policy["instrument_evidence"]}
+    assert status[excluded]["fund_status"] == "UNKNOWN"
+    assert policy["generation"]["counts"]["identity_first_failure"] == {"sec.missing": 1}
+    with _governed_env(dsn, live_audit, monkeypatch, capsys) as env:
+        manifest = json.loads(env["files"]["canary_manifest"].read_bytes())
+        assert excluded not in manifest["allowlist"] and manifest["size"] == 2
+        dossier = json.loads(env["files"]["audit_dossier"].read_bytes())
+        assert dossier["details"]["A8"]["exclusions"]["gap"] == 1
+        code, out, printed = _op(_op_args(env), capsys)
+        assert (code, out["status"]) == (0, "ready"), out
+        assert excluded not in printed
+        code, applied, _ = _op(_op_args(env, mode="apply", plan=out["plan_sha256"]), capsys)
+        assert (code, applied["status"], applied["policy"]) == (0, "applied", "committed")
+        assert _pointer(dsn, env["schema"]) == (
+            "synthetic-xnys", POLICY_VERSION, policy["generation"]["policy_hash"])
+        with psycopg.connect(dsn, options=f"-csearch_path={env['schema']},public") as conn:
+            assert conn.execute(
+                "SELECT fund_status, valuation_frequency, identity_verified "
+                "FROM nav_instrument_policy_evidence WHERE policy_version=%s "
+                "AND instrument_id=%s",
+                (POLICY_VERSION, excluded),
+            ).fetchone() == ("UNKNOWN", "unknown", False)
+        assert _event_certified(dsn, env["schema"]) == [
+            (True, True, len(policy["instrument_evidence"]))]
+        after, ledger = _state(dsn, env["schema"]), _ledger(dsn, env["schema"])
+        code, replay, _ = _op(_op_args(env, mode="apply", plan=out["plan_sha256"]), capsys)
+        assert (code, replay["status"], replay["dml_committed"]) == (0, "unchanged", False)
+        assert (_state(dsn, env["schema"]), _ledger(dsn, env["schema"])) == (after, ledger)

@@ -1,4 +1,4 @@
-"""Offline XNYS policy construction, identity v2 lifecycle and artifact custody."""
+"""Offline XNYS policy construction, identity v3 lifecycle and artifact custody."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from scripts import verify_fund_nav_identity_v2 as verifier
 from src.workers._nav_policy import (
     CATALOG_EVIDENCE_REFERENCE,
     IDENTITY_FAILURE_CODES,
+    SEC_FAILURE_CODES,
     SOURCE_QUERY_SHA256,
     generation_metadata_digest,
     instrument_evidence_digest,
@@ -30,12 +31,14 @@ from src.workers._nav_policy import (
     uuid_set_digest,
 )
 from tests._nav_identity_fixtures import (
+    SEC_AT,
     catalog,
     entity,
     only,
     oracle_cusip_valid,
     oracle_figi_valid,
     oracle_isin_valid,
+    sec_row,
     synthetic_cusip,
     synthetic_figi,
     synthetic_isin,
@@ -45,16 +48,22 @@ from tests._nav_identity_fixtures import (
 START = dt.date(2024, 1, 1)
 END = dt.date(2027, 12, 31)
 OBSERVED = dt.datetime(2026, 9, 23, 10, 0, tzinfo=dt.timezone.utc)
+POLICY_VERSION = "2026-09-25.3"
 V1_REFERENCE = (
     "nav-current-catalog-snapshot-v1:public.instruments_universe+public.funds_v:"
     "w1-tiingo-adjusted-daily-v1:current_only"
 )
+V2_REFERENCE = (
+    "nav-current-catalog-snapshot-v2:public.instruments_universe+public.funds_v+"
+    "public.instrument_identity:w1-tiingo-adjusted-daily-v1:current_only_not_pit:"
+    "identity=registry-ticker-series-claims-v2"
+)
 
 
 def _classify(*entities, **extra):
-    instruments, funds, identity = catalog(*entities, **extra)
+    instruments, funds, identity, sec = catalog(*entities, **extra)
     evidence, counts, digests = generator.classify_catalog(
-        instruments, funds, identity, OBSERVED
+        instruments, funds, identity, sec, OBSERVED
     )
     return (
         {uuid.UUID(row["instrument_id"]).int: row for row in evidence},
@@ -79,13 +88,13 @@ def _reason(subject, *others, **extra) -> str | None:
 
 
 def _policy(
-    *entities, policy_version="2026-09-24.2", observed=OBSERVED, calendar=None, **extra
+    *entities, policy_version=POLICY_VERSION, observed=OBSERVED, calendar=None, **extra
 ):
-    instruments, funds, identity = catalog(*entities, **extra)
+    sources = catalog(*entities, **extra)
     calendar = calendar or generator.build_calendar(START, END)
     return generator.build_policy(
-        calendar, instruments, funds, identity, observed, "policy-demo", policy_version
-    ), (instruments, funds, identity)
+        calendar, *sources, observed, "policy-demo", policy_version
+    ), sources
 
 
 def _rehash(policy: dict) -> dict:
@@ -577,14 +586,14 @@ def test_uppercase_uuid_text_is_canonicalized():
 @pytest.mark.parametrize("source", ["iu", "funds", "registry"])
 def test_source_row_limit_aborts_before_classifying(source):
     padding = [dict(entity(1)[{"iu": 0, "funds": 1, "registry": 2}[source]])] * 100_001
-    instruments, funds, identity = catalog(CONTROL)
+    instruments, funds, identity, sec = catalog(CONTROL)
     lists = {"iu": instruments, "funds": funds, "registry": identity}
     lists[source] = padding
     with pytest.raises(
         generator.PolicyGenerationError, match="catalog_row_limit_exceeded"
     ):
         generator.classify_catalog(
-            lists["iu"], lists["funds"], lists["registry"], OBSERVED
+            lists["iu"], lists["funds"], lists["registry"], sec, OBSERVED
         )
 
 
@@ -594,7 +603,10 @@ def test_every_emitted_reason_is_registered_and_counts_close():
         entity(2, figi="ZAG000000010"),
         entity(3, active=False),
         only(entity(4, active=False), fund=False, registry=False),
+        entity(5),
+        entity(6, fund_type="mmf"),
         CONTROL,
+        sec_extra=[sec_row(5, synced=SEC_AT - dt.timedelta(days=30))],
     )
     assert set(counts["identity_first_failure"]) <= set(IDENTITY_FAILURE_CODES)
     assert (
@@ -603,9 +615,369 @@ def test_every_emitted_reason_is_registered_and_counts_close():
     )
     assert (
         counts["structural_pre_claims"] - counts["active"]
-        == counts["structural_claim_failures"]
+        == counts["structural_claim_failures"] + counts["structural_sec_failures"]
     )
     assert counts["structural_claim_failures"] == 1  # the FIGI failure only
+    # Entity 5: a fresh correct row plus a stale duplicate triple -> historical
+    # rows never contradict fresh ones, so it stays ACTIVE.
+    assert rows[5]["fund_status"] == "ACTIVE"
+    assert counts["structural_sec_failures"] == 0
+
+
+# ── SEC corroboration (fourth source, same snapshot) ─────────────────────────
+TAU = OBSERVED
+FRESH = TAU - dt.timedelta(days=1)
+OLD = TAU - dt.timedelta(days=8)
+
+
+def _sec_case(subject_kwargs=None, *, sec, extra_entities=()):
+    """First failure of UUID 1 with the given SEC rows (CONTROL corroborated)."""
+    subject = entity(1, **(subject_kwargs or {}))
+    rows = [*sec, sec_row(900, synced=FRESH)]
+    return _reason(subject, CONTROL, *extra_entities, sec=rows)
+
+
+@pytest.mark.parametrize(
+    "sec,kwargs,code",
+    [
+        ([sec_row(1, synced=FRESH)], None, None),
+        ([sec_row(1, synced=FRESH)], {"class_id": "C000000001"}, None),
+        # Trim + ASCII uppercase on both sides; never repair.
+        ([sec_row(1, class_id=" c000000001 ", ticker="t1", synced=FRESH)], None, None),
+        # A declared class is judged first, even with no SEC row at all.
+        ([], {"class_id": "S000000001"}, "sec.declared_class_invalid"),
+        ([sec_row(1, synced=FRESH)], {"class_id": "C1"}, "sec.declared_class_invalid"),
+        # Fresh related rows with a malformed populated class/series: poison.
+        (
+            [sec_row(1, class_id="S000000001:T1", synced=FRESH)],
+            None,
+            "sec.poisoned_mapping",
+        ),
+        ([sec_row(1, series="SX", synced=FRESH)], None, "sec.poisoned_mapping"),
+        (
+            [
+                sec_row(1, synced=FRESH),
+                sec_row(2, class_id="C2", ticker="T1", synced=FRESH),
+            ],
+            None,
+            "sec.poisoned_mapping",
+        ),
+        # Populated fields that differ from sigma/theta/kappa: contradiction.
+        ([sec_row(1, series="S000000009", synced=FRESH)], None, "sec.contradiction"),
+        ([sec_row(1, synced=FRESH)], {"class_id": "C000000002"}, "sec.contradiction"),
+        # Related through the declared class but with another ticker.
+        (
+            [sec_row(1, synced=FRESH), sec_row(1, ticker="OTHER", synced=FRESH)],
+            {"class_id": "C000000001"},
+            "sec.contradiction",
+        ),
+        # Ambiguity: two complete rows, or a repeated normalized triple.
+        (
+            [
+                sec_row(1, synced=FRESH),
+                sec_row(2, series="S000000001", ticker="T1", synced=FRESH),
+            ],
+            None,
+            "sec.ambiguous",
+        ),
+        ([sec_row(1, synced=FRESH), sec_row(1, synced=FRESH)], None, "sec.ambiguous"),
+        (
+            [
+                sec_row(1, synced=FRESH),
+                sec_row(1, synced=FRESH - dt.timedelta(hours=1)),
+            ],
+            None,
+            "sec.ambiguous",
+        ),
+        # A fresh related row without class/series/ticker: incomplete, even
+        # beside a valid companion (empty text is absence, not poison).
+        ([sec_row(1, class_id=None, synced=FRESH)], None, "sec.incomplete"),
+        ([sec_row(1, class_id="", synced=FRESH)], None, "sec.incomplete"),
+        (
+            [
+                sec_row(1, synced=FRESH),
+                sec_row(2, series=None, ticker="T1", synced=FRESH),
+            ],
+            None,
+            "sec.incomplete",
+        ),
+        # Historical rows never corroborate nor contradict fresh ones: a ticker
+        # reused by another class/series in the past beside the fresh correct row.
+        (
+            [sec_row(1, synced=FRESH), sec_row(1, series="S000000009", synced=OLD)],
+            None,
+            None,
+        ),
+        (
+            [sec_row(1, synced=FRESH), sec_row(2, ticker="T1", synced=OLD)],
+            None,
+            None,
+        ),
+        (
+            [sec_row(1, synced=FRESH), sec_row(2, ticker="T1", synced=OLD)],
+            {"class_id": "C000000001"},
+            None,
+        ),
+        ([sec_row(1, synced=OLD)], None, "sec.stale"),
+        (
+            [sec_row(1, synced=OLD), sec_row(1, series="SX", synced=OLD)],
+            None,
+            "sec.stale",
+        ),
+        ([], None, "sec.missing"),
+        ([sec_row(2, synced=FRESH)], None, "sec.missing"),
+        # All classes of a series are NOT related without the ticker.
+        ([sec_row(2, series="S000000001", synced=FRESH)], None, "sec.missing"),
+        # Precedence inside SEC: poison > contradiction > ambiguous > incomplete.
+        (
+            [
+                sec_row(1, series="S000000009", synced=FRESH),
+                sec_row(2, series="SX", ticker="T1", synced=FRESH),
+            ],
+            None,
+            "sec.poisoned_mapping",
+        ),
+        (
+            [
+                sec_row(1, synced=FRESH),
+                sec_row(1, synced=FRESH),
+                sec_row(2, series="S000000009", ticker="T1", synced=FRESH),
+            ],
+            None,
+            "sec.contradiction",
+        ),
+        (
+            [
+                sec_row(1, synced=FRESH),
+                sec_row(1, synced=FRESH),
+                sec_row(2, series=None, ticker="T1", synced=FRESH),
+            ],
+            None,
+            "sec.ambiguous",
+        ),
+    ],
+)
+def test_sec_first_failure_matrix(sec, kwargs, code):
+    assert _sec_case(kwargs, sec=sec) == code
+
+
+def test_sec_freshness_boundary_is_exactly_seven_days():
+    exact = TAU - dt.timedelta(days=7)
+    assert _sec_case(sec=[sec_row(1, synced=exact)]) is None
+    stale = exact - dt.timedelta(microseconds=1)
+    assert _sec_case(sec=[sec_row(1, synced=stale)]) == "sec.stale"
+    # The newest source row keeps the source itself fresh (CONTROL at FRESH).
+
+
+def test_sec_is_last_internal_failures_keep_their_reason():
+    stale = [sec_row(1, synced=OLD)]
+    assert (
+        _sec_case({"iu_isin": wrong_check(synthetic_isin(1))}, sec=stale)
+        == "isin.checksum"
+    )
+    assert _sec_case({"active": None}, sec=[]) == "activity.unknown"
+    assert _sec_case({"fund_type": "closed_end"}, sec=[]) == "fund_type.unsupported"
+    # INACTIVE never needs SEC.
+    rows, counts, _ = _classify(
+        only(entity(3, active=False), fund=False, registry=False), CONTROL
+    )
+    assert rows[3]["fund_status"] == "INACTIVE"
+    assert list(IDENTITY_FAILURE_CODES[-len(SEC_FAILURE_CODES) :]) == list(
+        SEC_FAILURE_CODES
+    )
+    assert IDENTITY_FAILURE_CODES.index("activity.unknown") + 1 == (
+        IDENTITY_FAILURE_CODES.index("sec.declared_class_invalid")
+    )
+
+
+def test_sec_failure_is_unknown_with_every_flag_false_and_mmf_needs_sec():
+    rows, counts, digests = _classify(
+        entity(1, fund_type="mmf"),
+        entity(2),
+        entity(3),
+        CONTROL,
+        sec=[
+            sec_row(2, synced=OLD),
+            sec_row(3, synced=FRESH),
+            sec_row(900, synced=FRESH),
+        ],
+    )
+    assert rows[1]["fund_status"] == rows[2]["fund_status"] == "UNKNOWN"
+    for number in (1, 2):
+        assert rows[number]["valuation_frequency"] == "unknown"
+        assert not any(
+            rows[number][flag]
+            for flag in (
+                "identity_verified",
+                "return_basis_verified",
+                "currency_verified",
+            )
+        )
+    assert counts["identity_first_failure"] == {"sec.missing": 1, "sec.stale": 1}
+    # P counts daily structural candidates only (the MMF is outside it).
+    assert counts["structural_pre_claims"] == 4
+    assert counts["structural_pre_claims_daily"] == 3
+    assert counts["structural_sec_failures"] == 2
+    assert counts["structural_daily_sec_failures"] == 1
+    assert counts["active"] == counts["active_daily"] == 2
+    assert (
+        counts["structural_pre_claims_daily"] - counts["active_daily"]
+        == counts["structural_daily_claim_failures"]
+        + counts["structural_daily_sec_failures"]
+    )
+
+
+def test_sec_row_found_by_ticker_and_class_is_one_row():
+    rows = [sec_row(1, synced=FRESH)]
+    assert _sec_case({"class_id": "C000000001"}, sec=rows) is None
+
+
+@pytest.mark.parametrize(
+    "sec,code",
+    [
+        ([], "sec_source_empty"),
+        (
+            [sec_row(900, synced=TAU + dt.timedelta(microseconds=1))],
+            "sec_source_future",
+        ),
+        (
+            [sec_row(900, synced=TAU - dt.timedelta(days=7, microseconds=1))],
+            "sec_source_stale",
+        ),
+        # An unrelated future row aborts too: a systemic defect, never UNKNOWN.
+        (
+            [
+                sec_row(900, synced=FRESH),
+                sec_row(77, synced=TAU + dt.timedelta(seconds=1)),
+            ],
+            "sec_source_future",
+        ),
+        ([dict(sec_row(900), synced_at=None)], "sec_source_timestamp_invalid"),
+        (
+            [dict(sec_row(900), synced_at=dt.datetime(2026, 9, 22, 12))],
+            "sec_source_timestamp_invalid",
+        ),
+        ([dict(sec_row(900), synced_at="2026-09-22")], "sec_source_timestamp_invalid"),
+        ([dict(sec_row(900), ticker=5)], "sec_source_type_invalid"),
+        (
+            [{"class_id": "C000000900", "series_id": "S000000900"}],
+            "sec_source_schema_invalid",
+        ),
+        ([sec_row(900, synced=FRESH)] * 100_001, "sec_source_row_limit_exceeded"),
+    ],
+)
+def test_sec_source_defects_abort_the_whole_build(sec, code):
+    instruments, funds, identity, _ = catalog(entity(1), CONTROL)
+    with pytest.raises(generator.PolicyGenerationError, match=code):
+        generator.classify_catalog(instruments, funds, identity, sec, TAU)
+
+
+@pytest.mark.parametrize(
+    "lineage,code",
+    [
+        (None, "sec_source_lineage_mismatch"),
+        (
+            {"row_count": 2, "min_synced_at": FRESH, "max_synced_at": FRESH},
+            "sec_source_lineage_mismatch",
+        ),
+        (
+            {"row_count": 1, "min_synced_at": OLD, "max_synced_at": FRESH},
+            "sec_source_lineage_mismatch",
+        ),
+        (
+            {"row_count": True, "min_synced_at": FRESH, "max_synced_at": FRESH},
+            "sec_source_lineage_mismatch",
+        ),
+        (
+            {"row_count": 0, "min_synced_at": None, "max_synced_at": None},
+            "sec_source_lineage_mismatch",
+        ),
+    ],
+)
+def test_sec_lineage_must_describe_the_rows(lineage, code):
+    rows = [sec_row(900, synced=FRESH)]
+    with pytest.raises(generator.PolicyGenerationError, match=code):
+        generator._reconcile_sec_lineage(rows, lineage)
+    generator._reconcile_sec_lineage(
+        rows, {"row_count": 1, "min_synced_at": FRESH, "max_synced_at": FRESH}
+    )
+    generator._reconcile_sec_lineage(
+        [], {"row_count": 0, "min_synced_at": None, "max_synced_at": None}
+    )
+    with pytest.raises(
+        generator.PolicyGenerationError, match="sec_source_timestamp_invalid"
+    ):
+        generator._reconcile_sec_lineage(
+            [dict(rows[0], synced_at=None)],
+            {"row_count": 1, "min_synced_at": FRESH, "max_synced_at": FRESH},
+        )
+
+
+def test_sec_snapshot_text_is_canonical_utc_microseconds():
+    offset = dt.timezone(dt.timedelta(hours=-4))
+    rows = [sec_row(900, synced=FRESH.astimezone(offset))]
+    canonical = generator.canonical_source_rows(rows, "sec")
+    assert canonical[0]["synced_at"] == "2026-09-22T10:00:00.000000+00:00"
+    assert generator.canonical_source_rows(canonical, "sec") == canonical
+    assert generator.source_snapshot_sha256(
+        [], [], [], rows
+    ) == generator.source_snapshot_sha256([], [], [], canonical)
+    # Any SEC updated_at change (economically irrelevant) changes the hash.
+    moved = [dict(rows[0], synced_at=FRESH + dt.timedelta(microseconds=1))]
+    assert generator.source_snapshot_sha256(
+        [], [], [], moved
+    ) != generator.source_snapshot_sha256([], [], [], rows)
+
+
+def test_v3_active_set_is_the_v2_semantics_set_minus_exactly_sec_failures():
+    """Same internal gates: v3 ACTIVE ⊆ (every internal gate passed), difference = SEC."""
+    entities = [entity(n) for n in range(1, 12)] + [
+        entity(20, active=None),
+        entity(21, iu_isin=wrong_check(synthetic_isin(21))),
+        entity(22, fund_type="mmf"),
+    ]
+    sec = [sec_row(n, synced=FRESH) for n in (1, 2, 3, 4, 5, 6, 20, 21, 22)]
+    sec += [sec_row(7, synced=OLD), sec_row(8, series="S000000099", synced=FRESH)]
+    sec += [sec_row(9, synced=FRESH), sec_row(9, synced=FRESH)]
+    instruments, funds, identity, _ = catalog(*entities)
+    evidence, counts, _ = generator.classify_catalog(
+        instruments, funds, identity, sec, TAU
+    )
+    everyone = catalog(*entities)[3]  # a consistent fresh row for every entity
+    internal, internal_counts, _ = generator.classify_catalog(
+        instruments, funds, identity, everyone, TAU
+    )
+    v3 = {r["instrument_id"] for r in evidence if r["fund_status"] == "ACTIVE"}
+    v2 = {r["instrument_id"] for r in internal if r["fund_status"] == "ACTIVE"}
+    excluded = {str(uuid.UUID(int=n)) for n in (7, 8, 9, 10, 11)}
+    assert v3 <= v2 and v2 - v3 == excluded
+    sec_counts = {
+        k: v
+        for k, v in counts["identity_first_failure"].items()
+        if k.startswith("sec.")
+    }
+    assert sec_counts == {
+        "sec.ambiguous": 1,
+        "sec.contradiction": 1,
+        "sec.missing": 2,
+        "sec.stale": 1,
+    }
+    non_sec = {
+        k: v
+        for k, v in counts["identity_first_failure"].items()
+        if not k.startswith("sec.")
+    }
+    assert non_sec == internal_counts["identity_first_failure"]
+    for key in ("structural_pre_claims", "structural_pre_claims_daily"):
+        assert counts[key] == internal_counts[key]
+    assert counts["active"] == internal_counts["active"] - 5
+    assert (
+        counts["fund_status"]["UNKNOWN"]
+        == internal_counts["fund_status"]["UNKNOWN"] + 5
+    )
+    assert counts["fund_status"].get("INACTIVE") == internal_counts["fund_status"].get(
+        "INACTIVE"
+    )
 
 
 # ── seeded properties ────────────────────────────────────────────────────────
@@ -640,22 +1012,24 @@ def _random_catalog(rng: random.Random, size: int = 40):
     return catalog(*entities)
 
 
-def _active(instruments, funds, identity) -> set[str]:
-    evidence, _, _ = generator.classify_catalog(instruments, funds, identity, OBSERVED)
+def _active(instruments, funds, identity, sec) -> set[str]:
+    evidence, _, _ = generator.classify_catalog(
+        instruments, funds, identity, sec, OBSERVED
+    )
     return {row["instrument_id"] for row in evidence if row["fund_status"] == "ACTIVE"}
 
 
 @pytest.mark.parametrize("seed", range(20))
 def test_properties_permutation_duplication_contradiction_and_owner(seed):
     rng = random.Random(seed)
-    instruments, funds, identity = _random_catalog(rng)
+    instruments, funds, identity, sec = _random_catalog(rng)
     base_evidence, base_counts, base_digests = generator.classify_catalog(
-        instruments, funds, identity, OBSERVED
+        instruments, funds, identity, sec, OBSERVED
     )
     base_active = {
         r["instrument_id"] for r in base_evidence if r["fund_status"] == "ACTIVE"
     }
-    shuffled = [list(rows) for rows in (instruments, funds, identity)]
+    shuffled = [list(rows) for rows in (instruments, funds, identity, sec)]
     for rows in shuffled:
         rng.shuffle(rows)
     assert generator.classify_catalog(*shuffled, OBSERVED) == (
@@ -665,12 +1039,17 @@ def test_properties_permutation_duplication_contradiction_and_owner(seed):
     )
     assert generator.source_snapshot_sha256(
         *shuffled
-    ) == generator.source_snapshot_sha256(instruments, funds, identity)
-    # Duplicating any row never promotes.
-    for rows_index in range(3):
-        lists = [list(rows) for rows in (instruments, funds, identity)]
+    ) == generator.source_snapshot_sha256(instruments, funds, identity, sec)
+    # Duplicating any row (SEC included) never promotes.
+    for rows_index in range(4):
+        lists = [list(rows) for rows in (instruments, funds, identity, sec)]
         lists[rows_index].append(dict(rng.choice(lists[rows_index])))
         assert _active(*lists) <= base_active
+    # Removing any SEC row never promotes (SEC only ever withdraws ACTIVE).
+    if len(sec) > 1:
+        fewer = list(sec)
+        fewer.pop(rng.randrange(len(fewer)))
+        assert _active(instruments, funds, identity, fewer) <= base_active
     if base_active:
         target = uuid.UUID(sorted(base_active)[rng.randrange(len(base_active))])
         target_ticker = next(
@@ -678,7 +1057,7 @@ def test_properties_permutation_duplication_contradiction_and_owner(seed):
         )
         # A contradiction (foreign owner of the ticker) demotes it, promotes nobody.
         owner = dict(entity(5000)[0], instrument_type="equity", ticker=target_ticker)
-        after = _active(instruments + [owner], funds, identity)
+        after = _active(instruments + [owner], funds, identity, sec)
         assert after <= base_active and str(target) not in after
         # A new unique, valid FIGI on the target never demotes anyone.
         registry = [
@@ -687,9 +1066,9 @@ def test_properties_permutation_duplication_contradiction_and_owner(seed):
             else r
             for r in identity
         ]
-        assert _active(instruments, funds, registry) >= base_active - {str(target)}
+        assert _active(instruments, funds, registry, sec) >= base_active - {str(target)}
         if all(r["figi"] is None for r in identity if r["instrument_id"] == target):
-            assert _active(instruments, funds, registry) == base_active
+            assert _active(instruments, funds, registry, sec) == base_active
     # Any extra claimant (non-fund owner of an existing claim) never adds ACTIVE.
     donor = rng.choice(identity)
     claimant = dict(
@@ -698,7 +1077,7 @@ def test_properties_permutation_duplication_contradiction_and_owner(seed):
         ticker=donor["ticker"],
         isin=donor["isin"],
     )
-    assert _active(instruments + [claimant], funds, identity) <= base_active
+    assert _active(instruments + [claimant], funds, identity, sec) <= base_active
 
 
 # ── policy document, hashes and operator strictness ─────────────────────────
@@ -719,12 +1098,13 @@ def test_policy_content_hash_is_stable_across_generation_timestamps(calendar):
     assert first["generation"]["policy_hash"] == policy_content_digest(first)
     assert operator._policy(first)[0] == first
     assert generator.verify_artifact(first)["mode"] == "build"
-    assert first["generator_version"] == "fund-nav-policy-generator-v2"
+    assert first["generator_version"] == "fund-nav-policy-generator-v3"
     assert first["generation"]["source_query_sha256"] == SOURCE_QUERY_SHA256
     assert {r["evidence_reference"] for r in first["instrument_evidence"]} == {
         CATALOG_EVIDENCE_REFERENCE
     }
-    assert "identity=registry-ticker-series-claims-v2" in CATALOG_EVIDENCE_REFERENCE
+    assert "identity=registry-ticker-series-claims-sec-v3" in CATALOG_EVIDENCE_REFERENCE
+    assert "public.sec_company_tickers_mf" in CATALOG_EVIDENCE_REFERENCE
     assert (
         "current_only" in CATALOG_EVIDENCE_REFERENCE
         and "not_pit" in CATALOG_EVIDENCE_REFERENCE
@@ -806,6 +1186,12 @@ def _tampered_counts(policy, mutate):
             "structural_pre_claims", c["structural_pre_claims"] + 1
         ),
         lambda c: c.__setitem__("structural_claim_failures", -1),
+        lambda c: c.__setitem__("structural_sec_failures", 1),
+        lambda c: c.__setitem__("structural_daily_sec_failures", 1),
+        lambda c: c.__setitem__("structural_daily_claim_failures", 1),
+        lambda c: c.pop("structural_sec_failures"),
+        lambda c: c.pop("sec_company_tickers_mf"),
+        lambda c: c["identity_first_failure"].__setitem__("sec.missing", 1),
         lambda c: c["isin_presence_active"].__setitem__("both", 0),
         lambda c: c["inactive_reason"].__setitem__("inactive_without_funds_v", 5),
         lambda c: c["fund_status"].__setitem__("ACTIVE", 3),
@@ -848,8 +1234,11 @@ def test_unknown_with_verified_flag_is_rejected_even_when_rehashed(calendar):
     "tamper",
     [
         "generator_v1",
+        "generator_v2",
         "query_v1",
+        "query_v2",
         "reference_v1",
+        "reference_v2",
         "provider",
     ],
 )
@@ -861,11 +1250,21 @@ def test_retired_or_unsupported_contract_is_rejected_even_when_rehashed(
         policy["generator_version"] = policy["generation"]["generator_version"] = (
             "fund-nav-policy-generator-v1"
         )
+    elif tamper == "generator_v2":
+        # A consistently rehashed v2 artifact is still never publishable.
+        policy["generator_version"] = policy["generation"]["generator_version"] = (
+            "fund-nav-policy-generator-v2"
+        )
     elif tamper == "query_v1":
         policy["generation"]["source_query_version"] = "nav-current-catalog-snapshot-v1"
+    elif tamper == "query_v2":
+        policy["generation"]["source_query_version"] = "nav-current-catalog-snapshot-v2"
     elif tamper == "reference_v1":
         for row in policy["instrument_evidence"]:
             row["evidence_reference"] = V1_REFERENCE
+    elif tamper == "reference_v2":
+        for row in policy["instrument_evidence"]:
+            row["evidence_reference"] = V2_REFERENCE
     else:
         policy["provider_contract"] = policy["generation"]["provider_contract"] = (
             "unsupported"
@@ -876,7 +1275,9 @@ def test_retired_or_unsupported_contract_is_rejected_even_when_rehashed(
         generator.verify_artifact(policy)
 
 
-@pytest.mark.parametrize("reference", [V1_REFERENCE, CATALOG_EVIDENCE_REFERENCE])
+@pytest.mark.parametrize(
+    "reference", [V1_REFERENCE, V2_REFERENCE, CATALOG_EVIDENCE_REFERENCE]
+)
 def test_hand_authored_policy_cannot_claim_generator_catalog_references(
     calendar, reference
 ):
@@ -903,7 +1304,16 @@ def test_source_snapshot_export_is_hash_linked_and_tamper_evident(calendar):
         ]
         == policy["generation"]["source_snapshot_sha256"]
     )
-    assert snapshot["row_counts"] == {"funds": 2, "identity": 2, "instruments": 2}
+    assert snapshot["row_counts"] == {
+        "funds": 2,
+        "identity": 2,
+        "instruments": 2,
+        "sec": 2,
+    }
+    assert snapshot["kind"] == "nav-current-catalog-source-snapshot-v3"
+    assert snapshot["sources"]["sec"][0]["synced_at"] == (
+        "2026-09-23T00:00:00.000000+00:00"
+    )
     with pytest.raises(
         generator.PolicyGenerationError, match="source_snapshot_not_canonical"
     ):
@@ -914,6 +1324,18 @@ def test_source_snapshot_export_is_hash_linked_and_tamper_evident(calendar):
         generator.PolicyGenerationError, match="source_snapshot_link_invalid"
     ):
         generator.verify_source_snapshot(tampered, policy)
+    # A SEC updated_at moved by one microsecond breaks the link as well.
+    tampered = copy.deepcopy(snapshot)
+    tampered["sources"]["sec"][0]["synced_at"] = "2026-09-23T00:00:00.000001+00:00"
+    with pytest.raises(
+        generator.PolicyGenerationError, match="source_snapshot_link_invalid"
+    ):
+        generator.verify_source_snapshot(tampered, policy)
+    for bad in ("2026-09-23T00:00:00+00:00", "2026-09-23T00:00:00.000000Z", None):
+        tampered = copy.deepcopy(snapshot)
+        tampered["sources"]["sec"][0]["synced_at"] = bad
+        with pytest.raises(generator.PolicyGenerationError):
+            generator.verify_source_snapshot(tampered, policy)
     other, _ = _policy(
         entity(1),
         entity(2, iu_isin=None),
@@ -1302,7 +1724,7 @@ def _build_args(root, output, *extra):
         "--policy-id",
         "current-daily-nav-xnys-usd-adjusted",
         "--policy-version",
-        "2026-09-24.2",
+        POLICY_VERSION,
         *extra,
     ]
 
@@ -1315,7 +1737,7 @@ def test_build_exports_private_hash_linked_source_snapshot(
 ):
     root = _private_custody(tmp_path)
     _fake_snapshot(monkeypatch, entity(1), entity(2, reg_isin=None, cusip=None))
-    policy_path, snapshot_path = root / "policy-v2.json", root / "source-v2.json"
+    policy_path, snapshot_path = root / "policy-v3.json", root / "source-v3.json"
     assert (
         generator.main(
             _build_args(
@@ -1372,7 +1794,7 @@ def test_snapshot_export_failure_keeps_policy_as_incomplete_bundle(
 ):
     root = _private_custody(tmp_path)
     _fake_snapshot(monkeypatch, entity(1))
-    policy_path, snapshot_path = root / "policy-v2.json", root / "source-v2.json"
+    policy_path, snapshot_path = root / "policy-v3.json", root / "source-v3.json"
     real_write = generator.write_artifact
     calls = []
 
@@ -1412,6 +1834,31 @@ def test_snapshot_export_failure_keeps_policy_as_incomplete_bundle(
     assert (
         json.loads(capsys.readouterr().out)["code"] == "source_snapshot_output_collides"
     )
+
+
+@pytest.mark.parametrize(
+    "sec,code",
+    [
+        ([], "sec_source_empty"),
+        ([sec_row(900, synced=OBSERVED - dt.timedelta(days=9))], "sec_source_stale"),
+        (
+            [sec_row(900, synced=OBSERVED + dt.timedelta(seconds=1))],
+            "sec_source_future",
+        ),
+    ],
+)
+def test_sec_source_abort_blocks_build_without_writing(
+    tmp_path, monkeypatch, capsys, sec, code
+):
+    rows = catalog(entity(1), CONTROL, sec=sec)
+    monkeypatch.setenv("NAV_FAKE_DSN", "postgresql://fake.invalid/never-used")
+    monkeypatch.setattr(
+        generator, "read_catalog_snapshot", lambda dsn: (OBSERVED, *rows)
+    )
+    output = tmp_path / "policy.json"
+    assert generator.main(_build_args(tmp_path, output)) == 2
+    assert json.loads(capsys.readouterr().out)["code"] == code
+    assert not output.exists()
 
 
 def test_projection_mismatch_blocks_build_without_writing(

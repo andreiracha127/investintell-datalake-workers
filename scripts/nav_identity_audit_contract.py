@@ -1,4 +1,4 @@
-"""Declarative NAV identity audit contract, Round2 (shared leaf).
+"""Declarative NAV identity audit contract, Round6 / identity v3 (shared leaf).
 
 Pure data. This module imports nothing: not the generator/classifier, the
 independent auditor, the operator, a database driver or the custody writer.
@@ -7,7 +7,8 @@ The auditor (``scripts.verify_fund_nav_identity_v2``) and the operator
 imports the auditor or the classifier to validate a publication receipt.
 
 ``AUDIT_CONTRACT`` is the canonical declaration of the governed audit
-semantics (A4 ceiling population, A8 source/queries/freshness, required
+semantics (generation identity, SEC corroboration precedence and ceilings, A4
+ceiling population and conservation, A8 source/queries/freshness, required
 checks per gate, dossier/manifest/receipt shapes, Stage-1 margin, canary rule
 and selection digest). ``AUDIT_CONTRACT_SHA256`` is its frozen digest:
 SHA-256 of ``json.dumps(AUDIT_CONTRACT, sort_keys=True, separators=(",", ":"),
@@ -15,22 +16,43 @@ ensure_ascii=True)`` encoded UTF-8. The auditor recomputes it at import and
 refuses to run on a mismatch; any semantic change requires a new
 ``AUDIT_CONTRACT_VERSION`` and a new literal, never a silent edit.
 
+Round6 is an AUDIT contract bump (the SEC source now changes generation, the
+evidence universe and A4/A5/A8), not a receipt migration: the plan-v4 receipt
+shape and the Round5 publication semantics are unchanged.
+
 ``SEC_QUERY_CONTRACT_SHA256`` is SHA-256 of ``SEC_SQL + "\\n" + SEC_LINEAGE_SQL``.
 """
 
 from __future__ import annotations
 
-AUDIT_VERSION = "nav-identity-audit-v2"
-AUDIT_CONFIG_VERSION = "nav-identity-audit-config-v2"
-AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v2-round5"
-CAPTURE_KIND = "nav-identity-audit-capture-v2-round2"
+AUDIT_VERSION = "nav-identity-audit-v3"
+AUDIT_CONFIG_VERSION = "nav-identity-audit-config-v3"
+AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v3-round6"
+CAPTURE_KIND = "nav-identity-audit-capture-v3-round6"
+# Manifest SHAPE is unchanged; the v3-round6 contract version/hash it carries
+# is the binding, never compatibility with a v2 audit.
 CANARY_KIND = "nav-policy-v2-canary-manifest-round2"
 PLAN_VERSION = "nav-schema-plan-v4"
 
-# Catalog query digest of the three policy sources (generator contract; the
-# auditor recomputes it from its own independent SQL literals).
+# Generation identity the audited artifact must carry (the generator keeps
+# its own constants; the auditor its own literal copies; tests pin all three).
+GENERATOR_VERSION = "fund-nav-policy-generator-v3"
+CATALOG_QUERY_VERSION = "nav-current-catalog-snapshot-v3"
+IDENTITY_CONTRACT_VERSION = "registry-ticker-series-claims-sec-v3"
+SOURCE_SNAPSHOT_KIND = "nav-current-catalog-source-snapshot-v3"
+RETIRED_GENERATOR_VERSIONS = (
+    "fund-nav-policy-generator-v1",
+    "fund-nav-policy-generator-v2",
+)
+RETIRED_CATALOG_QUERY_VERSIONS = (
+    "nav-current-catalog-snapshot-v1",
+    "nav-current-catalog-snapshot-v2",
+)
+
+# Ordered digest of the four policy source SQLs (IU, funds_v, registry, SEC);
+# the auditor recomputes it from its own independent SQL literals.
 CATALOG_SOURCE_QUERY_SHA256 = (
-    "39ca1c5d3f09d989abb8c7fdfd652ef3832683d99486ad006610a37fb0cb97f7"
+    "47cd5565cad722bd2ca7377f5206ea39d9460861394b7d09f87c113d5b39b2b5"
 )
 
 ROW_CEILING = 100_000
@@ -75,19 +97,52 @@ SEC_CAPTURED_KEYS = (
     "state",
     "timestamp_column",
 )
-A8_OUTCOMES = (
-    "ambiguous",
-    "contradiction",
-    "matched",
-    "missing",
-    "partial",
-    "poisoned_active_mapping",
+# ── SEC corroboration of a candidate (generation AND audit, independently) ──
+# Evaluated only for a candidate passing every internal gate (after activity);
+# first failure in this order. Fresh rows are 0 <= instant - synced_at <= 7d
+# (7d + 1 microsecond is stale); historical rows neither corroborate nor
+# contradict fresh ones.
+SEC_FAILURE_CODES = (
+    "sec.declared_class_invalid",
+    "sec.poisoned_mapping",
+    "sec.contradiction",
+    "sec.ambiguous",
+    "sec.incomplete",
+    "sec.stale",
+    "sec.missing",
 )
+SEC_GAP_CODES = ("sec.incomplete", "sec.stale", "sec.missing")
+SEC_CONFLICT_CODES = (
+    "sec.declared_class_invalid",
+    "sec.poisoned_mapping",
+    "sec.contradiction",
+    "sec.ambiguous",
+)
+# Reviewed, fixed ceilings on FUNDS excluded by a SEC first failure (never
+# source rows); the config must carry exactly these values; never auto-raised.
+SEC_GAP_CEILING = 23
+SEC_CONFLICT_CEILING = 0
+SEC_GAP_CEILING_KEY = "gap_ceiling"
+SEC_CONFLICT_CEILING_KEY = "conflict_ceiling"
+# Systemic SEC source defects abort generation (never a per-fund UNKNOWN).
+SEC_SOURCE_ABORT_CODES = (
+    "sec_source_empty",
+    "sec_source_future",
+    "sec_source_lineage_mismatch",
+    "sec_source_privilege_missing",
+    "sec_source_relation_missing",
+    "sec_source_row_limit_exceeded",
+    "sec_source_schema_invalid",
+    "sec_source_stale",
+    "sec_source_timestamp_invalid",
+    "sec_source_type_invalid",
+)
+A8_OUTCOMES = ("matched", *SEC_FAILURE_CODES)
 A8_DETAIL_KEYS = (
-    "active_poisoned_count",
-    "duplicate_source_rows",
-    "excluded_poisoned_count",
+    "conflict_ceiling",
+    "exclusions",
     "freshness",
+    "gap_ceiling",
     "invalid_source_rows",
     "lineage",
     "outcomes",
@@ -100,6 +155,7 @@ A8_DETAIL_KEYS = (
     "source_contract",
     "timestamp_column",
 )
+A8_EXCLUSION_KEYS = ("by_code", "conflict", "gap")
 A8_FRESHNESS_KEYS = (
     "decision_at",
     "lineage_max_synced_at",
@@ -115,6 +171,7 @@ A4_DETAIL_KEYS = (
     "ceiling_population",
     "claim_first_failure",
     "pre_claim_first_failure",
+    "sec_first_failure",
     "structural_baseline",
     "structural_daily_ceiling",
     "structural_daily_count",
@@ -162,9 +219,10 @@ GATE_CHECKS = {
         "active_daily_subset_of_structural_daily",
         "baseline_first_failure_closure",
         "structural_baseline_accepted",
+        "structural_daily_reconciled_by_claim_and_sec_failures",
         "structural_daily_subset_of_baseline",
         "structural_daily_within_ceiling",
-        "structural_reconciled_by_claim_failures",
+        "structural_reconciled_by_claim_and_sec_failures",
     ),
     "A5": (
         "active_daily_digest",
@@ -191,12 +249,11 @@ GATE_CHECKS = {
     "A8": (
         "active_nonempty",
         "all_active_matched",
-        "fresh_within_max_age",
+        "sec_conflict_within_ceiling",
+        "sec_gap_within_ceiling",
+        "source_fresh_within_max_age",
         "source_lineage_verified",
         "synced_not_in_future",
-        "zero_active_duplicates",
-        "zero_active_poisoned",
-        "zero_contradictions",
     ),
 }
 DOSSIER_KEYS = (
@@ -313,35 +370,83 @@ AUDIT_CONTRACT = {
         "ceiling_default": DEFAULT_STRUCTURAL_DAILY_CEILING,
         "ceiling_population": "structural_pre_claims_daily",
         "closure": "D<=P<=B; B-P first failure in cardinality|registry|ticker|series; "
-        "P-D first failure in isin|cusip|figi; |B|=|D|+|B-P|+|P-D|",
+        "P-D first failure in isin|cusip|figi|sec; |B|=|D|+|B-P|+|P-D|; "
+        "|P|-|D| = structural_daily_claim_failures + structural_daily_sec_failures "
+        "(inside P, MMF outside); structural_pre_claims - |A| = "
+        "structural_claim_failures + structural_sec_failures (total domain); A "
+        "(ACTIVE total, MMF included) is never substituted for D",
         "detail_keys": list(A4_DETAIL_KEYS),
         "retired_config_keys": list(RETIRED_CEILING_KEYS),
     },
     "a8": {
         "class_pattern": SEC_CLASS_PATTERN,
+        "conflict_ceiling": SEC_CONFLICT_CEILING,
+        "conflict_ceiling_key": SEC_CONFLICT_CEILING_KEY,
         "detail_keys": list(A8_DETAIL_KEYS),
-        "freshness": "every matched row: 0 <= decision_at - synced_at <= "
+        "exclusion_keys": list(A8_EXCLUSION_KEYS),
+        "freshness": "at the capture instant (the A8 decision_at): every ACTIVE, "
+        "MMF included, re-classified with the SEC rule has exactly one fresh "
+        "complete consistent row (0 <= decision_at - synced_at <= "
+        "max_synced_age_days); the newest source row is itself within "
         "max_synced_age_days; any captured row after decision_at fails; "
         "valid_until = min_matched_synced_at + max_synced_age_days",
         "freshness_keys": list(A8_FRESHNESS_KEYS),
+        "gap_ceiling": SEC_GAP_CEILING,
+        "gap_ceiling_key": SEC_GAP_CEILING_KEY,
         "lineage_query": SEC_LINEAGE_SQL,
         "max_synced_age_days": SEC_MAX_SYNCED_AGE_DAYS,
         "outcomes": list(A8_OUTCOMES),
         "query": SEC_SQL,
         "query_contract_sha256": SEC_QUERY_CONTRACT_SHA256,
         "relation": SEC_RELATION,
-        "rule": "every related row is evaluated before a match: a related row with "
-        "a malformed populated class or series identifier is poison, a populated "
-        "identifier differing from the ACTIVE is a contradiction, and poison, "
-        "contradictions, ambiguity, duplicates, stale or future timestamps FAIL; "
-        "an incomplete related row (empty series or ticker) is partial and "
-        "NOT_EVALUATED even beside a valid companion; missing is NOT_EVALUATED; "
-        "failures dominate gaps; unrelated poison is counted, never fatal; "
-        "exactly one valid complete related row and nothing else is a match; "
-        "no fallback source",
+        "rule": "A8 PASS requires a verified lineage, a fresh newest source row, no "
+        "future row, a non-empty ACTIVE set whose every member is matched at the "
+        "capture instant, and the SEC exclusions recomputed at generated_at within "
+        "gap_ceiling (incomplete+stale+missing funds) and conflict_ceiling "
+        "(declared_class_invalid+poisoned_mapping+contradiction+ambiguous funds); "
+        "an unavailable or drifted SEC capture is NOT_EVALUATED (A5 FAILs the "
+        "drift); an individual gap is a FAIL, never NOT_EVALUATED; unrelated poison "
+        "is counted, never fatal; no fallback source",
         "series_pattern": SEC_SERIES_PATTERN,
         "source_contract": SEC_SOURCE_CONTRACT,
         "timestamp_column": SEC_TIMESTAMP_COLUMN,
+    },
+    "generation": {
+        "catalog_query_version": CATALOG_QUERY_VERSION,
+        "generator_version": GENERATOR_VERSION,
+        "identity_contract_version": IDENTITY_CONTRACT_VERSION,
+        "retired_catalog_query_versions": list(RETIRED_CATALOG_QUERY_VERSIONS),
+        "retired_generator_versions": list(RETIRED_GENERATOR_VERSIONS),
+        "rule": "four sources (IU, funds_v, registry, SEC) in one REPEATABLE READ "
+        "READ ONLY snapshot at the database decision instant tau; the source "
+        "snapshot hash covers all four; previous policy for continuity is the "
+        "published v1, never a v2 artifact; v1/v2 are never published or "
+        "re-audited",
+        "source_snapshot_kind": SOURCE_SNAPSHOT_KIND,
+    },
+    "sec_classification": {
+        "conflict_codes": list(SEC_CONFLICT_CODES),
+        "failure_codes": list(SEC_FAILURE_CODES),
+        "gap_codes": list(SEC_GAP_CODES),
+        "rule": "only a candidate passing every internal gate (after activity) is "
+        "judged; theta = registry ticker, sigma = registry series, kappa = "
+        "declared registry class (optional); related rows = union BY ROW of same "
+        "ticker and, when kappa is declared, same class; identifiers are trimmed "
+        "and ASCII-uppercased, never repaired; fresh Rc: 0 <= tau - synced_at <= "
+        "7 days, historical Rh otherwise; first failure: declared_class_invalid "
+        "(kappa malformed) > poisoned_mapping (Rc populated class/series "
+        "malformed) > contradiction (Rc populated field differs from "
+        "sigma/theta/kappa) > ambiguous (a repeated normalized triple in Rc or "
+        "more than one complete row) > incomplete (an Rc row without class, "
+        "series or ticker) > stale (Rc empty, Rh non-empty) > missing (both "
+        "empty); PASS = exactly one fresh complete consistent row; a SEC failure "
+        "is UNKNOWN with frequency unknown and every verified flag False, "
+        "current-only and re-evaluated at the next generation",
+        "source_abort_codes": list(SEC_SOURCE_ABORT_CODES),
+        "source_rule": "relation absent, SELECT denied, empty, more than "
+        f"{ROW_CEILING} rows, lineage count/min/max not equal to the rows, a "
+        "NULL/naive/invalid timestamp, any row after tau or a newest row older "
+        "than 7 days aborts generation (no partial policy)",
     },
     "audit_config_version": AUDIT_CONFIG_VERSION,
     "audit_contract_version": AUDIT_CONTRACT_VERSION,
@@ -406,5 +511,5 @@ AUDIT_CONTRACT = {
     "stage1_margin": f"max(1, ceil({STAGE1_MARGIN_TEXT} * quota)) for quota > 0",
 }
 AUDIT_CONTRACT_SHA256 = (
-    "0d237212e1e95a6e1e0494e071170d174481c29662a27b7bf9e7ac0bca3ec2c7"
+    "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff"
 )

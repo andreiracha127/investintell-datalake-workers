@@ -8,6 +8,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import random
 import stat
 import uuid
 from pathlib import Path
@@ -20,9 +21,11 @@ from scripts import verify_fund_nav_identity_v2 as verifier
 from src.workers._nav_policy import (
     CATALOG_EVIDENCE_REFERENCE,
     FUNDS_QUERY,
+    IDENTITY_CONTRACT_VERSION,
     IDENTITY_FAILURE_CODES,
     IDENTITY_QUERY,
     INSTRUMENTS_QUERY,
+    SEC_QUERY,
     SOURCE_QUERY_SHA256,
     generation_metadata_digest,
     instrument_evidence_digest,
@@ -33,6 +36,7 @@ from tests._nav_identity_fixtures import (
     catalog,
     entity,
     only,
+    sec_row,
     synthetic_figi,
     synthetic_isin,
     wrong_check,
@@ -42,6 +46,11 @@ START = dt.date(2024, 1, 1)
 END = dt.date(2027, 12, 31)
 OBSERVED = dt.datetime(2026, 9, 24, 12, 0, tzinfo=dt.timezone.utc)
 CAPTURED = "2026-09-24T12:05:00+00:00"
+V2_CATALOG_REFERENCE = (
+    "nav-current-catalog-snapshot-v2:public.instruments_universe+public.funds_v+"
+    "public.instrument_identity:w1-tiingo-adjusted-daily-v1:current_only_not_pit:"
+    "identity=registry-ticker-series-claims-v2"
+)
 LABELS = {1: "Large Blend", 2: "Government Bond", 3: "Technology", 4: "Real Estate"}
 SLEEVES = {
     "Large Blend": "equity",
@@ -82,7 +91,7 @@ def _rich_entities():
 def _build(calendar, entities=None, *, extra=None, observed=OBSERVED):
     rows = catalog(*(entities or _rich_entities()), **(extra or {}))
     policy = generator.build_policy(
-        calendar, *rows, observed, "current-daily-nav-xnys-usd-adjusted", "2026-09-24.2"
+        calendar, *rows, observed, "current-daily-nav-xnys-usd-adjusted", "2026-09-25.3"
     )
     snapshot = generator.build_source_snapshot(policy, *rows)
     return generator.canonical_json(policy), generator.canonical_json(snapshot), rows
@@ -104,32 +113,18 @@ SEC_CONFIG = {
     "timestamp_column": "updated_at",
     "query_contract_sha256": verifier.SEC_QUERY_CONTRACT_SHA256,
     "max_synced_age_days": 7,
+    "gap_ceiling": 23,
+    "conflict_ceiling": 0,
 }
-SYNCED = "2026-09-23T00:00:00+00:00"
-
-
-_DEFAULT = object()
-
-
-def _sec_row(n, *, class_id=_DEFAULT, series=_DEFAULT, ticker=_DEFAULT, synced=SYNCED):
-    return {
-        "class_id": f"C{n:09d}" if class_id is _DEFAULT else class_id,
-        "series_id": f"S{n:09d}" if series is _DEFAULT else series,
-        "ticker": f"T{n}" if ticker is _DEFAULT else ticker,
-        "synced_at": synced,
-    }
 
 
 def _lineage(rows):
     """Lineage aggregate exactly describing the given rows (as the DB would)."""
-
-    def instant(row):
-        return dt.datetime.fromisoformat(row["synced_at"])
-
+    instants = [row["synced_at"] for row in rows]
     return {
         "row_count": len(rows),
-        "min_synced_at": min(rows, key=instant)["synced_at"] if rows else None,
-        "max_synced_at": max(rows, key=instant)["synced_at"] if rows else None,
+        "min_synced_at": min(instants) if rows else None,
+        "max_synced_at": max(instants) if rows else None,
     }
 
 
@@ -139,7 +134,7 @@ def _config(**overrides):
         "audit_contract_version": verifier.AUDIT_CONTRACT_VERSION,
         "structural_daily_ceiling": 5103,
         "structural_baseline": None,
-        "canary_salt": "nav-policy-v2-canary-2026-09-24",
+        "canary_salt": "nav-policy-v3-canary-2026-09-25",
         "sec": dict(SEC_CONFIG),
         "builder": {
             "light_revision": "a" * 40,
@@ -155,16 +150,17 @@ def _config(**overrides):
 
 
 def _live(rows, *, cohort=None, sec=None):
-    """A fake READ ONLY capture with database-shaped values (uuid.UUID)."""
-    instruments, funds, identity = rows
+    """A fake READ ONLY capture with database-shaped values (uuid.UUID,
+    aware datetimes). By default the SEC part is the policy's own SEC rows."""
+    instruments, funds, identity, policy_sec = rows
     if cohort is None:
         cohort = [
             {"instrument_id": uuid.UUID(int=n), "strategy_label": LABELS[1 + (n % 2)]}
             for n in range(1, 18)
         ] + [{"instrument_id": uuid.UUID(int=99), "strategy_label": "Unclassified"}]
     if sec is None:
-        # Every ACTIVE of the rich fixture (1..9, MMF included) is corroborated.
-        sec = [_sec_row(n) for n in range(1, 10)]
+        # Same snapshot as the policy: every rich ACTIVE (MMF included) matched.
+        sec = [dict(row) for row in policy_sec]
     return {
         "captured_at": CAPTURED,
         "sources": {"instruments": instruments, "funds": funds, "identity": identity},
@@ -261,7 +257,13 @@ def test_verifier_imports_only_the_custody_writer_from_generator_code():
         "figi_problem",
         "canonical_source_rows",
         "validate_generation_v2",
+        "validate_generation_v3",
         "uuid_set_digest",
+        "_SecIndex",
+        "_sec_first_failure",
+        "SEC_FAILURE_CODES",
+        "SEC_GAP_CODES",
+        "SEC_CONFLICT_CODES",
         "generator",
     }
     assert not identifiers & forbidden
@@ -279,8 +281,17 @@ def test_contract_texts_match_generator_without_import_coupling():
         FUNDS_QUERY,
         IDENTITY_QUERY,
     )
+    assert verifier.SOURCE_SQL["sec"] == SEC_QUERY == verifier.SEC_SQL
     assert verifier.EXPECTED_REFERENCE == CATALOG_EVIDENCE_REFERENCE
     assert verifier.EXPECTED_GENERATOR == generator.GENERATOR_VERSION
+    assert verifier.SNAPSHOT_KIND == generator.SOURCE_SNAPSHOT_KIND
+    contract = verifier.AUDIT_CONTRACT["generation"]
+    assert contract["generator_version"] == generator.GENERATOR_VERSION
+    assert contract["catalog_query_version"] == generator.CURRENT_CATALOG_QUERY_VERSION
+    assert contract["identity_contract_version"] == IDENTITY_CONTRACT_VERSION
+    assert verifier.AUDIT_CONTRACT["catalog_source_query_sha256"] == (
+        SOURCE_QUERY_SHA256
+    )
 
 
 # ── offline core ────────────────────────────────────────────────────────────
@@ -331,6 +342,7 @@ def test_rich_fixture_passes_offline_core_and_strict_requires_every_gate(calenda
         "registry.status_not_canonical": 1,
     }
     assert a4["claim_first_failure"] == {"isin.checksum": 1}
+    assert a4["sec_first_failure"] == {}
     assert a4["ceiling_population"] == "structural_pre_claims_daily"
     assert set(a4) == set(verifier.A4_DETAIL_KEYS)
 
@@ -458,14 +470,68 @@ def test_counts_and_bytes_tamper_fail_integrity_and_partition(calendar):
     assert "canonical_bytes" in _failed_checks(report, "A1")
 
 
-def test_retired_v1_policy_is_blocked_not_reinterpreted(calendar):
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("generator_version", "fund-nav-policy-generator-v1"),
+        ("generator_version", "fund-nav-policy-generator-v2"),
+        ("source_query_version", "nav-current-catalog-snapshot-v2"),
+    ],
+)
+def test_retired_v1_v2_policy_is_blocked_not_reinterpreted(calendar, field, value):
     policy_raw, snapshot_raw, _ = _build(calendar)
     policy = json.loads(policy_raw)
-    policy["generator_version"] = policy["generation"]["generator_version"] = (
-        "fund-nav-policy-generator-v1"
-    )
+    if field == "generator_version":
+        policy["generator_version"] = value
+    policy["generation"][field] = value
     with pytest.raises(verifier.AuditBlocked, match="retired_generator_version"):
         verifier.audit(generator.canonical_json(policy), snapshot_raw=snapshot_raw)
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["fund-nav-policy-generator-v2", "fund-nav-policy-generator-v3", "other"],
+)
+def test_only_the_published_v1_is_a_previous_policy(calendar, version):
+    """A never-published v2 (or any later) artifact is never the previous policy."""
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    previous = json.loads(_previous(active_ids=(1,), calendar=calendar))
+    previous["generator_version"] = version
+    with pytest.raises(verifier.AuditBlocked, match="previous_policy_retired"):
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            previous_raw=json.dumps(previous).encode(),
+        )
+    previous["generator_version"] = "fund-nav-policy-generator-v1"
+    previous["generation"] = {"generator_version": version}
+    with pytest.raises(verifier.AuditBlocked, match="previous_policy_retired"):
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            previous_raw=json.dumps(previous).encode(),
+        )
+    # Labels stripped, but the v2/v3 catalog evidence reference gives it away.
+    previous.pop("generator_version")
+    previous.pop("generation")
+    for reference in (V2_CATALOG_REFERENCE, CATALOG_EVIDENCE_REFERENCE):
+        for row in previous["instrument_evidence"]:
+            row["evidence_reference"] = reference
+        with pytest.raises(verifier.AuditBlocked, match="previous_policy_retired"):
+            verifier.audit(
+                policy_raw,
+                snapshot_raw=snapshot_raw,
+                previous_raw=json.dumps(previous).encode(),
+            )
+    # The hand-authored pre-generator pointer (no generator metadata) is v1.
+    for row in previous["instrument_evidence"]:
+        row["evidence_reference"] = "fixture-previous-identity"
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        previous_raw=json.dumps(previous).encode(),
+    )
+    assert report["inputs"]["previous_policy_identity"][1] == "2026-09-23.1"
 
 
 def test_snapshot_tamper_and_source_type_errors(calendar):
@@ -533,8 +599,18 @@ def test_hostile_policy_snapshot_previous_roots_block_with_static_codes(calendar
         lambda s: s["sources"].__setitem__("extra", []),
         lambda s: s.__setitem__("row_counts", []),
         lambda s: s.__setitem__(
-            "row_counts", {"funds": True, "identity": 1, "instruments": 1}
+            "row_counts", {"funds": True, "identity": 1, "instruments": 1, "sec": 1}
         ),
+        lambda s: s.__setitem__(
+            "row_counts", {"funds": 1, "identity": 1, "instruments": 1}
+        ),
+        lambda s: s["sources"].pop("sec"),
+        lambda s: s["sources"]["sec"][0].__setitem__(
+            "synced_at", "2026-09-23T00:00:00+00:00"
+        ),
+        lambda s: s["sources"]["sec"][0].__setitem__("synced_at", None),
+        lambda s: s["sources"]["sec"][0].__setitem__("ticker", 5),
+        lambda s: s["sources"]["sec"][0].__setitem__("extra", "x"),
         lambda s: s.__setitem__("sources", []),
         lambda s: s.pop("policy_id"),
         lambda s: s.__setitem__("unexpected", 1),
@@ -559,8 +635,10 @@ def test_malformed_snapshot_blocks_before_lookup_in_both_verifiers(calendar, mut
         ("policy_id", "other-policy"),
         ("policy_version", "2026-09-24.9"),
         ("generator_version", "fund-nav-policy-generator-v1"),
+        ("generator_version", "fund-nav-policy-generator-v2"),
         ("source_query_version", "nav-current-catalog-snapshot-v1"),
-        ("row_counts", {"funds": 1, "identity": 1, "instruments": 1}),
+        ("source_query_version", "nav-current-catalog-snapshot-v2"),
+        ("row_counts", {"funds": 1, "identity": 1, "instruments": 1, "sec": 1}),
     ],
 )
 def test_snapshot_link_covers_identity_versions_and_row_counts(calendar, field, value):
@@ -847,14 +925,20 @@ def test_live_capture_same_snapshot_passes_all_gates_and_builds_canary(calendar)
         ]
         == 1
     )
+    # MMF included: A8 corroborates every ACTIVE at the capture instant.
     assert report["details"]["A8"]["outcomes"] == {
-        "ambiguous": 0,
-        "contradiction": 0,
-        "matched": 9,  # MMF included: A8 corroborates every ACTIVE
-        "missing": 0,
-        "partial": 0,
-        "poisoned_active_mapping": 0,
+        "matched": 9,
+        **{code: 0 for code in verifier.SEC_CODES},
     }
+    assert report["details"]["A8"]["exclusions"] == {
+        "by_code": {code: 0 for code in verifier.SEC_CODES},
+        "gap": 0,
+        "conflict": 0,
+    }
+    assert (
+        report["details"]["A8"]["gap_ceiling"],
+        report["details"]["A8"]["conflict_ceiling"],
+    ) == (23, 0)
     assert set(report["details"]) == set(
         verifier.AUDIT_CONTRACT["dossier"]["detail_keys"]
     )
@@ -951,7 +1035,7 @@ def test_fixed_income_quota_14_with_15_available_blocks_at_required_16(calendar)
     report = verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
-        live=_live(rows, cohort=cohort, sec=[]),
+        live=_live(rows, cohort=cohort),
         config_raw=json.dumps(config).encode(),
     )
     assert report["details"]["A7"]["sleeves"]["fixed_income"] == {
@@ -998,9 +1082,8 @@ def test_audit_contract_version_is_required_and_pinned(calendar, version):
 
 
 def test_repository_template_passes_config_validation():
-    raw = (
-        Path(verifier.__file__).parents[1] / "configs" / "nav_identity_audit_v2.json"
-    ).read_bytes()
+    configs = Path(verifier.__file__).parents[1] / "configs"
+    raw = (configs / "nav_identity_audit_v3.json").read_bytes()
     config = verifier._load_config(raw)
     assert (
         config["builder"]["light_revision"]
@@ -1008,7 +1091,14 @@ def test_repository_template_passes_config_validation():
     )
     assert config["builder"]["margin_fraction"] == "1/10"
     assert config["sec"]["max_synced_age_days"] == 7
+    assert (config["sec"]["gap_ceiling"], config["sec"]["conflict_ceiling"]) == (23, 0)
     assert config["audit_contract_version"] == verifier.AUDIT_CONTRACT_VERSION
+    assert config["audit_config_version"] == "nav-identity-audit-config-v3"
+    assert config["canary_salt"] == "nav-policy-v3-canary-2026-09-25"
+    assert operator.AUDIT_CONFIG.name == "nav_identity_audit_v3.json"
+    # The v2 config stays only as a historical, non-publishable record.
+    with pytest.raises(verifier.AuditBlocked):
+        verifier._load_config((configs / "nav_identity_audit_v2.json").read_bytes())
 
 
 def test_a7_every_cohort_exclusion_carries_a_reason(calendar):
@@ -1044,344 +1134,376 @@ def test_a7_every_cohort_exclusion_carries_a_reason(calendar):
     assert report["inputs"]["capture"]["cohort"]["row_count"] == 2  # multiplicity kept
 
 
-def _a8_case(
-    calendar, sec_rows, *, class_id=None, lineage=None, captured=CAPTURED, config=None
+# ── identity v3: SEC classified independently at generated_at, A8 at capture ─
+FRESH_AT_TAU = OBSERVED - dt.timedelta(days=1)
+OLD_AT_TAU = OBSERVED - dt.timedelta(days=8)
+CONTROL = entity(900)
+
+
+def _sec_audit(
+    calendar,
+    subject_kwargs=None,
+    sec=(),
+    *,
+    config=None,
+    captured=CAPTURED,
+    extra_entities=(),
+    control=True,
 ):
-    """One ACTIVE fund (UUID 1, S000000001/T1) against the given SEC rows."""
-    policy_raw, snapshot_raw, rows = _build(calendar, [entity(1, class_id=class_id)])
-    live = _live(rows, sec=sec_rows, cohort=[])
-    if lineage is not None:
-        live["sec"]["lineage"] = lineage
+    """UUID 1 against the given SEC rows (+ a corroborated control UUID 900).
+
+    The capture carries exactly the policy's four-source snapshot, so A5 sees
+    no drift and A8 re-judges every ACTIVE at ``captured``.
+    """
+    entities = [entity(1, **(subject_kwargs or {})), *extra_entities]
+    rows_sec = list(sec)
+    if control:
+        entities.append(CONTROL)
+        rows_sec.append(sec_row(900, synced=FRESH_AT_TAU))
+    policy_raw, snapshot_raw, rows = _build(calendar, entities, extra={"sec": rows_sec})
+    live = _live(rows, cohort=[])
     live["captured_at"] = captured
-    return verifier.audit(
+    report = verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
         live=live,
         config_raw=config or _config(),
     )
+    return report, json.loads(policy_raw)
 
 
 def _outcome(report):
     return {k: v for k, v in report["details"]["A8"]["outcomes"].items() if v}
 
 
-OTHER = "2026-09-22T00:00:00+00:00"
-
-
-@pytest.mark.parametrize(
-    "sec_rows,class_id,outcome,status,failed",
-    [
-        ([_sec_row(1)], None, "matched", "PASS", []),
-        ([_sec_row(1)], "C000000001", "matched", "PASS", []),
-        (
-            [_sec_row(1, class_id="c000000001", ticker="t1")],
-            None,
-            "matched",
-            "PASS",
-            [],
-        ),
-        (
-            [_sec_row(1, series="S000000009")],
-            None,
-            "contradiction",
-            "FAIL",
-            ["zero_contradictions"],
-        ),
-        (
-            [
-                _sec_row(1, ticker="OTHER"),
-                _sec_row(2, series="S000000001", ticker="T1"),
-            ],
-            "C000000001",
-            "contradiction",
-            "FAIL",
-            ["zero_contradictions"],
-        ),
-        ([_sec_row(1)], "C000000002", "contradiction", "FAIL", ["zero_contradictions"]),
-        ([_sec_row(1)], "S000000001", "contradiction", "FAIL", ["zero_contradictions"]),
-        (
-            [_sec_row(1), _sec_row(2, series="S000000001", ticker="T1")],
-            None,
-            "ambiguous",
-            "FAIL",
-            ["zero_contradictions"],
-        ),
-        (
-            [_sec_row(1), _sec_row(1, synced=OTHER)],
-            None,
-            "ambiguous",
-            "FAIL",
-            ["zero_contradictions"],
-        ),
-        (
-            [_sec_row(1), _sec_row(1)],
-            None,
-            "ambiguous",
-            "FAIL",
-            ["zero_active_duplicates", "zero_contradictions"],
-        ),
-        (
-            [_sec_row(1, class_id="S000000001")],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        (
-            [_sec_row(1, class_id="S000000001:T1")],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        (
-            [_sec_row(1, class_id="")],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        (
-            [_sec_row(1, class_id=None)],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        (
-            [_sec_row(1), _sec_row(1, class_id="series:ticker")],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        (
-            [_sec_row(1, series=None)],
-            None,
-            "partial",
-            "NOT_EVALUATED",
-            ["all_active_matched"],
-        ),
-        (
-            [_sec_row(1, series="")],
-            None,
-            "partial",
-            "NOT_EVALUATED",
-            ["all_active_matched"],
-        ),
-        # A POPULATED malformed series is poison (FAIL), never a mere gap.
-        (
-            [_sec_row(1, series="SX")],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        # Round3 F2: a valid companion never hides a related malformed row...
-        (
-            [_sec_row(1), _sec_row(2, series="SX", ticker="T1")],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        (
-            [_sec_row(1), _sec_row(2, class_id="C2", ticker="T1")],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        # ...nor an incomplete related row (NOT_EVALUATED, not matched)...
-        (
-            [_sec_row(1), _sec_row(2, series="", ticker="T1")],
-            None,
-            "partial",
-            "NOT_EVALUATED",
-            ["all_active_matched"],
-        ),
-        (
-            [_sec_row(1), _sec_row(2, series=None, ticker="T1")],
-            None,
-            "partial",
-            "NOT_EVALUATED",
-            ["all_active_matched"],
-        ),
-        (
-            [_sec_row(1), _sec_row(1, ticker="")],
-            "C000000001",
-            "partial",
-            "NOT_EVALUATED",
-            ["all_active_matched"],
-        ),
-        # ...and a populated contradiction on an otherwise incomplete row fails.
-        (
-            [_sec_row(1), _sec_row(1, series="", ticker="OTHER")],
-            "C000000001",
-            "contradiction",
-            "FAIL",
-            ["zero_contradictions"],
-        ),
-        # Precedence: poison > contradiction > ambiguous > partial.
-        (
-            [_sec_row(1, series=""), _sec_row(2, series="SX", ticker="T1")],
-            None,
-            "poisoned_active_mapping",
-            "FAIL",
-            ["zero_active_poisoned"],
-        ),
-        (
-            [_sec_row(1, series=""), _sec_row(2, series="S000000009", ticker="T1")],
-            None,
-            "contradiction",
-            "FAIL",
-            ["zero_contradictions"],
-        ),
-        (
-            [_sec_row(1), _sec_row(1), _sec_row(2, series="", ticker="T1")],
-            None,
-            "ambiguous",
-            "FAIL",
-            ["zero_active_duplicates", "zero_contradictions"],
-        ),
-        (
-            [
-                _sec_row(1),
-                _sec_row(2, series="S000000001", ticker="T1"),
-                _sec_row(3, series="", ticker="T1"),
-            ],
-            None,
-            "ambiguous",
-            "FAIL",
-            ["zero_contradictions"],
-        ),
-        ([], None, "missing", "NOT_EVALUATED", ["all_active_matched"]),
-        ([_sec_row(5)], None, "missing", "NOT_EVALUATED", ["all_active_matched"]),
-    ],
-)
-def test_a8_company_tickers_mf_outcome_matrix(
-    calendar, sec_rows, class_id, outcome, status, failed
-):
-    report = _a8_case(calendar, sec_rows, class_id=class_id)
-    assert _outcome(report) == {outcome: 1}
-    gate = report["gates"]["A8"]
-    assert gate["status"] == status
-    # Any non-matched ACTIVE also fails the completeness check.
-    expected = set(failed) | ({"all_active_matched"} if outcome != "matched" else set())
-    assert _failed_checks(report, "A8") == sorted(expected)
-    if status == "NOT_EVALUATED":
-        assert gate["code"] == "sec_active_mapping_incomplete"
-    assert verifier.verdict_of(report, strict=True) is False or status == "PASS"
-
-
-def test_a8_unrelated_poison_is_counted_and_excluded_but_not_fatal(calendar):
-    report = _a8_case(calendar, [_sec_row(1), _sec_row(7, class_id="S000000007:T7")])
-    assert report["gates"]["A8"]["status"] == "PASS"
-    detail = report["details"]["A8"]
-    assert (detail["excluded_poisoned_count"], detail["invalid_source_rows"]) == (1, 1)
-    assert detail["active_poisoned_count"] == 0
-    # Unrelated malformed-series and incomplete rows are ignored as well.
-    report = _a8_case(
-        calendar,
-        [_sec_row(1), _sec_row(7, series="SX"), _sec_row(8, series="", ticker="T8")],
-    )
-    assert report["gates"]["A8"]["status"] == "PASS"
-    detail = report["details"]["A8"]
-    assert (detail["excluded_poisoned_count"], detail["invalid_source_rows"]) == (1, 2)
-    assert _outcome(report) == {"matched": 1}
-
-
-def test_a8_reviewer_repro_valid_plus_malformed_related_row_fails(calendar):
-    """ACTIVE (S000000001, T1), no declared class: C1/S1/T1 + C2/SX/T1 FAIL."""
-    report = _a8_case(
-        calendar,
+SEC_MATRIX = [
+    ([sec_row(1, synced=FRESH_AT_TAU)], None, None),
+    ([sec_row(1, synced=FRESH_AT_TAU)], {"class_id": "C000000001"}, None),
+    (
+        [sec_row(1, class_id=" c000000001 ", ticker="t1", synced=FRESH_AT_TAU)],
+        None,
+        None,
+    ),
+    ([], {"class_id": "S000000001"}, "sec.declared_class_invalid"),
+    (
+        [sec_row(1, synced=FRESH_AT_TAU)],
+        {"class_id": "C1"},
+        "sec.declared_class_invalid",
+    ),
+    (
+        [sec_row(1, class_id="S000000001:T1", synced=FRESH_AT_TAU)],
+        None,
+        "sec.poisoned_mapping",
+    ),
+    ([sec_row(1, series="SX", synced=FRESH_AT_TAU)], None, "sec.poisoned_mapping"),
+    (
         [
-            _sec_row(1, class_id="C000000001", series="S000000001", ticker="T1"),
-            _sec_row(2, class_id="C000000002", series="SX", ticker="T1"),
+            sec_row(1, synced=FRESH_AT_TAU),
+            sec_row(2, class_id="C2", ticker="T1", synced=FRESH_AT_TAU),
         ],
+        None,
+        "sec.poisoned_mapping",
+    ),
+    ([sec_row(1, series="S000000009", synced=FRESH_AT_TAU)], None, "sec.contradiction"),
+    (
+        [sec_row(1, synced=FRESH_AT_TAU)],
+        {"class_id": "C000000002"},
+        "sec.contradiction",
+    ),
+    (
+        [
+            sec_row(1, synced=FRESH_AT_TAU),
+            sec_row(1, ticker="OTHER", synced=FRESH_AT_TAU),
+        ],
+        {"class_id": "C000000001"},
+        "sec.contradiction",
+    ),
+    (
+        [
+            sec_row(1, synced=FRESH_AT_TAU),
+            sec_row(2, series="S000000001", ticker="T1", synced=FRESH_AT_TAU),
+        ],
+        None,
+        "sec.ambiguous",
+    ),
+    (
+        [sec_row(1, synced=FRESH_AT_TAU), sec_row(1, synced=FRESH_AT_TAU)],
+        None,
+        "sec.ambiguous",
+    ),
+    ([sec_row(1, class_id=None, synced=FRESH_AT_TAU)], None, "sec.incomplete"),
+    ([sec_row(1, class_id="", synced=FRESH_AT_TAU)], None, "sec.incomplete"),
+    (
+        [
+            sec_row(1, synced=FRESH_AT_TAU),
+            sec_row(2, series=None, ticker="T1", synced=FRESH_AT_TAU),
+        ],
+        None,
+        "sec.incomplete",
+    ),
+    # A stale row of a reused ticker never blocks the fresh correct mapping.
+    (
+        [sec_row(1, synced=FRESH_AT_TAU), sec_row(2, ticker="T1", synced=OLD_AT_TAU)],
+        None,
+        None,
+    ),
+    ([sec_row(1, synced=OLD_AT_TAU)], None, "sec.stale"),
+    ([], None, "sec.missing"),
+    ([sec_row(2, series="S000000001", synced=FRESH_AT_TAU)], None, "sec.missing"),
+]
+
+
+@pytest.mark.parametrize("sec,kwargs,code", SEC_MATRIX)
+def test_sec_exclusions_recomputed_independently_and_bounded_by_ceilings(
+    calendar, sec, kwargs, code
+):
+    report, policy = _sec_audit(calendar, kwargs, sec)
+    gates = _gates(report)
+    # Generator and independent auditor agree on the SEC first failure.
+    for gate in ("A1", "A2", "A4", "A5", "A6"):
+        assert gates[gate] == "PASS", (gate, report["gates"][gate])
+    first = report["counts"]["identity_first_failure"]
+    assert first == ({code: 1} if code else {})
+    assert policy["generation"]["counts"]["identity_first_failure"] == first
+    exclusions = report["details"]["A8"]["exclusions"]
+    assert sum(exclusions["by_code"].values()) == (1 if code else 0)
+    if code is None:
+        assert gates["A8"] == "PASS" and _outcome(report) == {"matched": 2}
+    elif code in verifier.SEC_GAPS:
+        # One excluded fund is within the reviewed gap ceiling (23).
+        assert exclusions["gap"] == 1 and gates["A8"] == "PASS"
+        assert _outcome(report) == {"matched": 1}
+    else:
+        # Any conflict exceeds the reviewed conflict ceiling (0).
+        assert exclusions["conflict"] == 1 and gates["A8"] == "FAIL"
+        assert _failed_checks(report, "A8") == ["sec_conflict_within_ceiling"]
+    a4 = report["details"]["A4"]
+    assert a4["sec_first_failure"] == ({code: 1} if code else {})
+    if code:
+        dossier_private = report["differences"]["sec"]["excluded_at_generation"]
+        assert dossier_private == {str(uuid.UUID(int=1)): code}
+
+
+def test_generator_and_auditor_sec_judges_agree_on_random_catalogs():
+    """Two independent implementations of the written rule never diverge."""
+    rng = random.Random(20260925)
+    classes = ["C000000001", "C000000002", "c000000003", "C12", "S000000001", "", None]
+    series = ["S000000001", "S000000002", "SX", "", None]
+    tickers = ["T1", "t1 ", "T2", "", None]
+    ages = [
+        dt.timedelta(0),
+        dt.timedelta(days=1),
+        dt.timedelta(days=7),
+        dt.timedelta(days=7, microseconds=1),
+        dt.timedelta(days=30),
+    ]
+    for _ in range(3000):
+        rows = [
+            sec_row(
+                0,
+                class_id=rng.choice(classes),
+                series=rng.choice(series),
+                ticker=rng.choice(tickers),
+                synced=OBSERVED - rng.choice(ages),
+            )
+            for _ in range(rng.randint(1, 5))
+        ]
+        # An unrelated fresh anchor keeps the source itself fresh (no abort).
+        rows.append(sec_row(9, synced=OBSERVED - dt.timedelta(days=1)))
+        rng.shuffle(rows)
+        canonical = generator.canonical_source_rows(rows, "sec")
+        declared = rng.choice(["C000000001", "C000000002", "C1", None, None])
+        index = generator._SecIndex(canonical, OBSERVED)
+        judge = verifier.SecJudge(canonical)
+        expected = index.first_failure("T1", "S000000001", declared)
+        actual, _instant = judge.judge("T1", "S000000001", declared, OBSERVED)
+        assert actual == expected, (rows, declared)
+
+
+@pytest.mark.parametrize("mode", ["over_exclusion", "under_exclusion"])
+def test_generator_sec_mutation_is_caught_by_the_independent_audit(
+    calendar, monkeypatch, mode
+):
+    original = generator._SecIndex.first_failure
+    if mode == "over_exclusion":
+
+        def mutated(self, ticker, series, declared):
+            return (
+                "sec.missing"
+                if ticker == "T1"
+                else original(self, ticker, series, declared)
+            )
+    else:
+
+        def mutated(self, ticker, series, declared):
+            return None
+
+    monkeypatch.setattr(generator._SecIndex, "first_failure", mutated)
+    sec = [sec_row(1, synced=FRESH_AT_TAU)] if mode == "over_exclusion" else []
+    report, policy = _sec_audit(calendar, None, sec)
+    operator._policy(policy)  # the mutated artifact is internally consistent
+    assert {"lifecycle_equal", "reason_counts_equal", "active_set_equal"} <= set(
+        _failed_checks(report, "A5")
     )
-    assert report["gates"]["A8"]["status"] == "FAIL"
-    assert _outcome(report) == {"poisoned_active_mapping": 1}
-    assert report["details"]["A8"]["active_poisoned_count"] == 1
-    assert report["details"]["A8"]["freshness"]["valid_until"] is None
+    if mode == "under_exclusion":
+        assert "active_passes_every_gate" in _failed_checks(report, "A6")
+    assert verifier.verdict_of(report, strict=False) is False
 
 
-def test_a8_failure_dominates_gaps(calendar):
-    entities = [entity(1), entity(2)]
-    policy_raw, snapshot_raw, rows = _build(calendar, entities)
-    sec = [_sec_row(1, series="S000000009")]  # UUID 1 contradiction, UUID 2 missing
-    report = verifier.audit(
-        policy_raw,
-        snapshot_raw=snapshot_raw,
-        live=_live(rows, sec=sec, cohort=[]),
-        config_raw=_config(),
+def test_auditor_sec_mutation_disagrees_with_a_correct_generator(calendar, monkeypatch):
+    report, _ = _sec_audit(calendar, None, [sec_row(1, synced=OLD_AT_TAU)])
+    assert report["gates"]["A5"]["status"] == "PASS"
+    monkeypatch.setattr(
+        verifier.SecJudge, "judge", lambda self, t, s, k, at: (None, at)
     )
-    assert report["gates"]["A8"]["status"] == "FAIL"
-    assert _outcome(report) == {"contradiction": 1, "missing": 1}
-
-
-def test_a8_never_passes_vacuously_without_active(calendar):
-    report = _a8_case(calendar, [_sec_row(1)])
-    policy_raw, snapshot_raw, rows = _build(calendar, [entity(1, active=None)])
-    report = verifier.audit(
-        policy_raw,
-        snapshot_raw=snapshot_raw,
-        live=_live(rows, sec=[_sec_row(1)], cohort=[]),
-        config_raw=_config(),
+    report, _ = _sec_audit(calendar, None, [sec_row(1, synced=OLD_AT_TAU)])
+    assert {"lifecycle_equal", "reason_counts_equal"} <= set(
+        _failed_checks(report, "A5")
     )
-    assert report["gates"]["A8"]["status"] == "FAIL"
-    assert "active_nonempty" in _failed_checks(report, "A8")
 
 
-# ── A8 freshness: updated_at of every matched row vs the capture DB clock ──
+def test_sec_gap_ceiling_is_exactly_23_funds(calendar):
+    def run(missing):
+        extra = [entity(n) for n in range(2, missing + 1)]
+        return _sec_audit(calendar, None, [], extra_entities=extra)[0]
+
+    at_ceiling = run(23)
+    assert at_ceiling["details"]["A8"]["exclusions"]["gap"] == 23
+    assert at_ceiling["gates"]["A8"]["status"] == "PASS"
+    over = run(24)
+    assert over["details"]["A8"]["exclusions"]["gap"] == 24
+    assert _failed_checks(over, "A8") == ["sec_gap_within_ceiling"]
+    assert over["gates"]["A4"]["status"] == "PASS"  # P - D = 24 SEC failures
+
+
+def test_sec_ageing_between_generation_and_capture_fails_a8(calendar):
+    """Fresh at generated_at, older than 7 days at the capture instant."""
+    edge = OBSERVED - dt.timedelta(days=7) + dt.timedelta(minutes=1)
+    report, policy = _sec_audit(calendar, None, [sec_row(1, synced=edge)])
+    assert _outcome(report) == {"matched": 1, "sec.stale": 1}
+    assert _failed_checks(report, "A8") == ["all_active_matched"]
+    assert report["gates"]["A5"]["status"] == "PASS"
+    assert report["differences"]["sec"]["per_active_outcome"] == {
+        str(uuid.UUID(int=1)): "sec.stale"
+    }
+    statuses = {r["fund_status"] for r in policy["instrument_evidence"]}
+    assert statuses == {"ACTIVE"}  # the policy itself is never rewritten
+
+
 @pytest.mark.parametrize(
-    "synced,captured,status,failed",
+    "synced,failed",
     [
-        ("2026-09-17T12:05:00+00:00", CAPTURED, "PASS", []),  # exactly 7 days
-        ("2026-09-17T08:05:00-04:00", CAPTURED, "PASS", []),  # same instant, offset
-        ("2026-09-17T12:04:59+00:00", CAPTURED, "FAIL", ["fresh_within_max_age"]),
-        ("2026-09-24T12:05:01+00:00", CAPTURED, "FAIL", ["synced_not_in_future"]),
-        ("2026-09-24T12:05:00+00:00", CAPTURED, "PASS", []),
+        (dt.datetime(2026, 9, 17, 12, 5, tzinfo=dt.timezone.utc), []),  # exactly 7d
+        (
+            dt.datetime(2026, 9, 17, 12, 4, 59, 999999, tzinfo=dt.timezone.utc),
+            ["all_active_matched"],
+        ),
     ],
 )
-def test_a8_freshness_per_matched_row(calendar, synced, captured, status, failed):
-    report = _a8_case(calendar, [_sec_row(1, synced=synced)], captured=captured)
-    assert report["gates"]["A8"]["status"] == status
+def test_a8_freshness_boundary_at_the_capture_instant(calendar, synced, failed):
+    report, _ = _sec_audit(calendar, None, [sec_row(1, synced=synced)])
     assert _failed_checks(report, "A8") == failed
     freshness = report["details"]["A8"]["freshness"]
     assert freshness["decision_at"] == CAPTURED
     assert freshness["max_synced_age_days"] == 7
-    if status == "PASS":
+    if not failed:
         assert dt.datetime.fromisoformat(freshness["valid_until"]) == (
-            dt.datetime.fromisoformat(synced) + dt.timedelta(days=7)
+            synced + dt.timedelta(days=7)
         )
 
 
-def test_a8_one_stale_mapping_among_fresh_ones_fails(calendar):
-    """Reviewer repro: max(updated_at) fresh does not hide one stale ACTIVE."""
-    entities = [entity(1), entity(2)]
-    policy_raw, snapshot_raw, rows = _build(calendar, entities)
-    sec = [
-        _sec_row(1, synced="2026-09-24T00:00:00+00:00"),
-        _sec_row(2, synced="2026-09-01T00:00:00+00:00"),
-    ]
+def test_a8_capture_before_a_row_fails_future_and_generation_order(calendar):
+    earlier = "2026-09-24T11:00:00+00:00"
+    report, _ = _sec_audit(
+        calendar,
+        None,
+        [sec_row(1, synced=dt.datetime(2026, 9, 24, 11, 30, tzinfo=dt.timezone.utc))],
+        captured=earlier,
+    )
+    assert "generation_precedes_capture" in _failed_checks(report, "A5")
+    assert {"synced_not_in_future", "source_fresh_within_max_age"} <= set(
+        _failed_checks(report, "A8")
+    )
+
+
+def test_sec_drift_between_generation_and_capture_fails_a5(calendar):
+    policy_raw, snapshot_raw, rows = _build(calendar)
+    live = _live(rows)
+    live["sec"]["rows"][0]["synced_at"] += dt.timedelta(microseconds=1)
+    live["sec"]["lineage"] = _lineage(live["sec"]["rows"])
     report = verifier.audit(
-        policy_raw,
-        snapshot_raw=snapshot_raw,
-        live=_live(rows, sec=sec, cohort=[]),
-        config_raw=_config(),
+        policy_raw, snapshot_raw=snapshot_raw, live=live, config_raw=_config()
     )
-    assert _failed_checks(report, "A8") == ["fresh_within_max_age"]
-    assert report["details"]["A8"]["freshness"]["lineage_max_synced_at"] == (
-        "2026-09-24T00:00:00+00:00"
+    assert _failed_checks(report, "A5") == ["no_source_drift"]
+    for gate in ("A7", "A8"):
+        assert report["gates"][gate] == {
+            "status": "NOT_EVALUATED",
+            "code": "live_capture_absent_or_drifted",
+            "checks": {},
+        }
+
+
+def test_a8_unrelated_poison_and_incomplete_rows_are_counted_not_fatal(calendar):
+    report, _ = _sec_audit(
+        calendar,
+        None,
+        [
+            sec_row(1, synced=FRESH_AT_TAU),
+            sec_row(7, class_id="S000000007:T7", synced=FRESH_AT_TAU),
+            sec_row(8, series="", ticker="T8", synced=FRESH_AT_TAU),
+        ],
+    )
+    assert report["gates"]["A8"]["status"] == "PASS"
+    assert report["details"]["A8"]["invalid_source_rows"] == {
+        "incomplete": 1,
+        "poisoned": 1,
+    }
+    assert _outcome(report) == {"matched": 2}
+
+
+def test_a8_never_passes_vacuously_without_active(calendar):
+    report, _ = _sec_audit(
+        calendar, {"active": None}, [sec_row(1, synced=FRESH_AT_TAU)], control=False
+    )
+    assert report["gates"]["A8"]["status"] == "FAIL"
+    assert {"active_nonempty", "all_active_matched"} <= set(
+        _failed_checks(report, "A8")
     )
 
 
-def test_a8_unrelated_future_row_fails(calendar):
-    report = _a8_case(
-        calendar, [_sec_row(1), _sec_row(8, synced="2026-09-25T00:00:00+00:00")]
-    )
-    assert _failed_checks(report, "A8") == ["synced_not_in_future"]
+@pytest.mark.parametrize(
+    "mutate,code",
+    [
+        (lambda s: s.__setitem__("sec", []), "sec_source_empty"),
+        (
+            lambda s: s["sec"].append(
+                {
+                    "class_id": "C000000077",
+                    "series_id": "S000000077",
+                    "ticker": "T77",
+                    "synced_at": "2026-09-24T12:00:00.000001+00:00",
+                }
+            ),
+            "sec_source_future",
+        ),
+        (
+            lambda s: s.__setitem__(
+                "sec",
+                [
+                    dict(row, synced_at="2026-09-01T00:00:00.000000+00:00")
+                    for row in s["sec"]
+                ],
+            ),
+            "sec_source_stale",
+        ),
+    ],
+)
+def test_sec_source_defect_at_generated_at_blocks_the_audit(calendar, mutate, code):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    snapshot = json.loads(snapshot_raw)
+    mutate(snapshot["sources"])
+    with pytest.raises(verifier.AuditBlocked, match=code):
+        verifier.audit(policy_raw, snapshot_raw=generator.canonical_json(snapshot))
 
 
 @pytest.mark.parametrize(
@@ -1389,17 +1511,17 @@ def test_a8_unrelated_future_row_fails(calendar):
     [
         (
             lambda live: live["sec"]["rows"][0].__setitem__(
-                "synced_at", "2026-09-23T00:00:00"
+                "synced_at", dt.datetime(2026, 9, 23)
             ),
             "sec_timestamp_not_aware",
         ),
         (
             lambda live: live["sec"]["rows"][0].__setitem__("synced_at", "yesterday"),
-            "sec_timestamp_not_aware",
+            "sec_timestamp_not_canonical",
         ),
         (
             lambda live: live["sec"]["rows"][0].__setitem__("synced_at", None),
-            "sec_timestamp_not_aware",
+            "sec_timestamp_not_canonical",
         ),
         (
             lambda live: live["sec"]["rows"][0].__setitem__("ticker", 5),
@@ -1410,16 +1532,12 @@ def test_a8_unrelated_future_row_fails(calendar):
             "sec_source_shape_invalid",
         ),
         (
-            lambda live: live["sec"]["rows"][0].__setitem__("extra", 1),
-            "sec_source_shape_invalid",
-        ),
-        (
             lambda live: live["sec"]["lineage"].__setitem__("row_count", 7),
             "sec_lineage_mismatch",
         ),
         (
             lambda live: live["sec"]["lineage"].__setitem__(
-                "max_synced_at", "2026-09-24T00:00:00+00:00"
+                "max_synced_at", dt.datetime(2026, 9, 24, tzinfo=dt.timezone.utc)
             ),
             "sec_lineage_mismatch",
         ),
@@ -1435,72 +1553,57 @@ def test_a8_unrelated_future_row_fails(calendar):
             lambda live: live["sec"]["lineage"].__setitem__("row_count", True),
             "sec_lineage_invalid",
         ),
-        (lambda live: live.__setitem__("captured_at", "2026-09-24T12:05:00"), None),
+        (
+            lambda live: live.__setitem__(
+                "sec", {"state": "unavailable", "code": "sec_relation_missing"}
+            ),
+            "sec_relation_missing",
+        ),
+        (
+            lambda live: live.__setitem__(
+                "sec", {"state": "unavailable", "code": "sec_privilege_missing"}
+            ),
+            "sec_privilege_missing",
+        ),
+        (
+            lambda live: live.__setitem__(
+                "sec", {"state": "failed", "code": "sec_row_ceiling_exceeded"}
+            ),
+            "sec_row_ceiling_exceeded",
+        ),
     ],
 )
-def test_a8_malformed_capture_is_not_evaluated(calendar, mutate, code):
+def test_malformed_or_unavailable_sec_capture_is_drift_not_zero(calendar, mutate, code):
     policy_raw, snapshot_raw, rows = _build(calendar)
     live = _live(rows)
     mutate(live)
     report = verifier.audit(
         policy_raw, snapshot_raw=snapshot_raw, live=live, config_raw=_config()
     )
-    gate = report["gates"]["A8"]
-    assert gate["status"] == "NOT_EVALUATED"
-    assert gate["code"] == (code or "sec_decision_time_unverifiable")
-    assert verifier.verdict_of(report, strict=True) is False
-
-
-@pytest.mark.parametrize(
-    "sec_state,code",
-    [
-        (
-            {"state": "unavailable", "code": "sec_relation_missing"},
-            "sec_relation_missing",
-        ),
-        (
-            {"state": "unavailable", "code": "sec_privilege_missing"},
-            "sec_privilege_missing",
-        ),
-        (
-            {"state": "failed", "code": "sec_query_failed:42703"},
-            "sec_query_failed:42703",
-        ),
-        (
-            {"state": "failed", "code": "sec_row_ceiling_exceeded"},
-            "sec_row_ceiling_exceeded",
-        ),
-    ],
-)
-def test_a8_unavailable_source_is_not_evaluated_not_zero(calendar, sec_state, code):
-    policy_raw, snapshot_raw, rows = _build(calendar)
-    live = _live(rows)
-    live["sec"] = sec_state
-    report = verifier.audit(
-        policy_raw, snapshot_raw=snapshot_raw, live=live, config_raw=_config()
-    )
-    assert report["gates"]["A8"]["status"] == "NOT_EVALUATED"
-    assert report["gates"]["A8"]["code"] == code
     captured = report["inputs"]["capture"]["sec"]
-    assert captured["relation"] == "public.sec_company_tickers_mf"
+    assert (captured["state"] in ("invalid", "unavailable", "failed")) and (
+        captured["code"] == code
+    )
     assert captured["rows_sha256"] is None and captured["row_count"] is None
+    assert report["inputs"]["capture"]["source_snapshot_sha256"] is None
+    assert "no_source_drift" in _failed_checks(report, "A5")
+    assert report["gates"]["A8"]["status"] == "NOT_EVALUATED"
+    assert verifier.verdict_of(report, strict=True) is False
+    # Without the snapshot file the lifecycle cannot be recomputed at all.
+    with pytest.raises(verifier.AuditBlocked, match="sec_source_not_captured"):
+        verifier.audit(policy_raw, live=live, config_raw=_config())
 
 
-def test_a8_absent_sec_config_is_not_evaluated(calendar):
-    policy_raw, snapshot_raw, rows = _build(calendar)
+def test_sec_config_block_is_mandatory(calendar):
+    policy_raw, snapshot_raw, _ = _build(calendar)
     config = json.loads(_config())
     config.pop("sec")
-    report = verifier.audit(
-        policy_raw,
-        snapshot_raw=snapshot_raw,
-        live=_live(rows),
-        config_raw=json.dumps(config).encode(),
-    )
-    assert report["gates"]["A8"] == {
-        "status": "NOT_EVALUATED",
-        "code": "sec_freshness_criterion_absent",
-        "checks": {},
-    }
+    with pytest.raises(verifier.AuditBlocked, match="audit_config_sec_invalid"):
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            config_raw=json.dumps(config).encode(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1520,12 +1623,28 @@ def test_a8_absent_sec_config_is_not_evaluated(calendar):
         ("timestamp_column", "fetched_at", "audit_config_sec_source_invalid"),
         ("source_contract", "other", "audit_config_sec_source_invalid"),
         ("query_contract_sha256", "0" * 64, "audit_config_sec_source_invalid"),
+        ("gap_ceiling", 24, "audit_config_sec_ceiling_invalid"),
+        ("gap_ceiling", 22, "audit_config_sec_ceiling_invalid"),
+        ("gap_ceiling", True, "audit_config_sec_ceiling_invalid"),
+        ("gap_ceiling", 23.0, "audit_config_sec_ceiling_invalid"),
+        ("gap_ceiling", "23", "audit_config_sec_ceiling_invalid"),
+        ("gap_ceiling", None, "audit_config_sec_ceiling_invalid"),
+        ("conflict_ceiling", 1, "audit_config_sec_ceiling_invalid"),
+        ("conflict_ceiling", False, "audit_config_sec_ceiling_invalid"),
+        ("conflict_ceiling", None, "audit_config_sec_ceiling_invalid"),
     ],
 )
 def test_sec_config_is_pinned_to_the_contract(calendar, field, value, code):
     policy_raw, snapshot_raw, _ = _build(calendar)
     config = json.loads(_config())
     config["sec"][field] = value
+    with pytest.raises(verifier.AuditBlocked, match=code):
+        verifier.audit(
+            policy_raw,
+            snapshot_raw=snapshot_raw,
+            config_raw=json.dumps(config).encode(),
+        )
+    config["sec"].pop(field)
     with pytest.raises(verifier.AuditBlocked, match=code):
         verifier.audit(
             policy_raw,
@@ -1564,10 +1683,11 @@ def test_capture_bundle_is_canonical_order_independent_and_reloadable(calendar):
         shuffled["sources"][name] = list(reversed(shuffled["sources"][name]))
     assert verifier.capture_bytes(shuffled, config) == raw
     bundle = verifier.load_capture(raw, config)
-    assert bundle["cohort"]["row_count"] == 18 and bundle["sec"]["row_count"] == 9
+    assert bundle["cohort"]["row_count"] == 18 and bundle["sec"]["row_count"] == 15
     assert bundle["sec"]["relation"] == "public.sec_company_tickers_mf"
     assert bundle["sec"]["timestamp_column"] == "updated_at"
-    assert bundle["kind"] == "nav-identity-audit-capture-v2-round2"
+    assert bundle["kind"] == "nav-identity-audit-capture-v3-round6"
+    assert bundle["sec"]["rows"] == json.loads(snapshot_raw)["sources"]["sec"]
     assert (
         bundle["source_snapshot_sha256"]
         == json.loads(policy_raw)["generation"]["source_snapshot_sha256"]
@@ -1600,7 +1720,7 @@ def test_swapping_a_cohort_member_changes_bound_digests(calendar):
         return verifier.audit(
             policy_raw,
             snapshot_raw=snapshot_raw,
-            live=_live(rows, cohort=cohort, sec=[]),
+            live=_live(rows, cohort=cohort),
             config_raw=_config(),
         )
 
@@ -1614,17 +1734,20 @@ def test_swapping_a_cohort_member_changes_bound_digests(calendar):
         != second["inputs"]["capture"]["capture_bundle_sha256"]
     )
     assert verifier.report_bytes(first) != verifier.report_bytes(second)
-    # Same A8 outcomes, different captured SEC rows → different pinned digest.
-    base = [_sec_row(n) for n in range(1, 5)]
-    sec_a, sec_b = (
-        verifier.audit(
-            policy_raw,
-            snapshot_raw=snapshot_raw,
-            live=_live(rows, cohort=[], sec=extra_rows),
+
+    # Same A8 outcomes, different SEC snapshot rows → different pinned digests.
+    def with_sec(extra_rows):
+        raw_policy, raw_snapshot, sec_rows = _build(
+            calendar, entities, extra={"sec_extra": extra_rows}
+        )
+        return verifier.audit(
+            raw_policy,
+            snapshot_raw=raw_snapshot,
+            live=_live(sec_rows, cohort=[]),
             config_raw=_config(),
         )
-        for extra_rows in (base, [*base, _sec_row(77)])
-    )
+
+    sec_a, sec_b = with_sec([]), with_sec([sec_row(77)])
     assert sec_a["details"]["A8"]["outcomes"] == sec_b["details"]["A8"]["outcomes"]
     assert (
         sec_a["inputs"]["capture"]["sec"]["rows_sha256"]
@@ -1643,6 +1766,8 @@ def test_swapping_a_cohort_member_changes_bound_digests(calendar):
         ("source_digest", "capture_bundle_invalid"),
         ("kind", "capture_contract_invalid"),
         ("kind_round1", "capture_contract_invalid"),
+        ("kind_v2_round2", "capture_contract_invalid"),
+        ("sec_time_text", "capture_bundle_invalid"),
         ("query", "capture_cohort_query_mismatch"),
         ("sec_relation", "capture_sec_contract_invalid"),
         ("sec_timestamp_column", "capture_sec_contract_invalid"),
@@ -1666,6 +1791,12 @@ def test_capture_bundle_tamper_is_blocked(calendar, tamper, code):
         sec = bundle["sec"]
         if tamper == "kind_round1":
             bundle["kind"] = "nav-identity-audit-capture-v2"
+        elif tamper == "kind_v2_round2":
+            bundle["kind"] = "nav-identity-audit-capture-v2-round2"
+        elif tamper == "sec_time_text":
+            sec["rows"][0]["synced_at"] = sec["rows"][0]["synced_at"].replace(
+                ".000000+00:00", "+00:00"
+            )
         elif tamper == "sec_relation":
             sec["relation"] = "public.sec_fund_classes"
         elif tamper == "sec_timestamp_column":
@@ -1884,11 +2015,10 @@ def test_canary_is_capped_covers_strata_and_ignores_input_order(calendar):
     ]
     config = _config()
     previous = _previous(active_ids=(1,), calendar=calendar)
-    sec = [_sec_row(n) for n in range(1, 41)]
     first = verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
-        live=_live(rows, cohort=cohort, sec=sec),
+        live=_live(rows, cohort=cohort),
         previous_raw=previous,
         config_raw=config,
     )
@@ -1897,13 +2027,46 @@ def test_canary_is_capped_covers_strata_and_ignores_input_order(calendar):
     second = verifier.audit(
         policy_raw,
         snapshot_raw=snapshot_raw,
-        live=_live(rows, cohort=list(reversed(cohort)), sec=list(reversed(sec))),
+        live=_live(rows, cohort=list(reversed(cohort)), sec=list(reversed(rows[3]))),
         previous_raw=previous,
         config_raw=config,
     )
     assert _canary_of(second, policy_raw, config) == manifest
     assert manifest["size"] == 20 and manifest["cohort_size"] == 40
-    assert manifest["salt"] == "nav-policy-v2-canary-2026-09-24"
+    assert manifest["salt"] == "nav-policy-v3-canary-2026-09-25"
+
+
+def test_canary_never_contains_sec_excluded_funds(calendar):
+    """SEC-excluded funds are UNKNOWN, so they never reach the eligible cohort."""
+    entities = [
+        entity(n, fund_type="etf" if n % 2 else "mutual_fund") for n in range(1, 45)
+    ]
+    excluded = {41, 42, 43, 44}
+    sec = [
+        row for row in catalog(*entities)[3] if int(row["ticker"][1:]) not in excluded
+    ]
+    sec.append(sec_row(43, synced=OBSERVED - dt.timedelta(days=30)))  # stale
+    policy_raw, snapshot_raw, rows = _build(calendar, entities, extra={"sec": sec})
+    cohort = [
+        {"instrument_id": uuid.UUID(int=n), "strategy_label": LABELS[1 + (n % 4)]}
+        for n in range(1, 45)
+    ]
+    config = _config()
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        live=_live(rows, cohort=cohort),
+        previous_raw=_previous(active_ids=(1,), calendar=calendar),
+        config_raw=config,
+    )
+    assert set(_gates(report).values()) == {"PASS"}, _gates(report)
+    assert report["details"]["A8"]["exclusions"]["by_code"]["sec.missing"] == 3
+    assert report["details"]["A8"]["exclusions"]["by_code"]["sec.stale"] == 1
+    manifest = _canary_of(report, policy_raw, config)
+    excluded_ids = {str(uuid.UUID(int=n)) for n in excluded}
+    assert not excluded_ids & set(manifest["allowlist"])
+    assert manifest["cohort_size"] == 40
+    assert report["details"]["A7"]["eligible_cohort_size"] == 40
 
 
 # ── CLI and custody (POSIX) ─────────────────────────────────────────────────
@@ -1913,8 +2076,10 @@ def _custody(tmp_path):
     return root
 
 
-def _cli_inputs(root, calendar, *, entities=None, config=None, live_kwargs=None):
-    policy_raw, snapshot_raw, rows = _build(calendar, entities)
+def _cli_inputs(
+    root, calendar, *, entities=None, config=None, live_kwargs=None, extra=None
+):
+    policy_raw, snapshot_raw, rows = _build(calendar, entities, extra=extra)
     (root / "policy.json").write_bytes(policy_raw)
     (root / "source.json").write_bytes(snapshot_raw)
     config_raw = config or _config()
@@ -1958,7 +2123,7 @@ def test_cli_writes_private_dossier_and_prints_aggregates_only(
         and synthetic_isin(1) not in printed
     )
     dossier = json.loads((root / "audit.json").read_bytes())
-    assert dossier["audit_version"] == "nav-identity-audit-v2"
+    assert dossier["audit_version"] == "nav-identity-audit-v3"
     assert dossier["inputs"]["audit_contract_sha256"] == verifier.AUDIT_CONTRACT_SHA256
     assert (
         dossier["inputs"]["policy_artifact_sha256"]
@@ -2028,20 +2193,24 @@ def test_cli_strict_failure_persists_dossier_and_refuses_canary(
 ):
     root = _custody(tmp_path)
     config = json.loads(_config())
-    live_kwargs = {}
+    extra = None
     if failure == "sec_contradiction":
-        live_kwargs["sec"] = [
-            _sec_row(1, series="S000000099"),
-            *[_sec_row(n) for n in range(2, 10)],
-        ]
+        # Excluded at generation (UNKNOWN sec.contradiction): conflict ceiling 0.
+        rich = catalog(*_rich_entities())[3]
+        extra = {
+            "sec": [
+                sec_row(1, series="S000000099"),
+                *[row for row in rich if row["ticker"] != "T1"],
+            ]
+        }
     elif failure == "insufficient_sleeve":
         config["builder"]["stage1_quotas"] = {"equity": 30}
     elif failure == "stale_sec":
-        live_kwargs["sec"] = [
-            _sec_row(n, synced="2026-01-01T00:00:00+00:00") for n in range(1, 10)
-        ]
+        # Fresh at generated_at (12:00), older than 7 days at capture (12:05).
+        edge = OBSERVED - dt.timedelta(days=7) + dt.timedelta(minutes=1)
+        extra = {"sec_at": edge}
     base, _, capture = _cli_inputs(
-        root, calendar, config=json.dumps(config).encode(), live_kwargs=live_kwargs
+        root, calendar, config=json.dumps(config).encode(), extra=extra
     )
     args = [
         *base,
@@ -2071,8 +2240,14 @@ def test_cli_strict_failure_persists_dossier_and_refuses_canary(
     }
     assert failing == expected[failure]
     if failure == "sec_contradiction":
-        assert dossier["differences"]["sec"]["per_active_outcome"] == {
-            str(uuid.UUID(int=1)): "contradiction"
+        assert dossier["differences"]["sec"]["excluded_at_generation"] == {
+            str(uuid.UUID(int=1)): "sec.contradiction"
+        }
+        assert dossier["differences"]["sec"]["per_active_outcome"] == {}
+        assert dossier["details"]["A8"]["exclusions"]["conflict"] == 1
+    if failure == "stale_sec":
+        assert set(dossier["differences"]["sec"]["per_active_outcome"].values()) == {
+            "sec.stale"
         }
 
 
@@ -2369,6 +2544,17 @@ def _shift(value: str, **delta) -> str:
         # Round5 A14: Round4 dossiers are never accepted either.
         ("round4_contract_version", "audit_contract_mismatch"),
         ("round4_contract_sha256", "audit_contract_mismatch"),
+        # Round6 (identity v3): the blocked v2/Round5 audit is never accepted.
+        ("round5_contract_version", "audit_contract_mismatch"),
+        ("round5_contract_sha256", "audit_contract_mismatch"),
+        # SEC exclusions must equal the policy's SEC first failures and the
+        # fixed ceilings of the contract.
+        ("a8_exclusion_not_in_policy", "audit_dossier_invalid"),
+        ("a8_gap_total_inconsistent", "audit_dossier_invalid"),
+        ("a8_gap_ceiling_raised", "audit_dossier_invalid"),
+        ("a8_conflict_ceiling_raised", "audit_dossier_invalid"),
+        ("a8_exclusions_missing", "audit_dossier_invalid"),
+        ("a8_v2_detail_shape", "audit_dossier_invalid"),
     ],
 )
 def test_operator_receipt_nested_shapes_and_time_window_offline(
@@ -2469,6 +2655,44 @@ def test_operator_receipt_nested_shapes_and_time_window_offline(
                 audit_contract_sha256=(
                     "64c75b3db696132e435523e0f3d072309fc78c72069c2d8942bf7ef89bfd68db"
                 )
+            )
+        },
+        "round5_contract_version": {
+            "dossier": lambda d: d["inputs"].update(
+                audit_contract_version="nav-identity-audit-contract-v2-round5"
+            )
+        },
+        "round5_contract_sha256": {
+            "dossier": lambda d: d["inputs"].update(
+                audit_contract_sha256=(
+                    "0d237212e1e95a6e1e0494e071170d174481c29662a27b7bf9e7ac0bca3ec2c7"
+                )
+            )
+        },
+        "a8_exclusion_not_in_policy": {
+            "dossier": lambda d: d["details"]["A8"]["exclusions"].update(
+                by_code={
+                    **d["details"]["A8"]["exclusions"]["by_code"],
+                    "sec.missing": 1,
+                },
+                gap=1,
+            )
+        },
+        "a8_gap_total_inconsistent": {
+            "dossier": lambda d: d["details"]["A8"]["exclusions"].update(gap=1)
+        },
+        "a8_gap_ceiling_raised": {
+            "dossier": lambda d: d["details"]["A8"].update(gap_ceiling=24)
+        },
+        "a8_conflict_ceiling_raised": {
+            "dossier": lambda d: d["details"]["A8"].update(conflict_ceiling=1)
+        },
+        "a8_exclusions_missing": {
+            "dossier": lambda d: d["details"]["A8"].pop("exclusions")
+        },
+        "a8_v2_detail_shape": {
+            "dossier": lambda d: d["details"]["A8"].update(
+                active_poisoned_count=0, excluded_poisoned_count=0
             )
         },
     }

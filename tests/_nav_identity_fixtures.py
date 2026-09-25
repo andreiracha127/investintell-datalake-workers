@@ -1,13 +1,20 @@
 """Synthetic identity fixtures and an independent checksum oracle (tests only).
 
 Every identifier is synthetic: CUSIP bodies start with ``ZZ``, ISINs are built
-from those CUSIPs and FIGIs use the non-reserved ``ZZG`` prefix. The oracle is
-a third formulation (``int(c, 36)``, ``divmod`` digit sums, brute-force Luhn),
-distinct from both the generator and the independent verifier.
+from those CUSIPs and FIGIs use the non-reserved ``ZZG`` prefix; SEC classes
+are ``C`` + 9 digits of the entity number. The oracle is a third formulation
+(``int(c, 36)``, ``divmod`` digit sums, brute-force Luhn), distinct from both
+the generator and the independent verifier.
+
+``catalog`` returns the FOUR v3 sources; unless told otherwise every entity
+with a registry row gets exactly one complete SEC row consistent with its
+registry ticker/series (and declared class), synced at ``SEC_AT`` (fresh for
+the fixed decision instants used by the offline suites).
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 _SPECIALS = {"*": 36, "@": 37, "#": 38}
@@ -15,6 +22,7 @@ _ALNUM = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 _FIGI_CONSONANTS = set("BCDFGHJKLMNPQRSTVWXYZ")
 AUTO = object()
 EMPTY_CONFLICT = object()
+SEC_AT = dt.datetime(2026, 9, 23, 0, 0, tzinfo=dt.timezone.utc)
 
 
 def _value(ch: str) -> int:
@@ -159,8 +167,52 @@ def entity(
     return iu, fund, registry
 
 
-def catalog(*entities, iu=(), funds=(), registry=()) -> tuple[list, list, list]:
-    """Flatten entities (a ``None`` slot omits that source row) plus extra rows."""
+def sec_row(
+    n: int,
+    *,
+    class_id: str | None | object = AUTO,
+    series: str | None | object = AUTO,
+    ticker: str | None | object = AUTO,
+    synced: dt.datetime = SEC_AT,
+) -> dict:
+    """One ``public.sec_company_tickers_mf`` projection row (aware ``synced_at``)."""
+    return {
+        "class_id": f"C{n:09d}" if class_id is AUTO else class_id,
+        "series_id": f"S{n:09d}" if series is AUTO else series,
+        "ticker": f"T{n}" if ticker is AUTO else ticker,
+        "synced_at": synced,
+    }
+
+
+def auto_sec(*entities, synced: dt.datetime = SEC_AT) -> list[dict]:
+    """One consistent complete SEC row per entity that has a registry row."""
+    rows = []
+    for _iu, _fund, registry in entities:
+        if registry is None or registry["ticker"] is None:
+            continue
+        if registry["sec_series_id"] is None:
+            continue
+        number = uuid.UUID(str(registry["instrument_id"])).int
+        rows.append(
+            sec_row(
+                number,
+                class_id=registry["sec_class_id"] or f"C{number:09d}",
+                series=registry["sec_series_id"],
+                ticker=registry["ticker"],
+                synced=synced,
+            )
+        )
+    return rows
+
+
+def catalog(
+    *entities, iu=(), funds=(), registry=(), sec=None, sec_extra=(), sec_at=SEC_AT
+) -> tuple[list, list, list, list]:
+    """Flatten entities (a ``None`` slot omits that source row) plus extra rows.
+
+    ``sec=None`` derives one consistent SEC row per registry entity (``auto_sec``);
+    an explicit list replaces them. ``sec_extra`` rows are appended either way.
+    """
     instruments, fund_rows, identity = [], [], []
     for entry in entities:
         a, b, c = entry
@@ -173,7 +225,9 @@ def catalog(*entities, iu=(), funds=(), registry=()) -> tuple[list, list, list]:
     instruments.extend(dict(row) for row in iu)
     fund_rows.extend(dict(row) for row in funds)
     identity.extend(dict(row) for row in registry)
-    return instruments, fund_rows, identity
+    sec_rows = auto_sec(*entities, synced=sec_at) if sec is None else list(sec)
+    sec_rows = [dict(row) for row in (*sec_rows, *sec_extra)]
+    return instruments, fund_rows, identity, sec_rows
 
 
 def only(entry, *, iu: bool = True, fund: bool = True, registry: bool = True):

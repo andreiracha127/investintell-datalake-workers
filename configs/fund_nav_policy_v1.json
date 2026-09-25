@@ -1,10 +1,10 @@
 {
   "readiness_profile": "current_daily_nav_v1",
   "readiness_version": 1,
-  "generator_version": "fund-nav-policy-generator-v2",
+  "generator_version": "fund-nav-policy-generator-v3",
   "provider_contract": "w1-tiingo-adjusted-daily-v1",
-  "identity_contract_reference": "registry-ticker-series-claims-v2",
-  "catalog_query_version": "nav-current-catalog-snapshot-v2",
+  "identity_contract_reference": "registry-ticker-series-claims-sec-v3",
+  "catalog_query_version": "nav-current-catalog-snapshot-v3",
   "sample_intervals": 400,
   "required_endpoints": 401,
   "annualization_sessions": 252,
@@ -30,5 +30,5 @@
   "calendar_version": null,
   "calendar_source": null,
   "deadline_source_reference": null,
-  "note": "Template only, never publishable. Native USD adjusted total-return level evidence is required; raw ex-distribution NAV and non-USD without governed FX lineage are not admitted. No FX conversion is performed. Policies are produced only by scripts/generate_fund_nav_policy_v1.py (implements generator v2): identity is instrument_identity canonical registry + ticker + series with optional ISIN/CUSIP/FIGI claims validated by format/checksum/global uniqueness; current-only, not point-in-time, not an external identity validation. The policy version is chosen at build time (e.g. 2026-09-24.2), never hardcoded. v1 artifacts are rejected by v2 code. No operational cutoff, calendar session list, instrument identity or return basis is certified by this template."
+  "note": "Template only, never publishable. Native USD adjusted total-return level evidence is required; raw ex-distribution NAV and non-USD without governed FX lineage are not admitted. No FX conversion is performed. Policies are produced only by scripts/generate_fund_nav_policy_v1.py (implements generator v3): identity is instrument_identity canonical registry + ticker + series with optional ISIN/CUSIP/FIGI claims validated by format/checksum/global uniqueness, plus current SEC class/series/ticker corroboration from public.sec_company_tickers_mf read in the same snapshot (exactly one fresh complete consistent row, fresh = at most 7 days before the decision instant); current-only, not point-in-time, not an external identity validation. The policy version is chosen at build time (e.g. 2026-09-25.3), never hardcoded. v1 and v2 artifacts are rejected by v3 code. No operational cutoff, calendar session list, instrument identity or return basis is certified by this template."
 }
