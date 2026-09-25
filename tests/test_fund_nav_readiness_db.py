@@ -6117,6 +6117,645 @@ def test_round4_pgcrypto_namespace_is_pinned_and_normalized(test_dsn):
         _drop_database(test_dsn, name)
 
 
+# ── Round5 (B-forte): a new publication never adopts external evidence ──────
+DIVERGED = "target_partition_diverged"
+CONSUMED = "publication_plan_consumed"
+
+
+def _r5_snapshot(test_dsn, schema):
+    """W1 state (pointer incl. published_at), ledger, and every ops partition digest."""
+    with _connect(test_dsn, schema) as conn:
+        partitions = conn.execute(
+            "SELECT policy_version, published_at, "
+            "nav_policy_evidence_digest_v1(policy_id, policy_version), "
+            "(SELECT count(*) FROM nav_instrument_policy_evidence e "
+            " WHERE e.policy_id = v.policy_id AND e.policy_version = v.policy_version) "
+            "FROM nav_policy_versions v WHERE policy_id = 'ops' ORDER BY policy_version"
+        ).fetchall()
+    return _snapshot(test_dsn, schema), partitions
+
+
+def _blocked(test_dsn, schema, cli, plans, capsys, code, *, check=True):
+    """Check (optional) and every supplied plan refuse with ``code``; zero writes."""
+    baseline = _r5_snapshot(test_dsn, schema)
+    if check:
+        assert operator.main(cli) == 2
+        out = json.loads(capsys.readouterr().out)
+        assert (out["code"], out["dml_committed"]) == (code, False), out
+    for plan in plans:
+        code_, out = _apply_out(cli, plan, capsys)
+        assert (code_, out["code"], out["dml_committed"], out["published"]) == (
+            2, code, False, False), out
+    assert _r5_snapshot(test_dsn, schema) == baseline
+
+
+def _rollback_pointer(test_dsn, schema, version):
+    """Privileged pointer-only rollback (a new pointer instant; no receipt)."""
+    with _connect(test_dsn, schema) as conn:
+        conn.execute("UPDATE nav_policy_current SET policy_version = %s", (version,))
+        conn.commit()
+
+
+def _unpublished_version(test_dsn, schema, document):
+    """Commit the (empty, unpublished) version row a document will publish."""
+    evidence = operator._policy(document)[0]
+    with _connect(test_dsn, schema) as conn:
+        conn.execute(
+            """INSERT INTO nav_policy_versions
+               (policy_id,policy_version,policy_hash,readiness_profile,valuation_frequency,
+                calendar_id,calendar_version,calendar_source,timezone,sample_intervals,
+                annualization_sessions,coverage_start,coverage_end,valid_through,
+                calendar_session_count,calendar_digest,required_nav_kind,
+                required_return_semantics,modeling_currency,currency_treatment,
+                source_reference,published_at)
+               VALUES (%s,%s,%s,'current_daily_nav_v1','daily',%s,%s,%s,%s,400,252,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,NULL)""",
+            (evidence["policy_id"], evidence["policy_version"],
+             operator.policy_content_digest(evidence), evidence["calendar_id"],
+             evidence["calendar_version"], evidence["calendar_source"], evidence["timezone"],
+             evidence["coverage_start"], evidence["coverage_end"], evidence["valid_through"],
+             evidence["calendar_session_count"], evidence["calendar_digest"],
+             evidence["required_nav_kind"], evidence["required_return_semantics"],
+             evidence["modeling_currency"], evidence["currency_treatment"],
+             evidence["source_reference"]),
+        )
+        conn.commit()
+
+
+def _before_state(test_dsn, schema, document):
+    with _connect(test_dsn, schema) as conn:
+        state = operator._dml_state(conn, operator._policy(document)[0], [], None, None)
+        conn.rollback()
+    return state
+
+
+def _spy(monkeypatch, name, calls):
+    real = getattr(operator, name)
+
+    def wrapper(*args, **kwargs):
+        result = real(*args, **kwargs)
+        calls.append((name, result))
+        return result
+
+    monkeypatch.setattr(operator, name, wrapper)
+
+
+def _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys):
+    """v1/R1 then v2/R2 governed; pointer rolled back to v1 (privileged)."""
+    iid, grid, combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    base, v1_path = policy_only[:4], Path(policy_only[-1])
+    v1_doc = json.loads(v1_path.read_text())
+    _publish(base, v1_path, _governed_receipt("r1"), monkeypatch, capsys)
+    v2_path, v2_doc = _doc_path(tmp_path, grid, iid, "v2")
+    _publish(base, v2_path, _governed_receipt("r2", _identity(v1_doc)), monkeypatch, capsys)
+    _rollback_pointer(test_dsn, schema, "v1")
+    _install_receipt_seam(monkeypatch, _governed_receipt("r3", _identity(v1_doc)))
+    return {"iid": iid, "grid": grid, "base": base, "v1_doc": v1_doc, "v2_path": v2_path,
+            "v2_doc": v2_doc, "cli": [*base, "--policy-file", str(v2_path)],
+            "combined": combined}
+
+
+class _StatementRecorder:
+    """Connection proxy recording every executed statement's SQL text."""
+
+    def __init__(self, conn):
+        self._conn, self.statements = conn, []
+
+    def execute(self, query, params=None):
+        text = query if isinstance(query, str) else query.as_string(self._conn)
+        self.statements.append(text)
+        return self._conn.execute(query, params)
+
+
+_CONTENT_MARKERS = (
+    "nav_instrument_policy_evidence", "nav_policy_publication_receipts",
+    "nav_policy_evidence_digest_v1(",
+)
+
+
+def _content_statements(recorder):
+    """Statements reading partition/ledger CONTENT (shape probes excluded)."""
+    return [s for s in recorder.statements if any(m in s for m in _CONTENT_MARKERS)]
+
+
+def test_round5_admission_reads_digest_count_and_certificate_in_one_statement(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    """Splitting the three admission reads would let an append committed between
+    them inflate the baseline and be adopted: exactly ONE content statement."""
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    evidence = operator._policy(env["v2_doc"])[0]
+    with _connect(test_dsn, schema) as conn:
+        recorder = _StatementRecorder(conn)
+        assert operator._target_partition_before(recorder, evidence) == 1
+        assert _content_statements(recorder) == [operator._TARGET_PARTITION_SQL]
+        current, count, certified = conn.execute(
+            operator._TARGET_PARTITION_SQL, {"pid": "ops", "ver": "v2"}).fetchone()
+        assert (count, certified) == (1, current)
+        conn.rollback()
+        # Ledger absent (older W1): a single count, never the absent helper.
+        conn.execute("DROP TABLE nav_policy_publication_receipts")
+        conn.execute("DROP FUNCTION nav_policy_publication_receipt_guard_v1()")
+        conn.execute(f"DROP FUNCTION {DIGEST_FN}")
+        recorder = _StatementRecorder(conn)
+        with pytest.raises(ValueError, match=DIVERGED):
+            operator._target_partition_before(recorder, evidence)
+        assert _content_statements(recorder) == [operator._TARGET_PARTITION_COUNT_SQL]
+        conn.rollback()  # the drops were never committed
+
+
+@pytest.mark.parametrize(
+    "case", ["A1_document_instrument", "A3_retroactive", "A3_future"])
+def test_round5_a1_a3_committed_append_after_planning_refuses(
+    test_dsn, schema, tmp_path, monkeypatch, capsys, case
+):
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    plan = _check_out(env["cli"], capsys)["plan_sha256"]  # certified: ready
+    before = _before_state(test_dsn, schema, env["v2_doc"])
+    now = dt.datetime.now(dt.timezone.utc)
+    when = {"A1_document_instrument": now - dt.timedelta(hours=1),
+            "A3_retroactive": dt.datetime(2019, 5, 6, tzinfo=dt.timezone.utc),
+            "A3_future": now + dt.timedelta(days=30)}[case]
+    _append(test_dsn, schema, env["iid"], "v2", when)
+    assert _before_state(test_dsn, schema, env["v2_doc"]) == before  # plan not stale
+    _blocked(test_dsn, schema, env["cli"], [plan], capsys, DIVERGED)
+
+
+def test_round5_a1_append_between_prescreen_and_locks_refuses_under_locks(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    """The read-only pre-screen passes; the under-lock baseline refuses."""
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    plan = _check_out(env["cli"], capsys)["plan_sha256"]
+    baseline = _r5_snapshot(test_dsn, schema)
+    real_locks = operator._try_nav_writer_locks
+    appended = []
+
+    def append_then_lock(conn):
+        _append(test_dsn, schema, env["iid"], "v2", dt.datetime(2020, 1, 2, tzinfo=dt.timezone.utc))
+        appended.append(True)
+        return real_locks(conn)
+
+    monkeypatch.setattr(operator, "_try_nav_writer_locks", append_then_lock)
+    code, out = _apply_out(env["cli"], plan, capsys)
+    assert appended == [True]
+    assert (code, out["code"], out["policy"], out["dml_committed"]) == (
+        2, DIVERGED, "rolled_back", False)
+    after = _r5_snapshot(test_dsn, schema)
+    assert after[0][0][3] == baseline[0][0][3]  # pointer incl. published_at
+    assert after[0][1] == baseline[0][1]  # ledger
+    assert after[0][0][2] == baseline[0][0][2] + 1  # only the external row
+
+
+def test_round5_a2_append_outside_the_document_refuses_other_partition_does_not(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    plan = _check_out(env["cli"], capsys)["plan_sha256"]
+    # Control: another partition (same policy_id, other version) never blocks.
+    with _connect(test_dsn, schema) as conn:
+        _clone_version(conn, ("ops", "v1"), "v-other")
+        conn.commit()
+    _append(test_dsn, schema, uuid.uuid4(), "v-other", dt.datetime.now(dt.timezone.utc))
+    assert _check_out(env["cli"], capsys)["plan_sha256"] == plan
+    # Same partition, an instrument absent from the document.
+    _append(test_dsn, schema, uuid.uuid4(), "v2", dt.datetime.now(dt.timezone.utc))
+    _blocked(test_dsn, schema, env["cli"], [plan], capsys, DIVERGED)
+
+
+def test_round5_a4_regenerated_document_without_the_extra_refuses(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    _append(test_dsn, schema, uuid.uuid4(), "v2", dt.datetime.now(dt.timezone.utc))
+    later = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=3)
+    d2 = _regenerated(tmp_path, env["v2_doc"],
+                      [_lifecycle_row(uuid.uuid4(), later, reference="d2-new-row")])
+    cli = [*env["base"], "--policy-file", str(d2)]
+    _blocked(test_dsn, schema, cli, ["0" * 64], capsys, DIVERGED)
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM nav_instrument_policy_evidence "
+            "WHERE evidence_reference = 'd2-new-row'").fetchone()[0] == 0
+
+
+def test_round5_a5_regenerated_document_listing_the_extra_is_not_adoption(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    extra_iid = uuid.uuid4()
+    when = dt.datetime(2025, 6, 2, tzinfo=dt.timezone.utc)
+    _append(test_dsn, schema, extra_iid, "v2", when)
+    row = _lifecycle_row(extra_iid, when, reference="direct-append")
+    d2 = _regenerated(tmp_path, env["v2_doc"], [row])  # identical content
+    cli = [*env["base"], "--policy-file", str(d2)]
+    _blocked(test_dsn, schema, cli, ["0" * 64], capsys, DIVERGED)
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM nav_instrument_policy_evidence WHERE instrument_id = %s",
+            (extra_iid,)).fetchone()[0] == 1
+
+
+def test_round5_a6_new_generation_of_a_certified_version_applies(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    """T6 without extras: baseline = certified count, only own rows added."""
+    iid, grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    base, v1_path = policy_only[:4], Path(policy_only[-1])
+    v1_doc = json.loads(v1_path.read_text())
+    cli1, plan1 = _publish(base, v1_path, _governed_receipt("r1"), monkeypatch, capsys)
+    v2_path, v2_doc = _doc_path(tmp_path, grid, iid, "v2")
+    _publish(base, v2_path, _governed_receipt("r2", _identity(v1_doc)), monkeypatch, capsys)
+    later = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=5)
+    regenerated = _regenerated(tmp_path, v1_doc, [_lifecycle_row(uuid.uuid4(), later)])
+    calls = []
+    _spy(monkeypatch, "_target_partition_before", calls)
+    _spy(monkeypatch, "_publish_policy_tx", calls)
+    cli3, plan3 = _publish(base, regenerated, _governed_receipt("r3", _identity(v2_doc)),
+                           monkeypatch, capsys)
+    baselines = [result for name, result in calls if name == "_target_partition_before"]
+    inserted = [result[2] for name, result in calls if name == "_publish_policy_tx"]
+    assert baselines[-1] == 1 and inserted == [1]  # certified v1 row + own row
+    with _connect(test_dsn, schema) as conn:
+        digest = conn.execute(
+            "SELECT evidence_partition_digest FROM nav_policy_publication_receipts "
+            "WHERE plan_sha256 = %s", (plan3,)).fetchone()[0]
+        assert digest == _server_digest(conn, "ops", "v1")
+    _replays(test_dsn, schema, cli3, plan3, capsys)
+    _install_receipt_seam(monkeypatch, _governed_receipt("r1"))
+    _refused(test_dsn, schema, cli1, [plan1], capsys)
+
+
+def test_round5_a7_byte_identical_republication_is_a_new_event(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    with _connect(test_dsn, schema) as conn:
+        r2_digest = conn.execute(
+            "SELECT evidence_partition_digest FROM nav_policy_publication_receipts "
+            "WHERE policy_version = 'v2'").fetchone()[0]
+    calls = []
+    _spy(monkeypatch, "_publish_policy_tx", calls)
+    _cli, plan = _publish(env["base"], env["v2_path"],
+                          _governed_receipt("r3", _identity(env["v1_doc"])),
+                          monkeypatch, capsys)
+    assert [result[2] for _name, result in calls] == [0]  # nothing inserted
+    with _connect(test_dsn, schema) as conn:
+        rows = conn.execute(
+            "SELECT plan_sha256, evidence_partition_digest FROM nav_policy_publication_receipts "
+            "WHERE policy_version = 'v2' ORDER BY commit_xid").fetchall()
+    assert len(rows) == 2 and rows[-1] == (plan, r2_digest)
+
+
+def test_round5_a8_successor_version_applies_and_leaves_the_diverged_one(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    _append(test_dsn, schema, env["iid"], "v2", dt.datetime.now(dt.timezone.utc))
+    _blocked(test_dsn, schema, env["cli"], [], capsys, DIVERGED)
+    with _connect(test_dsn, schema) as conn:
+        v2 = conn.execute(
+            "SELECT nav_policy_evidence_digest_v1('ops', 'v2'), "
+            "(SELECT jsonb_agg(to_jsonb(r) ORDER BY commit_xid) FROM "
+            " nav_policy_publication_receipts r WHERE policy_version = 'v2')").fetchone()
+    v3_path, _ = _doc_path(tmp_path, env["grid"], env["iid"], "v3")
+    _publish(env["base"], v3_path, _governed_receipt("r4", _identity(env["v1_doc"])),
+             monkeypatch, capsys)
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT nav_policy_evidence_digest_v1('ops', 'v2'), "
+            "(SELECT jsonb_agg(to_jsonb(r) ORDER BY commit_xid) FROM "
+            " nav_policy_publication_receipts r WHERE policy_version = 'v2')"
+        ).fetchone() == v2
+        assert conn.execute(
+            "SELECT policy_version FROM nav_policy_current").fetchone()[0] == "v3"
+
+
+@pytest.mark.parametrize("ledger", ["absent", "present"])
+def test_round5_a9_uncertified_nonempty_target_refuses_empty_admits(
+    test_dsn, schema, tmp_path, monkeypatch, capsys, ledger
+):
+    iid, _grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    document = json.loads(Path(policy_only[-1]).read_text())
+    _unpublished_version(test_dsn, schema, document)  # existing, EMPTY partition
+    stray = uuid.uuid4()
+    _append(test_dsn, schema, stray, "v1", dt.datetime(2024, 2, 1, tzinfo=dt.timezone.utc))
+    if ledger == "absent":
+        with _connect(test_dsn, schema, autocommit=True) as conn:
+            conn.execute("DROP TABLE nav_policy_publication_receipts")
+            conn.execute("DROP FUNCTION nav_policy_publication_receipt_guard_v1()")
+            conn.execute(f"DROP FUNCTION {DIGEST_FN}")
+            assert operator._check(conn, schema)["compatibility"] == "repairable"
+    before = _w1_state(test_dsn, schema)
+    assert operator.main(policy_only) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert (out["code"], out["ddl"], out["dml_committed"]) == (DIVERGED, "not_attempted", False)
+    code, out = _apply_out(policy_only, "0" * 64, capsys)
+    assert (code, out["code"], out["ddl"], out["dml_committed"]) == (
+        2, DIVERGED, "not_attempted", False)
+    assert _w1_state(test_dsn, schema) == before
+    with _connect(test_dsn, schema) as conn:
+        assert operator._receipt_ledger_state(conn) == ledger.replace("present", "round4")
+
+
+def test_round5_a9_existing_version_with_empty_partition_admits(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    _iid, _grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    document = json.loads(Path(policy_only[-1]).read_text())
+    _unpublished_version(test_dsn, schema, document)
+    calls = []
+    _spy(monkeypatch, "_target_partition_before", calls)
+    _spy(monkeypatch, "_publish_policy_tx", calls)
+    plan = _check_out(policy_only, capsys)["plan_sha256"]
+    code, out = _apply_out(policy_only, plan, capsys)
+    assert (code, out["policy"], out["dml_committed"]) == (0, "committed", True)
+    # check pre-screen, apply pre-screen, then the under-lock baseline.
+    assert [r for n, r in calls if n == "_target_partition_before"] == [0, 0, 0]
+    assert [r[2] for n, r in calls if n == "_publish_policy_tx"] == [1]
+
+
+def test_round5_a9_fresh_schema_check_and_apply_never_touch_absent_relations(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute(NAV_SQL)
+        _access_fixture(conn, schema)
+        conn.execute("CREATE TABLE funds_profile_mv (instrument_id uuid PRIMARY KEY)")
+        assert operator._check(conn, schema)["compatibility"] == "absent"
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    _install_receipt_seam(monkeypatch)
+    path = tmp_path / "ops-fresh.json"
+    path.write_text(json.dumps(_policy_document(_grid(), uuid.uuid4())), encoding="utf-8")
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    cli = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest(),
+           "--policy-file", str(path)]
+    assert operator.main(cli) == 0, capsys.readouterr().out
+    out = json.loads(capsys.readouterr().out)
+    assert (out["status"], out["code"], out["compatibility"]) == ("planned", None, "absent")
+    code, out = _apply_out(cli, out["plan_sha256"], capsys)
+    assert (code, out["ddl"], out["policy"], out["dml_committed"]) == (
+        0, "applied", "committed", True), out
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM nav_policy_publication_receipts").fetchone()[0] == 1
+
+
+def test_round5_legacy_version_without_receipt_is_rollback_only(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    """Production-shaped v1 (evidence, no receipt): never republished; its
+    rollback is a pointer move; a successor publishes normally."""
+    iid, grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    base, v1_path = policy_only[:4], Path(policy_only[-1])
+    v1_doc = json.loads(v1_path.read_text())
+    with _connect(test_dsn, schema) as conn:
+        operator._publish_policy(conn, operator._policy(v1_doc)[0])  # legacy, no receipt
+        conn.commit()
+    v2_path, v2_doc = _doc_path(tmp_path, grid, iid, "v2")
+    _publish(base, v2_path, _governed_receipt("r2", _identity(v1_doc)), monkeypatch, capsys)
+    _install_receipt_seam(monkeypatch, _governed_receipt("r3", _identity(v2_doc)))
+    _blocked(test_dsn, schema, [*base, "--policy-file", str(v1_path)], ["0" * 64], capsys,
+             DIVERGED)
+    _rollback_pointer(test_dsn, schema, "v1")  # rollback-only: pointer movement
+    with _connect(test_dsn, schema) as conn:
+        assert conn.execute("SELECT policy_version FROM nav_policy_current").fetchone()[0] == "v1"
+        assert conn.execute(
+            "SELECT count(*) FROM nav_policy_publication_receipts WHERE policy_version = 'v1'"
+        ).fetchone()[0] == 0
+    v3_path, _ = _doc_path(tmp_path, grid, iid, "v3")
+    _publish(base, v3_path, _governed_receipt("r4", _identity(v1_doc)), monkeypatch, capsys)
+
+
+def test_round5_previous_pointer_restamp_does_not_affect_publication(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    env = _v1_v2_rolled_back(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    plan = _check_out(env["cli"], capsys)["plan_sha256"]
+    with _connect(test_dsn, schema) as conn:
+        stamp = conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0]
+        conn.execute("UPDATE nav_policy_current SET policy_id = policy_id")  # no-op re-stamp
+        conn.commit()
+        assert conn.execute("SELECT published_at FROM nav_policy_current").fetchone()[0] > stamp
+    code, out = _apply_out(env["cli"], plan, capsys)
+    assert (code, out["policy"], out["dml_committed"]) == (0, "committed", True), out
+
+
+@pytest.mark.parametrize("moment", ["before_receipt", "after_receipt"])
+def test_round5_a10_committed_external_append_during_publication_rolls_back(
+    test_dsn, schema, tmp_path, monkeypatch, capsys, moment
+):
+    """A privileged autocommit writer ignores the advisory locks; READ COMMITTED
+    makes its committed row visible to the receipt digest and/or the count."""
+    iid, grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    base, v1_path = policy_only[:4], Path(policy_only[-1])
+    v1_doc = json.loads(v1_path.read_text())
+    _publish(base, v1_path, _governed_receipt("r1"), monkeypatch, capsys)
+    v2_path, v2_doc = _doc_path(tmp_path, grid, iid, "v2")
+    _unpublished_version(test_dsn, schema, v2_doc)  # preexisting: no FK lock wait
+    _install_receipt_seam(monkeypatch, _governed_receipt("r2", _identity(v1_doc)))
+    cli = [*base, "--policy-file", str(v2_path)]
+    plan = _check_out(cli, capsys)["plan_sha256"]
+    baseline = _r5_snapshot(test_dsn, schema)
+    extra = uuid.uuid4()
+    real = operator._record_publication
+    seen = {}
+
+    def external_append():
+        with _connect(test_dsn, schema, autocommit=True) as other:
+            role, isolation = other.execute(
+                "SELECT current_user, current_setting('transaction_isolation')").fetchone()
+            seen["writer"] = (role, isolation)
+            seen["inserted"] = other.execute(
+                EVIDENCE_INSERT, (extra, "ops", "v2", "2025-03-03Z", "2025-03-03Z", "ACTIVE",
+                                  "daily", True, True, True, "race-extra")).rowcount
+
+    def racing_record(conn, *args):
+        if moment == "before_receipt":
+            external_append()
+        real(conn, *args)
+        seen["receipt_certifies_extra"] = conn.execute(
+            "SELECT r.evidence_partition_digest = nav_policy_evidence_digest_v1('ops', 'v2'), "
+            "EXISTS (SELECT 1 FROM nav_instrument_policy_evidence WHERE instrument_id = %s) "
+            "FROM nav_policy_publication_receipts r WHERE r.plan_sha256 = %s",
+            (extra, plan)).fetchone()
+        seen["isolation"] = conn.execute(
+            "SELECT current_setting('transaction_isolation')").fetchone()[0]
+        if moment == "after_receipt":
+            external_append()
+
+    monkeypatch.setattr(operator, "_record_publication", racing_record)
+    code, out = _apply_out(cli, plan, capsys)
+    assert (code, out["code"], out["policy"], out["dml_committed"], out["published"]) == (
+        2, DIVERGED, "rolled_back", False, False), out
+    assert seen["inserted"] == 1 and seen["writer"] == ("postgres", "read committed")
+    assert seen["isolation"] == "read committed"
+    # Before: the trigger certified the visible extra; the count still refuses.
+    assert seen["receipt_certifies_extra"] == (
+        (True, True) if moment == "before_receipt" else (True, False))
+    after = _r5_snapshot(test_dsn, schema)
+    assert after[0][1] == baseline[0][1]  # no receipt committed
+    assert after[0][0][3] == baseline[0][0][3]  # pointer incl. published_at
+    with _connect(test_dsn, schema) as conn:
+        rows = conn.execute(
+            "SELECT instrument_id, evidence_reference FROM nav_instrument_policy_evidence "
+            "WHERE policy_id = 'ops' AND policy_version = 'v2'").fetchall()
+        published = conn.execute(
+            "SELECT published_at FROM nav_policy_versions WHERE policy_version = 'v2'"
+        ).fetchone()[0]
+    assert rows == [(extra, "race-extra")] and published is None  # governed rows reverted
+
+
+def _consumed_env(test_dsn, schema, tmp_path, monkeypatch, capsys):
+    """A11: v2 exists (empty) before the first check; P2 applied; pointer back."""
+    iid, grid, _combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    base, v1_path = policy_only[:4], Path(policy_only[-1])
+    v1_doc = json.loads(v1_path.read_text())
+    _publish(base, v1_path, _governed_receipt("r1"), monkeypatch, capsys)
+    v2_path, v2_doc = _doc_path(tmp_path, grid, iid, "v2")
+    _unpublished_version(test_dsn, schema, v2_doc)
+    cli, plan = _publish(base, v2_path, _governed_receipt("r2", _identity(v1_doc)),
+                         monkeypatch, capsys)
+    _rollback_pointer(test_dsn, schema, "v1")
+    return {"cli": cli, "plan": plan, "v1_doc": v1_doc, "v2_doc": v2_doc,
+            "iid": iid}
+
+
+def test_round5_a11_consumed_plan_is_refused_before_the_publisher(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    env = _consumed_env(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    # The rollback restored the exact before-state: the plan is NOT stale.
+    assert _check_out(env["cli"], capsys)["plan_sha256"] == env["plan"]
+    calls = []
+    _spy(monkeypatch, "_publish_policy_tx", calls)
+    _blocked(test_dsn, schema, env["cli"], [env["plan"]], capsys, CONSUMED, check=False)
+    assert calls == []
+    # A new audit makes a different plan, applied with zero new rows.
+    _install_receipt_seam(monkeypatch, _governed_receipt("r3", _identity(env["v1_doc"])))
+    fresh = _check_out(env["cli"], capsys)["plan_sha256"]
+    assert fresh != env["plan"]
+    code, out = _apply_out(env["cli"], fresh, capsys)
+    assert (code, out["policy"], out["dml_committed"]) == (0, "committed", True)
+    assert [r[2] for _n, r in calls] == [0]
+
+
+def test_round5_a11_unique_violations_are_classified_by_constraint(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    env = _consumed_env(test_dsn, schema, tmp_path, monkeypatch, capsys)
+    baseline = _r5_snapshot(test_dsn, schema)
+    real_record = operator._record_publication
+    captured = {}
+
+    def capture(key):
+        def record(conn, *args):
+            try:
+                if key == "other":  # a real 23505 of another constraint first
+                    conn.execute(EVIDENCE_INSERT, (
+                        env["iid"], "ops", "v2", "2025-01-01T00:00:00+00:00",
+                        "2025-01-01T00:00:00+00:00", "ACTIVE", "daily", True, True, True,
+                        "ops-fixture-identity"))
+                real_record(conn, *args)
+            except psycopg.Error as exc:
+                captured[key] = exc
+                raise
+        return record
+
+    # (1) Probe bypassed: the real UNIQUE (plan_sha256) violation is typed.
+    monkeypatch.setattr(operator, "_assert_publication_plan_unused", lambda conn, plan: None)
+    monkeypatch.setattr(operator, "_record_publication", capture("plan"))
+    code, out = _apply_out(env["cli"], env["plan"], capsys)
+    assert (code, out["code"], out["policy"], out["dml_committed"]) == (
+        2, CONSUMED, "rolled_back", False), out
+    assert "sqlstate" not in out
+    exc = captured["plan"]
+    assert isinstance(exc, psycopg.errors.UniqueViolation)
+    assert exc.diag.constraint_name == operator.PUBLICATION_PLAN_CONSTRAINT
+    assert _r5_snapshot(test_dsn, schema) == baseline
+    # (2) Any other 23505 stays a database_error with its SQLSTATE only.
+    _install_receipt_seam(monkeypatch, _governed_receipt("r3", _identity(env["v1_doc"])))
+    fresh = _check_out(env["cli"], capsys)["plan_sha256"]
+    monkeypatch.setattr(operator, "_record_publication", capture("other"))
+    code, out = _apply_out(env["cli"], fresh, capsys)
+    assert (code, out["code"], out["sqlstate"], out["dml_committed"]) == (
+        2, "database_error", "23505", False), out
+    other = captured["other"]
+    assert isinstance(other, psycopg.errors.UniqueViolation)
+    assert other.diag.constraint_name != operator.PUBLICATION_PLAN_CONSTRAINT
+    assert operator._is_publication_plan_consumed(exc)
+    assert not operator._is_publication_plan_consumed(other)
+    assert not operator._is_publication_plan_consumed(ValueError(str(exc)))
+    assert _r5_snapshot(test_dsn, schema) == baseline
+    # (3) The outer handler of main applies the same classification.
+    for raised, expected in ((exc, (2, CONSUMED)), (other, (2, "database_error"))):
+        def boom(*_args, _raised=raised, **_kwargs):
+            raise _raised
+        monkeypatch.setattr(operator, "_apply_dml", boom)
+        code, out = _apply_out(env["cli"], fresh, capsys)
+        assert (code, out["code"]) == expected
+    assert operator._SAFE_CODES.fullmatch(CONSUMED) and operator._SAFE_CODES.fullmatch(DIVERGED)
+
+
+def test_round5_a12_maintenance_only_unaffected_combined_refused_atomically(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    iid, grid, combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    base, v1_path = policy_only[:4], Path(policy_only[-1])
+    v1_doc = json.loads(v1_path.read_text())
+    _publish(base, v1_path, _governed_receipt("r1"), monkeypatch, capsys)
+    # The combined plan now targets v2, whose partition diverged (no receipt).
+    v2_doc = json.loads(json.dumps(v1_doc))
+    v2_doc["policy_version"] = "v2"
+    v1_path.write_text(json.dumps(v2_doc), encoding="utf-8")
+    _unpublished_version(test_dsn, schema, v2_doc)
+    _append(test_dsn, schema, uuid.uuid4(), "v2", dt.datetime.now(dt.timezone.utc))
+    _install_receipt_seam(monkeypatch, _governed_receipt("r2", _identity(v1_doc)))
+    _blocked(test_dsn, schema, combined, ["0" * 64], capsys, DIVERGED)
+    # Maintenance-only never runs the policy guard: same behaviour and replay.
+    maintenance_only = [*base, "--instrument-id", str(iid),
+                        "--start", grid[0].isoformat(), "--end", grid[-1].isoformat()]
+    plan = _check_out(maintenance_only, capsys)["plan_sha256"]
+    code, out = _apply_out(maintenance_only, plan, capsys)
+    assert (code, out["maintenance"], out["changed_rows"], out["dml_committed"]) == (
+        0, "committed", 401, True), out
+    assert out["policy"] == "not_attempted" and len(_ledger(test_dsn, schema)) == 1
+    code, out = _apply_out(maintenance_only, plan, capsys)
+    assert (code, out["status"], out["dml_committed"]) == (0, "unchanged", False)
+
+
+def test_round5_a12_combined_refusal_under_locks_rolls_back_maintenance(
+    test_dsn, schema, tmp_path, monkeypatch, capsys
+):
+    iid, grid, combined, policy_only = _ops_env(test_dsn, schema, tmp_path, monkeypatch)
+    base, v1_path = policy_only[:4], Path(policy_only[-1])
+    v1_doc = json.loads(v1_path.read_text())
+    _publish(base, v1_path, _governed_receipt("r1"), monkeypatch, capsys)
+    v2_doc = json.loads(json.dumps(v1_doc))
+    v2_doc["policy_version"] = "v2"
+    v1_path.write_text(json.dumps(v2_doc), encoding="utf-8")
+    _unpublished_version(test_dsn, schema, v2_doc)
+    _install_receipt_seam(monkeypatch, _governed_receipt("r2", _identity(v1_doc)))
+    plan = _check_out(combined, capsys)["plan_sha256"]
+    baseline = _r5_snapshot(test_dsn, schema)
+    real_publish = operator._publish_policy_tx
+
+    def publish_then_race(conn, evidence):
+        result = real_publish(conn, evidence)
+        _append(test_dsn, schema, uuid.uuid4(), "v2", dt.datetime.now(dt.timezone.utc))
+        return result
+
+    monkeypatch.setattr(operator, "_publish_policy_tx", publish_then_race)
+    code, out = _apply_out(combined, plan, capsys)
+    assert (code, out["code"], out["policy"], out["maintenance"], out["dml_committed"]) == (
+        2, DIVERGED, "rolled_back", "rolled_back", False), out
+    after = _r5_snapshot(test_dsn, schema)
+    assert after[0][1] == baseline[0][1]  # no receipt
+    assert after[0][0][3] == baseline[0][0][3]  # pointer
+    assert after[0][0][4] == baseline[0][0][4]  # no maintenance run
+    assert after[0][0][7] == baseline[0][0][7]  # NAV rows untouched
+
+
 # ── N5: PR132 prerequisite (real catalog, representable mutations) ───────────
 PR132_ALT_TYPES = {
     "source_nav": "numeric(18,4)", "source_nav_kind": "varchar(17)",

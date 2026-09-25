@@ -32,6 +32,15 @@ snapshot); a stale plan replays only with the row of that exact plan digest and
 audit identity. Any partition append or pointer re-stamp ends the replay.
 pgcrypto ``digest(bytea, text)`` is a verified prerequisite (exit 3 if absent).
 
+A NEW publication (Round5, B-forte) is admitted only when the whole target
+partition equals the digest certified by the latest receipt of that version,
+or is empty with no receipt (``target_partition_diverged`` otherwise, check
+and apply; extras are never adopted, even if a regenerated document lists
+them). After the receipt, before COMMIT, the partition must hold exactly that
+baseline plus this transaction's own insertions. A plan digest already bound
+to a receipt is ``publication_plan_consumed``. Legacy versions with evidence
+and no receipt are rollback-only (pointer moves), never republished here.
+
 Run from the repository root: ``python -m scripts.fund_nav_readiness_schema``.
 """
 
@@ -1381,10 +1390,25 @@ def _publish_policy(conn, evidence: dict) -> tuple[str, bool]:
 
     Never commits. Returns ``(policy_hash, changed)``; an identical policy that
     is already current changes nothing (no pointer UPDATE, so no new stamp).
+    Thin wrapper over ``_publish_policy_tx`` (one implementation).
+    """
+    policy_hash, changed, _inserted = _publish_policy_tx(conn, evidence)
+    return policy_hash, changed
+
+
+def _publish_policy_tx(conn, evidence: dict) -> tuple[str, bool, int]:
+    """``_publish_policy`` plus the number of lifecycle rows THIS call inserted.
+
+    ``inserted_evidence_rows`` sums the ``rowcount`` of each successful INSERT
+    into ``nav_instrument_policy_evidence`` made here; rows that already
+    existed, schedules, the version row and the pointer are never counted. The
+    governed publication compares it with the target partition's count after
+    the receipt (``_assert_target_partition_count``).
     """
     policy_hash = policy_content_digest(evidence)
     pid, ver = evidence["policy_id"], evidence["policy_version"]
     changed = False
+    inserted_evidence_rows = 0
     changed |= conn.execute(
         """INSERT INTO nav_policy_versions
             (policy_id,policy_version,policy_hash,readiness_profile,valuation_frequency,
@@ -1491,7 +1515,7 @@ def _publish_policy(conn, evidence: dict) -> tuple[str, bool]:
         if saved is not None and saved != expected:
             raise ValueError("immutable_instrument_evidence_conflict")
         if saved is None:
-            conn.execute(
+            inserted_evidence_rows += conn.execute(
                 """INSERT INTO nav_instrument_policy_evidence
                (instrument_id,policy_id,policy_version,known_at,effective_at,fund_status,
                 valuation_frequency,identity_verified,return_basis_verified,
@@ -1510,7 +1534,7 @@ def _publish_policy(conn, evidence: dict) -> tuple[str, bool]:
                     bool(row["currency_verified"]),
                     row["evidence_reference"],
                 ),
-            )
+            ).rowcount
             changed = True
     changed |= conn.execute(
         """UPDATE nav_policy_versions SET published_at=clock_timestamp()
@@ -1527,7 +1551,7 @@ def _publish_policy(conn, evidence: dict) -> tuple[str, bool]:
               OR nav_policy_current.policy_version IS DISTINCT FROM EXCLUDED.policy_version""",
         (pid, ver),
     ).rowcount > 0
-    return policy_hash, changed
+    return policy_hash, changed, inserted_evidence_rows
 
 
 _SCOPE_ROWS_SQL = """
@@ -2718,8 +2742,71 @@ def _publication_receipt_exact(
     ).fetchone()[0]
 
 
-def _audit_pointer(conn, evidence: dict, audit: dict, policy_sha256: str | None) -> bool:
-    """The pointer is the audited previous version, or the target as a replay.
+# Round5 B-forte pre-condition, ONE statement (one snapshot): the digest and
+# row count of the WHOLE target lifecycle partition and the digest certified by
+# the latest receipt of that version (publications are serialized by the NAV
+# writer locks; the xid is assigned at the transaction's first write). Never
+# filtered by document, audit, pointer or plan.
+_TARGET_PARTITION_SQL = """
+SELECT nav_policy_evidence_digest_v1(%(pid)s, %(ver)s) AS current_digest,
+       (SELECT count(*) FROM nav_instrument_policy_evidence
+         WHERE policy_id = %(pid)s AND policy_version = %(ver)s) AS row_count,
+       (SELECT r.evidence_partition_digest
+          FROM nav_policy_publication_receipts r
+         WHERE r.readiness_profile = 'current_daily_nav_v1'
+           AND r.policy_id = %(pid)s AND r.policy_version = %(ver)s
+         ORDER BY r.commit_xid DESC LIMIT 1) AS certified_digest
+"""
+_TARGET_PARTITION_COUNT_SQL = """
+SELECT count(*) FROM nav_instrument_policy_evidence
+ WHERE policy_id = %(pid)s AND policy_version = %(ver)s
+"""
+# Default name of UNIQUE (plan_sha256) on the receipt ledger (Round4 DDL).
+PUBLICATION_PLAN_CONSTRAINT = "nav_policy_publication_receipts_plan_sha256_key"
+
+
+def _partition_key(evidence: dict) -> dict:
+    return {"pid": evidence["policy_id"], "ver": evidence["policy_version"]}
+
+
+def _target_partition_before(conn, evidence: dict) -> int:
+    """Row count of the target partition when it is certified or empty.
+
+    B-forte: the WHOLE partition ``(policy_id, policy_version)`` must equal the
+    digest certified by the latest receipt of that version, or, with no
+    receipt, be empty. Extras are never adopted, not even when a regenerated
+    document contains them. Shape first: a pre-Round4 ledger is
+    ``schema_upgrade_required`` (no query of absent columns); an absent ledger
+    does not mean an empty partition (count only, zero admitted); no evidence
+    relation at all (structural check of an absent schema) is zero. Otherwise
+    ``target_partition_diverged``.
+    """
+    ledger = _receipt_ledger_state(conn)
+    if ledger == "outdated":
+        raise ValueError("schema_upgrade_required")
+    if not _relation_exists(conn, "nav_instrument_policy_evidence"):
+        if ledger != "absent":
+            raise ValueError("incompatible_schema")
+        return 0
+    key = _partition_key(evidence)
+    if ledger == "absent":
+        count = conn.execute(_TARGET_PARTITION_COUNT_SQL, key).fetchone()[0]
+        if count != 0:
+            raise ValueError("target_partition_diverged")
+        return 0
+    current, count, certified = conn.execute(_TARGET_PARTITION_SQL, key).fetchone()
+    if certified is None:
+        if count != 0:
+            raise ValueError("target_partition_diverged")
+    elif certified != current:
+        raise ValueError("target_partition_diverged")
+    return count
+
+
+def _audit_publication_state(
+    conn, evidence: dict, audit: dict, policy_sha256: str | None
+) -> tuple[bool, int | None]:
+    """``(True, None)`` for an exact replay, ``(False, before_count)`` otherwise.
 
     A pointer already at the target is accepted ONLY as an exact replay: a
     publication receipt of this exact governed operation that still certifies
@@ -2728,8 +2815,10 @@ def _audit_pointer(conn, evidence: dict, audit: dict, policy_sha256: str | None)
     persisted (``_policy_facts_exact``, an additional defence). Anything else
     at the target (new evidence, an extra row of any instrument, another
     generation or audit of the same version, a re-stamped pointer) is
-    ``target_policy_not_exact_replay``. Returns True for an exact replay: no
-    write may follow.
+    ``target_policy_not_exact_replay``. A pointer that is not the audited
+    previous version is ``current_pointer_not_previous``. Only then the B-forte
+    pre-condition runs (``_target_partition_before``) and its count is the
+    baseline of the post-receipt check.
     """
     pointer = _pointer_identity(conn)
     target = [evidence["policy_id"], evidence["policy_version"],
@@ -2738,11 +2827,44 @@ def _audit_pointer(conn, evidence: dict, audit: dict, policy_sha256: str | None)
         if _policy_facts_exact(conn, evidence) and _publication_receipt_exact(
             conn, evidence, audit, policy_sha256
         ):
-            return True
+            return True, None
         raise ValueError("target_policy_not_exact_replay")
     if pointer != audit["previous_policy_identity"]:
         raise ValueError("current_pointer_not_previous")
-    return False
+    return False, _target_partition_before(conn, evidence)
+
+
+def _audit_pointer(conn, evidence: dict, audit: dict, policy_sha256: str | None) -> bool:
+    """Bool view of ``_audit_publication_state`` (guards included).
+
+    True for an exact replay (no write may follow); every refusal raises,
+    including the Round5 partition pre-condition for a new publication.
+    """
+    return _audit_publication_state(conn, evidence, audit, policy_sha256)[0]
+
+
+def _assert_target_partition_count(conn, evidence: dict, expected_count: int) -> None:
+    """Post-receipt: the partition holds exactly baseline + own insertions."""
+    count = conn.execute(_TARGET_PARTITION_COUNT_SQL, _partition_key(evidence)).fetchone()[0]
+    if count != expected_count:
+        raise ValueError("target_partition_diverged")
+
+
+def _assert_publication_plan_unused(conn, plan_sha256: str) -> None:
+    """A plan digest already bound to a receipt is never executed again."""
+    if conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM nav_policy_publication_receipts WHERE plan_sha256 = %s)",
+        (plan_sha256,),
+    ).fetchone()[0]:
+        raise ValueError("publication_plan_consumed")
+
+
+def _is_publication_plan_consumed(exc: BaseException) -> bool:
+    """23505 of exactly the receipt ``UNIQUE (plan_sha256)``; never by message."""
+    return (
+        isinstance(exc, psycopg.errors.UniqueViolation)
+        and exc.diag.constraint_name == PUBLICATION_PLAN_CONSTRAINT
+    )
 
 
 def _record_publication(
@@ -2942,6 +3064,8 @@ def main(argv: list[str] | None = None) -> int:
                 EXIT_INCOMPATIBLE, code="incompatible_schema", ddl="rolled_back",
                 mismatches=["receipt_ledger_not_admissible"],
             )
+        if _is_publication_plan_consumed(exc):
+            return finish(EXIT_BLOCKED, code="publication_plan_consumed")
         return finish(EXIT_BLOCKED, code="database_error", sqlstate=exc.sqlstate)
     except (ValueError, TypeError, KeyError) as exc:
         code = str(exc) if isinstance(exc, ValueError) and _SAFE_CODES.fullmatch(str(exc)) else (
@@ -2978,14 +3102,19 @@ def _apply_dml(conn, out, finish, evidence, ids, start, end, digest, plan, suppl
             conn.execute("ROLLBACK")
             return finish(EXIT_LOCK_BUSY, status="lock_busy", retryable=True,
                           code="nav_writer_lock_busy")
-        replay = False
+        replay, before_count = False, None
         if audit is not None:
             # Re-decided under the locks by the DB clock: the full receipt
             # window (capture <= now <= policy expiry, SEC deadline), then the
             # pointer: the audited previous version, or already the target
-            # only as an exact replay of a recorded publication (no write).
+            # only as an exact replay of a recorded publication (no write);
+            # for a new publication, the target partition certified-or-empty
+            # (its count is the baseline of the post-receipt check). Never
+            # for maintenance-only plans.
             _audit_window(conn, evidence, audit)
-            replay = _audit_pointer(conn, evidence, audit, plan["policy_sha256"])
+            replay, before_count = _audit_publication_state(
+                conn, evidence, audit, plan["policy_sha256"]
+            )
         # Only a stale plan may be a replay, and only when this exact
         # operation (policy facts + publication receipt of the supplied plan
         # digest and audit identity; maintenance receipt) is persisted.
@@ -3002,9 +3131,16 @@ def _apply_dml(conn, out, finish, evidence, ids, start, end, digest, plan, suppl
             raise ValueError("PLAN_STALE")
         policy_changed = False
         if evidence is not None and not replay:
-            _policy_hash, policy_changed = _publish_policy(conn, evidence)
+            # A current plan already bound to a receipt is consumed (after the
+            # stale/before decision, so a replay stays "unchanged").
+            _assert_publication_plan_unused(conn, digest)
+            _policy_hash, policy_changed, inserted = _publish_policy_tx(conn, evidence)
             if policy_changed:
                 _record_publication(conn, evidence, audit, plan["policy_sha256"], digest)
+            # Post-condition, never re-baselined: only this transaction's own
+            # rows were added (READ COMMITTED: any row committed by another
+            # writer since the baseline is visible here and refuses).
+            _assert_target_partition_count(conn, evidence, before_count + inserted)
         maintenance = None
         if ids:
             maintenance = _apply_calendar_maintenance_tx(
@@ -3016,6 +3152,8 @@ def _apply_dml(conn, out, finish, evidence, ids, start, end, digest, plan, suppl
     except BaseException as exc:
         conn.execute("ROLLBACK")
         rolled = {key: "rolled_back" for key, on in requested.items() if on}
+        if _is_publication_plan_consumed(exc):
+            return finish(EXIT_BLOCKED, code="publication_plan_consumed", **rolled)
         if isinstance(exc, psycopg.Error):
             return finish(EXIT_BLOCKED, code="database_error", sqlstate=exc.sqlstate, **rolled)
         if isinstance(exc, (ValueError, TypeError, KeyError)):

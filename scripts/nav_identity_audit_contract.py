@@ -22,7 +22,7 @@ from __future__ import annotations
 
 AUDIT_VERSION = "nav-identity-audit-v2"
 AUDIT_CONFIG_VERSION = "nav-identity-audit-config-v2"
-AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v2-round4"
+AUDIT_CONTRACT_VERSION = "nav-identity-audit-contract-v2-round5"
 CAPTURE_KIND = "nav-identity-audit-capture-v2-round2"
 CANARY_KIND = "nav-policy-v2-canary-manifest-round2"
 PLAN_VERSION = "nav-schema-plan-v4"
@@ -391,11 +391,20 @@ AUDIT_CONTRACT = {
         "pointer instant and the current partition digest; any append to the "
         "partition (document or other instrument, retroactive or future) or any "
         "pointer re-stamp (rollback, re-publication, no-op update) invalidates it; "
-        "maintenance-only operations write neither and stay outside",
+        "maintenance-only operations write neither and stay outside; a new "
+        "publication (pointer at the audited previous version) requires, in one "
+        "snapshot, the whole target partition equal to the digest certified by the "
+        "latest receipt of that version (by commit xid), or no receipt and an empty "
+        "partition, extras never adopted even when the document lists them; after "
+        "the receipt and before commit the partition holds exactly that baseline "
+        "count plus the rows this publication inserted, else it rolls back as "
+        "target_partition_diverged; a plan digest already bound to a receipt is "
+        "publication_plan_consumed (probe, or the plan_sha256 unique constraint "
+        "by name); a legacy version with evidence and no receipt is rollback-only",
     },
     "row_ceiling": ROW_CEILING,
     "stage1_margin": f"max(1, ceil({STAGE1_MARGIN_TEXT} * quota)) for quota > 0",
 }
 AUDIT_CONTRACT_SHA256 = (
-    "64c75b3db696132e435523e0f3d072309fc78c72069c2d8942bf7ef89bfd68db"
+    "0d237212e1e95a6e1e0494e071170d174481c29662a27b7bf9e7ac0bca3ec2c7"
 )

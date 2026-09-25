@@ -2366,6 +2366,9 @@ def _shift(value: str, **delta) -> str:
         # Round4 T9: Round3 dossiers are never accepted (version or literal).
         ("round3_contract_version", "audit_contract_mismatch"),
         ("round3_contract_sha256", "audit_contract_mismatch"),
+        # Round5 A14: Round4 dossiers are never accepted either.
+        ("round4_contract_version", "audit_contract_mismatch"),
+        ("round4_contract_sha256", "audit_contract_mismatch"),
     ],
 )
 def test_operator_receipt_nested_shapes_and_time_window_offline(
@@ -2453,6 +2456,18 @@ def test_operator_receipt_nested_shapes_and_time_window_offline(
             "dossier": lambda d: d["inputs"].update(
                 audit_contract_sha256=(
                     "1ef74c426526f5308223921c8297516c9fa4ac4034737fad59cad668f73b0001"
+                )
+            )
+        },
+        "round4_contract_version": {
+            "dossier": lambda d: d["inputs"].update(
+                audit_contract_version="nav-identity-audit-contract-v2-round4"
+            )
+        },
+        "round4_contract_sha256": {
+            "dossier": lambda d: d["inputs"].update(
+                audit_contract_sha256=(
+                    "64c75b3db696132e435523e0f3d072309fc78c72069c2d8942bf7ef89bfd68db"
                 )
             )
         },

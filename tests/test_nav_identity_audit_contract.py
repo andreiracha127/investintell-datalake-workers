@@ -82,26 +82,56 @@ def test_sec_source_is_only_company_tickers_mf():
         assert "fetched_at" not in text
 
 
-def test_round4_contract_is_frozen_and_round3_is_retired():
-    """T9: new version and literal; Round3 pins can no longer match."""
-    assert contract.AUDIT_CONTRACT_VERSION == "nav-identity-audit-contract-v2-round4"
-    assert contract.AUDIT_CONTRACT_SHA256 != (
-        "1ef74c426526f5308223921c8297516c9fa4ac4034737fad59cad668f73b0001"
+def test_round5_contract_is_frozen_and_round3_round4_are_retired():
+    """T9/A14: new version and literal; Round3 and Round4 pins never match."""
+    assert contract.AUDIT_CONTRACT_VERSION == "nav-identity-audit-contract-v2-round5"
+    assert contract.AUDIT_CONTRACT_SHA256 == (
+        "0d237212e1e95a6e1e0494e071170d174481c29662a27b7bf9e7ac0bca3ec2c7"
     )
+    for retired in (
+        "1ef74c426526f5308223921c8297516c9fa4ac4034737fad59cad668f73b0001",  # round3
+        "64c75b3db696132e435523e0f3d072309fc78c72069c2d8942bf7ef89bfd68db",  # round4
+    ):
+        assert contract.AUDIT_CONTRACT_SHA256 != retired
     rule = contract.AUDIT_CONTRACT["publication_receipt"]["rule"]
     for phrase in (
+        # Round4 replay semantics, preserved.
         "pointer published_at",
         "whole lifecycle partition",
         "evidence_id and recorded_at",
         "one receipt per pointer event",
         "same plan digest",
         "maintenance-only",
+        # Round5 B-forte publication.
+        "latest receipt of that version (by commit xid)",
+        "no receipt and an empty partition",
+        "extras never adopted",
+        "baseline count plus the rows this publication inserted",
+        "target_partition_diverged",
+        "publication_plan_consumed",
+        "rollback-only",
     ):
         assert phrase in rule
-    # plan-v4 shape unchanged: no new plan field, same version literal.
+    # plan-v4 shape unchanged: no new plan field, same version literal and kinds.
     assert contract.PLAN_VERSION == operator.PLAN_VERSION == "nav-schema-plan-v4"
+    assert contract.CAPTURE_KIND == "nav-identity-audit-capture-v2-round2"
+    assert contract.CANARY_KIND == "nav-policy-v2-canary-manifest-round2"
     assert "evidence_partition_digest" not in contract.AUDIT_RECEIPT_KEYS
     assert "pointer_published_at" not in contract.AUDIT_RECEIPT_KEYS
+    for code in ("target_partition_diverged", "publication_plan_consumed"):
+        assert operator._SAFE_CODES.fullmatch(code)
+
+
+def test_round5_leaves_ddl_and_catalog_unchanged():
+    """A14: Round5 is runtime-only; the Round4 schema artifacts are pinned."""
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    catalog = (ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json").read_bytes()
+    assert hashlib.sha256(ddl).hexdigest() == (
+        "687b019cfd546aa69e7a6024e3fd3cb615b3e84622f24ec3b7b6ff2e5a5c9cf4"
+    )
+    assert hashlib.sha256(catalog).hexdigest() == (
+        "c49223f7806b731e50eb8c8ae81a320c389fc1b557eee9ecacce92592e36ffe7"
+    )
 
 
 def test_repository_config_is_pinned_to_the_leaf():

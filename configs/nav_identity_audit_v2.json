@@ -1,6 +1,6 @@
 {
   "audit_config_version": "nav-identity-audit-config-v2",
-  "audit_contract_version": "nav-identity-audit-contract-v2-round4",
+  "audit_contract_version": "nav-identity-audit-contract-v2-round5",
   "note": "Versioned audit config for python -m scripts.verify_fund_nav_identity_v2; the operator pins the SHA-256 of THIS repository file, so a re-pin is a reviewed change, never a temporary production edit. Pinned to Light main aeb5933754f46af997198a0ab82c14e108a4553a (merge of PR #166). Before a strict audit OPS must confirm, live, that the deployed Light revision, the builder request/policy and the Stage-1 quotas are still these; otherwise re-pin light_revision, cohort_query/parameters and stage1_quotas in a reviewed change. structural_daily_ceiling bounds P = structural daily pre-claims population (v2 gates without ISIN/CUSIP/FIGI claims); it is a ceiling, never a target, never auto-raised, and the retired key active_ceiling is rejected. structural_baseline is the drift baseline B (v1 structural daily without ISIN); a non-zero delta must be explained and acknowledged via accepted_structural_delta, which never raises the ceiling. margin_fraction is a contract constant (exactly \"1/10\").",
   "structural_daily_ceiling": 5103,
   "structural_baseline": 5103,
