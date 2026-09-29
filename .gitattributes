@@ -32,3 +32,13 @@ tests/fixtures/open_macro_v03_chain/** text eol=lf
 # N-PORT DERA slice — carved verbatim from a real quarterly package; the tests
 # pin exact row and ISIN counts, so the bytes must not be rewritten on checkout.
 tests/fixtures/nport_dera/** text eol=lf
+
+# Public bond default-event contracts and fixtures — digests are pinned over the raw
+# bytes. The SEC EDGAR header pages and N-PORT XML are copied verbatim from sec.gov,
+# so their trailing whitespace is part of the evidence and must not be "fixed".
+contracts/bonds/** text eol=lf
+tests/fixtures/bond_default_events/** text eol=lf
+tests/fixtures/bond_default_events/edgar/*.html -whitespace
+tests/fixtures/bond_default_events/nport/*.xml -whitespace
+tests/fixtures/bond_default_events/ncen/**/*.tsv -whitespace
+tests/fixtures/bond_default_events/ncen/xml/*.xml -whitespace

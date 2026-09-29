@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/ncen" xmlns:com="http://www.sec.gov/edgar/common">
+  <schemaVersion>X0404</schemaVersion>
+  <headerData>
+    <submissionType>N-CEN</submissionType>
+    <filerInfo>
+      <liveTestFlag>LIVE</liveTestFlag>
+      <filer>
+        <issuerCredentials>
+          <cik>0001552947</cik>
+          <ccc>XXXXXXXX</ccc>
+        </issuerCredentials>
+        <fileNumber>811-22718</fileNumber>
+      </filer>
+      <investmentCompanyType>N-1A</investmentCompanyType>
+    </filerInfo>
+    <seriesClass>
+      <reportSeriesClass>
+        <rptSeriesClassInfo>
+          <seriesId>S000046375</seriesId>
+          <includeAllClassesFlag>true</includeAllClassesFlag>
+        </rptSeriesClassInfo>
+      </reportSeriesClass>
+    </seriesClass>
+  </headerData>
+  <formData>
+    <generalInfo reportEndingPeriod="2024-12-31" isReportPeriodLt12="Y"/>
+    <registrantInfo>
+      <registrantFullName>Two Roads Shared Trust</registrantFullName>
+      <investmentCompFileNo>811-22718</investmentCompFileNo>
+      <registrantCik>0001552947</registrantCik>
+      <registrantLei>549300REHU8QC2CK4V30</registrantLei>
+      <registrantstreet1>225 Pictoria Drive</registrantstreet1>
+      <registrantstreet2>Suite 450</registrantstreet2>
+      <registrantcity>Cincinnati</registrantcity>
+      <registrantzipCode>45246</registrantzipCode>
+      <registrantstate>US-OH</registrantstate>
+      <registrantcountry>US</registrantcountry>
+      <registrantphoneNumber>631-470-2600</registrantphoneNumber>
+      <websites>
+        <website webpage="https://www.ultimusfundsolutions.com/"/>
+      </websites>
+      <locationBooksRecords>
+        <locationBooksRecord>
+          <officeName>Ultimus Fund Solutions, LLC</officeName>
+          <officeAddress1>4221 North 203 Street</officeAddress1>
+          <officeAddress2>Suite 100</officeAddress2>
+          <officeCity>Elkhorn</officeCity>
+          <officeStateCountry officeCountry="US" officeState="US-NE"/>
+          <officeRecordsZipCode>68022</officeRecordsZipCode>
+          <officePhone>402-493-4603</officePhone>
+          <booksRecordsDesc>Fund Accounting and Transfer Agent Records</booksRecordsDesc>
+        </locationBooksRecord>
+      </locationBooksRecords>
+      <isRegistrantFirstFiling>N</isRegistrantFirstFiling>
+      <isRegistrantLastFiling>N</isRegistrantLastFiling>
+      <isRegistrantFamilyInvComp>N</isRegistrantFamilyInvComp>
+      <registrantClassificationType>N-1A</registrantClassificationType>
+      <totalSeries>27</totalSeries>
+      <terminatedSeries>
+        <terminatedSeriesInfo seriesName="Redwod Managed Volatility Portfolio" seriesId="S000046375" terminationDate="06/2024"/>
+      </terminatedSeries>
+      <isSecuritiesActRegistration>Y</isSecuritiesActRegistration>
+      <directors>
+        <director>
+          <directorName>Neil M. Kaufman</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-22963"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>Anita K. Krug</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-22963"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>Mark Garbin</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-23319"/>
+            <fileNumberInfo fileNumber="811-21720"/>
+            <fileNumberInfo fileNumber="811-22963"/>
+            <fileNumberInfo fileNumber="811-22865"/>
+            <fileNumberInfo fileNumber="811-21853"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>Mark D. Gersten</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-22963"/>
+            <fileNumberInfo fileNumber="811-21720"/>
+            <fileNumberInfo fileNumber="811-21853"/>
+          </fileNumbers>
+        </director>
+      </directors>
+      <chiefComplianceOfficers>
+        <chiefComplianceOfficer>
+          <ccoName>William B. Kimme</ccoName>
+          <crdNumber>N/A</crdNumber>
+          <ccoStreet1>4221 North 203rd St, Suite 100</ccoStreet1>
+          <ccoStreet2>N/A</ccoStreet2>
+          <ccoCity>Elkhorn</ccoCity>
+          <ccoStateCountry ccoCountry="US" ccoState="US-NE"/>
+          <ccoZipCode>68022</ccoZipCode>
+          <ccoPhone>XXXXXX</ccoPhone>
+          <isCcoChangedSinceLastFiling>N</isCcoChangedSinceLastFiling>
+          <ccoEmployers>
+            <ccoEmployer ccoEmployerName="Northern Lights Compliance Services, LLC" ccoEmployerId="N/A"/>
+          </ccoEmployers>
+        </chiefComplianceOfficer>
+      </chiefComplianceOfficers>
+      <isRegistrantSubmittedMatter>N</isRegistrantSubmittedMatter>
+      <isPreviousLegalProceeding>N</isPreviousLegalProceeding>
+      <isPreviousProceedingTerminated>N</isPreviousProceedingTerminated>
+      <isClaimFiled>N</isClaimFiled>
+      <coveredByInsurancePolicy isCoveredByInsurancePolicy="Y" isClaimFiledDuringPeriod="N"/>
+      <isFinancialSupportDuringPeriod>N</isFinancialSupportDuringPeriod>
+      <isExemptionFromAct>N</isExemptionFromAct>
+      <principalUnderwriters>
+        <principalUnderwriter>
+          <principalUnderwriterName>Northern Lights Distributors</principalUnderwriterName>
+          <principalUnderwriterFileNumber>8-065857</principalUnderwriterFileNumber>
+          <principalUnderwriterCrdNumber>000126159</principalUnderwriterCrdNumber>
+          <principalUnderwriterLei>N/A</principalUnderwriterLei>
+          <principalUnderWriterStateCountry principalUnderWriterCountry="US" principalUnderWriterState="US-NE"/>
+          <isPrincipalUnderwriterAffiliatedWithRegistrant>N</isPrincipalUnderwriterAffiliatedWithRegistrant>
+        </principalUnderwriter>
+      </principalUnderwriters>
+      <isUnderwriterHiredOrTerminated>N</isUnderwriterHiredOrTerminated>
+      <publicAccountants>
+        <publicAccountant>
+          <publicAccountantName>Cohen &amp; Company, Ltd.</publicAccountantName>
+          <pcaobNumber>925</pcaobNumber>
+          <publicAccountantLei>N/A</publicAccountantLei>
+          <publicAccountantStateCountry publicAccountantCountry="US" publicAccountantState="US-OH"/>
+        </publicAccountant>
+      </publicAccountants>
+      <isPublicAccountantChanged>N</isPublicAccountantChanged>
+      <isMaterialWeakness>N</isMaterialWeakness>
+      <isOpinionOffered>N</isOpinionOffered>
+      <isMaterialChange>N</isMaterialChange>
+      <isAccountingPrincipleChange>N</isAccountingPrincipleChange>
+      <isPaymentErrorInNetAssetValue>N</isPaymentErrorInNetAssetValue>
+      <isPaymentDividend>N</isPaymentDividend>
+    </registrantInfo>
+    <attachmentsTab>
+      <isLegalProceedings>false</isLegalProceedings>
+      <isProvisionFinancialSupport>false</isProvisionFinancialSupport>
+      <isIPAReportInternalControl>false</isIPAReportInternalControl>
+      <isChangeAccPrinciples>false</isChangeAccPrinciples>
+      <isInfoRequiredEO>false</isInfoRequiredEO>
+      <isOtherInfoRequired>false</isOtherInfoRequired>
+    </attachmentsTab>
+    <signature registrantSignedName="Two Roads Shared Trust" signedDate="2025-03-14" signature="Laura Szalyga" title="Treasurer"/>
+  </formData>
+</edgarSubmission>

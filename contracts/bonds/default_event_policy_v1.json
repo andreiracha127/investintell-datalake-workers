@@ -1,0 +1,445 @@
+{
+  "policy_id": "bond_default_event_policy_v1",
+  "policy_version": "1.1.0",
+  "status": "frozen",
+  "frozen_on": "2026-09-25",
+  "authority": [
+    "investintell-light .kilo/plans/bond-default-events-v1_8-implementation.md sections 3, 4.1 items 6-7, 4.3, 5.1",
+    "investintell-light .kilo/plans/bond-default-event-source-design.md sections 3 and 4",
+    "investintell-light .kilo/plans/bond-default-events-v1_8-W0-amendment-1.md (policy 1.1.0, bundle v2)",
+    "Where the two conflict the implementation plan wins."
+  ],
+  "amendment_1": {
+    "wire_version": "bond_default_event_bundle_v2",
+    "summary": "Persisted dependency closure: N-CEN filing ledger (input frame ncen_filings), per-(R,K) full-universe family contexts and memberships, persisted state-proposal evidence, directional old->new exchange relations, evidence-only adjudication subjects and rating-row binding links. v1 payloads are rejected, never decoded as v2.",
+    "family_rule_version": "bond_default_ncen_family_fe1ab_v3",
+    "ncen": "N-CEN is fund-family provenance, never credit evidence. Effective N-CEN per FE-1 (15-month window, exact-acceptance ordering, X0505 N-CEN/A complete replacement only); FE-1a universe is every Y/N/disputed voter on R public by K with no CUSIP or flag filter; FE-1b series completeness; union-find over adviser, underwriter and B.5 family-name tokens.",
+    "evidence_subjects": "issue_scope, followup_continuity, exchange_pairing and corroboration are evidence-only subjects admitted only by a human_reviewer accepted_evidence record; they never admit an event and are exempt from event completeness.",
+    "exchange": "A completed distressed exchange needs a persisted directional relation per old/new pair backed by an effective human exchange_pairing; the relation valid_to is exclusive; the old->new graph is acyclic without forks; many-old-to-one-new is not supported in v2.",
+    "ratings": "Rated rows recompute bucket, public_known_at and action_input_digest from cited actions and persisted binding links; public_known_at is the maximum relied observation and binding-link knowledge time; binding links are admitted issue-scope links valid at month end and, for public_pit, known before the month boundary; the canonical RatingScope and UnclearedRatingSource declaration record and digest are persisted and bound with approved rating packages and resolver identity by rating_input_digest."
+  },
+  "hash_procedure": {
+    "digest_key": "digest",
+    "algorithm": "sha256",
+    "canonicalization": "Parse as UTF-8 JSON rejecting duplicate object keys; remove the top-level digest key; serialize with object keys sorted recursively, separators ',' and ':', ensure_ascii false, NaN/Infinity rejected, array order preserved; encode UTF-8; hash the bytes.",
+    "format": "sha256:<64 lowercase hex>",
+    "numbers": "Only integers appear in this document; decimal quantities are strings.",
+    "line_endings": "Irrelevant: the digest is over the canonical serialization, not the file bytes."
+  },
+  "month_convention": {
+    "month_key": "First-of-month date key m denotes the month-end snapshot of month m.",
+    "risk_interval": "(end(m), end(m+1)] in calendar days, i.e. every day of month m+1.",
+    "outcome_window": "For target month T: outcomes [T-59 months, T]; snapshot/rating keys [T-60 months, T] (61 keys, 60 outcomes).",
+    "interval_notation": "Onset bounds are (onset_lower_exclusive, onset_upper_inclusive] in calendar days."
+  },
+  "event_types": {
+    "payment_default": "Missed interest or principal only after the applicable grace period expired uncured; due date, grace end and cure evidence required. Inside-grace nonpayment stays candidate.",
+    "bankruptcy": "Bankruptcy or receivership with verified debtor and affected debt. Plan confirmations, solvent affiliates and uncertain petitions are corroboration or candidates, never extra events.",
+    "distressed_exchange": "Completed impairment exchange to avoid default; announcement, ordinary tender or refinancing excluded. Old and new security links mandatory; the new alias never re-enters as an independent survivor.",
+    "agency_issue_default": "Issue-level agency D or explicit ROCR action classification WD for the rated obligation, only from a rights-approved agency package. Action date is the recognition date, not automatically the economic date.",
+    "default_state": "Accepted N-PORT C.9.c consensus state: defaulted by report date only; never an automatic incident month."
+  },
+  "primary_types": [
+    "payment_default",
+    "bankruptcy",
+    "distressed_exchange",
+    "agency_issue_default",
+    "default_state"
+  ],
+  "corroboration_flags": [
+    "nport_consensus_state",
+    "agency_issue_default",
+    "agency_rac_wd",
+    "issuer_agency_default_linked",
+    "edgar_document",
+    "issuer_document",
+    "court_document",
+    "payment_default",
+    "bankruptcy",
+    "distressed_exchange"
+  ],
+  "never_default_labels": [
+    "N-PORT C.9.d ARE_ANY_INTEREST_PAYMENT=Y alone (arrears_or_legal_deferral_unknown)",
+    "N-PORT C.9.e IS_ANY_PORTION_INTEREST_PAID / PIK",
+    "legal coupon deferral",
+    "technical or covenant acceleration without payment default facts",
+    "prices, spreads, market-implied ratings, FRED series",
+    "Moody's C/Ca without independent default evidence",
+    "rating-symbol WD/WR/NR or ROCR WO withdrawal",
+    "scheduled maturity, maturity floor, missing holdings or missing flags",
+    "a single N-PORT Y without independent corroboration and review",
+    "issuer SD/RD/D without affected-obligation proof for the specific CUSIP9",
+    "CIK, LEI, CUSIP6 or name matches without obligation-level link proof"
+  ],
+  "adjudication": {
+    "statuses": [
+      "candidate",
+      "accepted_state",
+      "accepted_event",
+      "accepted_evidence",
+      "nonqualifying",
+      "disputed",
+      "retracted"
+    ],
+    "evidence_statuses": {
+      "accepted_evidence": "human_reviewer acceptance of an evidence-only subject (issue_scope, followup_continuity, exchange_pairing, corroboration); never event-admitting"
+    },
+    "append_only": true,
+    "effective_rule": "Within the adjudication inventory of a publication, the effective adjudication of a subject is the unique record not superseded by another record of the same subject. A chain fork (two unsuperseded records) is a malformed inventory.",
+    "admitting_statuses": {
+      "accepted_state": "default_state admission; event row admission_status accepted_state",
+      "accepted_event": "dated or interval event admission; event row admission_status accepted_event"
+    },
+    "reviewer_roles": {
+      "extraction_proposer": [
+        "candidate"
+      ],
+      "policy_rule_engine": [
+        "candidate",
+        "accepted_state",
+        "nonqualifying",
+        "disputed",
+        "retracted"
+      ],
+      "human_reviewer": [
+        "candidate",
+        "accepted_state",
+        "accepted_event",
+        "accepted_evidence",
+        "nonqualifying",
+        "disputed",
+        "retracted"
+      ]
+    },
+    "human_review_required_for": [
+      "ambiguous scope",
+      "ambiguous or conflicting dates",
+      "conflicting sources including any material same-date N-PORT Y/N disagreement",
+      "grace period, cure and exchange completion",
+      "every accepted_event"
+    ],
+    "policy_digest_binding": "Every admitting adjudication records the digest of this policy; a publication only admits adjudications bound to its own policy digest."
+  },
+  "timing": {
+    "classes": {
+      "incident": "onset_lower_exclusive is not null and every day of (lower, upper] lies in one calendar month (the month of lower+1 day equals the month of upper).",
+      "interval_uncertain": "onset_lower_exclusive is not null and (lower, upper] spans more than one calendar month. Never split uniformly, never assigned to first Y, never repeated defaults.",
+      "prevalent": "onset_lower_exclusive is null: left-censored defaulted state with unknown onset. Never invented; excluded from scalar incident counts."
+    },
+    "exact_date": "An exact economic date d is stored as onset_date=d, onset_lower_exclusive=d-1 day, onset_upper_inclusive=d.",
+    "recognition_date": "Agency-recognition date is stored separately and never moves the economic onset.",
+    "window": "The bundle retains every admitted episode whose evidence is known by K, whatever its onset relative to T; consumers bound economic outcomes by T. Completeness: every effective admitting adjudication (accepted_state/accepted_event) in the publication's adjudication inventory has exactly one event row with episode_id equal to its subject_id, and every event cites the effective adjudication of its episode."
+  },
+  "temporal_admission": {
+    "evidence_known_at": "max(public_available_at of every relied-on observation revision, link_known_at)",
+    "link_known_at": "max(link_known_at of every admitted link relied on by the event)",
+    "cutoff": "Admission requires evidence_known_at <= K. T limits economic outcomes; K limits knowledge, not economic dates.",
+    "current_run": "Additionally every relied-on observation first_seen_at, source package retrieved_at and admitting adjudication adjudicated_at are <= K.",
+    "historical_reconstruction": "Uses proven contemporaneous public availability and link availability only; present-day ingestion and adjudication are recorded separately and never claimed as historic possession.",
+    "date_only_public_evidence": "public_available_at = start of the next calendar day in the evidenced timezone, converted to UTC; never noon or midnight of the same day.",
+    "edgar_acceptance": "EDGAR ACCEPTANCE-DATETIME (YYYYMMDDHHMMSS) is America/New_York wall time with DST, converted to UTC; raw text retained.",
+    "unknown_public_timing": "Use first verified public availability conservatively; never subtract statutory lags, never use action/report/filing date as publication time.",
+    "regenerated_bytes": "DERA packages regenerated after the fact are not proof of earlier availability of that data version."
+  },
+  "public_time_bases": [
+    "edgar_acceptance_datetime",
+    "archived_release_metadata",
+    "rocr_file_creation",
+    "first_verified_retrieval",
+    "date_only_next_day_boundary",
+    "internal_record"
+  ],
+  "nport": {
+    "flag_mapping": {
+      "IS_DEFAULT": {
+        "form_item": "C.9.c",
+        "meaning": "Currently in default? Holding/issue-level nullable Y/N state; not issuer-wide, not C.9.f, not an occurrence date.",
+        "observation_column": "nport_is_default"
+      },
+      "ARE_ANY_INTEREST_PAYMENT": {
+        "form_item": "C.9.d",
+        "meaning": "Interest payments in arrears OR coupon legally deferred; Y is arrears_or_legal_deferral_unknown, never a default label.",
+        "observation_column": "nport_arrears_or_deferral"
+      },
+      "IS_ANY_PORTION_INTEREST_PAID": {
+        "form_item": "C.9.e",
+        "meaning": "Paid in kind; never a default label.",
+        "observation_column": "nport_paid_in_kind"
+      }
+    },
+    "field_presence_states": {
+      "present": "column exists and raw value is Y or N",
+      "null": "column exists and value is empty/null",
+      "absent": "column does not exist in the package vintage",
+      "invalid": "column exists and raw value is neither Y nor N (raw retained)"
+    },
+    "eligibility": "Launch event eligibility requires ISSUER_TYPE=CORP and ASSET_CAT=DBT; exclusion counts retained.",
+    "vote_unit": "(accession, series, cusip9, report_date); duplicated lots are one vote; contradictory lots within one vote dispute that vote; package copies of one accession row are one semantic observation.",
+    "consensus_rule": "State consensus by (cusip9, report_date): at least two distinct series AND two independently evidenced registrant/fund families report Y, with no unresolved N vote. Distinct CIK alone does not prove independent family; unknown family identity cannot supply independent second support. Same-family multiple series require independent EDGAR or authorized-agency corroboration. Any material Y/N conflict goes to human adjudication; no majority vote. Identical independence/conflict tests apply to credible N bounds. One Y remains candidate unless independently corroborated and reviewed.",
+    "state_bounds": "Accepted consensus Y gives accepted_state. Last credible N at a < first credible Y at b gives onset (a, b]; first Y with no prior credible N has null lower bound and is prevalent/left-censored. N before or after Y cannot by itself prove cure or a new episode. Subsequent Y observations corroborate the same episode.",
+    "amendments": "Filing family (registrant, series, report_date); latest accepted complete replacement available at K; never blend original and amendment rows; ambiguous partial amendment stays disputed; later-than-K amendments never replace facts in a frozen build.",
+    "public_cadence": "Only the third fiscal-quarter month is public under the current regime; missing report months remain missing, never survival."
+  },
+  "episodes": {
+    "unit": "Issue-episode: one continuous unresolved impairment of one security (estimator unit, keyed (security_id, episode_id)); issuer_episode_id groups affected obligations of one obligor.",
+    "dedup": "One issue counts once per episode regardless of documents, agencies, fund series or repeated Y months; payment failure, bankruptcy and later D/WD in the same unresolved episode are corroboration.",
+    "new_episode": "Requires evidenced cure/resolution (resolution_date) of the prior episode and new impairment strictly after it; no fixed-day heuristic; disappearance/reappearance or exchange alias never resets.",
+    "disjointness": "Per security, episodes are ordered by onset; every earlier episode has a resolution_date and the next episode has a non-null onset_lower_exclusive >= that resolution_date."
+  },
+  "links": {
+    "statuses": [
+      "admitted",
+      "quarantined",
+      "rejected"
+    ],
+    "affected_scopes": [
+      "issue",
+      "issuer_affected_obligation",
+      "exchange_old",
+      "exchange_new"
+    ],
+    "rule": "Link proof includes obligor, guarantee/indenture, maturity/coupon/currency and affected scope. Suspected, ambiguous or reused identifiers are quarantined, never admitted. No CUSIP6/parent/issuer-wide propagation. Link knowledge time is independent of event time."
+  },
+  "followup": {
+    "statuses": [
+      "nondefault_continuous",
+      "repaid",
+      "resolved",
+      "unknown"
+    ],
+    "completeness_bases": [
+      "continuous_document",
+      "issuer_trustee_confirmation",
+      "surveillance_receipt",
+      "none"
+    ],
+    "rule": "N-PORT point N observations alone never form a nondefault_continuous segment; a continuous segment needs documentary evidence beyond N-PORT or a qualified surveillance receipt. unknown has basis none."
+  },
+  "exit_evidence": {
+    "primary_reasons": [
+      "maturity_floor",
+      "matured",
+      "source_handoff",
+      "scope_change",
+      "unknown"
+    ],
+    "flags": [
+      "maturity_floor",
+      "matured",
+      "source_handoff",
+      "scope_change",
+      "unknown",
+      "distressed_candidate",
+      "observed_gap_reentry",
+      "target_end_censored"
+    ],
+    "rule": "Scheduled maturity is not repayment; proven repayment needs evidence. Reasons alone never generate a default or a survival."
+  },
+  "coverage": {
+    "states": [
+      "qualified",
+      "partial",
+      "unavailable",
+      "not_applicable"
+    ],
+    "sources": [
+      "all",
+      "sec_nport",
+      "sec_edgar",
+      "agency_rocr",
+      "independent_reference",
+      "unknown"
+    ],
+    "event_types": [
+      "all",
+      "payment_default",
+      "bankruptcy",
+      "distressed_exchange",
+      "agency_issue_default",
+      "default_state",
+      "unknown"
+    ],
+    "rating_strata": [
+      "all",
+      "IG",
+      "HY",
+      "unknown"
+    ],
+    "exposure_cohorts": [
+      "all",
+      "retained",
+      "exited",
+      "gap",
+      "unknown"
+    ],
+    "denominator_bases": [
+      "independent_reference_enumeration",
+      "panel_exposure",
+      "none"
+    ],
+    "rule": "No NULL dimension key; explicit all/unknown labels. A qualified cell requires a validation receipt digest and a denominator basis other than none. Missing coverage never fabricates a pass; an empty cell is not_evaluable, never 100%."
+  },
+  "public_source_policy": {
+    "enabled_production_streams": [
+      "sec_nport_dera",
+      "sec_nport_public_xml",
+      "sec_edgar_index",
+      "sec_edgar_document"
+    ],
+    "source_families": {
+      "sec_nport_dera": {
+        "stream": "sec_nport",
+        "allowed_rights_states": [
+          "public_government_record"
+        ]
+      },
+      "sec_nport_public_xml": {
+        "stream": "sec_nport",
+        "allowed_rights_states": [
+          "public_government_record"
+        ]
+      },
+      "sec_edgar_index": {
+        "stream": "sec_edgar",
+        "allowed_rights_states": [
+          "public_government_record"
+        ]
+      },
+      "sec_edgar_document": {
+        "stream": "sec_edgar",
+        "allowed_rights_states": [
+          "public_government_record"
+        ]
+      },
+      "issuer_public_document": {
+        "stream": "sec_edgar",
+        "allowed_rights_states": [
+          "public_document_internal_use"
+        ]
+      },
+      "court_public_document": {
+        "stream": "sec_edgar",
+        "allowed_rights_states": [
+          "public_document_internal_use"
+        ]
+      },
+      "agency_rocr_xbrl": {
+        "stream": "agency_rocr",
+        "allowed_rights_states": [
+          "approved"
+        ],
+        "requires_rights_ref": true,
+        "optional": true,
+        "note": "Optional stream, disabled unless the manifest carries rights_state=approved with an agency/source/use authorization reference and official file provenance. Login, click-through, mirrors and the legacy license flag are not rights approval. Unapproved agency packages cannot enter a publication; missing rights leave the rating grid unqualified, never NR success."
+      },
+      "link_batch": {
+        "stream": "internal",
+        "allowed_rights_states": [
+          "internal_work_product"
+        ]
+      },
+      "adjudication_batch": {
+        "stream": "internal",
+        "allowed_rights_states": [
+          "internal_work_product"
+        ]
+      },
+      "sec_ncen_dera": {
+        "stream": "sec_ncen",
+        "allowed_rights_states": [
+          "public_government_record"
+        ]
+      },
+      "sec_ncen_public_xml": {
+        "stream": "sec_ncen",
+        "allowed_rights_states": [
+          "public_government_record"
+        ]
+      },
+      "sec_ncen_acceptance_header": {
+        "stream": "sec_ncen",
+        "allowed_rights_states": [
+          "public_government_record"
+        ]
+      }
+    },
+    "rights_states": [
+      "public_government_record",
+      "public_document_internal_use",
+      "approved",
+      "internal_work_product",
+      "unverified",
+      "denied"
+    ],
+    "excluded_sources": [
+      "DRD/FISD or other commercial feeds",
+      "market-implied ratings, prices, spreads, FRED",
+      "local agency mirror CSVs without approved rights",
+      "held-out reference documents (custody filter)"
+    ]
+  },
+  "rating_policy": {
+    "view_kinds": [
+      "public_pit",
+      "effective_audit"
+    ],
+    "states": [
+      "observed",
+      "carried_verified",
+      "withdrawn",
+      "missing",
+      "stale",
+      "pit_unverified",
+      "rights_unverified"
+    ],
+    "buckets": [
+      "AAA",
+      "AA",
+      "A",
+      "BBB",
+      "BB",
+      "B",
+      "CCC",
+      "D"
+    ],
+    "rules": [
+      "Every (cusip, month) of the pinned panel grid including the start month and excluded issues has exactly one row per view.",
+      "bucket is non-null only for observed and carried_verified rows, which require action date, public known time and rights-approved agency source observations.",
+      "public_pit requires action effective by month-end and proven public knowledge before the next month boundary (UTC); current K cannot backdate availability.",
+      "effective_audit is retrospective (known by K) and forbidden as allocation or start-rating input.",
+      "Default overlay references the event episode and never claims an agency D.",
+      "Moody's C/Ca map to CCC absent independent default evidence; same-day conflicting actions need sequence evidence or dispute.",
+      "No 2025-03 cutoff in this path; no fabricated extension; legacy eligible-only buckets are comparison only."
+    ]
+  },
+  "publication": {
+    "product": "bond_credit_evidence_v1",
+    "lifecycle": [
+      "prepared",
+      "validated"
+    ],
+    "quality_states": [
+      "qualified",
+      "partial",
+      "unavailable"
+    ],
+    "knowledge_modes": [
+      "current_run",
+      "historical_reconstruction"
+    ],
+    "build_scopes": [
+      "complete",
+      "limited"
+    ],
+    "rules": [
+      "Publication id is the RFC 9562 UUIDv8 built from the first 128 bits of the SHA-256 input fingerprint (version 8, variant 10xx); prepared_at is excluded. Exact replay verifies persisted rows then no-ops; same id with different bytes fails.",
+      "Row hashes, the validation-receipt digest and the fingerprint use the length-prefixed, type-tagged row encoding bond_credit_row_v1; bond_credit_validate recomputes every row hash, frame digest, the receipt digest, the fingerprint and the publication id from stored columns and fails on any mismatch.",
+      "Child rows are inserted only while the parent is prepared; inputs and validated builds are never updated or deleted.",
+      "A validated partial or unavailable build is a structurally valid shadow artifact, never a promotion candidate.",
+      "Promotion requires a validated, unrevoked, complete, qualified build, compare-and-set on the expected pointer (including absent), and non-regressing T and K.",
+      "qualified requires a positive validation receipt (verdict qualified); zero rows never imply qualification.",
+      "Revocation is append-only and makes readers refuse the publication immediately."
+    ]
+  },
+  "digest": "sha256:f0aea3d0d86daa874c237adf38de634151f18c0ef2cff5ab69e7d67588bc5662"
+}
