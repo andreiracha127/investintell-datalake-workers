@@ -42,3 +42,4 @@ tests/fixtures/bond_default_events/edgar/*.html -whitespace
 tests/fixtures/bond_default_events/nport/*.xml -whitespace
 tests/fixtures/bond_default_events/ncen/**/*.tsv -whitespace
 tests/fixtures/bond_default_events/ncen/xml/*.xml -whitespace
+configs/bond_default_events/** text eol=lf

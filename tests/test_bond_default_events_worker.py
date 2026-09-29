@@ -2888,3 +2888,93 @@ def test_module_entrypoint_typed_exit_codes_without_touching_the_database():
     plan_without_manifest = _cli([], dsn)
     assert plan_without_manifest.returncode == 2
     assert json.loads(plan_without_manifest.stdout)["code"] == "manifest_required"
+
+
+# ---------------------------------------------------------------------------
+# The committed frozen invocation manifest must stay in step with the tree it pins
+# ---------------------------------------------------------------------------
+COMMITTED_INVOCATION = (
+    Path(w.__file__).resolve().parents[2]
+    / "configs"
+    / "bond_default_events"
+    / "invocation_2026-08_v1.json"
+)
+
+
+def test_committed_invocation_manifest_plans_offline_against_the_current_tree():
+    computed = sb.code_digest()
+    stats = w.run(None, manifest=COMMITTED_INVOCATION, env={})
+    # A change to any of the code-digest files (see source_bundle.code_digest_files) changes the digest:
+    # update input.code_digest in configs/bond_default_events/invocation_2026-08_v1.json together with it.
+    assert stats["code_digest_matches"] is True, (
+        f"stale code_digest pin: computed {computed}, pinned {stats['code_digest_pinned']}"
+    )
+    assert stats["code_digest"] == computed == stats["code_digest_pinned"]
+    assert stats["state"] == "planned" and stats["mode"] == "plan"
+    assert stats["database"] == "not_contacted" and stats["network"] == "not_used"
+    assert stats["panel_publication_id"] == "65156481-8cb4-52b5-8676-cf77edc5644f"
+    assert stats["frontier_records"] == 6
+    assert (stats["max_grid_rows"], stats["max_bundle_bytes"]) == (
+        1_200_000,
+        805_306_368,
+    )
+    inv = w.load_invocation(COMMITTED_INVOCATION)
+    assert inv.kind == "sources" and (inv.quality_state, inv.build_scope) == (
+        "partial",
+        "limited",
+    )
+    assert inv.target_month == dt.date(2026, 8, 1)
+    assert inv.knowledge_cutoff == dt.datetime(
+        2026, 9, 29, 19, 30, tzinfo=dt.timezone.utc
+    )
+    frontier = json.loads(inv.source_manifest_path.read_text(encoding="utf-8"))
+    assert stats["source_manifest_digest"] == frontier["digest"]
+    assert (
+        inv.source_manifest_sha256
+        == hashlib.sha256(inv.source_manifest_path.read_bytes()).hexdigest()
+    )
+    # K is at or after every frontier observation and after month T has closed
+    latest = max(f["observed_at"] for f in frontier["frontiers"])
+    assert inv.knowledge_cutoff >= dt.datetime.fromisoformat(latest)
+    assert inv.knowledge_cutoff >= dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc)
+
+
+def test_committed_invocation_lives_outside_the_pinned_tree_and_is_deterministic_json():
+    rel = COMMITTED_INVOCATION.relative_to(c.ROOT).as_posix()
+    assert rel not in sb.code_digest_files() and not rel.startswith("contracts/bonds/")
+    raw = COMMITTED_INVOCATION.read_bytes()
+    assert raw.endswith(b"\n")  # LF or CRLF checkout: the pins never hash this file
+    assert not re.search(rb"[A-Za-z]:\\|/Users/|/home/|/tmp/|postgres", raw)
+
+
+def test_a_stale_pin_in_the_committed_invocation_is_refused_before_any_connection(
+    tmp_path,
+):
+    invocation = json.loads(COMMITTED_INVOCATION.read_text(encoding="utf-8"))
+    invocation["input"]["code_digest"] = "sha256:" + "0" * 64
+    invocation["input"]["source_manifest"]["path"] = str(
+        (
+            COMMITTED_INVOCATION.parent / invocation["input"]["source_manifest"]["path"]
+        ).resolve()
+    )
+    stale = tmp_path / "stale.json"
+    stale.write_text(json.dumps(invocation), encoding="utf-8")
+    plan = w.run(None, manifest=stale, env={})
+    assert plan["code_digest_matches"] is False  # plan reports the drift ...
+
+    def factory(dsn, schema):
+        raise AssertionError("no store may be opened for a stale pin")
+
+    with pytest.raises(
+        w.IntegrityError, match="code_digest_mismatch"
+    ) as caught:  # ... the read refuses
+        w.run(
+            SECRET_DSN,
+            mode="plan",
+            manifest=stale,
+            schema="public",
+            read_panel=True,
+            env={},
+            store_factory=factory,
+        )
+    assert w.IntegrityError.exit_code == 4 and sb.code_digest() in str(caught.value)
