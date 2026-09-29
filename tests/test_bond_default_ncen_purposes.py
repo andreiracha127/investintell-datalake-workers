@@ -6233,7 +6233,21 @@ def test_review_f13b_rows_equal_retired_whole_table_loader(tmp_path: Path) -> No
         assert str(actual_error.value) == str(expected_error.value), name
 
 
+_STDLIB_CSV_FIELD_LIMIT = 131_072  # csv's default; the retired loader's refusals rely on it
+
+
 def test_review_f13b_bounded_lines_and_row_grammar_fail_closed(tmp_path: Path) -> None:
+    # csv.field_size_limit is process-global and other modules raise it (src/rr1/tsv.py sets
+    # 10_000_000), so a combined pytest run would otherwise make the retired reference loader
+    # accept the oversized fixtures. Pin the stdlib default for this comparison and restore it.
+    previous = csv.field_size_limit(_STDLIB_CSV_FIELD_LIMIT)
+    try:
+        _review_f13b_bounded_lines_and_row_grammar(tmp_path)
+    finally:
+        csv.field_size_limit(previous)
+
+
+def _review_f13b_bounded_lines_and_row_grammar(tmp_path: Path) -> None:
     base = _f13b_tables(5, accessions=2, funds=1, advisers=1, underwriters=1)
     fund_id = base["ADVISER"][0][0]
     header = "\t".join(_F13B_HEADERS["ADVISER"]).encode() + b"\n"
