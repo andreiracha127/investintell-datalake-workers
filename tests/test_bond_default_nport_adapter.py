@@ -399,6 +399,27 @@ def test_inventory_refuses_missing_source_artifacts_and_projection_count(tmp_pat
     _error_reason(lambda: _inventory([]), "nport_adapter_arguments_invalid")
 
 
+def test_inventory_refuses_unbound_or_tampered_dera_artifacts(tmp_path: Path) -> None:
+    result = _dera(tmp_path, [_filing().hold(1, CUSIP_A)])
+    assert result.projection_sha256 and result.accessions_sha256
+    _inventory([_source(result)])  # bound and intact: accepted
+    legacy = dataclasses.replace(result, projection_sha256=None, accessions_sha256=None)
+    _error_reason(lambda: _inventory([_source(legacy)]), "nport_source_artifact_unbound")
+    half = dataclasses.replace(result, accessions_sha256=None)
+    _error_reason(lambda: _inventory([_source(half)]), "nport_source_artifact_unbound")
+    wrong = dataclasses.replace(result, projection_sha256="0" * 64)
+    _error_reason(lambda: _inventory([_source(wrong)]), "nport_source_artifact_hash_mismatch")
+    with open(result.accessions_path, "ab") as handle:
+        handle.write(b"\n")
+    _error_reason(lambda: _inventory([_source(result)]), "nport_source_artifact_hash_mismatch")
+
+
+def test_inventory_refuses_public_result_that_dropped_debt_less_holdings() -> None:
+    public = _public()
+    dropped = dataclasses.replace(public, stats={**public.stats, "eligible_without_single_debt_section": 1})
+    _error_reason(lambda: _inventory([_source(dropped)]), "nport_source_not_persistable")
+
+
 def test_public_observation_duplicate_and_conflict_handling() -> None:
     result = _public()
     row = result.observations[0]

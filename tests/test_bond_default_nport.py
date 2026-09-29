@@ -234,9 +234,11 @@ def test_identifiers_aggregated_before_join_no_fan_out(tmp_path: Path) -> None:
 
 def test_corp_dbt_eligibility_with_exclusion_counts(tmp_path: Path) -> None:
     f = filing(1).hold(1, CUSIP_A, is_default="Y").hold(2, CUSIP_B, is_default="Y", issuer_type="MUN")
-    f.hold(3, CUSIP_B, asset_cat="LON", is_default="Y").hold(4, CUSIP_B, debt=False)
+    # A non-CORP/DBT holding without a debt row is simply ineligible (a CORP/DBT one quarantines its accession).
+    f.hold(3, CUSIP_B, asset_cat="LON", is_default="Y").hold(4, CUSIP_B, issuer_type="MUN", debt=False)
     result = run(tmp_path, [f])
     assert [o.holding_id for o in observations(result)] == ["1"]
+    assert result.stats["eligible_without_single_debt_section"] == 0
     category = result.stats["debt_by_category"]
     assert category["eligible_corp_dbt_rows"] == 1 and category["excluded_rows"] == 2
     assert category["excluded_is_default_y_rows"] == 2
@@ -1128,3 +1130,128 @@ def test_end_to_end_package_to_state_proposal(tmp_path: Path) -> None:
     record = json.loads((result.projection_path.parent / "package_result.json").read_text())
     assert record["status"] == "parsed"
     assert nport.DeraPackageResult.load(result.projection_path.parent).source_package == result.source_package
+
+
+# --- artifact binding, timezone-aware inputs, fail-closed public parsing ---------------------
+def test_package_result_records_and_verifies_artifact_hashes(tmp_path: Path) -> None:
+    result = run(tmp_path, [filing(1).hold(1, CUSIP_A)])
+    directory = result.projection_path.parent
+    record = json.loads((directory / "package_result.json").read_text())
+    assert record["projection_sha256"] == result.projection_sha256 == nport.sha256_file(result.projection_path)
+    assert record["accessions_sha256"] == result.accessions_sha256 == nport.sha256_file(result.accessions_path)
+    loaded = nport.DeraPackageResult.load(directory)
+    assert (loaded.projection_sha256, loaded.accessions_sha256) == (result.projection_sha256, result.accessions_sha256)
+    with open(result.accessions_path, "ab") as handle:
+        handle.write(b"\n")
+    with pytest.raises(nport.NportError, match="package_result_artifact_hash_mismatch"):
+        nport.DeraPackageResult.load(directory)
+
+
+def test_tampered_projection_is_refused_on_reload(tmp_path: Path) -> None:
+    result = run(tmp_path, [filing(1).hold(1, CUSIP_A)])
+    directory = result.projection_path.parent
+    result.projection_path.write_bytes(result.projection_path.read_bytes() + b"x")
+    with pytest.raises(nport.NportError, match="package_result_artifact_hash_mismatch"):
+        nport.DeraPackageResult.load(directory)
+    (directory / "package_result.json").write_text(json.dumps(
+        {**json.loads((directory / "package_result.json").read_text()), "projection_sha256": "zz"}))
+    with pytest.raises(nport.NportError, match="package_result_inconsistent"):
+        nport.DeraPackageResult.load(directory)
+
+
+def test_legacy_package_result_without_hashes_loads_unbound_and_stays_readable(tmp_path: Path) -> None:
+    result = run(tmp_path, [filing(1).hold(1, CUSIP_A)])
+    directory = result.projection_path.parent
+    path = directory / "package_result.json"
+    legacy = {k: v for k, v in json.loads(path.read_text()).items() if not k.endswith("_sha256") or k == "zip_sha256"}
+    path.write_text(json.dumps(legacy))
+    loaded = nport.DeraPackageResult.load(directory)
+    assert loaded.projection_sha256 is None and loaded.accessions_sha256 is None
+    assert loaded.source_package == result.source_package  # metadata and projection stay readable
+    assert [o.observation_id for o in observations(loaded)] == [o.observation_id for o in observations(result)]
+
+
+def test_naive_timestamps_are_refused(tmp_path: Path) -> None:
+    naive = dt.datetime(2026, 9, 25, 3, 14)  # noqa: DTZ001 - deliberately naive
+    with pytest.raises(nport.NportError, match="timestamp_not_timezone_aware:retrieved_at"):
+        run(tmp_path, [filing(1).hold(1, CUSIP_A)], retrieved=naive)
+    path = tmp_path / "naive_2021q1_nport.zip"
+    sha = b.build_zip(path, b.tables([filing(1).hold(1, CUSIP_A)]), vintage="2021q1")
+    with pytest.raises(nport.NportError, match="timestamp_not_timezone_aware:first_verified_public_at"):
+        nport.parse_dera_package(
+            path, expected_sha256=sha, package_label="2021q1_nport.zip", output_dir=tmp_path / "out_naive",
+            work_dir=tmp_path / "work", retrieved_at=RETRIEVED, first_verified_public_at=naive,
+        )
+    with pytest.raises(nport.NportError, match="timestamp_not_timezone_aware:retrieved_at"):
+        nport.parse_public_accession(xml_doc(), header=xml_header(), retrieved_at=naive, official_url="u")
+
+
+@pytest.mark.parametrize(
+    "debt",
+    [
+        "",  # no debt section at all
+        "<debtSec><isDefault>Y</isDefault></debtSec><debtSec><isDefault>N</isDefault></debtSec>",  # two sections
+    ],
+)
+def test_public_xml_eligible_holding_without_single_debt_section_is_quarantined(debt: str) -> None:
+    result = nport.parse_public_accession(xml_doc(debt=debt), header=xml_header(), retrieved_at=RETRIEVED,
+                                          official_url="u")
+    assert result.status == "quarantined" and not result.observations
+    assert result.quarantine_reasons == ("eligible_holding_without_single_debt_section:1",)
+    assert result.stats["eligible_without_single_debt_section"] == 1
+
+
+# --- DERA CORP/DBT holdings without a debt section (same fail-closed rule as the public path) -----
+def test_dera_eligible_holding_without_debt_section_quarantines_its_accession_only(tmp_path: Path) -> None:
+    bad = filing(1).hold(1, CUSIP_A, is_default="Y").hold(2, CUSIP_B, debt=False)  # CORP/DBT, no debt row
+    good = filing(2, cik="0000000102", series="S000000002").hold(3, CUSIP_A, is_default="Y")
+    result = run(tmp_path, [bad, good])
+    assert result.status == "parsed" and not result.quarantine_reasons
+    assert result.stats["eligible_without_single_debt_section"] == 1 and result.stats["quarantined_accessions"] == 1
+    records = {r["accession_number"]: r for r in map(json.loads, result.accessions_path.read_text().splitlines())}
+    bad_record, good_record = records[bad.accession], records[good.accession]
+    assert bad_record["eligible_without_debt_section"] == 1
+    assert bad_record["quarantine_reasons"] == ["eligible_holding_without_single_debt_section:1"]
+    assert good_record["eligible_without_debt_section"] == 0 and good_record["quarantine_reasons"] == []
+    # No partial lot set survives: the quarantined accession has no observations and no filing copy.
+    assert {o.accession_number for o in observations(result)} == {good.accession}
+    assert result.stats["eligible_rows_excluded"] == {"accession_quarantined": 1}
+    filings = nport.accession_filings_from_result(result)
+    assert [f.accession_number for f in filings] == [good.accession]
+
+
+def test_dera_quarantined_accession_cannot_be_reconciled(tmp_path: Path) -> None:
+    bad = filing(1).hold(1, CUSIP_A, is_default="Y").hold(2, CUSIP_B, debt=False)
+    result = run(tmp_path, [bad])
+    public = nport.parse_public_accession(
+        xml_doc(), header=xml_header(), retrieved_at=RETRIEVED, official_url="u")
+    record = json.loads(result.accessions_path.read_text().splitlines()[0])
+    assert record["quarantine_reasons"]
+    dataclass_public = dataclasses.replace(public, header=dataclasses.replace(public.header, accession_number=bad.accession))
+    with pytest.raises(nport.ReconciliationError, match="dera_accession_quarantined"):
+        nport.reconcile_dera_with_public(result, dataclass_public)
+
+
+def test_dera_ineligible_holdings_without_debt_do_not_quarantine(tmp_path: Path) -> None:
+    f = filing(1).hold(1, CUSIP_A, is_default="Y").hold(2, CUSIP_B, issuer_type="MUN", debt=False)
+    result = run(tmp_path, [f])
+    assert result.stats["eligible_without_single_debt_section"] == 0
+    assert [o.holding_id for o in observations(result)] == ["1"]
+
+
+def test_legacy_accession_records_without_quarantine_field_stay_readable(tmp_path: Path) -> None:
+    result = run(tmp_path, [filing(1).hold(1, CUSIP_A)])
+    lines = [json.loads(x) for x in result.accessions_path.read_text().splitlines()]
+    for record in lines:
+        for key in ("quarantine_reasons", "eligible_without_debt_section", "n_corp_dbt"):
+            record.pop(key, None)
+    result.accessions_path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in lines))
+    assert len(nport.accession_filings_from_result(result)) == 1
+
+
+def test_naive_knowledge_cutoff_is_refused() -> None:
+    naive = dt.datetime(2026, 9, 25, 23, 0)  # noqa: DTZ001 - deliberately naive
+    with pytest.raises(nport.NportError, match="timestamp_not_timezone_aware:knowledge_cutoff"):
+        nport.resolve_accession_revisions([], knowledge_cutoff=naive)
+    with pytest.raises(nport.NportError, match="timestamp_not_timezone_aware:knowledge_cutoff"):
+        consensus([], knowledge_cutoff=naive)

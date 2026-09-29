@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import importlib.util
 import uuid
@@ -551,6 +552,89 @@ def test_v2_fixture_round_trips_and_validates():
     decoded = c.CreditBundle.from_json_obj(ex.to_json_obj())
     assert decoded.canonical_bytes() == ex.canonical_bytes()
     p.check_bundle(decoded)
+
+
+@pytest.mark.parametrize("chunk", [1, 3, 50_000])
+def test_verify_schema_is_chunk_size_independent(monkeypatch, qualified, chunk):
+    """Frame-by-frame verification proves the same round trip as the whole-payload check."""
+    monkeypatch.setattr(p, "_SCHEMA_CHUNK_ROWS", chunk)
+    for bundle in (qualified, syn.exchange_bundle(), syn.build_bundle(with_events=False)):
+        assert p.verify_schema(bundle) is bundle
+        # The whole-payload reference decode agrees with the streamed verdict.
+        assert c.CreditBundle.from_json_obj(bundle.to_json_obj()).canonical_bytes() == bundle.canonical_bytes()
+
+
+@pytest.mark.parametrize("chunk", [1, 4, 50_000])
+def test_chunked_wire_comparison_agrees_with_canonical_bytes(monkeypatch, qualified, chunk):
+    monkeypatch.setattr(p, "_SCHEMA_CHUNK_ROWS", chunk)
+    same = syn.build_bundle()
+    assert p._same_wire_form(qualified, same) and qualified.canonical_bytes() == same.canonical_bytes()
+    for other in (syn.build_bundle(alter_output=True), syn.build_bundle(with_events=False),
+                  syn.build_bundle(knowledge_cutoff=K0 + dt.timedelta(days=1))):
+        assert other.canonical_bytes() != qualified.canonical_bytes()
+        assert not p._same_wire_form(qualified, other) and not p._same_wire_form(other, qualified)
+
+
+@pytest.mark.parametrize("chunk", [1, 3, 50_000])
+def test_streamed_persisted_identity_equals_the_whole_object_digest(monkeypatch, chunk):
+    monkeypatch.setattr(p, "_SCHEMA_CHUNK_ROWS", chunk)
+    for bundle in (syn.build_bundle(), syn.exchange_bundle(), syn.build_bundle(with_events=False)):
+        payload = bundle.to_json_obj()
+        payload.pop("panel_grid")
+        assert p.persisted_identity(bundle) == c.digest_of(payload)
+
+
+def test_verify_schema_reports_the_unchunked_schema_error(monkeypatch, qualified):
+    """A chunk violation is re-validated on the full payload so the error is the canonical one."""
+    real = c.validate_against_schema
+    total = sum(len(rows) for rows in qualified.frames.values())
+
+    def fake(payload, *, schema=None):
+        rows = sum(len(v) for v in payload["frames"].values())
+        if rows:
+            raise c.ContractError("schema_violation:chunk" if rows < total else "schema_violation:full")
+        real(payload, schema=schema)
+
+    monkeypatch.setattr(c, "validate_against_schema", fake)
+    with pytest.raises(c.ContractError, match="schema_violation:full"):
+        p.verify_schema(qualified)
+
+
+def test_verify_schema_schema_violation_outranks_an_earlier_typed_decode_error(monkeypatch, qualified):
+    """Unchunked precedence: the whole payload is schema-checked before any row is decoded."""
+    populated = [name for name in sorted(c.FRAME_TYPES) if qualified.frames[name]]
+    early, late = populated[0], populated[-1]
+    assert early != late
+    cls = c.FRAME_TYPES[early]
+    monkeypatch.setattr(cls, "from_record", classmethod(
+        lambda klass, record: (_ for _ in ()).throw(c.ContractError("row_rule_violated"))))
+    real = c.validate_against_schema
+
+    def fake(payload, *, schema=None):
+        if sum(1 for rows in payload["frames"].values() if rows) > 1:  # only the full payload
+            raise c.ContractError(f"schema_violation:{late}")
+        real(payload, schema=schema)
+
+    monkeypatch.setattr(c, "validate_against_schema", fake)
+    with pytest.raises(c.ContractError, match=f"schema_violation:{late}"):
+        p.verify_schema(qualified)
+    # Without any schema violation the decode error surfaces unchanged.
+    monkeypatch.setattr(c, "validate_against_schema", real)
+    with pytest.raises(c.ContractError, match="row_rule_violated"):
+        p.verify_schema(qualified)
+
+
+def test_verify_schema_detects_a_lossy_typed_round_trip(monkeypatch, qualified):
+    cls = c.FRAME_TYPES["source_packages"]
+    original = cls.from_record.__func__
+
+    def lossy(klass, record):
+        row = original(klass, record)
+        return dataclasses.replace(row, raw_locator=row.raw_locator + "x")
+
+    monkeypatch.setattr(cls, "from_record", classmethod(lossy))
+    with pytest.raises(c.ContractError, match="schema_roundtrip_mismatch"):
+        p.verify_schema(qualified)
 
 
 RATING_REGRESSIONS = syn.rating_regressions()

@@ -364,6 +364,7 @@ jobs:
             tests/test_sec_regulatory_serving_contract.py
             tests/test_sec_regulatory_serving_materializer.py
             tests/test_sec_source_manifests.py
+            tests/test_bond_default_admin_roles_db.py
             tests/test_bond_default_contracts.py
             tests/test_bond_default_edgar.py
             tests/test_bond_default_ncen.py

@@ -24,9 +24,10 @@ files). Error codes are shared: ``<function>:<reason>``.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Protocol
@@ -108,7 +109,38 @@ def verify_derivation(bundle: CreditBundle) -> None:
         contract_digest=m["contract_digest"],
         sql_digest_value=m["sql_digest"],
     )
-    _require(rebuilt.canonical_bytes() == bundle.canonical_bytes(), "derived_fields_mismatch")
+    _require(_same_wire_form(rebuilt, bundle), "derived_fields_mismatch")
+
+
+def _same_wire_form(left: CreditBundle, right: CreditBundle) -> bool:
+    """``left.canonical_bytes() == right.canonical_bytes()`` proved chunk by chunk.
+
+    The canonical form is the canonical JSON of ``{contract_version, manifest, panel_grid, frames}``
+    where every frame is a list of row records; the elements are self-delimiting JSON values, so
+    the two byte strings are equal exactly when the manifest records, the grid records and every
+    frame's record sequence (same length, same order) are byte-identical. Comparing bounded
+    chunks avoids holding two full canonical byte strings and their wire objects.
+    """
+    if c.canonical_json_bytes(left.manifest.to_record()) != c.canonical_json_bytes(right.manifest.to_record()):
+        return False
+    if set(left.frames) != set(right.frames) or len(left.panel_grid) != len(right.panel_grid):
+        return False
+    step = _SCHEMA_CHUNK_ROWS
+    for start in range(0, len(left.panel_grid), step):
+        first = [[cusip, month.isoformat()] for cusip, month in left.panel_grid[start:start + step]]
+        second = [[cusip, month.isoformat()] for cusip, month in right.panel_grid[start:start + step]]
+        if c.canonical_json_bytes(first) != c.canonical_json_bytes(second):
+            return False
+    for name in sorted(left.frames):
+        rows, other = left.frames[name], right.frames[name]
+        if len(rows) != len(other):
+            return False
+        for start in range(0, len(rows), step):
+            first = [row.to_record() for row in rows[start:start + step]]
+            second = [row.to_record() for row in other[start:start + step]]
+            if c.canonical_json_bytes(first) != c.canonical_json_bytes(second):
+                return False
+    return True
 
 
 def check_bundle(bundle: CreditBundle) -> None:
@@ -1734,17 +1766,102 @@ def persisted_identity(bundle: CreditBundle) -> str:
     The panel grid list itself is bound through ``panel_grid_digest``/``panel_grid_count``
     in the manifest and is not stored separately, so replay compares this digest.
     """
-    payload = bundle.to_json_obj()
-    payload.pop("panel_grid")
-    return c.digest_of(payload)
+    # Byte-identical to ``c.digest_of`` of the wire object without ``panel_grid`` (canonical JSON with
+    # sorted keys: contract_version, frames{name: [records]}, manifest), but streamed into the hash
+    # frame by frame instead of materializing the whole wire object.
+    digest = hashlib.sha256()
+    digest.update(b'{"contract_version":' + c.canonical_json_bytes(c.CONTRACT_VERSION) + b',"frames":{')
+    for index, name in enumerate(sorted(bundle.frames)):
+        digest.update((b"," if index else b"") + c.canonical_json_bytes(name) + b":[")
+        rows = bundle.frames[name]
+        wrote = False
+        for start in range(0, len(rows), _SCHEMA_CHUNK_ROWS):
+            body = c.canonical_json_bytes([row.to_record() for row in rows[start:start + _SCHEMA_CHUNK_ROWS]])[1:-1]
+            digest.update((b"," if wrote else b"") + body)
+            wrote = True
+        digest.update(b"]")
+    digest.update(b'},"manifest":' + c.canonical_json_bytes(bundle.manifest.to_record()) + b"}")
+    return "sha256:" + digest.hexdigest()
+
+
+#: Rows per schema-validation / decode / canonical-compare chunk (bounds the transient wire objects).
+_SCHEMA_CHUNK_ROWS = 50_000
 
 
 def verify_schema(bundle: CreditBundle) -> CreditBundle:
-    """Round-trip through the strict JSON schema and the typed decoder."""
-    decoded = CreditBundle.from_json_obj(bundle.to_json_obj(), schema_check=True)
-    if decoded.canonical_bytes() != bundle.canonical_bytes():
-        raise ContractError("schema_roundtrip_mismatch")
-    return decoded
+    """Round-trip ``bundle`` through the strict JSON schema and the typed decoder.
+
+    Exactly as strict as decoding ``bundle.to_json_obj()`` with ``schema_check=True`` and
+    comparing canonical bytes, but evaluated frame by frame in bounded chunks so that neither
+    the full wire object, a second decoded object graph nor two full canonical byte strings is
+    ever resident. Frame arrays carry only ``items`` in the pinned schema (their uniqueness and
+    ordering are the typed bundle's own invariants), so validating each chunk as a frame array is
+    equivalent to validating the whole array; the array-level ``uniqueItems`` of ``panel_grid``
+    is validated on the whole grid. A frame whose schema node is not that plain array form is
+    validated whole. On any schema violation the full payload is re-validated so that the raised
+    error is identical to the unchunked check. Returns ``bundle`` (proved round-trip stable).
+    """
+    schema = c.load_bundle_schema()
+    manifest_record = bundle.manifest.to_record()
+    if manifest_record.get("contract_version") != c.CONTRACT_VERSION:
+        raise ContractError(
+            f"bundle:unsupported_contract_version:{c.CONTRACT_VERSION}/{manifest_record.get('contract_version')}"
+        )
+    grid_records = [[cusip, month.isoformat()] for cusip, month in bundle.panel_grid]
+    frame_nodes = schema["properties"]["frames"]["properties"]
+
+    full_schema_checked = False
+
+    def full_schema_first() -> None:
+        # The unchunked check validated the WHOLE payload against the schema before decoding
+        # anything, so a schema violation anywhere outranks any decode/rule error: re-run it
+        # unchunked (once) so the reported error is the canonical, previously-raised one.
+        nonlocal full_schema_checked
+        if not full_schema_checked:
+            full_schema_checked = True
+            c.validate_against_schema(bundle.to_json_obj(), schema=schema)
+
+    def check(frames: dict[str, list[Any]], grid: list[Any]) -> None:
+        payload = {"contract_version": c.CONTRACT_VERSION, "manifest": manifest_record,
+                   "panel_grid": grid, "frames": frames}
+        try:
+            c.validate_against_schema(payload, schema=schema)
+        except ContractError:
+            full_schema_first()
+            raise
+
+    empty: dict[str, list[Any]] = {name: [] for name in FRAME_TYPES}
+    try:
+        check(empty, grid_records)  # manifest, whole grid (uniqueItems) and every empty frame
+        decoded_manifest = BundleManifest.from_record(manifest_record)
+        if c.canonical_json_bytes(decoded_manifest.to_record()) != c.canonical_json_bytes(manifest_record):
+            raise ContractError("schema_roundtrip_mismatch")
+        for start in range(0, len(grid_records), _SCHEMA_CHUNK_ROWS):
+            part = grid_records[start:start + _SCHEMA_CHUNK_ROWS]
+            decoded_part = [[cusip, c._as_date("panel_grid", month).isoformat()] for cusip, month in part]
+            if c.canonical_json_bytes(decoded_part) != c.canonical_json_bytes(part):
+                raise ContractError("schema_roundtrip_mismatch")
+        for name in sorted(FRAME_TYPES):
+            cls = FRAME_TYPES[name]
+            rows = bundle.frames[name]
+            plain_array = set(frame_nodes[name]) == {"type", "items"}
+            step = _SCHEMA_CHUNK_ROWS if plain_array else max(len(rows), 1)
+            for start in range(0, len(rows), step):
+                chunk = rows[start:start + step]
+                records = [row.to_record() for row in chunk]
+                check({**empty, name: records}, [])
+                decoded = [cls.from_record(record) for record in records]
+                if any(type(new) is not cls or new.key() != old.key()
+                       for new, old in zip(decoded, chunk, strict=True)):
+                    raise ContractError("schema_roundtrip_mismatch")
+                if c.canonical_json_bytes([new.to_record() for new in decoded]) != c.canonical_json_bytes(records):
+                    raise ContractError("schema_roundtrip_mismatch")
+    except ContractError:
+        # A typed-decode / row-rule / round-trip error in an earlier frame must not mask a schema
+        # violation in a later one (the schema is checked for the whole payload first).
+        full_schema_first()
+        raise
+    return bundle
 
 
 # ---------------------------------------------------------------------------
@@ -1997,6 +2114,9 @@ TABLES = {
     "proposal_evidence": "bond_default_proposal_evidence_v2",
     "exchange_relations": "bond_default_exchange_relation_v2",
 }
+#: Rows per ``executemany`` call and per named-cursor fetch (bounded transient memory).
+_INSERT_BATCH_ROWS = 50_000
+_SELECT_ITERSIZE = 20_000
 _SUPERSEDES = {
     "observations": "supersedes_observation_id",
     "event_links": "supersedes_link_id",
@@ -2118,18 +2238,30 @@ class PostgresPublicationStore:
             sql.SQL(", ").join(sql.Identifier(n) for n in names),
             sql.SQL(", ").join(sql.Placeholder() for _ in names),
         )
-        params = []
-        for row in rows:
-            values = [] if publication_id is None else [publication_id]
-            values += [_db_value(kind, getattr(row, name)) for name, kind in cls.SPEC]
-            values.append(row.row_sha256())
-            params.append(values)
-        if params:
-            with self.conn.cursor() as cur:
-                cur.executemany(statement, params)
+        # Bounded batches (same rows, same order): the production ratings frame is >2M rows and
+        # must never be materialized as one parameter list.
+        with self.conn.cursor() as cur:
+            batch: list[list[Any]] = []
+            for row in rows:
+                values = [] if publication_id is None else [publication_id]
+                values += [_db_value(kind, getattr(row, name)) for name, kind in cls.SPEC]
+                values.append(row.row_sha256())
+                batch.append(values)
+                if len(batch) >= _INSERT_BATCH_ROWS:
+                    cur.executemany(statement, batch)
+                    batch = []
+            if batch:
+                cur.executemany(statement, batch)
 
-    def _select(self, frame: str, where: Any, params: Iterable[Any], *, source: Any = None) -> list[tuple[Any, str]]:
-        """Decoded, hash-checked rows of ``frame`` from its table (or ``source``, a FROM item)."""
+    def _iter_select(
+        self, frame: str, where: Any, params: Iterable[Any], *, source: Any = None
+    ) -> Iterator[tuple[Any, str]]:
+        """Stream decoded, hash-checked rows of ``frame`` from its table (or ``source``, a FROM item).
+
+        A server-side (named) cursor fetches ``_SELECT_ITERSIZE`` rows at a time, so the raw
+        record dicts are never all resident; each row is decoded and its stored hash checked
+        as it arrives (same refusals as the former ``fetchall`` path).
+        """
         from psycopg import sql
         from psycopg.rows import dict_row
 
@@ -2139,16 +2271,25 @@ class PostgresPublicationStore:
             sql.SQL(", ").join(sql.Identifier(n) for n in names),
             self._q(TABLES[frame]) if source is None else source, where,
         )
-        with self.conn.cursor(row_factory=dict_row) as cur:
-            records = cur.execute(statement, list(params)).fetchall()
-        out = []
-        for record in records:
-            stored = record.pop("row_sha256")
-            row = cls.from_record(record)
-            if row.row_sha256() != stored:
-                raise PublicationError("bond_credit_db:row_hash_mismatch", f"{frame}:{row.key()}")
-            out.append((row, stored))
-        return out
+        with self.conn.cursor(name=f"bond_credit_{uuid.uuid4().hex}", row_factory=dict_row) as cur:
+            cur.itersize = _SELECT_ITERSIZE
+            cur.execute(statement, list(params))
+            for record in cur:
+                stored = record.pop("row_sha256")
+                row = cls.from_record(record)
+                if row.row_sha256() != stored:
+                    raise PublicationError("bond_credit_db:row_hash_mismatch", f"{frame}:{row.key()}")
+                yield row, stored
+
+    def _select(self, frame: str, where: Any, params: Iterable[Any], *, source: Any = None) -> list[tuple[Any, str]]:
+        """Decoded, hash-checked rows of ``frame`` (see :meth:`_iter_select`) as a list."""
+        return list(self._iter_select(frame, where, params, source=source))
+
+    def _select_sorted(self, frame: str, where: Any, params: Iterable[Any], *, source: Any = None) -> tuple[Any, ...]:
+        """Rows of ``frame`` in canonical key order without retaining the (row, hash) pairs."""
+        rows = [row for row, _ in self._iter_select(frame, where, params, source=source)]
+        rows.sort(key=lambda r: r.key())
+        return tuple(rows)
 
     def _load_manifest_row(self, publication_id: uuid.UUID) -> dict[str, Any] | None:
         from psycopg import sql
@@ -2172,27 +2313,28 @@ class PostgresPublicationStore:
 
         manifest = BundleManifest.from_record({n: row[n] for n, _ in MANIFEST_SPEC})
         pid = manifest["publication_id"]
-        frames: dict[str, list[Any]] = {}
+        # Each frame is streamed (named cursor), decoded and hash-checked row by row, then sorted
+        # once in place into its final tuple: no record-dict list, pair list or sorted copy.
+        frames: dict[str, tuple[Any, ...]] = {}
         if reader_allow_shadow is not None:
             for frame in (*c.INPUT_FRAMES, *c.OUTPUT_FRAMES):
                 source = sql.SQL("{}(%s, %s)").format(self._fn(f"bond_credit_read_{frame}"))
-                frames[frame] = [r for r, _ in self._select(
-                    frame, sql.SQL("TRUE"), [pid, reader_allow_shadow], source=source)]
+                frames[frame] = self._select_sorted(
+                    frame, sql.SQL("TRUE"), [pid, reader_allow_shadow], source=source)
         else:
             by_pub = sql.SQL("publication_id = %s")
-            sources = [r for r, _ in self._select("publication_sources", by_pub, [pid])]
+            sources = self._select_sorted("publication_sources", by_pub, [pid])
             package_ids = [s.package_id for s in sources]  # type: ignore[attr-defined]
             for frame in c.INPUT_FRAMES:
-                frames[frame] = [r for r, _ in self._select(frame, sql.SQL("package_id = ANY(%s)"), [package_ids])]
+                frames[frame] = self._select_sorted(frame, sql.SQL("package_id = ANY(%s)"), [package_ids])
             for frame in c.OUTPUT_FRAMES:
-                frames[frame] = sources if frame == "publication_sources" else [
-                    r for r, _ in self._select(frame, by_pub, [pid])]
+                frames[frame] = sources if frame == "publication_sources" else self._select_sorted(
+                    frame, by_pub, [pid])
         grid = sorted(
             {(r.cusip_id, r.month) for r in frames["ratings"] if r.view_kind == "public_pit"},
             key=lambda item: f"{item[0]}|{item[1].isoformat()}",
         )
-        ordered = {name: tuple(sorted(rows, key=lambda r: r.key())) for name, rows in frames.items()}
-        return CreditBundle(manifest, tuple(grid), ordered)
+        return CreditBundle(manifest, tuple(grid), frames)
 
     def _state_from(self, row: Mapping[str, Any], revoked: bool) -> PublicationState:
         return PublicationState(

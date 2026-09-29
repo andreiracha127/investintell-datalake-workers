@@ -9,10 +9,12 @@
 -- app_runtime must NOT receive bond_credit_reader / bond_credit_auditor / bond_credit_writer.
 --
 -- It never alters existing roles: an existing role with LOGIN, SUPERUSER, CREATEROLE,
--- CREATEDB, REPLICATION or BYPASSRLS, or one that is itself a member of any role, stops the
--- transaction for manual reconciliation. The membership invariants are re-checked AFTER the
--- grants and abort the transaction on violation. It changes no default privileges and no
--- ACL outside these four roles. Idempotent.
+-- CREATEDB, REPLICATION or BYPASSRLS, one that is itself a member of any role, or one that
+-- already has any member other than its intended principal (worker_writer for
+-- bond_credit_writer, app_runtime for bond_default_diagnostic_reader, nobody for
+-- bond_credit_reader / bond_credit_auditor) stops the transaction for manual reconciliation.
+-- The exact membership sets are re-checked AFTER the grants and abort the transaction on
+-- violation. It changes no default privileges and no ACL outside these four roles. Idempotent.
 --
 -- Run with psql only (`\set` is a psql meta-command), e.g. inside the database container:
 --   psql -X -v ON_ERROR_STOP=1 -U postgres -d market -f admin_roles_v1.sql
@@ -49,6 +51,17 @@ BEGIN
                    WHERE g.rolname = r) THEN
             RAISE EXCEPTION 'bond_default_events admin roles: existing role % is a member of another role', r;
         END IF;
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
+                   JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
+                   JOIN pg_catalog.pg_roles u ON u.oid = m.member
+                   WHERE g.rolname = r
+                     AND u.rolname <> ALL (CASE r
+                                             WHEN 'bond_credit_writer' THEN ARRAY['worker_writer']
+                                             WHEN 'bond_default_diagnostic_reader' THEN ARRAY['app_runtime']
+                                             ELSE ARRAY[]::text[]
+                                           END)) THEN
+            RAISE EXCEPTION 'bond_default_events admin roles: existing role % has an unexpected member', r;
+        END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r) THEN
             EXECUTE pg_catalog.format('CREATE ROLE %I NOLOGIN', r);
         END IF;
@@ -78,6 +91,24 @@ BEGIN
     END IF;
     IF NOT pg_catalog.has_schema_privilege('worker_writer', 'public', 'CREATE') THEN
         RAISE EXCEPTION 'bond_default_events admin roles: worker_writer lacks CREATE on schema public';
+    END IF;
+    -- Exact membership sets of the four group roles.
+    IF EXISTS (
+        SELECT g.rolname, array_agg(DISTINCT u.rolname ORDER BY u.rolname) AS members
+        FROM pg_catalog.pg_roles g
+        LEFT JOIN pg_catalog.pg_auth_members m ON m.roleid = g.oid
+        LEFT JOIN pg_catalog.pg_roles u ON u.oid = m.member
+        WHERE g.rolname IN ('bond_credit_reader', 'bond_credit_writer', 'bond_credit_auditor',
+                            'bond_default_diagnostic_reader')
+        GROUP BY g.rolname
+        HAVING array_remove(array_agg(DISTINCT u.rolname ORDER BY u.rolname), NULL)
+               IS DISTINCT FROM (CASE g.rolname
+                                   WHEN 'bond_credit_writer' THEN ARRAY['worker_writer']::name[]
+                                   WHEN 'bond_default_diagnostic_reader' THEN ARRAY['app_runtime']::name[]
+                                   ELSE ARRAY[]::name[]
+                                 END)
+    ) THEN
+        RAISE EXCEPTION 'bond_default_events admin roles: group role membership differs from the intended set after the grants';
     END IF;
 END $$;
 

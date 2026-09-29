@@ -119,6 +119,7 @@ _ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
 _SERIES = re.compile(r"S\d{9}")
 _CUSIP_PLACEHOLDER = re.compile(r"N/?A|NONE|0+|-+|9{9}")
 _COLUMN_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 
 class NportError(RuntimeError):
@@ -373,6 +374,13 @@ def _ts(value: dt.datetime) -> str:
     return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _require_aware_utc(value: object, name: str) -> dt.datetime:
+    """UTC-normalized ``value``; a naive (or non-datetime) input is refused, never assumed local."""
+    if not isinstance(value, dt.datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise NportError(f"timestamp_not_timezone_aware:{name}")
+    return value.astimezone(dt.timezone.utc)
+
+
 def _parse_ts(text: str) -> dt.datetime:
     return dt.datetime.strptime(text, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=dt.timezone.utc)
 
@@ -392,12 +400,19 @@ class DeraPackageResult:
     projection_path: Path | None
     accessions_path: Path | None
     stats: Mapping[str, Any]
+    #: sha256 of the persisted Parquet projection / accessions JSONL. Recorded by
+    #: :func:`parse_dera_package` in newly written results; ``None`` for legacy results that
+    #: predate artifact binding (those are refused at materialization, never silently accepted).
+    projection_sha256: str | None = None
+    accessions_sha256: str | None = None
 
     def to_record(self) -> dict[str, Any]:
         return {
             "accessions_path": None if self.accessions_path is None else self.accessions_path.name,
+            "accessions_sha256": self.accessions_sha256,
             "package_label": self.package_label,
             "projection_path": None if self.projection_path is None else self.projection_path.name,
+            "projection_sha256": self.projection_sha256,
             "quarantine_reasons": list(self.quarantine_reasons),
             "source_package": None if self.source_package is None else self.source_package.to_record(),
             "stats": dict(self.stats),
@@ -409,22 +424,41 @@ class DeraPackageResult:
     def load(cls, directory: Path) -> DeraPackageResult:
         """Reload a persisted result. The package is rebuilt with the *current* W0
         constructor (its ID is derived from family/external_id/content_sha256), so a
-        projection stays usable if the contract's ID encoding changes."""
+        projection stays usable if the contract's ID encoding changes.
+
+        Artifact hashes recorded by :func:`parse_dera_package` are verified against the files
+        on disk. A legacy record without them still loads (its metadata stays readable) but
+        carries ``None`` hashes, so :func:`materialize_nport_inventory` refuses it."""
         record = json.loads((Path(directory) / "package_result.json").read_bytes())
         package = record["source_package"]
         if package is not None:
             package = SourcePackage.create(**{k: v for k, v in package.items() if k != "package_id"})
             if package.content_sha256 != record["zip_sha256"]:
                 raise NportError("package_result_inconsistent")
+        projection_path = None if record["projection_path"] is None else Path(directory) / record["projection_path"]
+        accessions_path = None if record["accessions_path"] is None else Path(directory) / record["accessions_path"]
+        hashes: dict[str, str | None] = {}
+        for key, path in (("projection_sha256", projection_path), ("accessions_sha256", accessions_path)):
+            recorded = record.get(key)
+            if recorded is None:
+                hashes[key] = None
+                continue
+            if path is None or not isinstance(recorded, str) or not _SHA256_HEX.fullmatch(recorded):
+                raise NportError(f"package_result_inconsistent:{key}")
+            if not path.is_file() or sha256_file(path) != recorded:
+                raise NportError(f"package_result_artifact_hash_mismatch:{record['package_label']}:{key}")
+            hashes[key] = recorded
         return cls(
             package_label=record["package_label"],
             status=record["status"],
             quarantine_reasons=tuple(record["quarantine_reasons"]),
             zip_sha256=record["zip_sha256"],
             source_package=package,
-            projection_path=None if record["projection_path"] is None else Path(directory) / record["projection_path"],
-            accessions_path=None if record["accessions_path"] is None else Path(directory) / record["accessions_path"],
+            projection_path=projection_path,
+            accessions_path=accessions_path,
             stats=record["stats"],
+            projection_sha256=hashes["projection_sha256"],
+            accessions_sha256=hashes["accessions_sha256"],
         )
 
 
@@ -504,6 +538,12 @@ def parse_dera_package(
     diagnostics but no projection. Only one package is processed per call; members are
     streamed to ``work_dir`` and joined by DuckDB with a disk spill directory.
     """
+    # A naive timestamp would be read as local time by ``astimezone``: refuse it up front.
+    retrieved = _require_aware_utc(retrieved_at, "retrieved_at")
+    first_public = (
+        retrieved if first_verified_public_at is None
+        else _require_aware_utc(first_verified_public_at, "first_verified_public_at")
+    )
     limits = limits or ZipLimits()
     started = time.perf_counter()
     timings: dict[str, float] = {}
@@ -516,8 +556,6 @@ def parse_dera_package(
     timings["sha256"] = time.perf_counter() - started
     if zip_sha != expected_sha256:
         raise PackageIntegrityError(f"package_sha256_mismatch:{package_label}:{zip_sha}")
-    retrieved = retrieved_at.astimezone(dt.timezone.utc)
-    first_public = (first_verified_public_at or retrieved_at).astimezone(dt.timezone.utc)
 
     member_shas: dict[str, str] = {}
     headers: dict[str, list[str]] = {}
@@ -678,6 +716,9 @@ def _finish(
         projection_path=projection,
         accessions_path=accessions,
         stats=stats,
+        # Bind the persisted artifacts to the bytes just written; ``load`` re-verifies them.
+        projection_sha256=None if projection is None else sha256_file(projection),
+        accessions_sha256=None if accessions is None else sha256_file(accessions),
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "package_result.json").write_text(
@@ -779,6 +820,10 @@ def _parse_extracted(
 
         phase = time.perf_counter()
         accessions = _accession_metadata(con, headers)
+        stats["eligible_without_single_debt_section"] = sum(
+            a["eligible_without_debt_section"] for a in accessions.values()
+        )
+        stats["quarantined_accessions"] = sum(1 for a in accessions.values() if a["quarantine_reasons"])
         stats["debt_by_category"] = _debt_category_counts(con)
         stats["identifiers"] = _identifier_aggregate(con)
         timings["aggregate"] = time.perf_counter() - phase
@@ -882,13 +927,15 @@ def _accession_metadata(con: Any, headers: Mapping[str, list[str]]) -> dict[str,
                    count(*) AS n_holdings,
                    count(d.HOLDING_ID) AS n_debt,
                    count(d.HOLDING_ID) FILTER (
-                       WHERE h.ISSUER_TYPE = 'CORP' AND h.ASSET_CAT = 'DBT') AS n_eligible
+                       WHERE h.ISSUER_TYPE = 'CORP' AND h.ASSET_CAT = 'DBT') AS n_eligible,
+                   count(*) FILTER (WHERE h.ISSUER_TYPE = 'CORP' AND h.ASSET_CAT = 'DBT') AS n_corp_dbt
             FROM t_FUND_REPORTED_HOLDING h
             LEFT JOIN t_DEBT_SECURITY d ON d.HOLDING_ID = h.HOLDING_ID
             GROUP BY h.ACCESSION_NUMBER
         )
         SELECT s.ACCESSION_NUMBER, s.SUB_TYPE, s.FILING_DATE, s.REPORT_DATE, r.CIK, f.SERIES_ID,
-               coalesce(c.n_holdings, 0), coalesce(c.n_debt, 0), coalesce(c.n_eligible, 0)
+               coalesce(c.n_holdings, 0), coalesce(c.n_debt, 0), coalesce(c.n_eligible, 0),
+               coalesce(c.n_corp_dbt, 0)
         FROM t_SUBMISSION s
         LEFT JOIN t_REGISTRANT r ON r.ACCESSION_NUMBER = s.ACCESSION_NUMBER
         LEFT JOIN t_FUND_REPORTED_INFO f ON f.ACCESSION_NUMBER = s.ACCESSION_NUMBER
@@ -897,7 +944,10 @@ def _accession_metadata(con: Any, headers: Mapping[str, list[str]]) -> dict[str,
         """
     ).fetchall()
     result: dict[str, dict[str, Any]] = {}
-    for accession, sub_type, filing_raw, report_raw, cik_raw, series_raw, n_hold, n_debt, n_elig in rows:
+    for accession, sub_type, filing_raw, report_raw, cik_raw, series_raw, n_hold, n_debt, n_elig, n_corp_dbt in rows:
+        # Holdings are unique per HOLDING_ID (cardinality-checked), so a CORP/DBT holding has zero or
+        # one debt row: the difference is the count of eligible holdings that have no debt section.
+        without_debt = int(n_corp_dbt) - int(n_elig)
         registrant = normalize_cik(cik_raw)
         series = series_raw if series_raw is not None and _SERIES.fullmatch(series_raw) else None
         filing = parse_dera_date(filing_raw)
@@ -918,6 +968,12 @@ def _accession_metadata(con: Any, headers: Mapping[str, list[str]]) -> dict[str,
             "n_holdings": int(n_hold),
             "n_debt": int(n_debt),
             "n_eligible": int(n_elig),
+            "eligible_without_debt_section": without_debt,
+            # Same reason code as the public path: a CORP/DBT holding without a debt row cannot be
+            # observed, so the accession is quarantined instead of being silently partial.
+            "quarantine_reasons": (
+                [f"eligible_holding_without_single_debt_section:{without_debt}"] if without_debt else []
+            ),
         }
     return result
 
@@ -1117,6 +1173,9 @@ def _write_projection(
                     current, current_hashes, ordinals = accession, [], Counter()
                 if meta is None or not meta["accession_valid"]:
                     excluded["accession_invalid"] += 1
+                    continue
+                if meta.get("quarantine_reasons"):
+                    excluded["accession_quarantined"] += 1
                     continue
                 if meta["sub_type"] not in PUBLIC_SUB_TYPES:
                     excluded["sub_type_not_public_nport"] += 1
@@ -1401,6 +1460,8 @@ def reconcile_dera_with_public(result: DeraPackageResult, public: PublicAccessio
         raise ReconciliationError("public_accession_not_parsed")
     header = public.header
     record = _accession_record(result, header.accession_number)
+    if record.get("quarantine_reasons"):
+        raise ReconciliationError(f"dera_accession_quarantined:{record['quarantine_reasons'][0]}")
     public_fund = fund_key_for(public.series_id, public.registrant_cik)
     mismatches = [
         name for name, dera_value, xml_value in (
@@ -1442,6 +1503,8 @@ def _verified_reconciliations(
         if rec.dera_zip_sha256 != result.zip_sha256 or rec.dera_semantic_digest != rec.xml_semantic_digest:
             raise ReconciliationError(f"reconciliation_binding_invalid:{rec.accession_number}")
         record = _accession_record(result, rec.accession_number)
+        if record.get("quarantine_reasons"):
+            raise ReconciliationError(f"dera_accession_quarantined:{record['quarantine_reasons'][0]}")
         if record["eligible_content_digest"] != rec.dera_semantic_digest:
             raise ReconciliationError(f"reconciliation_digest_stale:{rec.accession_number}")
         if rec.accession_number in verified and verified[rec.accession_number] != rec:
@@ -1736,7 +1799,7 @@ def parse_public_accession(
     its acceptance time is the knowledge time. A flag element that is not reported is
     ``absent``; an empty element is ``null``; any other lexical value is ``invalid``.
     """
-    retrieved = retrieved_at.astimezone(dt.timezone.utc)
+    retrieved = _require_aware_utc(retrieved_at, "retrieved_at")
     xml_sha = hashlib.sha256(xml_bytes).hexdigest()
     package = SourcePackage.create(
         source_family="sec_nport_public_xml",
@@ -1890,6 +1953,14 @@ def parse_public_accession(
         )
         counts["eligible_observations"] += 1
     stats.update(dict(sorted(counts.items())))
+    if counts["eligible_without_single_debt_section"]:
+        # A CORP/DBT holding without exactly one debt section cannot be observed; dropping it
+        # would leave a "parsed" accession silently missing a credit lot (fail closed instead).
+        return PublicAccessionResult(
+            "quarantined",
+            (f"eligible_holding_without_single_debt_section:{counts['eligible_without_single_debt_section']}",),
+            package, (), stats,
+        )
     stats["public_time_note"] = public_time.note
     return PublicAccessionResult(
         "parsed", (), package, tuple(observations), stats,
@@ -1985,6 +2056,8 @@ def accession_filings_from_result(
             record = json.loads(line)
             if record["sub_type"] not in PUBLIC_SUB_TYPES or not record["accession_valid"]:
                 continue
+            if record.get("quarantine_reasons"):  # incomplete lot set: never attest a partial accession
+                continue
             public = dera_public_time(
                 accession_number=record["accession_number"],
                 sub_type=record["sub_type"],
@@ -2073,7 +2146,7 @@ def resolve_accession_revisions(
     """
     if mode not in REVISION_MODES:
         raise NportError(f"revision_mode_invalid:{mode}")
-    cutoff = knowledge_cutoff.astimezone(dt.timezone.utc)
+    cutoff = _require_aware_utc(knowledge_cutoff, "knowledge_cutoff")
     by_accession: dict[str, list[AccessionFiling]] = defaultdict(list)
     late_copies: dict[str, set[str]] = defaultdict(set)
     late_only: dict[str, AccessionFiling] = {}
@@ -2531,7 +2604,7 @@ def build_consensus_states(
     cure; later Y corroborates. C.9.d is only ``arrears_or_legal_deferral_unknown`` and
     C.9.e/PIK never counts.
     """
-    cutoff = knowledge_cutoff.astimezone(dt.timezone.utc)
+    cutoff = _require_aware_utc(knowledge_cutoff, "knowledge_cutoff")
     families = {cik: _as_history(value) for cik, value in (family_evidence or {}).items()}
     for cik, history in families.items():
         if any(f.registrant_cik != cik for f in history):
@@ -2909,13 +2982,21 @@ def _source_fingerprint(source: NportSourceInput, *, max_scan_rows: int) -> tupl
         count = result.stats.get("eligible_rows_projected")
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise NportAdapterError("nport_source_projection_mismatch", result.package_label)
+        if result.projection_sha256 is None or result.accessions_sha256 is None:
+            # Legacy result without recorded artifact hashes: the projection is not bound to
+            # the pinned ZIP. Refuse; re-derive it with ``parse_dera_package`` (which records them).
+            raise NportAdapterError("nport_source_artifact_unbound", result.package_label)
+        projection_sha = sha256_file(result.projection_path)
+        accessions_sha = sha256_file(result.accessions_path)
+        if projection_sha != result.projection_sha256 or accessions_sha != result.accessions_sha256:
+            raise NportAdapterError("nport_source_artifact_hash_mismatch", result.package_label)
         return (
             "dera",
             package.row_sha256(),
             result.package_label,
             result.zip_sha256,
-            sha256_file(result.projection_path),
-            sha256_file(result.accessions_path),
+            projection_sha,
+            accessions_sha,
             count,
             headers,
             proof,
@@ -2929,6 +3010,8 @@ def _source_fingerprint(source: NportSourceInput, *, max_scan_rows: int) -> tupl
         or result.report_date is None
     ):
         raise NportAdapterError("nport_source_not_persistable", "public_accession")
+    if result.stats.get("eligible_without_single_debt_section"):
+        raise NportAdapterError("nport_source_not_persistable", "public_eligible_without_debt_section")
     if len(result.observations) > max_scan_rows or len(result.semantic_shas) > max_scan_rows:
         raise NportAdapterError("nport_inventory_limit_exceeded", "max_scan_rows")
     unique_observations: dict[uuid.UUID, CreditObservation] = {}

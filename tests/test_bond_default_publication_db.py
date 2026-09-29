@@ -526,6 +526,166 @@ def test_full_lifecycle_roundtrip(store, admin):
     assert _pointer(admin) == q.publication_id
 
 
+class _SpyCursor:
+    def __init__(self, cursor, batches, fail_at):
+        self._cursor, self._batches, self._fail_at = cursor, batches, fail_at
+
+    def __enter__(self):
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._cursor.__exit__(*exc)
+
+    def executemany(self, statement, params):
+        params = list(params)
+        self._batches.append(len(params))
+        if len(self._batches) == self._fail_at[0]:
+            raise RuntimeError("synthetic executemany failure")
+        return self._cursor.executemany(statement, params)
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+
+class _SpyConn:
+    """Delegating connection that records the size of every ``executemany`` batch."""
+
+    def __init__(self, conn):
+        self._conn, self.batches, self.named, self.fail_at = conn, [], 0, [None]
+        self.named_executed = []  # per named cursor: did DECLARE (execute) complete?
+
+    def cursor(self, *args, **kwargs):
+        cursor = self._conn.cursor(*args, **kwargs)
+        if kwargs.get("name"):
+            self.named += 1
+            return _NamedSpy(cursor, self.named_executed)
+        return _SpyCursor(cursor, self.batches, self.fail_at)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_prepare_and_reads_run_in_bounded_batches_with_identical_bytes(monkeypatch, admin, schema, login_roles):
+    monkeypatch.setattr(p, "_INSERT_BATCH_ROWS", 2)
+    monkeypatch.setattr(p, "_SELECT_ITERSIZE", 2)
+    spy = _SpyConn(admin)
+    store = p.PostgresPublicationStore(spy, schema)
+    q = syn.build_bundle()
+    assert p.prepare_bundle(store, q) == "inserted"
+    assert spy.batches and max(spy.batches) <= 2
+    assert sum(spy.batches) == sum(len(rows) for rows in q.frames.values())  # every row once, in order
+    assert p.validate_bundle(store, q.publication_id).lifecycle_state == "validated"  # streamed re-read
+    assert spy.named > 0
+    assert p.prepare_bundle(store, q) == "replayed"
+    assert store.read(q.publication_id).canonical_bytes() == q.canonical_bytes()
+    with _connect_as(login_roles["reader"], schema) as reader:
+        served = p.PostgresPublicationStore(reader, schema).read(q.publication_id)
+        assert served.canonical_bytes() == q.canonical_bytes()
+
+
+class _NamedSpy:
+    """Server-side cursor proxy recording whether ``execute`` (DECLARE) finished before an error."""
+
+    def __init__(self, cursor, executed):
+        self._cursor, self._executed = cursor, executed
+
+    def __enter__(self):
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._cursor.__exit__(*exc)
+
+    def execute(self, *args, **kwargs):
+        result = self._cursor.execute(*args, **kwargs)
+        self._executed.append(True)
+        return result
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+    def __setattr__(self, name, value):
+        if name in ("_cursor", "_executed"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._cursor, name, value)
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+
+def _assert_connection_clean(admin, store, publication_id):
+    """After a streamed-read/insert failure: no open transaction, no lingering cursor, still usable."""
+    assert admin.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert admin.execute("SELECT count(*) FROM pg_cursors").fetchone()[0] == 0
+    admin.rollback()
+    assert store.state(publication_id).publication_id == publication_id
+    assert admin.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+
+def test_streamed_read_failure_on_a_tampered_ratings_row_leaves_the_connection_clean(monkeypatch, admin, schema):
+    monkeypatch.setattr(p, "_SELECT_ITERSIZE", 2)
+    spy = _SpyConn(admin)
+    store = p.PostgresPublicationStore(spy, schema)
+    q = syn.build_bundle()
+    assert p.prepare_bundle(store, q) == "inserted"
+    ratings = p.TABLES["ratings"]
+    with admin.transaction():
+        # Superuser-only bypass of the immutability triggers, simulating out-of-band tampering.
+        admin.execute("SET LOCAL session_replication_role = replica")
+        admin.execute(
+            sql.SQL("UPDATE {} SET row_sha256 = repeat('0', 64) WHERE ctid = "
+                    "(SELECT ctid FROM {} WHERE publication_id = %s ORDER BY cusip_id, month LIMIT 1)").format(
+                sql.Identifier(ratings), sql.Identifier(ratings)), [q.publication_id])
+    assert len(q.frames["ratings"]) > 2  # the failing row is not in the first fetch batch's tail only
+    with pytest.raises(p.PublicationError, match="bond_credit_db:row_hash_mismatch"):
+        p.validate_bundle(store, q.publication_id)
+    assert spy.named > 0
+    _assert_connection_clean(admin, store, q.publication_id)
+    assert admin.execute(
+        "SELECT lifecycle_state FROM bond_credit_publications WHERE publication_id = %s", [q.publication_id]
+    ).fetchone()[0] == "prepared"
+    admin.rollback()
+
+
+def test_guarded_read_failing_on_the_first_fetch_is_handled_like_a_row_error(monkeypatch, admin, schema):
+    monkeypatch.setattr(p, "_SELECT_ITERSIZE", 2)
+    spy = _SpyConn(admin)
+    store = p.PostgresPublicationStore(spy, schema)
+    q = syn.build_bundle()
+    assert p.prepare_bundle(store, q) == "inserted"  # prepared, never validated: the guard refuses reads
+    spy.named = 0
+    spy.named_executed.clear()
+
+    def read_first_frame():
+        source = sql.SQL("{}(%s, %s)").format(store._fn("bond_credit_read_source_packages"))
+        return store._select_sorted("source_packages", sql.SQL("TRUE"), [q.publication_id, False], source=source)
+
+    with pytest.raises(p.PublicationError, match="bond_credit_read_publication:not_validated"):
+        store._run(read_first_frame)
+    # The plpgsql guard runs when the cursor is first fetched: DECLARE had already succeeded.
+    assert spy.named == 1 and spy.named_executed == [True]
+    _assert_connection_clean(admin, store, q.publication_id)
+
+
+def test_batched_insert_failure_rolls_back_every_table(monkeypatch, admin, schema):
+    monkeypatch.setattr(p, "_INSERT_BATCH_ROWS", 1)
+    spy = _SpyConn(admin)
+    spy.fail_at[0] = 3
+    store = p.PostgresPublicationStore(spy, schema)
+    q = syn.build_bundle()
+    with pytest.raises(RuntimeError, match="synthetic executemany failure"):
+        p.prepare_bundle(store, q)
+    assert spy.batches == [1, 1, 1]  # two batches executed, the third failed
+    assert admin.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    for table in (*p.TABLES.values(), "bond_credit_publications"):
+        count = admin.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))).fetchone()[0]
+        assert count == 0, table
+    admin.rollback()
+    spy.fail_at[0] = None
+    assert p.prepare_bundle(store, q) == "inserted"  # the same connection and bundle prepare cleanly afterwards
+
 def test_exact_replay_noop_and_collision_with_different_bytes(store, admin):
     q = syn.build_bundle()
     assert p.prepare_bundle(store, q) == "inserted"
