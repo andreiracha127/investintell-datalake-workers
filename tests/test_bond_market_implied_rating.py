@@ -402,7 +402,8 @@ def test_policy_anchor_pin_uses_only_absolute_tolerance(
     level = pd.Series([resolved], index=pd.to_datetime(["2026-08-01"]))
     monkeypatch.setitem(ir.POLICY["market_level"]["anchor"], "l_anchor", str(resolved + offset))
     if reproduced:
-        assert ir.market_anchor(level) == resolved
+        # A tolerance match returns the policy pin, never the local float.
+        assert ir.market_anchor(level) == float(str(resolved + offset))
     else:
         with pytest.raises(ir.AnchorNotReproduced, match="new calibration round"):
             ir.market_anchor(level)

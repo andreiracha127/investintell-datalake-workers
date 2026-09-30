@@ -360,7 +360,10 @@ def market_anchor(
             f"policy l_anchor {float(pinned)!r} is not reproduced by the closed "
             f"history ({resolved!r}); a new calibration round is required"
         )
-    return resolved
+    # Within tolerance the declared pin, not the locally resolved float, is the
+    # anchor: identical policy/input/revision builds must not depend on the
+    # environment's float path.
+    return resolved if pinned is None else float(pinned)
 
 
 # --------------------------------------------------------------------------- #
