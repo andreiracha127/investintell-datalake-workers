@@ -265,16 +265,21 @@ def normalized_spread(snapshot: pd.DataFrame) -> pd.Series:
     return series.where(witness_mask(snapshot))
 
 
-def market_level(spread_norm: pd.DataFrame) -> pd.Series:
-    """Chained market level ``L_t`` from the median of intersection deltas.
+def market_level(
+    spread_norm: pd.DataFrame, *, end: date | pd.Timestamp | str | None = None
+) -> pd.Series:
+    """Calendar-indexed market level, bridging months with no witnesses.
 
-    ``L_t = L_{t-1} + median_{i in W_t & W_{t-1}} (s_i,t - s_i,t-1)``
+    For non-empty ``W_t``, ``L_t = L_ref + median_{i in W_t & W_ref}(s_i,t - s_i,ref)``;
+    ``ref`` is the most recent prior month with a non-empty witness set. An
+    empty intersection contributes delta 0, and each witnessed month becomes
+    the next reference. The first witnessed month's level is 0.0.
 
-    ``spread_norm`` carries the witnessed rows (``cusip_id``, ``month``,
-    ``spread_norm_log``). Months with an empty intersection keep the previous
-    level (delta 0): the chain never invents a move it did not observe. The
-    first month is 0.0 by construction; a single-month input returns a
-    single-point series.
+    ``spread_norm`` carries ``cusip_id``, ``month``, ``spread_norm_log``. The
+    series spans every month start from the first witnessed month through
+    ``end`` (the last witnessed month when omitted). Dark months are NaN and
+    do not advance the reference: anchors use only observed levels, while
+    publication and score neutralization use the forward-filled level.
     """
     frame = spread_norm.loc[
         spread_norm["spread_norm_log"].notna(), ["cusip_id", "month", "spread_norm_log"]
@@ -283,7 +288,7 @@ def market_level(spread_norm: pd.DataFrame) -> pd.Series:
     frame["spread_norm_log"] = pd.to_numeric(frame["spread_norm_log"], errors="coerce")
     months = pd.DatetimeIndex(sorted(frame["month"].unique()))
     level = pd.Series(0.0, index=months, dtype="float64")
-    if len(months) <= 1:
+    if len(months) == 0:
         return level
     delta = pd.Series(0.0, index=months, dtype="float64")
     for position in range(1, len(months)):
@@ -299,7 +304,11 @@ def market_level(spread_norm: pd.DataFrame) -> pd.Series:
         delta.iloc[position] = float(
             (common["spread_norm_log_curr"] - common["spread_norm_log_prev"]).median()
         )
-    return (level + delta.cumsum()).astype("float64")
+    level = (level + delta.cumsum()).astype("float64")
+    calendar = pd.date_range(
+        start=months[0], end=months[-1] if end is None else pd.Timestamp(end), freq="MS"
+    )
+    return level.reindex(calendar)
 
 
 class AnchorWindowEmpty(ValueError):
@@ -324,14 +333,15 @@ def market_anchor(
     """Median of ``L`` over the frozen calibration window.
 
     The window is ``[window_end - (window_months - 1), window_end]`` inclusive,
-    over the months the level series actually carries. A window with no
-    observation raises: an unanchored chain would silently move every bucket.
+    over months with a non-empty witness set; dark months are excluded. A
+    window with no observation raises: an unanchored chain would silently move
+    every bucket.
     """
     anchor_policy = POLICY["market_level"]["anchor"]
     end = pd.Timestamp(window_end_month or anchor_policy["window_end_month"]).normalize()
     count = int(window_months or int(anchor_policy["window_months"]))
     start = pd.Timestamp(end - pd.DateOffset(months=count - 1)).normalize()
-    window = level.loc[(level.index >= start) & (level.index <= end)]
+    window = level.loc[(level.index >= start) & (level.index <= end)].dropna()
     if window.empty:
         raise AnchorWindowEmpty(
             f"calibration window {start.date().isoformat()}..{end.date().isoformat()} "
@@ -609,6 +619,7 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
                         spell_seq += 1
                         state.reset(spell_id=spell_seq, spell_start=index)
                     state.confirmed = True
+                    state.bucket = "D"
                     state.cure_streak = 0
                     state.event_month = months[confirmation]
                     state.event_price = (
@@ -721,13 +732,17 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
                     "censoring": "none",
                 })
             continue
-        if state.carry == 0 and last_witnessed_index is not None:
-            # First month without observation after a witnessed one: the
-            # terminal classification of this disappearance is decided here.
-            if source_exit_after(last_witnessed_index):
-                rows[last_witnessed_row]["censoring"] = "source_exit"
-                state.reset(spell_id=0, spell_start=index + 1)
-                continue
+        # The first dark month classifies disappearance only for non-confirmed
+        # spells. An uncured D carries to default_absorbing instead.
+        if (
+            not state.confirmed
+            and state.carry == 0
+            and last_witnessed_index is not None
+            and source_exit_after(last_witnessed_index)
+        ):
+            rows[last_witnessed_row]["censoring"] = "source_exit"
+            state.reset(spell_id=0, spell_start=index + 1)
+            continue
         state.carry += 1
         if state.confirmed:
             if state.carry > k:
@@ -831,7 +846,8 @@ def market_anchor_for_snapshot(
     """
     frame = _closed_frame(snapshot, last_closed_month=last_closed_month)
     level = market_level(
-        frame.loc[frame["witnessed"], ["cusip_id", "month", "spread_norm_log"]]
+        frame.loc[frame["witnessed"], ["cusip_id", "month", "spread_norm_log"]],
+        end=last_closed_month,
     )
     return market_anchor(
         level, window_end_month=window_end_month, window_months=window_months
@@ -865,9 +881,11 @@ def build_publication_rows(
         return pd.DataFrame(columns=[*PUBLICATION_COLUMNS])
     end = pd.Timestamp(last_closed_month).normalize()
     level = market_level(
-        frame.loc[frame["witnessed"], ["cusip_id", "month", "spread_norm_log"]]
+        frame.loc[frame["witnessed"], ["cusip_id", "month", "spread_norm_log"]],
+        end=last_closed_month,
     )
     resolved_anchor = market_anchor(level) if l_anchor is None else float(l_anchor)
+    level = level.ffill()
     beta = _policy_float("market_level", "beta")
 
     outputs: list[dict[str, Any]] = []

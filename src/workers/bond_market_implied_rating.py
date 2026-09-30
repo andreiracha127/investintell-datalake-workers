@@ -15,7 +15,7 @@ FULL REBUILD. The machine needs the whole history (the level chain is
 cumulative, carry-forward and hysteresis are path-dependent), so every
 publication rewrites every closed month and the pointer flip is the only
 "delta". ``BOND_IMPLIED_RATING_FORCE_REPUBLISH=1`` bypasses the
-``(policy_digest, panel_last_closed_month)`` short-circuit; the pointer CAS
+exact panel, policy and code identity short-circuit; the pointer CAS
 still refuses a stale predecessor.
 
 IDENTITY. ``uuid5(product | policy_version | policy_digest | code_revision |
@@ -133,22 +133,76 @@ def _current_pointer(conn: psycopg.Connection) -> str | None:
     return None if row is None else str(row[0])
 
 
-def _already_current(
-    conn: psycopg.Connection, *, panel_last_closed_month: date, pointer: str | None
-) -> str | None:
-    """The validated publication for this policy + panel month, if the pointer is on it."""
-    if pointer is None:
+def _pointer_build(conn: psycopg.Connection, pointer: str) -> dict[str, Any] | None:
+    """Read only the build owned by the product's current pointer."""
+    if not _relation_exists(conn, f"{PRODUCT}_builds"):
         return None
     row = conn.execute(
-        f"SELECT b.publication_id::text FROM {PRODUCT}_builds b "
+        "SELECT b.publication_id::text, b.panel_publication_id::text, b.policy_digest, "
+        "b.code_revision, b.panel_last_closed_month, s.lifecycle_state, b.input_fingerprint "
+        f"FROM {PRODUCT}_builds b "
         "JOIN sec_derived_publications s USING (publication_id) "
-        "WHERE b.policy_digest = %s AND b.panel_last_closed_month = %s "
-        "AND s.lifecycle_state = 'validated'",
-        (policy.POLICY_DIGEST, panel_last_closed_month),
+        "WHERE b.publication_id = %s",
+        (pointer,),
     ).fetchone()
-    if row is not None and str(row[0]) == pointer:
-        return str(row[0])
-    return None
+    if row is None:
+        return None
+    return {
+        "publication_id": str(row[0]),
+        "panel_publication_id": str(row[1]),
+        "policy_digest": row[2],
+        "code_revision": row[3],
+        "panel_last_closed_month": row[4],
+        "lifecycle_state": row[5],
+        "input_fingerprint": row[6],
+    }
+
+
+def _currentness_mismatch(
+    build: dict[str, Any] | None, *, parent: dict[str, Any], revision: str
+) -> list[str]:
+    """Identity inputs available before reading the closed snapshot, in gate order."""
+    if build is None:
+        return ["pointer_build_absent"]
+    return [
+        reason
+        for mismatch, reason in (
+            (build["lifecycle_state"] != "validated", "pointer_not_validated"),
+            (build["panel_publication_id"] != parent["publication_id"], "panel_publication_changed"),
+            (build["panel_last_closed_month"] != parent["last_closed_month"], "panel_month_changed"),
+            (build["policy_digest"] != policy.POLICY_DIGEST, "policy_digest_changed"),
+            (build["code_revision"] != revision, "code_revision_changed"),
+        )
+        if mismatch
+    ]
+
+
+def _currentness(
+    conn: psycopg.Connection, *, parent: dict[str, Any], revision: str, pointer: str | None
+) -> tuple[str | None, list[str]]:
+    if pointer is None:
+        return None, []
+    reasons = _currentness_mismatch(_pointer_build(conn, pointer), parent=parent, revision=revision)
+    if reasons:
+        LOGGER.info("bond_market_implied_rating_v1 pointer %s not current: %s", pointer, reasons)
+        return None, reasons
+    return pointer, []
+
+
+def _already_current(
+    conn: psycopg.Connection, *, parent: dict[str, Any], revision: str, pointer: str | None
+) -> str | None:
+    """The pointer's own validated build, only if all pre-read identity inputs match."""
+    return _currentness(conn, parent=parent, revision=revision, pointer=pointer)[0]
+
+
+def _mirror_serves_panel(conn: psycopg.Connection, *, parent: dict[str, Any]) -> bool:
+    row = conn.execute(
+        f"SELECT EXISTS (SELECT 1 FROM {SNAPSHOT_MATVIEW} "
+        "WHERE month >= %s AND publication_id = %s)",
+        (parent["last_closed_month"], parent["publication_id"]),
+    ).fetchone()
+    return bool(row and row[0])
 
 
 def _failure(
@@ -185,18 +239,12 @@ def _read_snapshot(
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
-def _build_payload(
-    conn: psycopg.Connection, *, parent: dict[str, Any], revision: str, started: float
+def _read_snapshot_inputs(
+    conn: psycopg.Connection, *, parent: dict[str, Any], started: float
 ) -> dict[str, Any]:
-    """Read the closed snapshot and build the publication payload (no writes).
-
-    Returns ``{"failure": <typed dict>}`` when the read cannot produce a build,
-    or ``{"publication", "rows", "last_closed_month", "input_fingerprint",
-    "rows_digest", "d_confirmed_count", "d_candidate_count", "l_anchor", "bucket_counts"}``.
-    """
-    last_closed_month = parent["last_closed_month"]
+    """One read and one canonical fingerprint for both convergence and rebuild."""
     try:
-        snapshot = _read_snapshot(conn, last_closed_month=last_closed_month)
+        snapshot = _read_snapshot(conn, last_closed_month=parent["last_closed_month"])
     except psycopg.Error as exc:
         return {"failure": _failure(
             "implied_rating_gate_failed",
@@ -211,7 +259,54 @@ def _build_payload(
             input_reasons=["snapshot_empty"],
             panel_publication_id=parent["publication_id"],
         )}
-    input_fingerprint = policy.snapshot_fingerprint(snapshot)
+    return {"snapshot": snapshot, "input_fingerprint": policy.snapshot_fingerprint(snapshot)}
+
+
+def _panel_inputs_current(
+    conn: psycopg.Connection, *, parent: dict[str, Any], revision: str,
+    pointer: str, started: float
+) -> dict[str, Any]:
+    """A new panel pointer can serve the same immutable implied publication."""
+    inputs = _read_snapshot_inputs(conn, parent=parent, started=started)
+    if "failure" in inputs:
+        return inputs
+    build = _pointer_build(conn, pointer)
+    if build is not None and inputs["input_fingerprint"] == build["input_fingerprint"]:
+        return {"current": {
+            "state": "current",
+            "aborted": False,
+            "reason": "panel_inputs_unchanged",
+            "publication_id": pointer,
+            "panel_publication_id": parent["publication_id"],
+            "build_panel_publication_id": build["panel_publication_id"],
+            "panel_last_closed_month": parent["last_closed_month"].isoformat(),
+            "input_fingerprint": inputs["input_fingerprint"],
+            "code_revision": revision,
+            "policy_digest": policy.POLICY_DIGEST,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }}
+    return inputs
+
+
+def _build_payload(
+    conn: psycopg.Connection, *, parent: dict[str, Any], revision: str, started: float,
+    snapshot_inputs: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Read the closed snapshot and build the publication payload (no writes).
+
+    Returns ``{"failure": <typed dict>}`` when the read cannot produce a build,
+    or ``{"publication", "rows", "last_closed_month", "input_fingerprint",
+    "rows_digest", "d_confirmed_count", "d_candidate_count", "l_anchor", "bucket_counts"}``.
+    """
+    inputs = (
+        _read_snapshot_inputs(conn, parent=parent, started=started)
+        if snapshot_inputs is None else snapshot_inputs
+    )
+    if "failure" in inputs:
+        return inputs
+    snapshot = inputs["snapshot"]
+    input_fingerprint = inputs["input_fingerprint"]
+    last_closed_month = parent["last_closed_month"]
     try:
         l_anchor = policy.market_anchor_for_snapshot(
             snapshot, last_closed_month=last_closed_month
@@ -315,6 +410,13 @@ def _gates(conn: psycopg.Connection, *, started: float) -> dict[str, Any]:
             elapsed=time.monotonic() - started,
             input_reasons=["panel_no_parent"],
         )}
+    if not _mirror_serves_panel(conn, parent=parent):
+        return {"failure": _failure(
+            "implied_rating_gate_failed",
+            elapsed=time.monotonic() - started,
+            input_reasons=["snapshot_mirror_stale"],
+            panel_publication_id=parent["publication_id"],
+        )}
     return {"parent": parent, "pointer": _current_pointer(conn)}
 
 
@@ -334,13 +436,27 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
             gates = _gates(conn, started=started)
             if "failure" in gates:
                 return gates["failure"]
+            parent = gates["parent"]
+            pointer = gates["pointer"]
+            _, rebuild_reasons = _currentness(
+                conn, parent=parent, revision=revision, pointer=pointer
+            )
+            payload_kwargs: dict[str, Any] = {}
+            if not _force_republish_requested() and rebuild_reasons == ["panel_publication_changed"]:
+                inputs = _panel_inputs_current(
+                    conn, parent=parent, revision=revision, pointer=pointer, started=started
+                )
+                if "failure" in inputs:
+                    return inputs["failure"]
+                if "current" in inputs:
+                    return inputs["current"]
+                payload_kwargs["snapshot_inputs"] = inputs
             prepared = _build_payload(
-                conn, parent=gates["parent"], revision=revision, started=started
+                conn, parent=parent, revision=revision, started=started, **payload_kwargs
             )
             if "failure" in prepared:
                 return prepared["failure"]
             publication: ImpliedRatingPublication = prepared["publication"]
-            pointer = gates["pointer"]
             previous_anchor = (
                 current_pinned_anchor(conn)
                 if _relation_exists(conn, f"{PRODUCT}_builds")
@@ -411,28 +527,36 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 return gates["failure"]
             parent = gates["parent"]
             pointer = gates["pointer"]
-            if not force_republish:
-                # The short-circuit runs BEFORE the rebuild: a daily hook that
-                # sees the same closed panel month must not rebuild 3M rows.
-                current = _already_current(
-                    conn,
-                    panel_last_closed_month=parent["last_closed_month"],
-                    pointer=pointer,
+            current, rebuild_reasons = _currentness(
+                conn, parent=parent, revision=revision, pointer=pointer
+            )
+            # The short-circuit runs BEFORE the rebuild: a daily hook that
+            # sees the same panel, policy and code must not rebuild 3M rows.
+            if not force_republish and current is not None:
+                return {
+                    "state": "current",
+                    "aborted": False,
+                    "reason": "implied_rating_already_current",
+                    "publication_id": current,
+                    "panel_publication_id": parent["publication_id"],
+                    "panel_last_closed_month": parent["last_closed_month"].isoformat(),
+                    "policy_digest": policy.POLICY_DIGEST,
+                    "code_revision": revision,
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                }
+            payload_kwargs: dict[str, Any] = {}
+            if not force_republish and rebuild_reasons == ["panel_publication_changed"]:
+                inputs = _panel_inputs_current(
+                    conn, parent=parent, revision=revision, pointer=pointer, started=started
                 )
-                if current is not None:
-                    return {
-                        "state": "current",
-                        "aborted": False,
-                        "reason": "implied_rating_already_current",
-                        "publication_id": current,
-                        "panel_publication_id": parent["publication_id"],
-                        "panel_last_closed_month": parent["last_closed_month"].isoformat(),
-                        "policy_digest": policy.POLICY_DIGEST,
-                        "elapsed_seconds": round(time.monotonic() - started, 3),
-                    }
+                if "failure" in inputs:
+                    return inputs["failure"]
+                if "current" in inputs:
+                    return inputs["current"]
+                payload_kwargs["snapshot_inputs"] = inputs
             install_schema(conn)
             prepared = _build_payload(
-                conn, parent=parent, revision=revision, started=started
+                conn, parent=parent, revision=revision, started=started, **payload_kwargs
             )
             if "failure" in prepared:
                 return prepared["failure"]
@@ -453,6 +577,12 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
             result = materialize(
                 conn, publication, prepared["rows"], expected_pointer=pointer
             )
+            build_parent_id = publication.panel_publication_id
+            if result.reused:
+                persisted_build = _pointer_build(conn, result.publication_id)
+                if persisted_build is None:
+                    raise BondError("build_pin_mismatch", {"publication_id": result.publication_id})
+                build_parent_id = persisted_build["panel_publication_id"]
             if prepared["d_confirmed_count"] == 0:
                 # Publish anyway (a young or quiet history is not an error), but
                 # the caller must be able to see that the producer's positive
@@ -466,7 +596,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 "state": "published_no_defaults" if prepared["d_confirmed_count"] == 0 else "published",
                 "aborted": False,
                 "publication_id": result.publication_id,
-                "panel_publication_id": publication.panel_publication_id,
+                "panel_publication_id": build_parent_id,
                 "panel_last_closed_month": publication.panel_last_closed_month.isoformat(),
                 "policy_version": policy.POLICY_VERSION,
                 "policy_digest": policy.POLICY_DIGEST,
@@ -479,6 +609,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 "l_anchor": prepared["l_anchor"],
                 "bucket_counts": prepared["bucket_counts"],
                 "reused_publication": result.reused,
+                "rebuild_reasons": rebuild_reasons,
                 "build_fingerprint": build_fingerprint(
                     policy.POLICY_DIGEST, publication.code_revision,
                     prepared["input_fingerprint"],

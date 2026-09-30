@@ -29,8 +29,8 @@ import pytest
 from src.bonds import implied_rating as ir
 from src.bonds.errors import BondError
 from src.bonds.implied_rating_materializer import (
-    InMemoryPublicationStore,
     ImpliedRatingPublication,
+    InMemoryPublicationStore,
     build_fingerprint,
     publication_id_for,
 )
@@ -146,6 +146,9 @@ def test_policy_digest_is_canonical_and_stable() -> None:
         ).encode("utf-8")
     ).hexdigest()
     assert ir.POLICY_DIGEST == recomputed
+    assert ir.POLICY_DIGEST == (
+        "28f70b9bd8f617fedf6104deb86cd518d43307e88b3bbd1fcf53aa1fae869a3b"
+    )
     assert len(ir.POLICY_DIGEST) == 64
     assert set(ir.POLICY_DIGEST) <= set("0123456789abcdef")
     # The declaration freezes the digest BEFORE the round runs: the document and
@@ -248,6 +251,114 @@ def test_market_level_keeps_the_previous_level_when_nothing_is_shared() -> None:
     )
     level = ir.market_level(spread_norm)
     assert level.iloc[1] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("end", [MONTHS[5], MONTHS[5].date(), "2025-06-01"])
+def test_market_level_bridges_dark_calendar_months(end) -> None:
+    months = MONTHS[:6]
+    scores = {
+        "A": [4.0, 4.1, None, 4.3, None, None],
+        "B": [5.0, 5.1, None, 5.5, None, None],
+        "C": [3.0, 3.2, None, 3.6, None, None],
+    }
+    spread_norm = pd.DataFrame([
+        {"cusip_id": cusip, "month": month, "spread_norm_log": value}
+        for cusip, values in scores.items()
+        for month, value in zip(months, values, strict=True)
+    ])
+    level = ir.market_level(spread_norm, end=end)
+    pd.testing.assert_index_equal(level.index, months)
+    assert level.iloc[[0, 1, 3]].to_numpy() == pytest.approx([0.0, 0.1, 0.5])
+    assert level.iloc[[2, 4, 5]].isna().all()
+    assert level.ffill().to_numpy() == pytest.approx([0.0, 0.1, 0.1, 0.5, 0.5, 0.5])
+    assert ir.market_anchor(
+        level, window_end_month="2025-06-01", window_months=6
+    ) == pytest.approx(0.1)
+    assert ir.market_level(spread_norm).index.tolist() == list(months[:4])
+
+    panel = pd.DataFrame([
+        row
+        for cusip, values in scores.items()
+        for row in bond_rows(
+            cusip, [math.exp(value) if value is not None else 100.0 for value in values],
+            months=months,
+        )
+    ])
+    panel.loc[panel["month"].isin(months[[2, 4, 5]]), "trade_count"] = 0
+    rows = build(panel, months=months)
+    for cusip in scores:
+        published = slice_of(rows, cusip)
+        assert published["market_level_l"].to_numpy() == pytest.approx(
+            [0.0, 0.1, 0.1, 0.5, 0.5, 0.5]
+        )
+        assert_ddl_invariants(published)
+    assert ir.market_anchor_for_snapshot(
+        panel, last_closed_month=end, window_end_month="2025-06-01", window_months=6
+    ) == pytest.approx(0.1)
+
+
+def test_market_level_preserves_observed_chain_and_buckets_with_a_dark_tail() -> None:
+    months = MONTHS[:6]
+    scores = {"A": [4.0, 4.1, 4.3], "B": [5.0, 5.1, 5.5], "C": [3.0, 3.2, 3.6]}
+    panel = pd.DataFrame([
+        row
+        for cusip, values in scores.items()
+        for row in (
+            bond_rows(cusip, [math.exp(value) for value in values], months=months[:3])
+            + bond_rows(cusip, [100.0] * 3, months=months[3:], trade_count=0)
+        )
+    ])
+    witnessed = ir.witness_mask(panel)
+    spread_norm = panel.loc[witnessed, ["cusip_id", "month"]].assign(
+        spread_norm_log=ir.normalized_spread(panel)[witnessed].to_numpy()
+    )
+    level = ir.market_level(spread_norm, end=months[-1])
+    assert level.iloc[:3].to_numpy() == pytest.approx([0.0, 0.1, 0.5])
+    pd.testing.assert_series_equal(level.iloc[:3], ir.market_level(spread_norm))
+    assert level.iloc[3:].isna().all()
+    rows = build(panel, months=months)
+    observed_rows = build(panel, months=months[:3])
+    pd.testing.assert_frame_equal(
+        rows.loc[rows["month"].le(months[2])].reset_index(drop=True), observed_rows
+    )
+    for cusip, bucket in {"A": "AAA", "B": "BBB", "C": "AAA"}.items():
+        published = slice_of(rows, cusip)
+        assert published["implied_bucket"].tolist() == [bucket] * 6
+        assert published["market_level_l"].to_numpy() == pytest.approx(
+            [0.0, 0.1, 0.5, 0.5, 0.5, 0.5]
+        )
+        assert_ddl_invariants(published)
+
+
+def test_market_level_is_null_before_the_first_witness() -> None:
+    months = MONTHS[:4]
+    frame = pd.DataFrame(
+        bond_rows("X", [300.0] * 2, months=months[:2], trade_count=0)
+        + bond_rows("X", [300.0] * 2, months=months[2:])
+    )
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["implied_bucket"].tolist() == ["NOT_RATED", "NOT_RATED", "BB", "BB"]
+    assert rows["market_level_l"].iloc[:2].isna().all()
+    assert rows["market_level_l"].iloc[2:].to_numpy() == pytest.approx([0.0, 0.0])
+    assert_ddl_invariants(rows)
+
+
+def test_market_anchor_rejects_a_window_of_only_dark_months() -> None:
+    months = MONTHS[:6]
+    frame = pd.DataFrame(bond_rows("X", [100.0, 200.0], months=months[:2]))
+    spread_norm = frame.loc[:, ["cusip_id", "month"]].assign(
+        spread_norm_log=ir.normalized_spread(frame).to_numpy()
+    )
+    level = ir.market_level(spread_norm, end=months[-1])
+    assert level.iloc[2:].isna().all()
+    assert level.ffill().iloc[2:].notna().all()
+    with pytest.raises(ir.AnchorWindowEmpty, match="no market-level observation"):
+        ir.market_anchor(level, window_end_month="2025-06-01", window_months=4)
+    with pytest.raises(ir.AnchorWindowEmpty, match="no market-level observation"):
+        ir.market_anchor_for_snapshot(
+            frame, last_closed_month=months[-1],
+            window_end_month="2025-06-01", window_months=4,
+        )
 
 
 def test_market_anchor_is_the_window_median_and_rejects_an_empty_window() -> None:
@@ -601,6 +712,128 @@ def test_default_rows_carry_then_withdraw_with_default_absorbing() -> None:
     assert_ddl_invariants(rows)
 
 
+def test_first_row_standalone_default_carries_d_and_is_point_in_time() -> None:
+    months = MONTHS[:6]
+    frame = pd.DataFrame(
+        market_fillers(months=months)
+        + bond_rows("X", [1500.0], months=months[:1], prices=[30.0])
+        + bond_rows("X", [1500.0] * 5, months=months[1:], trade_count=0)
+    )
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["implied_bucket"].tolist() == ["D"] * 4 + ["WITHDRAWN", "NOT_RATED"]
+    assert rows["witnessed"].tolist() == [True] + [False] * 5
+    assert rows["carry_months"].tolist() == [0, 1, 2, 3, 4, 0]
+    assert rows["spell_id"].tolist() == [1, 1, 1, 1, 1, 2]
+    assert rows["d_confirmed"].tolist() == [True] * 4 + [False, False]
+    assert not rows["d_candidate"].any()
+    assert rows["d_event_month"].iloc[:4].tolist() == [months[0].date()] * 4
+    assert rows["recovery_observed"].iloc[:4].to_numpy() == pytest.approx([30.0] * 4)
+    assert rows["censoring"].tolist() == ["none"] * 4 + ["default_absorbing", "none"]
+    truncated = slice_of(build(frame, months=months[:4]), "X")
+    pd.testing.assert_frame_equal(rows.iloc[:4].reset_index(drop=True), truncated)
+    assert_ddl_invariants(rows)
+
+
+def test_standalone_default_carry_is_invariant_to_confirmation_position() -> None:
+    months = MONTHS[:7]
+    first_row = pd.DataFrame(
+        market_fillers(months=months[:6])
+        + bond_rows("X", [1500.0], months=months[:1], prices=[30.0])
+        + bond_rows("X", [1500.0] * 5, months=months[1:6], trade_count=0)
+    )
+    mid_spell = pd.DataFrame(
+        market_fillers(months=months)
+        + bond_rows("X", [300.0, 1500.0], months=months[:2], prices=[95.0, 30.0])
+        + bond_rows("X", [1500.0] * 5, months=months[2:], trade_count=0)
+    )
+    expected = slice_of(build(first_row, months=months[:6]), "X")
+    expected["month"] += pd.DateOffset(months=1)
+    expected["d_event_month"] = expected["d_event_month"].map(
+        lambda value: (pd.Timestamp(value) + pd.DateOffset(months=1)).date()
+        if pd.notna(value) else None
+    )
+    actual = slice_of(build(mid_spell, months=months), "X").iloc[1:].reset_index(drop=True)
+    pd.testing.assert_frame_equal(actual, expected)
+    assert actual["spell_id"].iloc[:5].tolist() == [1] * 5
+    assert_ddl_invariants(actual)
+
+
+def test_dual_confirmation_then_disappearance_carries_d() -> None:
+    months = MONTHS[:6]
+    frame = pd.DataFrame(
+        market_fillers(months=months)
+        + bond_rows("X", [2500.0] * 2, months=months[:2], prices=[45.0, 45.0])
+        + bond_rows("X", [2500.0] * 4, months=months[2:], trade_count=0)
+    )
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["implied_bucket"].tolist() == ["CCC"] + ["D"] * 4 + ["WITHDRAWN"]
+    assert rows["carry_months"].tolist() == [0, 0, 1, 2, 3, 4]
+    assert rows["spell_id"].tolist() == [1] * 6
+    assert rows["d_confirmed"].tolist() == [False] + [True] * 4 + [False]
+    assert rows["d_event_month"].iloc[1:5].tolist() == [months[0].date()] * 4
+    assert rows["recovery_observed"].iloc[1:5].to_numpy() == pytest.approx([45.0] * 4)
+    assert rows["censoring"].tolist() == ["none"] * 5 + ["default_absorbing"]
+    assert_ddl_invariants(rows)
+
+
+def test_uncured_default_with_par_prints_does_not_source_exit() -> None:
+    months = MONTHS[:7]
+    frame = pd.DataFrame(
+        market_fillers(months=months)
+        + bond_rows("X", [1500.0] * 3, months=months[:3], prices=[30.0, 98.0, 98.0])
+        + bond_rows("X", [1500.0] * 4, months=months[3:], trade_count=0)
+        + bond_rows("BENIGN", [300.0] * 2, months=months[:2], prices=[95.0, 98.0])
+    )
+    publication = build(frame, months=months)
+    rows = slice_of(publication, "X")
+    assert rows["implied_bucket"].tolist() == ["D"] * 6 + ["WITHDRAWN"]
+    assert rows["carry_months"].tolist() == [0, 0, 0, 1, 2, 3, 4]
+    assert rows["censoring"].tolist() == ["none"] * 6 + ["default_absorbing"]
+    assert rows["spell_id"].tolist() == [1] * 7
+    benign = slice_of(publication, "BENIGN")
+    assert benign["month"].tolist() == list(months[:2])
+    assert benign["implied_bucket"].tolist() == ["BB", "BB"]
+    assert benign["censoring"].tolist() == ["none", "source_exit"]
+    assert_ddl_invariants(publication)
+
+
+def test_uncured_default_near_maturity_does_not_source_exit() -> None:
+    months = MONTHS[:5]
+    frame = pd.DataFrame(
+        market_fillers(months=months)
+        + bond_rows(
+            "X", [1500.0], months=months[:1], prices=[30.0], maturity=months[1].date()
+        )
+        + bond_rows(
+            "X", [1500.0] * 4, months=months[1:], trade_count=0,
+            maturity=months[1].date(),
+        )
+    )
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["implied_bucket"].tolist() == ["D"] * 4 + ["WITHDRAWN"]
+    assert rows["carry_months"].tolist() == [0, 1, 2, 3, 4]
+    assert rows["censoring"].tolist() == ["none"] * 4 + ["default_absorbing"]
+    assert rows["spell_id"].tolist() == [1] * 5
+    assert_ddl_invariants(rows)
+
+
+def test_source_exit_precedence_returns_after_a_completed_cure() -> None:
+    months = MONTHS[:7]
+    frame = pd.DataFrame(
+        market_fillers(months=months)
+        + bond_rows("X", [300.0] * 4, months=months[:4], prices=[30.0, 98.0, 98.0, 98.0])
+        + bond_rows("X", [300.0] * 3, months=months[4:], trade_count=0)
+    )
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["implied_bucket"].tolist() == ["D", "D", "D", "BB", "NOT_RATED", "NOT_RATED"]
+    assert rows["month"].tolist() == list(months[:4]) + list(months[5:])
+    assert rows["spell_id"].tolist() == [1, 1, 1, 2, 3, 3]
+    assert rows["carry_months"].tolist() == [0] * 6
+    assert rows["d_confirmed"].tolist() == [True] * 3 + [False] * 3
+    assert rows["censoring"].tolist() == ["none"] * 3 + ["source_exit", "none", "none"]
+    assert_ddl_invariants(rows)
+
+
 def test_default_event_dates_at_the_candidate_with_the_prior_month_as_origin() -> None:
     months = MONTHS[:5]
     frame = pd.DataFrame(market_fillers(months=months) + bond_rows(
@@ -892,8 +1125,9 @@ def _patch_worker(monkeypatch, *, panel=None, pointer=None, current=None, snapsh
     monkeypatch.setattr(worker, "install_schema", lambda _conn: None)
     monkeypatch.setattr(worker, "_relation_exists", lambda _conn, name: (relations or {}).get(name, True))
     monkeypatch.setattr(worker, "_current_panel", lambda _conn: panel)
+    monkeypatch.setattr(worker, "_mirror_serves_panel", lambda _conn, **kwargs: True)
     monkeypatch.setattr(worker, "_current_pointer", lambda _conn: pointer)
-    monkeypatch.setattr(worker, "_already_current", lambda _conn, **kwargs: current)
+    monkeypatch.setattr(worker, "_currentness", lambda _conn, **kwargs: (current, []))
     monkeypatch.setattr(worker, "_read_snapshot", lambda _conn, **kwargs: snapshot)
     monkeypatch.setattr(worker, "current_pinned_anchor", lambda _conn: anchor)
     monkeypatch.setenv("CODE_REVISION", "test-rev")

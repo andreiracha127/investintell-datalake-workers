@@ -361,7 +361,19 @@ def test_checked_in_contract_binds_verified_identity_receipt() -> None:
     assert receipt["materializer_module_sha256"] == _sha(
         ROOT / "src" / "bonds" / "implied_rating_materializer.py"
     )
-    assert loader._verify_sources(contract)
+    # The producer pin is deliberately NOT re-pinned when the runtime policy module
+    # diverges from the round-002 producer: the loader must stay verifiable from its
+    # release commit (a1b06f1) and fail closed on any other checkout.
+    checkout_is_frozen_release = all(
+        _sha(ROOT / pin.relative_path) in pin.accepted_runtime_sha256
+        for pin in contract.sources
+    )
+    if checkout_is_frozen_release:
+        assert loader._verify_sources(contract)
+    else:
+        with pytest.raises(loader.ArtifactLoaderError) as excinfo:
+            loader._verify_sources(contract)
+        assert excinfo.value.error_code is loader.ErrorCode.SOURCE_MISMATCH
     assert contract.runtime.statement_timeout_ms == 7_200_000
     assert contract.runtime.idle_transaction_timeout_ms == 7_200_000
     assert contract.runtime.lock_timeout_ms == 5_000

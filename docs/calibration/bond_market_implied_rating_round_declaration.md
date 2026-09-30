@@ -109,6 +109,33 @@ covered by its unit tests):
   (`implied_rating.state`) plus those `bond_market_implied_rating_v1` warnings;
   the daily verdict stays neutral by plan.
 
+### Mechanics clarifications (PR #130 review, 2026-09-30)
+
+These corrections clarify the declared mechanics; no parameter, policy version
+or `POLICY_DIGEST` changes.
+
+- A confirmed `D` spell's unwitnessed months carry `D` for `k` months, then
+  `WITHDRAWN` / `default_absorbing`, regardless of where in the spell
+  confirmation occurred.
+- `source_exit` applies only to non-confirmed spells. A confirmed, uncured `D`
+  never source-exits, including at par or near maturity; only a completed cure
+  returns it to a rated state in a new spell.
+- `L` is indexed on the month calendar from the first witnessed month through
+  `last_closed_month`. A month with an empty witness set carries the level
+  (delta 0); the next witnessed month chains against the last month with a
+  non-empty witness set. The anchor median uses only window months with a
+  non-empty witness set; published `market_level_l` on dark months is the
+  carried level.
+
+The frozen **round-002** artifact was produced at `c541c35` with these defects.
+Review measurements on that artifact: **A:** 63 CUSIPs / 583 rows; **B:** 1
+CUSIP; **D:** 2 trailing dark months (`2026-07` / `2026-08`), 15,767 null
+`market_level_l` rows, 0 bucket changes, anchor unchanged. It is **not
+republished**, and later code revisions do not reproduce it. After the panel
+unit repair makes `2026-07` / `2026-08` observed, the anchor moves and
+`anchor_drift` refuses: **a new calibration round is required by design**, not
+a silent re-anchor of this frozen artifact.
+
 ## 3. Data split (frozen)
 
 Let `A = 2026-08` be the frozen window end (`CALIBRATION_WINDOW_END_MONTH`, the

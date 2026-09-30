@@ -165,6 +165,7 @@ def _drive_run(
     republish: dict | None = None,
     panel: dict | None = None,
     implied_rating: dict | None = None,
+    implied_rating_enabled: bool = True,
     limit: int | None = None,
     calc_date: _dt.date = TODAY,
     connector: "_FakeConnect | None" = None,
@@ -185,8 +186,13 @@ def _drive_run(
     ``(name, conn.commits)`` as it is entered, so a test can assert both where
     the lock is released relative to stages 4 and 5 and whether the load
     connection was quiesced before them.
+
+    ``implied_rating_enabled=False`` preserves the caller's environment so tests
+    can exercise both an unset flag and explicit false values.
     """
     conn = conn if conn is not None else FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    if implied_rating_enabled:
+        monkeypatch.setenv("BOND_IMPLIED_RATING_ENABLED", "1")
 
     def _note(name: str) -> None:
         if events is not None:
@@ -1437,19 +1443,106 @@ def test_the_implied_rating_stage_defers_when_the_panel_did_not_publish(monkeypa
         "aborted": False,
         "reason": "panel_not_published",
         "panel_state": "deferred",
-        "matview_state": "refreshed",
+        "panel_matview_refresh": None,
     }
     assert "implied_rating" not in [name for name, _ in events]
 
 
-def test_the_implied_rating_stage_defers_when_the_snapshot_was_not_refreshed(monkeypatch) -> None:
+def test_the_implied_rating_stage_runs_when_the_curated_matview_refresh_failed(monkeypatch) -> None:
+    events: list[tuple[str, int]] = []
     out = _drive_run(
         monkeypatch,
         matview={"state": "failed", "error": "boom"},
+        events=events,
         calc_date=_dt.date.today(),
     )
-    assert out["implied_rating"]["reason"] == "panel_not_published"
-    assert out["implied_rating"]["matview_state"] == "failed"
+    assert out["state"] == "matview_failed"
+    assert out["aborted"] is True
+    assert out["implied_rating"] == {"state": "published", "aborted": False}
+    assert "implied_rating" in [name for name, _ in events]
+
+
+def test_the_implied_rating_stage_defers_when_the_panel_mirror_was_not_refreshed(monkeypatch) -> None:
+    events: list[tuple[str, int]] = []
+    out = _drive_run(
+        monkeypatch,
+        panel={"state": "published", "aborted": False, "matview_refresh": "failed:Boom"},
+        events=events,
+        calc_date=_dt.datetime.now().astimezone().date(),
+    )
+    assert out["implied_rating"] == {
+        "state": "deferred",
+        "aborted": False,
+        "reason": "panel_mirror_not_refreshed",
+        "panel_state": "published",
+        "panel_matview_refresh": "failed:Boom",
+    }
+    assert out["state"] == "ok"
+    assert "implied_rating" not in [name for name, _ in events]
+    assert "implied_rating" not in out["timings_seconds"]
+
+
+@pytest.mark.parametrize("panel_state", ["published", "current"])
+def test_the_implied_rating_stage_runs_for_a_ready_panel(monkeypatch, panel_state) -> None:
+    events: list[tuple[str, int]] = []
+    panel = {"state": panel_state, "aborted": False}
+    if panel_state == "published":
+        panel["matview_refresh"] = "refreshed"
+    out = _drive_run(
+        monkeypatch, panel=panel, events=events, calc_date=_dt.datetime.now().astimezone().date(),
+    )
+    assert out["state"] == "ok"
+    assert out["implied_rating"] == {"state": "published", "aborted": False}
+    assert "implied_rating" in [name for name, _ in events]
+    assert "implied_rating" in out["timings_seconds"]
+
+
+@pytest.mark.parametrize("flag", [None, "0"])
+def test_the_disabled_implied_rating_stage_never_imports_or_calls_the_worker(monkeypatch, flag) -> None:
+    import builtins
+
+    if flag is None:
+        monkeypatch.delenv("BOND_IMPLIED_RATING_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("BOND_IMPLIED_RATING_ENABLED", flag)
+    monkeypatch.setenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", "1")
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        assert name != "src.workers.bond_market_implied_rating"
+        assert name != "src.workers" or "bond_market_implied_rating" not in (fromlist or ())
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    events: list[tuple[str, int]] = []
+    out = _drive_run(
+        monkeypatch, implied_rating_enabled=False, events=events,
+        calc_date=_dt.datetime.now().astimezone().date(),
+    )
+    assert out["implied_rating"] == {
+        "state": "disabled",
+        "aborted": False,
+        "reason": "implied_rating_disabled",
+        "flag": "BOND_IMPLIED_RATING_ENABLED",
+    }
+    assert out["state"] == "ok"
+    assert out["aborted"] is False
+    assert out["halted_by"] == []
+    assert "implied_rating" not in [name for name, _ in events]
+    assert "implied_rating" not in out["timings_seconds"]
+
+
+@pytest.mark.parametrize(
+    ("flag", "enabled"),
+    [(None, False), ("0", False), ("false", False), ("yes", False),
+     ("1", True), ("true", True), (" TRUE ", True)],
+)
+def test_the_implied_rating_enable_flag_uses_the_repo_boolean_convention(monkeypatch, flag, enabled) -> None:
+    if flag is None:
+        monkeypatch.delenv("BOND_IMPLIED_RATING_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("BOND_IMPLIED_RATING_ENABLED", flag)
+    assert bond_live_daily._implied_rating_enabled() is enabled
 
 
 @pytest.mark.parametrize(

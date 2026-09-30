@@ -5,7 +5,7 @@ recomputes the data daily"*. This is that worker. It runs BEFORE the publication
 chain, on its own Railway service, and it leaves the product fresh with no human
 in the loop.
 
-Six stages, each REPORTED separately so a partial day is visible rather than
+Seven stages, each REPORTED separately so a partial day is visible rather than
 laundered into a green run:
 
   1. ``candles``  -- delta of daily price/YTM candles for the curated universe
@@ -27,6 +27,8 @@ laundered into a green run:
                      payloads carry the day just loaded.
   6. ``panel``    -- publish the DB-only monthly research-panel delta after the
                      serving inputs have been recomputed.
+  7. ``implied_rating`` -- optional market-implied rating rebuild from the panel
+                     mirror; default off and verdict-neutral.
 
 WHY STAGE 5 EXISTS AT ALL (measured 2026-08-07, do not remove it):
 ``daily_chain`` keys a run by ``(chain, source_day, code_revision,
@@ -66,7 +68,7 @@ universe sets it. That includes the paths that look like polite no-ops:
 ===========================  =====  ====================================
 state                        green  why
 ===========================  =====  ====================================
-``ok``                       yes    all six stages ran, publications and panel published
+``ok``                       yes    all seven stages handled; stage 7 may be disabled/deferred
 ``calc_date_in_future``      no     WORKER_CALC_DATE past the execution date:
                                     refused before anything opens, never clamped
 ``locked``                   no     another holder; this run did NOTHING
@@ -109,14 +111,14 @@ state                        green  why
                                     its budget, NOT the day
 ===========================  =====  ====================================
 
-THE DAILY LOCK COVERS ALL FIVE STAGES, including the two that run on other
+THE DAILY LOCK COVERS ALL SEVEN STAGES (1-7), including those that run on other
 connections. Released after stage 3, it would let an overlapping manual restart
 start a second sweep while this one is still refreshing and republishing: the
 second run commits a PREFIX of its revised candles into the very table this
 run's publication build is reading, then aborts on the publication locks -- and
 this run exits green having served a mix of two sweeps. Holding it is free,
 because a session advisory lock is not a transaction: the connection is
-committed and left IDLE for the minutes stages 5-6 take, so it pins no snapshot
+committed and left IDLE for the minutes stages 5-7 take, so it pins no snapshot
 and holds back no VACUUM. (Same two-level shape as ``daily_chain``, which holds
 its own lock across these same workers while each takes its own underneath.)
 
@@ -1379,6 +1381,10 @@ def _publish_panel(dsn: str, *, as_of: _dt.date) -> dict[str, Any]:
         return {"state": "publish_failed", "aborted": True, "error": type(exc).__name__}
 
 
+def _implied_rating_enabled() -> bool:
+    return (os.getenv("BOND_IMPLIED_RATING_ENABLED") or "").strip().lower() in {"1", "true"}
+
+
 def _publish_implied_rating(dsn: str) -> dict[str, Any]:
     """Run the market-implied rating rebuild after the panel refresh.
 
@@ -1516,7 +1522,7 @@ def run(
                 provider_error, provider_detail = "provider_rejected", str(exc)
                 ticks = {"swept": 0, "aborted": True, "transient_failures": 0, "state": provider_error}
 
-        # Stages 4 through 6 run INSIDE the daily lock, and that placement is the
+        # Stages 4 through 7 run INSIDE the daily lock, and that placement is the
         # whole of what makes the lock mean anything. Held only through stage 3,
         # a manual restart could take it while this run was still refreshing and
         # republishing: the second run would commit a PREFIX of its own revised
@@ -1531,7 +1537,7 @@ def run(
         # connection IDLE rather than IDLE IN TRANSACTION for the minutes the two
         # publication builds take, so nothing here holds back the global xmin
         # horizon -- the VACUUM trap this repo has already paid for (runbook §6).
-        # KEEP IT: an added read on ``conn`` between here and stage 6 would
+        # KEEP IT: an added read on ``conn`` between here and stage 7 would
         # silently re-open a minutes-long transaction. Every downstream stage
         # below opens its OWN connection, so this one only carries the lock.
         #
@@ -1601,29 +1607,37 @@ def run(
                 "panel", lambda: _publish_panel(resolved, as_of=today)
             )
 
-        # Stage 7: market-implied rating. The product is a full rebuild over the
-        # panel snapshot, so it runs only when that snapshot really moved in
-        # this run -- a panel that refused, deferred or failed leaves the stage
-        # typed and deferred, never silently skipped. It stays inside the daily
-        # lock for the same reason stages 4-6 do: the snapshot it derives from
-        # must not be replaced under it by an overlapping run. The stage is
-        # REPORTED and verdict-neutral: the product's own pointer is its truth,
-        # and the next successful pass rebuilds it from scratch anyway.
-        if (
-            str(panel.get("state")) in {"published", "current"}
-            and matview.get("state") == "refreshed"
+        # Stage 7 is default-off: no worker import, DDL, publish or timing while
+        # disabled. When enabled it reads the panel mirror, not stage 4's curated
+        # matview. A current panel is eligible too; the worker probes mirror
+        # provenance to catch an earlier failed refresh. Keep it inside the daily
+        # lock and verdict-neutral, with every refusal reported in the day JSON.
+        if not _implied_rating_enabled():
+            implied_rating = {
+                "state": "disabled",
+                "aborted": False,
+                "reason": "implied_rating_disabled",
+                "flag": "BOND_IMPLIED_RATING_ENABLED",
+            }
+        elif (
+            str(panel.get("state")) not in {"published", "current"}
+            or panel.get("matview_refresh", "refreshed") != "refreshed"
         ):
-            implied_rating = stopwatch.run(
-                "implied_rating", lambda: _publish_implied_rating(resolved)
-            )
-        else:
             implied_rating = {
                 "state": "deferred",
                 "aborted": False,
-                "reason": "panel_not_published",
+                "reason": (
+                    "panel_not_published"
+                    if str(panel.get("state")) not in {"published", "current"}
+                    else "panel_mirror_not_refreshed"
+                ),
                 "panel_state": str(panel.get("state")),
-                "matview_state": matview.get("state"),
+                "panel_matview_refresh": panel.get("matview_refresh"),
             }
+        else:
+            implied_rating = stopwatch.run(
+                "implied_rating", lambda: _publish_implied_rating(resolved)
+            )
 
     # THE VERDICT. Every stage above has already RUN -- this is computed at the
     # end and never used to skip work -- and each clause below is a way the day

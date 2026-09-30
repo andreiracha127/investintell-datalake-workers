@@ -8,6 +8,7 @@ and the compare-and-set pointer.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import date
 from dataclasses import replace
 import os
@@ -369,3 +370,86 @@ def test_divergent_rerun_under_the_same_identity_is_refused() -> None:
             conn.execute(
                 sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
             )
+
+
+@pytest.mark.skipif(
+    not os.getenv("SEC_TEST_DATABASE_URL"),
+    reason="SEC_TEST_DATABASE_URL unavailable",
+)
+def test_panel_pointer_change_with_identical_inputs_converges_without_writing(monkeypatch) -> None:
+    import psycopg
+    from psycopg import sql
+
+    from src.workers import bond_market_implied_rating as worker
+
+    schema = f"test_bond_implied_convergence_{uuid4().hex}"
+    run_id, package_id, panel_a, panel_b = uuid4(), uuid4(), uuid4(), uuid4()
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        conn.execute(
+            sql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO worker_writer").format(sql.Identifier(schema))
+        )
+        conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        try:
+            conn.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
+            conn.execute("CREATE TABLE sec_source_packages(package_id uuid PRIMARY KEY, run_id uuid NOT NULL)")
+            conn.execute(
+                "CREATE VIEW sec_validated_raw_runs AS SELECT run_id, raw_validated_at "
+                "FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL"
+            )
+            conn.execute("CREATE TABLE bond_panel_publications(publication_id uuid PRIMARY KEY)")
+            conn.execute("INSERT INTO sec_ingestion_runs VALUES(%s, now())", (run_id,))
+            conn.execute("INSERT INTO sec_source_packages VALUES(%s, %s)", (package_id, run_id))
+            conn.execute("INSERT INTO bond_panel_publications VALUES(%s), (%s)", (panel_a, panel_b))
+            install_schema(conn)
+            conn.execute(
+                sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO worker_writer").format(sql.Identifier(schema))
+            )
+            frame = _snapshot()
+            publication = _publication(frame, panel_publication_id=str(panel_a))
+            materialize(
+                conn, publication,
+                publication_row_tuples(
+                    publication, policy.build_publication_rows(frame, last_closed_month=MONTHS[-1])
+                ),
+                expected_pointer=None,
+            )
+            stored = worker._pointer_build(conn, publication.publication_id)
+            assert stored["panel_publication_id"] == str(panel_a)
+            parent = {
+                "publication_id": str(panel_b), "first_month": publication.first_month,
+                "last_closed_month": publication.last_month,
+            }
+            reads = []
+
+            def read_snapshot(_conn, **kwargs):
+                reads.append(kwargs["last_closed_month"])
+                return frame
+
+            monkeypatch.setattr(worker, "connect", lambda _dsn: nullcontext(conn))
+            monkeypatch.setattr(worker, "_code_revision", lambda: publication.code_revision)
+            monkeypatch.delenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", raising=False)
+            monkeypatch.setattr(worker, "_gates", lambda _conn, **kwargs: {
+                "parent": parent, "pointer": publication.publication_id,
+            })
+            monkeypatch.setattr(worker, "_read_snapshot", read_snapshot)
+            monkeypatch.setattr(worker, "install_schema", lambda _conn: pytest.fail("DDL"))
+            monkeypatch.setattr(worker, "materialize", lambda *args, **kwargs: pytest.fail("materialize"))
+            monkeypatch.setattr(
+                policy, "build_publication_rows", lambda *args, **kwargs: pytest.fail("state machine")
+            )
+            for _ in range(2):
+                result = worker.run(os.environ["SEC_TEST_DATABASE_URL"])
+                assert result["state"] == "current"
+                assert result["reason"] == "panel_inputs_unchanged"
+                assert result["publication_id"] == publication.publication_id
+                assert result["panel_publication_id"] == str(panel_b)
+                assert result["build_panel_publication_id"] == str(panel_a)
+                assert result["input_fingerprint"] == publication.input_fingerprint
+                assert worker._pointer_build(conn, publication.publication_id) == stored
+            assert reads == [publication.last_month, publication.last_month]
+            assert worker._current_pointer(conn) == publication.publication_id
+            assert conn.execute("SELECT count(*) FROM bond_market_implied_rating_v1_builds").fetchone()[0] == 1
+        finally:
+            conn.execute("SET search_path TO public")
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))

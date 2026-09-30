@@ -41,6 +41,17 @@ WRAPPER_PATH = "/app/docker/bond-implied-artifact-loader/bootstrap_evidence.py"
 CONTRACT = ROOT / "contracts" / "bond_market_implied_rating_round002_artifact.json"
 IMAGE = os.environ.get("BOND_BOOTSTRAP_IMAGE", "")
 ENABLED = os.environ.get("BOND_BOOTSTRAP_DOCKER_TEST") == "1" and bool(IMAGE)
+CHECKOUT_IS_FROZEN_RELEASE = all(
+    hashlib.sha256((ROOT / source["relative_path"]).read_bytes()).hexdigest()
+    in source["accepted_runtime_sha256"]
+    for source in json.loads(CONTRACT.read_text(encoding="utf-8"))["producer"]["sources"]
+)
+if not CHECKOUT_IS_FROZEN_RELEASE:
+    pytest.skip(
+        "checkout is not the frozen loader release (src/bonds/implied_rating.py digest not in "
+        "accepted_runtime_sha256); run from loader commit a1b06f1",
+        allow_module_level=True,
+    )
 LOADER_ARGV = [
     "timeout", "--signal=TERM", "--kill-after=30s", "9000s", "python", "-m",
     "scripts.load_bond_market_implied_rating_artifact", "--artifact-root", "/artifact",
