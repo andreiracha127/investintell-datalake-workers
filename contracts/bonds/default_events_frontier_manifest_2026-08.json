@@ -1,0 +1,774 @@
+{
+  "digest": "sha256:4b1a7c8ddb4ba833ee4badf8d4d17d0201c5e59d3e79cf6ea27117f5d5830679",
+  "frontiers": [
+    {
+      "basis": "Agency rating histories not acquired; access and rights unverified (Stage 1A); no agency data used",
+      "code": "unavailable_rights_unverified",
+      "evidence": {
+        "report_md_sha256": "bb70a604ec939ffd7478a0d9a4fcf642356bb51258823cfb84b65892bc78cc0b"
+      },
+      "filing_count": null,
+      "frontier": null,
+      "ingestion": "not_ingested",
+      "inventory_kind": "agency_history",
+      "observed_at": "2026-09-25T02:58:31.532065Z",
+      "reason_codes": [
+        "rating_rights_unverified",
+        "rating_source_unavailable"
+      ],
+      "source": "agency_rocr",
+      "source_key": "agency_rocr.agency_history",
+      "state": "unavailable"
+    },
+    {
+      "basis": "Item level 8-K census 2021-09 to 2026-08: 495 filings with Item 1.03 and 766 with Item 2.04 (1086 distinct); filing counts not distinct defaults; not linked to panel CUSIPs",
+      "code": "inventory_only_not_ingested",
+      "evidence": {
+        "artifacts": [
+          {
+            "bytes": 141721,
+            "label": "census_accessions_2021_2026.tsv",
+            "sha256": "b863eae9f346f9c007baaa383a13a5e7e3e2278e7dd585730eb038f3b9e7427e"
+          },
+          {
+            "bytes": 1240,
+            "label": "census_summary.json",
+            "sha256": "151047774d86d09a5d5a23bf5f77920c371c73ad86bed89cb8fdacc93069ef1a"
+          }
+        ],
+        "distinct_8k_filings": 1086,
+        "item_1_03_filings": 495,
+        "item_2_04_filings": 766,
+        "report_md_sha256": "bb70a604ec939ffd7478a0d9a4fcf642356bb51258823cfb84b65892bc78cc0b",
+        "sha256sums_sha256": "bf94b68cb09525158858d791417831fbaf24760c043b87067e4a2d6672121203",
+        "window_first_date": "2021-09-01",
+        "window_last_date": "2026-08-31"
+      },
+      "filing_count": 1086,
+      "frontier": "2026-08-31",
+      "ingestion": "not_ingested",
+      "inventory_kind": "census",
+      "observed_at": "2026-09-25T02:54:58.853964Z",
+      "reason_codes": [
+        "inventory_not_ingested",
+        "outcomes_unascertained"
+      ],
+      "source": "sec_edgar",
+      "source_key": "sec_edgar.census",
+      "state": "inventory_only"
+    },
+    {
+      "basis": "EDGAR bulk submissions archive (last modified 2026-09-24) retrieved once as a filing inventory; freshness is not default surveillance completeness",
+      "code": "inventory_only_not_ingested",
+      "evidence": {
+        "artifacts": [
+          {
+            "bytes": 1565294470,
+            "label": "submissions.zip",
+            "last_modified": "Thu, 24 Sep 2026 04:31:44 GMT",
+            "sha256": "3f894f8c1ef56c0068f7f8a4cd994dc0fb2619946bd23f7affb90384de6fecb8"
+          }
+        ]
+      },
+      "filing_count": null,
+      "frontier": "2026-09-24",
+      "ingestion": "not_ingested",
+      "inventory_kind": "submissions",
+      "observed_at": "2026-09-25T02:48:23.637529Z",
+      "reason_codes": [
+        "inventory_not_ingested",
+        "outcomes_unascertained"
+      ],
+      "source": "sec_edgar",
+      "source_key": "sec_edgar.submissions",
+      "state": "inventory_only"
+    },
+    {
+      "basis": "32 DERA N-CEN packages 2018q3 to 2026q2 inventoried (28590 submissions); 2026q3 not published; schema 3.1 filings excluded by DERA; not parsed",
+      "code": "inventory_only_not_ingested",
+      "evidence": {
+        "absence_probe": {
+          "http_status": 404,
+          "observed_at": "2026-09-25T07:58:31.481684Z",
+          "quarter": "2026q3"
+        },
+        "artifact_total_bytes": 308563027,
+        "artifacts": [
+          {
+            "bytes": 655684,
+            "label": "2018q3_ncen",
+            "last_modified": "Fri, 02 Jun 2023 11:45:29 GMT",
+            "sha256": "8f94b1b1630c04f4b27b0f0a4691dd6daaf0d67e887fb3e3072aa56febb22194"
+          },
+          {
+            "bytes": 4322296,
+            "label": "2018q4_ncen",
+            "last_modified": "Fri, 02 Jun 2023 11:49:33 GMT",
+            "sha256": "2789823477f303a5615ed8f6d3d6b8904210ab5ad776321e7683c1bd410fad3b"
+          },
+          {
+            "bytes": 10964691,
+            "label": "2019q1_ncen",
+            "last_modified": "Fri, 02 Jun 2023 11:53:25 GMT",
+            "sha256": "0182b4fddf85c294434f58266398590e5dc2a4a33be3a5f5460178de229a6519"
+          },
+          {
+            "bytes": 9948476,
+            "label": "2019q2_ncen",
+            "last_modified": "Fri, 02 Jun 2023 11:57:14 GMT",
+            "sha256": "73b97d7bb2477e81df33d06301c2e343020768c05de50bbc9b6a441c7c569d7b"
+          },
+          {
+            "bytes": 13564033,
+            "label": "2019q3_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:02:15 GMT",
+            "sha256": "fed528ab8445d3bc3b38275b6c55bd4a9b6e26200e24e9a7ca59e744ee023d31"
+          },
+          {
+            "bytes": 11847950,
+            "label": "2019q4_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:06:25 GMT",
+            "sha256": "eaa9669018b97c19e974b9dcf061586383a0c48d556dff152c46ec5b81e07b2d"
+          },
+          {
+            "bytes": 16453431,
+            "label": "2020q1_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:12:28 GMT",
+            "sha256": "555e8010891c503743c46abf2eb898850862398ffdd6aedf60b88b33b4be1a3f"
+          },
+          {
+            "bytes": 7987682,
+            "label": "2020q2_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:16:03 GMT",
+            "sha256": "761bf89b94b04f2c841cd7d862d035963b3dd829408f19b588ccc7eaeb60c101"
+          },
+          {
+            "bytes": 4991240,
+            "label": "2020q3_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:19:08 GMT",
+            "sha256": "6c61cc7a16c7291fb2646ea6266a6ab647c60b79e30e843263af0e8a0ce60a66"
+          },
+          {
+            "bytes": 8156664,
+            "label": "2020q4_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:22:09 GMT",
+            "sha256": "b0a7eecdb5d056eac7151d4e7c8dfdaa8c2eac55b9d599212b8cacd3e589d801"
+          },
+          {
+            "bytes": 14978443,
+            "label": "2021q1_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:26:44 GMT",
+            "sha256": "f12f1b9c35eb24d32002faf4f4f85ea7c794f3c2e53b521ccccdd0679e9eeb41"
+          },
+          {
+            "bytes": 6766056,
+            "label": "2021q2_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:29:18 GMT",
+            "sha256": "6b3f67315265e4483c5f2567680de419a26c179d67e744abde484c88802b791e"
+          },
+          {
+            "bytes": 4858022,
+            "label": "2021q3_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:31:39 GMT",
+            "sha256": "430316e3d5701678faf064e796c992798709e712aa3f9688bf2f593f12efbd8e"
+          },
+          {
+            "bytes": 8346446,
+            "label": "2021q4_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:36:23 GMT",
+            "sha256": "5e6d78a17e4b4d50891188a11ac448282e75ead23f10ff5b8d5c61ba9dcef0f7"
+          },
+          {
+            "bytes": 14986237,
+            "label": "2022q1_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:42:10 GMT",
+            "sha256": "52338268929ea0c7c8a0570406c9234ba93f49237bf1f125913a0fd3f62b27c3"
+          },
+          {
+            "bytes": 7017193,
+            "label": "2022q2_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:44:56 GMT",
+            "sha256": "79c4ee177387accdb12f8de97c516da14a2984976a5d119a10507234685c7ce7"
+          },
+          {
+            "bytes": 5296909,
+            "label": "2022q3_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:47:15 GMT",
+            "sha256": "34fbeabd5ab77f618e82e708bdb4b301ad4a6c3c86a95163f8702235e3c67320"
+          },
+          {
+            "bytes": 8893904,
+            "label": "2022q4_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:50:37 GMT",
+            "sha256": "ad8f0bcda725fe9f4ebdb256b2edb68b3f410ef61ca47e100fa0f5205f473896"
+          },
+          {
+            "bytes": 15007931,
+            "label": "2023q1_ncen",
+            "last_modified": "Fri, 02 Jun 2023 12:55:31 GMT",
+            "sha256": "a2c96a7966d1c535c2e9769a1d0b9b5282ab360c406b7a119ae050c0b73bd7cc"
+          },
+          {
+            "bytes": 9355383,
+            "label": "2023q2_ncen",
+            "last_modified": "Tue, 11 Jul 2023 14:19:04 GMT",
+            "sha256": "2f3939ed3d825aa59d529d2a1f20e29325f343c703b048034110fed77da21d1a"
+          },
+          {
+            "bytes": 5581828,
+            "label": "2023q3_ncen",
+            "last_modified": "Fri, 06 Oct 2023 12:36:42 GMT",
+            "sha256": "6b837ca504f689898f3fda3eb501dd3ac0b839540c0563436340d1c0c365521e"
+          },
+          {
+            "bytes": 9618041,
+            "label": "2023q4_ncen",
+            "last_modified": "Thu, 04 Jan 2024 17:47:16 GMT",
+            "sha256": "a17231500c950e9b996ddae0f2e9d66edb4131fdf8297e2131bc906433d765a2"
+          },
+          {
+            "bytes": 17766801,
+            "label": "2024q1_ncen_0",
+            "last_modified": "Tue, 09 Dec 2025 14:23:32 GMT",
+            "sha256": "7d9933ffadd70af3fcf83fee5ccacb58793a9f9359975257e0750cf4d444a353"
+          },
+          {
+            "bytes": 8793347,
+            "label": "2024q2_ncen_0",
+            "last_modified": "Tue, 09 Dec 2025 14:18:32 GMT",
+            "sha256": "517071f637f144da763af9caca88956288ecdcbf2a42f81c9d760ea94e66f92d"
+          },
+          {
+            "bytes": 5951687,
+            "label": "2024q3_ncen_0",
+            "last_modified": "Tue, 09 Dec 2025 14:14:32 GMT",
+            "sha256": "f166532f362eca167065a593c313b0ce3b85304c9dfeebde66dc61b149a0a0e1"
+          },
+          {
+            "bytes": 9796685,
+            "label": "2024q4_ncen_0",
+            "last_modified": "Tue, 09 Dec 2025 14:10:49 GMT",
+            "sha256": "460783ea76a0f807fc22060cb9954632429248cc0502f9eb7467cf89023e0840"
+          },
+          {
+            "bytes": 16725855,
+            "label": "2025q1_ncen_0",
+            "last_modified": "Tue, 09 Dec 2025 14:04:31 GMT",
+            "sha256": "beed82037d5c03ad931b096dbfef6978faf76cc2a58e14942fca055a1fbb22a0"
+          },
+          {
+            "bytes": 11611170,
+            "label": "2025q2_ncen_0",
+            "last_modified": "Tue, 09 Dec 2025 13:59:20 GMT",
+            "sha256": "ddf34fe8851d3190dd248821e9021cb7761e200ae347aa608010d158d79be216"
+          },
+          {
+            "bytes": 5977881,
+            "label": "2025q3_ncen",
+            "last_modified": "Tue, 09 Dec 2025 13:12:40 GMT",
+            "sha256": "1317f2bc2f51cc5d5e9f5d27d5e3c944afbbaa1acaf259b61a51ef5adbf597ff"
+          },
+          {
+            "bytes": 7571694,
+            "label": "2025q4_ncen",
+            "last_modified": "Wed, 07 Jan 2026 13:45:12 GMT",
+            "sha256": "edbd91ac464203625dda4f00ec07083d06ebbf5f04194673b13a3362ee1c1476"
+          },
+          {
+            "bytes": 16365257,
+            "label": "2026q1_ncen",
+            "last_modified": "Mon, 06 Apr 2026 13:58:07 GMT",
+            "sha256": "3b791cdfa9c497157468a26764d508cd0a5723056c5ba75a9809bf80db9ef9fd"
+          },
+          {
+            "bytes": 8404110,
+            "label": "2026q2_ncen",
+            "last_modified": "Thu, 09 Jul 2026 14:57:21 GMT",
+            "sha256": "97899fef613a151faf42b6b01573bde3d22db81af7f896598c43a62cec0c7614"
+          }
+        ],
+        "manifest_json_sha256": "df16a455e42daee568a9229bdf13d7dcd9abb61ab9a8376130e114a7d17d06fc",
+        "packages_json_sha256": "2f220b1393857a2b9b003322b9c39c1a15d1eaa2cbbad087c52bc45a154c35de",
+        "report_md_sha256": "0775903a03eb716cb95dedd05cc80644f4c45ade92c9949f8e1b736feffc727e",
+        "sha256sums_sha256": "e9d5146d0bceb03fcee1e3fed65a00569eda8639bdbaeca7cae7d66f12b0c4f9"
+      },
+      "filing_count": 28590,
+      "frontier": "2026-06-30",
+      "ingestion": "not_ingested",
+      "inventory_kind": "dera_packages",
+      "observed_at": "2026-09-25T07:58:31.481684Z",
+      "reason_codes": [
+        "inventory_not_ingested"
+      ],
+      "source": "sec_ncen",
+      "source_key": "sec_ncen.dera_packages",
+      "state": "inventory_only"
+    },
+    {
+      "basis": "EDGAR form index 2018Q2 to 2026Q3 inventoried for N-CEN family entries; 2026Q3 partial with data received through 2026-09-24; entries are not follow-up guarantees",
+      "code": "inventory_only_not_ingested",
+      "evidence": {
+        "artifacts": [
+          {
+            "bytes": 38885172,
+            "date_filed_max": null,
+            "label": "2018QTR2",
+            "retrieved_at": "2026-09-25T07:58:46.289145Z",
+            "sha256": "37fc5a985eb88cd3853989932cd0db783e50138659ac25fb90a4541bceab1f9a"
+          },
+          {
+            "bytes": 30521237,
+            "date_filed_max": "2018-09-28",
+            "label": "2018QTR3",
+            "retrieved_at": "2026-09-25T07:58:46.971735Z",
+            "sha256": "9d1e46464a4ec5a4c84928688f573980f8ca5b2511bf97c245ea5da296c401b7"
+          },
+          {
+            "bytes": 31229476,
+            "date_filed_max": "2018-12-31",
+            "label": "2018QTR4",
+            "retrieved_at": "2026-09-25T07:58:48.249485Z",
+            "sha256": "fb17a0b4e7f5dab378fe34dbc5a9cffef53c451520d072ec70ff6526c3d64c40"
+          },
+          {
+            "bytes": 46348993,
+            "date_filed_max": "2019-03-29",
+            "label": "2019QTR1",
+            "retrieved_at": "2026-09-25T07:58:48.904860Z",
+            "sha256": "88901ad5ec510ebf9c74f58f50fc94bfe44c2ccd2bab94680864a5a1a6323ff2"
+          },
+          {
+            "bytes": 38937900,
+            "date_filed_max": "2019-06-28",
+            "label": "2019QTR2",
+            "retrieved_at": "2026-09-25T07:58:49.667842Z",
+            "sha256": "64a108ce2f798cbf1ef23bc7a24ff15a88d4bd19b2f80acd80765f8751baf68c"
+          },
+          {
+            "bytes": 30960533,
+            "date_filed_max": "2019-09-20",
+            "label": "2019QTR3",
+            "retrieved_at": "2026-09-25T07:58:50.340914Z",
+            "sha256": "2a2b2ac46d85e10b7f9ef04b2acb1ab3fc3eba939a625e208ea42a6dca26da8f"
+          },
+          {
+            "bytes": 32230060,
+            "date_filed_max": "2019-12-30",
+            "label": "2019QTR4",
+            "retrieved_at": "2026-09-25T07:58:50.880545Z",
+            "sha256": "a8e6d873ff24cd31ea8036e990274e9e18d045cfbfc8c7c07d85f94a4cab9e28"
+          },
+          {
+            "bytes": 50685481,
+            "date_filed_max": "2020-03-31",
+            "label": "2020QTR1",
+            "retrieved_at": "2026-09-25T07:58:51.591781Z",
+            "sha256": "593cbf371d422fe526408a74142f00e1e13f22efe63e4b71b48011e077f9af2a"
+          },
+          {
+            "bytes": 41419860,
+            "date_filed_max": "2020-06-30",
+            "label": "2020QTR2",
+            "retrieved_at": "2026-09-25T07:58:52.485423Z",
+            "sha256": "038d6eb07e7fca5b37b8d8f3e0f899f16e1e3cc3a3a38c22a5ffb0ed4fdbec50"
+          },
+          {
+            "bytes": 34590653,
+            "date_filed_max": "2020-09-30",
+            "label": "2020QTR3",
+            "retrieved_at": "2026-09-25T07:58:53.204509Z",
+            "sha256": "d378841b0abbe2d2161d8c9bbd3cb2b99bb4d386eee13118c17f21bae57bbc5f"
+          },
+          {
+            "bytes": 36414292,
+            "date_filed_max": "2020-12-28",
+            "label": "2020QTR4",
+            "retrieved_at": "2026-09-25T07:58:54.031463Z",
+            "sha256": "84aa7452907f241582e01db0d589314af070f434ee0e1884a2e3f14960a56142"
+          },
+          {
+            "bytes": 56365441,
+            "date_filed_max": "2021-03-29",
+            "label": "2021QTR1",
+            "retrieved_at": "2026-09-25T07:58:55.083873Z",
+            "sha256": "78b6719feb4d8da28f7c2f1ca2a40de5f31d6c71339215d90e1b666ca23938d0"
+          },
+          {
+            "bytes": 46825104,
+            "date_filed_max": "2021-06-30",
+            "label": "2021QTR2",
+            "retrieved_at": "2026-09-25T07:58:56.006011Z",
+            "sha256": "3dbc13373ec533eafe178a93a7ca1f7e2061ee6cc673191dec1800203ff689cf"
+          },
+          {
+            "bytes": 39349121,
+            "date_filed_max": "2021-09-30",
+            "label": "2021QTR3",
+            "retrieved_at": "2026-09-25T07:58:56.818469Z",
+            "sha256": "e872a4b1bbc2d21b0bf1c2654bf01b079b4c20c4532ded074d1705999bea0a61"
+          },
+          {
+            "bytes": 40298068,
+            "date_filed_max": "2021-12-29",
+            "label": "2021QTR4",
+            "retrieved_at": "2026-09-25T07:58:57.832023Z",
+            "sha256": "3e13f8f3c700e1db56d81a9243c630542d2a3fd540b4d27b671db3a6724e1494"
+          },
+          {
+            "bytes": 55619761,
+            "date_filed_max": "2022-03-31",
+            "label": "2022QTR1",
+            "retrieved_at": "2026-09-25T07:58:58.555679Z",
+            "sha256": "37fe14a468cc65367150abf15854f1861fed89192111bc2ec3990393fe39d2aa"
+          },
+          {
+            "bytes": 45498480,
+            "date_filed_max": "2022-06-29",
+            "label": "2022QTR2",
+            "retrieved_at": "2026-09-25T07:58:59.384179Z",
+            "sha256": "ff3985ef4a9c775ebb12b0a59738912477b929fc31539ae37b7716f9f95053c4"
+          },
+          {
+            "bytes": 37094765,
+            "date_filed_max": "2022-09-27",
+            "label": "2022QTR3",
+            "retrieved_at": "2026-09-25T07:59:00.194105Z",
+            "sha256": "bce3e54373776e8038aa0007a37cc1680e12c98ca405d8318a2ae12d194ef7a9"
+          },
+          {
+            "bytes": 35987632,
+            "date_filed_max": "2022-12-30",
+            "label": "2022QTR4",
+            "retrieved_at": "2026-09-25T07:59:00.867951Z",
+            "sha256": "e4fa292fcd6e15eb9d0f4552613ebc189ea3b166a8a3b5b550641785f69ec1c2"
+          },
+          {
+            "bytes": 54362089,
+            "date_filed_max": "2023-03-30",
+            "label": "2023QTR1",
+            "retrieved_at": "2026-09-25T07:59:01.641745Z",
+            "sha256": "0f11bf75dd8c43d66a9bb9dd7498fab0cd18316d468f6a941418358efc84d895"
+          },
+          {
+            "bytes": 48017880,
+            "date_filed_max": "2023-06-30",
+            "label": "2023QTR2",
+            "retrieved_at": "2026-09-25T07:59:02.472382Z",
+            "sha256": "de6bea77f33fd87c9489ae0cf5936d902159797aeaf733d851eea006737894c1"
+          },
+          {
+            "bytes": 39411209,
+            "date_filed_max": "2023-09-29",
+            "label": "2023QTR3",
+            "retrieved_at": "2026-09-25T07:59:03.212414Z",
+            "sha256": "d46731588a4f8553a8bb6b16bafbfc9c0cb01f623c3b9fa1ab59eebbf2221269"
+          },
+          {
+            "bytes": 39211216,
+            "date_filed_max": "2023-12-28",
+            "label": "2023QTR4",
+            "retrieved_at": "2026-09-25T07:59:03.847169Z",
+            "sha256": "3865901770ae3cbfd7545677692c1477382cb06f09f82f0f96ab608c65464348"
+          },
+          {
+            "bytes": 57770533,
+            "date_filed_max": "2024-03-29",
+            "label": "2024QTR1",
+            "retrieved_at": "2026-09-25T07:59:04.574368Z",
+            "sha256": "5f91755d27d18df08a2f8497c7b092174285e30b24ea8297b0ec5e17daa0a553"
+          },
+          {
+            "bytes": 49302228,
+            "date_filed_max": "2024-06-28",
+            "label": "2024QTR2",
+            "retrieved_at": "2026-09-25T07:59:05.968794Z",
+            "sha256": "a213f3926c23261d493f88956d23ea20ebf98ac9751a78452b01bc12aeba07f8"
+          },
+          {
+            "bytes": 42268817,
+            "date_filed_max": "2024-09-25",
+            "label": "2024QTR3",
+            "retrieved_at": "2026-09-25T07:59:06.783673Z",
+            "sha256": "b263587d4d7d34917237c68c555a225bd755584edbc68d9f3a26d01243cd49a2"
+          },
+          {
+            "bytes": 44335192,
+            "date_filed_max": "2024-12-27",
+            "label": "2024QTR4",
+            "retrieved_at": "2026-09-25T07:59:07.453906Z",
+            "sha256": "64f4851f1f27507c9eb374799b7cde1e61e79f89093470d3130c8857ba0eabe5"
+          },
+          {
+            "bytes": 53058553,
+            "date_filed_max": "2025-03-31",
+            "label": "2025QTR1",
+            "retrieved_at": "2026-09-25T07:59:08.169716Z",
+            "sha256": "4f1f94f386680942298d1d06919febeeb87a1319cb9f173db92e541b01264b14"
+          },
+          {
+            "bytes": 51758604,
+            "date_filed_max": "2025-06-27",
+            "label": "2025QTR2",
+            "retrieved_at": "2026-09-25T07:59:09.352630Z",
+            "sha256": "542b014d65e7c597db108ac248edf1ec324baa31ab791cbccd34a93683ef5435"
+          },
+          {
+            "bytes": 44906465,
+            "date_filed_max": "2025-09-30",
+            "label": "2025QTR3",
+            "retrieved_at": "2026-09-25T07:59:10.174157Z",
+            "sha256": "451a07b1a91db660691856488dc3f1d3b08c32fa71b081a94bbc193d973cbb9b"
+          },
+          {
+            "bytes": 43147096,
+            "date_filed_max": "2025-12-30",
+            "label": "2025QTR4",
+            "retrieved_at": "2026-09-25T07:59:10.924525Z",
+            "sha256": "f8066bda8438bb4e167cdfb0c88af9ffd29effdc883dcf2cd6d9253f42d70555"
+          },
+          {
+            "bytes": 57744013,
+            "date_filed_max": "2026-03-31",
+            "label": "2026QTR1",
+            "retrieved_at": "2026-09-25T07:59:11.974489Z",
+            "sha256": "e2d34d5233e3e26c24cb4b79d47e01a99e5a9134713ca5be6fb21519e26b26ff"
+          },
+          {
+            "bytes": 55106676,
+            "date_filed_max": "2026-06-30",
+            "label": "2026QTR2",
+            "retrieved_at": "2026-09-25T07:59:12.823012Z",
+            "sha256": "e4d9b7dc2fe575e869806f3ae6762dc3ffa4a3597dd573b2649e96e1f31f7945"
+          },
+          {
+            "bytes": 44280905,
+            "date_filed_max": "2026-09-24",
+            "label": "2026QTR3",
+            "retrieved_at": "2026-09-25T07:59:13.866399Z",
+            "sha256": "caaf91bcba13364ddf76ea5d672a017e7d15c53b1ff4cc41287e9f8b78777784"
+          }
+        ],
+        "index_entries_jsonl_sha256": "57b6e35669ce0e6b104df95e8cb539eb1ecbf693304920e22005b0b5b311aab1",
+        "index_summary_sha256": "f6b3af7cd417ff667d95ab1afd2d64d9fc1842d45927dc1932b9d14565925351"
+      },
+      "filing_count": 29129,
+      "frontier": "2026-09-24",
+      "ingestion": "not_ingested",
+      "inventory_kind": "form_index",
+      "observed_at": "2026-09-25T07:59:13.866399Z",
+      "reason_codes": [
+        "inventory_not_ingested"
+      ],
+      "source": "sec_ncen",
+      "source_key": "sec_ncen.form_index",
+      "state": "inventory_only"
+    },
+    {
+      "basis": "27 DERA N-PORT quarterly packages 2019q4 to 2026q2 inventoried; filings through 2026-06-30; 2026q3 not published at observation; not parsed",
+      "code": "inventory_only_not_ingested",
+      "evidence": {
+        "absence_probe": {
+          "http_status": 404,
+          "observed_at": "2026-09-25T03:05:07.181614Z",
+          "quarter": "2026q3"
+        },
+        "artifact_total_bytes": 11472984963,
+        "artifacts": [
+          {
+            "bytes": 240007320,
+            "label": "2019q4",
+            "last_modified": "Thu, 25 Jul 2024 20:14:33 GMT",
+            "sha256": "f8e10bce83ac2251bcdb80111faa362b7c2b1ffb6581513e11559af0eac31390"
+          },
+          {
+            "bytes": 340462382,
+            "label": "2020q1",
+            "last_modified": "Fri, 26 Jul 2024 11:33:01 GMT",
+            "sha256": "4763fe2a71c67bd95934d8a961b88d29d0726e8ee7d1d0f57de9bddb2b087dbd"
+          },
+          {
+            "bytes": 332888140,
+            "label": "2020q2",
+            "last_modified": "Fri, 26 Jul 2024 11:42:23 GMT",
+            "sha256": "c0d02e0fc87a73387ff8390045639deac4ec84d4356eca1484a36637cbabaccb"
+          },
+          {
+            "bytes": 371068711,
+            "label": "2020q3",
+            "last_modified": "Fri, 26 Jul 2024 11:55:08 GMT",
+            "sha256": "e048462a9cedc857b56075b0a7db47f1b7f98cc1752017b3220b86e43431283b"
+          },
+          {
+            "bytes": 359205250,
+            "label": "2020q4",
+            "last_modified": "Fri, 26 Jul 2024 12:01:12 GMT",
+            "sha256": "37eac516e1f8af19ef87718eaa100a9a05905a33f8c11ec7c38ab5fc784b02e1"
+          },
+          {
+            "bytes": 342516796,
+            "label": "2021q1",
+            "last_modified": "Fri, 26 Jul 2024 12:07:17 GMT",
+            "sha256": "b88674c295ca8b1f25d7396d6e779dc66428bc8ba8d7d435b28e05efb9e1f0b8"
+          },
+          {
+            "bytes": 358497137,
+            "label": "2021q2",
+            "last_modified": "Fri, 26 Jul 2024 12:15:01 GMT",
+            "sha256": "1a84e50fa13053ea2a66dd82726b741d818248a3b6722a5a8e72dd1739d37289"
+          },
+          {
+            "bytes": 380417219,
+            "label": "2021q3",
+            "last_modified": "Fri, 26 Jul 2024 12:20:55 GMT",
+            "sha256": "57900ea865f16f5fc717b0185ba7a73a0d0fb84a00441f9ccebdde0437c937a1"
+          },
+          {
+            "bytes": 374616598,
+            "label": "2021q4",
+            "last_modified": "Fri, 26 Jul 2024 12:29:17 GMT",
+            "sha256": "94169bcf86b40095a9590599291b40ee67ceb56d1e2cc88a085e1d018430917d"
+          },
+          {
+            "bytes": 482447144,
+            "label": "2022q1",
+            "last_modified": "Thu, 18 Jul 2024 22:29:05 GMT",
+            "sha256": "9d28cad347e433f921e9154efd77c4f3755634d7c105a1dc0b9c3b72be69872e"
+          },
+          {
+            "bytes": 432741571,
+            "label": "2022q2",
+            "last_modified": "Fri, 19 Jul 2024 00:32:59 GMT",
+            "sha256": "228dc1a21e3e5813d2cad2cb776a25b1a9580da1129d060b6ed1ec7bdb7f8250"
+          },
+          {
+            "bytes": 724385184,
+            "label": "2022q3",
+            "last_modified": "Fri, 19 Jul 2024 00:33:14 GMT",
+            "sha256": "6494465b63ef3450437019794d0d15bfae72c6752e4fc589b6f71953d9203f1b"
+          },
+          {
+            "bytes": 422189888,
+            "label": "2022q4",
+            "last_modified": "Fri, 19 Jul 2024 00:33:26 GMT",
+            "sha256": "add0a14dc5f7a753a897c3daeea674cbbf75c8167670cdeaa3d647068db8416d"
+          },
+          {
+            "bytes": 480447687,
+            "label": "2023q1",
+            "last_modified": "Fri, 19 Jul 2024 00:33:37 GMT",
+            "sha256": "3c970127ca2315ac35ec7e6fc2f8c1eed0dadb64a8bfb760dc6f0609d540ca87"
+          },
+          {
+            "bytes": 427953767,
+            "label": "2023q2",
+            "last_modified": "Fri, 19 Jul 2024 00:33:56 GMT",
+            "sha256": "29cee81fdbe41ac9ebde1dcf76c6a7088e5c9b3e345829ab9f5773574946ef00"
+          },
+          {
+            "bytes": 457209257,
+            "label": "2023q3",
+            "last_modified": "Fri, 19 Jul 2024 00:34:08 GMT",
+            "sha256": "d27b2645f282b1230ca998a2fe759eca3547542f0e25c568046509152a5ad21e"
+          },
+          {
+            "bytes": 420320703,
+            "label": "2023q4",
+            "last_modified": "Fri, 19 Jul 2024 00:34:19 GMT",
+            "sha256": "238ca64537a7b6febcb7adbc444645db7a847cdf1bd7579eb8372f2ae29f1c55"
+          },
+          {
+            "bytes": 446989787,
+            "label": "2024q1",
+            "last_modified": "Fri, 19 Jul 2024 00:59:29 GMT",
+            "sha256": "7f391a05a71cec3fde5ce382e8ca8af9b11606ae85c465f99d98846e2d695254"
+          },
+          {
+            "bytes": 506739574,
+            "label": "2024q2",
+            "last_modified": "Fri, 19 Jul 2024 01:13:57 GMT",
+            "sha256": "960ee7685ee0da352b0e59c1e34ce7ec383a04d90f7d1a877c891b2b31aa4332"
+          },
+          {
+            "bytes": 478076657,
+            "label": "2024q3",
+            "last_modified": "Tue, 08 Oct 2024 19:25:31 GMT",
+            "sha256": "e2c4d7e7cbf346338476e65231918917d327776f348065b3329d55274ec35f74"
+          },
+          {
+            "bytes": 406008057,
+            "label": "2024q4",
+            "last_modified": "Tue, 07 Jan 2025 16:10:32 GMT",
+            "sha256": "449963cd187fc40774dd947c6302863c9d958369f747b196d957eab999501465"
+          },
+          {
+            "bytes": 462120659,
+            "label": "2025q1",
+            "last_modified": "Tue, 08 Apr 2025 14:29:53 GMT",
+            "sha256": "7593dc6f6eaed347ba21bf0e95bb1c1fb14701de98bdf09410a1e975871d2f1b"
+          },
+          {
+            "bytes": 435156377,
+            "label": "2025q2",
+            "last_modified": "Thu, 03 Jul 2025 19:33:01 GMT",
+            "sha256": "08b90e310da506ae46e8a5b276022861808d61d56ce434ce310f52f31f608ca7"
+          },
+          {
+            "bytes": 468940747,
+            "label": "2025q3",
+            "last_modified": "Tue, 18 Nov 2025 21:10:43 GMT",
+            "sha256": "4cc5c2431bf8997ef0af1cb7b69568255a1d6a1840e41499d9ffd1fc42e030f6"
+          },
+          {
+            "bytes": 417802295,
+            "label": "2025q4",
+            "last_modified": "Wed, 07 Jan 2026 14:46:14 GMT",
+            "sha256": "4ebb169e6cc0745b4cc65de4e83ea4916c7ad39146c383007e078b6223af8dea"
+          },
+          {
+            "bytes": 463076167,
+            "label": "2026q1",
+            "last_modified": "Mon, 06 Apr 2026 14:13:33 GMT",
+            "sha256": "7626e33d21ab48169db412f7370190a9ba8d6a2c921718e59a445b333b23694c"
+          },
+          {
+            "bytes": 440699889,
+            "label": "2026q2",
+            "last_modified": "Thu, 09 Jul 2026 15:11:37 GMT",
+            "sha256": "077cc836a978a593b29012219395fbe9c303d5e930f5be3b5f4353c3b02296fc"
+          }
+        ],
+        "packages_json_sha256": "48bdb7bceaa18ee1aa468359dddc550fb63a424577b26b95d98475c26d297f7f",
+        "report_md_sha256": "b127f34fdd137a0838045b51a89521624995a658a7b45adbe8d37535f4597f84",
+        "sha256sums_sha256": "80948bea9e28ed619e316c3f66c50ed7c2ca44405da5837452b354b4166c9af8"
+      },
+      "filing_count": null,
+      "frontier": "2026-06-30",
+      "ingestion": "not_ingested",
+      "inventory_kind": "dera_packages",
+      "observed_at": "2026-09-25T03:16:02.540136Z",
+      "reason_codes": [
+        "inventory_not_ingested",
+        "nport_consensus_c1_blocked",
+        "nport_q3_unavailable_at_observation"
+      ],
+      "source": "sec_nport",
+      "source_key": "sec_nport.dera_packages",
+      "state": "inventory_only"
+    }
+  ],
+  "limits": {
+    "max_bundle_bytes": 805306368,
+    "max_grid_rows": 1200000
+  },
+  "mode": "inventory_only",
+  "panel": {
+    "expected_publication_id": "65156481-8cb4-52b5-8676-cf77edc5644f",
+    "first_month": "2021-08-01",
+    "last_month": "2026-08-01",
+    "months": 61,
+    "product": "bond_panel_v1"
+  },
+  "product": "bond_credit_evidence_v1",
+  "target_month": "2026-08-01",
+  "version": "bond_default_events_source_frontier_manifest_v1"
+}

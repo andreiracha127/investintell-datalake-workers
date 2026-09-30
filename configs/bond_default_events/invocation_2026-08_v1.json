@@ -1,0 +1,21 @@
+{
+  "invocation_version": "bond_default_events_invocation_v1",
+  "product": "bond_credit_evidence_v1",
+  "contract_version": "bond_default_event_bundle_v2",
+  "input": {
+    "kind": "sources",
+    "source_manifest": {
+      "path": "../../contracts/bonds/default_events_frontier_manifest_2026-08.json",
+      "sha256": "ff17b9ac668a55668c006c34fa397365fea58045f89836c86c64bb8b06f525a2"
+    },
+    "expected_panel_publication_id": "65156481-8cb4-52b5-8676-cf77edc5644f",
+    "code_digest": "sha256:e30f3195862984621321f64203d8c6303d7ece6740488766d74022215366b39a"
+  },
+  "expected": {
+    "publication_id": "fbd98775-1e01-8186-9208-9467e84cc74e",
+    "target_month": "2026-08-01",
+    "knowledge_cutoff": "2026-09-29T19:30:00+00:00",
+    "quality_state": "partial",
+    "build_scope": "limited"
+  }
+}

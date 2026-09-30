@@ -19,6 +19,7 @@ test builds its own throwaway schema and rolls the whole transaction back.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 from uuid import uuid4
 
 import psycopg
@@ -125,7 +126,11 @@ def _cohort(cur) -> list[str]:
 
 @pytest.fixture
 def conn():
-    with psycopg.connect(DSN) as c:
+    dsn = os.getenv("NAV_W1_TEST_DSN", DSN)
+    if "NAV_W1_TEST_DSN" in os.environ:
+        assert psycopg.conninfo.conninfo_to_dict(dsn).get("dbname", "").startswith(
+            "nav_readiness_w1")
+    with psycopg.connect(dsn) as c:
         with c.cursor() as cur:
             _seed(cur)
         yield c

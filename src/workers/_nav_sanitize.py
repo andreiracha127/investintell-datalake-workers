@@ -28,12 +28,17 @@ WINDOW = 5               # centered window (half=2 each side) for the local medi
 SCALE_STEP_RATIO = 10.0  # persistent >=10x level shift that never reverts = scale change
 GLITCH_LOG = 1.0         # |log return| above this is "impossible" (>2.7x/day)
 _DEAD_FRACTION = 0.5     # >= this fraction of points near-zero => dead fund
+REPAIRED_NAV_KINDS = frozenset({
+    "centered_interpolation_v1", "log_linear_interpolation_v1",
+    "one_sided_carry_v1", "local_median_v1",
+})
 
 
 @dataclass
 class SanitizeResult:
     nav: list[float | None]
     repaired: list[bool]
+    repair_kinds: list[str]
     glitch_count: int
     dead: bool
     scale_step: bool
@@ -54,12 +59,13 @@ def sanitize_nav_series(
     navs: list[float | None] = [v for _d, v in ordered]
     n = len(navs)
     repaired = [False] * n
+    repair_kinds = ["none"] * n
     if n == 0:
-        return SanitizeResult([], [], 0, False, False)
+        return SanitizeResult([], [], [], 0, False, False)
 
     positives = [v for v in navs if v is not None and v > 0]
     if not positives:
-        return SanitizeResult(navs, repaired, 0, False, False)
+        return SanitizeResult(navs, repaired, repair_kinds, 0, False, False)
 
     # Dead: a large fraction of the series sits near-zero relative to the series
     # peak. Tiingo's glitches are LOW (near-zero prints), never spuriously high,
@@ -93,9 +99,13 @@ def sanitize_nav_series(
                 right = _nearest(navs, i, +1, ref)
                 navs[i] = _interp(left, right, ref)
                 repaired[i] = True
+                repair_kinds[i] = ("log_linear_interpolation_v1" if left is not None
+                                   and right is not None else "one_sided_carry_v1"
+                                   if left is not None or right is not None
+                                   else "local_median_v1")
                 glitch_count += 1
 
-    return SanitizeResult(navs, repaired, glitch_count, dead, scale_step)
+    return SanitizeResult(navs, repaired, repair_kinds, glitch_count, dead, scale_step)
 
 
 def _nearest(navs, i, step, ref):

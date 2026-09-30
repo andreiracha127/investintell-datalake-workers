@@ -44,6 +44,9 @@ def run(
                 }
 
             risk = risk_runner(dsn, calc_date=calc_date, limit=limit)
+            # Analytics depends on computed metrics and their MV, not on the NAV
+            # readiness publication: a diagnostic/busy/superseded
+            # ``risk_publication`` never blocks momentum when mv_refreshed is true.
             _require_success("risk_metrics", risk)
             if risk.get("mv_refreshed") is not True:
                 reason = risk.get("mv_refresh_error", "fund_risk_latest_mv not refreshed")

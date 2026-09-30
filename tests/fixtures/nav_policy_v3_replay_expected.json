@@ -1,0 +1,20 @@
+{
+  "active_daily_delta": 23,
+  "excluded": 23,
+  "sec_first_failure": {
+    "sec.missing": 10,
+    "sec.stale": 13
+  },
+  "v2": {
+    "active": 2924,
+    "inactive": 8979,
+    "structural_pre_claims_daily": 5102,
+    "unknown": 8174
+  },
+  "v3": {
+    "active": 2901,
+    "inactive": 8979,
+    "structural_pre_claims_daily": 5102,
+    "unknown": 8197
+  }
+}

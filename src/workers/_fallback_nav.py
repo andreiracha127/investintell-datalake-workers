@@ -23,11 +23,12 @@ which Yahoo accepts verbatim; EODHD needs ``.L→.LSE`` and ``.DE→.XETRA``
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import os
 import time
 from typing import Any
 
-from src.workers._tiingo import TokenBucket
+from src.workers._tiingo import NavFetchResult, NavObservation, TokenBucket, parse_nav_observations
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 YAHOO_BASE_URL = "https://query1.finance.yahoo.com"
@@ -79,6 +80,23 @@ def parse_yahoo_chart(payload: Any) -> list[tuple[_dt.date, float | None]]:
     return out
 
 
+def parse_yahoo_observations(payload: Any) -> tuple[NavObservation, ...]:
+    result = payload["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    quote = result["indicators"]["quote"][0]["close"]
+    adjusted = (result["indicators"].get("adjclose") or [{}])[0].get("adjclose", [])
+    out = []
+    for i, ts in enumerate(timestamps):
+        price = adjusted[i] if i < len(adjusted) else None
+        kind = "adjusted" if price is not None else "raw"
+        if price is None:
+            price = quote[i]
+        out.append(NavObservation(_dt.datetime.fromtimestamp(ts, _dt.timezone.utc).date(),
+                                  float(price) if price is not None else None,
+                                  kind if price is not None else "unknown"))
+    return tuple(out)
+
+
 class FallbackNav:
     """Provider chain tried in order when the primary returns empty.
 
@@ -113,7 +131,12 @@ class FallbackNav:
         self.close()
 
     def _get_json(self, url: str, *, params: dict | None = None,
-                  headers: dict | None = None, bucket: TokenBucket) -> Any:
+                   headers: dict | None = None, bucket: TokenBucket) -> Any:
+        return self._get_json_result(url, params=params, headers=headers, bucket=bucket)[1]
+
+    def _get_json_result(self, url: str, *, params: dict | None = None,
+                         headers: dict | None = None, bucket: TokenBucket) -> tuple[str, Any]:
+        failure = "transient_error"
         for sleep_s in (1.0, 4.0):
             bucket.acquire()
             try:
@@ -121,16 +144,64 @@ class FallbackNav:
             except Exception:
                 time.sleep(sleep_s)
                 continue
-            if resp.status_code in (429, 503) or resp.status_code >= 500:
+            if resp.status_code == 429:
+                failure = "rate_limited"
                 time.sleep(sleep_s)
                 continue
+            if resp.status_code >= 500:
+                failure = "transient_error"
+                time.sleep(sleep_s)
+                continue
+            if resp.status_code == 404:
+                return "not_found", None
             if resp.status_code >= 400:
-                return None
+                return "invalid_payload", None
             try:
-                return resp.json()
-            except Exception:
-                return None
-        return None
+                payload = resp.json()
+            except (ValueError, TypeError):
+                return "invalid_payload", None
+            return ("success_new" if payload else "empty"), payload
+        return failure, None
+
+    def fetch_observations(self, ticker: str, start: _dt.date,
+                           end: _dt.date) -> tuple[NavFetchResult, str | None,
+                                                   list[tuple[str, NavFetchResult]]]:
+        """NAV-only typed path; legacy fetch() retains its public list contract."""
+        attempts: list[tuple[str, NavFetchResult]] = []
+        if not self._eodhd_key:
+            attempts.append(("eodhd", NavFetchResult("not_configured")))
+        for provider in self.providers:
+            started = _dt.datetime.now(_dt.timezone.utc)
+            if provider == "eodhd":
+                status, payload = self._get_json_result(
+                    f"{EODHD_BASE_URL}/eod/{eodhd_symbol(ticker)}",
+                    params={"api_token": self._eodhd_key, "fmt": "json",
+                            "from": start.isoformat(), "to": end.isoformat(), "period": "d"},
+                    bucket=self._eodhd_bucket)
+            else:
+                p1 = int(_dt.datetime.combine(start, _dt.time.min, _dt.timezone.utc).timestamp())
+                p2 = int(_dt.datetime.combine(end, _dt.time.min, _dt.timezone.utc).timestamp()) + 86400
+                status, payload = self._get_json_result(
+                    f"{YAHOO_BASE_URL}/v8/finance/chart/{ticker}",
+                    params={"period1": p1, "period2": p2, "interval": "1d", "events": "div,splits"},
+                    headers=_YAHOO_HEADERS, bucket=self._yahoo_bucket)
+            if payload is None:
+                result = NavFetchResult(status)
+            else:
+                try:
+                    observations = (parse_nav_observations(payload, source="eodhd")
+                                    if provider == "eodhd" else parse_yahoo_observations(payload))
+                    result = NavFetchResult("success_new" if any(
+                        o.price is not None and math.isfinite(o.price) and o.price > 0
+                        for o in observations) else "success_no_new", observations)
+                except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+                    result = NavFetchResult("invalid_payload")
+            result = NavFetchResult(result.status, result.observations, started,
+                                    _dt.datetime.now(_dt.timezone.utc))
+            attempts.append((provider, result))
+            if result.status == "success_new":
+                return result, provider, attempts
+        return NavFetchResult("success_no_new"), None, attempts
 
     def _fetch_eodhd(self, ticker: str, start: _dt.date,
                      end: _dt.date) -> list[tuple[_dt.date, float | None]]:

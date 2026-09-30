@@ -79,3 +79,28 @@ def test_build_rows_carries_fallback_source():
     # default unchanged
     rows = ii.build_rows([(_dt.date(2026, 6, 11), 10.0)], [(uuid.uuid4(), "USD")])
     assert rows[0]["source"] == "tiingo"
+
+
+def test_typed_yahoo_preserves_adjusted_raw_boundary():
+    payload = {"chart": {"result": [{
+        "timestamp": [1781049600, 1781136000],
+        "indicators": {"quote": [{"close": [100, 101]}],
+                       "adjclose": [{"adjclose": [99, None]}]},
+    }]}}
+    series = fb.parse_yahoo_observations(payload)
+    assert [o.kind for o in series] == ["adjusted", "raw"]
+    rows = ii.build_rows(series, [("iid", "USD")], source="yahoo")
+    assert rows[1]["return_source_boundary"] is True
+    assert rows[1]["return_start_date"] is None
+    assert rows[1]["return_1d"] is None
+
+
+def test_typed_fallback_distinguishes_http_failure_and_malformed_payload(monkeypatch):
+    client = fb.FallbackNav(eodhd_key="fixture")
+    outcomes = iter([("not_found", None), ("success_new", {"chart": {"result": None}})])
+    monkeypatch.setattr(client, "_get_json_result", lambda *_args, **_kw: next(outcomes))
+    result, provider, attempts = client.fetch_observations(
+        "TEST", _dt.date(2026, 6, 10), _dt.date(2026, 6, 11))
+    assert provider is None and result.status == "success_no_new"
+    assert [r.status for _, r in attempts] == ["not_found", "invalid_payload"]
+    assert all(r.attempted_at <= r.finished_at for _, r in attempts)

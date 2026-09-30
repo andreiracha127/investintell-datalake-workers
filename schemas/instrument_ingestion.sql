@@ -12,6 +12,17 @@ CREATE TABLE IF NOT EXISTS nav_timeseries (
     currency      VARCHAR(3),
     source        VARCHAR(30)   DEFAULT 'tiingo',
     return_type   VARCHAR(10)   NOT NULL DEFAULT 'arithmetic',
+    source_nav NUMERIC(18,6),
+    source_nav_kind VARCHAR(16),
+    nav_repair_kind VARCHAR(48),
+    return_start_date DATE,
+    return_source_boundary BOOLEAN,
+    return_uses_repaired_nav BOOLEAN,
+    return_semantics VARCHAR(48),
+    return_verification_status VARCHAR(24),
+    calendar_id VARCHAR(128),
+    calendar_version VARCHAR(64),
+    calendar_source TEXT,
     PRIMARY KEY (instrument_id, nav_date)
 );
 

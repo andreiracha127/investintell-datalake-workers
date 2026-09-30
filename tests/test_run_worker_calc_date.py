@@ -259,3 +259,83 @@ def test_the_cli_reports_lock_busy_then_exits_nonzero(monkeypatch, capsys) -> No
     output = capsys.readouterr().out
     assert '"status": "lock_busy"' in output
     assert '"releases": 0' in output
+
+
+# --------------------------------------------------------------------------- #
+# W2: the two NAV publication lanes exit 1 unless they really published.
+# Controlled subprocess: the real ``src.run_worker.main`` in a fresh
+# interpreter, the worker module replaced by a stub (no provider, no DB).
+# --------------------------------------------------------------------------- #
+_NAV_DRIVER = """
+import json, sys, types
+import src.workers
+name, stats = sys.argv[1], json.loads(sys.argv[2])
+stub = types.ModuleType("src.workers." + name)
+stub.run = lambda dsn: stats
+sys.modules["src.workers." + name] = stub
+import src.run_worker
+src.run_worker.main()
+"""
+_SECRET = "s3cr3t-must-not-print"
+_BUSY = {"status": "lock_busy", "state": "lock_busy", "published": False,
+         "retryable": True}
+
+
+def _run_lane(worker: str, stats: dict):
+    import json
+    import os
+    import subprocess
+    from pathlib import Path
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("DB_TLS_", "WORKER"))
+    }
+    env.update(
+        WORKER=worker,
+        DATABASE_URL=f"postgresql://nav:{_SECRET}@127.0.0.1:1/none",
+        PYTHONDONTWRITEBYTECODE="1",
+    )
+    flags = ["-s"] if sys.flags.no_user_site else []
+    proc = subprocess.run(
+        [sys.executable, *flags, "-c", _NAV_DRIVER, worker, json.dumps(stats)],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert _SECRET not in proc.stdout + proc.stderr
+    lines = [line for line in proc.stdout.splitlines() if line.startswith("{")]
+    assert len(lines) == 1, (proc.stdout, proc.stderr)
+    return proc.returncode, json.loads(lines[0])
+
+
+@pytest.mark.parametrize(
+    ("worker", "stats", "code"),
+    [
+        ("fund_nav_readiness", _BUSY, 1),
+        ("fund_nav_readiness", {"state": "complete", "published": True,
+                                "run_id": "r"}, 0),
+        ("nav_current_daily_chain", {**_BUSY, "blocked_stage": "risk_metrics"}, 1),
+        ("nav_current_daily_chain", {"status": "blocked", "state": "blocked",
+                                     "published": False, "retryable": False,
+                                     "reason": "LIMITED_RUN"}, 1),
+        ("nav_current_daily_chain", {"status": "complete", "state": "complete",
+                                     "published": True, "as_of_session": "2026-09-08"},
+         0),
+        ("nav_current_daily_chain", {"published": False}, 1),
+        # Legacy fleet unchanged: risk/analytics publication flags do not exit 1.
+        ("risk_metrics", {"processed": 0, "upserted": 0, "skipped": "lock_busy",
+                          "mv_refreshed": False}, 0),
+        ("risk_metrics", {"processed": 3, "upserted": 3, "mv_refreshed": True,
+                          "risk_publication": {"published": False,
+                                               "reason": "LIMITED_RUN"}}, 0),
+        ("analytics_refresh_chain", {"published": False, "skipped": "lock_busy"}, 0),
+    ],
+)
+def test_runner_subprocess_exit_codes_for_nav_lanes(worker, stats, code):
+    returncode, payload = _run_lane(worker, stats)
+    assert returncode == code
+    assert payload == {"worker": worker, **stats}

@@ -1,0 +1,20 @@
+{
+ "0000910472-25-005685.xml": {
+  "bytes": 26687,
+  "retrieved_at": "2026-09-25T05:48:41.012066+00:00",
+  "sha256": "5a4e0c9f992f47ac16c1c115955361e2c62c90e4b9ab7f682cf7bcdaae64617d",
+  "url": "https://www.sec.gov/Archives/edgar/data/1722837/000091047225005685/primary_doc.xml"
+ },
+ "0001752724-20-182663.xml": {
+  "bytes": 25716,
+  "retrieved_at": "2026-09-25T05:42:10.187003+00:00",
+  "sha256": "8e89f2766f1a644c35d8c6dc054346cf3a1994e58fde1cc391f41658d4456043",
+  "url": "https://www.sec.gov/Archives/edgar/data/1678130/000175272420182663/primary_doc.xml"
+ },
+ "0001752724-25-058421.xml": {
+  "bytes": 7647,
+  "retrieved_at": "2026-09-25T05:47:33.280211+00:00",
+  "sha256": "477b0f7f552dabc194b884938e6a69d43b209d7941284a23f5db1a649270ce94",
+  "url": "https://www.sec.gov/Archives/edgar/data/1552947/000175272425058421/primary_doc.xml"
+ }
+}

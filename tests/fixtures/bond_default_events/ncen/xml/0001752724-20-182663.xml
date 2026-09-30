@@ -1,0 +1,500 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/ncen" xmlns:com="http://www.sec.gov/edgar/common">
+  <schemaVersion>X0201</schemaVersion>
+  <headerData>
+    <submissionType>N-CEN</submissionType>
+    <filerInfo>
+      <liveTestFlag>LIVE</liveTestFlag>
+      <filer>
+        <issuerCredentials>
+          <cik>0001678130</cik>
+          <ccc>XXXXXXXX</ccc>
+        </issuerCredentials>
+        <fileNumber>811-23434</fileNumber>
+      </filer>
+      <flags>
+        <returnCopyFlag>true</returnCopyFlag>
+        <overrideInternetFlag>false</overrideInternetFlag>
+        <confirmingCopyFlag>false</confirmingCopyFlag>
+      </flags>
+      <investmentCompanyType>N-2</investmentCompanyType>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <generalInfo reportEndingPeriod="2020-06-30" isReportPeriodLt12="N"/>
+    <registrantInfo>
+      <registrantFullName>RiverNorth/Doubleline Strategic Opportunity Fund, Inc.</registrantFullName>
+      <investmentCompFileNo>811-23166</investmentCompFileNo>
+      <registrantCik>0001678130</registrantCik>
+      <registrantLei>549300RV95QKKVIRV167</registrantLei>
+      <registrantstreet1>325 North LaSalle Street</registrantstreet1>
+      <registrantstreet2>Suite 645</registrantstreet2>
+      <registrantcity>Chicago</registrantcity>
+      <registrantzipCode>60654</registrantzipCode>
+      <registrantstate>US-IL</registrantstate>
+      <registrantcountry>US</registrantcountry>
+      <registrantphoneNumber>312-832-1440</registrantphoneNumber>
+      <websites>
+        <website webpage="www.rivernorth.com/opp"/>
+      </websites>
+      <locationBooksRecords>
+        <locationBooksRecord>
+          <officeName>ALPS Fund Services, Inc.</officeName>
+          <officeAddress1>1290 Broadway, Suite 1000</officeAddress1>
+          <officeCity>Denver</officeCity>
+          <officeStateCountry officeCountry="US" officeState="US-CO"/>
+          <officeRecordsZipCode>80203</officeRecordsZipCode>
+          <officePhone>303-623-2577</officePhone>
+          <booksRecordsDesc>All applicable accounts, books and documents required to be maintained by the Fund by Section 31(a) of the 1940 Act and the Rules promulgated thereunder.</booksRecordsDesc>
+        </locationBooksRecord>
+        <locationBooksRecord>
+          <officeName>RiverNorth Capital Management, LLC</officeName>
+          <officeAddress1>325 N. LaSalle Street, Suite 645</officeAddress1>
+          <officeCity>Chicago</officeCity>
+          <officeStateCountry officeCountry="US" officeState="US-IL"/>
+          <officeRecordsZipCode>60654</officeRecordsZipCode>
+          <officePhone>312-832-1440</officePhone>
+          <booksRecordsDesc>All applicable accounts, books and documents required to be maintained by the Fund by Section 31(a) of the 1940 Act and the Rules promulgated thereunder.</booksRecordsDesc>
+        </locationBooksRecord>
+        <locationBooksRecord>
+          <officeName>State Street Bank and Trust Company</officeName>
+          <officeAddress1>One Lincoln Street</officeAddress1>
+          <officeCity>Boston</officeCity>
+          <officeStateCountry officeCountry="US" officeState="US-MA"/>
+          <officeRecordsZipCode>02111</officeRecordsZipCode>
+          <officePhone>617-786-3000</officePhone>
+          <booksRecordsDesc>All applicable accounts, books and documents required to be maintained by the Fund by Section 31(a) of the 1940 Act and the Rules promulgated thereunder</booksRecordsDesc>
+        </locationBooksRecord>
+      </locationBooksRecords>
+      <isRegistrantFirstFiling>N</isRegistrantFirstFiling>
+      <isRegistrantLastFiling>N</isRegistrantLastFiling>
+      <isRegistrantFamilyInvComp>N</isRegistrantFamilyInvComp>
+      <registrantClassificationType>N-2</registrantClassificationType>
+      <isSecuritiesActRegistration>Y</isSecuritiesActRegistration>
+      <directors>
+        <director>
+          <directorName>Patrick W. Galley</directorName>
+          <crdNumber>004869392</crdNumber>
+          <isDirectorInterestedPerson>Y</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-23067"/>
+            <fileNumberInfo fileNumber="811-23366"/>
+            <fileNumberInfo fileNumber="811-23434"/>
+            <fileNumberInfo fileNumber="811-21934"/>
+            <fileNumberInfo fileNumber="811-23481"/>
+            <fileNumberInfo fileNumber="811-22472"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>J. Wayne Hutchens</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-23166"/>
+            <fileNumberInfo fileNumber="811-22472"/>
+            <fileNumberInfo fileNumber="811-22747"/>
+            <fileNumberInfo fileNumber="811-23434"/>
+            <fileNumberInfo fileNumber="811-23481"/>
+            <fileNumberInfo fileNumber="811-23366"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>David Swanson</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-23067"/>
+            <fileNumberInfo fileNumber="811-22472"/>
+            <fileNumberInfo fileNumber="811-21987"/>
+            <fileNumberInfo fileNumber="811-23434"/>
+            <fileNumberInfo fileNumber="811-22525"/>
+            <fileNumberInfo fileNumber="811-23481"/>
+            <fileNumberInfo fileNumber="811-23366"/>
+            <fileNumberInfo fileNumber="811-21934"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>John K. Carter</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-23067"/>
+            <fileNumberInfo fileNumber="811-23481"/>
+            <fileNumberInfo fileNumber="811-21934"/>
+            <fileNumberInfo fileNumber="811-23434"/>
+            <fileNumberInfo fileNumber="811-22472"/>
+            <fileNumberInfo fileNumber="811-07470"/>
+            <fileNumberInfo fileNumber="811-23366"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>Jerry Raio</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>Y</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-23434"/>
+            <fileNumberInfo fileNumber="811-23481"/>
+            <fileNumberInfo fileNumber="811-23366"/>
+            <fileNumberInfo fileNumber="811-23067"/>
+            <fileNumberInfo fileNumber="811-22472"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>John S. Oakes</directorName>
+          <crdNumber>000350101</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-23067"/>
+            <fileNumberInfo fileNumber="811-23434"/>
+            <fileNumberInfo fileNumber="811-23481"/>
+            <fileNumberInfo fileNumber="811-23067"/>
+            <fileNumberInfo fileNumber="811-21934"/>
+            <fileNumberInfo fileNumber="811-22472"/>
+            <fileNumberInfo fileNumber="811-23366"/>
+          </fileNumbers>
+        </director>
+      </directors>
+      <chiefComplianceOfficers>
+        <chiefComplianceOfficer>
+          <ccoName>Marcus L. Collins</ccoName>
+          <crdNumber>N/A</crdNumber>
+          <ccoStreet1>325 N. Lasalle Street</ccoStreet1>
+          <ccoStreet2>Suite 645</ccoStreet2>
+          <ccoCity>Chicago</ccoCity>
+          <ccoStateCountry ccoCountry="US" ccoState="US-IL"/>
+          <ccoZipCode>60654</ccoZipCode>
+          <ccoPhone>XXXXXX</ccoPhone>
+          <isCcoChangedSinceLastFiling>N</isCcoChangedSinceLastFiling>
+          <ccoEmployers>
+            <ccoEmployer ccoEmployerName="N/A" ccoEmployerId="N/A"/>
+          </ccoEmployers>
+        </chiefComplianceOfficer>
+      </chiefComplianceOfficers>
+      <securityMatterSeriesInfo isRegistrantSubmittedMatter="Y"/>
+      <isPreviousLegalProceeding>N</isPreviousLegalProceeding>
+      <isPreviousProceedingTerminated>N</isPreviousProceedingTerminated>
+      <isClaimFiled>N</isClaimFiled>
+      <coveredByInsurancePolicy isCoveredByInsurancePolicy="Y" isClaimFiledDuringPeriod="N"/>
+      <isFinancialSupportDuringPeriod>N</isFinancialSupportDuringPeriod>
+      <isExemptionFromAct>N</isExemptionFromAct>
+      <principalUnderwriters>
+        <principalUnderwriter>
+          <principalUnderwriterName>Wells Fargo Securities, LLC</principalUnderwriterName>
+          <principalUnderwriterFileNumber>008-65876</principalUnderwriterFileNumber>
+          <principalUnderwriterCrdNumber>000126292</principalUnderwriterCrdNumber>
+          <principalUnderwriterLei>VYVVCKR63DVZZN70PB21</principalUnderwriterLei>
+          <principalUnderWriterStateCountry principalUnderWriterCountry="US" principalUnderWriterState="US-NC"/>
+          <isPrincipalUnderwriterAffiliatedWithRegistrant>N</isPrincipalUnderwriterAffiliatedWithRegistrant>
+        </principalUnderwriter>
+      </principalUnderwriters>
+      <isUnderwriterHiredOrTerminated>N</isUnderwriterHiredOrTerminated>
+      <publicAccountants>
+        <publicAccountant>
+          <publicAccountantName>COHEN &amp; CO., LTD.</publicAccountantName>
+          <pcaobNumber>00925</pcaobNumber>
+          <publicAccountantLei>N/A</publicAccountantLei>
+          <publicAccountantStateCountry publicAccountantCountry="US" publicAccountantState="US-OH"/>
+        </publicAccountant>
+      </publicAccountants>
+      <isPublicAccountantChanged>N</isPublicAccountantChanged>
+      <isMaterialWeakness>N</isMaterialWeakness>
+      <isOpinionOffered>N</isOpinionOffered>
+      <isMaterialChange>N</isMaterialChange>
+      <isAccountingPrincipleChange>N</isAccountingPrincipleChange>
+      <paymentDividendSeries isPaymentDividend="Y"/>
+    </registrantInfo>
+    <managementInvestmentQuestionSeriesInfo>
+      <managementInvestmentQuestion>
+        <mgmtInvFundName>RiverNorth/Doubleline Strategic Opportunity Fund, Inc.</mgmtInvFundName>
+        <mgmtInvLei>549300RV95QKKVIRV167</mgmtInvLei>
+        <isFirstFilingByFund>N</isFirstFilingByFund>
+        <numAuthorizedClass>0</numAuthorizedClass>
+        <fundType>N/A</fundType>
+        <isNonDiversifiedCompany>N</isNonDiversifiedCompany>
+        <isForeignSubsidiary>N</isForeignSubsidiary>
+        <isFundSecuritiesLending>N</isFundSecuritiesLending>
+        <didFundLendSecurities>N</didFundLendSecurities>
+        <paymentToAgentManagerType>N/A</paymentToAgentManagerType>
+        <avgPortfolioSecuritiesValue>0</avgPortfolioSecuritiesValue>
+        <netIncomeSecuritiesLending>0</netIncomeSecuritiesLending>
+        <relyOnRuleType>N/A</relyOnRuleType>
+        <isExpenseLimitationInPlace>N</isExpenseLimitationInPlace>
+        <isExpenseReducedOrWaived>N</isExpenseReducedOrWaived>
+        <isFeesWaivedRecoupable>N</isFeesWaivedRecoupable>
+        <isExpenseWaivedRecoupable>N</isExpenseWaivedRecoupable>
+        <investmentAdvisers>
+          <investmentAdviser>
+            <investmentAdviserName>Rivernorth Capital Management, LLC</investmentAdviserName>
+            <investmentAdviserFileNo>801-61533</investmentAdviserFileNo>
+            <investmentAdviserCrdNo>000122020</investmentAdviserCrdNo>
+            <investmentAdviserLei>549300GSJH8NAH5BFT73</investmentAdviserLei>
+            <investmentAdviserStateCountry investmentAdviserState="US-IL" investmentAdviserCountry="US"/>
+            <isInvestmentAdviserHired>N</isInvestmentAdviserHired>
+          </investmentAdviser>
+        </investmentAdvisers>
+        <subAdvisers>
+          <subAdviser>
+            <subAdviserName>DoubleLine Capital Management</subAdviserName>
+            <subAdviserFileNo>801-70942</subAdviserFileNo>
+            <subAdviserCrdNo>000152606</subAdviserCrdNo>
+            <subAdviserLei>549300AQKG3ZYRYGH003</subAdviserLei>
+            <isSubAdviserAffiliated>N</isSubAdviserAffiliated>
+            <subAdviserStateCountry subAdviserState="US-CA" subAdviserCountry="US"/>
+            <isSubAdviserHired>N</isSubAdviserHired>
+          </subAdviser>
+        </subAdvisers>
+        <transferAgents>
+          <transferAgent>
+            <transferAgentName>DST Systems, Inc.</transferAgentName>
+            <transferAgentFileNo>84-00448</transferAgentFileNo>
+            <transferAgentLei>N/A</transferAgentLei>
+            <transferAgentStateCountry transferAgentState="US-MO" transferAgentCountry="US"/>
+            <isTransferAgentAffiliated>N</isTransferAgentAffiliated>
+            <isTransferAgentSubAgent>N</isTransferAgentSubAgent>
+          </transferAgent>
+        </transferAgents>
+        <isTransferAgentHiredOrTerminated>Y</isTransferAgentHiredOrTerminated>
+        <pricingServices>
+          <pricingService>
+            <pricingServiceName>ICE Data Pricing &amp; Reference Data, LLC</pricingServiceName>
+            <pricingServiceLei>5493000NQ9LYLDBCTL34</pricingServiceLei>
+            <pricingServiceStateCountry pricingServiceState="US-DE" pricingServiceCountry="US"/>
+            <isPricingServiceAffiliated>N</isPricingServiceAffiliated>
+          </pricingService>
+        </pricingServices>
+        <isPricingServiceHiredOrTerminated>N</isPricingServiceHiredOrTerminated>
+        <custodians>
+          <custodian>
+            <custodianName>State Street Bank &amp; Trust Co.</custodianName>
+            <custodianLei>N/A</custodianLei>
+            <custodianStateCountry custodianState="US-MA" custodianCountry="US"/>
+            <isCustodianAffiliated>N</isCustodianAffiliated>
+            <isSubCustodian>N</isSubCustodian>
+            <custodyType>Bank - section 17(f)(1) (15 U.S.C. 80a-17(f)(1))</custodyType>
+          </custodian>
+        </custodians>
+        <isCustodianHiredOrTerminated>Y</isCustodianHiredOrTerminated>
+        <shareholderServicingAgents>
+          <shareholderServicingAgent>
+            <shareholderServiceAgentName>DST SYSTEMS, INC.</shareholderServiceAgentName>
+            <shareholderServiceAgentLei>21B7QCD05XOK0YTYOP98</shareholderServiceAgentLei>
+            <shareholderServiceAgentStateCountry shareholderServiceAgentState="US-MO" shareholderServiceAgentCountry="US"/>
+            <isShareholderServiceAgentAffiliated>N</isShareholderServiceAgentAffiliated>
+            <isShareholderServiceAgentSubshare>N</isShareholderServiceAgentSubshare>
+          </shareholderServicingAgent>
+        </shareholderServicingAgents>
+        <isShareholderServiceHiredTerminated>Y</isShareholderServiceHiredTerminated>
+        <admins>
+          <admin>
+            <adminName>ALPS FUND SERVICES, INC.</adminName>
+            <adminLei>N/A</adminLei>
+            <adminStateCountry adminState="US-CO" adminCountry="US"/>
+            <isAdminAffiliated>N</isAdminAffiliated>
+            <isAdminSubAdmin>N</isAdminSubAdmin>
+          </admin>
+        </admins>
+        <isAdminHiredOrTerminated>Y</isAdminHiredOrTerminated>
+        <brokers>
+          <broker>
+            <brokerName>OPPENHEIMER &amp; CO. INC.</brokerName>
+            <brokerFileNo>8-4077</brokerFileNo>
+            <brokerCrdNo>000000249</brokerCrdNo>
+            <brokerLei>254900VH02JQR2L8XD64</brokerLei>
+            <brokerStateCountry brokerState="US-NY" brokerCountry="US"/>
+            <grossCommission>1717.24</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>NATIONAL FINANCIAL SERVICES LLC</brokerName>
+            <brokerFileNo>8-26740</brokerFileNo>
+            <brokerCrdNo>000013041</brokerCrdNo>
+            <brokerLei>549300JRHF1MHHWUAW04</brokerLei>
+            <brokerStateCountry brokerState="US-TX" brokerCountry="US"/>
+            <grossCommission>22851.19</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>NATIONAL SECURITIES CORPORATION</brokerName>
+            <brokerFileNo>8-164</brokerFileNo>
+            <brokerCrdNo>000007569</brokerCrdNo>
+            <brokerLei>254900QUIGJ7E9W0Y853</brokerLei>
+            <brokerStateCountry brokerState="US-FL" brokerCountry="US"/>
+            <grossCommission>3159.36</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>PIPER SANDLER</brokerName>
+            <brokerFileNo>8-15204</brokerFileNo>
+            <brokerCrdNo>000000665</brokerCrdNo>
+            <brokerLei>549300GRQCWQ3XGH0H10</brokerLei>
+            <brokerStateCountry brokerState="US-MN" brokerCountry="US"/>
+            <grossCommission>2839.79</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>JONESTRADING</brokerName>
+            <brokerFileNo>8-26089</brokerFileNo>
+            <brokerCrdNo>000006888</brokerCrdNo>
+            <brokerLei>2138008JJ5PA8H5UIL69</brokerLei>
+            <brokerStateCountry brokerState="US-CA" brokerCountry="US"/>
+            <grossCommission>8432.39</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>CITICORP SECURITIES SERVICES, INC.</brokerName>
+            <brokerFileNo>8-32117</brokerFileNo>
+            <brokerCrdNo>000015387</brokerCrdNo>
+            <brokerLei>549300N0SOX9OZVKG341</brokerLei>
+            <brokerStateCountry brokerState="US-NY" brokerCountry="US"/>
+            <grossCommission>1308.70</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>INTERACTIVE BROKERS LLC</brokerName>
+            <brokerFileNo>8-47257</brokerFileNo>
+            <brokerCrdNo>000036418</brokerCrdNo>
+            <brokerLei>50OBSE5T5521O6SMZR28</brokerLei>
+            <brokerStateCountry brokerState="US-CT" brokerCountry="US"/>
+            <grossCommission>4783.02</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>CANTOR FITZGERALD &amp; CO.</brokerName>
+            <brokerFileNo>8-201</brokerFileNo>
+            <brokerCrdNo>000000134</brokerCrdNo>
+            <brokerLei>5493004J7H4GCPG6OB62</brokerLei>
+            <brokerStateCountry brokerState="US-NY" brokerCountry="US"/>
+            <grossCommission>154.83</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>Hilltop Securities, Inc.</brokerName>
+            <brokerFileNo>8-45123</brokerFileNo>
+            <brokerCrdNo>000006220</brokerCrdNo>
+            <brokerLei>549300IXU82PMU6XZT45</brokerLei>
+            <brokerStateCountry brokerState="US-TX" brokerCountry="US"/>
+            <grossCommission>275.84</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>WALLACHBETH CAPITAL LLC</brokerName>
+            <brokerFileNo>8-67936</brokerFileNo>
+            <brokerCrdNo>000147853</brokerCrdNo>
+            <brokerLei>549300R371KUKXEXC133</brokerLei>
+            <brokerStateCountry brokerState="US-NJ" brokerCountry="US"/>
+            <grossCommission>166.43</grossCommission>
+          </broker>
+        </brokers>
+        <aggregateCommission>45807.92</aggregateCommission>
+        <principalTransactions>
+          <principalTransaction>
+            <principalName>GOLDMAN SACHS &amp; CO. LLC</principalName>
+            <principalFileNo>8-129</principalFileNo>
+            <principalCrdNo>000000361</principalCrdNo>
+            <principalLei>FOR8UP27PHTHYVLBNG30</principalLei>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>5253177.62</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>Citicorp Securities Service, Inc.</principalName>
+            <principalFileNo>8-32117</principalFileNo>
+            <principalCrdNo>000015387</principalCrdNo>
+            <principalLei>549300N0SOX9OZVKG341</principalLei>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>3360219.72</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>BCP SECURITIES, LLC</principalName>
+            <principalFileNo>8-42836</principalFileNo>
+            <principalCrdNo>000027063</principalCrdNo>
+            <principalLei>2549006Q2SCXK1988H68</principalLei>
+            <principalStateCountry principalState="US-CT" principalCountry="US"/>
+            <principalTotalPurchaseSale>5225268.32</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>NOMURA SECURITIES INTERNATIONAL, INC.</principalName>
+            <principalFileNo>8-15255</principalFileNo>
+            <principalCrdNo>000004297</principalCrdNo>
+            <principalLei>OXTKY6Q8X53C9ILVV871</principalLei>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>5945843.44</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>Interactive Brokers, LLC</principalName>
+            <principalFileNo>8-47257</principalFileNo>
+            <principalCrdNo>000036418</principalCrdNo>
+            <principalLei>50OBSE5T5521O6SMZR28</principalLei>
+            <principalStateCountry principalState="US-CT" principalCountry="US"/>
+            <principalTotalPurchaseSale>5351049.49</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>National Financial Services LLC</principalName>
+            <principalFileNo>8-26740</principalFileNo>
+            <principalCrdNo>000013041</principalCrdNo>
+            <principalLei>549300JRHF1MHHWUAW04</principalLei>
+            <principalStateCountry principalState="US-TX" principalCountry="US"/>
+            <principalTotalPurchaseSale>24597636.82</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>JPMORGAN DISTRIBUTION SERVICES, INC.</principalName>
+            <principalFileNo>8-52700</principalFileNo>
+            <principalCrdNo>000104234</principalCrdNo>
+            <principalLei>N/A</principalLei>
+            <principalStateCountry principalState="US-OH" principalCountry="US"/>
+            <principalTotalPurchaseSale>18370351.35</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>JonesTrading</principalName>
+            <principalFileNo>8-26089</principalFileNo>
+            <principalCrdNo>000006888</principalCrdNo>
+            <principalLei>2138008JJ5PA8H5UIL69</principalLei>
+            <principalStateCountry principalState="US-CA" principalCountry="US"/>
+            <principalTotalPurchaseSale>3998135.87</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>CREDIT SUISSE SECURITIES (USA) LLC</principalName>
+            <principalFileNo>8-422</principalFileNo>
+            <principalCrdNo>000000816</principalCrdNo>
+            <principalLei>1V8Y6QCX6YMJ2OELII46</principalLei>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>14384031.42</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>MORGAN STANLEY</principalName>
+            <principalFileNo>8-68191</principalFileNo>
+            <principalCrdNo>000149777</principalCrdNo>
+            <principalLei>IGJSJL3JD5P30I6NJZ34</principalLei>
+            <principalStateCountry principalState="US-MD" principalCountry="US"/>
+            <principalTotalPurchaseSale>4339395.46</principalTotalPurchaseSale>
+          </principalTransaction>
+        </principalTransactions>
+        <principalAggregatePurchase>112562971.66</principalAggregatePurchase>
+        <isBrokerageResearchPayment>N</isBrokerageResearchPayment>
+        <mnthlyAvgNetAssets>203234109.58</mnthlyAvgNetAssets>
+      </managementInvestmentQuestion>
+    </managementInvestmentQuestionSeriesInfo>
+    <closedEndManagementInvestment>
+      <securityRelatedItems>
+        <securityRelatedItem>
+          <description>Common stock</description>
+          <securityClassTitle>Common Stock</securityClassTitle>
+          <commonStocks>
+            <commonStock commonStockExchange="XNYS" commonStockTickerSymbol="OPP"/>
+          </commonStocks>
+        </securityRelatedItem>
+      </securityRelatedItems>
+      <rightsOfferingFunds isRightsOffering="Y">
+        <rightsOfferingFund>
+          <rightsOfferingTypes>
+            <rightsOfferingType>Common stock</rightsOfferingType>
+          </rightsOfferingTypes>
+          <rightsOfferingParticipationPercent>65</rightsOfferingParticipationPercent>
+        </rightsOfferingFund>
+      </rightsOfferingFunds>
+      <isSecondaryOffering>N</isSecondaryOffering>
+      <isRepurchaseSecurity>N</isRepurchaseSecurity>
+      <isDefaultLongTermDebt>N</isDefaultLongTermDebt>
+      <isDividendsInArrears>N</isDividendsInArrears>
+      <isSecuritiesModified>N</isSecuritiesModified>
+      <managementFee>1.37</managementFee>
+      <netOperatingExpenses>2.90</netOperatingExpenses>
+      <marketPricePerShare>13.91</marketPricePerShare>
+      <netAssetValuePerShare>14.91</netAssetValuePerShare>
+    </closedEndManagementInvestment>
+    <attachmentsTab>
+      <isIPAReportInternalControl>true</isIPAReportInternalControl>
+    </attachmentsTab>
+    <signature registrantSignedName="RiverNorth/Doubleline Strategic Opportunity Fund, Inc." signedDate="2020-09-14" signature="Jonathan M. Mohrhardt" title="Treasurer"/>
+  </formData>
+</edgarSubmission>

@@ -1,0 +1,72 @@
+{
+ "accessions": [
+  "0000035402-26-002197",
+  "0000894189-26-011966"
+ ],
+ "crlf_counts_in_source": {
+  "ADVISER": 0,
+  "FUND_REPORTED_INFO": 0,
+  "PRINCIPAL_UNDERWRITER": 0,
+  "REGISTRANT": 0,
+  "SUBMISSION": 0
+ },
+ "members": {
+  "ADVISER.tsv": {
+   "fixture_sha256": "9cf868e2adabd34dcb1252bb7931fdae9185e170572f8e347a0d99bf0282fe38",
+   "line_sha256": [
+    "0579459d722ba86b0dfe3def7c16e1796cc1a125d51a835ec1bf91aabafff801",
+    "3a74cdcc91e3491964977ecf56fabd556534b774c1f9afb71ca8fcf45e29eef5",
+    "a3563346ad02160e327ca0badd90b29ef8ae7df0b3259fd8bdcf6b7a5bb96efa",
+    "d8d9b991eb818fdac7f902e0d44128bbf56306efbd3a4f07e54905afec66d43b",
+    "d594c0289f930e0abf5fb7fb7eb2ae695a164de6f3871351782f3a0bbbec3266",
+    "8c2810d2158b56772258a8bd7c8b3b4c7bb2c558406af0816c53c9e7be31bedc",
+    "f0d6ec24e944e7fda23caf4d201c72c9c548b6bf72b5d3be4e7bf2e6f84f695c"
+   ],
+   "lines": 7,
+   "source_member_sha256": "63aea8fe2b8ad1fb31fe52a39e6b1520f6772c6c7f3629723fda98d19476b66c"
+  },
+  "FUND_REPORTED_INFO.tsv": {
+   "fixture_sha256": "a2c59bb5f0461a3d9aacb2c6d05f23be8c3826595800e0dcc97c35e8dec34570",
+   "line_sha256": [
+    "ddc7d858f00da7ed62a59d2d57a67e0bcfc6d07adb1a9bb550de99497a7d71c0",
+    "91c3b0125e6cf37608ef5b1ec941a65cd7d41de284fe110c6ba0ab582858e832",
+    "6ca3d7e8a8ffafe775a8a38239118a02ebd7af0f7c21225933299e3ca660bb22"
+   ],
+   "lines": 3,
+   "source_member_sha256": "d57b791aca3109f87be0ab6ddc4ce5386ca00c8fd40b919339c6652d5a9f7067"
+  },
+  "PRINCIPAL_UNDERWRITER.tsv": {
+   "fixture_sha256": "b6de86a36c4c89d82f2553ccd2695da4f2cf5d467240785215e031412f724e19",
+   "line_sha256": [
+    "d7aefa8297a05bc9be5ff8b1aace921f06d7509be317f41e26aa9e67e3516c20",
+    "d516f9fd29bfdf28e45dbe47181267b8f1c7276b3b61340ac11bb8cf485255b2",
+    "f8e39184f186da950b696b45db08631068e9e35a12d1752b56cef4346dccfe41"
+   ],
+   "lines": 3,
+   "source_member_sha256": "a114e45cf5c1aba925ccd06fb97c5f8196363807797ed67084eb55f139ea2b6d"
+  },
+  "REGISTRANT.tsv": {
+   "fixture_sha256": "dc28d52b81c3f5f57753214bfdfefa04242cadfcb717dddc1d873d2d58f7bfad",
+   "line_sha256": [
+    "81e76c00ddaf7e027cedd250718e03bab77a04ac49aa224f7d17431e8893082b",
+    "a5e4847f14cad1d1289c4e7c242fc1d20dc6b00992dc8133ff31385e945f8dc7",
+    "e59d00c499b0a8c0f715e7e75b1dd85f0218a59af690d764a7e631e80673f504"
+   ],
+   "lines": 3,
+   "source_member_sha256": "a738b558f882fb84d766bca2c13b353dea176033b832fe2ed25d341220ed4383"
+  },
+  "SUBMISSION.tsv": {
+   "fixture_sha256": "642bc5fa808f23ebda0021c892ceb2dbb8fc28c82af725ee48ef1a4e728b54c8",
+   "line_sha256": [
+    "20c57566d3d505d2ec1cd354f30c05981f602490a6d9cadc0885ebe372c7f80c",
+    "0bcc3e10ad3e7c021f4264c7d330867059f1bd6793305e20ee09a846e3298d3e",
+    "4de1356a2d0cfa5c0baa770618e253ba558127d1fa7afaff4b8dd5243591ac4c"
+   ],
+   "lines": 3,
+   "source_member_sha256": "28f39f58aa24d52c982651ce184b14a1a30815ab5a1529c921b37c2dd9a6f8db"
+  }
+ },
+ "source_package": "2026q2_ncen.zip",
+ "source_sha256": "97899fef613a151faf42b6b01573bde3d22db81af7f896598c43a62cec0c7614",
+ "source_url": "https://www.sec.gov/files/dera/data/form-n-cen-data-sets/2026q2_ncen.zip"
+}

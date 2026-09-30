@@ -64,6 +64,10 @@ COPY fixtures/p1_packs/open_macro_v03_pack_003_vintage_backfill/ \
 # scoping rule as the a5 artifact above — the one directory the worker pins.
 COPY artifacts/quant/open_macro_v4_formulation_freeze_001/ \
      /app/artifacts/quant/open_macro_v4_formulation_freeze_001/
+# bond_default_events runtime input: the frozen, hash-pinned invocation manifests the
+# one-shot worker reads (BOND_DEFAULT_EVENTS_MANIFEST). The frontier manifest it points
+# to lives under contracts/bonds/ (already copied above).
+COPY configs/bond_default_events/ /app/configs/bond_default_events/
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 CMD ["python", "-m", "src.run_worker"]

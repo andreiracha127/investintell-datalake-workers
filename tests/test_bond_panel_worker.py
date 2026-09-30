@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import logging
 from datetime import date
@@ -25,6 +26,7 @@ REG_S_LINEAGE = {
     "distribution_rule": "rule_144a_and_reg_s",
     "distribution_mapping_snapshot_id": REG_S_SNAPSHOT_ID,
 }
+UNIT_REPAIR_PUBLICATION_ID = "65156481-8cb4-52b5-8676-cf77edc5644f"
 
 
 @pytest.mark.parametrize(
@@ -987,13 +989,19 @@ def test_panel_same_month_rerun_is_current_without_reloading_inputs(monkeypatch)
     }
 
 
-def _stub_publishable_panel(monkeypatch, parent: dict[str, object]) -> list[dict[str, object]]:
-    closed = pd.Timestamp("2026-07-01")
-    open_month = pd.Timestamp("2026-08-01")
+def _stub_publishable_panel(
+    monkeypatch,
+    parent: dict[str, object],
+    *,
+    closed: str = "2026-07-01",
+    open_month: str = "2026-08-01",
+) -> list[dict[str, object]]:
+    closed_at = pd.Timestamp(closed)
+    open_at = pd.Timestamp(open_month)
     panel = pd.DataFrame(
         {
             "cusip_id": ["AAA", "AAA"],
-            "month": [closed, open_month],
+            "month": [closed_at, open_at],
             "pr": [99.0, 100.0],
             "ytm": [0.05, 0.05],
             "bond_maturity": [5.0, 5.0],
@@ -1049,8 +1057,8 @@ def _stub_publishable_panel(monkeypatch, parent: dict[str, object]) -> list[dict
 
     monkeypatch.setattr(bond_panel, "build_snapshots", snapshots)
     monkeypatch.setattr(bond_panel, "_parent_return_anchor", lambda _conn, _closed: pd.DataFrame())
-    monkeypatch.setattr(bond_panel, "monthly_returns", lambda _panel, terminal_exits=None: pd.DataFrame({"cusip_id": ["AAA"], "month": [closed], "total_return": [0.01], "exit_basis": ["observed"], "exit_reason": [None], "price_return": [0.01], "carry_return": [0.0], "suspect": [False]}))
-    monkeypatch.setattr(bond_panel, "fit_all_months", lambda frame, *, as_of: (pd.DataFrame({"cusip_id": ["AAA"], "month": [closed], "rv_signal": [1.0]}), pd.DataFrame()))
+    monkeypatch.setattr(bond_panel, "monthly_returns", lambda _panel, terminal_exits=None: pd.DataFrame({"cusip_id": ["AAA"], "month": [closed_at], "total_return": [0.01], "exit_basis": ["observed"], "exit_reason": [None], "price_return": [0.01], "carry_return": [0.0], "suspect": [False]}))
+    monkeypatch.setattr(bond_panel, "fit_all_months", lambda frame, *, as_of: (pd.DataFrame({"cusip_id": ["AAA"], "month": [closed_at], "rv_signal": [1.0]}), pd.DataFrame()))
 
     def materialize(_conn, **kwargs):
         captured.append(kwargs)
@@ -1114,6 +1122,43 @@ def test_panel_force_republish_env_stays_a_forward_delta_when_the_parent_is_not_
     assert captured[0]["last_closed_month"] == date(2026, 7, 1)
     assert captured[0]["open_month"] == date(2026, 8, 1)
     assert outcome["state"] == "published"
+
+
+def test_future_daily_delta_extends_unit_repair_child_without_one_shot_transport(
+    monkeypatch,
+) -> None:
+    parent = {
+        "publication_id": UNIT_REPAIR_PUBLICATION_ID,
+        "parent_publication_id": "71b672c8-239c-55bc-bccb-ed39960c0fd2",
+        "first_month": date(2002, 7, 1),
+        "last_closed_month": date(2026, 8, 1),
+        "open_month": date(2026, 9, 1),
+        "snapshot_max_month": date(2026, 9, 1),
+        "returns_max_month": date(2026, 8, 1),
+        "source_lineage": REG_S_LINEAGE,
+        "config_hash": bond_panel.PANEL_CONFIG_HASH,
+    }
+    captured = _stub_publishable_panel(
+        monkeypatch,
+        parent,
+        closed="2026-09-01",
+        open_month="2026-10-01",
+    )
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 10, 8))
+
+    assert outcome["state"] == "published"
+    assert captured[0]["parent_publication_id"] == UNIT_REPAIR_PUBLICATION_ID
+    assert captured[0]["first_month"] == date(2002, 7, 1)
+    assert captured[0]["last_closed_month"] == date(2026, 9, 1)
+    assert captured[0]["open_month"] == date(2026, 10, 1)
+    assert [row["dollar_volume"] for row in captured[0]["facts"]["snapshot"]] == [
+        1000.0,
+        500.0,
+    ]
+    source = inspect.getsource(bond_panel)
+    assert "backfill_bond_panel_history" not in source
+    assert "UNIT_REPAIR" not in source
 
 
 def test_panel_classifies_registry_resolution_failures_as_mapping_gates(monkeypatch) -> None:

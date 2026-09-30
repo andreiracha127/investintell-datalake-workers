@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import os
 import uuid
 
 import psycopg
@@ -17,16 +18,15 @@ import pytest
 from src.db import LOCK_INSTRUMENT_INGESTION, advisory_lock
 from src.workers import instrument_ingestion as ii
 
-MAE_DSN = "host=localhost port=5434 dbname=investintell_alloc user=investintell password=investintell"
-
 AS_OF = _dt.date(2026, 6, 11)
 
 
 def _mae():
-    try:
-        return psycopg.connect(MAE_DSN, connect_timeout=5)
-    except Exception as exc:  # pragma: no cover
-        pytest.skip(f"DB-mãe unreachable: {exc}")
+    dsn = os.environ["NAV_W1_TEST_DSN"]
+    parsed = psycopg.conninfo.conninfo_to_dict(dsn)
+    assert parsed.get("dbname", "").startswith("nav_readiness_w1")
+    assert parsed.get("host") in ("127.0.0.1", "localhost", "host.docker.internal")
+    return psycopg.connect(dsn, connect_timeout=5)
 
 
 def _inst(ticker: str, currency: str = "USD", aum: float | None = None):
@@ -120,6 +120,12 @@ def test_upsert_nav_timeseries_idempotent():
                        currency varchar(3),
                        source varchar(30) DEFAULT 'tiingo',
                        return_type varchar(10) NOT NULL DEFAULT 'arithmetic',
+                       source_nav numeric(18,6), source_nav_kind varchar(16),
+                       nav_repair_kind varchar(48), return_start_date date,
+                       return_source_boundary boolean, return_uses_repaired_nav boolean,
+                       return_semantics varchar(48), return_verification_status varchar(24),
+                       calendar_id varchar(128), calendar_version varchar(64),
+                       calendar_source text,
                        PRIMARY KEY (instrument_id, nav_date))"""
             )
         iid = uuid.uuid4()
@@ -129,7 +135,10 @@ def test_upsert_nav_timeseries_idempotent():
         )
         n1 = ii.upsert_nav_timeseries(conn, rows)
         conn.commit()
-        rows[1]["nav"] = 101.5  # revision on re-run
+        rows = ii.build_rows(
+            [(_dt.date(2026, 6, 8), 100.0), (_dt.date(2026, 6, 9), 101.5)],
+            [(iid, "USD")],
+        )
         n2 = ii.upsert_nav_timeseries(conn, rows)
         conn.commit()
         with conn.cursor() as cur:
@@ -153,3 +162,49 @@ def test_advisory_lock_is_distinct():
             assert got is True
     finally:
         conn.close()
+
+
+def test_repair_kind_distinguishes_interpolation_from_one_sided_carry():
+    dates = [_dt.date(2026, 6, day) for day in (8, 9, 10)]
+    centered = ii.build_rows(list(zip(dates, [100., .02, 101.])),
+                             [(uuid.uuid4(), "USD")])
+    assert centered[1]["nav_repair_kind"] == "log_linear_interpolation_v1"
+    assert centered[1]["source_nav"] == .02
+    assert centered[1]["nav"] > 100
+    assert centered[1]["return_uses_repaired_nav"] is True
+    assert centered[2]["return_uses_repaired_nav"] is True
+
+    one_sided = ii.build_rows(list(zip(dates, [.02, 100., 101.])),
+                              [(uuid.uuid4(), "USD")])
+    assert one_sided[0]["nav_repair_kind"] == "one_sided_carry_v1"
+    assert one_sided[0]["nav"] == 100.0
+    assert one_sided[1]["return_uses_repaired_nav"] is True
+
+
+def test_explicit_due_session_attempts_monday_to_tuesday_without_age_cutoff():
+    monday = _dt.date(2026, 9, 21)
+    tuesday = _dt.date(2026, 9, 22)
+    universe = [{"instrument_id": uuid.uuid4(), "ticker": "DAY", "currency": "USD",
+                 "is_active": True, "aum_usd": 50.0}]
+    assert ii.select_stale_tickers(universe, {"DAY": monday}, tuesday, 1) == []
+    due = ii.select_stale_tickers(
+        universe, {"DAY": monday}, tuesday, 1, target_session=tuesday)
+    assert len(due) == 1 and due[0].start_date <= monday
+    assert ii.select_stale_tickers(
+        universe, {"DAY": tuesday}, tuesday, 1, target_session=tuesday) == []
+    with pytest.raises(ValueError, match="target_session"):
+        ii.select_stale_tickers(
+            universe, {"DAY": monday}, tuesday, 1, target_session=monday)
+
+
+def test_explicit_holiday_target_uses_supplied_session_not_weekdays():
+    friday = _dt.date(2026, 9, 4)
+    after_labor_day = _dt.date(2026, 9, 8)
+    universe = [{"instrument_id": uuid.uuid4(), "ticker": "DAY", "currency": "USD",
+                 "is_active": True, "aum_usd": 50.0}]
+    assert len(ii.select_stale_tickers(
+        universe, {"DAY": friday}, after_labor_day, 1,
+        target_session=after_labor_day)) == 1
+    assert ii.select_stale_tickers(
+        universe, {"DAY": after_labor_day}, after_labor_day, 1,
+        target_session=after_labor_day) == []
