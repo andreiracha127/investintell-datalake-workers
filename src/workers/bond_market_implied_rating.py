@@ -281,6 +281,10 @@ def _read_snapshot_inputs(
             input_reasons=["snapshot_empty"],
             panel_publication_id=parent["publication_id"],
         )}
+    # The rows are in memory and their generation is proven: end the read
+    # transaction before the full-frame fingerprint, so its ledger and mirror
+    # AccessShare locks cannot queue another worker's DDL for minutes.
+    conn.commit()
     return {"snapshot": snapshot, "input_fingerprint": policy.snapshot_fingerprint(snapshot)}
 
 
@@ -356,6 +360,12 @@ def _build_payload(
         if _relation_exists(conn, f"{PRODUCT}_builds")
         else None
     )
+    # End the read transaction before the full-history build (tens of minutes
+    # in production): an open transaction keeps AccessShare locks on the shared
+    # ledger, which would queue any other derived worker's DDL behind this
+    # build and every ledger reader behind that queued DDL. Nothing read so far
+    # needs to stay locked -- materialize re-checks the pointer by CAS.
+    conn.commit()
     l_anchor = resolved_l_anchor
     if previous_anchor is not None and math.isclose(
         previous_anchor, resolved_l_anchor, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
@@ -609,6 +619,11 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                     return inputs["failure"]
                 payload_kwargs["snapshot_inputs"] = inputs
             install_schema(conn)
+            # Commit the DDL at once: it takes AccessExclusiveLock on the shared
+            # ledger (sec_derived_publications / sec_derived_current_pointers),
+            # and holding it through the build blocked every ledger reader for
+            # ~55 minutes on the first production rebuild (2026-09-30).
+            conn.commit()
             prepared = _build_payload(
                 conn, parent=parent, revision=revision, started=started, **payload_kwargs
             )

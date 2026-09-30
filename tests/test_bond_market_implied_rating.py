@@ -1255,11 +1255,16 @@ def test_publication_identity_binds_a_canonical_inherited_anchor() -> None:
 # Worker states
 # --------------------------------------------------------------------------- #
 class _FakeConnection:
+    commits = 0
+
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         return False
+
+    def commit(self):
+        type(self).commits += 1
 
 
 def _patch_worker(monkeypatch, *, panel=None, pointer=None, current=None, snapshot=None,
@@ -1370,6 +1375,35 @@ def test_worker_publishes_and_reports_the_identity(monkeypatch) -> None:
     assert publication.l_anchor == pytest.approx(
         ir.market_anchor_for_snapshot(frame, last_closed_month=MONTHS[-1])
     )
+
+
+@pytest.mark.parametrize("entrypoint", ["run", "plan"])
+def test_worker_ends_its_transaction_before_the_full_history_build(monkeypatch, entrypoint) -> None:
+    # The build runs for tens of minutes in production; no transaction (and so
+    # no DDL AccessExclusiveLock or ledger AccessShareLock) may stay open
+    # through it. run() commits the snapshot read, the DDL and the pin read;
+    # plan() the snapshot read and the pin read.
+    frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
+    captured = _patch_worker(
+        monkeypatch,
+        panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
+               "last_closed_month": MONTHS[-1].date(), "open_month": None},
+        pointer=None, current=None, snapshot=frame,
+    )
+    monkeypatch.setattr(_FakeConnection, "commits", 0)
+    commits_at_build: list[int] = []
+    real_build = ir.build_publication_rows
+
+    def build(*args, **kwargs):
+        commits_at_build.append(_FakeConnection.commits)
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(worker.policy, "build_publication_rows", build)
+    result = getattr(worker, entrypoint)("postgresql://example")
+    assert result["state"] in {"published", "published_no_defaults", "planned"}
+    assert commits_at_build == [3 if entrypoint == "run" else 2]
+    if entrypoint == "run":
+        assert "publication" in captured
 
 
 def test_worker_refuses_an_anchor_drift(monkeypatch, caplog) -> None:
