@@ -2901,6 +2901,16 @@ COMMITTED_INVOCATION = (
 )
 
 
+def test_fleet_image_copies_the_invocation_and_its_pinned_inputs():
+    """The Railway one-shot runs from the root Dockerfile image; it must carry the
+    invocation manifests and every tree the pinned code digest and frontier manifest
+    read at runtime, or the service fails with manifest_unreadable before any work."""
+    root = COMMITTED_INVOCATION.parents[2]
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    for tree in ("src/", "schemas/", "contracts/", "configs/bond_default_events/"):
+        assert f"COPY {tree}" in dockerfile, f"{tree} missing from the fleet image"
+
+
 def test_committed_invocation_manifest_plans_offline_against_the_current_tree():
     computed = sb.code_digest()
     stats = w.run(None, manifest=COMMITTED_INVOCATION, env={})
