@@ -20,6 +20,7 @@ cron **`30 7 * * *` UTC**.
 | 4 | `matview` | — | `REFRESH MATERIALIZED VIEW CONCURRENTLY bond_curated_securities`. |
 | 5 | `republish` | `bond_metric_v1`, `bond_serving_v1` | Invokes `bond_metrics.run()` then `bond_serving.run()`. |
 | 6 | `panel` | `bond_panel_v1` | Reads only production DB relations and atomically publishes the closed-month plus open-month delta after stage 5. |
+| 7 | `implied_rating` | `bond_market_implied_rating_v1` | Default-off, verdict-neutral full rebuild from the panel snapshot mirror after stage 6; requires an enabled flag and a ready panel mirror. |
 
 **Stage 5 is not optional.** `daily_chain` keys a run by `(chain, source_day,
 code_revision, config_version)` and returns a *completed* run's summary verbatim
@@ -51,6 +52,8 @@ mean paying for the same publication twice.
 | `WORKER_CALC_DATE` | no | Pins "today" for the window arithmetic (replay). **A date past the execution date is refused, never clamped** (`calc_date_in_future`) — see §3c. |
 | `BOND_TICK_TOP_N` | no | Optional emergency cap. Unset means full curated universe; any positive cap is reported as `bounded_tick_scope` and keeps the run red. |
 | `CODE_REVISION` | no | **One-off pin only — never a permanent service variable.** See §3a. |
+| `BOND_IMPLIED_RATING_ENABLED` | no | Default off. `1`/`true` (trimmed, case-insensitive) enables Stage 7 only after DG-4 acceptance and a separate operational decision. |
+| `BOND_IMPLIED_RATING_FORCE_REPUBLISH` | no | Bypasses Stage 7's currentness short-circuit only when the daily stage is enabled, or during an explicit manual worker/CLI invocation. |
 
 ### 3a. The deploy sha is a requirement, not a nicety
 
@@ -347,6 +350,63 @@ month (or last closed month for a base), and its direct returns maximum must
 equal `last_closed_month`. A stale historical base is therefore repaired or
 replaced explicitly; a daily delta cannot jump over a missing return interval.
 
+### Stage 7: market-implied rating
+
+The automatic daily hook is **disabled by default**. With
+`BOND_IMPLIED_RATING_ENABLED` unset or false, it reports `disabled`, never imports
+or calls the implied-rating worker, applies no product DDL, publishes nothing,
+and records no `implied_rating` stopwatch event. Enabling it with `1`/`true`
+requires accepted DG-4 evidence (Phase 2) and a separate operational decision.
+Explicit `WORKER=bond_market_implied_rating` and backfill CLI invocations do not
+read this automatic-path flag.
+
+When enabled, Stage 7 requires `panel.state` to be `published` or `current`, then
+requires `panel.matview_refresh` to be `refreshed` when that key is present. A
+`current` panel has no refresh key and is eligible. Stage 4 refreshes
+`bond_curated_securities`, not the panel snapshot, so its failure does not defer
+Stage 7 (it still makes the daily verdict red independently). The implied-rating
+worker independently probes the snapshot mirror for rows written by the current
+panel publication at or after its last closed month, including on manual and
+dry-run paths. This catches a publish-day refresh failure on later `current` days.
+
+| `implied_rating.state` | Meaning |
+|------------------------|---------|
+| `disabled` | `reason=implied_rating_disabled`, `flag=BOND_IMPLIED_RATING_ENABLED`; configuration is off, not waiting for data. |
+| `deferred` | `reason=panel_not_published` or `panel_mirror_not_refreshed`; includes `panel_state` and `panel_matview_refresh`. No worker call or stopwatch event. |
+| `current` | The pointer's own validated build matches panel publication, closed month, policy digest and runtime `code_revision`. If only the panel publication changed but its closed snapshot fingerprint is identical, `reason=panel_inputs_unchanged` reports the current `panel_publication_id` and original `build_panel_publication_id`. Neither path runs the state machine, applies product DDL or materializes a publication. |
+| `published` | Full closed-history rebuild published under pointer CAS and the pinned-anchor drift gate. |
+| `published_no_defaults` | Published with zero confirmed defaults; the consumer's default-capacity gate decides admissibility. |
+| `gate_failed` | Typed refusal in `input_reasons`, including `snapshot_mirror_stale`, `panel_pointer_moved` (the panel publication or closed-month window changed during the snapshot read), missing panel relations/revision, `anchor_drift`, or `pointer_moved`. |
+| `publish_failed` | Operational or build failure; the returned `reason` and `input_reasons` describe the refusal. |
+
+Published results include ordered `rebuild_reasons`: `pointer_build_absent`,
+`pointer_not_validated`, `panel_publication_changed`, `panel_month_changed`,
+`policy_digest_changed`, `code_revision_changed`. The list is empty for an initial
+publication or a forced rebuild of otherwise-current inputs. A revision change,
+even an unrelated deploy, triggers one rebuild on the next enabled pass.
+For a panel-only mismatch, the fingerprint check reads the snapshot once and
+reuses it for the rebuild if inputs differ. An unchanged snapshot converges on
+the existing publication without changing its immutable build parent; published
+results that reuse an existing publication report its persisted build parent.
+`BOND_IMPLIED_RATING_FORCE_REPUBLISH=1` does not enable a disabled daily stage and
+does not bypass pointer CAS, mirror provenance or anchor drift.
+
+Stage 7 remains **verdict-neutral** and inside the daily lock. Before Phase 3,
+alert on `implied_rating.state` in the day JSON and
+`bond_market_implied_rating_v1` WARNING logs, not merely the top-level `ok`:
+distinguish configuration (`disabled`) from waiting (`deferred`) and typed
+refusals (`gate_failed`/`publish_failed`).
+
+**Frozen-loader provenance:** runtime `src/bonds/implied_rating.py` diverges from
+the round-002 producer (`8d8513be...`). The frozen-artifact loader is intentionally
+NOT re-pinned: both committed contracts remain unchanged, the loader is
+fail-closed on `main` (`SOURCE_MISMATCH`), and frozen-artifact verification must
+run from loader release commit `a1b06f1` or its immutable image. The real Docker
+bootstrap suite skips non-release checkouts whose producer source digests are
+outside `accepted_runtime_sha256`; its receipt/source assertions remain intact.
+Any live rebuild requires DG-4 acceptance and `BOND_IMPLIED_RATING_ENABLED=1`
+for the automatic daily path.
+
 ## 4. Reading the result
 
 **One rule: a run exits green only when it actually did the day's work.**
@@ -357,7 +417,7 @@ stays invisible for a week.
 
 | `state` | green? | what it means |
 |---------|--------|---------------|
-| `ok` | **yes** | all six stages ran; both serving publications and the panel delta reported a publication |
+| `ok` | **yes** | all seven stages handled; both serving publications and the panel reported published/current; stage 7 is verdict-neutral and may report `disabled`/`deferred` |
 | `calc_date_in_future` | no | `WORKER_CALC_DATE` is past the execution date: refused before anything opens, never clamped (§3c) |
 | `locked` | no | another holder had this worker's advisory lock; **this run did nothing** (§4a) |
 | `no_observation_table` | no | `bond_observation_daily` is absent (the serving repo owns its DDL); nothing loaded |
@@ -406,9 +466,9 @@ lock, then re-run the service (`railway service restart`, not `redeploy`). The
 state name stays `locked` on purpose — `daily_chain.classify_worker_result`
 reads that exact string and classifies it as transient/retryable.
 
-### 4c. The daily lock is held through stage 6 — and costs nothing
+### 4c. The daily lock is held through stage 7 — and costs nothing
 
-The lock wraps **all six stages**, not just the three that
+The lock wraps **all seven stages**, not just the three that
 write on its own connection.
 
 Released after stage 3, an overlapping manual restart could take it while this
@@ -428,9 +488,9 @@ worth keeping straight because they look alike:
 * The run **commits** before stage 4, so the connection sits `idle`, not
   `idle in transaction`, for the minutes the two publication builds take. That
 commit is load-bearing: adding a read on that connection between stage 3 and
-stage 6 would silently turn it into a minutes-long transaction, which is the
+stage 7 would silently turn it into a minutes-long transaction, which is the
   trap. The code says so at the call site.
-* Stages 4 through 6 open their **own** connections (`_refresh_curated` in
+* Stages 4 through 7 open their **own** connections (`_refresh_curated` in
   autocommit; each publication worker and the panel materializer use their
   own), so the held connection only carries the lock.
 

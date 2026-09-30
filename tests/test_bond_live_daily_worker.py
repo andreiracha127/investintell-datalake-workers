@@ -164,6 +164,8 @@ def _drive_run(
     matview: dict | None = None,
     republish: dict | None = None,
     panel: dict | None = None,
+    implied_rating: dict | None = None,
+    implied_rating_enabled: bool = True,
     limit: int | None = None,
     calc_date: _dt.date = TODAY,
     connector: "_FakeConnect | None" = None,
@@ -174,7 +176,8 @@ def _drive_run(
     """Run ``bond_live_daily.run`` against fakes, exercising the REAL verdict.
 
     Only the seams that need a database are replaced (the connection, the lock,
-    the DDL install, the matview refresh, the two publication workers). The stage
+    the DDL install, the matview refresh, the two publication workers and the
+    implied-rating stage). The stage
     functions, the coverage arithmetic and the state/abort decision are the
     shipping ones -- which is the whole point: what these tests pin is which
     outcomes are allowed to exit green.
@@ -183,8 +186,13 @@ def _drive_run(
     ``(name, conn.commits)`` as it is entered, so a test can assert both where
     the lock is released relative to stages 4 and 5 and whether the load
     connection was quiesced before them.
+
+    ``implied_rating_enabled=False`` preserves the caller's environment so tests
+    can exercise both an unset flag and explicit false values.
     """
     conn = conn if conn is not None else FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    if implied_rating_enabled:
+        monkeypatch.setenv("BOND_IMPLIED_RATING_ENABLED", "1")
 
     def _note(name: str) -> None:
         if events is not None:
@@ -218,9 +226,14 @@ def _drive_run(
         _note("panel")
         return panel or {"state": "published", "aborted": False}
 
+    def _implied_rating_stub(_dsn):
+        _note("implied_rating")
+        return implied_rating or {"state": "published", "aborted": False}
+
     monkeypatch.setattr(bond_live_daily, "_refresh_curated", _matview)
     monkeypatch.setattr(bond_live_daily, "_republish", _republish_stub)
     monkeypatch.setattr(bond_live_daily, "_publish_panel", _panel_stub)
+    monkeypatch.setattr(bond_live_daily, "_publish_implied_rating", _implied_rating_stub)
 
     def _identity_reg_s_map(_conn, *, snapshot_id, as_of, reference_cusip9s):
         references = list(reference_cusip9s)
@@ -1330,7 +1343,7 @@ def test_a_matview_that_is_absent_is_a_stage_that_did_no_work(monkeypatch) -> No
 def test_the_daily_lock_is_held_through_the_panel_publication(
     monkeypatch,
 ) -> None:
-    """Stages 4 through 6 run INSIDE the lock, or the lock protects only writes.
+    """Stages 4 through 7 run INSIDE the lock, or the lock protects only writes.
 
     Released after stage 3, an overlapping manual restart takes this worker's
     lock while the first run is still refreshing and republishing. The second run
@@ -1339,6 +1352,9 @@ def test_the_daily_lock_is_held_through_the_panel_publication(
     then aborts on the publication locks -- and the first run exits green having
     served a mix of two sweeps. Nothing downstream can see it: every row is
     individually valid. The lock has to cover the READ, not just the write.
+
+    Stage 7 reads the panel snapshot the run just published, so it is inside the
+    same lock for the same reason.
 
     The trace also pins the half that makes holding it free. A session advisory
     lock is not a transaction, but an uncommitted connection IS one, and stage 5
@@ -1351,11 +1367,15 @@ def test_the_daily_lock_is_held_through_the_panel_publication(
 
     assert out["state"] == "ok"
     assert [name for name, _ in events] == [
-        "lock_acquired", "matview", "republish", "panel", "lock_released"
+        "lock_acquired", "matview", "republish", "panel", "implied_rating",
+        "lock_released",
     ]
 
     commits = dict(events)
     assert commits["matview"] > 0, "the load connection must be committed before stage 4"
+    assert commits["implied_rating"] == commits["panel"], (
+        "stage 7 runs after stage 6, on the same quiesced connection"
+    )
     assert commits["panel"] == commits["republish"] == commits["matview"] == commits["lock_released"], (
         "nothing may run on the held connection while the publications build"
     )
@@ -1380,6 +1400,149 @@ def test_missing_provider_configuration_defers_panel_after_the_end_stages(monkey
         "reason": "input_lanes_failed",
         "blocked_by": ["no_api_key", "aborted", "curve_failed"],
     }
+
+
+def test_the_implied_rating_stage_is_reported_and_verdict_neutral(monkeypatch) -> None:
+    """Stage 7 is evidence, not a gate: the app's own gate decides on it.
+
+    The product's pointer is its truth and the next successful pass rebuilds it
+    from scratch, so a typed stage failure must not turn the day red -- but the
+    result must still be in the day's JSON for the operator.
+    """
+    out = _drive_run(
+        monkeypatch,
+        implied_rating={"state": "published_no_defaults", "aborted": False},
+        calc_date=_dt.date.today(),
+    )
+    assert out["state"] == "ok"
+    assert out["aborted"] is False
+    assert out["implied_rating"] == {"state": "published_no_defaults", "aborted": False}
+
+
+def test_an_implied_rating_failure_is_reported_without_colouring_the_day(monkeypatch) -> None:
+    out = _drive_run(
+        monkeypatch,
+        implied_rating={"state": "publish_failed", "aborted": True, "reason": "typed"},
+        calc_date=_dt.date.today(),
+    )
+    assert out["state"] == "ok"
+    assert out["aborted"] is False
+    assert out["implied_rating"]["aborted"] is True
+
+
+def test_the_implied_rating_stage_defers_when_the_panel_did_not_publish(monkeypatch) -> None:
+    events: list[tuple[str, int]] = []
+    out = _drive_run(
+        monkeypatch,
+        panel={"state": "deferred", "aborted": False, "reason": "partial_sweep"},
+        events=events,
+        calc_date=_dt.date.today(),
+    )
+    assert out["implied_rating"] == {
+        "state": "deferred",
+        "aborted": False,
+        "reason": "panel_not_published",
+        "panel_state": "deferred",
+        "panel_matview_refresh": None,
+    }
+    assert "implied_rating" not in [name for name, _ in events]
+
+
+def test_the_implied_rating_stage_runs_when_the_curated_matview_refresh_failed(monkeypatch) -> None:
+    events: list[tuple[str, int]] = []
+    out = _drive_run(
+        monkeypatch,
+        matview={"state": "failed", "error": "boom"},
+        events=events,
+        calc_date=_dt.date.today(),
+    )
+    assert out["state"] == "matview_failed"
+    assert out["aborted"] is True
+    assert out["implied_rating"] == {"state": "published", "aborted": False}
+    assert "implied_rating" in [name for name, _ in events]
+
+
+def test_the_implied_rating_stage_defers_when_the_panel_mirror_was_not_refreshed(monkeypatch) -> None:
+    events: list[tuple[str, int]] = []
+    out = _drive_run(
+        monkeypatch,
+        panel={"state": "published", "aborted": False, "matview_refresh": "failed:Boom"},
+        events=events,
+        calc_date=_dt.datetime.now().astimezone().date(),
+    )
+    assert out["implied_rating"] == {
+        "state": "deferred",
+        "aborted": False,
+        "reason": "panel_mirror_not_refreshed",
+        "panel_state": "published",
+        "panel_matview_refresh": "failed:Boom",
+    }
+    assert out["state"] == "ok"
+    assert "implied_rating" not in [name for name, _ in events]
+    assert "implied_rating" not in out["timings_seconds"]
+
+
+@pytest.mark.parametrize("panel_state", ["published", "current"])
+def test_the_implied_rating_stage_runs_for_a_ready_panel(monkeypatch, panel_state) -> None:
+    events: list[tuple[str, int]] = []
+    panel = {"state": panel_state, "aborted": False}
+    if panel_state == "published":
+        panel["matview_refresh"] = "refreshed"
+    out = _drive_run(
+        monkeypatch, panel=panel, events=events, calc_date=_dt.datetime.now().astimezone().date(),
+    )
+    assert out["state"] == "ok"
+    assert out["implied_rating"] == {"state": "published", "aborted": False}
+    assert "implied_rating" in [name for name, _ in events]
+    assert "implied_rating" in out["timings_seconds"]
+
+
+@pytest.mark.parametrize("flag", [None, "0"])
+def test_the_disabled_implied_rating_stage_never_imports_or_calls_the_worker(monkeypatch, flag) -> None:
+    import builtins
+
+    if flag is None:
+        monkeypatch.delenv("BOND_IMPLIED_RATING_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("BOND_IMPLIED_RATING_ENABLED", flag)
+    monkeypatch.setenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", "1")
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        assert name != "src.workers.bond_market_implied_rating"
+        assert name != "src.workers" or "bond_market_implied_rating" not in (fromlist or ())
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    events: list[tuple[str, int]] = []
+    out = _drive_run(
+        monkeypatch, implied_rating_enabled=False, events=events,
+        calc_date=_dt.datetime.now().astimezone().date(),
+    )
+    assert out["implied_rating"] == {
+        "state": "disabled",
+        "aborted": False,
+        "reason": "implied_rating_disabled",
+        "flag": "BOND_IMPLIED_RATING_ENABLED",
+    }
+    assert out["state"] == "ok"
+    assert out["aborted"] is False
+    assert out["halted_by"] == []
+    assert "implied_rating" not in [name for name, _ in events]
+    assert "implied_rating" not in out["timings_seconds"]
+
+
+@pytest.mark.parametrize(
+    ("flag", "enabled"),
+    [(None, False), ("0", False), ("false", False), ("yes", False),
+     ("1", True), ("true", True), (" TRUE ", True)],
+)
+def test_the_implied_rating_enable_flag_uses_the_repo_boolean_convention(monkeypatch, flag, enabled) -> None:
+    if flag is None:
+        monkeypatch.delenv("BOND_IMPLIED_RATING_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("BOND_IMPLIED_RATING_ENABLED", flag)
+    assert bond_live_daily._implied_rating_enabled() is enabled
 
 
 @pytest.mark.parametrize(
@@ -2164,7 +2327,8 @@ def test_partial_sweep_defers_stage_six_until_a_full_rerun(monkeypatch) -> None:
     assert full["state"] == "ok"
     assert full["panel"]["state"] == "published"
     assert [name for name, _ in full_events] == [
-        "lock_acquired", "matview", "republish", "panel", "lock_released",
+        "lock_acquired", "matview", "republish", "panel", "implied_rating",
+        "lock_released",
     ]
 
 

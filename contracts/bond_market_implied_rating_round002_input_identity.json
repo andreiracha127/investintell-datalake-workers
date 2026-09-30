@@ -1,0 +1,32 @@
+{
+  "schema_version": "bond_market_implied_rating_round002_input_identity/1",
+  "authority": "historical_round_002_csv_pandas",
+  "type_sensitivity": "snapshot_fingerprint canonicalizes Python cell types; this CSV/pandas identity is not claimed to equal the legacy worker DB-typed Decimal/date path",
+  "input_fingerprint": "620760bf4de0584d44138d880ff57bf87d3ffa24ef205074d0b004d8874b9867",
+  "publication_id": "bc13a5e4-7f1a-54fa-8a5b-68862df4020b",
+  "build_fingerprint": "c30f0c49fe918f1b429a133b896da33450a6bc443584cadb83bab56c5eaa06a1",
+  "stopped_run_evidence_sha256": "7b6bb4dd9ae46ee9a67cc60fa275b719f0142e0e4adf6f7125fff7d8e2be20b0",
+  "original_receipt_sha256": "2974f9dcf96ff9ce7b95f69cd821f44aabf475f28747d069f0d30191a18c3879",
+  "evidence_manifest_sha256": "ca7c243de264dca633dbf995a721716eecb21eb83e3960ad88c373dfda0dba9f",
+  "artifact_sha256": "a7fde442abb529f3e6291ba41871e0d96cd3a0aa75d9654d309ec5e3857eed7a",
+  "build_manifest_sha256": "eccd41daaa0082dca29a33db28187f72ab2db54f252ad57b3f055b0bec875941",
+  "export_manifest_sha256": "3261b3bb84784e3426f7825bce7968447c9f7279eb798d358b0751d4f7037011",
+  "gate_manifest_sha256": "d6fe5fd30d49c140a18e3556ed70f9f29f1fa22ef43ebaf3058214d7a0000649",
+  "producer_module_sha256": "8d8513beca598600fd5a8a1e64816b81089c33fca8fd7a57ec0ce62aa0d52148",
+  "materializer_module_sha256": "b1dfdb6d11d633aaf0735cf4759d68ac54d14b487cc04e8adc26985e7f8ce379",
+  "snapshot": {
+    "relative_path": "snapshot.csv",
+    "bytes": 337895736,
+    "rows": 3438099,
+    "sha256": "e9602304741aacf1e23461b4442ec4c4eaaae5bde13ef1d1fa3b6d0db123031c"
+  },
+  "parser": {
+    "source_sha256": "e9295a4d225d47ffaf4f1c93c86f5dc284f51a370d2a0f36d61d56ad03521b51",
+    "function_source_sha256": "5c44765b711637519d04f549a9c18e778dfe22b102ce9f677495614b64ac9557",
+    "python": "CPython 3.13.12",
+    "pandas": "3.0.3",
+    "numpy": "2.5.1",
+    "authority": "historical_round_002_csv_pandas",
+    "type_sensitivity": "snapshot_fingerprint canonicalizes Python cell types; this CSV/pandas identity is not claimed to equal the legacy worker DB-typed Decimal/date path"
+  }
+}
