@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -89,6 +91,22 @@ def _dera(
         duckdb_threads=2,
         duckdb_memory_limit="512MB",
     )
+
+
+def _edited_copy(result: nport.DeraPackageResult, tmp_path: Path, **changes) -> nport.DeraPackageResult:
+    """A self-consistent copy of ``result`` whose sidecar carries ``changes`` (so its pin is that sidecar's)."""
+    import shutil
+
+    target = tmp_path / f"copy_{uuid.uuid4().hex[:8]}"
+    shutil.copytree(result.projection_path.parent, target)
+    sidecar = target / "package_result.json"
+    record = json.loads(sidecar.read_text())
+    record.update(changes)
+    sidecar.write_bytes(json.dumps(record, sort_keys=True, indent=1, default=str).encode())
+    loaded = nport.DeraPackageResult.load(target)
+    assert loaded.result_sha256 is None  # ``load`` never produces a trust root
+    # Emulate a package legitimately re-parsed and sealed with this sidecar.
+    return dataclasses.replace(loaded, result_sha256=loaded.current_result_file_sha256())
 
 
 def _header(
@@ -182,11 +200,17 @@ def _source(
     *,
     headers: Mapping[str, sa.AcceptanceHeader] | None = None,
     reconciliations: Iterable[nport.DeraReconciliation] = (),
+    pin: str | None = "auto",
 ) -> nport.NportSourceInput:
+    if pin == "auto":  # DERA sources are authenticated by a sealed pin of their sidecar
+        # The pin is the digest recorded at PARSE time (what a sealed manifest would carry), never one
+        # recomputed from the sidecar under test; a result reloaded with ``load()`` has none.
+        pin = result.result_sha256 if type(result) is nport.DeraPackageResult else None
     return nport.NportSourceInput(
         result=result,
         acceptance_headers={} if headers is None else headers,
         reconciliations=tuple(reconciliations),
+        expected_result_sha256=pin,
     )
 
 
@@ -381,7 +405,11 @@ def test_inventory_refuses_missing_source_artifacts_and_projection_count(tmp_pat
     )
     missing = dataclasses.replace(result, projection_path=None)
     _error_reason(lambda: _inventory([_source(missing)]), "nport_source_not_persistable")
-    mismatch = dataclasses.replace(result, stats={**result.stats, "eligible_rows_projected": 2})
+    _error_reason(  # in-memory divergence from the authenticated sidecar is refused outright
+        lambda: _inventory([_source(dataclasses.replace(result, stats={**result.stats, "eligible_rows_projected": 2}))]),
+        "nport_source_result_hash_mismatch",
+    )
+    mismatch = _edited_copy(result, tmp_path, stats={**result.stats, "eligible_rows_projected": 2})
     _error_reason(lambda: _inventory([_source(mismatch)]), "nport_source_projection_mismatch")
     missing_count = dict(result.stats)
     missing_count.pop("eligible_rows_projected")
@@ -408,10 +436,40 @@ def test_inventory_refuses_unbound_or_tampered_dera_artifacts(tmp_path: Path) ->
     half = dataclasses.replace(result, accessions_sha256=None)
     _error_reason(lambda: _inventory([_source(half)]), "nport_source_artifact_unbound")
     wrong = dataclasses.replace(result, projection_sha256="0" * 64)
-    _error_reason(lambda: _inventory([_source(wrong)]), "nport_source_artifact_hash_mismatch")
+    _error_reason(lambda: _inventory([_source(wrong)]), "nport_source_result_hash_mismatch")  # not the sidecar's
     with open(result.accessions_path, "ab") as handle:
         handle.write(b"\n")
     _error_reason(lambda: _inventory([_source(result)]), "nport_source_artifact_hash_mismatch")
+
+
+def test_inventory_requires_an_external_pin_of_the_result_sidecar(tmp_path: Path) -> None:
+    result = _dera(tmp_path, [_filing().hold(1, CUSIP_A)])
+    pin = result.result_sha256
+    assert pin == result.current_result_file_sha256()  # parse recorded the digest of the exact bytes written
+    _error_reason(lambda: _inventory([_source(result, pin=None)]), "nport_source_result_unpinned")
+    _error_reason(lambda: _inventory([_source(result, pin="0" * 64)]), "nport_source_result_hash_mismatch")
+    assert _inventory([_source(result, pin=pin)]).observations  # the correct pin is accepted
+    with pytest.raises(nport.NportAdapterError, match="nport_adapter_arguments_invalid"):
+        _source(result, pin="not-a-digest")
+    with pytest.raises(nport.NportAdapterError, match="nport_adapter_arguments_invalid"):
+        _source(_public(), pin=pin)  # only DERA sources carry a sidecar pin
+
+
+def test_swapped_projection_with_an_edited_sidecar_is_refused_by_the_external_pin(tmp_path: Path) -> None:
+    good = _dera(tmp_path, [_filing().hold(1, CUSIP_A, is_default="Y")])
+    forged = _dera(tmp_path, [_filing().hold(1, CUSIP_A, is_default="N")])
+    pin = good.result_sha256  # sealed when the package was parsed
+    # Attacker replaces the Parquet and rewrites the sidecar hash so ``load`` is self-consistent.
+    good.projection_path.write_bytes(forged.projection_path.read_bytes())
+    sidecar = good.result_file()
+    record = json.loads(sidecar.read_text())
+    record["projection_sha256"] = forged.projection_sha256
+    sidecar.write_text(json.dumps(record, sort_keys=True, indent=1))
+    reloaded = nport.DeraPackageResult.load(good.projection_path.parent)  # passes: internally consistent
+    assert reloaded.projection_sha256 == forged.projection_sha256 and reloaded.result_sha256 is None
+    _error_reason(lambda: _inventory([_source(reloaded, pin=pin)]), "nport_source_result_hash_mismatch")
+    _error_reason(lambda: _inventory([_source(good, pin=pin)]), "nport_source_result_hash_mismatch")
+    _error_reason(lambda: _inventory([_source(reloaded, pin=None)]), "nport_source_result_unpinned")
 
 
 def test_inventory_refuses_public_result_that_dropped_debt_less_holdings() -> None:
@@ -462,8 +520,8 @@ def test_duplicate_sources_deduplicate_and_conflicting_package_identity_refuses(
     assert len(inventory.source_packages) == 1
     assert len(inventory.observations) == 1
 
-    package = dataclasses.replace(result.source_package, raw_sha256="f" * 64)
-    conflict = dataclasses.replace(result, source_package=package)
+    record_package = {**result.source_package.to_record(), "raw_sha256": "f" * 64}
+    conflict = _edited_copy(result, tmp_path, source_package=record_package)
     _error_reason(
         lambda: _inventory([_source(result), _source(conflict)]),
         "nport_duplicate_identity_conflict",
@@ -1413,3 +1471,62 @@ print(json.dumps({"packages":[x.row_sha256() for x in i.source_packages],"observ
         )
         outputs.append(completed.stdout.strip())
     assert outputs[0] == outputs[1]
+
+def test_result_sha256_is_recorded_at_parse_time_and_never_by_load(tmp_path: Path) -> None:
+    result = _dera(tmp_path, [_filing().hold(1, CUSIP_A)])
+    assert result.result_sha256 == hashlib.sha256(result.result_file().read_bytes()).hexdigest()
+    assert "result_sha256" not in json.loads(result.result_file().read_text())  # not self-referential
+    assert nport.DeraPackageResult.load(result.result_file().parent).result_sha256 is None
+
+
+def test_malformed_sidecar_bytes_map_to_typed_refusals(tmp_path: Path) -> None:
+    result = _dera(tmp_path, [_filing().hold(1, CUSIP_A)])
+    original = result.result_file().read_bytes()
+    record = json.loads(original)
+    variants = {
+        "not_json": b"\xff\x00not json",
+        "not_an_object": b"[1, 2, 3]",
+        "package_missing": json.dumps({**record, "source_package": None}).encode(),
+        "package_bad": json.dumps({**record, "source_package": {"family": "x"}}).encode(),
+        "package_wrong_type": json.dumps({**record, "source_package": [1]}).encode(),
+    }
+    try:
+        for name, data in variants.items():
+            result.result_file().write_bytes(data)
+            pin = hashlib.sha256(data).hexdigest()  # correctly pinned garbage is still refused, typed
+            with pytest.raises(nport.NportAdapterError) as info:
+                _inventory([_source(result, pin=pin)])
+            assert info.value.reason == "nport_source_result_hash_mismatch", name
+    finally:
+        result.result_file().write_bytes(original)
+    assert _inventory([_source(result)]).observations
+
+
+def test_sidecar_is_hashed_and_parsed_from_the_same_bytes(tmp_path: Path, monkeypatch) -> None:
+    result = _dera(tmp_path, [_filing().hold(1, CUSIP_A)])
+    sidecar = result.result_file()
+    reads: list[int] = []
+    real = Path.read_bytes
+
+    def counting(self):
+        if self == sidecar:
+            reads.append(1)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    _inventory([_source(result)])
+    assert sum(reads) == 1
+
+
+def test_projection_row_tampering_surfaces_as_a_typed_adapter_refusal(tmp_path: Path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    result = _dera(tmp_path, [_filing().hold(1, CUSIP_A, is_default="Y")])
+    table = pq.read_table(result.projection_path)
+    index = table.schema.get_field_index("is_default_raw")
+    pq.write_table(table.set_column(index, "is_default_raw", pa.array(["N"] * table.num_rows)), result.projection_path)
+    tampered = _edited_copy(result, tmp_path, projection_sha256=nport.sha256_file(result.projection_path))
+    with pytest.raises(nport.NportAdapterError) as info:
+        _inventory([_source(tampered)])
+    assert (info.value.reason, info.value.detail) == ("nport_source_not_persistable", "projection_row_hash_mismatch")

@@ -1798,3 +1798,58 @@ def test_phase1_non_consensus_bundle_digest_is_stable_in_fresh_processes() -> No
         for _ in range(2)
     }
     assert len(digests) == 1 and next(iter(digests)).startswith("sha256:")
+
+
+# --- coverage: events need a panel exposure unit; frontiers cannot postdate the cutoff ------------------
+def test_event_without_a_panel_exposure_unit_is_not_counted_and_is_surfaced_as_unlinked() -> None:
+    episodes = _payment_episode()
+    (episode,) = episodes
+    covered = _cov([(episode.cusip9, m) for m in MONTHS], episodes=episodes)
+    assert _cell(covered, "all", "all").event_count == 1
+    other = C if episode.cusip9 != C else B
+    off_panel = _cov([(other, m) for m in MONTHS], episodes=episodes)  # the event's CUSIP is not in the panel
+    for cell in off_panel:
+        assert cell.event_count == 0, (cell.event_type, cell.rating_stratum, cell.exposure_cohort)
+    aggregate = _cell(off_panel, "all", "all")
+    assert aggregate.unlinked_count == 1 and _cell(off_panel, "all", "unknown").unlinked_count == 1
+    assert sum(cell.unlinked_count for cell in off_panel) == 2  # only the all/all/all and unknown-stratum cells
+    # Same CUSIP but the start month of the event is absent from the grid: also unlinked.
+    start = r._start_key(episode)
+    gapped = _cov([(episode.cusip9, m) for m in MONTHS if (episode.cusip9, m) != start] + [(other, MONTHS[0])],
+                  episodes=episodes)
+    assert _cell(gapped, "all", "all").event_count == 0 and _cell(gapped, "all", "all").unlinked_count == 1
+    # An explicit caller-supplied unlinked count is preserved and added to.
+    both = _cov([(other, m) for m in MONTHS], episodes=episodes, unlinked_counts={"2026": 3})
+    assert _cell(both, "all", "all").unlinked_count == 4
+
+
+def test_source_frontier_after_the_cutoff_is_refused() -> None:
+    grid = [(B, m) for m in MONTHS]
+    tomorrow = K.astimezone(UTC).date() + dt.timedelta(days=1)
+    with pytest.raises(r.ResolveError, match="source_frontier_after_cutoff"):
+        _cov(grid, source_frontiers={"all": tomorrow})
+    assert _cov(grid, source_frontiers={"all": K.astimezone(UTC).date()})  # equal to the cutoff date is fine
+    assert _cov(grid, source_frontiers={"all": None})
+
+def test_off_grid_event_still_determines_the_outcomes_of_the_same_cusips_other_units() -> None:
+    episodes = _payment_episode()
+    (episode,) = episodes
+    start = r._start_key(episode)
+    grid = [(episode.cusip9, m) for m in MONTHS if (episode.cusip9, m) != start]  # the start unit is off-grid
+    cell = _cell(_cov(grid, episodes=episodes), "all", "all")
+    expected_unknown = sum(
+        1 for key in grid
+        if r.outcome_interval(key[1], T) is not None
+        and r.interval_outcome(r.outcome_interval(key[1], T), [episode], []) == "unknown"
+    )
+    # Some remaining unit lies entirely inside the event's certain-default span: it is a resolved outcome,
+    # not unknown (dropping the off-grid episode from the outcome computation would make it unknown).
+    without_episode = sum(
+        1 for key in grid
+        if r.outcome_interval(key[1], T) is not None
+        and r.interval_outcome(r.outcome_interval(key[1], T), [], []) == "unknown"
+    )
+    assert expected_unknown < without_episode
+    assert cell.unknown_outcome_issue_months == expected_unknown
+    assert cell.event_count == 0 and cell.unlinked_count == 1
+    assert "events_without_exposure_unit=1" in cell.rationale

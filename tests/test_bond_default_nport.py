@@ -1255,3 +1255,38 @@ def test_naive_knowledge_cutoff_is_refused() -> None:
         nport.resolve_accession_revisions([], knowledge_cutoff=naive)
     with pytest.raises(nport.NportError, match="timestamp_not_timezone_aware:knowledge_cutoff"):
         consensus([], knowledge_cutoff=naive)
+
+
+# --- projection rows are re-verified against their stored hashes ---------------------------------
+def _rewrite_projection(path: Path, **columns) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path)
+    for name, value in columns.items():
+        index = table.schema.get_field_index(name)
+        table = table.set_column(index, name, pa.array([value] * table.num_rows, type=table.schema.field(name).type))
+    pq.write_table(table, path)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "reason"),
+    [
+        ("is_default_raw", "N", "content_sha256"),  # a flipped default flag with stale hashes
+        ("issuer_name", "Forged Issuer", "content_sha256"),
+        ("is_default_presence", "null", "is_default_presence"),
+        ("cusip9", CUSIP_B, "identity"),
+        ("lot_ordinal", 7, "semantic_key"),
+    ],
+)
+def test_tampered_projection_row_is_refused_on_materialization(tmp_path: Path, column, value, reason) -> None:
+    result = run(tmp_path, [filing(1).hold(1, CUSIP_A, is_default="Y")])
+    assert len(observations(result)) == 1  # untampered rows verify
+    _rewrite_projection(result.projection_path, **{column: value})
+    with pytest.raises(nport.NportError, match=f"projection_row_hash_mismatch:.*:{reason}"):
+        observations(result)
+
+
+def test_projection_rows_without_stored_hashes_are_not_checkable() -> None:
+    row = {"is_default_raw": "Y"}
+    nport._verify_projection_row(row)  # no content/semantic hash: nothing to recompute

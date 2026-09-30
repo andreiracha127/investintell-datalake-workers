@@ -10832,3 +10832,75 @@ def test_c1b2b_stage5_data_parse_hashes_the_same_bytes(
             trusted_run=trust, staging_root=output, code_root=ROOT,
             input_roots=roots, monitor=monitor,
         )
+
+
+# --- naive timestamps are refused by the N-CEN entry points (guards live after the frozen core) -----
+_NAIVE = dt.datetime(2026, 9, 25, 5, 29)  # noqa: DTZ001 - deliberately naive
+
+
+def test_ncen_entry_points_refuse_naive_timestamps(tmp_path: Path) -> None:
+    path = tmp_path / "naive.zip"
+    with zipfile.ZipFile(path, "w"):
+        pass
+    for kwargs, field in (
+        ({"retrieved_at": _NAIVE}, "retrieved_at"),
+        ({"retrieved_at": K, "first_verified_public_at": _NAIVE}, "first_verified_public_at"),
+    ):
+        with pytest.raises(ncen.NcenError, match=f"timestamp_not_timezone_aware:{field}"):
+            ncen.parse_dera_ncen_package(path, expected_sha256="0" * 64, package_label="2026q1", **kwargs)
+    with pytest.raises(ncen.NcenError, match="timestamp_not_timezone_aware:retrieved_at"):
+        ncen.parse_ncen_primary_doc(b"<x/>", accession_number=ACCESSION, source_url="u", retrieved_at=_NAIVE)
+
+
+@pytest.mark.parametrize("mode", [ncen.KNOWLEDGE_CURRENT_RUN, ncen.KNOWLEDGE_HISTORICAL])
+def test_ncen_filing_visibility_refuses_naive_cutoffs(mode: str) -> None:
+    filing = ncen.NcenFiling(
+        accession_number=ACCESSION, registrant_cik=cik(1), form_type="N-CEN", form_type_source="dera",
+        report_period_end=dt.date(2025, 12, 31), filing_date=dt.date(2026, 2, 20),
+        public_available_at=K - dt.timedelta(days=30), public_time_basis="date_only_conservative",
+        data_known_at=K - dt.timedelta(days=30), source="dera", source_refs=("t",), family_answer="N",
+        family_name_raw=None, funds=(), underwriters=(), status="parsed", reasons=(),
+        retrieved_at=K - dt.timedelta(days=1),
+    )
+    assert filing.data_available(mode, K) and filing.visible(mode, K) is False  # aware cutoffs behave as before
+    for call in (filing.visible, filing.data_available, filing.exact_acceptance, filing.admission_bound,
+                 filing.earliest_public):
+        with pytest.raises(ncen.NcenError, match="timestamp_not_timezone_aware:cutoff"):
+            call(mode, _NAIVE)
+
+def test_ncen_public_entry_points_refuse_a_naive_cutoff_before_conversion() -> None:
+    index = ncen.merge_filings(())
+    inventory = object()
+    for call in (
+        lambda: ncen.effective_filing(index, cik(1), R, _NAIVE, knowledge_mode="current_run"),
+        lambda: ncen.family_components(index, {}, R, _NAIVE, knowledge_mode="current_run"),
+        lambda: ncen.build_vote_inventory((), knowledge_cutoff=_NAIVE, knowledge_mode="current_run"),
+        lambda: ncen.family_evidence_for(index, inventory, knowledge_cutoff=_NAIVE, knowledge_mode="current_run"),
+        lambda: ncen.build_consensus_with_ncen(
+            inventory, index, target_votes=(), knowledge_cutoff=_NAIVE, knowledge_mode="current_run"),
+        lambda: ncen.diagnostic_per_state_components(
+            index, inventory, (), knowledge_cutoff=_NAIVE, knowledge_mode="current_run"),
+    ):
+        with pytest.raises(ncen.NcenError, match="timestamp_not_timezone_aware:knowledge_cutoff"):
+            call()
+    with pytest.raises(ncen.NcenError, match="timestamp_not_timezone_aware:index_retrieved_at"):
+        ncen.merge_filings((), index_retrieved_at=_NAIVE)
+    with pytest.raises(ncen.NcenError, match="timestamp_not_timezone_aware:retrieved_at"):
+        ncen._diagnostic_dera_projections(
+            None, package_label="2026q1", zip_sha256="0" * 64, retrieved_at=_NAIVE,
+            first_verified_public_at=K, monitor=None)
+    # Exempt entry points keep their own diagnostic-specific refusal.
+    with pytest.raises(ncen.NcenError, match="datetime_not_timezone_aware"):
+        ncen.diagnostic_selection(index, None, cik(1), R, _NAIVE, mode="current_run")
+    assert ncen.merge_filings((), index_retrieved_at=K) is not None  # aware values pass the guard
+
+
+def test_guard_fast_path_accepts_aware_datetimes_and_skips_optional_none() -> None:
+    guarded = ncen._guard_aware(lambda a, *, when=None: (a, when), "when")
+    assert guarded(1) == (1, None) and guarded(1, when=None) == (1, None)
+    assert guarded(1, when=K) == (1, K)
+    for bad in (_NAIVE, "2026-09-25", 0):
+        with pytest.raises(ncen.NcenError, match="timestamp_not_timezone_aware:when"):
+            guarded(1, when=bad)
+    with pytest.raises(ncen.NcenError, match="guard_parameter_unknown"):
+        ncen._guard_aware(lambda a: a, "when")

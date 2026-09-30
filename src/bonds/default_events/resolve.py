@@ -1897,8 +1897,18 @@ def build_coverage(
       negative lag; otherwise ``partial`` (``not_applicable`` without exposure or when disabled).
     * Negative lags (evidence known before the onset upper bound) are excluded from the lag
       summaries and reported as ``negative_lag_pending_adjudication=<n>``.
+    * An event whose start key is not an exposure unit is never counted in ``event_count`` (no
+      denominator); it is added to ``unlinked_count`` of its onset year (``all/all/all`` and the
+      ``unknown`` stratum) and reported as ``events_without_exposure_unit=<n>`` in that cell's
+      rationale. Such an event still shapes the outcomes of the same CUSIP's *other* units.
+      ``unlinked_count`` therefore includes these linked-but-off-panel events; caller-supplied
+      ``unlinked_counts`` must exclude the episodes passed in (they are added to, not deduplicated).
     """
     k = _utc(knowledge_cutoff)
+    for source, frontier in sorted(source_frontiers.items()):
+        # A frontier is what the source was verified to cover by K: one later than K cannot be known at K.
+        if frontier is not None and frontier > k.date():
+            raise ResolveError("source_frontier_after_cutoff", (f"{source}:{frontier.isoformat()}",))
     t_end = c.month_end(target_month)
     denominators = dict(independent_denominators or {})
     unlinked = dict(unlinked_counts or {})
@@ -1920,9 +1930,20 @@ def build_coverage(
         interval = outcome_interval(month, target_month)
         if interval is not None:
             units[(cusip9, c.month_key(month))] = interval
-    all_episodes = [e for e in episodes if e.onset_upper_inclusive <= t_end]
+    in_horizon = [e for e in episodes if e.onset_upper_inclusive <= t_end]
+    # An event whose start key is not a panel exposure unit has no denominator: it is never *counted* in a
+    # cell (the ``all`` aggregates included) but is surfaced as an unlinked event of its onset year.
+    uncovered = [e for e in in_horizon if _start_key(e) not in units]
+    all_episodes = [e for e in in_horizon if _start_key(e) in units]
+    uncovered_by_period: dict[str, int] = defaultdict(int)
+    for e in uncovered:
+        uncovered_by_period[str(e.onset_upper_inclusive.year)] += 1
+        unlinked[str(e.onset_upper_inclusive.year)] = unlinked.get(str(e.onset_upper_inclusive.year), 0) + 1
+    # Outcomes of the CUSIP's *other* units still depend on every episode of that CUSIP (an off-grid
+    # episode's certain-default span or onset window changes their ``interval_outcome``): use the
+    # pre-filter list here, the filtered one only for event counting.
     by_cusip: dict[str, list[DefaultEpisode]] = defaultdict(list)
-    for e in all_episodes:
+    for e in in_horizon:
         by_cusip[e.cusip9].append(e)
     segments: dict[str, list[Interval]] = defaultdict(list)
     for f in followups:
@@ -1939,7 +1960,8 @@ def build_coverage(
 
     sources = ("all", *sorted({s for v in (*unit_sources.values(), *ev_sources.values()) for s in v}))
     cohort_labels = ("all", *sorted(set(cohorts.values())))
-    years = sorted({iv[1].year for iv in units.values()} | {e.onset_upper_inclusive.year for e in all_episodes})
+    years = sorted(
+        {iv[1].year for iv in units.values()} | {e.onset_upper_inclusive.year for e in (*all_episodes, *uncovered)})
     cells: list[c.CoverageCell] = []
     for year in years:
         period = str(year)
@@ -1963,6 +1985,8 @@ def build_coverage(
                             unlinked.get(period, 0) if (source, event_type, cohort) == ("all", "all", "all")
                             and stratum in ("all", "unknown") else 0,
                             event_type in disabled, settled_lags,
+                            uncovered_by_period.get(period, 0) if (source, event_type, cohort) == ("all", "all", "all")
+                            and stratum in ("all", "unknown") else 0,
                         ))
     return tuple(sorted(cells, key=lambda x: x.key()))
 
@@ -1971,7 +1995,7 @@ def _coverage_cell(
     key: CellKey, keys: Sequence[GridKey], events: Sequence[DefaultEpisode], unknown_units: set[GridKey],
     frontier: dt.date | None, bounds: tuple[dt.date, dt.date], receipt_ok: bool,
     receipt: c.ValidationReceipt | None, reference: int | None, n_unlinked: int, disabled: bool,
-    settled_lags: set[uuid.UUID],
+    settled_lags: set[uuid.UUID], without_unit: int = 0,
 ) -> c.CoverageCell:
     period, source, event_type, stratum, cohort = key
     lags = {e.episode_id: (e.evidence_known_at.date() - e.onset_upper_inclusive).days for e in events}
@@ -1992,6 +2016,8 @@ def _coverage_cell(
         rationale = "public-source evidence without an exact-cell qualified denominator"
     if pending:
         rationale += f"; negative_lag_pending_adjudication={pending}"
+    if without_unit:
+        rationale += f"; events_without_exposure_unit={without_unit}"
     return c.CoverageCell(
         period_label=period, source=source, event_type=event_type, rating_stratum=stratum, exposure_cohort=cohort,
         state=state, denominator_basis=basis, denominator_count=count, exposed_issue_months=len(keys),

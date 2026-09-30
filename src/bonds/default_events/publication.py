@@ -19,6 +19,14 @@ State machine (implementation plan section 3.3):
 Two stores implement the same contract: :class:`InMemoryPublicationStore` (tests) and
 :class:`PostgresPublicationStore` (immutable DB writer over the four additive SQL
 files). Error codes are shared: ``<function>:<reason>``.
+
+Python-only invariants: two rules are enforced by :func:`check_bundle` only and have no counterpart in the
+pinned SQL ``bond_credit_validate`` (changing it would change a pinned digest): (1) a source-free
+``missing``/``rights_unverified`` rating row that has an approved in-scope candidate must equal the public
+rating resolver's own outcome (``rating_scope_invalid`` otherwise); (2) a coverage ``source_frontier`` may not
+be later than the knowledge-cutoff date (``coverage_frontier_after_cutoff``). ``PostgresPublicationStore.validate``
+runs ``check_bundle`` before the SQL validate, so the supported path enforces them; direct SQL validation does
+not (``KNOWN_SQL_GAPS`` in ``tests/test_bond_default_publication_db.py`` pins that fact).
 """
 
 from __future__ import annotations
@@ -27,7 +35,7 @@ import datetime as dt
 import hashlib
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Protocol
@@ -413,6 +421,10 @@ def check_bundle(bundle: CreditBundle) -> None:
     for cell in fr["coverage"]:
         digest = cell.validation_receipt_digest  # type: ignore[attr-defined]
         _require(digest is None or digest == m["validation_digest"], "coverage_receipt_mismatch", cell.period_label)  # type: ignore[attr-defined]
+        frontier = cell.source_frontier  # type: ignore[attr-defined]
+        # A source frontier is what the source was verified to cover by K; a later one is unknowable at K.
+        _require(frontier is None or frontier <= k.astimezone(dt.timezone.utc).date(),
+                 "coverage_frontier_after_cutoff", cell.period_label)  # type: ignore[attr-defined]
 
     grid = set(bundle.panel_grid)
     ratings = fr["ratings"]
@@ -421,6 +433,7 @@ def check_bundle(bundle: CreditBundle) -> None:
         count = sum(1 for r in ratings if r.view_kind == view)  # type: ignore[attr-defined]
         _require(keys == grid and count == len(grid), "rating_grid_mismatch", view)
     event_cusips = {(e.episode_id, e.cusip9) for e in events}  # type: ignore[attr-defined]
+    source_free_with_candidate: list[Any] = []
     for r in ratings:
         label = f"{r.cusip_id}|{r.month.isoformat()}|{r.view_kind}"  # type: ignore[attr-defined]
         _require(r.public_known_at is None or r.public_known_at <= k, "rating_row_invalid", label)  # type: ignore[attr-defined]
@@ -438,11 +451,22 @@ def check_bundle(bundle: CreditBundle) -> None:
                 source.covers(r.month) for source in uncleared_sources  # type: ignore[attr-defined]
             )
             has_approved_candidate = _rating_candidate_exists(ix, r, rating_scope_keys)
-            expected_state = "rights_unverified" if declared_unavailable and not has_approved_candidate else "missing"
-            _require(r.state == expected_state, "rating_scope_invalid", label)  # type: ignore[attr-defined]
+            if has_approved_candidate:
+                # An approved in-scope action reaches this key: only the resolver can say whether it
+                # resolves to a rating or (symbol problem, same-day conflict) stays unrated.
+                source_free_with_candidate.append(r)
+            else:
+                expected_state = "rights_unverified" if declared_unavailable else "missing"
+                _require(r.state == expected_state, "rating_scope_invalid", label)  # type: ignore[attr-defined]
         overlay = r.default_overlay_episode_id  # type: ignore[attr-defined]
         _require(overlay is None or (overlay, r.cusip_id) in event_cusips, "rating_row_invalid", label)  # type: ignore[attr-defined]
         _require(_check_rating_row(ix, r), "rating_row_invalid", label)
+
+    if source_free_with_candidate:
+        _check_source_free_rows_against_resolver(
+            source_free_with_candidate, packages=packages, obs=obs, links=links, k=k,
+            mode=m["knowledge_mode"], scopes=rating_scopes, uncleared=uncleared_sources,
+        )
 
     # No output row relies on an observation/link superseded or retracted as of K.
     for label, relied_obs, relied_links in _relied_inputs(fr, adjs, ix):
@@ -461,6 +485,36 @@ def check_bundle(bundle: CreditBundle) -> None:
             and not pit_states & {"pit_unverified", "rights_unverified"}
             and _rating_input_qualified(receipt, m["rating_input_digest"], packages.values(), grid),
             "qualified_state_unsupported",
+        )
+
+
+def _check_source_free_rows_against_resolver(
+    rows: Sequence[Any], *, packages: Mapping[uuid.UUID, SourcePackage], obs: Mapping[uuid.UUID, CreditObservation],
+    links: Mapping[uuid.UUID, EventLink], k: dt.datetime, mode: str, scopes: Iterable[Any],
+    uncleared: Iterable[Any],
+) -> None:
+    """A source-free row with an approved in-scope candidate must equal the resolver's own outcome.
+
+    The public rating resolver (``RATING_RESOLVER_ID``, unchanged) is run non-strictly over just the
+    affected CUSIPs (per-CUSIP sweeps are independent); a key it resolves to a rating (``observed``,
+    ``carried_verified``, ``stale``, ...) can no longer be published as a source-free row.
+    """
+    wanted = {(r.cusip_id, r.month) for r in rows}
+    grid = sorted(wanted)
+    try:
+        resolution = pr.build_full_grid_ratings(
+            grid, knowledge_cutoff=k, packages=packages.values(), observations=obs.values(),
+            links=links.values(), rating_scopes=scopes, uncleared_sources=uncleared,
+            knowledge_mode=mode, strict=False,
+        )
+    except pr.RatingResolveError as exc:
+        raise ContractError(f"rating_resolution_invalid:{exc}") from exc
+    expected = resolution.by_key()
+    for r in rows:
+        want = expected.get((r.cusip_id, r.month, r.view_kind))
+        label = f"{r.cusip_id}|{r.month.isoformat()}|{r.view_kind}"
+        _require(
+            want is not None and not want.agency_source_ids and want.state == r.state, "rating_scope_invalid", label,
         )
 
 

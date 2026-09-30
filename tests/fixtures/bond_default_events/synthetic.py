@@ -792,6 +792,19 @@ def _frontier_may(bundle: c.CreditBundle, *, row_frontier: dt.date | None) -> di
     return frames
 
 
+def _resolved_frontier_may(bundle: c.CreditBundle) -> dict:  # type: ignore[type-arg]
+    """``_frontier_may`` frames with the ratings exactly as the resolver derives them from them."""
+    frames = _frontier_may(bundle, row_frontier=None)
+    merged = {**bundle.frames, **frames}
+    resolved = pr.build_full_grid_ratings(
+        bundle.panel_grid, knowledge_cutoff=bundle.manifest["knowledge_cutoff"],
+        packages=merged["source_packages"], observations=merged["observations"], links=merged["event_links"],
+        episodes=merged["events"], rating_scopes=RATING_SCOPES, uncleared_sources=(),
+        knowledge_mode=bundle.manifest["knowledge_mode"], strict=False,
+    )
+    return {**frames, "ratings": resolved.rows}
+
+
 def _cusip_a_april_relies_on_c(bundle: c.CreditBundle) -> dict:  # type: ignore[type-arg]
     """CUSIP A's April public-PIT row relies on the CUSIP C agency action (another obligation)."""
     _package, action = _agency_inputs(bundle)
@@ -944,10 +957,11 @@ def rating_regressions() -> dict[str, tuple[c.CreditBundle, str | None]]:
         "receipt_without_rating_qualification": (
             rebind_receipt(q, rating_input_digest=None, rating_package_digest=None), unsupported),
         "grid_month_beyond_coverage_frontier": (
-            rebind_receipt(q, {**_frontier_may(q, row_frontier=None), "ratings": _all_missing(q.frames["ratings"])}),
-            unsupported),
+            rebind_receipt(q, _resolved_frontier_may(q)), unsupported),
+        # An approved in-scope action reaches these keys: suppressing every rating as source-free ``missing``
+        # is refused (the resolver, not mere candidate existence, owns the expected state).
         "all_missing_under_qualified_input": (
-            reassemble(q, frames={"ratings": _all_missing(q.frames["ratings"])}), None),
+            reassemble(q, frames={"ratings": _all_missing(q.frames["ratings"])}), "rating_scope_invalid"),
         "rating_input_declarations_mismatch": (
             reassemble(q, rating_declarations=uncleared, rating_input_digest=q.manifest["rating_input_digest"]),
             "rating_input_digest_mismatch"),

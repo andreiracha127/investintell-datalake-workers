@@ -17432,3 +17432,84 @@ def write_purpose_diagnostics(
         sha256sums_sha256=receipt["sha256sums_sha256"],
         receipt_sha256=receipt_sha256,
     )
+
+
+# === Timezone-awareness guards (post-freeze) =================================================
+# The v3 core above and the FE-1 test suite are byte-pinned (``test_frozen_v3_and_prep1_unchanged``), so
+# the naive-timestamp refusal is applied here, by rebinding the public entry points, instead of inside the
+# frozen text. Module-level callers resolve these names at call time, so module-internal calls to a
+# rebound *function* are guarded too; the ``NcenFiling`` methods are patched on the class and therefore
+# guard every caller. Naive values are refused with ``NcenError("timestamp_not_timezone_aware:<name>")``
+# (the N-PORT parser's code) BEFORE the wrapped body converts them with ``astimezone`` (which would read a
+# naive value as local time).
+#
+# Exemptions (documented, deliberate): ``diagnostic_selection`` already refuses a naive cutoff itself
+# (``datetime_not_timezone_aware``, before any conversion); ``diagnostic_fixture_selection`` and
+# ``_diagnostic_build_context`` accept a naive ``knowledge_cutoff`` on purpose and reject it later with
+# diagnostic-specific errors. They keep those codes and are not wrapped.
+#
+# FE-1 trust root: ``build_vote_inventory`` / ``VoteInventory.target_votes`` read ``DeraPackageResult``
+# artifacts (Parquet + JSONL) WITHOUT an external sidecar pin. FE-1 inputs are pinned only by their sealed
+# source manifests and the pinned package ZIP sha256 (``parse_dera_package`` re-verifies the ZIP; the
+# derived artifacts are trusted as the sealed run's output). The externally pinned
+# ``NportSourceInput.expected_result_sha256`` gate applies to ``nport.materialize_nport_inventory`` only.
+def _aware(value: object, name: str) -> dt.datetime:
+    """UTC-normalized ``value``; a naive input raises ``timestamp_not_timezone_aware:<name>``
+    (same code as the N-PORT parser)."""
+    try:
+        return nport._require_aware_utc(value, name)
+    except nport.NportError as exc:
+        raise NcenError(str(exc)) from exc
+
+
+def _guard_aware(function: Any, *names: str) -> Any:
+    import functools
+    import inspect
+
+    parameters = list(inspect.signature(function).parameters.values())
+    positional = {
+        p.name: index for index, p in enumerate(parameters)
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    }
+    missing = [name for name in names if name not in {p.name for p in parameters}]
+    if missing:
+        raise NcenError(f"guard_parameter_unknown:{function.__name__}:{missing}")
+    where = tuple((name, positional.get(name)) for name in names)
+
+    @functools.wraps(function)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        for name, index in where:
+            if name in kwargs:
+                value = kwargs[name]
+            elif index is not None and index < len(args):
+                value = args[index]
+            else:
+                continue  # defaulted: nothing to check
+            # Fast path: an aware datetime needs no further work; anything else (naive, non-datetime) is
+            # checked (``None`` means "not supplied" for the optional parameters).
+            if value is not None and not (
+                isinstance(value, dt.datetime) and value.tzinfo is not None
+                and value.tzinfo.utcoffset(value) is not None
+            ):
+                _aware(value, name)
+        return function(*args, **kwargs)
+
+    return guarded
+
+
+for _name, _params in (
+    ("parse_dera_ncen_package", ("retrieved_at", "first_verified_public_at")),
+    ("parse_ncen_primary_doc", ("retrieved_at",)),
+    ("merge_filings", ("index_retrieved_at",)),
+    ("effective_filing", ("knowledge_cutoff",)),
+    ("family_components", ("knowledge_cutoff",)),
+    ("build_vote_inventory", ("knowledge_cutoff",)),
+    ("family_evidence_for", ("knowledge_cutoff",)),
+    ("build_consensus_with_ncen", ("knowledge_cutoff",)),
+    ("diagnostic_per_state_components", ("knowledge_cutoff",)),
+    ("_diagnostic_dera_projections", ("retrieved_at", "first_verified_public_at")),
+):
+    globals()[_name] = _guard_aware(globals()[_name], *_params)
+for _method in ("visible", "data_available", "exact_acceptance", "admission_bound", "earliest_public"):
+    setattr(NcenFiling, _method, _guard_aware(getattr(NcenFiling, _method), "cutoff"))
+del _name, _params, _method

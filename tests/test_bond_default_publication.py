@@ -256,6 +256,50 @@ def test_full_grid_and_rating_rows(qualified):
     assert _code(_swap(qualified, "ratings", rated, not_agency)) == "rating_row_invalid"
 
 
+def _suppressed(row):
+    return syn.replace_row(
+        row, state="missing", bucket=None, action_date=None, public_known_at=None, agency_source_ids=(),
+        binding_link_ids=(), coverage_frontier=None, action_input_digest=None,
+    )
+
+
+@pytest.mark.parametrize("state", ["observed", "carried_verified", "stale", "withdrawn"])
+def test_a_valid_approved_rating_cannot_be_suppressed_as_a_source_free_missing_row(qualified, state):
+    rows = [r for r in qualified.frames["ratings"] if r.agency_source_ids and r.state == state]
+    if not rows:
+        pytest.skip(f"fixture has no {state} rating row")
+    rated = rows[0]
+    assert _code(_swap(qualified, "ratings", rated, _suppressed(rated))) == "rating_scope_invalid"
+
+
+def test_resolver_owned_missing_stays_valid_and_no_candidate_rows_skip_the_resolver(monkeypatch, qualified):
+    """A candidate the resolver itself leaves unrated is accepted; rows without any candidate never call it."""
+    real = p.pr.build_full_grid_ratings
+    calls: list[int] = []
+
+    def spy(grid, **kwargs):
+        calls.append(len(grid))
+        return real(grid, **kwargs)
+
+    monkeypatch.setattr(p.pr, "build_full_grid_ratings", spy)
+    p.check_bundle(qualified)  # every source-free row lacks an approved candidate or is resolver-consistent
+    rated = next(r for r in qualified.frames["ratings"] if r.state == "observed")
+    key = (rated.cusip_id, rated.month, rated.view_kind)
+
+    def unrated(grid, **kwargs):
+        resolution = real(grid, **kwargs)
+        rows = tuple(_suppressed(r) if (r.cusip_id, r.month, r.view_kind) == key else r for r in resolution.rows)
+        return dataclasses.replace(resolution, rows=rows)
+
+    suppressed = _swap(qualified, "ratings", rated, _suppressed(rated))
+    calls.clear()
+    with pytest.raises(c.ContractError, match="rating_scope_invalid"):
+        p.check_bundle(suppressed)
+    assert calls  # the resolver was consulted for the candidate row
+    monkeypatch.setattr(p.pr, "build_full_grid_ratings", unrated)  # resolver agrees the key is unrated
+    p.check_bundle(suppressed)  # the resolver agrees the key is unrated: no rating_scope_invalid
+
+
 def test_rating_rows_require_the_governed_declared_scope(qualified):
     package, action = syn._agency_inputs(qualified)
     out_of_scope = syn.replace_row(
@@ -903,3 +947,10 @@ def test_promotion_reverifies_frames_against_the_manifest(store, frame, reason):
         p.promote_bundle(store, bundle.publication_id, expected_pointer=None)
     assert reason in str(info.value)
     assert store.pointer is None
+
+
+def test_coverage_frontier_later_than_the_cutoff_is_refused_by_bundle_validation(qualified):
+    cell = next(x for x in qualified.frames["coverage"] if x.source_frontier is not None)
+    later = qualified.manifest["knowledge_cutoff"].astimezone(dt.timezone.utc).date() + dt.timedelta(days=1)
+    tampered = syn.replace_row(cell, source_frontier=later)
+    assert _code(_swap(qualified, "coverage", cell, tampered)) == "coverage_frontier_after_cutoff"

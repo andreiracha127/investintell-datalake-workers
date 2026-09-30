@@ -399,6 +399,14 @@ def validate_source_manifest(
             raise SourceManifestError(
                 "manifest_observed_after_cutoff", item["source_key"]
             )
+        # A frontier cannot postdate its own observation or the knowledge cutoff (UTC dates).
+        if frontier is not None and (
+            frontier > observed.astimezone(dt.timezone.utc).date()
+            or frontier > cutoff.astimezone(dt.timezone.utc).date()
+        ):
+            raise SourceManifestError(
+                "manifest_frontier_after_observation", item["source_key"]
+            )
         count = item["filing_count"]
         if count is not None and (not _plain_int(count) or count < 0):
             raise SourceManifestError("manifest_filing_count_invalid", where)

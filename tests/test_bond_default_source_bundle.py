@@ -221,6 +221,10 @@ def _set_frontier(key: str, **changes):
             ),
             "timestamp_not_canonical",
         ),
+        (
+            _set_frontier("sec_nport.dera_packages", frontier="2026-09-26"),
+            "frontier_after_observation",
+        ),
         (_set_frontier("sec_nport.dera_packages", state="qualified"), "state_invalid"),
         (
             _set_frontier("sec_nport.dera_packages", ingestion="ingested"),
@@ -333,6 +337,21 @@ def test_manifest_observed_exactly_at_cutoff_is_allowed_and_one_tick_later_is_no
     with pytest.raises(sb.SourceManifestError, match="observed_after_cutoff"):
         validate(
             load_manifest(), knowledge_cutoff=latest - dt.timedelta(microseconds=1)
+        )
+
+
+def test_manifest_frontier_on_its_observation_date_is_allowed_and_a_day_later_is_not():
+    # sec_nport.dera_packages is observed on 2026-09-25 (UTC); the frontier may equal that date.
+    validate(
+        manifest_for(
+            mutate=_set_frontier("sec_nport.dera_packages", frontier="2026-09-25")
+        )
+    )
+    with pytest.raises(sb.SourceManifestError, match="frontier_after_observation"):
+        validate(
+            manifest_for(
+                mutate=_set_frontier("sec_nport.dera_packages", frontier="2026-09-26")
+            )
         )
 
 

@@ -23,6 +23,7 @@ No value interpretation erases the lexical source value: flags keep their raw te
 from __future__ import annotations
 
 import ctypes
+import dataclasses
 import datetime as dt
 import hashlib
 import json
@@ -405,6 +406,10 @@ class DeraPackageResult:
     #: predate artifact binding (those are refused at materialization, never silently accepted).
     projection_sha256: str | None = None
     accessions_sha256: str | None = None
+    #: sha256 of the exact ``package_result.json`` bytes ``parse_dera_package`` wrote. Set ONLY by the
+    #: parser (in memory, not persisted in the sidecar) and never by :meth:`load`: it is the parse-time
+    #: value a caller seals in a source manifest and later supplies as ``expected_result_sha256``.
+    result_sha256: str | None = None
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -419,6 +424,23 @@ class DeraPackageResult:
             "status": self.status,
             "zip_sha256": self.zip_sha256,
         }
+
+    def result_file(self) -> Path:
+        """The persisted ``package_result.json`` next to this result's artifacts."""
+        anchor = self.projection_path or self.accessions_path
+        if anchor is None:
+            raise NportError(f"package_result_file_unknown:{self.package_label}")
+        return Path(anchor).parent / "package_result.json"
+
+    def current_result_file_sha256(self) -> str:
+        """sha256 of the sidecar file *as it is on disk now*.
+
+        WARNING: never use this to produce the pin handed to :func:`materialize_nport_inventory`
+        (``NportSourceInput.expected_result_sha256``): a pin derived from the file being verified
+        authenticates nothing. The pin must come from outside — the digest recorded at parse time
+        (:attr:`result_sha256`) and sealed in a source manifest. This accessor is for diagnostics and
+        for sealing a manifest right after parsing."""
+        return sha256_file(self.result_file())
 
     @classmethod
     def load(cls, directory: Path) -> DeraPackageResult:
@@ -721,10 +743,10 @@ def _finish(
         accessions_sha256=None if accessions is None else sha256_file(accessions),
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "package_result.json").write_text(
-        json.dumps(result.to_record(), sort_keys=True, indent=1, default=str), encoding="utf-8"
-    )
-    return result
+    sidecar = json.dumps(result.to_record(), sort_keys=True, indent=1, default=str).encode("utf-8")
+    (output_dir / "package_result.json").write_bytes(sidecar)
+    # Digest of the exact bytes written (``write_text`` would translate newlines on some platforms).
+    return dataclasses.replace(result, result_sha256=hashlib.sha256(sidecar).hexdigest())
 
 
 def _scalar(con: Any, sql: str) -> Any:
@@ -1319,6 +1341,53 @@ def _flag_value(raw: str | None, presence: str) -> str | None:
     return raw if presence in ("present", "invalid") else None
 
 
+_IDENTITY_CHECK_CACHE: dict[tuple[str | None, tuple[str, ...]], IdentityResolution] = {}
+
+
+def _verify_projection_row(row: Mapping[str, Any]) -> None:
+    """Recompute a projection row's stored derived values; refuse the row on any disagreement.
+
+    Rows that carry ``content_sha256``/``semantic_sha256`` (every persisted Parquet row and every
+    public-XML row) must reproduce them from their own raw fields, the semantic key from the
+    semantic hash and lot ordinal, the flag presences from the raw flags, and the CUSIP9/ISIN
+    identity from the raw identifiers. Rows without stored hashes are not checkable and pass.
+    """
+    if "content_sha256" not in row or "semantic_sha256" not in row:
+        return
+    where = f"{row.get('accession_number')}:{row.get('holding_id')}"
+
+    def bad(field_name: str) -> NportError:
+        return NportError(f"projection_row_hash_mismatch:{where}:{field_name}")
+
+    isins = row["isins"] if "isins" in row else json.loads(row["isins_json"])
+    values = {name: row[name] for name in _CONTENT_FIELDS if name != "isins"}
+    values["isins"] = list(isins)
+    if _content_sha(values) != row["content_sha256"]:
+        raise bad("content_sha256")
+    if semantic_sha(values) != row["semantic_sha256"]:
+        raise bad("semantic_sha256")
+    if "lot_ordinal" in row and row["semantic_key"] != semantic_key_for(
+        row["accession_number"], row["semantic_sha256"], int(row["lot_ordinal"])
+    ):
+        raise bad("semantic_key")
+    for raw_name, presence_name in (("is_default_raw", "is_default_presence"), ("arrears_raw", "arrears_presence"),
+                                    ("pik_raw", "pik_presence")):
+        if flag_presence(row[raw_name])[1] != row[presence_name] and not (
+            row[presence_name] == "absent" and row[raw_name] is None
+        ):
+            raise bad(presence_name)
+    key = (row["cusip_raw"], tuple(isins))
+    resolved = _IDENTITY_CHECK_CACHE.get(key)
+    if resolved is None:
+        if len(_IDENTITY_CHECK_CACHE) > 500_000:
+            _IDENTITY_CHECK_CACHE.clear()
+        resolved = _IDENTITY_CHECK_CACHE[key] = resolve_identity(row["cusip_raw"], isins)
+    if (resolved.cusip9, resolved.isin_raw, resolved.status) != (
+        row["cusip9"], row["isin_raw"], row.get("identity_status", resolved.status)
+    ):
+        raise bad("identity")
+
+
 def observation_from_projection(
     row: Mapping[str, Any],
     *,
@@ -1327,6 +1396,7 @@ def observation_from_projection(
     first_seen_at: dt.datetime,
 ) -> CreditObservation:
     """One contract observation from one projection row (lexical values preserved)."""
+    _verify_projection_row(row)
     report_date = row["report_date"]
     if isinstance(report_date, str):
         report_date = dt.date.fromisoformat(report_date)
@@ -2851,10 +2921,17 @@ class NportSourceInput:
     result: DeraPackageResult | PublicAccessionResult
     acceptance_headers: Mapping[str, AcceptanceHeader] = field(default_factory=dict)
     reconciliations: tuple[DeraReconciliation, ...] = ()
+    #: sha256 of the DERA result's ``package_result.json``, taken from a sealed source
+    #: manifest/inventory (never from the sidecar itself). Required for DERA sources.
+    expected_result_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.result) not in (DeraPackageResult, PublicAccessionResult):
             raise NportAdapterError("nport_adapter_arguments_invalid", "source_result_type")
+        pin = self.expected_result_sha256
+        if pin is not None and (not isinstance(pin, str) or not _SHA256_HEX.fullmatch(pin)
+                                or type(self.result) is not DeraPackageResult):
+            raise NportAdapterError("nport_adapter_arguments_invalid", "expected_result_sha256")
         if not isinstance(self.acceptance_headers, Mapping):
             raise NportAdapterError("nport_adapter_arguments_invalid", "acceptance_headers")
         headers: dict[str, AcceptanceHeader] = {}
@@ -2986,6 +3063,35 @@ def _source_fingerprint(source: NportSourceInput, *, max_scan_rows: int) -> tupl
             # Legacy result without recorded artifact hashes: the projection is not bound to
             # the pinned ZIP. Refuse; re-derive it with ``parse_dera_package`` (which records them).
             raise NportAdapterError("nport_source_artifact_unbound", result.package_label)
+        # The artifact hashes live in the mutable sidecar: authenticate the sidecar itself from
+        # outside (sealed pin), then require the in-memory result to be that sidecar's content.
+        if source.expected_result_sha256 is None:
+            raise NportAdapterError("nport_source_result_unpinned", result.package_label)
+        try:
+            sidecar_bytes = result.result_file().read_bytes()  # read ONCE: hash and parse the same bytes
+        except (NportError, OSError) as exc:
+            raise NportAdapterError("nport_source_result_hash_mismatch", result.package_label) from exc
+        if hashlib.sha256(sidecar_bytes).hexdigest() != source.expected_result_sha256:
+            raise NportAdapterError("nport_source_result_hash_mismatch", result.package_label)
+        try:
+            record = json.loads(sidecar_bytes)
+            if not isinstance(record, dict):
+                raise TypeError("sidecar_not_an_object")
+            sidecar_package = SourcePackage.create(
+                **{k: v for k, v in record["source_package"].items() if k != "package_id"}
+            )
+        except (ValueError, TypeError, KeyError, AttributeError, ContractError) as exc:
+            raise NportAdapterError("nport_source_result_hash_mismatch", result.package_label) from exc
+        if (
+            record.get("projection_sha256") != result.projection_sha256
+            or record.get("accessions_sha256") != result.accessions_sha256
+            or record.get("zip_sha256") != result.zip_sha256
+            or record.get("package_label") != result.package_label
+            or record.get("status") != result.status
+            or (record.get("stats") or {}).get("eligible_rows_projected") != count
+            or sidecar_package.row_sha256() != package.row_sha256()
+        ):
+            raise NportAdapterError("nport_source_result_hash_mismatch", result.package_label)
         projection_sha = sha256_file(result.projection_path)
         accessions_sha = sha256_file(result.accessions_path)
         if projection_sha != result.projection_sha256 or accessions_sha != result.accessions_sha256:
@@ -2997,6 +3103,7 @@ def _source_fingerprint(source: NportSourceInput, *, max_scan_rows: int) -> tupl
             result.zip_sha256,
             projection_sha,
             accessions_sha,
+            source.expected_result_sha256,
             count,
             headers,
             proof,
@@ -3100,6 +3207,21 @@ def _observation_eligible(
     if str(row.package_id) not in resolution.attestations.get(accession, ()):
         return "package_copy_not_eligible_at_cutoff"
     return None
+
+
+def _typed_row_errors(rows: Iterator[CreditObservation]) -> Iterator[CreditObservation]:
+    """Yield ``rows``; a projection row that fails its stored-hash re-verification becomes the adapter's typed refusal."""
+    iterator = iter(rows)
+    while True:
+        try:
+            row = next(iterator)
+        except StopIteration:
+            return
+        except NportError as exc:
+            if str(exc).startswith("projection_row_hash_mismatch:"):
+                raise NportAdapterError("nport_source_not_persistable", "projection_row_hash_mismatch") from exc
+            raise
+        yield row
 
 
 def materialize_nport_inventory(
@@ -3209,7 +3331,7 @@ def materialize_nport_inventory(
             else iter(result.observations)
         )
         source_count = 0
-        for row in rows:
+        for row in _typed_row_errors(rows):
             scanned += 1
             source_count += 1
             if scanned > scan_limit:

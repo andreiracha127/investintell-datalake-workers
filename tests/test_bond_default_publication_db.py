@@ -1015,12 +1015,29 @@ def test_sql_validate_enforces_semantic_rules(store, admin):
 
 
 RATING_REGRESSIONS = syn.rating_regressions()
+#: Invariants enforced only by ``check_bundle`` (run by ``PostgresPublicationStore.validate`` BEFORE the pinned SQL
+#: ``bond_credit_validate``): scenario -> Python refusal. The pinned SQL currently ACCEPTS these bundles; the test
+#: asserts that, so a future SQL fix is noticed and the entry can be retired.
+KNOWN_SQL_GAPS = {"all_missing_under_qualified_input": "rating_scope_invalid"}
 
 
 @pytest.mark.parametrize("name", sorted(RATING_REGRESSIONS))
 def test_sql_rating_input_qualification_and_public_pit_binding(store, admin, name):
     """bond_credit_validate itself refuses unqualified rating input and unbound PIT rows."""
     bundle, reason = RATING_REGRESSIONS[name]
+    if name in KNOWN_SQL_GAPS:
+        # ``check_bundle`` recomputes the resolver's expected rating state; the pinned SQL
+        # ``bond_credit_validate`` only checks candidate existence.
+        with pytest.raises(p.ContractError, match=KNOWN_SQL_GAPS[name]):
+            p.check_bundle(bundle)
+        p.prepare_bundle(store, bundle)  # prepare verifies derivation only
+        with pytest.raises(p.PublicationError, match=KNOWN_SQL_GAPS[name]):  # the Python store refuses ...
+            p.validate_bundle(store, bundle.publication_id)
+        assert store.state(bundle.publication_id).lifecycle_state == "prepared"
+        with admin.transaction():  # ... while the pinned SQL alone accepts: the known gap
+            admin.execute("SELECT bond_credit_validate(%s)", [bundle.publication_id])
+        assert store.state(bundle.publication_id).lifecycle_state == "validated"
+        return
     if reason is None:
         assert _promoted(store, bundle) == bundle.publication_id
         assert _pointer(admin) == bundle.publication_id
