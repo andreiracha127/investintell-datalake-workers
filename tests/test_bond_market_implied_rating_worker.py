@@ -45,15 +45,20 @@ def _matching_build():
 
 
 class _FakeConnection:
-    def __init__(self, row=None):
+    def __init__(self, row=None, events=None):
         self.row = row
         self.statements = []
+        self.events = events
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         return False
+
+    def commit(self):
+        if self.events is not None:
+            self.events.append("commit")
 
     def execute(self, sql, params=None):
         self.statements.append((sql, params))
@@ -179,6 +184,7 @@ def _patch_worker(monkeypatch, *, build=None, pointer=POINTER, mirror=True, defa
         build["input_fingerprint"],
     ))
     events = []
+    conn.events = events
     monkeypatch.setattr(worker, "connect", lambda _dsn: conn)
     monkeypatch.setattr(worker, "resolve_dsn", lambda _dsn: "postgresql://example")
     monkeypatch.setattr(worker, "_code_revision", lambda: REVISION)
@@ -249,7 +255,12 @@ def test_run_rebuilds_changed_identity_and_reports_reasons(monkeypatch, field, v
     assert result["rebuild_reasons"] == [reason]
     assert result["panel_publication_id"] == PARENT["publication_id"]
     assert result["code_revision"] == REVISION
-    expected_events = ["read_snapshot", "install_schema", "build_payload", ("materialize", POINTER)]
+    # The DDL commits before the build: its AccessExclusiveLock on the shared
+    # ledger must not live through the full-history computation.
+    expected_events = [
+        "read_snapshot", "commit", "install_schema", "commit", "build_payload",
+        ("materialize", POINTER),
+    ]
     assert events == expected_events
     assert len(conn.statements) == (2 if field == "panel_publication_id" else 1)
 
@@ -318,7 +329,7 @@ def test_panel_only_change_with_identical_inputs_is_current_without_building(mon
         assert result["policy_digest"] == worker.policy.POLICY_DIGEST
         assert result["aborted"] is False
         assert not result.get("rebuild_reasons")
-    assert events == ["read_snapshot", "read_snapshot"]
+    assert events == ["read_snapshot", "commit", "read_snapshot", "commit"]
     assert len(conn.statements) == 4
 
 
