@@ -390,6 +390,7 @@ the existing publication without changing its immutable build parent; published
 results that reuse an existing publication report its persisted build parent.
 `BOND_IMPLIED_RATING_FORCE_REPUBLISH=1` does not enable a disabled daily stage and
 does not bypass pointer CAS, mirror provenance or anchor drift.
+The anchor drift gate uses absolute tolerance `1e-9` (log units, `rel_tol=0`), reuses the pinned anchor within tolerance, and reports/logs `resolved_l_anchor`; drift beyond tolerance refuses publication.
 
 Stage 7 remains **verdict-neutral** and inside the daily lock. Before Phase 3,
 alert on `implied_rating.state` in the day JSON and

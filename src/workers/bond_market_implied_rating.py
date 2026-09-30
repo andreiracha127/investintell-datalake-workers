@@ -39,6 +39,7 @@ must match on ``bond_market_implied_rating_v1`` warnings or on
 from __future__ import annotations
 
 import logging
+import math
 import os
 import subprocess
 import time
@@ -50,6 +51,7 @@ import psycopg
 
 from src.bonds import implied_rating as policy
 from src.bonds.errors import BondError
+from src.bonds.implied_rating import ANCHOR_DRIFT_ABS_TOL
 from src.bonds.implied_rating_materializer import (
     PRODUCT,
     ImpliedRatingPublication,
@@ -316,7 +318,8 @@ def _build_payload(
 
     Returns ``{"failure": <typed dict>}`` when the read cannot produce a build,
     or ``{"publication", "rows", "last_closed_month", "input_fingerprint",
-    "rows_digest", "d_confirmed_count", "d_candidate_count", "l_anchor", "bucket_counts"}``.
+    "rows_digest", "d_confirmed_count", "d_candidate_count", "l_anchor",
+    "resolved_l_anchor", "pinned_l_anchor", "bucket_counts"}``.
     """
     inputs = (
         _read_snapshot_inputs(conn, parent=parent, started=started)
@@ -328,7 +331,7 @@ def _build_payload(
     input_fingerprint = inputs["input_fingerprint"]
     last_closed_month = parent["last_closed_month"]
     try:
-        l_anchor = policy.market_anchor_for_snapshot(
+        resolved_l_anchor = policy.market_anchor_for_snapshot(
             snapshot, last_closed_month=last_closed_month
         )
     except policy.AnchorWindowEmpty:
@@ -348,6 +351,22 @@ def _build_payload(
             input_reasons=["anchor_not_reproduced"],
             panel_publication_id=parent["publication_id"],
         )}
+    previous_anchor = (
+        current_pinned_anchor(conn)
+        if _relation_exists(conn, f"{PRODUCT}_builds")
+        else None
+    )
+    l_anchor = resolved_l_anchor
+    if previous_anchor is not None and math.isclose(
+        previous_anchor, resolved_l_anchor, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
+    ):
+        # Preserve the exact build pin and historical scores across float paths.
+        l_anchor = previous_anchor
+    LOGGER.info(
+        "bond_market_implied_rating_v1 anchor: l_anchor=%s pinned_l_anchor=%s "
+        "resolved_l_anchor=%s",
+        l_anchor, previous_anchor, resolved_l_anchor,
+    )
     rows = policy.build_publication_rows(
         snapshot, last_closed_month=last_closed_month, l_anchor=l_anchor
     )
@@ -388,6 +407,8 @@ def _build_payload(
         "input_fingerprint": input_fingerprint,
         "rows_digest": rows_digest,
         "l_anchor": l_anchor,
+        "resolved_l_anchor": resolved_l_anchor,
+        "pinned_l_anchor": previous_anchor,
         "d_confirmed_count": d_confirmed_count,
         "d_candidate_count": d_candidate_count,
         "bucket_counts": {
@@ -482,21 +503,20 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
             if "failure" in prepared:
                 return prepared["failure"]
             publication: ImpliedRatingPublication = prepared["publication"]
-            previous_anchor = (
-                current_pinned_anchor(conn)
-                if _relation_exists(conn, f"{PRODUCT}_builds")
-                else None
-            )
+            previous_anchor = prepared["pinned_l_anchor"]
             drift = (
                 previous_anchor is not None
-                and previous_anchor != prepared["l_anchor"]
+                and not math.isclose(
+                    previous_anchor, prepared["resolved_l_anchor"],
+                    rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL,
+                )
             )
             if drift:
                 LOGGER.warning(
                     "bond_market_implied_rating_v1 anchor drift in plan: pinned=%s "
                     "resolved=%s; a publication under this anchor is refused",
                     previous_anchor,
-                    prepared["l_anchor"],
+                    prepared["resolved_l_anchor"],
                 )
             return {
                 "state": "anchor_drift" if drift else "planned",
@@ -515,6 +535,7 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 "d_confirmed_count": prepared["d_confirmed_count"],
                 "d_candidate_count": prepared["d_candidate_count"],
                 "l_anchor": prepared["l_anchor"],
+                "resolved_l_anchor": prepared["resolved_l_anchor"],
                 "pinned_l_anchor": previous_anchor,
                 "anchor_drift": drift,
                 "current_pointer": pointer,
@@ -591,8 +612,11 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
             if "failure" in prepared:
                 return prepared["failure"]
             publication: ImpliedRatingPublication = prepared["publication"]
-            previous_anchor = current_pinned_anchor(conn)
-            if previous_anchor is not None and previous_anchor != prepared["l_anchor"]:
+            previous_anchor = prepared["pinned_l_anchor"]
+            if previous_anchor is not None and not math.isclose(
+                previous_anchor, prepared["resolved_l_anchor"],
+                rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL,
+            ):
                 # The closed window no longer resolves the anchor the current
                 # publication was built with: publishing would silently rewrite
                 # every historical bucket. Stop and let the calibration round
@@ -602,7 +626,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                     elapsed=time.monotonic() - started,
                     input_reasons=["anchor_drift"],
                     pinned_l_anchor=previous_anchor,
-                    resolved_l_anchor=prepared["l_anchor"],
+                    resolved_l_anchor=prepared["resolved_l_anchor"],
                 )
             result = materialize(
                 conn, publication, prepared["rows"], expected_pointer=pointer
@@ -637,6 +661,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 "d_confirmed_count": prepared["d_confirmed_count"],
                 "d_candidate_count": prepared["d_candidate_count"],
                 "l_anchor": prepared["l_anchor"],
+                "resolved_l_anchor": prepared["resolved_l_anchor"],
                 "bucket_counts": prepared["bucket_counts"],
                 "reused_publication": result.reused,
                 "rebuild_reasons": rebuild_reasons,

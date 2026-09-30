@@ -33,6 +33,7 @@ from src.bonds.implied_rating_materializer import (
     InMemoryPublicationStore,
     build_fingerprint,
     publication_id_for,
+    publication_row_tuples,
 )
 from src.workers import bond_market_implied_rating as worker
 
@@ -384,6 +385,26 @@ def test_policy_anchor_pin_is_checked_against_the_closed_history(monkeypatch) ->
     )
     with pytest.raises(ValueError, match="new calibration round"):
         ir.market_anchor(level)
+
+
+@pytest.mark.parametrize(
+    ("resolved", "offset", "reproduced"),
+    [
+        (-0.8864114120812479, 8e-16, True),
+        (-0.8864114120812479, 1e-6, False),
+        (1e6, 1e-6, False),
+    ],
+)
+def test_policy_anchor_pin_uses_only_absolute_tolerance(
+    monkeypatch, resolved, offset, reproduced
+) -> None:
+    level = pd.Series([resolved], index=pd.to_datetime(["2026-08-01"]))
+    monkeypatch.setitem(ir.POLICY["market_level"]["anchor"], "l_anchor", str(resolved + offset))
+    if reproduced:
+        assert ir.market_anchor(level) == resolved
+    else:
+        with pytest.raises(ir.AnchorNotReproduced, match="new calibration round"):
+            ir.market_anchor(level)
 
 
 def test_spread_norm_log_is_s_and_neutralized_score_is_the_market_adjustment() -> None:
@@ -1237,6 +1258,7 @@ def _patch_worker(monkeypatch, *, panel=None, pointer=None, current=None, snapsh
 
     def fake_materialize(conn, publication, rows, *, expected_pointer):
         captured["publication"] = publication
+        captured["rows"] = rows
         captured["expected_pointer"] = expected_pointer
         return type("Result", (), {
             "publication_id": publication.publication_id,
@@ -1349,6 +1371,93 @@ def test_worker_refuses_an_anchor_drift(monkeypatch, caplog) -> None:
         record.levelno == logging.WARNING and "anchor_drift" in record.getMessage()
         for record in caplog.records
     )
+
+
+@pytest.mark.parametrize("entrypoint", [worker.run, worker.plan], ids=["run", "plan"])
+@pytest.mark.parametrize("previous_anchor", [-0.8864114120812487, None], ids=["pinned", "initial"])
+def test_worker_build_uses_the_pin_and_reports_the_resolved_anchor(
+    monkeypatch, caplog, entrypoint, previous_anchor
+) -> None:
+    resolved = -0.8864114120812479
+    frame = pd.DataFrame(bond_rows("A", [300.0] * len(MONTHS)))
+    pointer = "pub-current" if previous_anchor is not None else None
+    captured = _patch_worker(
+        monkeypatch,
+        panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
+               "last_closed_month": MONTHS[-1].date(), "open_month": None},
+        pointer=pointer, snapshot=frame, anchor=previous_anchor,
+    )
+    calls = []
+    real_rows = ir.build_publication_rows
+
+    def resolve_anchor(*args, **kwargs):
+        calls.append("resolve")
+        return resolved
+
+    def pinned_anchor(_conn):
+        calls.append("pin")
+        return previous_anchor
+
+    def build_rows(snapshot, *, last_closed_month, l_anchor):
+        calls.append(("rows", l_anchor))
+        return real_rows(snapshot, last_closed_month=last_closed_month, l_anchor=l_anchor)
+
+    monkeypatch.setattr(ir, "market_anchor_for_snapshot", resolve_anchor)
+    monkeypatch.setattr(worker, "current_pinned_anchor", pinned_anchor)
+    monkeypatch.setattr(ir, "build_publication_rows", build_rows)
+    if entrypoint is worker.plan:
+        monkeypatch.setattr(worker, "install_schema", lambda _conn: pytest.fail("plan DDL"))
+        monkeypatch.setattr(worker, "materialize", lambda *args, **kwargs: pytest.fail("plan wrote"))
+    with caplog.at_level(logging.INFO, logger=worker.__name__):
+        result = entrypoint("postgresql://example")
+    expected_anchor = resolved if previous_anchor is None else previous_anchor
+    assert result["state"] == ("published_no_defaults" if entrypoint is worker.run else "planned")
+    assert result["l_anchor"] == expected_anchor
+    assert result["resolved_l_anchor"] == resolved
+    assert f"resolved_l_anchor={resolved}" in caplog.text
+    assert calls == ["resolve", "pin", ("rows", expected_anchor)]
+    if entrypoint is worker.run:
+        publication = captured["publication"]
+        assert publication.l_anchor == expected_anchor
+        assert captured["expected_pointer"] == pointer
+        store = InMemoryPublicationStore()
+        store.materialize(
+            publication, publication_row_tuples(publication, captured["rows"]),
+            expected_pointer=None,
+        )
+        assert store.pinned_anchor() == expected_anchor
+    else:
+        assert result["pinned_l_anchor"] == previous_anchor
+        assert result["anchor_drift"] is False
+
+
+@pytest.mark.parametrize("entrypoint", [worker.run, worker.plan], ids=["run", "plan"])
+@pytest.mark.parametrize("previous_anchor", [-0.8864114120812487, 1e6])
+def test_worker_refuses_anchor_drift_beyond_absolute_tolerance(
+    monkeypatch, entrypoint, previous_anchor
+) -> None:
+    resolved = previous_anchor + 1e-6
+    frame = pd.DataFrame(bond_rows("A", [300.0] * len(MONTHS)))
+    _patch_worker(
+        monkeypatch,
+        panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
+               "last_closed_month": MONTHS[-1].date(), "open_month": None},
+        pointer="pub-current", snapshot=frame, anchor=previous_anchor,
+    )
+    monkeypatch.setattr(ir, "market_anchor_for_snapshot", lambda *args, **kwargs: resolved)
+    monkeypatch.setattr(worker, "materialize", lambda *args, **kwargs: pytest.fail("drift published"))
+    if entrypoint is worker.plan:
+        monkeypatch.setattr(worker, "install_schema", lambda _conn: pytest.fail("plan DDL"))
+    result = entrypoint("postgresql://example")
+    assert result["pinned_l_anchor"] == previous_anchor
+    assert result["resolved_l_anchor"] == resolved
+    if entrypoint is worker.run:
+        assert result["state"] == "gate_failed"
+        assert result["input_reasons"] == ["anchor_drift"]
+        assert result["aborted"] is True
+    else:
+        assert result["state"] == "anchor_drift"
+        assert result["anchor_drift"] is True
 
 
 def test_worker_warns_when_the_publication_fails(monkeypatch, caplog) -> None:
