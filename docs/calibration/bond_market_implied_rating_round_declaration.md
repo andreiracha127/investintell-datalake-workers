@@ -120,6 +120,13 @@ or `POLICY_DIGEST` changes.
 - `source_exit` applies only to non-confirmed spells. A confirmed, uncured `D`
   never source-exits, including at par or near maturity; only a completed cure
   returns it to a rated state in a new spell.
+- **Cure is calendar-consecutive.** A confirmed `D` cures only after `n_cure=3`
+  consecutive calendar months, each witnessed with `price ≥ p_cure`. Any
+  unwitnessed month (in-grid or gap) resets the cure streak while the `D` carry
+  continues; a witnessed month below `p_cure` also resets it. A missing
+  observation is never more favorable than an adverse one. Gaps longer than
+  `carry_forward_k` terminate the spell as `WITHDRAWN/default_absorbing`
+  regardless.
 - `L` is indexed on the month calendar from the first witnessed month through
   `last_closed_month`. A month with an empty witness set carries the level
   (delta 0); the next witnessed month chains against the last month with a

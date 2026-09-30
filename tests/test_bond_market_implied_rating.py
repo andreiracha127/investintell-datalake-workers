@@ -694,6 +694,108 @@ def test_default_is_absorbing_and_a_cure_opens_a_new_spell() -> None:
     assert_ddl_invariants(rows)
 
 
+@pytest.mark.parametrize("in_grid", [True, False], ids=["in_grid", "gap"])
+def test_cure_requires_calendar_consecutive_witnesses(in_grid: bool) -> None:
+    months = pd.date_range("2024-12-01", periods=6, freq="MS")
+    frame = pd.DataFrame(bond_rows(
+        "X", [300.0] * 6, months=months, prices=[30.0, 85.0, 85.0, 85.0, 85.0, 85.0],
+    ))
+    if in_grid:
+        frame.loc[frame["month"].eq(months[2]), "trade_count"] = 0
+    else:
+        frame = frame.loc[~frame["month"].eq(months[2])]
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["month"].tolist() == list(months)
+    assert rows["implied_bucket"].tolist() == ["D"] * 5 + ["BB"]
+    assert rows["spell_id"].tolist() == [1] * 5 + [2]
+    assert rows["d_confirmed"].tolist() == [True] * 5 + [False]
+    assert rows["witnessed"].tolist() == [True, True, False, True, True, True]
+    assert rows["carry_months"].tolist() == [0, 0, 1, 0, 0, 0]
+    assert rows["d_event_month"].iloc[:5].tolist() == [months[0].date()] * 5
+    assert rows["recovery_observed"].iloc[:5].to_numpy() == pytest.approx([30.0] * 5)
+    assert_ddl_invariants(rows)
+
+
+def test_cure_completes_after_three_consecutive_calendar_witnesses() -> None:
+    months = pd.date_range("2024-12-01", periods=4, freq="MS")
+    frame = pd.DataFrame(bond_rows(
+        "X", [300.0] * 4, months=months, prices=[30.0, 85.0, 85.0, 85.0],
+    ))
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["implied_bucket"].tolist() == ["D", "D", "D", "BB"]
+    assert rows["spell_id"].tolist() == [1, 1, 1, 2]
+    assert rows["d_confirmed"].tolist() == [True, True, True, False]
+    assert rows["witnessed"].all()
+    assert_ddl_invariants(rows)
+
+
+@pytest.mark.parametrize("in_grid", [True, False], ids=["in_grid", "gap"])
+def test_cure_treats_dark_months_no_more_favorably_than_adverse_witnesses(in_grid: bool) -> None:
+    months = pd.date_range("2024-12-01", periods=6, freq="MS")
+    adverse = pd.DataFrame(bond_rows(
+        "X", [300.0] * 6, months=months, prices=[30.0, 85.0, 70.0, 85.0, 85.0, 85.0],
+    ))
+    dark = adverse.copy()
+    dark.loc[dark["month"].eq(months[2]), "price"] = 85.0
+    if in_grid:
+        dark.loc[dark["month"].eq(months[2]), "trade_count"] = 0
+    else:
+        dark = dark.loc[~dark["month"].eq(months[2])]
+    adverse_rows = slice_of(build(adverse, months=months), "X")
+    dark_rows = slice_of(build(dark, months=months), "X")
+    for rows in (adverse_rows, dark_rows):
+        assert rows["implied_bucket"].tolist() == ["D"] * 5 + ["BB"]
+        assert rows["spell_id"].tolist() == [1] * 5 + [2]
+        assert rows["d_confirmed"].tolist() == [True] * 5 + [False]
+        assert_ddl_invariants(rows)
+    pd.testing.assert_frame_equal(
+        adverse_rows.loc[3:, ["implied_bucket", "spell_id"]],
+        dark_rows.loc[3:, ["implied_bucket", "spell_id"]],
+        check_exact=True,
+    )
+
+
+@pytest.mark.parametrize("in_grid", [True, False], ids=["in_grid", "gap"])
+def test_cure_cannot_survive_a_gap_longer_than_default_carry(in_grid: bool) -> None:
+    months = pd.date_range("2024-12-01", periods=7, freq="MS")
+    frame = pd.DataFrame(bond_rows(
+        "X", [300.0] * 7, months=months, prices=[30.0] + [85.0] * 6,
+    ))
+    if in_grid:
+        frame.loc[frame["month"].isin(months[2:6]), "trade_count"] = 0
+    else:
+        frame = frame.loc[~frame["month"].isin(months[2:6])]
+    rows = slice_of(build(frame, months=months), "X")
+    assert rows["month"].tolist() == list(months)
+    assert rows["implied_bucket"].tolist() == ["D"] * 5 + ["WITHDRAWN", "BB"]
+    assert rows["carry_months"].tolist() == [0, 0, 1, 2, 3, 4, 0]
+    assert rows["spell_id"].tolist() == [1] * 6 + [2]
+    assert rows["d_confirmed"].tolist() == [True] * 5 + [False, False]
+    assert rows["censoring"].tolist() == ["none"] * 5 + ["default_absorbing", "none"]
+    assert_ddl_invariants(rows)
+
+
+@pytest.mark.parametrize("in_grid", [True, False], ids=["in_grid", "gap"])
+def test_calendar_consecutive_cure_is_point_in_time(in_grid: bool) -> None:
+    months = pd.date_range("2024-12-01", periods=6, freq="MS")
+    frame = pd.DataFrame(bond_rows(
+        "X", [300.0] * 6, months=months, prices=[30.0, 85.0, 85.0, 85.0, 85.0, 85.0],
+    ))
+    if in_grid:
+        frame.loc[frame["month"].eq(months[2]), "trade_count"] = 0
+    else:
+        frame = frame.loc[~frame["month"].eq(months[2])]
+    anchor = ir.market_anchor_for_snapshot(frame, last_closed_month=months[-1])
+    full = ir.build_publication_rows(frame, last_closed_month=months[-1], l_anchor=anchor)
+    truncated = ir.build_publication_rows(frame, last_closed_month=months[4], l_anchor=anchor)
+    pd.testing.assert_frame_equal(
+        full.loc[full["month"].le(months[4])].reset_index(drop=True),
+        truncated,
+        check_exact=True,
+    )
+    assert_ddl_invariants(truncated)
+
+
 def test_default_rows_carry_then_withdraw_with_default_absorbing() -> None:
     months = pd.date_range("2025-01-01", periods=7, freq="MS")
     frame = pd.DataFrame(market_fillers(months=months) + bond_rows(

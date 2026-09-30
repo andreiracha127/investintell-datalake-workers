@@ -252,6 +252,26 @@ def _read_snapshot_inputs(
             input_reasons=[f"snapshot_unreadable:{type(exc).__name__}"],
             panel_publication_id=parent["publication_id"],
         )}
+    # The matview read is a single-statement snapshot. The panel commits its
+    # forward-only pointer CAS before refreshing the mirror, so the pre-read
+    # mirror probe plus an unchanged post-read pointer proves the rows belong
+    # to the captured generation. A newer mirror requires a pointer move;
+    # another mirror probe would add no protection against this race.
+    current_parent = _current_panel(conn)
+    if (
+        current_parent is None
+        or current_parent["publication_id"] != parent["publication_id"]
+        or current_parent["last_closed_month"] != parent["last_closed_month"]
+    ):
+        return {"failure": _failure(
+            "implied_rating_gate_failed",
+            elapsed=time.monotonic() - started,
+            input_reasons=["panel_pointer_moved"],
+            panel_publication_id=parent["publication_id"],
+            current_panel_publication_id=(
+                current_parent["publication_id"] if current_parent is not None else None
+            ),
+        )}
     if snapshot.empty:
         return {"failure": _failure(
             "implied_rating_gate_failed",
@@ -451,6 +471,11 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 if "current" in inputs:
                     return inputs["current"]
                 payload_kwargs["snapshot_inputs"] = inputs
+            if "snapshot_inputs" not in payload_kwargs:
+                inputs = _read_snapshot_inputs(conn, parent=parent, started=started)
+                if "failure" in inputs:
+                    return inputs["failure"]
+                payload_kwargs["snapshot_inputs"] = inputs
             prepared = _build_payload(
                 conn, parent=parent, revision=revision, started=started, **payload_kwargs
             )
@@ -553,6 +578,11 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                     return inputs["failure"]
                 if "current" in inputs:
                     return inputs["current"]
+                payload_kwargs["snapshot_inputs"] = inputs
+            if "snapshot_inputs" not in payload_kwargs:
+                inputs = _read_snapshot_inputs(conn, parent=parent, started=started)
+                if "failure" in inputs:
+                    return inputs["failure"]
                 payload_kwargs["snapshot_inputs"] = inputs
             install_schema(conn)
             prepared = _build_payload(

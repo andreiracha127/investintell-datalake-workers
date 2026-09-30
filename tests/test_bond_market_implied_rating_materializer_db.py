@@ -397,10 +397,19 @@ def test_panel_pointer_change_with_identical_inputs_converges_without_writing(mo
                 "CREATE VIEW sec_validated_raw_runs AS SELECT run_id, raw_validated_at "
                 "FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL"
             )
-            conn.execute("CREATE TABLE bond_panel_publications(publication_id uuid PRIMARY KEY)")
+            conn.execute(
+                "CREATE TABLE bond_panel_publications(publication_id uuid PRIMARY KEY, "
+                "publication_status text, first_month date, last_closed_month date, open_month date)"
+            )
+            conn.execute("CREATE TABLE bond_panel_app_pointer(product text PRIMARY KEY, publication_id uuid)")
             conn.execute("INSERT INTO sec_ingestion_runs VALUES(%s, now())", (run_id,))
             conn.execute("INSERT INTO sec_source_packages VALUES(%s, %s)", (package_id, run_id))
-            conn.execute("INSERT INTO bond_panel_publications VALUES(%s), (%s)", (panel_a, panel_b))
+            for panel_id in (panel_a, panel_b):
+                conn.execute(
+                    "INSERT INTO bond_panel_publications VALUES(%s, 'validated', %s, %s, %s)",
+                    (panel_id, MONTHS[0].date(), MONTHS[-1].date(), date(2025, 4, 1)),
+                )
+            conn.execute("INSERT INTO bond_panel_app_pointer VALUES('bond_panel_v1', %s)", (panel_b,))
             install_schema(conn)
             conn.execute(
                 sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA {} TO worker_writer").format(sql.Identifier(schema))

@@ -248,9 +248,7 @@ def test_run_rebuilds_changed_identity_and_reports_reasons(monkeypatch, field, v
     assert result["rebuild_reasons"] == [reason]
     assert result["panel_publication_id"] == PARENT["publication_id"]
     assert result["code_revision"] == REVISION
-    expected_events = ["install_schema", "build_payload", ("materialize", POINTER)]
-    if field == "panel_publication_id":
-        expected_events.insert(0, "read_snapshot")
+    expected_events = ["read_snapshot", "install_schema", "build_payload", ("materialize", POINTER)]
     assert events == expected_events
     assert len(conn.statements) == (2 if field == "panel_publication_id" else 1)
 
@@ -370,7 +368,7 @@ def test_panel_and_revision_change_cannot_use_the_fingerprint_shortcut(monkeypat
     if entrypoint is worker.run:
         assert result["rebuild_reasons"] == ["panel_publication_changed", "code_revision_changed"]
     assert "build_payload" in events
-    assert "read_snapshot" not in events
+    assert events.count("read_snapshot") == 1
 
 
 @pytest.mark.parametrize("entrypoint", [worker.run, worker.plan], ids=["run", "plan"])
@@ -389,7 +387,7 @@ def test_force_republish_bypasses_panel_input_convergence(monkeypatch, entrypoin
         assert result["rebuild_reasons"] == ["panel_publication_changed"]
         assert events[-1] == ("materialize", POINTER)
     assert "build_payload" in events
-    assert "read_snapshot" not in events
+    assert events.count("read_snapshot") == 1
 
 
 def test_reused_publication_reports_its_persisted_build_parent(monkeypatch):
@@ -425,3 +423,84 @@ def test_panel_input_convergence_preserves_snapshot_refusals(monkeypatch, snapsh
         ["snapshot_unreadable:Error"] if snapshot_error else ["snapshot_empty"]
     )
     assert events == []
+
+
+@pytest.mark.parametrize("entrypoint", [worker.run, worker.plan], ids=["run", "plan"])
+@pytest.mark.parametrize("convergence", [False, True], ids=["rebuild", "convergence"])
+@pytest.mark.parametrize("moved", ["publication", "window", "same_id_window", "absent"])
+def test_panel_pointer_moved_during_snapshot_read_refuses_before_building(
+    monkeypatch, entrypoint, convergence, moved
+):
+    build = {
+        **_matching_build(), "panel_publication_id": "panel-previous",
+        "input_fingerprint": worker.policy.snapshot_fingerprint(_snapshot()),
+    } if convergence else None
+    _, events = _patch_worker(monkeypatch, build=build, pointer=POINTER if convergence else None)
+    current = dict(PARENT)
+    probes = []
+
+    def read_snapshot(_conn, **kwargs):
+        nonlocal current
+        events.append("read_snapshot")
+        if moved == "absent":
+            current = None
+        else:
+            current = dict(PARENT)
+            if moved != "same_id_window":
+                current["publication_id"] = "panel-next"
+            if moved != "publication":
+                current["last_closed_month"] = date(2026, 9, 1)
+        return _snapshot()
+
+    monkeypatch.setattr(worker, "_current_panel", lambda _conn: current)
+    monkeypatch.setattr(worker, "_read_snapshot", read_snapshot)
+    monkeypatch.setattr(worker, "_mirror_serves_panel", lambda _conn, **kwargs: probes.append(kwargs) or True)
+    monkeypatch.setattr(worker, "install_schema", lambda _conn: pytest.fail("DDL"))
+    monkeypatch.setattr(worker, "_build_payload", lambda *args, **kwargs: pytest.fail("build payload"))
+    monkeypatch.setattr(worker, "materialize", lambda *args, **kwargs: pytest.fail("materialize"))
+    monkeypatch.setattr(
+        worker.policy, "snapshot_fingerprint", lambda *args, **kwargs: pytest.fail("fingerprint decision")
+    )
+    monkeypatch.setattr(
+        worker.policy, "build_publication_rows", lambda *args, **kwargs: pytest.fail("state machine")
+    )
+    result = entrypoint("postgresql://example")
+    assert result["state"] == "gate_failed"
+    assert result["reason"] == "implied_rating_gate_failed"
+    assert result["aborted"] is True
+    assert result["input_reasons"] == ["panel_pointer_moved"]
+    assert result["panel_publication_id"] == PARENT["publication_id"]
+    assert result["current_panel_publication_id"] == (
+        current["publication_id"] if current is not None else None
+    )
+    assert events == ["read_snapshot"]
+    assert len(probes) == 1
+
+
+@pytest.mark.parametrize("entrypoint", [worker.run, worker.plan], ids=["run", "plan"])
+@pytest.mark.parametrize("convergence", [False, True], ids=["rebuild", "convergence"])
+def test_stable_panel_pointer_preserves_rebuild_and_convergence(monkeypatch, entrypoint, convergence):
+    build = {
+        **_matching_build(), "panel_publication_id": "panel-previous",
+        "input_fingerprint": worker.policy.snapshot_fingerprint(_snapshot()),
+    } if convergence else None
+    _, events = _patch_worker(monkeypatch, build=build, pointer=POINTER if convergence else None)
+    sequence = []
+    read_snapshot = worker._read_snapshot
+
+    def read(_conn, **kwargs):
+        sequence.append("snapshot")
+        return read_snapshot(_conn, **kwargs)
+
+    monkeypatch.setattr(worker, "_current_panel", lambda _conn: sequence.append("panel") or dict(PARENT))
+    monkeypatch.setattr(worker, "_mirror_serves_panel", lambda _conn, **kwargs: sequence.append("mirror") or True)
+    monkeypatch.setattr(worker, "_read_snapshot", read)
+    result = entrypoint("postgresql://example")
+    assert result["state"] == (
+        "current" if convergence else "published" if entrypoint is worker.run else "planned"
+    )
+    if convergence:
+        assert result["reason"] == "panel_inputs_unchanged"
+    assert result["panel_publication_id"] == PARENT["publication_id"]
+    assert sequence == ["panel", "mirror", "snapshot", "panel"]
+    assert events.count("read_snapshot") == 1

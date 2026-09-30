@@ -745,6 +745,7 @@ def _state_rows_for_cusip(timeline: pd.DataFrame, *, cusip: str) -> list[dict[st
             continue
         state.carry += 1
         if state.confirmed:
+            state.cure_streak = 0
             if state.carry > k:
                 rows.append(_carry_row(
                     month=month, cusip=cusip, bucket="WITHDRAWN",

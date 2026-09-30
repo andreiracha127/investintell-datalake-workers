@@ -376,7 +376,7 @@ dry-run paths. This catches a publish-day refresh failure on later `current` day
 | `current` | The pointer's own validated build matches panel publication, closed month, policy digest and runtime `code_revision`. If only the panel publication changed but its closed snapshot fingerprint is identical, `reason=panel_inputs_unchanged` reports the current `panel_publication_id` and original `build_panel_publication_id`. Neither path runs the state machine, applies product DDL or materializes a publication. |
 | `published` | Full closed-history rebuild published under pointer CAS and the pinned-anchor drift gate. |
 | `published_no_defaults` | Published with zero confirmed defaults; the consumer's default-capacity gate decides admissibility. |
-| `gate_failed` | Typed refusal in `input_reasons`, including `snapshot_mirror_stale`, missing panel relations/revision, `anchor_drift`, or `pointer_moved`. |
+| `gate_failed` | Typed refusal in `input_reasons`, including `snapshot_mirror_stale`, `panel_pointer_moved` (the panel publication or closed-month window changed during the snapshot read), missing panel relations/revision, `anchor_drift`, or `pointer_moved`. |
 | `publish_failed` | Operational or build failure; the returned `reason` and `input_reasons` describe the refusal. |
 
 Published results include ordered `rebuild_reasons`: `pointer_build_absent`,
