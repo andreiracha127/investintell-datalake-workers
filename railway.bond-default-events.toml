@@ -90,11 +90,18 @@
 # Verify a run in bond_credit_publications / bond_default_diagnostic_releases, not from the deploy
 # status.
 #
-# Runtime: needs a tz database for America/New_York (system /usr/share/zoneinfo on the nixpacks image,
-# or the `tzdata` package); contracts.py resolves it at import, so a missing database fails loudly.
+# Image: the service builds the repo-root Dockerfile (fleet image, python:3.12-slim + /opt/venv).
+# Its COPY set must carry src/, schemas/, contracts/ and configs/bond_default_events/ (the frozen
+# invocation); test_fleet_image_copies_the_invocation_and_its_pinned_inputs guards that.  Railway
+# rejects linking config-as-code files for new services, so the service instance settings mirror
+# this file (builder, startCommand, restartPolicy NEVER, no cron) rather than reading it.
+#
+# Runtime: needs a tz database for America/New_York (the fleet image resolves it; contracts.py
+# resolves it at import, so a missing database fails loudly).
 
 [build]
-builder = "nixpacks"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "python -m src.workers.bond_default_events"

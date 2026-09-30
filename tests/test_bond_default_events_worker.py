@@ -2901,6 +2901,29 @@ COMMITTED_INVOCATION = (
 )
 
 
+def test_fleet_image_copies_the_invocation_and_its_pinned_inputs():
+    """The Railway one-shot runs from the root Dockerfile image; it must carry the
+    invocation manifests and every tree the pinned code digest and frontier manifest
+    read at runtime, or the service fails with manifest_unreadable before any work."""
+    root = COMMITTED_INVOCATION.parents[2]
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    for tree in ("src/", "schemas/", "contracts/", "configs/bond_default_events/"):
+        assert f"COPY {tree} /app/{tree}" in dockerfile, (
+            f"{tree} missing from the fleet image"
+        )
+    # The service config must build that Dockerfile (not a Nixpacks/Railpack image).
+    config = (root / "railway.bond-default-events.toml").read_text(encoding="utf-8")
+    assert (
+        'builder = "DOCKERFILE"' in config and 'dockerfilePath = "Dockerfile"' in config
+    )
+    # The invocation's frontier manifest resolves under a copied tree.
+    doc = json.loads(COMMITTED_INVOCATION.read_text(encoding="utf-8"))
+    frontier = (
+        COMMITTED_INVOCATION.parent / doc["input"]["source_manifest"]["path"]
+    ).resolve()
+    assert frontier.relative_to(root.resolve()).parts[0] == "contracts"
+
+
 def test_committed_invocation_manifest_plans_offline_against_the_current_tree():
     computed = sb.code_digest()
     stats = w.run(None, manifest=COMMITTED_INVOCATION, env={})
