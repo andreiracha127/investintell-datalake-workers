@@ -382,9 +382,12 @@ def _build_payload(
             panel_last_closed_month=last_closed_month.isoformat(),
             published_last_month=months.max().date().isoformat(),
         )}
+    identity_kwargs: dict[str, float] = {}
+    if l_anchor.hex() != resolved_l_anchor.hex():
+        identity_kwargs["inherited_l_anchor"] = l_anchor
     publication = ImpliedRatingPublication(
         publication_id=publication_id_for(
-            policy.POLICY_DIGEST, revision, input_fingerprint
+            policy.POLICY_DIGEST, revision, input_fingerprint, **identity_kwargs
         ),
         panel_publication_id=parent["publication_id"],
         policy_version=policy.POLICY_VERSION,

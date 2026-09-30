@@ -23,6 +23,7 @@ import math
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -1230,6 +1231,25 @@ def test_publication_identity_binds_policy_revision_and_inputs() -> None:
     assert build_fingerprint("a" * 64, "rev1", "b" * 64) != base
 
 
+def test_publication_identity_preserves_the_frozen_round002_id() -> None:
+    assert publication_id_for(
+        "28f70b9bd8f617fedf6104deb86cd518d43307e88b3bbd1fcf53aa1fae869a3b",
+        "c541c35cfcec9cd1df08ce5d7a1eca2ef2f30c76",
+        "620760bf4de0584d44138d880ff57bf87d3ffa24ef205074d0b004d8874b9867",
+    ) == "bc13a5e4-7f1a-54fa-8a5b-68862df4020b"
+
+
+def test_publication_identity_binds_a_canonical_inherited_anchor() -> None:
+    args = ("a" * 64, "rev1", "b" * 64)
+    plain = publication_id_for(*args)
+    assert publication_id_for(*args, inherited_l_anchor=None) == plain
+    anchor = -0.8864114120812487
+    inherited = publication_id_for(*args, inherited_l_anchor=anchor)
+    assert inherited != plain
+    assert inherited == publication_id_for(*args, inherited_l_anchor=np.float64(anchor))
+    assert inherited != publication_id_for(*args, inherited_l_anchor=anchor + 8e-16)
+
+
 # --------------------------------------------------------------------------- #
 # Worker states
 # --------------------------------------------------------------------------- #
@@ -1429,6 +1449,53 @@ def test_worker_build_uses_the_pin_and_reports_the_resolved_anchor(
     else:
         assert result["pinned_l_anchor"] == previous_anchor
         assert result["anchor_drift"] is False
+
+
+@pytest.mark.parametrize(
+    ("previous_anchor", "resolved"),
+    [
+        (None, -0.8864114120812479),
+        (-0.8864114120812487, -0.8864114120812479),
+        (-0.8864114120812479, -0.8864114120812479),
+        (-0.0, 0.0),
+    ],
+    ids=["initial", "inherited", "identical", "signed-zero"],
+)
+def test_worker_plan_and_run_bind_only_a_bitwise_changed_inherited_anchor(
+    monkeypatch, previous_anchor, resolved
+) -> None:
+    frame = pd.DataFrame(bond_rows("A", [300.0] * len(MONTHS)))
+    captured = _patch_worker(
+        monkeypatch,
+        panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
+               "last_closed_month": MONTHS[-1].date(), "open_month": None},
+        pointer="pub-current" if previous_anchor is not None else None,
+        snapshot=frame, anchor=previous_anchor,
+    )
+    monkeypatch.setattr(ir, "market_anchor_for_snapshot", lambda *args, **kwargs: resolved)
+    planned = worker.plan("postgresql://example")
+    assert planned["state"] == "planned"
+    assert "publication" not in captured
+    published = worker.run("postgresql://example")
+    assert published["state"] == "published_no_defaults"
+    assert planned["publication_id"] == published["publication_id"]
+    assert planned["rows_digest"] == published["rows_digest"]
+
+    monkeypatch.setattr(worker, "current_pinned_anchor", lambda _conn: None)
+    monkeypatch.setattr(worker, "_current_pointer", lambda _conn: None)
+    fresh = worker.plan("postgresql://example")
+    plain_id = publication_id_for(ir.POLICY_DIGEST, "test-rev", ir.snapshot_fingerprint(frame))
+    assert fresh["publication_id"] == plain_id
+    if previous_anchor is not None and previous_anchor.hex() != resolved.hex():
+        assert published["publication_id"] != plain_id
+        assert published["publication_id"] == publication_id_for(
+            ir.POLICY_DIGEST, "test-rev", ir.snapshot_fingerprint(frame),
+            inherited_l_anchor=previous_anchor,
+        )
+        if previous_anchor != resolved:
+            assert published["rows_digest"] != fresh["rows_digest"]
+    else:
+        assert published["publication_id"] == plain_id
 
 
 @pytest.mark.parametrize("entrypoint", [worker.run, worker.plan], ids=["run", "plan"])

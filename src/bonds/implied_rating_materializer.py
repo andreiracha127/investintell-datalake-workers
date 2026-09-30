@@ -10,13 +10,14 @@ through ``sec_set_current_derived_publication``.
 Two disciplines are added on top of the ledger, both fail-closed:
 
   * the build is idempotent by identity: ``uuid5(product | policy_digest |
-    code_revision | input_fingerprint)`` mints the same publication for the same
-    inputs + policy + code and a NEW one for anything else, so a replay
+    code_revision | input_fingerprint [| inherited_l_anchor])`` binds an inherited
+    anchor when it differs bitwise from the resolved value; without that suffix,
+    all legacy identities are unchanged. A replay
     re-points instead of rebuilding -- after re-verifying the stored pin field
     by field, so a divergent payload under a reused identity refuses with
     ``deterministic_rerun_mismatch``. A changed policy can never reuse an old
     build. The builds table's ``UNIQUE (policy_digest, input_fingerprint,
-    code_revision)`` enforces the same statement in the database.
+    code_revision)`` still allows only one build per base policy/code/input tuple.
   * the pointer move is compare-and-set: the caller passes the pointer it read
     before the build, and the writer re-reads it FOR UPDATE before promoting.
     A concurrent publication that moved the pointer fails this run loudly.
@@ -89,17 +90,21 @@ BUILD_COLUMNS: tuple[str, ...] = (
 
 
 def publication_id_for(
-    policy_digest: str, code_revision: str, input_fingerprint: str
+    policy_digest: str, code_revision: str, input_fingerprint: str,
+    *, inherited_l_anchor: float | None = None,
 ) -> str:
-    """Stable exact-input identity: same policy + code + inputs, same build."""
+    """Stable identity, optionally binding an inherited anchor without changing legacy IDs."""
+    name = f"{PRODUCT}|{POLICY_VERSION}|{policy_digest}|{code_revision}|{input_fingerprint}"
+    if inherited_l_anchor is not None:
+        name += f"|inherited_l_anchor={float(inherited_l_anchor)!r}"
     return str(uuid.uuid5(
         _NAMESPACE_PUBLICATION,
-        f"{PRODUCT}|{POLICY_VERSION}|{policy_digest}|{code_revision}|{input_fingerprint}",
+        name,
     ))
 
 
 def build_fingerprint(policy_digest: str, code_revision: str, input_fingerprint: str) -> str:
-    """The ledger's ``build_fingerprint``: one sha256 over the identity tuple."""
+    """The ledger's legacy fingerprint over policy + code + snapshot inputs."""
     return hashlib.sha256(
         f"{PRODUCT}|{POLICY_VERSION}|{policy_digest}|{code_revision}|{input_fingerprint}"
         .encode("utf-8")
