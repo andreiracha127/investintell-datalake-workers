@@ -1,0 +1,2851 @@
+<?xml version="1.0" encoding="UTF-8"?><edgarSubmission xmlns="http://www.sec.gov/edgar/nport" xmlns:com="http://www.sec.gov/edgar/common" xmlns:ncom="http://www.sec.gov/edgar/nportcommon" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <headerData>
+    <submissionType>NPORT-P</submissionType>
+    <isConfidential>false</isConfidential>
+    <filerInfo>
+
+      <filer>
+        <issuerCredentials>
+          <cik>0001331971</cik>
+          <ccc>XXXXXXXX</ccc>
+        </issuerCredentials>
+      </filer>
+
+
+      <seriesClassInfo>
+        <seriesId>S000034045</seriesId>
+        <classId>C000104934</classId>
+        <classId>C000104935</classId>
+      </seriesClassInfo>
+
+
+    </filerInfo>
+  </headerData>
+  <formData>
+    <genInfo>
+      <regName>John Hancock Funds II</regName>
+      <regFileNumber>811-21779</regFileNumber>
+      <regCik>0001331971</regCik>
+      <regLei>O3MKD80X1I2OGNEFGW25</regLei>
+      <regStreet1>200 Berkeley Street</regStreet1>
+      <regCity>Boston</regCity>
+      <regStateConditional regCountry="US" regState="US-MA"/>
+      <regZipOrPostalCode>02116</regZipOrPostalCode>
+      <regPhone>617-663-4497</regPhone>
+      <seriesName>Diversified Strategies Fund</seriesName>
+      <seriesId>S000034045</seriesId>
+      <seriesLei>5493006TL0KTDJ2PJ818</seriesLei>
+      <repPdEnd>2021-07-31</repPdEnd>
+      <repPdDate>2021-01-31</repPdDate>
+      <isFinalFiling>N</isFinalFiling>
+    </genInfo>
+    <fundInfo>
+      <totAssets>10334181.090000000000</totAssets>
+      <totLiabs>201675.700000000000</totLiabs>
+      <netAssets>10132505.390000000000</netAssets>
+      <assetsAttrMiscSec>0.000000000000</assetsAttrMiscSec>
+      <assetsInvested>0.000000000000</assetsInvested>
+      <amtPayOneYrBanksBorr>0.000000000000</amtPayOneYrBanksBorr>
+      <amtPayOneYrCtrldComp>0.000000000000</amtPayOneYrCtrldComp>
+      <amtPayOneYrOthAffil>0.000000000000</amtPayOneYrOthAffil>
+      <amtPayOneYrOther>0.000000000000</amtPayOneYrOther>
+      <amtPayAftOneYrBanksBorr>0.000000000000</amtPayAftOneYrBanksBorr>
+      <amtPayAftOneYrCtrldComp>0.000000000000</amtPayAftOneYrCtrldComp>
+      <amtPayAftOneYrOthAffil>0.000000000000</amtPayAftOneYrOthAffil>
+      <amtPayAftOneYrOther>0.000000000000</amtPayAftOneYrOther>
+      <delayDeliv>0.000000000000</delayDeliv>
+      <standByCommit>0.000000000000</standByCommit>
+      <liquidPref>0.000000000000</liquidPref>
+      <cshNotRptdInCorD>866107.420000000000</cshNotRptdInCorD>
+      <curMetrics>
+        <curMetric>
+          <curCd>EUR</curCd>
+          <intrstRtRiskdv01 period10Yr="-509.834795000000" period1Yr="10.038814000000" period30Yr="0.000000000000" period3Mon="6.130008000000" period5Yr="-83.710794000000"/>
+          <intrstRtRiskdv100 period10Yr="-48961.673596000000" period1Yr="994.585635000000" period30Yr="0.000000000000" period3Mon="610.989101000000" period5Yr="-8346.699361000000"/>
+        </curMetric>
+        <curMetric>
+          <curCd>GBP</curCd>
+          <intrstRtRiskdv01 period10Yr="0.000000000000" period1Yr="0.000000000000" period30Yr="0.000000000000" period3Mon="11.095894000000" period5Yr="0.000000000000"/>
+          <intrstRtRiskdv100 period10Yr="0.000000000000" period1Yr="0.000000000000" period30Yr="0.000000000000" period3Mon="1106.823442000000" period5Yr="0.000000000000"/>
+        </curMetric>
+        <curMetric>
+          <curCd>USD</curCd>
+          <intrstRtRiskdv01 period10Yr="0.000000000000" period1Yr="441.099469000000" period30Yr="0.000000000000" period3Mon="-95.059477000000" period5Yr="-1470.355195000000"/>
+          <intrstRtRiskdv100 period10Yr="0.000000000000" period1Yr="43415.524585000000" period30Yr="0.000000000000" period3Mon="-9474.030397000000" period5Yr="-143531.521344000000"/>
+        </curMetric>
+        <curMetric>
+          <curCd>JPY</curCd>
+          <intrstRtRiskdv01 period10Yr="0.000000000000" period1Yr="0.000000000000" period30Yr="0.000000000000" period3Mon="-0.011337000000" period5Yr="0.000000000000"/>
+          <intrstRtRiskdv100 period10Yr="0.000000000000" period1Yr="0.000000000000" period30Yr="0.000000000000" period3Mon="-1.130709000000" period5Yr="0.000000000000"/>
+        </curMetric>
+      </curMetrics>
+      <creditSprdRiskInvstGrade period10Yr="0.000000000000" period1Yr="-2.078051000000" period30Yr="0.000000000000" period3Mon="-46.192599000000" period5Yr="0.000000000000"/>
+      <creditSprdRiskNonInvstGrade period10Yr="0.000000000000" period1Yr="0.000000000000" period30Yr="0.000000000000" period3Mon="0.000000000000" period5Yr="0.000000000000"/>
+      <isNonCashCollateral>N</isNonCashCollateral>
+      <returnInfo>
+        <monthlyTotReturns>
+          <monthlyTotReturn classId="C000104934" rtn1="-0.120000000000" rtn2="-0.190000000000" rtn3="-0.890000000000"/>
+          <monthlyTotReturn classId="C000104935" rtn1="0.000000000000" rtn2="-0.190000000000" rtn3="-0.750000000000"/>
+        </monthlyTotReturns>
+        <monthlyReturnCats>
+          <equityContracts>
+            <mon1 netRealizedGain="-65061.10" netUnrealizedAppr="73768.93"/>
+            <mon2 netRealizedGain="70054.70" netUnrealizedAppr="-54254.01"/>
+            <mon3 netRealizedGain="21624.06" netUnrealizedAppr="4833.95"/>
+            <futureCategory>
+              <instrMon1 netRealizedGain="-25414.780000000000" netUnrealizedAppr="61077.25"/>
+              <instrMon2 netRealizedGain="84888.700000000000" netUnrealizedAppr="-48104.01"/>
+              <instrMon3 netRealizedGain="43994.430000000000" netUnrealizedAppr="-16283.059999999998"/>
+            </futureCategory>
+            <optionCategory>
+              <instrMon1 netRealizedGain="-39646.32" netUnrealizedAppr="12691.68"/>
+              <instrMon2 netRealizedGain="-14834" netUnrealizedAppr="-6150"/>
+              <instrMon3 netRealizedGain="-22370.37" netUnrealizedAppr="21117.010000000002"/>
+            </optionCategory>
+          </equityContracts>
+          <foreignExchgContracts>
+            <mon1 netRealizedGain="-26002.080000000000" netUnrealizedAppr="-30029.74"/>
+            <mon2 netRealizedGain="26138.730000000000" netUnrealizedAppr="-71995.67"/>
+            <mon3 netRealizedGain="-39849.110000000000" netUnrealizedAppr="35811.39"/>
+            <forwardCategory>
+              <instrMon1 netRealizedGain="-17392.610000000000" netUnrealizedAppr="-15038.12"/>
+              <instrMon2 netRealizedGain="-24329.090000000000" netUnrealizedAppr="600.610000000001"/>
+              <instrMon3 netRealizedGain="-8137.580000000000" netUnrealizedAppr="26271.08"/>
+            </forwardCategory>
+            <optionCategory>
+              <instrMon1 netRealizedGain="-8609.470000000000" netUnrealizedAppr="-14991.62"/>
+              <instrMon2 netRealizedGain="50467.820000000000" netUnrealizedAppr="-72596.28"/>
+              <instrMon3 netRealizedGain="-31711.530000000000" netUnrealizedAppr="9540.309999999998"/>
+            </optionCategory>
+          </foreignExchgContracts>
+          <interestRtContracts>
+            <mon1 netRealizedGain="72926.41" netUnrealizedAppr="-2639.95"/>
+            <mon2 netRealizedGain="862.72" netUnrealizedAppr="-5322.61"/>
+            <mon3 netRealizedGain="-73628.334" netUnrealizedAppr="-4942.47"/>
+            <futureCategory>
+              <instrMon1 netRealizedGain="72926.410000000000" netUnrealizedAppr="-2639.95"/>
+              <instrMon2 netRealizedGain="862.72" netUnrealizedAppr="-5322.61"/>
+              <instrMon3 netRealizedGain="-73628.340000000000" netUnrealizedAppr="-11088.470000000001"/>
+            </futureCategory>
+            <swapCategory>
+              <instrMon1 netRealizedGain="N/A" netUnrealizedAppr="N/A"/>
+              <instrMon2 netRealizedGain="N/A" netUnrealizedAppr="N/A"/>
+              <instrMon3 netRealizedGain="N/A" netUnrealizedAppr="6146"/>
+            </swapCategory>
+          </interestRtContracts>
+        </monthlyReturnCats>
+        <othMon1 netRealizedGain="-55935.8" netUnrealizedAppr="31401.17"/>
+        <othMon2 netRealizedGain="62573.6" netUnrealizedAppr="-39157.77"/>
+        <othMon3 netRealizedGain="-25137.92" netUnrealizedAppr="11201.13"/>
+      </returnInfo>
+      <mon1Flow redemption="0.000000000000" reinvestment="0.000000000000" sales="0.000000000000"/>
+      <mon2Flow redemption="0.000000000000" reinvestment="160791.210000000000" sales="0.000000000000"/>
+      <mon3Flow redemption="107846.540000000000" reinvestment="0.000000000000" sales="0.000000000000"/>
+    </fundInfo>
+    <invstOrSecs>
+      <invstOrSec>
+        <name>BOUGHT JPY/SOLD CAD</name>
+        <lei>N/A</lei>
+        <title>BOUGHT JPY/SOLD CAD</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="TRADE ID" value="21AQKBBXS62"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <currencyConditional curCd="JPY" exchangeRt="N/A"/>
+        <valUSD>-3236.09</valUSD>
+        <pctVal>-0.0319377082</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>JP</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>BANK OF MONTREAL</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <amtCurSold>650000.000000000000</amtCurSold>
+            <curSold>CAD</curSold>
+            <amtCurPur>52899555.000000000000</amtCurPur>
+            <curPur>JPY</curPur>
+            <settlementDt>2021-02-17</settlementDt>
+            <unrealizedAppr>-3236.090000000000</unrealizedAppr>
+          </fwdDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>BOUGHT SGD/SOLD USD</name>
+        <lei>N/A</lei>
+        <title>BOUGHT SGD/SOLD USD</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="TRADE ID" value="21AQKBBNZKM"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <currencyConditional curCd="SGD" exchangeRt="N/A"/>
+        <valUSD>-1044.47</valUSD>
+        <pctVal>-0.0103081120</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>SG</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>STANDARD CHARTERED BANK</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <amtCurSold>500000.000000000000</amtCurSold>
+            <curSold>USD</curSold>
+            <amtCurPur>662827.500000000000</amtCurPur>
+            <curPur>SGD</curPur>
+            <settlementDt>2021-02-17</settlementDt>
+            <unrealizedAppr>-1044.470000000000</unrealizedAppr>
+          </fwdDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Apple Inc.</name>
+        <lei>HWUPKR0MPOU8FGXBT394</lei>
+        <title>APPLE INC COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="03785DQF6"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474949.53</valUSD>
+        <pctVal>4.6873849233</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-03-15</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Bridgestone Corporation</name>
+        <lei>549300DHPOF90OYYD780</lei>
+        <title>BASF AKTIENGESELLSCH COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="05526LPC5"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474983.38</valUSD>
+        <pctVal>4.6877189966</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-12</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>PROV. BRITSH COLUMBIA COMMERCIAL PAPER DISCOUNT</name>
+        <lei>N/A</lei>
+        <title>PROV. BRITSH COLUMBIA COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="11070JT91"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474758.02</valUSD>
+        <pctVal>4.6854948675</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>NUSS</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-06-09</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Chariot Acquisition LLC</name>
+        <lei>N/A</lei>
+        <title>CHARIOT FNDG LLC COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="15963TPG8"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474963.43</valUSD>
+        <pctVal>4.6875221055</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-16</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>The Coca-Cola Company</name>
+        <lei>UWJKFUJFZ02DKWI3RY53</lei>
+        <title>COCA-COLA COMPANY COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="19121APN5"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474969.6</valUSD>
+        <pctVal>4.6875829987</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-22</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>John Deere Limited</name>
+        <lei>N/A</lei>
+        <title>JOHN DEERE LTD. COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="24423HP88"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474987.73</valUSD>
+        <pctVal>4.6877619278</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-12-08</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Emerson Electric Co.</name>
+        <lei>FGLT0EWZSUIRRITFOA30</lei>
+        <title>EMERSON ELECTRIC CO COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="29101AP81"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474988.13</valUSD>
+        <pctVal>4.6877658754</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-08</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Federal Home Loan Bank Discount Notes</name>
+        <lei>N/A</lei>
+        <title>FEDERAL HOME LOAN BANK DISCOUN DISCOUNT NOT 03/21 0.00000</title>
+        <cusip>313385DF0</cusip>
+        <identifiers>
+          <isin value="US313385DF02"/>
+          <ticker value="FHLBDN"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474969.65</valUSD>
+        <pctVal>4.6875834921</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>USGSE</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-03-19</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Federal National Mortgage Association</name>
+        <lei>B1V7KEBTPIMZEU4LTD58</lei>
+        <title>FEDERAL NATIONAL MORTGAGE ASSO NOTES 04/21 2.5</title>
+        <cusip>3135G0U27</cusip>
+        <identifiers>
+          <isin value="US3135G0U276"/>
+          <ticker value="FNMA"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>477235.06</valUSD>
+        <pctVal>4.7099413386</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>USGSE</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-04-13</maturityDt>
+          <couponKind>Fixed</couponKind>
+          <annualizedRt>2.500000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>TI Gotham Inc.</name>
+        <lei>549300FF19T8PC5C0051</lei>
+        <title>GOTHAM FDG CORP COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="38346LR57"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474841.51</valUSD>
+        <pctVal>4.6863188493</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-04-05</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Honeywell International Inc.</name>
+        <lei>ISRPG12PN4EIEOEMW547</lei>
+        <title>HONEYWELL INTERNATN' COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="43851TT48"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474763.93</valUSD>
+        <pctVal>4.6855531947</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-06-04</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>ISHARES TRUST ISHARES 1-5 YEAR ISHARES 1-5Y INV GRADE CORP</name>
+        <lei>N/A</lei>
+        <title>ISHARES SHORT-TERM CORPORATE B ISHARES SHORT-TERM CORPORATE</title>
+        <cusip>464288646</cusip>
+        <identifiers>
+          <isin value="US4642886463"/>
+          <ticker value="IGSB "/>
+        </identifiers>
+        <balance>1500</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>82680</valUSD>
+        <pctVal>0.8159877229</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>RF</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>J.P. Morgan Securities Inc.</name>
+        <lei>ZBUT11V806EZRVTWT807</lei>
+        <title>J.P. MORGAN SECURITIES COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="46640PPH0"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474976.18</valUSD>
+        <pctVal>4.6876479382</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-17</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Jupiter Securitization Company LLC</name>
+        <lei>N/A</lei>
+        <title>JUPITER SECT CO LLC COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="4820P2QG3"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474896.82</valUSD>
+        <pctVal>4.6868647163</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-03-16</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>LIME FUNDING COMMERCIAL PAPER DISCOUNT</name>
+        <lei>N/A</lei>
+        <title>LIME FUNDING COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="53262QP32"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474991.42</valUSD>
+        <pctVal>4.6877983452</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-03</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Manhattan Asset Funding Company LLC</name>
+        <lei>N/A</lei>
+        <title>MANHATTAN ASSET FDG. COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="56274LPS7"/>
+        </identifiers>
+        <balance>275000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>274965.78</valUSD>
+        <pctVal>2.7136998148</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-26</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>PSP Capital Inc</name>
+        <lei>N/A</lei>
+        <title>PSP CAPITAL INC. COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="69370AP24"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474996.3</valUSD>
+        <pctVal>4.6878465070</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-02</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Philip Morris International Inc.</name>
+        <lei>HL3H1H2BGXWVG3BSWR90</lei>
+        <title>PHILIP MORRIS INTL COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="71838LPH9"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474976.69</valUSD>
+        <pctVal>4.6876529715</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-17</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>State Street Bank and Trust Company</name>
+        <lei>571474TGEMMWANRLN572</lei>
+        <title>SSC GOVERNMENT MM GVMXX</title>
+        <cusip>7839989D1</cusip>
+        <identifiers>
+          <ticker value="7839989D1010"/>
+        </identifiers>
+        <balance>377887.25</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>377887.25</valUSD>
+        <pctVal>3.7294552083</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>STIV</assetCat>
+        <issuerCat>RF</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>SPDR Bloomberg Barclays High Yield Bond ETF</name>
+        <lei>549300NCLW2248PN7J24</lei>
+        <title>SPDR BLOOMBERG BARCLAYS HIGH Y SPDR BBG BARC HIGH YIELD BND</title>
+        <cusip>78468R622</cusip>
+        <identifiers>
+          <isin value="US78468R6229"/>
+          <ticker value="JNK "/>
+        </identifiers>
+        <balance>1000</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>108400</valUSD>
+        <pctVal>1.0698242520</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>RF</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Sanofi</name>
+        <lei>549300E9PC51EN656011</lei>
+        <title>SANOFI COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="8010M2P89"/>
+        </identifiers>
+        <balance>250000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>249995.14</valUSD>
+        <pctVal>2.4672588899</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-02-08</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>VanEck Vectors Gold Miners ETF</name>
+        <lei>54930031TORTKAM9TJ98</lei>
+        <title>VANECK VECTORS GOLD MINERS ETF VANECK GOLD MINERS</title>
+        <cusip>92189F106</cusip>
+        <identifiers>
+          <isin value="US92189F1066"/>
+          <ticker value="GDX "/>
+        </identifiers>
+        <balance>1250</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>43137.5</valUSD>
+        <pctVal>0.4257337977</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>RF</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>WESTPAC BANKING CORP. COMMERCIAL PAPER DISCOUNT</name>
+        <lei>N/A</lei>
+        <title>WESTPAC BANKING CORP. COMMERCIAL PAPER DISCOUNT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="9612C0Q44"/>
+        </identifiers>
+        <balance>475000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>474940.34</valUSD>
+        <pctVal>4.6872942251</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>DBT</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <debtSec>
+          <maturityDt>2021-03-04</maturityDt>
+          <couponKind>None</couponKind>
+          <annualizedRt>0.000000000000</annualizedRt>
+          <isDefault>N</isDefault>
+          <areIntrstPmntsInArrs>N</areIntrstPmntsInArrs>
+          <isPaidKind>N</isPaidKind>
+        </debtSec>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>XAE ENERGY 0321</name>
+        <lei>N/A</lei>
+        <title>XAE ENERGY 0321</title>
+        <cusip>ADI1N0FY5</cusip>
+        <identifiers>
+          <ticker value="IXPH1"/>
+        </identifiers>
+        <balance>3</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>-10116.5</valUSD>
+        <pctVal>-0.0998420392</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>CHICAGO MERCANTILE EXCHANGE</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Long</payOffProf>
+            <descRefInstrmnt>
+              <indexBasketInfo>
+                <indexName>Energy Select Sector Index</indexName>
+                <indexIdentifier>IXE</indexIdentifier>
+              </indexBasketInfo>
+            </descRefInstrmnt>
+            <expDate>2021-03-19</expDate>
+            <notionalAmt>132366.500000000000</notionalAmt>
+            <curCd>USD</curCd>
+            <unrealizedAppr>-10116.500000000000</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>US ULTRA BONDCBT 0321</name>
+        <lei>N/A</lei>
+        <title>US ULTRA BONDCBT 0321</title>
+        <cusip>ADI1NDN10</cusip>
+        <identifiers>
+          <isin value="US912810RV26"/>
+          <ticker value="WNH1"/>
+        </identifiers>
+        <balance>2</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>-6066.44</valUSD>
+        <pctVal>-0.0598710760</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DIR</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>CHICAGO BOARD OF TRADE</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Long</payOffProf>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>US 30yr 6%</issuerName>
+                <issueTitle>US 30yr 6%</issueTitle>
+                <identifiers>
+                  <other otherDesc="NOTIONAL BOND" value="US 30yr 6%"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <expDate>2021-03-22</expDate>
+            <notionalAmt>416816.440000000000</notionalAmt>
+            <curCd>USD</curCd>
+            <unrealizedAppr>-6066.440000000000</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>EURO-BUND FUTURE 0321</name>
+        <lei>N/A</lei>
+        <title>EURO-BUND FUTURE 0321</title>
+        <cusip>ADI1NDP00</cusip>
+        <identifiers>
+          <isin value="DE000C5GTXB2"/>
+          <ticker value="RXH1"/>
+        </identifiers>
+        <balance>6</balance>
+        <units>NC</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.824029"/>
+        <valUSD>-4158.49442191962</valUSD>
+        <pctVal>-0.0410411272</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DIR</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>EUREX ZURICH</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Long</payOffProf>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>Euro-Bund 10yr 6%</issuerName>
+                <issueTitle>Euro-Bund 10yr 6%</issueTitle>
+                <identifiers>
+                  <other otherDesc="NOTIONAL BOND" value="Euro-Bund 10yr 6%"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <expDate>2021-03-08</expDate>
+            <notionalAmt>1067406.720000000000</notionalAmt>
+            <curCd>EUR</curCd>
+            <unrealizedAppr>-4158.494421919620</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>MINI MSCI EMG MKT 0321</name>
+        <lei>N/A</lei>
+        <title>MINI MSCI EMG MKT 0321</title>
+        <cusip>ADI1PPPZ4</cusip>
+        <identifiers>
+          <isin value="BBG00MH49B37"/>
+          <ticker value="MESH1"/>
+        </identifiers>
+        <balance>6</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>-19095.02</valUSD>
+        <pctVal>-0.1884530949</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>ICE FUTURES U.S.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Long</payOffProf>
+            <descRefInstrmnt>
+              <indexBasketInfo>
+                <indexName>MSCI Emerging Markets Index</indexName>
+                <indexIdentifier>MXEF</indexIdentifier>
+              </indexBasketInfo>
+            </descRefInstrmnt>
+            <expDate>2021-03-19</expDate>
+            <notionalAmt>417495.020000000000</notionalAmt>
+            <curCd>USD</curCd>
+            <unrealizedAppr>-19095.020000000000</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>FTSE 100 IDX FUT 0321</name>
+        <lei>N/A</lei>
+        <title>FTSE 100 IDX FUT 0321</title>
+        <cusip>ADI1PQT13</cusip>
+        <identifiers>
+          <isin value="GB00J6C6FT38"/>
+          <ticker value="Z "/>
+        </identifiers>
+        <balance>10</balance>
+        <units>NC</units>
+        <currencyConditional curCd="GBP" exchangeRt="0.729847"/>
+        <valUSD>-24544.0208701276</valUSD>
+        <pctVal>-0.2422305237</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>GB</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>ICE FUTURES EUROPE - FINANCIAL PRODUCTS DIVISION</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Long</payOffProf>
+            <descRefInstrmnt>
+              <indexBasketInfo>
+                <indexName>FTSE 100 Index</indexName>
+                <indexIdentifier>UKX</indexIdentifier>
+              </indexBasketInfo>
+            </descRefInstrmnt>
+            <expDate>2021-03-19</expDate>
+            <notionalAmt>650763.380000000000</notionalAmt>
+            <curCd>GBP</curCd>
+            <unrealizedAppr>-24544.020870127600</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>CBOE VIX FUTURE 0221</name>
+        <lei>N/A</lei>
+        <title>CBOE VIX FUTURE 0221</title>
+        <cusip>ADI1Q0FY2</cusip>
+        <identifiers>
+          <isin value="BBG00V26S488"/>
+          <ticker value="UXG1"/>
+        </identifiers>
+        <balance>2</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>7688.31</valUSD>
+        <pctVal>0.0758776798</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>CBOE FUTURES EXCHANGE</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Long</payOffProf>
+            <descRefInstrmnt>
+              <indexBasketInfo>
+                <indexName>CBOE Volatility Index</indexName>
+                <indexIdentifier>VIX</indexIdentifier>
+              </indexBasketInfo>
+            </descRefInstrmnt>
+            <expDate>2021-02-17</expDate>
+            <notionalAmt>58011.690000000000</notionalAmt>
+            <curCd>USD</curCd>
+            <unrealizedAppr>7688.310000000000</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>CBOE VIX FUTURE 0521</name>
+        <lei>N/A</lei>
+        <title>CBOE VIX FUTURE 0521</title>
+        <cusip>ADI1SN5S4</cusip>
+        <identifiers>
+          <ticker value="UXK1"/>
+        </identifiers>
+        <balance>2</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>-2346.29</valUSD>
+        <pctVal>-0.0231560696</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>CBOE FUTURES EXCHANGE</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Short</payOffProf>
+            <descRefInstrmnt>
+              <indexBasketInfo>
+                <indexName>CBOE Volatility Index</indexName>
+                <indexIdentifier>VIX</indexIdentifier>
+              </indexBasketInfo>
+            </descRefInstrmnt>
+            <expDate>2021-05-19</expDate>
+            <notionalAmt>-58813.710000000000</notionalAmt>
+            <curCd>USD</curCd>
+            <unrealizedAppr>-2346.290000000000</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>SP500 MIC EMIN FUT 0321</name>
+        <lei>N/A</lei>
+        <title>SP500 MIC EMIN FUT 0321</title>
+        <cusip>ADI1T55Y9</cusip>
+        <identifiers>
+          <ticker value="HWAH1"/>
+        </identifiers>
+        <balance>33</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>13569.69</valUSD>
+        <pctVal>0.1339223566</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>CHICAGO MERCANTILE EXCHANGE</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Short</payOffProf>
+            <descRefInstrmnt>
+              <indexBasketInfo>
+                <indexName>S and P 500 Index</indexName>
+                <indexIdentifier>SPX</indexIdentifier>
+              </indexBasketInfo>
+            </descRefInstrmnt>
+            <expDate>2021-03-19</expDate>
+            <notionalAmt>-624927.690000000000</notionalAmt>
+            <curCd>USD</curCd>
+            <unrealizedAppr>13569.690000000000</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>XAF FINANCIAL 0321</name>
+        <lei>N/A</lei>
+        <title>XAF FINANCIAL 0321</title>
+        <cusip>ADI1TGHR7</cusip>
+        <identifiers>
+          <ticker value="IXAH1"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>1522.8</valUSD>
+        <pctVal>0.0150288595</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <futrDeriv derivCat="FUT">
+            <counterparties>
+              <counterpartyName>CHICAGO MERCANTILE EXCHANGE</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <payOffProf>Long</payOffProf>
+            <descRefInstrmnt>
+              <indexBasketInfo>
+                <indexName>Financial Select Sector Index</indexName>
+                <indexIdentifier>IXM</indexIdentifier>
+              </indexBasketInfo>
+            </descRefInstrmnt>
+            <expDate>2021-03-19</expDate>
+            <notionalAmt>87452.200000000000</notionalAmt>
+            <curCd>USD</curCd>
+            <unrealizedAppr>1522.800000000000</unrealizedAppr>
+          </futrDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>FTSE 100 INDEX FEB21 6800 CALL</name>
+        <lei>N/A</lei>
+        <title>FTSE 100 INDEX FEB21 6800 CALL</title>
+        <cusip>ADI1TSDM6</cusip>
+        <identifiers>
+          <isin value="GB00HJX30J11"/>
+          <ticker value="UKX 2 C6800"/>
+        </identifiers>
+        <balance>10</balance>
+        <units>NC</units>
+        <currencyConditional curCd="GBP" exchangeRt="0.729847"/>
+        <valUSD>-1027.61</valUSD>
+        <pctVal>-0.0101417168</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>GB</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>ICE FUTURES EUROPE - FINANCIAL PRODUCTS DIVISION</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <indexBasketInfo>
+                <indexName>FTSE 100 Index</indexName>
+                <indexIdentifier>UKX</indexIdentifier>
+              </indexBasketInfo>
+            </descRefInstrmnt>
+            <shareNo>10</shareNo>
+            <exercisePrice>6800.000000000000</exercisePrice>
+            <exercisePriceCurCd>GBP</exercisePriceCurCd>
+            <expDt>2021-02-19</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>5183.010000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>OPX48VTE EUR RUB MAY21 88.5 PUT</name>
+        <lei>N/A</lei>
+        <title>OPX48VTE EUR RUB MAY21 88.5 PUT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="AEIB66791"/>
+        </identifiers>
+        <balance>2000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.824029"/>
+        <valUSD>21627.88</valUSD>
+        <pctVal>0.2134504663</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>GOLDMAN SACHS INTERNATIONAL</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>EUR PUT RUB CALL</issuerName>
+                <issueTitle>EUR PUT RUB CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="EUR PUT RUB CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>EUR</curCd>
+            <exercisePrice>88.500000000000</exercisePrice>
+            <exercisePriceCurCd>EUR</exercisePriceCurCd>
+            <expDt>2021-05-11</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-26095.440000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>OPX48VWP EUR RUB MAY21 83.5 PUT</name>
+        <lei>N/A</lei>
+        <title>OPX48VWP EUR RUB MAY21 83.5 PUT</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="AEIB66809"/>
+        </identifiers>
+        <balance>2000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.824029"/>
+        <valUSD>-3118.82</valUSD>
+        <pctVal>-0.0307803439</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>GOLDMAN SACHS INTERNATIONAL</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>EUR PUT RUB CALL</issuerName>
+                <issueTitle>EUR PUT RUB CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="EUR PUT RUB CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>EUR</curCd>
+            <exercisePrice>83.500000000000</exercisePrice>
+            <exercisePriceCurCd>EUR</exercisePriceCurCd>
+            <expDt>2021-05-11</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>8286.810000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>5529875 MFC GLOBAL FXVANILLAOPTION---20210204</name>
+        <lei>N/A</lei>
+        <title>5529875 MFC GLOBAL FXVANILLAOPTION---20210204</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000DGQ7"/>
+        </identifiers>
+        <balance>2000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.824029"/>
+        <valUSD>2.43</valUSD>
+        <pctVal>0.0000239822</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>Bank of America Corporation</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>EUR PUT USD CALL</issuerName>
+                <issueTitle>EUR PUT USD CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="EUR PUT USD CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>EUR</curCd>
+            <exercisePrice>1.075000000000</exercisePrice>
+            <exercisePriceCurCd>EUR</exercisePriceCurCd>
+            <expDt>2021-02-04</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-61546.870000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>5529901 MFC GLOBAL FXVANILLAOPTION---20210204</name>
+        <lei>N/A</lei>
+        <title>5529901 MFC GLOBAL FXVANILLAOPTION---20210204</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000DGR5"/>
+        </identifiers>
+        <balance>2000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.824029"/>
+        <valUSD>-2.43</valUSD>
+        <pctVal>-0.0000239822</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>Bank of America Corporation</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>EUR PUT USD CALL</issuerName>
+                <issueTitle>EUR PUT USD CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="EUR PUT USD CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>EUR</curCd>
+            <exercisePrice>1.050000000000</exercisePrice>
+            <exercisePriceCurCd>EUR</exercisePriceCurCd>
+            <expDt>2021-02-04</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>43062.630000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>9585990 MFC GLOBAL FXVANILLAOPTION---20210129</name>
+        <lei>N/A</lei>
+        <title>9585990 MFC GLOBAL FXVAN PUT USD JPY 104.000000</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000M3P3"/>
+        </identifiers>
+        <balance>1000000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>274</valUSD>
+        <pctVal>0.0027041683</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>MORGAN STANLEY AND CO. LLC</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>USD PUT JPY CALL</issuerName>
+                <issueTitle>USD PUT JPY CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="USD PUT JPY CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>USD</curCd>
+            <exercisePrice>104.000000000000</exercisePrice>
+            <exercisePriceCurCd>USD</exercisePriceCurCd>
+            <expDt>2021-01-29</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-12990.000000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>9587326 MFC GLOBAL FXVANILLAOPTION---20210129</name>
+        <lei>N/A</lei>
+        <title>9587326 MFC GLOBAL FXVAN PUT USD JPY 101.500000</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000M3Q1"/>
+        </identifiers>
+        <balance>1000000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>-1</valUSD>
+        <pctVal>-0.0000098692</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>MORGAN STANLEY AND CO. LLC</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>USD PUT JPY CALL</issuerName>
+                <issueTitle>USD PUT JPY CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="USD PUT JPY CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>USD</curCd>
+            <exercisePrice>101.500000000000</exercisePrice>
+            <exercisePriceCurCd>USD</exercisePriceCurCd>
+            <expDt>2021-01-29</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>6683.000000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>10279501 MFC GLOBAL FXVAN CALL NOK SEK .980000</name>
+        <lei>N/A</lei>
+        <title>10279501 MFC GLOBAL FXVAN CALL NOK SEK .980000</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000N884"/>
+        </identifiers>
+        <balance>20000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="NOK" exchangeRt="8.56555"/>
+        <valUSD>21565.46</valUSD>
+        <pctVal>0.2128344291</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>NO</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>GOLDMAN SACHS BANK USA</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>NOK CALL SEK PUT</issuerName>
+                <issueTitle>NOK CALL SEK PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="NOK CALL SEK PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>NOK</curCd>
+            <exercisePrice>0.980000000000</exercisePrice>
+            <exercisePriceCurCd>NOK</exercisePriceCurCd>
+            <expDt>2021-03-25</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>4291.990000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>10280402 MFC GLOBAL FXVAN CALL NOK SEK 1.000000</name>
+        <lei>N/A</lei>
+        <title>10280402 MFC GLOBAL FXVAN CALL NOK SEK 1.000000</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000N892"/>
+        </identifiers>
+        <balance>20000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="NOK" exchangeRt="8.56555"/>
+        <valUSD>-7044.5</valUSD>
+        <pctVal>-0.0695237725</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>NO</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>GOLDMAN SACHS BANK USA</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>NOK CALL SEK PUT</issuerName>
+                <issueTitle>NOK CALL SEK PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="NOK CALL SEK PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>NOK</curCd>
+            <exercisePrice>1.000000000000</exercisePrice>
+            <exercisePriceCurCd>NOK</exercisePriceCurCd>
+            <expDt>2021-03-25</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>734.570000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11109997 MFC GLOBAL FXVANILLAOPTION---20210628</name>
+        <lei>N/A</lei>
+        <title>11109997 MFC GLOBAL FXVANILLAOPTION---20210628</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PGQ0"/>
+        </identifiers>
+        <balance>1000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.824029"/>
+        <valUSD>6497.34</valUSD>
+        <pctVal>0.0641237261</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>MORGAN STANLEY AND CO. LLC</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>EUR CALL GBP PUT</issuerName>
+                <issueTitle>EUR CALL GBP PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="EUR CALL GBP PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>EUR</curCd>
+            <exercisePrice>0.930000000000</exercisePrice>
+            <exercisePriceCurCd>EUR</exercisePriceCurCd>
+            <expDt>2021-06-28</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-7926.400000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11110008 MFC GLOBAL FXVANILLAOPTION---20210628</name>
+        <lei>N/A</lei>
+        <title>11110008 MFC GLOBAL FXVANILLAOPTION---20210628</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PGS6"/>
+        </identifiers>
+        <balance>1000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="EUR" exchangeRt="0.824029"/>
+        <valUSD>-1890.71</valUSD>
+        <pctVal>-0.0186598470</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>DE</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>MORGAN STANLEY AND CO. LLC</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>EUR CALL GBP PUT</issuerName>
+                <issueTitle>EUR CALL GBP PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="EUR CALL GBP PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>EUR</curCd>
+            <exercisePrice>0.970000000000</exercisePrice>
+            <exercisePriceCurCd>EUR</exercisePriceCurCd>
+            <expDt>2021-06-28</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>3253.280000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11235333 MFC GLOBAL FXVANILLAOPTION---20210304</name>
+        <lei>N/A</lei>
+        <title>11235333 MFC GLOBAL FXVANILLAOPTION---20210304</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PM18"/>
+        </identifiers>
+        <balance>1000000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>15399</valUSD>
+        <pctVal>0.1519762330</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>CANADIAN IMPERIAL BANK OF COMM</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>USD CALL ZAR PUT</issuerName>
+                <issueTitle>USD CALL ZAR PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="USD CALL ZAR PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>USD</curCd>
+            <exercisePrice>15.400000000000</exercisePrice>
+            <exercisePriceCurCd>USD</exercisePriceCurCd>
+            <expDt>2021-03-04</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-6511.000000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11274542 MFC GLOBAL FXVANILLAOPTION---20210205</name>
+        <lei>N/A</lei>
+        <title>11274542 MFC GLOBAL FXVANILLAOPTION---20210205</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PPK3"/>
+        </identifiers>
+        <balance>1500000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="GBP" exchangeRt="0.729847"/>
+        <valUSD>1510.59</valUSD>
+        <pctVal>0.0149083562</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>GB</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>CITIBANK N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>GBP PUT USD CALL</issuerName>
+                <issueTitle>GBP PUT USD CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="GBP PUT USD CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>GBP</curCd>
+            <exercisePrice>1.350000000000</exercisePrice>
+            <exercisePriceCurCd>GBP</exercisePriceCurCd>
+            <expDt>2021-02-05</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-13252.640000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11274643 MFC GLOBAL FXVANILLAOPTION---20210205</name>
+        <lei>N/A</lei>
+        <title>11274643 MFC GLOBAL FXVANILLAOPTION---20210205</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PPL1"/>
+        </identifiers>
+        <balance>1500000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="GBP" exchangeRt="0.729847"/>
+        <valUSD>-69.88</valUSD>
+        <pctVal>-0.0006896616</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>GB</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>CITIBANK N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>GBP PUT USD CALL</issuerName>
+                <issueTitle>GBP PUT USD CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="GBP PUT USD CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>GBP</curCd>
+            <exercisePrice>1.325000000000</exercisePrice>
+            <exercisePriceCurCd>GBP</exercisePriceCurCd>
+            <expDt>2021-02-05</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>5198.630000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11302245 MFC GLOBAL FXVANILLAOPTION---20210708</name>
+        <lei>N/A</lei>
+        <title>11302245 MFC GLOBAL FXVANILLAOPTION---20210708</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PR39"/>
+        </identifiers>
+        <balance>10000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="NOK" exchangeRt="8.56555"/>
+        <valUSD>15782.99</valUSD>
+        <pctVal>0.1557659176</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>NO</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>UBS SECURITIES LIMITED</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>NOK CALL SEK PUT</issuerName>
+                <issueTitle>NOK CALL SEK PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="NOK CALL SEK PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>NOK</curCd>
+            <exercisePrice>0.985000000000</exercisePrice>
+            <exercisePriceCurCd>NOK</exercisePriceCurCd>
+            <expDt>2021-07-08</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>619.260000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11302694 MFC GLOBAL FXVANILLAOPTION---20210708</name>
+        <lei>N/A</lei>
+        <title>11302694 MFC GLOBAL FXVANILLAOPTION---20210708</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PR47"/>
+        </identifiers>
+        <balance>10000000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="NOK" exchangeRt="8.56555"/>
+        <valUSD>-6763.14</valUSD>
+        <pctVal>-0.0667469667</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>NO</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>UBS SECURITIES LIMITED</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>NOK CALL SEK PUT</issuerName>
+                <issueTitle>NOK CALL SEK PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="NOK CALL SEK PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>NOK</curCd>
+            <exercisePrice>1.010000000000</exercisePrice>
+            <exercisePriceCurCd>NOK</exercisePriceCurCd>
+            <expDt>2021-07-08</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-218.670000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11380909 MFC GLOBAL FXVANILLAOPTION---20210212</name>
+        <lei>N/A</lei>
+        <title>11380909 MFC GLOBAL FXVANILLAOPTION---20210212</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PWW9"/>
+        </identifiers>
+        <balance>1500000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="AUD" exchangeRt="1.308472"/>
+        <valUSD>10012.44</valUSD>
+        <pctVal>0.0988150474</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>AU</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>BANK OF AMERICA N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>AUD PUT USD CALL</issuerName>
+                <issueTitle>AUD PUT USD CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="AUD PUT USD CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>AUD</curCd>
+            <exercisePrice>0.765000000000</exercisePrice>
+            <exercisePriceCurCd>AUD</exercisePriceCurCd>
+            <expDt>2021-02-12</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-2799.840000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11380960 MFC GLOBAL FXVANILLAOPTION---20210212</name>
+        <lei>N/A</lei>
+        <title>11380960 MFC GLOBAL FXVANILLAOPTION---20210212</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PX16"/>
+        </identifiers>
+        <balance>1500000</balance>
+        <units>PA</units>
+        <currencyConditional curCd="AUD" exchangeRt="1.308472"/>
+        <valUSD>-1277.06</valUSD>
+        <pctVal>-0.0126035956</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>AU</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>BANK OF AMERICA N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Put</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>AUD PUT USD CALL</issuerName>
+                <issueTitle>AUD PUT USD CALL</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="AUD PUT USD CALL"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>AUD</curCd>
+            <exercisePrice>0.740000000000</exercisePrice>
+            <exercisePriceCurCd>AUD</exercisePriceCurCd>
+            <expDt>2021-02-12</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>2188.840000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11384731 MFC GLOBAL FXVANILLAOPTION---20210311</name>
+        <lei>N/A</lei>
+        <title>11384731 MFC GLOBAL FXVANILLAOPTION---20210311</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PX40"/>
+        </identifiers>
+        <balance>2000000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>11924</valUSD>
+        <pctVal>0.1176806677</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>CITIBANK N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>USD CALL CAD PUT</issuerName>
+                <issueTitle>USD CALL CAD PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="USD CALL CAD PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>USD</curCd>
+            <exercisePrice>1.290000000000</exercisePrice>
+            <exercisePriceCurCd>USD</exercisePriceCurCd>
+            <expDt>2021-03-11</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-3409.670000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11384584 MFC GLOBAL FXVANILLAOPTION---20210304</name>
+        <lei>N/A</lei>
+        <title>11384584 MFC GLOBAL FXVANILLAOPTION---20210304</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000PX73"/>
+        </identifiers>
+        <balance>1000000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>-4217</valUSD>
+        <pctVal>-0.0416185320</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>CANADIAN IMPERIAL BANK OF COMMERCE</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>USD CALL ZAR PUT</issuerName>
+                <issueTitle>USD CALL ZAR PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="USD CALL ZAR PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>USD</curCd>
+            <exercisePrice>16.300000000000</exercisePrice>
+            <exercisePriceCurCd>USD</exercisePriceCurCd>
+            <expDt>2021-03-04</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>9548.000000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11443025 MFC GLOBAL FXVANILLAOPTION---20210211</name>
+        <lei>N/A</lei>
+        <title>11443025 MFC GLOBAL FXVANILLAOPTION---20210211</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000Q192"/>
+        </identifiers>
+        <balance>1000000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>29071</valUSD>
+        <pctVal>0.2869083102</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>CITIBANK N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Purchased</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>USD CALL MXN PUT</issuerName>
+                <issueTitle>USD CALL MXN PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="USD CALL MXN PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>USD</curCd>
+            <exercisePrice>20.000000000000</exercisePrice>
+            <exercisePriceCurCd>USD</exercisePriceCurCd>
+            <expDt>2021-02-11</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>14501.180000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>11444767 MFC GLOBAL FXVANILLAOPTION---20210211</name>
+        <lei>N/A</lei>
+        <title>11444767 MFC GLOBAL FXVANILLAOPTION---20210211</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="OP000Q1B7"/>
+        </identifiers>
+        <balance>1000000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>-9177</valUSD>
+        <pctVal>-0.0905699000</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <optionSwaptionWarrantDeriv derivCat="OPT">
+            <counterparties>
+              <counterpartyName>CITIBANK N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <putOrCall>Call</putOrCall>
+            <writtenOrPur>Written</writtenOrPur>
+            <descRefInstrmnt>
+              <otherRefInst>
+                <issuerName>USD CALL MXN PUT</issuerName>
+                <issueTitle>USD CALL MXN PUT</issueTitle>
+                <identifiers>
+                  <other otherDesc="Custodian Identifier" value="USD CALL MXN PUT"/>
+                </identifiers>
+              </otherRefInst>
+            </descRefInstrmnt>
+            <principalAmt>1</principalAmt>
+            <curCd>USD</curCd>
+            <exercisePrice>20.750000000000</exercisePrice>
+            <exercisePriceCurCd>USD</exercisePriceCurCd>
+            <expDt>2021-02-11</expDt>
+            <delta>XXXX</delta>
+            <unrealizedAppr>-3507.180000000000</unrealizedAppr>
+          </optionSwaptionWarrantDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>SOLD SGD/BOUGHT USD</name>
+        <lei>N/A</lei>
+        <title>SOLD SGD/BOUGHT USD</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="TRADE ID" value="21AKKBBS93L"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>-1850.68</valUSD>
+        <pctVal>-0.0182647818</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>SG</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>STANDARD CHARTERED BANK</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <amtCurSold>666673.500000000000</amtCurSold>
+            <curSold>SGD</curSold>
+            <amtCurPur>500000.000000000000</amtCurPur>
+            <curPur>USD</curPur>
+            <settlementDt>2021-02-17</settlementDt>
+            <unrealizedAppr>-1850.680000000000</unrealizedAppr>
+          </fwdDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>SOLD CAD/BOUGHT USD</name>
+        <lei>N/A</lei>
+        <title>SOLD CAD/BOUGHT USD</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="TRADE ID" value="21AKKBBS93M"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>-290.84</valUSD>
+        <pctVal>-0.0028703661</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>CA</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>STANDARD CHARTERED BANK</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <amtCurSold>639714.750000000000</amtCurSold>
+            <curSold>CAD</curSold>
+            <amtCurPur>500000.000000000000</amtCurPur>
+            <curPur>USD</curPur>
+            <settlementDt>2021-02-17</settlementDt>
+            <unrealizedAppr>-290.840000000000</unrealizedAppr>
+          </fwdDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>SOLD JPY/BOUGHT USD</name>
+        <lei>N/A</lei>
+        <title>SOLD JPY/BOUGHT USD</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="TRADE ID" value="21AKKBCGLWT"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>7239.63</valUSD>
+        <pctVal>0.0714495549</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>JP</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>MORGAN STANLEY CAPITAL SERVICES INC</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <amtCurSold>103972980.000000000000</amtCurSold>
+            <curSold>JPY</curSold>
+            <amtCurPur>1000000.000000000000</amtCurPur>
+            <curPur>USD</curPur>
+            <settlementDt>2021-02-17</settlementDt>
+            <unrealizedAppr>7239.630000000000</unrealizedAppr>
+          </fwdDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>SOLD CAD/BOUGHT USD</name>
+        <lei>N/A</lei>
+        <title>SOLD CAD/BOUGHT USD</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="TRADE ID" value="21ALKBB4SBV"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>6334.67</valUSD>
+        <pctVal>0.0625182988</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>CA</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>CITIBANK N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <amtCurSold>631242.800000000000</amtCurSold>
+            <curSold>CAD</curSold>
+            <amtCurPur>500000.000000000000</amtCurPur>
+            <curPur>USD</curPur>
+            <settlementDt>2021-02-17</settlementDt>
+            <unrealizedAppr>6334.670000000000</unrealizedAppr>
+          </fwdDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>SOLD SEK/BOUGHT USD</name>
+        <lei>N/A</lei>
+        <title>SOLD SEK/BOUGHT USD</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="TRADE ID" value="21ANKBBVTD9"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <curCd>USD</curCd>
+        <valUSD>4306.4</valUSD>
+        <pctVal>0.0425008409</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>SE</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>MORGAN STANLEY CAPITAL SERVICES INC</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <amtCurSold>4141536.750000000000</amtCurSold>
+            <curSold>SEK</curSold>
+            <amtCurPur>500000.000000000000</amtCurPur>
+            <curPur>USD</curPur>
+            <settlementDt>2021-02-17</settlementDt>
+            <unrealizedAppr>4306.400000000000</unrealizedAppr>
+          </fwdDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>BOUGHT CAD/SOLD USD</name>
+        <lei>N/A</lei>
+        <title>BOUGHT CAD/SOLD USD</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="TRADE ID" value="21ANKBB40HN"/>
+        </identifiers>
+        <balance>1</balance>
+        <units>NC</units>
+        <currencyConditional curCd="CAD" exchangeRt="N/A"/>
+        <valUSD>-983</valUSD>
+        <pctVal>-0.0097014506</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DFE</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>CA</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <fwdDeriv derivCat="FWD">
+            <counterparties>
+              <counterpartyName>CITIBANK N.A.</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <amtCurSold>200000.000000000000</amtCurSold>
+            <curSold>USD</curSold>
+            <amtCurPur>254480.200000000000</amtCurPur>
+            <curPur>CAD</curPur>
+            <settlementDt>2021-02-17</settlementDt>
+            <unrealizedAppr>-983.000000000000</unrealizedAppr>
+          </fwdDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>IRS USD R 0.82 20240116-20250116</name>
+        <lei>N/A</lei>
+        <title>IRS USD R 0.82 20240116-20250116</title>
+        <cusip>N/A</cusip>
+        <identifiers>
+          <other otherDesc="Custodian Identifier" value="11438890"/>
+        </identifiers>
+        <balance>10000000</balance>
+        <units>PA</units>
+        <curCd>USD</curCd>
+        <valUSD>6146</valUSD>
+        <pctVal>0.0606562717</pctVal>
+        <payoffProfile>N/A</payoffProfile>
+        <assetCat>DIR</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <derivativeInfo>
+          <swapDeriv derivCat="SWP">
+            <counterparties>
+              <counterpartyName>LCH</counterpartyName>
+              <counterpartyLei>N/A</counterpartyLei>
+            </counterparties>
+            <swapFlag>Y</swapFlag>
+            <fixedRecDesc amount="0" curCd="USD" fixedOrFloating="Fixed" fixedRt="0.817100000000"/>
+            <floatingPmntDesc curCd="USD" fixedOrFloating="Floating" floatingRtIndex="USD-LIBOR-BBA 3M" floatingRtSpread="0.000000000000" pmntAmt="0.000000000000">
+              <rtResetTenors>
+                <rtResetTenor rateTenor="Month" rateTenorUnit="3" resetDt="Month" resetDtUnit="3"/>
+              </rtResetTenors>
+            </floatingPmntDesc>
+            <terminationDt>2025-01-16</terminationDt>
+            <upfrontPmnt>0.000000000000</upfrontPmnt>
+            <pmntCurCd>USD</pmntCurCd>
+            <upfrontRcpt>0.000000000000</upfrontRcpt>
+            <rcptCurCd>USD</rcptCurCd>
+            <notionalAmt>10000000</notionalAmt>
+            <curCd>USD</curCd>
+            <unrealizedAppr>6146</unrealizedAppr>
+          </swapDeriv>
+        </derivativeInfo>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+    </invstOrSecs>
+    <explntrNotes>
+      <explntrNote note="Returns are reported without deduction of sales loads and redemption fees, if applicable." noteItem="B.5.a"/>
+    </explntrNotes>
+    <signature>
+      <ncom:dateSigned>2021-02-26</ncom:dateSigned>
+      <ncom:nameOfApplicant>John Hancock Funds II</ncom:nameOfApplicant>
+      <ncom:signature>/s/Salvatore Schiavone</ncom:signature>
+      <ncom:signerName>Salvatore Schiavone</ncom:signerName>
+      <ncom:title>Treasurer</ncom:title>
+    </signature>
+  </formData>
+</edgarSubmission>

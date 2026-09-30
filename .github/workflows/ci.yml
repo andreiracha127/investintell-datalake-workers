@@ -57,6 +57,7 @@ jobs:
           src/sec_serving
           src/workers/_finnhub.py
           src/workers/bond_curves.py
+          src/workers/bond_default_events.py
           src/workers/bond_live_daily.py
           src/workers/bond_metrics.py
           src/workers/bond_price_eligibility.py
@@ -152,6 +153,19 @@ jobs:
             tests/test_sec_regulatory_serving_contract.py
             tests/test_sec_regulatory_serving_materializer.py
             tests/test_sec_source_manifests.py
+            tests/test_bond_default_contracts.py
+            tests/test_bond_default_edgar.py
+            tests/test_bond_default_ncen.py
+            tests/test_bond_default_ncen_purposes.py
+            tests/test_bond_default_nport.py
+            tests/test_bond_default_nport_adapter.py
+            tests/test_bond_default_public_ratings.py
+            tests/test_bond_default_publication.py
+            tests/test_bond_default_resolve.py
+            tests/test_bond_default_sec_acquisition.py
+            tests/test_bond_default_diagnostic_publication.py
+            tests/test_bond_default_source_bundle.py
+            tests/test_bond_default_events_worker.py
           )
           printf 'environment_mode=no-dsn\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
@@ -183,6 +197,9 @@ jobs:
       PYTHONPATH: .
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
       SEC_TEST_DATABASE_URL: host=127.0.0.1 port=65431 dbname=postgres user=postgres
+      # Loopback + a database name containing 'disposable' + an explicit password satisfy the bond default-event
+      # DB-suite guard (the service uses trust auth, so the password value is ignored).
+      BOND_DEFAULT_TEST_DATABASE_URL: host=127.0.0.1 port=65431 dbname=bdefault_disposable_ci user=postgres password=postgres
     services:
       postgres:
         image: postgres:16
@@ -232,6 +249,7 @@ jobs:
           src/sec_serving
           src/workers/_finnhub.py
           src/workers/bond_curves.py
+          src/workers/bond_default_events.py
           src/workers/bond_live_daily.py
           src/workers/bond_metrics.py
           src/workers/bond_price_eligibility.py
@@ -256,6 +274,12 @@ jobs:
           src/workers/sec_class_peers_scoring.py
           src/workers/sec_class_shadow_readiness.py
           src/workers/sec_regulatory_serving.py
+
+      - name: Create the disposable bond default-event database
+        run: >-
+          python -c "import psycopg;
+          c = psycopg.connect('host=127.0.0.1 port=65431 dbname=postgres user=postgres', autocommit=True);
+          c.execute('CREATE DATABASE bdefault_disposable_ci')"
 
       - name: Run mixed tests with PostgreSQL
         shell: bash
@@ -340,6 +364,22 @@ jobs:
             tests/test_sec_regulatory_serving_contract.py
             tests/test_sec_regulatory_serving_materializer.py
             tests/test_sec_source_manifests.py
+            tests/test_bond_default_admin_roles_db.py
+            tests/test_bond_default_contracts.py
+            tests/test_bond_default_edgar.py
+            tests/test_bond_default_ncen.py
+            tests/test_bond_default_ncen_purposes.py
+            tests/test_bond_default_nport.py
+            tests/test_bond_default_nport_adapter.py
+            tests/test_bond_default_public_ratings.py
+            tests/test_bond_default_publication.py
+            tests/test_bond_default_resolve.py
+            tests/test_bond_default_sec_acquisition.py
+            tests/test_bond_default_diagnostic_publication.py
+            tests/test_bond_default_source_bundle.py
+            tests/test_bond_default_events_worker.py
+            tests/test_bond_default_publication_db.py
+            tests/test_bond_default_diagnostic_publication_db.py
           )
           db_tests=(
             tests/test_fomc_sep_ingestion.py
@@ -366,6 +406,10 @@ jobs:
             tests/test_rr1_fee_profiles.py
             tests/test_sec_derived_publications.py
             tests/test_sec_regulatory_mandate.py
+            tests/test_bond_default_publication_db.py
+            tests/test_bond_default_diagnostic_publication_db.py
+            tests/test_bond_default_source_bundle.py
+            tests/test_bond_default_events_worker.py
           )
           printf 'environment_mode=postgres\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \

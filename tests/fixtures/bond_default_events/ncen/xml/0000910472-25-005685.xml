@@ -1,0 +1,514 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/ncen" xmlns:com="http://www.sec.gov/edgar/common">
+  <schemaVersion>X0505</schemaVersion>
+  <headerData>
+    <submissionType>N-CEN</submissionType>
+    <filerInfo>
+      <liveTestFlag>LIVE</liveTestFlag>
+      <filer>
+        <issuerCredentials>
+          <cik>0001722837</cik>
+          <ccc>XXXXXXXX</ccc>
+        </issuerCredentials>
+        <fileNumber>811-23309</fileNumber>
+      </filer>
+      <investmentCompanyType>N-2</investmentCompanyType>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <generalInfo reportEndingPeriod="2025-09-30" isReportPeriodLt12="N"/>
+    <registrantInfo>
+      <registrantFullName>BLUEBAY DESTRA INTERNATIONAL EVENT-DRIVEN CREDIT FUND</registrantFullName>
+      <investmentCompFileNo>811-23309</investmentCompFileNo>
+      <registrantCik>0001722837</registrantCik>
+      <registrantLei>549300LJCXU3SII0EB34</registrantLei>
+      <registrantstreet1>443 NORTH WILLSON AVENUE</registrantstreet1>
+      <registrantcity>BOZEMAN</registrantcity>
+      <registrantzipCode>59715</registrantzipCode>
+      <registrantstate>US-MT</registrantstate>
+      <registrantcountry>US</registrantcountry>
+      <registrantphoneNumber>877-855-3434</registrantphoneNumber>
+      <websites>
+        <website webpage="www.destracapital.com"/>
+      </websites>
+      <locationBooksRecords>
+        <locationBooksRecord>
+          <officeName>FAEGRE DRINKER BIDDLE &amp; REATH LLP</officeName>
+          <officeAddress1>ONE LOGAN SQUARE</officeAddress1>
+          <officeAddress2>SUITE 2000</officeAddress2>
+          <officeCity>PHILADELPHIA</officeCity>
+          <officeStateCountry officeCountry="US" officeState="US-PA"/>
+          <officeRecordsZipCode>19103</officeRecordsZipCode>
+          <officePhone>215-988-2700</officePhone>
+          <booksRecordsDesc>LEGAL COUNSEL</booksRecordsDesc>
+        </locationBooksRecord>
+        <locationBooksRecord>
+          <officeName>RBC Global Asset mgt (UK) Ltd</officeName>
+          <officeAddress1>77 GROSVENOR STREET</officeAddress1>
+          <officeCity>LONDON??</officeCity>
+          <officeCountry>GB</officeCountry>
+          <officeRecordsZipCode>W1K3JR</officeRecordsZipCode>
+          <officePhone>442073893700</officePhone>
+          <booksRecordsDesc>SUB-ADVISER??</booksRecordsDesc>
+        </locationBooksRecord>
+        <locationBooksRecord>
+          <officeName>BANK OF NEW YORK</officeName>
+          <officeAddress1>ONE WALL STREET</officeAddress1>
+          <officeCity>NEW YORK</officeCity>
+          <officeStateCountry officeCountry="US" officeState="US-NY"/>
+          <officeRecordsZipCode>10286</officeRecordsZipCode>
+          <officePhone>212-495-1784</officePhone>
+          <booksRecordsDesc>CUSTODIAN??</booksRecordsDesc>
+        </locationBooksRecord>
+        <locationBooksRecord>
+          <officeName>DESTRA CAPITAL ADVISORS LLC</officeName>
+          <officeAddress1>443 NORTH WILLSON AVENUE</officeAddress1>
+          <officeCity>BOZEMAN??</officeCity>
+          <officeStateCountry officeCountry="US" officeState="US-MT"/>
+          <officeRecordsZipCode>59715</officeRecordsZipCode>
+          <officePhone>877-855-3434</officePhone>
+          <booksRecordsDesc>INVESTMENT MANAGER</booksRecordsDesc>
+        </locationBooksRecord>
+        <locationBooksRecord>
+          <officeName>Ultimus Fund Solutions</officeName>
+          <officeAddress1>225 Pictoria Drive, Suite 450</officeAddress1>
+          <officeCity>Cincinnati</officeCity>
+          <officeStateCountry officeCountry="US" officeState="US-OH"/>
+          <officeRecordsZipCode>45246</officeRecordsZipCode>
+          <officePhone>631-470-2600</officePhone>
+          <booksRecordsDesc>FUND ADMINISTRATOR AND FUND ACCOUNTANT</booksRecordsDesc>
+        </locationBooksRecord>
+      </locationBooksRecords>
+      <isRegistrantFirstFiling>N</isRegistrantFirstFiling>
+      <isRegistrantLastFiling>N</isRegistrantLastFiling>
+      <registrantFamilyInvComp isRegistrantFamilyInvComp="Y" familyInvCompFullName="Destra"/>
+      <registrantClassificationType>N-2</registrantClassificationType>
+      <isSecuritiesActRegistration>Y</isSecuritiesActRegistration>
+      <directors>
+        <director>
+          <directorName>MICHAEL S ERICKSON</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-04014"/>
+            <fileNumberInfo fileNumber="811-22572"/>
+            <fileNumberInfo fileNumber="811-22417"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>JOHN S EMRICH</directorName>
+          <crdNumber>006852043</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-22572"/>
+            <fileNumberInfo fileNumber="811-04014"/>
+            <fileNumberInfo fileNumber="811-22417"/>
+            <fileNumberInfo fileNumber="811-22853"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>NICHOLAS DALMASO</directorName>
+          <crdNumber>002246955</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-22417"/>
+            <fileNumberInfo fileNumber="811-22572"/>
+          </fileNumbers>
+        </director>
+        <director>
+          <directorName>JEFFREY S MURPHY</directorName>
+          <crdNumber>N/A</crdNumber>
+          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>
+          <fileNumbers>
+            <fileNumberInfo fileNumber="811-22572"/>
+            <fileNumberInfo fileNumber="811-22417"/>
+          </fileNumbers>
+        </director>
+      </directors>
+      <chiefComplianceOfficers>
+        <chiefComplianceOfficer>
+          <ccoName>RANDI ROESSLER</ccoName>
+          <crdNumber>005178959</crdNumber>
+          <ccoStreet1>443 NORTH WILLSON AVENUE</ccoStreet1>
+          <ccoCity>BOZEMAN??</ccoCity>
+          <ccoStateCountry ccoCountry="US" ccoState="US-MT"/>
+          <ccoZipCode>59715</ccoZipCode>
+          <ccoPhone>XXXXXX</ccoPhone>
+          <isCcoChangedSinceLastFiling>N</isCcoChangedSinceLastFiling>
+          <ccoEmployers>
+            <ccoEmployer ccoEmployerName="PINE ADVISOR SOLUTIONS LLC" ccoEmployerId="82-3455885"/>
+          </ccoEmployers>
+        </chiefComplianceOfficer>
+      </chiefComplianceOfficers>
+      <isRegistrantSubmittedMatter>N</isRegistrantSubmittedMatter>
+      <isPreviousLegalProceeding>N</isPreviousLegalProceeding>
+      <isPreviousProceedingTerminated>N</isPreviousProceedingTerminated>
+      <isClaimFiled>N</isClaimFiled>
+      <coveredByInsurancePolicy isCoveredByInsurancePolicy="Y" isClaimFiledDuringPeriod="N"/>
+      <isFinancialSupportDuringPeriod>N</isFinancialSupportDuringPeriod>
+      <releaseNumbers isExemptionFromAct="Y">
+        <releaseNumberInfo releaseNumber="IC-33293"/>
+      </releaseNumbers>
+      <principalUnderwriters>
+        <principalUnderwriter>
+          <principalUnderwriterName>DESTRA CAPITAL INVESTMENTS LLC</principalUnderwriterName>
+          <principalUnderwriterFileNumber>8-68006</principalUnderwriterFileNumber>
+          <principalUnderwriterCrdNumber>000148299</principalUnderwriterCrdNumber>
+          <principalUnderwriterLei>N/A</principalUnderwriterLei>
+          <principalUnderwriterRssdId>N/A</principalUnderwriterRssdId>
+          <principalUnderWriterStateCountry principalUnderWriterCountry="US" principalUnderWriterState="US-MT"/>
+          <isPrincipalUnderwriterAffiliatedWithRegistrant>Y</isPrincipalUnderwriterAffiliatedWithRegistrant>
+        </principalUnderwriter>
+      </principalUnderwriters>
+      <isUnderwriterHiredOrTerminated>N</isUnderwriterHiredOrTerminated>
+      <publicAccountants>
+        <publicAccountant>
+          <publicAccountantName>COHEN AND COMPANY, LTD</publicAccountantName>
+          <pcaobNumber>00925</pcaobNumber>
+          <publicAccountantLei>N/A</publicAccountantLei>
+          <publicAccountantRssdId>N/A</publicAccountantRssdId>
+          <publicAccountantStateCountry publicAccountantCountry="US" publicAccountantState="US-OH"/>
+        </publicAccountant>
+      </publicAccountants>
+      <isPublicAccountantChanged>N</isPublicAccountantChanged>
+      <isMaterialWeakness>N</isMaterialWeakness>
+      <isOpinionOffered>N</isOpinionOffered>
+      <isMaterialChange>N</isMaterialChange>
+      <isAccountingPrincipleChange>N</isAccountingPrincipleChange>
+      <isPaymentErrorInNetAssetValue>N</isPaymentErrorInNetAssetValue>
+      <isPaymentDividend>N</isPaymentDividend>
+    </registrantInfo>
+    <managementInvestmentQuestionSeriesInfo>
+      <managementInvestmentQuestion>
+        <mgmtInvFundName>BlueBay Destra International Event-Driven Credit Fund</mgmtInvFundName>
+        <mgmtInvLei>549300LJCXU3SII0EB34</mgmtInvLei>
+        <isFirstFilingByFund>N</isFirstFilingByFund>
+        <numAuthorizedClass>0</numAuthorizedClass>
+        <numAddedClass>0</numAddedClass>
+        <numTerminatedClass>0</numTerminatedClass>
+        <fundTypes>
+          <fundType>Interval Fund</fundType>
+        </fundTypes>
+        <isNonDiversifiedCompany>N</isNonDiversifiedCompany>
+        <isForeignSubsidiary>N</isForeignSubsidiary>
+        <isFundSecuritiesLending>Y</isFundSecuritiesLending>
+        <didFundLendSecurities>N</didFundLendSecurities>
+        <paymentToAgentManagerType>N/A</paymentToAgentManagerType>
+        <avgPortfolioSecuritiesValue>0</avgPortfolioSecuritiesValue>
+        <netIncomeSecuritiesLending>0</netIncomeSecuritiesLending>
+        <relyOnRuleTypes>
+          <relyOnRuleType>Rule 22d-1 (17 CFR 270.22d-1)</relyOnRuleType>
+          <relyOnRuleType>Rule 32a-4 (17 CFR 270.32a-4)</relyOnRuleType>
+          <relyOnRuleType>Rule 18f-4(f)(17 CFR 270.18f-4(f))</relyOnRuleType>
+        </relyOnRuleTypes>
+        <isExpenseLimitationInPlace>Y</isExpenseLimitationInPlace>
+        <isExpenseReducedOrWaived>Y</isExpenseReducedOrWaived>
+        <isFeesWaivedRecoupable>Y</isFeesWaivedRecoupable>
+        <isExpenseWaivedRecoupable>N</isExpenseWaivedRecoupable>
+        <investmentAdvisers>
+          <investmentAdviser>
+            <investmentAdviserName>DESTRA CAPITAL ADVISORS LLC</investmentAdviserName>
+            <investmentAdviserFileNo>801-71604</investmentAdviserFileNo>
+            <investmentAdviserCrdNo>000148574</investmentAdviserCrdNo>
+            <investmentAdviserLei>N/A</investmentAdviserLei>
+            <investmentAdviserRssdId>N/A</investmentAdviserRssdId>
+            <investmentAdviserStateCountry investmentAdviserState="US-MT" investmentAdviserCountry="US"/>
+            <isInvestmentAdviserHired>N</isInvestmentAdviserHired>
+          </investmentAdviser>
+        </investmentAdvisers>
+        <subAdvisers>
+          <subAdviser>
+            <subAdviserName>RBC GLOBAL ASSET MANAGEMENT (UK) LIMITED</subAdviserName>
+            <subAdviserFileNo>801-78436</subAdviserFileNo>
+            <subAdviserCrdNo>000168551</subAdviserCrdNo>
+            <subAdviserLei>2138004TUI3ONH2MK159</subAdviserLei>
+            <isSubAdviserAffiliated>N</isSubAdviserAffiliated>
+            <subAdviserCountry>GB</subAdviserCountry>
+            <isSubAdviserHired>N</isSubAdviserHired>
+          </subAdviser>
+        </subAdvisers>
+        <transferAgents>
+          <transferAgent>
+            <transferAgentName>UMB Fund Services</transferAgentName>
+            <transferAgentFileNo>84-5792</transferAgentFileNo>
+            <transferAgentLei>N/A</transferAgentLei>
+            <transferAgentRssdId>3028706</transferAgentRssdId>
+            <transferAgentStateCountry transferAgentState="US-WI" transferAgentCountry="US"/>
+            <isTransferAgentAffiliated>N</isTransferAgentAffiliated>
+            <isTransferAgentSubAgent>N</isTransferAgentSubAgent>
+          </transferAgent>
+          <transferAgent>
+            <transferAgentName>Ultimus Fund Solutions, LLC</transferAgentName>
+            <transferAgentFileNo>84-06083</transferAgentFileNo>
+            <transferAgentLei>N/A</transferAgentLei>
+            <transferAgentRssdId>N/A</transferAgentRssdId>
+            <transferAgentStateCountry transferAgentState="US-OH" transferAgentCountry="US"/>
+            <isTransferAgentAffiliated>N</isTransferAgentAffiliated>
+            <isTransferAgentSubAgent>N</isTransferAgentSubAgent>
+          </transferAgent>
+        </transferAgents>
+        <isTransferAgentHiredOrTerminated>Y</isTransferAgentHiredOrTerminated>
+        <pricingServices>
+          <pricingService>
+            <pricingServiceName>INTERCONTINENTAL EXCHANGE, INC.</pricingServiceName>
+            <pricingServiceLei>5493000F4ZO33MV32P92</pricingServiceLei>
+            <pricingServiceStateCountry pricingServiceState="US-GA" pricingServiceCountry="US"/>
+            <isPricingServiceAffiliated>N</isPricingServiceAffiliated>
+          </pricingService>
+          <pricingService>
+            <pricingServiceName>IHS MARKIT LTD.</pricingServiceName>
+            <pricingServiceLei>549300HLPTRASHS0E726</pricingServiceLei>
+            <pricingServiceCountry>BM</pricingServiceCountry>
+            <isPricingServiceAffiliated>N</isPricingServiceAffiliated>
+          </pricingService>
+        </pricingServices>
+        <isPricingServiceHiredOrTerminated>N</isPricingServiceHiredOrTerminated>
+        <custodians>
+          <custodian>
+            <custodianName>Bank of New York</custodianName>
+            <custodianLei>HPFHU0OQ28E4N0NFVK49</custodianLei>
+            <custodianRssdId>3587146</custodianRssdId>
+            <custodianStateCountry custodianState="US-NY" custodianCountry="US"/>
+            <isCustodianAffiliated>N</isCustodianAffiliated>
+            <isSubCustodian>N</isSubCustodian>
+            <custodyType>Bank - section 17(f)(1) (15 U.S.C. 80a-17(f)(1))</custodyType>
+          </custodian>
+        </custodians>
+        <isCustodianHiredOrTerminated>N</isCustodianHiredOrTerminated>
+        <shareholderServicingAgents>
+          <shareholderServicingAgent>
+            <shareholderServiceAgentName>DESTRA CAPITAL INVESTMENTS LLC</shareholderServiceAgentName>
+            <shareholderServiceAgentLei>N/A</shareholderServiceAgentLei>
+            <shareholderServiceAgentRssdId>N/A</shareholderServiceAgentRssdId>
+            <shareholderServiceAgentOther>8-68006</shareholderServiceAgentOther>
+            <shareholderServiceIdNumberDesc>SEC FILE NUMBER</shareholderServiceIdNumberDesc>
+            <shareholderServiceAgentStateCountry shareholderServiceAgentState="US-MT" shareholderServiceAgentCountry="US"/>
+            <isShareholderServiceAgentAffiliated>Y</isShareholderServiceAgentAffiliated>
+            <isShareholderServiceAgentSubshare>N</isShareholderServiceAgentSubshare>
+          </shareholderServicingAgent>
+        </shareholderServicingAgents>
+        <isShareholderServiceHiredTerminated>N</isShareholderServiceHiredTerminated>
+        <admins>
+          <admin>
+            <adminName>Ultimus Fund Solutions, LLC</adminName>
+            <adminLei>N/A</adminLei>
+            <adminRssdId>N/A</adminRssdId>
+            <adminOther>84-05829</adminOther>
+            <idNumberDesc>SEC File Number</idNumberDesc>
+            <adminStateCountry adminState="US-OH" adminCountry="US"/>
+            <isAdminAffiliated>N</isAdminAffiliated>
+            <isAdminSubAdmin>N</isAdminSubAdmin>
+          </admin>
+          <admin>
+            <adminName>UMB Fund Services</adminName>
+            <adminLei>N/A</adminLei>
+            <adminRssdId>3028706</adminRssdId>
+            <adminOther>84-5792</adminOther>
+            <idNumberDesc>SEC File Number</idNumberDesc>
+            <adminStateCountry adminState="US-WI" adminCountry="US"/>
+            <isAdminAffiliated>N</isAdminAffiliated>
+            <isAdminSubAdmin>N</isAdminSubAdmin>
+          </admin>
+        </admins>
+        <isAdminHiredOrTerminated>Y</isAdminHiredOrTerminated>
+        <brokers>
+          <broker>
+            <brokerName>STIFEL NICOLAUS</brokerName>
+            <brokerFileNo>008-01447</brokerFileNo>
+            <brokerCrdNo>000000793</brokerCrdNo>
+            <brokerLei>5WUVMA08EYG4KEUPW589</brokerLei>
+            <brokerRssdId>3261688</brokerRssdId>
+            <brokerStateCountry brokerState="US-MO" brokerCountry="US"/>
+            <grossCommission>26.86000000</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>CITIGROUP GLOBAL MARKETS INC.</brokerName>
+            <brokerFileNo>8-8177</brokerFileNo>
+            <brokerCrdNo>000007059</brokerCrdNo>
+            <brokerLei>MBNUM2BPBDO7JBLYG310</brokerLei>
+            <brokerRssdId>2754521</brokerRssdId>
+            <brokerStateCountry brokerState="US-NY" brokerCountry="US"/>
+            <grossCommission>18618.23177609</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>MERCANTILE BANK CORPORATION</brokerName>
+            <brokerFileNo>N/A</brokerFileNo>
+            <brokerCrdNo>N/A</brokerCrdNo>
+            <brokerLei>P16VZZCKTJ5IONL6XE37</brokerLei>
+            <brokerStateCountry brokerState="US-MI" brokerCountry="US"/>
+            <grossCommission>205.62000000</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>PEEL HUNT LLP</brokerName>
+            <brokerFileNo>N/A</brokerFileNo>
+            <brokerCrdNo>N/A</brokerCrdNo>
+            <brokerLei>5493007DWN0R4YBM4C84</brokerLei>
+            <brokerCountry>GB</brokerCountry>
+            <grossCommission>1.37000000</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>CLARKSON PLATOU SECURITIES</brokerName>
+            <brokerFileNo>8-45221</brokerFileNo>
+            <brokerCrdNo>000030882</brokerCrdNo>
+            <brokerLei>549300ED05S7MWQ8U215</brokerLei>
+            <brokerStateCountry brokerState="US-NY" brokerCountry="US"/>
+            <grossCommission>35217.19000000</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>PARETO SECURITIES</brokerName>
+            <brokerFileNo>N/A</brokerFileNo>
+            <brokerCrdNo>N/A</brokerCrdNo>
+            <brokerLei>549300H0QDQHRJXRM779</brokerLei>
+            <brokerCountry>NO</brokerCountry>
+            <grossCommission>10029.66892364</grossCommission>
+          </broker>
+          <broker>
+            <brokerName>MARIANA CAPITAL MARKETS LLP</brokerName>
+            <brokerFileNo>N/A</brokerFileNo>
+            <brokerCrdNo>N/A</brokerCrdNo>
+            <brokerLei>213800YRA1J9QFBMU217</brokerLei>
+            <brokerCountry>GB</brokerCountry>
+            <grossCommission>11781.36000000</grossCommission>
+          </broker>
+        </brokers>
+        <aggregateCommission>75880.30000000</aggregateCommission>
+        <principalTransactions>
+          <principalTransaction>
+            <principalName>WELLS FARGO</principalName>
+            <principalFileNo>8-65876</principalFileNo>
+            <principalCrdNo>000126292</principalCrdNo>
+            <principalLei>VYVVCKR63DVZZN70PB21</principalLei>
+            <principalStateCountry principalState="US-NC" principalCountry="US"/>
+            <principalTotalPurchaseSale>52311480.34999999</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>UBS AG</principalName>
+            <principalFileNo>8-22651</principalFileNo>
+            <principalCrdNo>000007654</principalCrdNo>
+            <principalLei>T6FIZBDPKLYJKFCRVK44</principalLei>
+            <principalCountry>CH</principalCountry>
+            <principalTotalPurchaseSale>237200517.36000001</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>MORGAN STANLEY SMITH BARNEY LLC</principalName>
+            <principalFileNo>8-68191</principalFileNo>
+            <principalCrdNo>000149777</principalCrdNo>
+            <principalLei>7PDDXEMZ0ZV0CEDU4D16</principalLei>
+            <principalRssdId>3959202</principalRssdId>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>51430940.34000000</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>BARCLAYS CAPITAL, INC.</principalName>
+            <principalFileNo>8-41342</principalFileNo>
+            <principalCrdNo>000019714</principalCrdNo>
+            <principalLei>AC28XWWI3WIBK2824319</principalLei>
+            <principalRssdId>1146316</principalRssdId>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>56303640.96000000</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>DEUTSCHE BANK</principalName>
+            <principalFileNo>8-17822</principalFileNo>
+            <principalCrdNo>000002525</principalCrdNo>
+            <principalLei>9J6MBOOO7BECTDTUZW19</principalLei>
+            <principalRssdId>1900666</principalRssdId>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>70687329.22000000</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>BANK OF AMERICA MERRILL LYNCH</principalName>
+            <principalFileNo>8-7221</principalFileNo>
+            <principalCrdNo>000007691</principalCrdNo>
+            <principalLei>8NAV47T0Y26Q87Y0QP81</principalLei>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>55792477.49000000</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>CLARKSON PLATOU SECURITIES</principalName>
+            <principalFileNo>8-45221</principalFileNo>
+            <principalCrdNo>000030882</principalCrdNo>
+            <principalLei>549300ED05S7MWQ8U215</principalLei>
+            <principalStateCountry principalState="US-NY" principalCountry="US"/>
+            <principalTotalPurchaseSale>40035007.06000000</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>NATWEST SECURITIES</principalName>
+            <principalFileNo>N/A</principalFileNo>
+            <principalCrdNo>N/A</principalCrdNo>
+            <principalLei>ZE2ZWJ5BTIQJ8M0C6K34</principalLei>
+            <principalStateCountry principalState="US-CT" principalCountry="US"/>
+            <principalTotalPurchaseSale>65451740.65999999</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>BROWN BROTHERS HARRIMAN</principalName>
+            <principalFileNo>8-69731</principalFileNo>
+            <principalCrdNo>000282732</principalCrdNo>
+            <principalLei>5493006KMX1VFTPYPW14</principalLei>
+            <principalStateCountry principalState="US-MA" principalCountry="US"/>
+            <principalTotalPurchaseSale>55030353.14999999</principalTotalPurchaseSale>
+          </principalTransaction>
+          <principalTransaction>
+            <principalName>BNP PARIBAS</principalName>
+            <principalFileNo>8-32682</principalFileNo>
+            <principalCrdNo>000015794</principalCrdNo>
+            <principalLei>R0MUWSFPU8MPRO8K5P83</principalLei>
+            <principalCountry>FR</principalCountry>
+            <principalTotalPurchaseSale>41971952.58000000</principalTotalPurchaseSale>
+          </principalTransaction>
+        </principalTransactions>
+        <principalAggregatePurchase>993465481.44000000</principalAggregatePurchase>
+        <isBrokerageResearchPayment>N</isBrokerageResearchPayment>
+        <mnthlyAvgNetAssets>328688273.34999996</mnthlyAvgNetAssets>
+      </managementInvestmentQuestion>
+    </managementInvestmentQuestionSeriesInfo>
+    <closedEndManagementInvestment>
+      <securityRelatedItems>
+        <securityRelatedItem>
+          <description>Common stock</description>
+          <securityClassTitle>CLASS T SHARES??</securityClassTitle>
+          <commonStocks>
+            <commonStock commonStockExchange="N/A" commonStockTickerSymbol="CEDTX??"/>
+          </commonStocks>
+        </securityRelatedItem>
+        <securityRelatedItem>
+          <description>Common stock</description>
+          <securityClassTitle>CLASS A SHARES??</securityClassTitle>
+          <commonStocks>
+            <commonStock commonStockExchange="N/A" commonStockTickerSymbol="CEDAX??"/>
+          </commonStocks>
+        </securityRelatedItem>
+        <securityRelatedItem>
+          <description>Common stock</description>
+          <securityClassTitle>CLASS I SHARES</securityClassTitle>
+          <commonStocks>
+            <commonStock commonStockExchange="N/A" commonStockTickerSymbol="CEDIX"/>
+          </commonStocks>
+        </securityRelatedItem>
+      </securityRelatedItems>
+      <isRightsOffering>N</isRightsOffering>
+      <isSecondaryOffering>N</isSecondaryOffering>
+      <repurchaseSecurities isRepurchaseSecurity="Y">
+        <repurchaseSecurityType>Common stock</repurchaseSecurityType>
+      </repurchaseSecurities>
+      <longTermDebtDefault isDefaultLongTermDebt="Y">
+        <longTermDebtDefaults>
+          <longTermDebtDefault defaultNature="Non Payment" defaultDate="2025-09-30" defaultPerThousandAmount="68.75" defaultTotalAmount="481250"/>
+          <longTermDebtDefault defaultNature="Non Payment" defaultDate="2025-11-15" defaultPerThousandAmount="23.78" defaultTotalAmount="92033"/>
+          <longTermDebtDefault defaultNature="Non Payment" defaultDate="2025-10-28" defaultPerThousandAmount="47.21" defaultTotalAmount="647178"/>
+          <longTermDebtDefault defaultNature="Non Payment" defaultDate="2025-10-07" defaultPerThousandAmount="157.87" defaultTotalAmount="591936"/>
+        </longTermDebtDefaults>
+      </longTermDebtDefault>
+      <isDividendsInArrears>N</isDividendsInArrears>
+      <isSecuritiesModified>N</isSecuritiesModified>
+      <managementFee>1.75000000</managementFee>
+      <netOperatingExpenses>2.25000000</netOperatingExpenses>
+      <marketPricePerShare>N/A</marketPricePerShare>
+      <netAssetValuePerShare>21.99000000</netAssetValuePerShare>
+    </closedEndManagementInvestment>
+    <attachmentsTab>
+      <isIPAReportInternalControl>true</isIPAReportInternalControl>
+    </attachmentsTab>
+    <signature registrantSignedName="BLUEBAY DESTRA INTERNATIONAL EVENT-DRIVEN CREDIT FUND" signedDate="2025-12-15" signature="/s/ Derek Mullins" title="Principal Financial Officer"/>
+  </formData>
+</edgarSubmission>

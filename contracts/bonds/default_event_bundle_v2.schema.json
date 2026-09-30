@@ -1,0 +1,4383 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/contracts/bonds/default_event_bundle_v2.schema.json",
+  "title": "BondDefaultEventBundleV2",
+  "$comment": "Rendered from src/bonds/default_events/contracts.py; do not hand-edit. x-digest = sha256 of the canonical JSON of this document without x-digest. Frames are arrays sorted and unique by x-row-key; set-valued arrays are sorted. Cross-frame, temporal, identity and derivation rules are enforced by validate_bundle (Python) and bond_credit_validate (SQL); this schema is the structural layer.",
+  "x-contract-version": "bond_default_event_bundle_v2",
+  "x-product": "bond_credit_evidence_v1",
+  "x-policy-digest": "sha256:f0aea3d0d86daa874c237adf38de634151f18c0ef2cff5ab69e7d67588bc5662",
+  "x-uuid-namespace": "bb022049-6738-5033-b532-d19b7c29c541",
+  "x-identity-name": "UUIDv5 name = canonical JSON array [kind, *components]",
+  "x-publication-id": "RFC 9562 UUIDv8 from fingerprint sha256 bits 0..127; version nibble 8, variant 10xx",
+  "x-row-encoding": "bond_credit_row_v1: sha256 over UTF-8 of the fields in x-columns order; null=N; string=S<utf8 bytes>:<text>; integer=I<len>:<decimal>; boolean=B<len>:true|false; array=A<count>:<elements>; object=M<count>:<S-key><value> keys in UTF-8 byte order; ts=S of UTC YYYY-MM-DDTHH:MM:SS.ffffffZ; date=S of YYYY-MM-DD; uuid=S of lowercase text",
+  "x-sql-files": [
+    "bond_default_sources_v1.sql",
+    "bond_credit_publications_v1.sql",
+    "bond_default_events_v1.sql",
+    "bond_rating_history_public_v1.sql"
+  ],
+  "x-input-frames": [
+    "source_packages",
+    "observations",
+    "event_links",
+    "adjudications",
+    "ncen_filings"
+  ],
+  "x-output-frames": [
+    "publication_sources",
+    "events",
+    "followups",
+    "exit_evidence",
+    "coverage",
+    "ratings",
+    "family_contexts",
+    "family_evidence",
+    "proposal_evidence",
+    "exchange_relations"
+  ],
+  "x-frame-manifest-prefix": {
+    "publication_sources": "sources",
+    "events": "events",
+    "followups": "followups",
+    "exit_evidence": "exits",
+    "coverage": "coverage",
+    "ratings": "ratings",
+    "family_contexts": "family_contexts",
+    "family_evidence": "family_evidence",
+    "proposal_evidence": "proposal_evidence",
+    "exchange_relations": "exchange_relations"
+  },
+  "x-legacy-contract-versions": [
+    "bond_default_event_bundle_v1"
+  ],
+  "x-family-rule-version": "bond_default_ncen_family_fe1ab_v3",
+  "x-rating-resolver-id": "bond_public_ratings_v1",
+  "x-structured-sort": "structured records sort by declared fields in order, null before text",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "manifest",
+    "panel_grid",
+    "frames"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "bond_default_event_bundle_v2"
+    },
+    "manifest": {
+      "$ref": "#/$defs/manifest"
+    },
+    "panel_grid": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "string",
+            "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+          },
+          {
+            "type": "string",
+            "pattern": "^\\d{4}-(0[1-9]|1[0-2])-01$"
+          }
+        ],
+        "items": false,
+        "minItems": 2
+      }
+    },
+    "frames": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adjudications",
+        "coverage",
+        "event_links",
+        "events",
+        "exchange_relations",
+        "exit_evidence",
+        "family_contexts",
+        "family_evidence",
+        "followups",
+        "ncen_filings",
+        "observations",
+        "proposal_evidence",
+        "publication_sources",
+        "ratings",
+        "source_packages"
+      ],
+      "properties": {
+        "adjudications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/adjudications"
+          }
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/coverage"
+          }
+        },
+        "event_links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/event_links"
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/events"
+          }
+        },
+        "exchange_relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exchange_relations"
+          }
+        },
+        "exit_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exit_evidence"
+          }
+        },
+        "family_contexts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/family_contexts"
+          }
+        },
+        "family_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/family_evidence"
+          }
+        },
+        "followups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/followups"
+          }
+        },
+        "ncen_filings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ncen_filings"
+          }
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/observations"
+          }
+        },
+        "proposal_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/proposal_evidence"
+          }
+        },
+        "publication_sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/publication_sources"
+          }
+        },
+        "ratings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ratings"
+          }
+        },
+        "source_packages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_packages"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "source_packages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_id",
+        "source_family",
+        "external_id",
+        "content_sha256",
+        "raw_sha256",
+        "header_sha256",
+        "member_sha256s",
+        "official_url",
+        "accession_number",
+        "rights_state",
+        "rights_ref",
+        "parser_version",
+        "schema_version",
+        "retrieved_at",
+        "first_verified_public_at",
+        "public_time_basis",
+        "public_time_evidence",
+        "source_coverage_start",
+        "source_coverage_end",
+        "public_coverage_start",
+        "public_coverage_end",
+        "effective_coverage_start",
+        "effective_coverage_end",
+        "raw_locator",
+        "revision_of_package_id",
+        "sec_run_id",
+        "sec_package_id"
+      ],
+      "properties": {
+        "package_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "source_family": {
+          "enum": [
+            "adjudication_batch",
+            "agency_rocr_xbrl",
+            "court_public_document",
+            "issuer_public_document",
+            "link_batch",
+            "sec_edgar_document",
+            "sec_edgar_index",
+            "sec_ncen_acceptance_header",
+            "sec_ncen_dera",
+            "sec_ncen_public_xml",
+            "sec_nport_dera",
+            "sec_nport_public_xml"
+          ]
+        },
+        "external_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "raw_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "header_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "member_sha256s": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "official_url": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accession_number": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rights_state": {
+          "enum": [
+            "approved",
+            "denied",
+            "internal_work_product",
+            "public_document_internal_use",
+            "public_government_record",
+            "unverified"
+          ]
+        },
+        "rights_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parser_version": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "schema_version": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "retrieved_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "first_verified_public_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "public_time_basis": {
+          "enum": [
+            "archived_release_metadata",
+            "date_only_next_day_boundary",
+            "edgar_acceptance_datetime",
+            "first_verified_retrieval",
+            "internal_record",
+            "rocr_file_creation"
+          ]
+        },
+        "public_time_evidence": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "source_coverage_start": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_coverage_end": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "public_coverage_start": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "public_coverage_end": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_coverage_start": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_coverage_end": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raw_locator": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "revision_of_package_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sec_run_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sec_package_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-row-key": [
+        "package_id"
+      ],
+      "x-columns": [
+        {
+          "name": "package_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "source_family",
+          "kind": "enum:source_family"
+        },
+        {
+          "name": "external_id",
+          "kind": "text"
+        },
+        {
+          "name": "content_sha256",
+          "kind": "hex"
+        },
+        {
+          "name": "raw_sha256",
+          "kind": "hex"
+        },
+        {
+          "name": "header_sha256",
+          "kind": "hex?"
+        },
+        {
+          "name": "member_sha256s",
+          "kind": "members"
+        },
+        {
+          "name": "official_url",
+          "kind": "text?"
+        },
+        {
+          "name": "accession_number",
+          "kind": "text?"
+        },
+        {
+          "name": "rights_state",
+          "kind": "enum:rights_state"
+        },
+        {
+          "name": "rights_ref",
+          "kind": "text?"
+        },
+        {
+          "name": "parser_version",
+          "kind": "text"
+        },
+        {
+          "name": "schema_version",
+          "kind": "text"
+        },
+        {
+          "name": "retrieved_at",
+          "kind": "ts"
+        },
+        {
+          "name": "first_verified_public_at",
+          "kind": "ts"
+        },
+        {
+          "name": "public_time_basis",
+          "kind": "enum:public_time_basis"
+        },
+        {
+          "name": "public_time_evidence",
+          "kind": "text"
+        },
+        {
+          "name": "source_coverage_start",
+          "kind": "date?"
+        },
+        {
+          "name": "source_coverage_end",
+          "kind": "date?"
+        },
+        {
+          "name": "public_coverage_start",
+          "kind": "date?"
+        },
+        {
+          "name": "public_coverage_end",
+          "kind": "date?"
+        },
+        {
+          "name": "effective_coverage_start",
+          "kind": "date?"
+        },
+        {
+          "name": "effective_coverage_end",
+          "kind": "date?"
+        },
+        {
+          "name": "raw_locator",
+          "kind": "text"
+        },
+        {
+          "name": "revision_of_package_id",
+          "kind": "uuid?"
+        },
+        {
+          "name": "sec_run_id",
+          "kind": "uuid?"
+        },
+        {
+          "name": "sec_package_id",
+          "kind": "uuid?"
+        }
+      ]
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_id",
+        "package_id",
+        "member_name",
+        "row_locator",
+        "observation_kind",
+        "semantic_key",
+        "accession_number",
+        "holding_id",
+        "cusip_raw",
+        "cusip9",
+        "isin_raw",
+        "security_id",
+        "issuer_cik",
+        "registrant_cik",
+        "series_id",
+        "fund_family_id",
+        "issuer_type_raw",
+        "asset_category_raw",
+        "report_date",
+        "effective_date",
+        "date_precision",
+        "effective_lower_exclusive",
+        "effective_upper_inclusive",
+        "acceptance_raw",
+        "acceptance_at",
+        "public_available_at",
+        "public_time_basis",
+        "first_seen_at",
+        "nport_is_default",
+        "nport_arrears_or_deferral",
+        "nport_paid_in_kind",
+        "field_presence",
+        "agency_name",
+        "agency_subject_kind",
+        "agency_rating_type",
+        "agency_scale",
+        "agency_currency",
+        "agency_rating_symbol",
+        "agency_action_classification",
+        "agency_action_date",
+        "agency_file_creation_at",
+        "document_quote",
+        "document_location",
+        "document_sha256",
+        "revision_kind",
+        "supersedes_observation_id"
+      ],
+      "properties": {
+        "observation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "package_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "member_name": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "row_locator": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "observation_kind": {
+          "enum": [
+            "agency_action",
+            "court_document_passage",
+            "edgar_passage",
+            "issuer_document_passage",
+            "nport_holding"
+          ]
+        },
+        "semantic_key": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "accession_number": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "holding_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cusip_raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cusip9": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "isin_raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "security_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issuer_cik": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{10}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registrant_cik": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{10}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "series_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fund_family_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issuer_type_raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "asset_category_raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "date_precision": {
+          "enum": [
+            "day",
+            "interval",
+            "month",
+            "unknown"
+          ]
+        },
+        "effective_lower_exclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_upper_inclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acceptance_raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acceptance_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "public_available_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "public_time_basis": {
+          "enum": [
+            "archived_release_metadata",
+            "date_only_next_day_boundary",
+            "edgar_acceptance_datetime",
+            "first_verified_retrieval",
+            "internal_record",
+            "rocr_file_creation"
+          ]
+        },
+        "first_seen_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "nport_is_default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nport_arrears_or_deferral": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nport_paid_in_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "field_presence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nport_arrears_or_deferral": {
+              "enum": [
+                "absent",
+                "invalid",
+                "null",
+                "present"
+              ]
+            },
+            "nport_is_default": {
+              "enum": [
+                "absent",
+                "invalid",
+                "null",
+                "present"
+              ]
+            },
+            "nport_paid_in_kind": {
+              "enum": [
+                "absent",
+                "invalid",
+                "null",
+                "present"
+              ]
+            }
+          }
+        },
+        "agency_name": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_subject_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "instrument",
+                "issuer"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_rating_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_scale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_rating_symbol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_action_classification": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_action_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_file_creation_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "document_quote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "document_location": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "document_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision_kind": {
+          "enum": [
+            "amendment",
+            "correction",
+            "original",
+            "retraction"
+          ]
+        },
+        "supersedes_observation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-row-key": [
+        "observation_id"
+      ],
+      "x-columns": [
+        {
+          "name": "observation_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "package_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "member_name",
+          "kind": "text"
+        },
+        {
+          "name": "row_locator",
+          "kind": "text"
+        },
+        {
+          "name": "observation_kind",
+          "kind": "enum:observation_kind"
+        },
+        {
+          "name": "semantic_key",
+          "kind": "text"
+        },
+        {
+          "name": "accession_number",
+          "kind": "text?"
+        },
+        {
+          "name": "holding_id",
+          "kind": "text?"
+        },
+        {
+          "name": "cusip_raw",
+          "kind": "raw?"
+        },
+        {
+          "name": "cusip9",
+          "kind": "cusip?"
+        },
+        {
+          "name": "isin_raw",
+          "kind": "raw?"
+        },
+        {
+          "name": "security_id",
+          "kind": "uuid?"
+        },
+        {
+          "name": "issuer_cik",
+          "kind": "cik?"
+        },
+        {
+          "name": "registrant_cik",
+          "kind": "cik?"
+        },
+        {
+          "name": "series_id",
+          "kind": "text?"
+        },
+        {
+          "name": "fund_family_id",
+          "kind": "text?"
+        },
+        {
+          "name": "issuer_type_raw",
+          "kind": "raw?"
+        },
+        {
+          "name": "asset_category_raw",
+          "kind": "raw?"
+        },
+        {
+          "name": "report_date",
+          "kind": "date?"
+        },
+        {
+          "name": "effective_date",
+          "kind": "date?"
+        },
+        {
+          "name": "date_precision",
+          "kind": "enum:date_precision"
+        },
+        {
+          "name": "effective_lower_exclusive",
+          "kind": "date?"
+        },
+        {
+          "name": "effective_upper_inclusive",
+          "kind": "date?"
+        },
+        {
+          "name": "acceptance_raw",
+          "kind": "raw?"
+        },
+        {
+          "name": "acceptance_at",
+          "kind": "ts?"
+        },
+        {
+          "name": "public_available_at",
+          "kind": "ts"
+        },
+        {
+          "name": "public_time_basis",
+          "kind": "enum:public_time_basis"
+        },
+        {
+          "name": "first_seen_at",
+          "kind": "ts"
+        },
+        {
+          "name": "nport_is_default",
+          "kind": "raw?"
+        },
+        {
+          "name": "nport_arrears_or_deferral",
+          "kind": "raw?"
+        },
+        {
+          "name": "nport_paid_in_kind",
+          "kind": "raw?"
+        },
+        {
+          "name": "field_presence",
+          "kind": "presence"
+        },
+        {
+          "name": "agency_name",
+          "kind": "text?"
+        },
+        {
+          "name": "agency_subject_kind",
+          "kind": "enum:agency_subject_kind?"
+        },
+        {
+          "name": "agency_rating_type",
+          "kind": "raw?"
+        },
+        {
+          "name": "agency_scale",
+          "kind": "raw?"
+        },
+        {
+          "name": "agency_currency",
+          "kind": "raw?"
+        },
+        {
+          "name": "agency_rating_symbol",
+          "kind": "raw?"
+        },
+        {
+          "name": "agency_action_classification",
+          "kind": "raw?"
+        },
+        {
+          "name": "agency_action_date",
+          "kind": "date?"
+        },
+        {
+          "name": "agency_file_creation_at",
+          "kind": "ts?"
+        },
+        {
+          "name": "document_quote",
+          "kind": "raw?"
+        },
+        {
+          "name": "document_location",
+          "kind": "text?"
+        },
+        {
+          "name": "document_sha256",
+          "kind": "hex?"
+        },
+        {
+          "name": "revision_kind",
+          "kind": "enum:revision_kind"
+        },
+        {
+          "name": "supersedes_observation_id",
+          "kind": "uuid?"
+        }
+      ]
+    },
+    "event_links": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "link_id",
+        "package_id",
+        "observation_id",
+        "security_id",
+        "cusip9",
+        "obligor_id",
+        "affected_scope",
+        "valid_from",
+        "valid_to",
+        "link_known_at",
+        "identity_evidence_refs",
+        "identity_evidence_digest",
+        "status",
+        "rationale",
+        "supersedes_link_id"
+      ],
+      "properties": {
+        "link_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "package_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "observation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "security_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "cusip9": {
+          "type": "string",
+          "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+        },
+        "obligor_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "affected_scope": {
+          "enum": [
+            "exchange_new",
+            "exchange_old",
+            "issue",
+            "issuer_affected_obligation"
+          ]
+        },
+        "valid_from": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "link_known_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "identity_evidence_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        },
+        "identity_evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "status": {
+          "enum": [
+            "admitted",
+            "quarantined",
+            "rejected"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "supersedes_link_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-row-key": [
+        "link_id"
+      ],
+      "x-columns": [
+        {
+          "name": "link_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "package_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "observation_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "security_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "cusip9",
+          "kind": "cusip"
+        },
+        {
+          "name": "obligor_id",
+          "kind": "text"
+        },
+        {
+          "name": "affected_scope",
+          "kind": "enum:affected_scope"
+        },
+        {
+          "name": "valid_from",
+          "kind": "date"
+        },
+        {
+          "name": "valid_to",
+          "kind": "date?"
+        },
+        {
+          "name": "link_known_at",
+          "kind": "ts"
+        },
+        {
+          "name": "identity_evidence_refs",
+          "kind": "texts"
+        },
+        {
+          "name": "identity_evidence_digest",
+          "kind": "digest"
+        },
+        {
+          "name": "status",
+          "kind": "enum:link_status"
+        },
+        {
+          "name": "rationale",
+          "kind": "text"
+        },
+        {
+          "name": "supersedes_link_id",
+          "kind": "uuid?"
+        }
+      ]
+    },
+    "adjudications": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adjudication_id",
+        "package_id",
+        "subject_kind",
+        "subject_id",
+        "status",
+        "supersedes_adjudication_id",
+        "policy_digest",
+        "reviewer_id",
+        "reviewer_role",
+        "adjudicated_at",
+        "rationale",
+        "evidence_observation_ids",
+        "link_ids",
+        "proposal_evidence_ids",
+        "support_valid_from",
+        "support_valid_to"
+      ],
+      "properties": {
+        "adjudication_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "package_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "subject_kind": {
+          "enum": [
+            "candidate",
+            "corroboration",
+            "exchange_pairing",
+            "followup_continuity",
+            "issue_episode",
+            "issue_scope"
+          ]
+        },
+        "subject_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "status": {
+          "enum": [
+            "accepted_event",
+            "accepted_evidence",
+            "accepted_state",
+            "candidate",
+            "disputed",
+            "nonqualifying",
+            "retracted"
+          ]
+        },
+        "supersedes_adjudication_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reviewer_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "reviewer_role": {
+          "enum": [
+            "extraction_proposer",
+            "human_reviewer",
+            "policy_rule_engine"
+          ]
+        },
+        "adjudicated_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "rationale": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "evidence_observation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "link_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "proposal_evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "support_valid_from": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "support_valid_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-row-key": [
+        "adjudication_id"
+      ],
+      "x-columns": [
+        {
+          "name": "adjudication_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "package_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "subject_kind",
+          "kind": "enum:subject_kind"
+        },
+        {
+          "name": "subject_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "status",
+          "kind": "enum:adjudication_status"
+        },
+        {
+          "name": "supersedes_adjudication_id",
+          "kind": "uuid?"
+        },
+        {
+          "name": "policy_digest",
+          "kind": "digest"
+        },
+        {
+          "name": "reviewer_id",
+          "kind": "text"
+        },
+        {
+          "name": "reviewer_role",
+          "kind": "enum:reviewer_role"
+        },
+        {
+          "name": "adjudicated_at",
+          "kind": "ts"
+        },
+        {
+          "name": "rationale",
+          "kind": "text"
+        },
+        {
+          "name": "evidence_observation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "link_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "proposal_evidence_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "support_valid_from",
+          "kind": "date?"
+        },
+        {
+          "name": "support_valid_to",
+          "kind": "date?"
+        }
+      ]
+    },
+    "ncen_filings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filing_evidence_id",
+        "package_id",
+        "accession_number",
+        "row_locator",
+        "registrant_cik",
+        "form_type",
+        "report_period_end",
+        "filing_date",
+        "header_package_id",
+        "acceptance_raw",
+        "acceptance_at",
+        "public_available_at",
+        "first_seen_at",
+        "public_time_basis",
+        "version_evidence_filing_ids",
+        "parse_status",
+        "reasons",
+        "family_answer",
+        "family_name_raw",
+        "reported_series_ids",
+        "adviser_records",
+        "underwriter_records",
+        "projection_digest",
+        "supersedes_filing_evidence_id"
+      ],
+      "properties": {
+        "filing_evidence_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "package_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "accession_number": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "row_locator": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "registrant_cik": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{10}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "form_type": {
+          "anyOf": [
+            {
+              "enum": [
+                "N-CEN",
+                "N-CEN/A"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "report_period_end": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "filing_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "header_package_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acceptance_raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acceptance_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "public_available_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "first_seen_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "public_time_basis": {
+          "enum": [
+            "archived_release_metadata",
+            "date_only_next_day_boundary",
+            "edgar_acceptance_datetime",
+            "first_verified_retrieval"
+          ]
+        },
+        "version_evidence_filing_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "parse_status": {
+          "enum": [
+            "index_only",
+            "parsed",
+            "quarantined",
+            "retracted"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        },
+        "family_answer": {
+          "anyOf": [
+            {
+              "enum": [
+                "N",
+                "Y"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "family_name_raw": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S",
+              "maxLength": 1000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reported_series_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 5000,
+          "items": {
+            "type": "string",
+            "pattern": "\\S",
+            "maxLength": 1000
+          }
+        },
+        "adviser_records": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 20000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "series_id",
+              "role",
+              "file_number_raw",
+              "crd_raw",
+              "lei_raw"
+            ],
+            "properties": {
+              "series_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "\\S",
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "role": {
+                "enum": [
+                  "adviser",
+                  "sub_adviser",
+                  "terminated_adviser",
+                  "terminated_sub_adviser"
+                ]
+              },
+              "file_number_raw": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "\\S",
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "crd_raw": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "\\S",
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lei_raw": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "\\S",
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "underwriter_records": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file_number_raw",
+              "crd_raw",
+              "lei_raw"
+            ],
+            "properties": {
+              "file_number_raw": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "\\S",
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "crd_raw": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "\\S",
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lei_raw": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "\\S",
+                    "maxLength": 1000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "projection_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "supersedes_filing_evidence_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-row-key": [
+        "filing_evidence_id"
+      ],
+      "x-columns": [
+        {
+          "name": "filing_evidence_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "package_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "accession_number",
+          "kind": "text"
+        },
+        {
+          "name": "row_locator",
+          "kind": "text"
+        },
+        {
+          "name": "registrant_cik",
+          "kind": "cik?"
+        },
+        {
+          "name": "form_type",
+          "kind": "enum:ncen_form_type?"
+        },
+        {
+          "name": "report_period_end",
+          "kind": "date?"
+        },
+        {
+          "name": "filing_date",
+          "kind": "date?"
+        },
+        {
+          "name": "header_package_id",
+          "kind": "uuid?"
+        },
+        {
+          "name": "acceptance_raw",
+          "kind": "raw?"
+        },
+        {
+          "name": "acceptance_at",
+          "kind": "ts?"
+        },
+        {
+          "name": "public_available_at",
+          "kind": "ts"
+        },
+        {
+          "name": "first_seen_at",
+          "kind": "ts"
+        },
+        {
+          "name": "public_time_basis",
+          "kind": "enum:ncen_public_time_basis"
+        },
+        {
+          "name": "version_evidence_filing_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "parse_status",
+          "kind": "enum:ncen_parse_status"
+        },
+        {
+          "name": "reasons",
+          "kind": "texts"
+        },
+        {
+          "name": "family_answer",
+          "kind": "enum:family_answer?"
+        },
+        {
+          "name": "family_name_raw",
+          "kind": "boundedtext?"
+        },
+        {
+          "name": "reported_series_ids",
+          "kind": "series_ids"
+        },
+        {
+          "name": "adviser_records",
+          "kind": "advisers"
+        },
+        {
+          "name": "underwriter_records",
+          "kind": "underwriters"
+        },
+        {
+          "name": "projection_digest",
+          "kind": "digest"
+        },
+        {
+          "name": "supersedes_filing_evidence_id",
+          "kind": "uuid?"
+        }
+      ]
+    },
+    "publication_sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_id",
+        "role",
+        "package_content_sha256",
+        "row_count",
+        "row_inventory_digest"
+      ],
+      "properties": {
+        "package_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "role": {
+          "enum": [
+            "adjudication_inventory",
+            "agency_evidence",
+            "document_evidence",
+            "edgar_evidence",
+            "link_inventory",
+            "ncen_family_evidence",
+            "nport_evidence"
+          ]
+        },
+        "package_content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row_inventory_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "x-row-key": [
+        "package_id"
+      ],
+      "x-columns": [
+        {
+          "name": "package_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "role",
+          "kind": "enum:source_role"
+        },
+        {
+          "name": "package_content_sha256",
+          "kind": "hex"
+        },
+        {
+          "name": "row_count",
+          "kind": "int"
+        },
+        {
+          "name": "row_inventory_digest",
+          "kind": "digest"
+        }
+      ]
+    },
+    "events": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security_id",
+        "episode_id",
+        "cusip9",
+        "obligor_id",
+        "issuer_episode_id",
+        "primary_type",
+        "corroboration_flags",
+        "admission_status",
+        "timing_class",
+        "onset_date",
+        "onset_lower_exclusive",
+        "onset_upper_inclusive",
+        "onset_lower_evidence_ids",
+        "recognition_date",
+        "evidence_known_at",
+        "link_known_at",
+        "evidence_observation_ids",
+        "link_ids",
+        "adjudication_ids",
+        "resolution_date",
+        "resolution_refs",
+        "resolution_known_at",
+        "alias_spell_id",
+        "proposal_evidence_ids",
+        "exchange_relation_ids",
+        "dependency_digest",
+        "event_input_digest"
+      ],
+      "properties": {
+        "security_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "cusip9": {
+          "type": "string",
+          "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+        },
+        "obligor_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "issuer_episode_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "primary_type": {
+          "enum": [
+            "agency_issue_default",
+            "bankruptcy",
+            "default_state",
+            "distressed_exchange",
+            "payment_default"
+          ]
+        },
+        "corroboration_flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "agency_issue_default",
+              "agency_rac_wd",
+              "bankruptcy",
+              "court_document",
+              "distressed_exchange",
+              "edgar_document",
+              "issuer_agency_default_linked",
+              "issuer_document",
+              "nport_consensus_state",
+              "payment_default"
+            ]
+          }
+        },
+        "admission_status": {
+          "enum": [
+            "accepted_event",
+            "accepted_state"
+          ]
+        },
+        "timing_class": {
+          "enum": [
+            "incident",
+            "interval_uncertain",
+            "prevalent"
+          ]
+        },
+        "onset_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "onset_lower_exclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "onset_upper_inclusive": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "onset_lower_evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "recognition_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_known_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "link_known_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "evidence_observation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "link_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "adjudication_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "resolution_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolution_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "resolution_known_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alias_spell_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proposal_evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "exchange_relation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "dependency_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "event_input_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "x-row-key": [
+        "security_id",
+        "episode_id"
+      ],
+      "x-columns": [
+        {
+          "name": "security_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "episode_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "cusip9",
+          "kind": "cusip"
+        },
+        {
+          "name": "obligor_id",
+          "kind": "text"
+        },
+        {
+          "name": "issuer_episode_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "primary_type",
+          "kind": "enum:primary_type"
+        },
+        {
+          "name": "corroboration_flags",
+          "kind": "enums:corroboration_flag"
+        },
+        {
+          "name": "admission_status",
+          "kind": "enum:admission_status"
+        },
+        {
+          "name": "timing_class",
+          "kind": "enum:timing_class"
+        },
+        {
+          "name": "onset_date",
+          "kind": "date?"
+        },
+        {
+          "name": "onset_lower_exclusive",
+          "kind": "date?"
+        },
+        {
+          "name": "onset_upper_inclusive",
+          "kind": "date"
+        },
+        {
+          "name": "onset_lower_evidence_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "recognition_date",
+          "kind": "date?"
+        },
+        {
+          "name": "evidence_known_at",
+          "kind": "ts"
+        },
+        {
+          "name": "link_known_at",
+          "kind": "ts"
+        },
+        {
+          "name": "evidence_observation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "link_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "adjudication_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "resolution_date",
+          "kind": "date?"
+        },
+        {
+          "name": "resolution_refs",
+          "kind": "uuids"
+        },
+        {
+          "name": "resolution_known_at",
+          "kind": "ts?"
+        },
+        {
+          "name": "alias_spell_id",
+          "kind": "uuid?"
+        },
+        {
+          "name": "proposal_evidence_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "exchange_relation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "dependency_digest",
+          "kind": "digest"
+        },
+        {
+          "name": "event_input_digest",
+          "kind": "digest"
+        }
+      ]
+    },
+    "followups": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security_id",
+        "spell_id",
+        "segment_id",
+        "cusip9",
+        "interval_start_exclusive",
+        "interval_end_inclusive",
+        "status",
+        "completeness_basis",
+        "evidence_observation_ids",
+        "adjudication_ids",
+        "known_at"
+      ],
+      "properties": {
+        "security_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "spell_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "segment_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "cusip9": {
+          "type": "string",
+          "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+        },
+        "interval_start_exclusive": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "interval_end_inclusive": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "status": {
+          "enum": [
+            "nondefault_continuous",
+            "repaid",
+            "resolved",
+            "unknown"
+          ]
+        },
+        "completeness_basis": {
+          "enum": [
+            "continuous_document",
+            "issuer_trustee_confirmation",
+            "none",
+            "surveillance_receipt"
+          ]
+        },
+        "evidence_observation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "adjudication_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "known_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        }
+      },
+      "x-row-key": [
+        "security_id",
+        "spell_id",
+        "segment_id"
+      ],
+      "x-columns": [
+        {
+          "name": "security_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "spell_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "segment_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "cusip9",
+          "kind": "cusip"
+        },
+        {
+          "name": "interval_start_exclusive",
+          "kind": "date"
+        },
+        {
+          "name": "interval_end_inclusive",
+          "kind": "date"
+        },
+        {
+          "name": "status",
+          "kind": "enum:followup_status"
+        },
+        {
+          "name": "completeness_basis",
+          "kind": "enum:completeness_basis"
+        },
+        {
+          "name": "evidence_observation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "adjudication_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "known_at",
+          "kind": "ts"
+        }
+      ]
+    },
+    "exit_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security_id",
+        "last_panel_month",
+        "cusip9",
+        "primary_reason",
+        "flags",
+        "next_observed_month",
+        "gap_months",
+        "scheduled_maturity",
+        "proven_repayment_date",
+        "evidence_observation_ids",
+        "known_at"
+      ],
+      "properties": {
+        "security_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "last_panel_month": {
+          "type": "string",
+          "pattern": "^\\d{4}-(0[1-9]|1[0-2])-01$"
+        },
+        "cusip9": {
+          "type": "string",
+          "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+        },
+        "primary_reason": {
+          "enum": [
+            "matured",
+            "maturity_floor",
+            "scope_change",
+            "source_handoff",
+            "unknown"
+          ]
+        },
+        "flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "distressed_candidate",
+              "matured",
+              "maturity_floor",
+              "observed_gap_reentry",
+              "scope_change",
+              "source_handoff",
+              "target_end_censored",
+              "unknown"
+            ]
+          }
+        },
+        "next_observed_month": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-(0[1-9]|1[0-2])-01$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gap_months": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scheduled_maturity": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proven_repayment_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_observation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "known_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        }
+      },
+      "x-row-key": [
+        "security_id",
+        "last_panel_month"
+      ],
+      "x-columns": [
+        {
+          "name": "security_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "last_panel_month",
+          "kind": "month"
+        },
+        {
+          "name": "cusip9",
+          "kind": "cusip"
+        },
+        {
+          "name": "primary_reason",
+          "kind": "enum:exit_reason"
+        },
+        {
+          "name": "flags",
+          "kind": "enums:exit_flag"
+        },
+        {
+          "name": "next_observed_month",
+          "kind": "month?"
+        },
+        {
+          "name": "gap_months",
+          "kind": "int?"
+        },
+        {
+          "name": "scheduled_maturity",
+          "kind": "date?"
+        },
+        {
+          "name": "proven_repayment_date",
+          "kind": "date?"
+        },
+        {
+          "name": "evidence_observation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "known_at",
+          "kind": "ts"
+        }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "period_label",
+        "source",
+        "event_type",
+        "rating_stratum",
+        "exposure_cohort",
+        "state",
+        "denominator_basis",
+        "denominator_count",
+        "exposed_issue_months",
+        "event_count",
+        "unlinked_count",
+        "date_uncertain_count",
+        "unknown_outcome_issue_months",
+        "source_frontier",
+        "lag_p50_days",
+        "lag_p90_days",
+        "lag_max_days",
+        "rationale",
+        "validation_receipt_digest"
+      ],
+      "properties": {
+        "period_label": {
+          "type": "string",
+          "pattern": "^(all|[0-9]{4}|[0-9]{4}-(0[1-9]|1[0-2]))$"
+        },
+        "source": {
+          "enum": [
+            "agency_rocr",
+            "all",
+            "independent_reference",
+            "sec_edgar",
+            "sec_nport",
+            "unknown"
+          ]
+        },
+        "event_type": {
+          "enum": [
+            "agency_issue_default",
+            "all",
+            "bankruptcy",
+            "default_state",
+            "distressed_exchange",
+            "payment_default",
+            "unknown"
+          ]
+        },
+        "rating_stratum": {
+          "enum": [
+            "HY",
+            "IG",
+            "all",
+            "unknown"
+          ]
+        },
+        "exposure_cohort": {
+          "enum": [
+            "all",
+            "exited",
+            "gap",
+            "retained",
+            "unknown"
+          ]
+        },
+        "state": {
+          "enum": [
+            "not_applicable",
+            "partial",
+            "qualified",
+            "unavailable"
+          ]
+        },
+        "denominator_basis": {
+          "enum": [
+            "independent_reference_enumeration",
+            "none",
+            "panel_exposure"
+          ]
+        },
+        "denominator_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exposed_issue_months": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unlinked_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "date_uncertain_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown_outcome_issue_months": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_frontier": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lag_p50_days": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lag_p90_days": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lag_max_days": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "validation_receipt_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-row-key": [
+        "period_label",
+        "source",
+        "event_type",
+        "rating_stratum",
+        "exposure_cohort"
+      ],
+      "x-columns": [
+        {
+          "name": "period_label",
+          "kind": "period"
+        },
+        {
+          "name": "source",
+          "kind": "enum:coverage_source"
+        },
+        {
+          "name": "event_type",
+          "kind": "enum:coverage_event_type"
+        },
+        {
+          "name": "rating_stratum",
+          "kind": "enum:rating_stratum"
+        },
+        {
+          "name": "exposure_cohort",
+          "kind": "enum:exposure_cohort"
+        },
+        {
+          "name": "state",
+          "kind": "enum:coverage_state"
+        },
+        {
+          "name": "denominator_basis",
+          "kind": "enum:denominator_basis"
+        },
+        {
+          "name": "denominator_count",
+          "kind": "int?"
+        },
+        {
+          "name": "exposed_issue_months",
+          "kind": "int"
+        },
+        {
+          "name": "event_count",
+          "kind": "int"
+        },
+        {
+          "name": "unlinked_count",
+          "kind": "int"
+        },
+        {
+          "name": "date_uncertain_count",
+          "kind": "int"
+        },
+        {
+          "name": "unknown_outcome_issue_months",
+          "kind": "int"
+        },
+        {
+          "name": "source_frontier",
+          "kind": "date?"
+        },
+        {
+          "name": "lag_p50_days",
+          "kind": "int?"
+        },
+        {
+          "name": "lag_p90_days",
+          "kind": "int?"
+        },
+        {
+          "name": "lag_max_days",
+          "kind": "int?"
+        },
+        {
+          "name": "rationale",
+          "kind": "text"
+        },
+        {
+          "name": "validation_receipt_digest",
+          "kind": "digest?"
+        }
+      ]
+    },
+    "ratings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cusip_id",
+        "month",
+        "view_kind",
+        "bucket",
+        "state",
+        "action_date",
+        "public_known_at",
+        "agency_source_ids",
+        "binding_link_ids",
+        "coverage_frontier",
+        "action_input_digest",
+        "default_overlay_episode_id"
+      ],
+      "properties": {
+        "cusip_id": {
+          "type": "string",
+          "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+        },
+        "month": {
+          "type": "string",
+          "pattern": "^\\d{4}-(0[1-9]|1[0-2])-01$"
+        },
+        "view_kind": {
+          "enum": [
+            "effective_audit",
+            "public_pit"
+          ]
+        },
+        "bucket": {
+          "anyOf": [
+            {
+              "enum": [
+                "A",
+                "AA",
+                "AAA",
+                "B",
+                "BB",
+                "BBB",
+                "CCC",
+                "D"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": [
+            "carried_verified",
+            "missing",
+            "observed",
+            "pit_unverified",
+            "rights_unverified",
+            "stale",
+            "withdrawn"
+          ]
+        },
+        "action_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "public_known_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agency_source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "binding_link_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "coverage_frontier": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "action_input_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_overlay_episode_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-row-key": [
+        "cusip_id",
+        "month",
+        "view_kind"
+      ],
+      "x-columns": [
+        {
+          "name": "cusip_id",
+          "kind": "cusip"
+        },
+        {
+          "name": "month",
+          "kind": "month"
+        },
+        {
+          "name": "view_kind",
+          "kind": "enum:view_kind"
+        },
+        {
+          "name": "bucket",
+          "kind": "enum:rating_bucket?"
+        },
+        {
+          "name": "state",
+          "kind": "enum:rating_state"
+        },
+        {
+          "name": "action_date",
+          "kind": "date?"
+        },
+        {
+          "name": "public_known_at",
+          "kind": "ts?"
+        },
+        {
+          "name": "agency_source_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "binding_link_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "coverage_frontier",
+          "kind": "date?"
+        },
+        {
+          "name": "action_input_digest",
+          "kind": "digest?"
+        },
+        {
+          "name": "default_overlay_episode_id",
+          "kind": "uuid?"
+        }
+      ]
+    },
+    "family_contexts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "context_id",
+        "report_date",
+        "knowledge_cutoff",
+        "rule_version",
+        "vote_observation_ids",
+        "selection_filing_ids",
+        "index_package_ids",
+        "universe_digest",
+        "membership_digest",
+        "evidence_known_at"
+      ],
+      "properties": {
+        "context_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "report_date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "knowledge_cutoff": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "rule_version": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "vote_observation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "selection_filing_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "index_package_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "universe_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "membership_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "evidence_known_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        }
+      },
+      "x-row-key": [
+        "context_id"
+      ],
+      "x-columns": [
+        {
+          "name": "context_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "report_date",
+          "kind": "date"
+        },
+        {
+          "name": "knowledge_cutoff",
+          "kind": "ts"
+        },
+        {
+          "name": "rule_version",
+          "kind": "text"
+        },
+        {
+          "name": "vote_observation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "selection_filing_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "index_package_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "universe_digest",
+          "kind": "digest"
+        },
+        {
+          "name": "membership_digest",
+          "kind": "digest"
+        },
+        {
+          "name": "evidence_known_at",
+          "kind": "ts"
+        }
+      ]
+    },
+    "family_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family_evidence_id",
+        "context_id",
+        "registrant_cik",
+        "voting_series_ids",
+        "vote_observation_ids",
+        "selected_filing_id",
+        "blocking_filing_ids",
+        "state",
+        "reasons",
+        "component_id",
+        "valid_from",
+        "valid_to"
+      ],
+      "properties": {
+        "family_evidence_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "context_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "registrant_cik": {
+          "type": "string",
+          "pattern": "^[0-9]{10}$"
+        },
+        "voting_series_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 5000,
+          "items": {
+            "type": "string",
+            "pattern": "\\S",
+            "maxLength": 1000
+          }
+        },
+        "vote_observation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "selected_filing_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "blocking_filing_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "state": {
+          "enum": [
+            "complete",
+            "incomplete"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        },
+        "component_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valid_from": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "valid_to": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "x-row-key": [
+        "context_id",
+        "registrant_cik"
+      ],
+      "x-columns": [
+        {
+          "name": "family_evidence_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "context_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "registrant_cik",
+          "kind": "cik"
+        },
+        {
+          "name": "voting_series_ids",
+          "kind": "series_ids"
+        },
+        {
+          "name": "vote_observation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "selected_filing_id",
+          "kind": "uuid?"
+        },
+        {
+          "name": "blocking_filing_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "state",
+          "kind": "enum:membership_state"
+        },
+        {
+          "name": "reasons",
+          "kind": "texts"
+        },
+        {
+          "name": "component_id",
+          "kind": "text?"
+        },
+        {
+          "name": "valid_from",
+          "kind": "date"
+        },
+        {
+          "name": "valid_to",
+          "kind": "date"
+        }
+      ]
+    },
+    "proposal_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_evidence_id",
+        "cusip9",
+        "proposed_status",
+        "basis",
+        "onset_lower_exclusive",
+        "onset_upper_inclusive",
+        "onset_lower_evidence_ids",
+        "onset_upper_evidence_ids",
+        "evidence_observation_ids",
+        "family_evidence_ids",
+        "corroboration_adjudication_ids",
+        "evidence_known_at",
+        "policy_digest"
+      ],
+      "properties": {
+        "proposal_evidence_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "cusip9": {
+          "type": "string",
+          "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+        },
+        "proposed_status": {
+          "enum": [
+            "accepted_state",
+            "candidate"
+          ]
+        },
+        "basis": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "onset_lower_exclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "onset_upper_inclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "onset_lower_evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "onset_upper_evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "evidence_observation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "family_evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "corroboration_adjudication_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "evidence_known_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "x-row-key": [
+        "proposal_evidence_id"
+      ],
+      "x-columns": [
+        {
+          "name": "proposal_evidence_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "cusip9",
+          "kind": "cusip"
+        },
+        {
+          "name": "proposed_status",
+          "kind": "enum:proposal_status"
+        },
+        {
+          "name": "basis",
+          "kind": "text"
+        },
+        {
+          "name": "onset_lower_exclusive",
+          "kind": "date?"
+        },
+        {
+          "name": "onset_upper_inclusive",
+          "kind": "date?"
+        },
+        {
+          "name": "onset_lower_evidence_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "onset_upper_evidence_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "evidence_observation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "family_evidence_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "corroboration_adjudication_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "evidence_known_at",
+          "kind": "ts"
+        },
+        {
+          "name": "policy_digest",
+          "kind": "digest"
+        }
+      ]
+    },
+    "exchange_relations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relation_id",
+        "old_security_id",
+        "old_cusip9",
+        "new_security_id",
+        "new_cusip9",
+        "episode_id",
+        "alias_spell_id",
+        "old_link_id",
+        "new_link_id",
+        "exchange_document_observation_ids",
+        "pairing_adjudication_id",
+        "exchange_effective_date",
+        "valid_from",
+        "valid_to",
+        "evidence_known_at"
+      ],
+      "properties": {
+        "relation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "old_security_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "old_cusip9": {
+          "type": "string",
+          "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+        },
+        "new_security_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "new_cusip9": {
+          "type": "string",
+          "pattern": "^[0-9A-Z*@#]{8}[0-9]$"
+        },
+        "episode_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "alias_spell_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "old_link_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "new_link_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "exchange_document_observation_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "pairing_adjudication_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "exchange_effective_date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "valid_from": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_known_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        }
+      },
+      "x-row-key": [
+        "old_security_id",
+        "new_security_id",
+        "episode_id"
+      ],
+      "x-columns": [
+        {
+          "name": "relation_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "old_security_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "old_cusip9",
+          "kind": "cusip"
+        },
+        {
+          "name": "new_security_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "new_cusip9",
+          "kind": "cusip"
+        },
+        {
+          "name": "episode_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "alias_spell_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "old_link_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "new_link_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "exchange_document_observation_ids",
+          "kind": "uuids"
+        },
+        {
+          "name": "pairing_adjudication_id",
+          "kind": "uuid"
+        },
+        {
+          "name": "exchange_effective_date",
+          "kind": "date"
+        },
+        {
+          "name": "valid_from",
+          "kind": "date"
+        },
+        {
+          "name": "valid_to",
+          "kind": "date?"
+        },
+        {
+          "name": "evidence_known_at",
+          "kind": "ts"
+        }
+      ]
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product",
+        "contract_version",
+        "publication_id",
+        "fingerprint_digest",
+        "target_month",
+        "knowledge_cutoff",
+        "knowledge_mode",
+        "build_scope",
+        "quality_state",
+        "policy_digest",
+        "contract_digest",
+        "sql_digest",
+        "code_digest",
+        "panel_publication_id",
+        "panel_grid_digest",
+        "panel_grid_count",
+        "issuer_mapping_digest",
+        "rating_declarations",
+        "rating_declarations_digest",
+        "rating_input_digest",
+        "source_manifest_digest",
+        "package_inventory_digest",
+        "observation_inventory_digest",
+        "link_inventory_digest",
+        "adjudication_inventory_digest",
+        "ncen_filing_inventory_digest",
+        "validation_receipt_id",
+        "validation_verdict",
+        "validation_scope",
+        "validation_evidence_digest",
+        "validation_reviewer_id",
+        "validation_issued_at",
+        "validation_positive_evidence_count",
+        "validation_rating_input_digest",
+        "validation_rating_package_digest",
+        "validation_surveillance_start_exclusive",
+        "validation_surveillance_end_inclusive",
+        "validation_digest",
+        "sources_count",
+        "sources_digest",
+        "events_count",
+        "events_digest",
+        "followups_count",
+        "followups_digest",
+        "exits_count",
+        "exits_digest",
+        "coverage_count",
+        "coverage_digest",
+        "ratings_count",
+        "ratings_digest",
+        "family_contexts_count",
+        "family_contexts_digest",
+        "family_evidence_count",
+        "family_evidence_digest",
+        "proposal_evidence_count",
+        "proposal_evidence_digest",
+        "exchange_relations_count",
+        "exchange_relations_digest"
+      ],
+      "properties": {
+        "product": {
+          "const": "bond_credit_evidence_v1"
+        },
+        "contract_version": {
+          "const": "bond_default_event_bundle_v2"
+        },
+        "publication_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "fingerprint_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "target_month": {
+          "type": "string",
+          "pattern": "^\\d{4}-(0[1-9]|1[0-2])-01$"
+        },
+        "knowledge_cutoff": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+        },
+        "knowledge_mode": {
+          "enum": [
+            "current_run",
+            "historical_reconstruction"
+          ]
+        },
+        "build_scope": {
+          "enum": [
+            "complete",
+            "limited"
+          ]
+        },
+        "quality_state": {
+          "enum": [
+            "partial",
+            "qualified",
+            "unavailable"
+          ]
+        },
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "contract_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "sql_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "code_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "panel_publication_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "panel_grid_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "panel_grid_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "issuer_mapping_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rating_declarations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "rating_scopes",
+            "uncleared_rating_sources"
+          ],
+          "properties": {
+            "version": {
+              "const": "bond_rating_declarations_v1"
+            },
+            "rating_scopes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "agency_name",
+                  "rating_type",
+                  "scale"
+                ],
+                "properties": {
+                  "agency_name": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "rating_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "uncleared_rating_sources": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source_ref",
+                  "rights_state",
+                  "coverage_start",
+                  "coverage_end"
+                ],
+                "properties": {
+                  "source_ref": {
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "rights_state": {
+                    "enum": [
+                      "denied",
+                      "internal_work_product",
+                      "public_document_internal_use",
+                      "public_government_record",
+                      "unverified"
+                    ]
+                  },
+                  "coverage_start": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "coverage_end": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "rating_declarations_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "rating_input_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source_manifest_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "package_inventory_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "observation_inventory_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "link_inventory_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "adjudication_inventory_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ncen_filing_inventory_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "validation_receipt_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_verdict": {
+          "anyOf": [
+            {
+              "enum": [
+                "partial",
+                "qualified",
+                "unavailable"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_scope": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_evidence_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_reviewer_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "\\S"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_issued_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_positive_evidence_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_rating_input_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_rating_package_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_surveillance_start_exclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_surveillance_end_inclusive": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sources_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "events_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "events_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "followups_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "followups_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "exits_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exits_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "coverage_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ratings_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ratings_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "family_contexts_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "family_contexts_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "family_evidence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "family_evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "proposal_evidence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "proposal_evidence_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "exchange_relations_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exchange_relations_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "x-fingerprint-fields": [
+        "product",
+        "contract_version",
+        "target_month",
+        "knowledge_cutoff",
+        "knowledge_mode",
+        "build_scope",
+        "policy_digest",
+        "contract_digest",
+        "sql_digest",
+        "code_digest",
+        "panel_publication_id",
+        "panel_grid_digest",
+        "panel_grid_count",
+        "issuer_mapping_digest",
+        "rating_declarations",
+        "rating_declarations_digest",
+        "rating_input_digest",
+        "source_manifest_digest",
+        "package_inventory_digest",
+        "observation_inventory_digest",
+        "link_inventory_digest",
+        "adjudication_inventory_digest",
+        "ncen_filing_inventory_digest",
+        "validation_digest",
+        "family_contexts_digest",
+        "family_evidence_digest",
+        "proposal_evidence_digest",
+        "exchange_relations_digest"
+      ]
+    }
+  },
+  "x-digest": "sha256:7b48e744ecb5e75e8865c6284d285462dcb9f11ca7ffa15dda1a375cd27f337f"
+}

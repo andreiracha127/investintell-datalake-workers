@@ -1,0 +1,101 @@
+# Bond Default Events producer (bond_credit_evidence_v1) - DEDICATED one-shot Railway service.
+#
+# Attach this file only to its own service (never livefeed or another worker's service).
+# Service variables (all modes):
+#   WORKER=bond_default_events
+#   DATABASE_URL   private-network DSN of the `worker_writer` role (service variable; never inline
+#                  in argv, never printed).  The worker is a non-superuser table owner.
+# No cron on purpose: a deploy is an operator action and restartPolicyType=never prevents looping.
+# The service exposes no HTTP endpoint.  Creating the service and deploying are separate
+# operational steps that this file does NOT perform.
+#
+# Railway redeploys on EVERY variable change.  A run is therefore triggered by setting the mode
+# variables below; afterwards the service MUST be returned to BOND_DEFAULT_EVENTS_MODE=plan and the
+# per-run variables removed.  The default mode is `plan` (no DB write; contacts the DB only when
+# BOND_DEFAULT_EVENTS_PLAN_READ_PANEL=1).
+#
+# Files: the invocation manifest and the frontier manifest must already exist in the image.  The
+# tracked frontier manifest is contracts/bonds/default_events_frontier_manifest_2026-08.json; an
+# invocation manifest names it by a path relative to itself and must NOT live under contracts/bonds
+# (that tree is part of the code digest, which the invocation carries).
+#
+# Code digest: `plan` prints `code_digest` (sorted relative paths + LF-normalised bytes of
+# src/bonds/default_events/*.py, src/workers/bond_default_events.py, the five schemas/*.sql files
+# and contracts/bonds/**, excluding __pycache__).  The invocation pins it as input.code_digest;
+# `prepare` recomputes it and refuses (exit 4, code_digest_mismatch) when it differs.
+#
+# Exit codes: 2 config, 3 invocation, 4 integrity, 5 contract, 6 refused, 7 not authorised,
+# 8 layer unavailable, 9 infrastructure, 10 install prerequisite missing.
+#
+# ---------------------------------------------------------------------------------------------
+# Run sequence (each step = set the variables, let Railway redeploy, read the JSON in the logs,
+# then reset BOND_DEFAULT_EVENTS_MODE=plan and delete the step's variables):
+#
+#   0. ADMIN (outside this service, superuser, psql): docs/bond_default_events/admin_roles_v1.sql
+#      creates the NOLOGIN roles bond_credit_reader, bond_credit_writer, bond_credit_auditor,
+#      bond_default_diagnostic_reader; makes worker_writer a member of bond_credit_writer and
+#      app_runtime a member of bond_default_diagnostic_reader only.  It also requires (does not grant)
+#      worker_writer USAGE, CREATE on schema public; worker_writer must already have SELECT on
+#      public.bond_panel_app_pointer / bond_panel_publications / bond_panel_snapshot.
+#   1. install-schema   BOND_DEFAULT_EVENTS_MODE=install-schema
+#                       BOND_DEFAULT_EVENTS_SCHEMA=public
+#                       BOND_DEFAULT_EVENTS_CONFIRM_INSTALL=install-public-v1
+#                       (optional) BOND_DEFAULT_EVENTS_EXPECTED_OWNER (default worker_writer),
+#                       BOND_DEFAULT_EVENTS_RUNTIME_ROLE (default app_runtime),
+#                       BOND_DEFAULT_EVENTS_OTHER_ROLES (default app_analytics_ro)
+#                       Idempotent; prints roles, pins, harden counts and the read-back checks.
+#   2. plan (pin check) BOND_DEFAULT_EVENTS_MODE=plan  BOND_DEFAULT_EVENTS_PLAN_READ_PANEL=1
+#                       BOND_DEFAULT_EVENTS_MANIFEST=<invocation manifest>
+#                       BOND_DEFAULT_EVENTS_SCHEMA=public
+#                       One READ ONLY REPEATABLE READ panel read; nothing persisted.  Checks the
+#                       pinned publication id, panel id, G and the code digest.
+#   3. prepare          BOND_DEFAULT_EVENTS_MODE=prepare  BOND_DEFAULT_EVENTS_MANIFEST=<...>
+#                       BOND_DEFAULT_EVENTS_SCHEMA=public
+#                       One credit prepare + structural validate + diagnostic prepare/verify.
+#                       Elects NO pointer.  Prints publication_id and release_id.
+#   4. verify           BOND_DEFAULT_EVENTS_MODE=verify  BOND_DEFAULT_EVENTS_MANIFEST=<...>
+#                       BOND_DEFAULT_EVENTS_PUBLICATION_ID=<publication id>
+#                       BOND_DEFAULT_EVENTS_RELEASE_ID=<release id>
+#                       BOND_DEFAULT_EVENTS_SCHEMA=public
+#                       Refuses when the release belongs to another publication.
+#   5. diagnostic-promote (LATER, only after the Light consumer is deployed)
+#                       BOND_DEFAULT_EVENTS_MODE=diagnostic-promote
+#                       BOND_DEFAULT_EVENTS_RELEASE_ID=<release id>
+#                       BOND_DEFAULT_EVENTS_EXPECTED_DIAGNOSTIC_POINTER=<uuid|none>
+#                       BOND_DEFAULT_EVENTS_CONFIRM_DIAGNOSTIC_PROMOTE=<release id>
+#                       BOND_DEFAULT_EVENTS_SCHEMA=public
+#                       (recommended) BOND_DEFAULT_EVENTS_MANIFEST=<...> to cross-check the
+#                       release's publication id, T and K.
+#      `promote` (qualified pointer) is never used for this build: it is partial/limited and a
+#      release id is refused there.
+#
+# Variables per mode:
+#   plan               MANIFEST [PLAN_READ_PANEL, SCHEMA=public when PLAN_READ_PANEL=1]
+#   prepare            MANIFEST, SCHEMA=public                       (K <= now + 10 min, K >= first
+#                                                                      day after T, code digest pinned)
+#   verify             PUBLICATION_ID, SCHEMA [, RELEASE_ID (requires SCHEMA=public), MANIFEST]
+#   promote            PUBLICATION_ID, SCHEMA, EXPECTED_POINTER, CONFIRM_PROMOTE (qualified builds only)
+#   diagnostic-promote RELEASE_ID, SCHEMA=public, EXPECTED_DIAGNOSTIC_POINTER,
+#                      CONFIRM_DIAGNOSTIC_PROMOTE [, MANIFEST]
+#   install-schema     SCHEMA=public, CONFIRM_INSTALL=install-public-v1 [, EXPECTED_OWNER,
+#                      RUNTIME_ROLE, OTHER_ROLES]
+# All names are BOND_DEFAULT_EVENTS_<NAME>; BOND_DEFAULT_EVENTS_CODE_DIGEST is an optional extra pin
+# that must equal the invocation's input.code_digest.
+#
+# The worker never acquires source data and never promotes automatically.  Only sanitized ids,
+# counts, digests and check verdicts are printed.  The service starts the worker's own CLI (not
+# src.run_worker) so the typed exit codes above and the sanitized failure JSON reach the logs; it reads
+# the DSN from DATABASE_URL (--dsn-env default).  WORKER is informational for this service, and
+# WORKER_LIMIT / WORKER_CALC_DATE are NOT read (do not set them; src.run_worker's abort does not apply).
+# Verify a run in bond_credit_publications / bond_default_diagnostic_releases, not from the deploy
+# status.
+#
+# Runtime: needs a tz database for America/New_York (system /usr/share/zoneinfo on the nixpacks image,
+# or the `tzdata` package); contracts.py resolves it at import, so a missing database fails loudly.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.workers.bond_default_events"
+restartPolicyType = "never"
