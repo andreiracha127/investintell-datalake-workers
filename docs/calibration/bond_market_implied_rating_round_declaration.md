@@ -114,6 +114,7 @@ covered by its unit tests):
 These corrections clarify the declared mechanics; no parameter, policy version
 or `POLICY_DIGEST` changes.
 
+- **`anchor_drift` tolerance.** The re-resolved anchor is compared to the pinned anchor with absolute tolerance `1e-9` (log units, `rel_tol=0`); within tolerance the build reuses the pinned value `-0.8864114120812487` and records the resolved value as a diagnostic; beyond it the build refuses. Real drift (a new observed window month) exceeds this by ≥4 orders of magnitude. Motivation: the production DB `Decimal→float` path resolves `-0.8864114120812479` from the same witnessed months as the CSV-produced round-002 pin. An inherited anchor that differs bitwise from the resolved value is part of the publication identity; first builds and bit-identical re-resolutions retain the legacy identity.
 - A confirmed `D` spell's unwitnessed months carry `D` for `k` months, then
   `WITHDRAWN` / `default_absorbing`, regardless of where in the spell
   confirmation occurred.

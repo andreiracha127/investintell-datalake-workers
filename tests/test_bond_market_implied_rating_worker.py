@@ -214,6 +214,7 @@ def _patch_worker(monkeypatch, *, build=None, pointer=POINTER, mirror=True, defa
             "input_fingerprint": publication.input_fingerprint, "rows_digest": publication.rows_digest,
             "d_confirmed_count": defaults, "d_candidate_count": 0,
             "l_anchor": publication.l_anchor, "bucket_counts": {"D": defaults},
+            "resolved_l_anchor": publication.l_anchor, "pinned_l_anchor": None,
             "last_closed_month": publication.panel_last_closed_month,
         }
 

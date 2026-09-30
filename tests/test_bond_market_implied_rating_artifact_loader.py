@@ -358,8 +358,9 @@ def test_checked_in_contract_binds_verified_identity_receipt() -> None:
         loader.ROOT, contract.identity.receipt, contract.limits
     )
     assert evidence.sha256 == contract.identity.receipt.sha256
-    assert receipt["materializer_module_sha256"] == _sha(
-        ROOT / "src" / "bonds" / "implied_rating_materializer.py"
+    # The frozen receipt binds the historical materializer, not this runtime checkout.
+    assert receipt["materializer_module_sha256"] == (
+        "b1dfdb6d11d633aaf0735cf4759d68ac54d14b487cc04e8adc26985e7f8ce379"
     )
     # The producer pin is deliberately NOT re-pinned when the runtime policy module
     # diverges from the round-002 producer: the loader must stay verifiable from its

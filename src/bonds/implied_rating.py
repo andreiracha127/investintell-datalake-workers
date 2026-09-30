@@ -79,6 +79,7 @@ import pandas as pd
 
 POLICY_VERSION = "bond_market_implied_rating_policy_v1"
 PRODUCT = "bond_market_implied_rating_v1"
+ANCHOR_DRIFT_ABS_TOL = 1e-9  # Log-spread units; not a policy parameter.
 
 #: The last closed bond-panel month at the round declaration. Frozen in the
 #: policy on purpose (see the module docstring): the calibration window is
@@ -349,7 +350,9 @@ def market_anchor(
         )
     resolved = float(window.median())
     pinned = anchor_policy.get("l_anchor")
-    if pinned is not None and float(pinned) != resolved:
+    if pinned is not None and not math.isclose(
+        float(pinned), resolved, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
+    ):
         # The policy froze a value; the closed history no longer reproduces it
         # (a forced panel republish rewrote window months). Publishing under the
         # drifted anchor would silently rewrite every historical bucket.
@@ -357,7 +360,10 @@ def market_anchor(
             f"policy l_anchor {float(pinned)!r} is not reproduced by the closed "
             f"history ({resolved!r}); a new calibration round is required"
         )
-    return resolved
+    # Within tolerance the declared pin, not the locally resolved float, is the
+    # anchor: identical policy/input/revision builds must not depend on the
+    # environment's float path.
+    return resolved if pinned is None else float(pinned)
 
 
 # --------------------------------------------------------------------------- #
