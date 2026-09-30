@@ -38,7 +38,7 @@ from src.bonds.default_events import diagnostic_publication as d
 from src.bonds.default_events import publication as p
 
 psycopg = pytest.importorskip("psycopg")
-from psycopg import errors, sql
+from psycopg import errors, sql  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 UTC = dt.timezone.utc
@@ -89,6 +89,7 @@ DIAG_TABLES = (
     "bond_default_diagnostic_releases",
     "bond_default_diagnostic_pointer",
     "bond_default_diagnostic_revocations",
+    "bond_default_diagnostic_installations",
 )
 DIAG_WRITER_FUNCTIONS = (
     "bond_default_prepare_diagnostic(NULL::uuid, NULL::jsonb, NULL::text, NULL::text)",
@@ -369,7 +370,12 @@ def clean(env):
     """Empty every table created by the installers (superuser, triggers bypassed); pointers start absent."""
     with env.admin(autocommit=True) as conn:
         conn.execute("SET session_replication_role = replica")
-        tables = ", ".join(f"public.{t}" for t in env.created_tables)
+        # The installation marker is install state, not scenario data: it survives the reset.
+        tables = ", ".join(
+            f"public.{t}"
+            for t in env.created_tables
+            if t != "bond_default_diagnostic_installations"
+        )
         conn.execute(f"TRUNCATE {tables} RESTART IDENTITY CASCADE")
     yield env
 
@@ -667,7 +673,7 @@ def test_verify_fails_on_the_default_privilege_leak_until_hardening_then_passes(
         harden = d.harden_installed_privileges(conn, schema="public")
         assert harden["owner"] == "worker_writer" and harden["schema"] == "public"
         assert (
-            harden["tables"] == 23
+            harden["tables"] == 24
             and harden["sequences"] == 0
             and harden["functions"] >= 121
         )
@@ -1052,7 +1058,7 @@ def test_verify_compares_all_five_contract_pins_and_reports_definition_evidence(
     with env.writer(autocommit=True) as conn:
         report = d.verify_installed_privileges(conn, schema="public")
         evidence = report["evidence"]["function_definition_sha256"]
-        assert len(evidence) == 24
+        assert len(evidence) == 25
         assert all(re.fullmatch(r"[0-9a-f]{64}", v) for v in evidence.values())
         assert evidence["bond_default_current_diagnostic_release()"] == c.sha256_hex(
             conn.execute(
@@ -2006,6 +2012,91 @@ def test_revoking_the_underlying_build_is_refused_on_the_next_read_and_blocks_ne
             assert info.value.reason == "credit_publication_revoked"
 
 
+def _wait_for_waiter_or_fail(env):
+    _wait_for_advisory_waiter(env)
+
+
+def test_revocation_committing_while_promotion_waits_on_the_lock_refuses_the_promotion(
+    clean,
+):
+    release = diagnostic_release(clean, unit.coverage_only_bundle())
+    outcome: dict[str, object] = {}
+
+    def promoter():
+        with clean.writer() as conn:
+            try:
+                with conn.transaction():
+                    d.promote_diagnostic(
+                        conn,
+                        schema="public",
+                        release_id=release,
+                        expected_release_id=None,
+                    )
+                outcome["promote"] = "ok"
+            except d.DiagnosticError as exc:
+                outcome["promote"] = exc.reason
+
+    with clean.writer() as conn:
+        with conn.transaction():
+            d.revoke_diagnostic(
+                conn,
+                schema="public",
+                release_id=release,
+                reason_code="operator_rollback",
+            )
+            thread = threading.Thread(target=promoter)
+            thread.start()
+            _wait_for_waiter_or_fail(clean)  # promotion is blocked on the SAME lock
+            assert "promote" not in outcome
+        thread.join(30)
+    assert outcome == {"promote": "diagnostic_release_revoked"}
+    with clean.admin() as admin:
+        assert count_of(admin, "bond_default_diagnostic_pointer") == 0
+    with pytest.raises(d.DiagnosticError, match="diagnostic_not_published"):
+        read_current(clean)
+
+
+def test_promotion_committing_first_lets_a_waiting_revocation_succeed_and_the_next_read_refuses(
+    clean,
+):
+    release = diagnostic_release(clean, unit.coverage_only_bundle())
+    outcome: dict[str, object] = {}
+
+    def revoker():
+        with clean.writer() as conn:
+            try:
+                with conn.transaction():
+                    d.revoke_diagnostic(
+                        conn,
+                        schema="public",
+                        release_id=release,
+                        reason_code="operator_rollback",
+                    )
+                outcome["revoke"] = "ok"
+            except d.DiagnosticError as exc:
+                outcome["revoke"] = exc.reason
+
+    with clean.writer() as conn:
+        with conn.transaction():
+            d.promote_diagnostic(
+                conn, schema="public", release_id=release, expected_release_id=None
+            )
+            thread = threading.Thread(target=revoker)
+            thread.start()
+            _wait_for_waiter_or_fail(
+                clean
+            )  # revocation is blocked on the promotion's lock
+            assert "revoke" not in outcome
+        thread.join(30)
+    assert outcome == {"revoke": "ok"}
+    with pytest.raises(d.DiagnosticError) as info:
+        read_current(clean)
+    assert (info.value.reason, info.value.sqlstate) == (
+        "diagnostic_release_revoked",
+        "P0001",
+    )
+
+
 def test_release_revocation_takes_precedence_and_other_releases_stay_electable(clean):
     r1 = diagnostic_release(clean, unit.coverage_only_bundle(label="r1"))
     r2 = diagnostic_release(
@@ -2656,3 +2747,190 @@ def test_forged_rows_written_around_the_triggers_are_caught_by_the_next_guarded_
         assert d.verify_diagnostic(
             conn, schema="public", release_id=release
         ) == unit.projection_of(bundle)
+
+
+# ---------------------------------------------------------------------------
+# Schema-owned installation marker: the SQL pin is verified inside the database
+# ---------------------------------------------------------------------------
+def _marker_rows(env):
+    with env.admin() as admin:
+        return admin.execute(
+            "SELECT sql_digest FROM public.bond_default_diagnostic_installations "
+            "ORDER BY installed_at, installation_id"
+        ).fetchall()
+
+
+def test_installation_marker_is_recorded_once_and_reruns_are_idempotent(env):
+    before = _marker_rows(env)
+    assert before and before[-1] == (d.DIAGNOSTIC_SQL_DIGEST,)
+    with env.writer(autocommit=True) as conn:
+        for _ in range(3):
+            d.install_diagnostic_schema(conn, schema="public")
+        assert d._record_installation(conn, "public") is False
+    assert _marker_rows(env) == before
+    with env.admin() as admin:
+        assert (
+            admin.execute(
+                "SELECT public.bond_default_diag_installed_sql_digest()"
+            ).fetchone()[0]
+            == d.DIAGNOSTIC_SQL_DIGEST
+        )
+        row = admin.execute(
+            "SELECT installed_by FROM public.bond_default_diagnostic_installations LIMIT 1"
+        ).fetchone()
+        assert row == ("worker_writer",)
+
+
+def test_installation_marker_is_append_only_and_has_no_dml_grants(env):
+    with env.writer(autocommit=True) as conn:
+        for statement in (
+            "UPDATE public.bond_default_diagnostic_installations SET sql_digest = 'sha256:' || repeat('1', 64)",
+            "DELETE FROM public.bond_default_diagnostic_installations",
+            "TRUNCATE public.bond_default_diagnostic_installations",
+        ):
+            with pytest.raises(errors.RaiseException):
+                conn.execute(statement)
+    with env.app(autocommit=True) as conn:
+        for statement in (
+            "SELECT count(*) FROM public.bond_default_diagnostic_installations",
+            "INSERT INTO public.bond_default_diagnostic_installations (sql_digest) VALUES ('sha256:' || repeat('1', 64))",
+            "SELECT public.bond_default_diag_installed_sql_digest()",
+        ):
+            with pytest.raises(errors.InsufficientPrivilege):
+                conn.execute(statement)
+    with env.admin() as admin:
+        assert admin.execute(
+            "SELECT has_table_privilege('bond_credit_writer', 'public.bond_default_diagnostic_installations', 'SELECT'), "
+            "has_table_privilege('bond_credit_auditor', 'public.bond_default_diagnostic_installations', 'SELECT'), "
+            "has_table_privilege('bond_credit_writer', 'public.bond_default_diagnostic_installations', 'INSERT'), "
+            "has_table_privilege('bond_credit_reader', 'public.bond_default_diagnostic_installations', 'SELECT'), "
+            "has_table_privilege('app_runtime', 'public.bond_default_diagnostic_installations', 'SELECT'), "
+            "has_table_privilege('app_analytics_ro', 'public.bond_default_diagnostic_installations', 'SELECT')"
+        ).fetchone() == (True, True, False, False, False, False)
+    with env.writer(autocommit=True) as conn:
+        report = d.verify_installed_privileges(
+            conn, schema="public", require_empty_pointers=False
+        )
+        assert report["checks"]["installation_marker_current"]["ok"] is True
+        assert report["checks"]["diagnostic_tables_select_only"]["ok"] is True
+        assert report["checks"]["contract_pins_match"]["ok"] is True
+        assert d.harden_installed_privileges(conn, schema="public")["revoked"] == []
+
+
+def test_prepare_refuses_a_digest_that_is_not_the_installed_pin(clean):
+    bundle = unit.coverage_only_bundle()
+    publication = publish(clean, bundle)
+    other = "sha256:" + "1" * 64
+    result = _prepare_raw(
+        clean,
+        publication,
+        unit.projection_of(bundle).to_json_obj(),
+        unit.frontier_digest_of(bundle),
+        sql_digest=other,
+    )
+    assert isinstance(result, d.DiagnosticError)
+    assert (result.reason, result.sqlstate) == ("diagnostic_sql_pin_mismatch", "P0001")
+    with clean.admin() as admin:
+        assert count_of(admin, "bond_default_diagnostic_releases") == 0
+
+
+def test_stale_install_and_new_worker_mismatch_is_refused_at_prepare_verify_promote_and_read(
+    clean,
+):
+    bundle = unit.coverage_only_bundle()
+    release = diagnostic_release(clean, bundle)
+    promote(clean, release)
+    served = read_current(clean)
+    stale = "sha256:" + "2" * 64
+    with (
+        clean.writer() as conn
+    ):  # a different pinned file installed later becomes the marker
+        conn.execute(
+            "INSERT INTO public.bond_default_diagnostic_installations (sql_digest) VALUES (%s)",
+            [stale],
+        )
+        conn.commit()
+    try:
+        with pytest.raises(d.DiagnosticError) as info:
+            read_current(clean)  # the runtime guard
+        assert (info.value.reason, info.value.sqlstate) == (
+            "diagnostic_sql_pin_mismatch",
+            "P0001",
+        )
+        with clean.writer() as conn:
+            for call in (
+                lambda: d.verify_diagnostic(conn, schema="public", release_id=release),
+                lambda: d.promote_diagnostic(
+                    conn,
+                    schema="public",
+                    release_id=release,
+                    expected_release_id=release,
+                ),
+                lambda: d.prepare_diagnostic(
+                    conn,
+                    schema="public",
+                    publication_id=bundle.publication_id,
+                    projection=unit.projection_of(bundle),
+                    source_frontier_manifest_digest=unit.frontier_digest_of(bundle),
+                ),
+            ):
+                with pytest.raises(d.DiagnosticError) as info, conn.transaction():
+                    call()
+                assert info.value.reason == "diagnostic_sql_pin_mismatch"
+        with clean.writer(autocommit=True) as conn:
+            report_error = None
+            try:
+                d.verify_installed_privileges(
+                    conn, schema="public", require_empty_pointers=False
+                )
+            except d.DiagnosticError as exc:
+                report_error = exc
+            assert report_error is not None
+            assert not report_error.report["checks"]["installation_marker_current"][
+                "ok"
+            ]
+    finally:
+        with clean.writer(autocommit=True) as conn:
+            d.install_diagnostic_schema(
+                conn, schema="public"
+            )  # re-records the pinned digest as current
+    assert read_current(clean) == served
+    assert _marker_rows(clean)[-2:] == [(stale,), (d.DIAGNOSTIC_SQL_DIGEST,)]
+    with clean.writer(autocommit=True) as conn:
+        assert (
+            d.verify_installed_privileges(
+                conn, schema="public", require_empty_pointers=False
+            )["ok"]
+            is True
+        )
+
+
+def test_a_database_without_any_marker_refuses_every_release(clean):
+    bundle = unit.coverage_only_bundle()
+    release = diagnostic_release(clean, bundle)
+    promote(clean, release)
+    with clean.admin(autocommit=True) as admin:
+        admin.execute("SET session_replication_role = replica")
+        admin.execute(
+            "CREATE TEMP TABLE marker_backup AS SELECT * FROM public.bond_default_diagnostic_installations"
+        )
+        admin.execute("DELETE FROM public.bond_default_diagnostic_installations")
+        try:
+            with pytest.raises(d.DiagnosticError) as info:
+                read_current(clean)
+            assert info.value.reason == "diagnostic_sql_pin_mismatch"
+            with pytest.raises(d.DiagnosticError) as info:
+                d.verify_installed_privileges(
+                    admin, schema="public", require_empty_pointers=False
+                )
+            assert (
+                info.value.report["checks"]["installation_marker_current"]["detail"][
+                    "recorded"
+                ]
+                == "none"
+            )
+        finally:
+            admin.execute(
+                "INSERT INTO public.bond_default_diagnostic_installations SELECT * FROM marker_backup"
+            )
+    assert read_current(clean)["release_id"] == str(release)

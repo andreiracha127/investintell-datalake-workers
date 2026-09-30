@@ -842,13 +842,14 @@ def test_module_never_commits_or_installs_implicitly():
 # ---------------------------------------------------------------------------
 def test_installed_manifest_is_the_exact_name_set_read_from_the_sql_files():
     manifest = d.installed_manifest()
-    assert len(manifest.tables) == 23 and len(manifest.functions) == 121
+    assert len(manifest.tables) == 24 and len(manifest.functions) == 122
     assert manifest.tables == tuple(sorted(manifest.tables))
     assert manifest.functions == tuple(sorted(manifest.functions))
     assert {
         "bond_default_diagnostic_releases",
         "bond_default_diagnostic_pointer",
         "bond_default_diagnostic_revocations",
+        "bond_default_diagnostic_installations",
         "bond_credit_publications",
         "bond_rating_history_public_v1",
     } <= set(manifest.tables)

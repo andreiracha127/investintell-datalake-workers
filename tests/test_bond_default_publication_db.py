@@ -686,6 +686,86 @@ def test_batched_insert_failure_rolls_back_every_table(monkeypatch, admin, schem
     spy.fail_at[0] = None
     assert p.prepare_bundle(store, q) == "inserted"  # the same connection and bundle prepare cleanly afterwards
 
+def _bypass(admin, statement, params=()):
+    """Superuser-only out-of-band write (immutability triggers off), simulating tampering."""
+    with admin.transaction():
+        admin.execute("SET LOCAL session_replication_role = replica")
+        admin.execute(statement, list(params))
+
+
+def _no_full_read(monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("replay must not build a second full bundle")
+
+    monkeypatch.setattr(p.PostgresPublicationStore, "_read_bundle", forbidden)
+
+
+@pytest.mark.parametrize("make", [
+    lambda: syn.build_bundle(),
+    lambda: syn.exchange_bundle(),
+    lambda: syn.build_bundle(with_events=False),
+    lambda: syn.build_bundle(quality_state="partial", with_receipt=False, with_events=False),
+], ids=["qualified", "exchange", "no_events", "coverage_only"])
+def test_replay_streams_and_never_reads_a_full_bundle(monkeypatch, admin, schema, make):
+    monkeypatch.setattr(p, "_SELECT_ITERSIZE", 2)
+    spy = _SpyConn(admin)
+    store = p.PostgresPublicationStore(spy, schema)
+    bundle = make()
+    assert p.prepare_bundle(store, bundle) == "inserted"
+    _no_full_read(monkeypatch)
+    spy.named = 0
+    assert p.prepare_bundle(store, bundle) == "replayed"
+    assert spy.named == len(c.INPUT_FRAMES) + len(c.OUTPUT_FRAMES)  # every frame streamed server-side
+    admin.rollback()
+
+def test_replay_refuses_a_tampered_persisted_row_with_the_same_code(monkeypatch, admin, schema):
+    monkeypatch.setattr(p, "_SELECT_ITERSIZE", 2)
+    store = p.PostgresPublicationStore(admin, schema)
+    q = syn.build_bundle()
+    assert p.prepare_bundle(store, q) == "inserted"
+    _no_full_read(monkeypatch)
+    ratings = sql.Identifier(p.TABLES["ratings"])
+    _bypass(admin, sql.SQL(
+        "UPDATE {} SET row_sha256 = repeat('0', 64) WHERE ctid = (SELECT ctid FROM {} WHERE publication_id = %s "
+        "ORDER BY cusip_id, month LIMIT 1)").format(ratings, ratings), [q.publication_id])
+    with pytest.raises(p.PublicationError, match="bond_credit_db:row_hash_mismatch"):
+        p.prepare_bundle(store, q)
+    _assert_connection_clean(admin, store, q.publication_id)
+
+
+def test_replay_refuses_count_digest_and_row_set_mismatches(monkeypatch, admin, schema):
+    monkeypatch.setattr(p, "_SELECT_ITERSIZE", 2)
+    store = p.PostgresPublicationStore(admin, schema)
+    q = syn.build_bundle()
+    assert p.prepare_bundle(store, q) == "inserted"
+    _no_full_read(monkeypatch)
+    ratings = sql.Identifier(p.TABLES["ratings"])
+    # A different bundle under the same id (fingerprint/count/digests differ): refused before any row is read.
+    altered = syn.build_bundle(alter_output=True)
+    assert altered.publication_id == q.publication_id
+    with pytest.raises(p.PublicationCollision, match="publication_collision"):
+        p.prepare_bundle(store, altered)
+    # Stored manifest count / digest edited out of band: the incoming bundle no longer matches it.
+    for column, tampered in (("ratings_count", None), ("ratings_digest", "sha256:" + "0" * 64)):
+        original = admin.execute(
+            sql.SQL("SELECT {} FROM bond_credit_publications WHERE publication_id = %s").format(sql.Identifier(column)),
+            [q.publication_id]).fetchone()[0]
+        admin.rollback()
+        tampered = original + 1 if tampered is None else tampered
+        update = sql.SQL("UPDATE bond_credit_publications SET {} = %s WHERE publication_id = %s").format(
+            sql.Identifier(column))
+        _bypass(admin, update, [tampered, q.publication_id])
+        with pytest.raises(p.PublicationCollision, match="publication_collision"):
+            p.prepare_bundle(store, q)
+        _bypass(admin, update, [original, q.publication_id])
+    assert p.prepare_bundle(store, q) == "replayed"  # restored: identical again
+    # A persisted frame that lost a row while its manifest stays intact.
+    _bypass(admin, sql.SQL("DELETE FROM {} WHERE ctid = (SELECT ctid FROM {} WHERE publication_id = %s LIMIT 1)").format(
+        ratings, ratings), [q.publication_id])
+    with pytest.raises(p.PublicationCollision, match="publication_collision"):
+        p.prepare_bundle(store, q)
+    admin.rollback()
+
 def test_exact_replay_noop_and_collision_with_different_bytes(store, admin):
     q = syn.build_bundle()
     assert p.prepare_bundle(store, q) == "inserted"

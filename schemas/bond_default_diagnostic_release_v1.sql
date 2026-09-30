@@ -80,6 +80,18 @@ CREATE TABLE IF NOT EXISTS bond_default_diagnostic_revocations (
     revoked_by text NOT NULL DEFAULT session_user
 );
 
+-- Schema-owned installation marker: the pinned digest of THIS file, recorded by the trusted installer
+-- (diagnostic_publication.install_diagnostic_schema, direct INSERT as the table owner after the file ran).
+-- A file cannot contain its own digest, so the marker is the in-database witness of which pinned file is
+-- installed; prepare and the guard refuse any release whose diagnostic_sql_digest differs from the most
+-- recently recorded one (stale install / new worker, or the reverse). Append-only, no DML grants.
+CREATE TABLE IF NOT EXISTS bond_default_diagnostic_installations (
+    installation_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    sql_digest text NOT NULL CHECK (sql_digest ~ '^sha256:[0-9a-f]{64}$'),
+    installed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    installed_by text NOT NULL DEFAULT session_user
+);
+
 -- ---------------------------------------------------------------------------
 -- Guards
 -- ---------------------------------------------------------------------------
@@ -120,6 +132,13 @@ CREATE TRIGGER bond_default_diagnostic_revocations_append_only BEFORE UPDATE OR 
 FOR EACH ROW EXECUTE FUNCTION bond_default_diag_append_only();
 DROP TRIGGER IF EXISTS bond_default_diagnostic_revocations_no_truncate ON bond_default_diagnostic_revocations;
 CREATE TRIGGER bond_default_diagnostic_revocations_no_truncate BEFORE TRUNCATE ON bond_default_diagnostic_revocations
+FOR EACH STATEMENT EXECUTE FUNCTION bond_default_diag_append_only();
+
+DROP TRIGGER IF EXISTS bond_default_diagnostic_installations_append_only ON bond_default_diagnostic_installations;
+CREATE TRIGGER bond_default_diagnostic_installations_append_only BEFORE UPDATE OR DELETE ON bond_default_diagnostic_installations
+FOR EACH ROW EXECUTE FUNCTION bond_default_diag_append_only();
+DROP TRIGGER IF EXISTS bond_default_diagnostic_installations_no_truncate ON bond_default_diagnostic_installations;
+CREATE TRIGGER bond_default_diagnostic_installations_no_truncate BEFORE TRUNCATE ON bond_default_diagnostic_installations
 FOR EACH STATEMENT EXECUTE FUNCTION bond_default_diag_append_only();
 
 DROP TRIGGER IF EXISTS bond_default_diagnostic_pointer_guard ON bond_default_diagnostic_pointer;
@@ -615,6 +634,13 @@ LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
         bond_credit_identity_name('bond_default_diagnostic_release', ARRAY[bond_credit_json_digest(identity)]))
 $$;
 
+-- The digest of the most recently recorded installation (NULL when none was recorded).
+CREATE OR REPLACE FUNCTION bond_default_diag_installed_sql_digest() RETURNS text
+LANGUAGE sql STABLE SET search_path = public, pg_temp AS $$
+    SELECT i.sql_digest FROM bond_default_diagnostic_installations i
+    ORDER BY i.installed_at DESC, i.installation_id DESC LIMIT 1
+$$;
+
 -- Every guard shared by verify / promote / current reader. deep = re-derive the projection from the
 -- persisted frames and recompute the frontier digest (writer paths); the runtime reader skips it.
 CREATE OR REPLACE FUNCTION bond_default_diag_guard(target_release_id uuid, deep boolean)
@@ -632,6 +658,9 @@ BEGIN
     END IF;
     IF EXISTS (SELECT 1 FROM bond_default_diagnostic_revocations v WHERE v.release_id = rel.release_id) THEN
         PERFORM bond_default_diag_raise('diagnostic_release_revoked');
+    END IF;
+    IF rel.diagnostic_sql_digest IS DISTINCT FROM bond_default_diag_installed_sql_digest() THEN
+        PERFORM bond_default_diag_raise('diagnostic_sql_pin_mismatch', 'release_vs_installed');
     END IF;
     SELECT * INTO pub FROM bond_credit_publications p WHERE p.publication_id = rel.publication_id;
     IF NOT FOUND THEN
@@ -732,6 +761,9 @@ BEGIN
     IF frontier_digest !~ '^sha256:[0-9a-f]{64}$' OR diagnostic_sql_digest !~ '^sha256:[0-9a-f]{64}$' THEN
         PERFORM bond_default_diag_raise('invalid_argument', 'digest_format');
     END IF;
+    IF diagnostic_sql_digest IS DISTINCT FROM bond_default_diag_installed_sql_digest() THEN
+        PERFORM bond_default_diag_raise('diagnostic_sql_pin_mismatch', 'supplied_vs_installed');
+    END IF;
     problem := bond_default_diag_projection_problem(projection);
     IF problem IS NOT NULL THEN
         PERFORM bond_default_diag_raise('projection_invalid', problem);
@@ -803,6 +835,11 @@ BEGIN
             PERFORM bond_default_diag_raise('k_regression', bond_credit_ts_text(cur.knowledge_cutoff) || ' -> '
                                             || bond_credit_ts_text(rel.knowledge_cutoff));
         END IF;
+    END IF;
+    -- Revocation takes the same product lock, so a committed revocation is visible here; re-check it (a fresh
+    -- statement, after the lock and immediately before the pointer write) rather than trust the guard alone.
+    IF EXISTS (SELECT 1 FROM bond_default_diagnostic_revocations v WHERE v.release_id = rel.release_id) THEN
+        PERFORM bond_default_diag_raise('diagnostic_release_revoked');
     END IF;
     PERFORM pg_catalog.set_config('bond_default_diagnostic.pointer_token',
         pg_catalog.pg_backend_pid()::text || ':' || pg_catalog.txid_current()::text, true);
@@ -893,7 +930,8 @@ BEGIN
     IF target_release_id IS NULL OR reason_code IS NULL OR reason_code !~ '^[a-z][a-z0-9_]{2,63}$' THEN
         PERFORM bond_default_diag_raise('invalid_argument', 'revoke');
     END IF;
-    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('bond_default_events_diagnostic_v1|revoke', 0));
+    -- The SAME lock as bond_default_promote_diagnostic: revocation and election are serialized.
+    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('bond_default_events_diagnostic_v1|pointer', 0));
     IF NOT EXISTS (SELECT 1 FROM bond_default_diagnostic_releases r WHERE r.release_id = target_release_id) THEN
         PERFORM bond_default_diag_raise('unknown_release');
     END IF;
@@ -926,7 +964,7 @@ BEGIN
         CROSS JOIN LATERAL pg_catalog.aclexplode(
             COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))) a
         WHERE c.relname IN ('bond_default_diagnostic_releases', 'bond_default_diagnostic_pointer',
-                            'bond_default_diagnostic_revocations')
+                            'bond_default_diagnostic_revocations', 'bond_default_diagnostic_installations')
           AND a.grantee <> 0 AND a.grantee <> c.relowner
         ORDER BY 1, 2
     LOOP
@@ -950,9 +988,11 @@ BEGIN
     END LOOP;
 END $$;
 
-REVOKE ALL ON bond_default_diagnostic_releases, bond_default_diagnostic_pointer, bond_default_diagnostic_revocations
+REVOKE ALL ON bond_default_diagnostic_releases, bond_default_diagnostic_pointer, bond_default_diagnostic_revocations,
+    bond_default_diagnostic_installations
     FROM PUBLIC, bond_credit_reader, bond_credit_writer, bond_credit_auditor, bond_default_diagnostic_reader;
-GRANT SELECT ON bond_default_diagnostic_releases, bond_default_diagnostic_pointer, bond_default_diagnostic_revocations
+GRANT SELECT ON bond_default_diagnostic_releases, bond_default_diagnostic_pointer, bond_default_diagnostic_revocations,
+    bond_default_diagnostic_installations
     TO bond_credit_auditor, bond_credit_writer;
 
 REVOKE ALL ON FUNCTION
@@ -964,6 +1004,7 @@ REVOKE ALL ON FUNCTION
     bond_default_diag_frontier_digest(jsonb), bond_default_diag_derive(uuid), bond_default_diag_projection_problem(jsonb),
     bond_default_diag_identity(uuid, text, date, timestamptz, text, text, text, text, text),
     bond_default_diag_release_id_for(jsonb), bond_default_diag_guard(uuid, boolean),
+    bond_default_diag_installed_sql_digest(),
     bond_default_prepare_diagnostic(uuid, jsonb, text, text), bond_default_promote_diagnostic(uuid, uuid),
     bond_default_current_diagnostic_release(), bond_default_verify_diagnostic(uuid),
     bond_default_revoke_diagnostic(uuid, text)

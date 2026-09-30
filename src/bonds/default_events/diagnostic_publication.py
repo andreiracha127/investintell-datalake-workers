@@ -45,7 +45,7 @@ ERROR_PREFIX: Final = "bond_default_diagnostic:"
 SQL_PATH = c.ROOT / "schemas" / "bond_default_diagnostic_release_v1.sql"
 #: LF-normalized SHA-256 of the diagnostic SQL file (independent of the four-file ``c.sql_digest``).
 DIAGNOSTIC_SQL_DIGEST: Final = (
-    "sha256:b5df1a409f6e14e2a3391fb36fc8e40ce24752055a5896c769a612d5aa775674"
+    "sha256:3b97413930bd1497f504ca4041ad8be8c8f9a1db745c2f4751d398550d7a1480"
 )
 
 SOURCES: Final = ("agency_rocr", "sec_edgar", "sec_ncen", "sec_nport")
@@ -1058,12 +1058,43 @@ def diagnostic_sql_digest(path: Any = SQL_PATH) -> str:
     return "sha256:" + c.sha256_hex(path.read_bytes().replace(b"\r\n", b"\n"))
 
 
+def _record_installation(conn: Any, schema: str) -> bool:
+    """Record the pinned digest as the schema's installation marker (idempotent; returns True when a row was added).
+
+    A direct INSERT as the table owner (the installer): no function or grant exists for it. Nothing is
+    recorded when the most recent marker already equals the digest, so a rerun is a no-op while a different
+    (older or newer) pinned file installed later becomes the current marker.
+    """
+    from psycopg import sql
+
+    table = sql.SQL("{}.bond_default_diagnostic_installations").format(
+        sql.Identifier(schema)
+    )
+    with conn.transaction():
+        conn.execute(
+            "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(%s, 0))",
+            ["bond_default_events_diagnostic_v1|install"],
+        )
+        inserted = conn.execute(
+            sql.SQL(
+                "INSERT INTO {t} (sql_digest) SELECT %s WHERE %s IS DISTINCT FROM "
+                "(SELECT i.sql_digest FROM {t} i ORDER BY i.installed_at DESC, i.installation_id DESC LIMIT 1) "
+                "RETURNING 1"
+            ).format(t=table),
+            [DIAGNOSTIC_SQL_DIGEST, DIAGNOSTIC_SQL_DIGEST],
+        ).fetchone()
+    return inserted is not None
+
+
 def install_diagnostic_schema(conn: Any, *, schema: str) -> None:
     """Apply the diagnostic SQL (autocommit connection; the file owns BEGIN/COMMIT).
 
     Explicit operator / disposable-test use only: run it as the trusted table owner after the four
     ``install_schema`` files and after the administrator created ``bond_default_diagnostic_reader``.
-    The pinned digest is checked before any statement runs.
+    The pinned digest is checked before any statement runs. After the file ran, the pinned digest is recorded in
+    ``bond_default_diagnostic_installations`` (idempotent); ``bond_default_prepare_diagnostic`` and the guard
+    then refuse any release whose ``diagnostic_sql_digest`` differs from the most recent marker
+    (``diagnostic_sql_pin_mismatch``), so a stale install and a newer worker (or the reverse) cannot interoperate.
 
     The four pinned files declare ``SET search_path FROM CURRENT``: they capture the *installing session's*
     search_path in ``proconfig``. ``install_schema`` therefore starts with ``SET search_path TO public,
@@ -1086,6 +1117,7 @@ def install_diagnostic_schema(conn: Any, *, schema: str) -> None:
     if conn.execute("SHOW search_path").fetchone()[0] != EXPECTED_SEARCH_PATH:
         raise DiagnosticError("install_search_path_not_pinned")
     conn.execute(SQL_PATH.read_text(encoding="utf-8"))
+    _record_installation(conn, schema)
 
 
 def _fn(schema: str, name: str) -> Any:
@@ -1769,7 +1801,7 @@ def verify_installed_privileges(
         if kind == "TABLE" and n in diag_tables and p != "SELECT"
     ]
     checks["diagnostic_tables_select_only"] = _check(
-        len(diag_tables) == 3 and not table_bad, table_bad
+        len(diag_tables) == 4 and not table_bad, table_bad
     )
 
     matrix_bad: list[str] = []
@@ -1877,6 +1909,21 @@ def verify_installed_privileges(
     checks["diagnostic_sql_digest_pinned"] = _check(
         diagnostic_sql_digest() == DIAGNOSTIC_SQL_DIGEST,
         "pinned" if diagnostic_sql_digest() == DIAGNOSTIC_SQL_DIGEST else "drift",
+    )
+    marker: Any = "unreadable"
+    if conn.execute(
+        "SELECT CASE WHEN pg_catalog.to_regclass(%s) IS NULL THEN NULL "
+        "ELSE pg_catalog.has_table_privilege(current_user, pg_catalog.to_regclass(%s), 'SELECT') END",
+        [f"{schema}.bond_default_diagnostic_installations"] * 2,
+    ).fetchone()[0]:
+        marker = conn.execute(
+            "SELECT sql_digest FROM public.bond_default_diagnostic_installations "
+            "ORDER BY installed_at DESC, installation_id DESC LIMIT 1"
+        ).fetchone()
+        marker = marker[0] if marker else "none"
+    checks["installation_marker_current"] = _check(
+        marker == DIAGNOSTIC_SQL_DIGEST,
+        {"recorded": marker, "pinned": DIAGNOSTIC_SQL_DIGEST},
     )
     if require_empty_pointers:
         from psycopg import sql

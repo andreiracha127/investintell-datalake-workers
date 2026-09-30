@@ -2308,13 +2308,15 @@ class PostgresPublicationStore:
                 cur.executemany(statement, batch)
 
     def _iter_select(
-        self, frame: str, where: Any, params: Iterable[Any], *, source: Any = None
+        self, frame: str, where: Any, params: Iterable[Any], *, source: Any = None, ordered: bool = False
     ) -> Iterator[tuple[Any, str]]:
         """Stream decoded, hash-checked rows of ``frame`` from its table (or ``source``, a FROM item).
 
         A server-side (named) cursor fetches ``_SELECT_ITERSIZE`` rows at a time, so the raw
         record dicts are never all resident; each row is decoded and its stored hash checked
-        as it arrives (same refusals as the former ``fetchall`` path).
+        as it arrives (same refusals as the former ``fetchall`` path). ``ordered`` adds an
+        ``ORDER BY`` reproducing the Python canonical row order (``row.key()``: the string of each
+        encoded key column, compared by code point) so a caller can merge against a key-sorted frame.
         """
         from psycopg import sql
         from psycopg.rows import dict_row
@@ -2325,6 +2327,15 @@ class PostgresPublicationStore:
             sql.SQL(", ").join(sql.Identifier(n) for n in names),
             self._q(TABLES[frame]) if source is None else source, where,
         )
+        if ordered:
+            kinds = dict(cls.SPEC)
+            terms = []
+            for name in cls.KEY:
+                if kinds[name].rstrip("?") in ("date", "month"):  # isoformat, independent of DateStyle
+                    terms.append(sql.SQL("to_char({}, 'YYYY-MM-DD')").format(sql.Identifier(name)))
+                else:  # uuid / text / enum: canonical text, bytewise (= Python code-point) order
+                    terms.append(sql.SQL("{}::text COLLATE \"C\"").format(sql.Identifier(name)))
+            statement = sql.SQL("{} ORDER BY {}").format(statement, sql.SQL(", ").join(terms))
         with self.conn.cursor(name=f"bond_credit_{uuid.uuid4().hex}", row_factory=dict_row) as cur:
             cur.itersize = _SELECT_ITERSIZE
             cur.execute(statement, list(params))
@@ -2390,6 +2401,47 @@ class PostgresPublicationStore:
         )
         return CreditBundle(manifest, tuple(grid), frames)
 
+    def _verify_replay(self, existing: Mapping[str, Any], bundle: CreditBundle) -> None:
+        """Bounded replay check: the persisted publication must equal ``bundle`` exactly.
+
+        Equivalent to ``persisted_identity(self._read_bundle(existing)) == persisted_identity(bundle)``
+        without building a second bundle: the stored manifest (fingerprint, frame counts and digests,
+        inventories) is compared first; then every persisted frame is streamed in canonical key order
+        through a server-side cursor with the per-row hash check and merged against the incoming
+        (key-sorted) frame, comparing key and row hash. Any difference is a publication collision;
+        a stored row whose hash does not match its content raises ``row_hash_mismatch`` as before.
+        """
+        from psycopg import sql
+
+        def collision(detail: str) -> PublicationCollision:
+            return PublicationCollision("bond_credit_prepare:publication_collision", detail)
+
+        pid = bundle.publication_id
+        stored_manifest = BundleManifest.from_record({n: existing[n] for n, _ in MANIFEST_SPEC})
+        if c.canonical_json_bytes(stored_manifest.to_record()) != c.canonical_json_bytes(bundle.manifest.to_record()):
+            raise collision(str(pid))
+
+        def merge(frame: str, stream: Iterator[tuple[Any, str]], collect: list[Any] | None = None) -> None:
+            expected = iter(bundle.frames[frame])
+            for row, stored in stream:
+                want = next(expected, None)
+                if want is None or want.key() != row.key() or want.row_sha256() != stored:
+                    raise collision(str(pid))
+                if collect is not None:
+                    collect.append(row)
+            if next(expected, None) is not None:
+                raise collision(str(pid))
+
+        by_pub = sql.SQL("publication_id = %s")
+        sources: list[Any] = []
+        merge("publication_sources", self._iter_select("publication_sources", by_pub, [pid], ordered=True), sources)
+        package_ids = [s.package_id for s in sources]
+        for frame in c.INPUT_FRAMES:
+            merge(frame, self._iter_select(frame, sql.SQL("package_id = ANY(%s)"), [package_ids], ordered=True))
+        for frame in c.OUTPUT_FRAMES:
+            if frame != "publication_sources":
+                merge(frame, self._iter_select(frame, by_pub, [pid], ordered=True))
+
     def _state_from(self, row: Mapping[str, Any], revoked: bool) -> PublicationState:
         return PublicationState(
             publication_id=row["publication_id"],
@@ -2437,9 +2489,7 @@ class PostgresPublicationStore:
             self._lock_publication(pid)
             existing = self._load_manifest_row(pid)
             if existing is not None:
-                persisted = self._read_bundle(existing)
-                if persisted_identity(persisted) != persisted_identity(bundle):
-                    raise PublicationCollision("bond_credit_prepare:publication_collision", str(pid))
+                self._verify_replay(existing, bundle)
                 return "replayed"
             from psycopg import sql
 
