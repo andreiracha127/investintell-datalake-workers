@@ -190,6 +190,8 @@ def _patch_worker(monkeypatch, *, build=None, pointer=POINTER, mirror=True, defa
     monkeypatch.setattr(worker, "_code_revision", lambda: REVISION)
     monkeypatch.delenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", raising=False)
     monkeypatch.delenv("BOND_IMPLIED_RATING_ENABLED", raising=False)
+    for var in worker.EXPECTATION_ENV_VARS.values():
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(worker, "_relation_exists", lambda _conn, name: True)
     monkeypatch.setattr(worker, "_current_panel", lambda _conn: dict(PARENT))
     monkeypatch.setattr(worker, "_current_pointer", lambda _conn: pointer)
@@ -231,6 +233,15 @@ def _patch_worker(monkeypatch, *, build=None, pointer=POINTER, mirror=True, defa
     monkeypatch.setattr(worker, "_build_payload", build_payload)
     monkeypatch.setattr(worker, "materialize", materialize)
     return conn, events
+
+
+def _force_republish(monkeypatch) -> None:
+    """A forced run is digest-bound: declare the digest/fingerprint the harness builds."""
+    monkeypatch.setenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", "1")
+    monkeypatch.setenv(worker.EXPECTATION_ENV_VARS["rows_digest"], "b" * 64)
+    monkeypatch.setenv(
+        worker.EXPECTATION_ENV_VARS["input_fingerprint"], worker.policy.snapshot_fingerprint(_snapshot())
+    )
 
 
 def test_run_current_reports_the_runtime_revision_without_reading_or_writing(monkeypatch):
@@ -284,7 +295,7 @@ def test_run_rebuilds_an_absent_pointer_build(monkeypatch):
 
 def test_run_force_republish_bypasses_current_identity_but_preserves_cas(monkeypatch):
     _, events = _patch_worker(monkeypatch, build=_matching_build())
-    monkeypatch.setenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", "1")
+    _force_republish(monkeypatch)
     result = worker.run("postgresql://example")
     assert result["state"] == "published"
     assert result["rebuild_reasons"] == []
@@ -388,7 +399,7 @@ def test_force_republish_bypasses_panel_input_convergence(monkeypatch, entrypoin
         **_matching_build(), "panel_publication_id": "panel-previous",
         "input_fingerprint": worker.policy.snapshot_fingerprint(_snapshot()),
     })
-    monkeypatch.setenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", "1")
+    _force_republish(monkeypatch)
     monkeypatch.setattr(
         worker, "_panel_inputs_current", lambda *args, **kwargs: pytest.fail("fingerprint shortcut")
     )
@@ -405,7 +416,7 @@ def test_reused_publication_reports_its_persisted_build_parent(monkeypatch):
     conn, _ = _patch_worker(monkeypatch, build={
         **_matching_build(), "panel_publication_id": "panel-previous",
     })
-    monkeypatch.setenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", "1")
+    _force_republish(monkeypatch)
     monkeypatch.setattr(worker, "materialize", lambda *args, **kwargs: SimpleNamespace(
         publication_id="rebuilt-publication", row_count=2, reused=True,
     ))

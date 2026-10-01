@@ -1342,7 +1342,8 @@ def test_worker_short_circuits_when_already_current(monkeypatch) -> None:
 
 
 def test_worker_force_republish_bypasses_the_short_circuit(monkeypatch) -> None:
-    frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
+    # A WITNESSED last closed month: run() refuses to publish a dark one (latest-month guard).
+    frame = pd.DataFrame(bond_rows("A", [300.0] * len(MONTHS)))
     captured = _patch_worker(
         monkeypatch,
         panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
@@ -1352,14 +1353,27 @@ def test_worker_force_republish_bypasses_the_short_circuit(monkeypatch) -> None:
         snapshot=frame,
         anchor=None,
     )
+    # A forced run is digest-bound: without the two expectations it refuses before connecting.
     monkeypatch.setenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", "1")
-    result = worker.run("postgresql://example")
+    for var in worker.EXPECTATION_ENV_VARS.values():
+        monkeypatch.delenv(var, raising=False)
+    refused = worker.run("postgresql://example")
+    assert refused["state"] == "precondition_failed"
+    assert refused["input_reasons"] == ["expected_rows_digest_required", "expected_input_fingerprint_required"]
+    assert "publication" not in captured
+    # Bound to what the read-only plan reports, the force flag bypasses the short-circuit.
+    planned = worker.plan("postgresql://example")
+    assert planned["state"] == "planned"
+    result = worker.run("postgresql://example", expectations=worker.ApplyExpectations(
+        rows_digest=planned["rows_digest"], input_fingerprint=planned["input_fingerprint"],
+    ))
     assert result["state"] in {"published", "published_no_defaults"}
     assert captured["expected_pointer"] == "pub-current"
 
 
 def test_worker_publishes_and_reports_the_identity(monkeypatch) -> None:
-    frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
+    # A WITNESSED last closed month: run() refuses to publish a dark one (latest-month guard).
+    frame = pd.DataFrame(bond_rows("A", [300.0] * len(MONTHS)))
     captured = _patch_worker(
         monkeypatch,
         panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
@@ -1387,7 +1401,8 @@ def test_worker_ends_its_transaction_before_the_full_history_build(monkeypatch, 
     # no DDL AccessExclusiveLock or ledger AccessShareLock) may stay open
     # through it. run() commits the snapshot read, the DDL and the pin read;
     # plan() the snapshot read and the pin read.
-    frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
+    # A WITNESSED last closed month: run() refuses to publish a dark one (latest-month guard).
+    frame = pd.DataFrame(bond_rows("A", [300.0] * len(MONTHS)))
     captured = _patch_worker(
         monkeypatch,
         panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
@@ -1573,7 +1588,8 @@ def test_worker_refuses_anchor_drift_beyond_absolute_tolerance(
 
 
 def test_worker_warns_when_the_publication_fails(monkeypatch, caplog) -> None:
-    frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
+    # A WITNESSED last closed month: run() refuses to publish a dark one (latest-month guard).
+    frame = pd.DataFrame(bond_rows("A", [300.0] * len(MONTHS)))
     _patch_worker(
         monkeypatch,
         panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),
@@ -1616,7 +1632,8 @@ def test_worker_refuses_a_snapshot_without_a_market_level_observation(monkeypatc
 
 
 def test_worker_types_a_pointer_move_as_a_gate_failure(monkeypatch) -> None:
-    frame = pd.DataFrame(bond_rows("A", [300.0] * 4, months=MONTHS[:4]))
+    # A WITNESSED last closed month: run() refuses to publish a dark one (latest-month guard).
+    frame = pd.DataFrame(bond_rows("A", [300.0] * len(MONTHS)))
     _patch_worker(
         monkeypatch,
         panel={"publication_id": "panel-1", "first_month": MONTHS[0].date(),

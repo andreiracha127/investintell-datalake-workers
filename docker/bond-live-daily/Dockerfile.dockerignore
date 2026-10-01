@@ -1,0 +1,25 @@
+# BuildKit per-Dockerfile ignore (<Dockerfile>.dockerignore): trims the build
+# context sent for docker/bond-live-daily/Dockerfile WITHOUT touching the root
+# Dockerfile's context. Correctness never depends on it -- the Dockerfile COPY
+# set is explicit -- it only keeps evidence trees and local state out of the
+# upload. A builder that ignores this file simply uploads more bytes.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.discovery
+.worktrees
+artifacts
+fixtures
+golden
+harness
+notebooks
+qc-a3-parity
+tests
+docs
+packages
+services
+tools
+.env
+.cloud_dsn

@@ -16,7 +16,11 @@ cumulative, carry-forward and hysteresis are path-dependent), so every
 publication rewrites every closed month and the pointer flip is the only
 "delta". ``BOND_IMPLIED_RATING_FORCE_REPUBLISH=1`` bypasses the
 exact panel, policy and code identity short-circuit; the pointer CAS
-still refuses a stale predecessor.
+still refuses a stale predecessor. A forced run is a MANUAL republication
+and must be digest-bound: it requires ``rows_digest`` and
+``input_fingerprint`` expectations (``--expect-*`` on the backfill CLI, or
+``BOND_IMPLIED_RATING_EXPECT_*`` service variables through ``src.run_worker``
+on the deployed image) and refuses before any DDL without them.
 
 IDENTITY. ``uuid5(product | policy_version | policy_digest | code_revision |
 input_fingerprint)`` -- the same closed panel rows under the same code and
@@ -41,17 +45,22 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import subprocess
 import time
+from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, Mapping
+from uuid import UUID
 
 import pandas as pd
 import psycopg
 
 from src.bonds import implied_rating as policy
+from src.bonds.build_manifest import collect_build_manifest, manifest_summary
 from src.bonds.errors import BondError
 from src.bonds.implied_rating import ANCHOR_DRIFT_ABS_TOL
+from src.bonds.implied_rating_build import build_payload_from_snapshot
 from src.bonds.implied_rating_materializer import (
     PRODUCT,
     ImpliedRatingPublication,
@@ -59,7 +68,6 @@ from src.bonds.implied_rating_materializer import (
     current_pinned_anchor,
     install_schema,
     materialize,
-    publication_id_for,
 )
 from src.db import connect, resolve_dsn
 
@@ -74,6 +82,22 @@ STAGE_COLUMNS: tuple[str, ...] = (
 # Build stamps a deploy may inject (the container image carries no ``.git``).
 # Verbatim from src/workers/bond_metrics.py: one ladder, one fleet.
 _REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
+
+FORCE_ENV = "BOND_IMPLIED_RATING_FORCE_REPUBLISH"
+
+#: Service variables that carry operator expectations through ``src.run_worker``
+#: (``WORKER=bond_market_implied_rating`` / ``..._check``), where no CLI flag can
+#: reach the deployed image. Same semantics as the backfill CLI's ``--expect-*``.
+EXPECTATION_ENV_VARS: dict[str, str] = {
+    "rows_digest": "BOND_IMPLIED_RATING_EXPECT_ROWS_DIGEST",
+    "input_fingerprint": "BOND_IMPLIED_RATING_EXPECT_INPUT_FINGERPRINT",
+    "panel_publication_id": "BOND_IMPLIED_RATING_EXPECT_PANEL_PUBLICATION",
+    "current_pointer": "BOND_IMPLIED_RATING_EXPECT_CURRENT_POINTER",
+}
+#: A forced (manual) republication is digest-bound: it must declare what it publishes.
+FORCED_REQUIRED_EXPECTATIONS: tuple[str, ...] = ("rows_digest", "input_fingerprint")
+_SHA256_FIELDS = frozenset({"rows_digest", "input_fingerprint"})
+_SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 def _code_revision() -> str:
@@ -95,7 +119,7 @@ def _code_revision() -> str:
 
 
 def _force_republish_requested() -> bool:
-    value = (os.getenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH") or "").strip().lower()
+    value = (os.getenv(FORCE_ENV) or "").strip().lower()
     return value in {"1", "true"}
 
 
@@ -228,6 +252,180 @@ def _failure(
     }
 
 
+@dataclass(frozen=True)
+class ApplyExpectations:
+    """Operator-declared facts a publication must match BEFORE it writes.
+
+    Each field is optional; a set field is compared at the earliest point the
+    value is known and a mismatch refuses with ``implied_rating_precondition_failed``
+    and ``input_reasons=["expected_<field>_mismatch"]``, before any DDL replay
+    or materialization: ``current_pointer`` and ``panel_publication_id`` right
+    after the gates, ``input_fingerprint`` right after the single snapshot
+    read (still before ``install_schema``), ``rows_digest`` after the build
+    and before ``materialize`` (it cannot be known earlier). A run that would
+    converge on an existing publication without building cannot verify a
+    fingerprint/digest expectation and refuses as ``..._unverifiable``.
+    """
+
+    input_fingerprint: str | None = None
+    rows_digest: str | None = None
+    panel_publication_id: str | None = None
+    current_pointer: str | None = None
+
+    def any(self) -> bool:
+        return any(
+            value is not None for value in (
+                self.input_fingerprint, self.rows_digest,
+                self.panel_publication_id, self.current_pointer,
+            )
+        )
+
+    def missing(self, fields: tuple[str, ...]) -> list[str]:
+        return [field for field in fields if getattr(self, field) is None]
+
+
+class ExpectationError(ValueError):
+    """An expectation that cannot be honoured as written (malformed or conflicting).
+
+    Raised while PARSING expectations (CLI flags, service variables), i.e.
+    before any connection; the callers turn it into the typed
+    ``implied_rating_precondition_failed`` refusal or a CLI usage error.
+    """
+
+    def __init__(self, field: str, reason: str, *, value: Any = None, source: str | None = None) -> None:
+        self.field = field
+        self.reason = reason
+        self.value = value
+        self.source = source
+        where = f" ({source})" if source else ""
+        super().__init__(f"{field}{where}: {reason}: {value!r}")
+
+
+def validate_sha256_hex(field: str, value: str, *, source: str | None = None) -> str:
+    """A digest/fingerprint expectation is exactly 64 lowercase hex characters."""
+    if not isinstance(value, str) or not _SHA256_HEX.match(value):
+        raise ExpectationError(field, "not_sha256_hex", value=value, source=source)
+    return value
+
+
+def _validate_uuid(field: str, value: str, *, source: str | None = None) -> str:
+    try:
+        return str(UUID(value))
+    except (ValueError, AttributeError, TypeError):
+        raise ExpectationError(field, "not_uuid", value=value, source=source) from None
+
+
+def expectations_from_env(environ: Mapping[str, str] | None = None) -> ApplyExpectations:
+    """Parse ``BOND_IMPLIED_RATING_EXPECT_*`` into ``ApplyExpectations``.
+
+    Blank values count as unset (Railway keeps emptied variables as empty
+    strings). Digest/fingerprint values must be 64 lowercase hex; the two
+    publication ids must be UUIDs. Anything else raises ``ExpectationError``:
+    a malformed expectation refuses instead of silently expecting nothing.
+    """
+    env = os.environ if environ is None else environ
+    values: dict[str, str | None] = {}
+    for field, var in EXPECTATION_ENV_VARS.items():
+        raw = (env.get(var) or "").strip()
+        if not raw:
+            values[field] = None
+        elif field in _SHA256_FIELDS:
+            values[field] = validate_sha256_hex(field, raw, source=var)
+        else:
+            values[field] = _validate_uuid(field, raw, source=var)
+    return ApplyExpectations(**values)
+
+
+def merge_expectations(
+    explicit: ApplyExpectations | None, env: ApplyExpectations
+) -> ApplyExpectations:
+    """Programmatic expectations plus the service variables; a disagreement refuses."""
+    if explicit is None:
+        return env
+    merged: dict[str, str | None] = {}
+    for field in EXPECTATION_ENV_VARS:
+        given, from_env = getattr(explicit, field), getattr(env, field)
+        if given is not None and from_env is not None and given != from_env:
+            raise ExpectationError(
+                field, "conflict", value={"explicit": given, "env": from_env},
+                source=EXPECTATION_ENV_VARS[field],
+            )
+        merged[field] = given if given is not None else from_env
+    return ApplyExpectations(**merged)
+
+
+def _expectation_error_failure(exc: ExpectationError, *, started: float) -> dict[str, Any]:
+    reason = "conflict" if exc.reason == "conflict" else "malformed"
+    return _failure(
+        "implied_rating_precondition_failed", elapsed=time.monotonic() - started,
+        input_reasons=[f"expected_{exc.field}_{reason}"], expectation=exc.field,
+        env_var=exc.source, actual=exc.value, error=exc.reason,
+    )
+
+
+def _forced_without_digest_failure(missing: list[str], *, started: float) -> dict[str, Any]:
+    """A forced republication that does not say WHAT it publishes is refused before any DDL."""
+    return _failure(
+        "implied_rating_precondition_failed", elapsed=time.monotonic() - started,
+        input_reasons=[f"expected_{field}_required" for field in missing],
+        forced_republish=True, missing_expectations=missing,
+        env_vars=[EXPECTATION_ENV_VARS[field] for field in missing],
+    )
+
+
+def _precondition_failure(
+    field: str, *, expected: Any, actual: Any, started: float, verifiable: bool = True
+) -> dict[str, Any]:
+    reason = f"expected_{field}_{'mismatch' if verifiable else 'unverifiable'}"
+    return _failure(
+        "implied_rating_precondition_failed", elapsed=time.monotonic() - started,
+        input_reasons=[reason], expectation=field, expected=expected, actual=actual,
+    )
+
+
+def _expectation_mismatch(
+    expectations: ApplyExpectations | None, field: str, actual: Any, *, started: float
+) -> dict[str, Any] | None:
+    """The typed refusal for one set expectation that does not match, else None."""
+    if expectations is None:
+        return None
+    expected = getattr(expectations, field)
+    if expected is None or expected == actual:
+        return None
+    return _precondition_failure(field, expected=expected, actual=actual, started=started)
+
+
+def _unverifiable_expectations(
+    expectations: ApplyExpectations | None, *, started: float,
+    known_fingerprint: str | None = None,
+) -> dict[str, Any] | None:
+    """A convergence/current result builds nothing: a digest expectation cannot be met.
+
+    The panel-convergence path HAS read and fingerprinted the snapshot, so an
+    ``input_fingerprint`` expectation is compared there (``known_fingerprint``);
+    the pre-read short-circuit cannot verify it at all.
+    """
+    if expectations is None:
+        return None
+    if expectations.input_fingerprint is not None:
+        if known_fingerprint is None:
+            return _precondition_failure(
+                "input_fingerprint", expected=expectations.input_fingerprint, actual=None,
+                started=started, verifiable=False,
+            )
+        refused = _expectation_mismatch(
+            expectations, "input_fingerprint", known_fingerprint, started=started
+        )
+        if refused is not None:
+            return refused
+    if expectations.rows_digest is not None:
+        return _precondition_failure(
+            "rows_digest", expected=expectations.rows_digest, actual=None,
+            started=started, verifiable=False,
+        )
+    return None
+
+
 def _read_snapshot(
     conn: psycopg.Connection, *, last_closed_month: date
 ) -> pd.DataFrame:
@@ -331,145 +529,55 @@ def _build_payload(
     )
     if "failure" in inputs:
         return inputs
-    snapshot = inputs["snapshot"]
-    input_fingerprint = inputs["input_fingerprint"]
-    last_closed_month = parent["last_closed_month"]
-    try:
-        diagnostics = policy.market_anchor_diagnostics_for_snapshot(
-            snapshot, last_closed_month=last_closed_month
+
+    def resolve_pinned_anchor() -> float | None:
+        previous_anchor = (
+            current_pinned_anchor(conn)
+            if _relation_exists(conn, f"{PRODUCT}_builds")
+            else None
         )
-        policy_anchor = policy.policy_l_anchor()
-        resolved_l_anchor = (
-            None if diagnostics.resolved_l_anchor is None else policy.finite_anchor(
-                diagnostics.resolved_l_anchor, field="resolved_l_anchor"
-            )
-        )
-        l_anchor = policy.finite_anchor(diagnostics.l_anchor, field="chosen_l_anchor")
-        if policy_anchor is not None and l_anchor != policy_anchor:
-            raise policy.InvalidAnchor("chosen_l_anchor does not match the official policy pin")
-    except policy.AnchorWindowEmpty:
-        # No genuine observed market level globally (or no window median under
-        # an explicitly unpinned policy). A fixed pin never invents witnesses.
-        return {"failure": _failure(
-            "implied_rating_gate_failed",
-            elapsed=time.monotonic() - started,
-            input_reasons=["no_market_level_observation"],
-            panel_publication_id=parent["publication_id"],
-        )}
-    except policy.InvalidAnchor:
-        return {"failure": _failure(
-            "implied_rating_gate_failed",
-            elapsed=time.monotonic() - started,
-            input_reasons=["invalid_anchor"],
-            panel_publication_id=parent["publication_id"],
-        )}
-    previous_anchor = (
-        current_pinned_anchor(conn)
-        if _relation_exists(conn, f"{PRODUCT}_builds")
-        else None
-    )
-    # End the read transaction before the full-history build (tens of minutes
-    # in production): an open transaction keeps AccessShare locks on the shared
-    # ledger, which would queue any other derived worker's DDL behind this
-    # build and every ledger reader behind that queued DDL. Nothing read so far
-    # needs to stay locked -- materialize re-checks the pointer by CAS.
-    conn.commit()
-    try:
-        if previous_anchor is not None:
-            previous_anchor = policy.finite_anchor(previous_anchor, field="pinned_l_anchor")
-    except policy.InvalidAnchor:
-        return {"failure": _failure(
-            "implied_rating_gate_failed", elapsed=time.monotonic() - started,
-            input_reasons=["invalid_anchor"],
-            panel_publication_id=parent["publication_id"],
-        )}
-    if policy_anchor is not None:
-        if previous_anchor is not None and not math.isclose(
-            previous_anchor, policy_anchor, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
-        ):
-            # A foreign current pin is not a corrected window median. Do not
-            # silently adopt it or treat a diagnostic drift as its authority.
-            return {"failure": _failure(
-                "implied_rating_gate_failed", elapsed=time.monotonic() - started,
-                input_reasons=["anchor_policy_mismatch"],
-                pinned_l_anchor=previous_anchor, policy_l_anchor=policy_anchor,
-                resolved_l_anchor=resolved_l_anchor,
-            )}
-        l_anchor = policy_anchor
-    elif previous_anchor is not None and resolved_l_anchor is not None and math.isclose(
-        previous_anchor, resolved_l_anchor, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
-    ):
-        # Historical unpinned policy: bind a bitwise-different inherited value.
-        l_anchor = previous_anchor
-    diagnostic_drift = (
-        None if resolved_l_anchor is None else not math.isclose(
-            l_anchor, resolved_l_anchor, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
-        )
-    )
-    LOGGER.info(
-        "bond_market_implied_rating_v1 anchor: l_anchor=%s pinned_l_anchor=%s "
-        "resolved_l_anchor=%s anchor_source=%s diagnostic_reason=%s",
-        l_anchor, previous_anchor, resolved_l_anchor,
-        diagnostics.anchor_source, diagnostics.diagnostic_reason,
-    )
-    rows = policy.build_publication_rows(
-        snapshot, last_closed_month=last_closed_month, l_anchor=l_anchor
-    )
-    rows_digest = policy.rows_digest(rows)
-    d_confirmed_count, d_candidate_count = policy.default_counts(rows)
-    months = pd.to_datetime(rows["month"])
-    if months.max().date() != last_closed_month:
-        return {"failure": _failure(
-            "implied_rating_gate_failed",
-            elapsed=time.monotonic() - started,
-            input_reasons=["snapshot_window_incomplete"],
-            panel_publication_id=parent["publication_id"],
-            panel_last_closed_month=last_closed_month.isoformat(),
-            published_last_month=months.max().date().isoformat(),
-        )}
-    identity_kwargs: dict[str, float] = {}
-    if policy_anchor is None and resolved_l_anchor is not None and l_anchor.hex() != resolved_l_anchor.hex():
-        # A fixed anchor is already bound canonically by POLICY_DIGEST. The
-        # diagnostic must not introduce a second, data-dependent identity pin.
-        identity_kwargs["inherited_l_anchor"] = l_anchor
-    publication = ImpliedRatingPublication(
-        publication_id=publication_id_for(
-            policy.POLICY_DIGEST, revision, input_fingerprint, **identity_kwargs
-        ),
+        # End the read transaction before the full-history build (tens of
+        # minutes in production): an open transaction keeps AccessShare locks
+        # on the shared ledger, which would queue any other derived worker's
+        # DDL behind this build and every ledger reader behind that queued
+        # DDL. Nothing read so far needs to stay locked -- materialize
+        # re-checks the pointer by CAS.
+        conn.commit()
+        return previous_anchor
+
+    # The build itself is the pure, process-independent function the
+    # determinism replay runs in fresh subprocesses (src.bonds.implied_rating_build).
+    built = build_payload_from_snapshot(
+        inputs["snapshot"],
+        last_closed_month=parent["last_closed_month"],
+        revision=revision,
         panel_publication_id=parent["publication_id"],
-        policy_version=policy.POLICY_VERSION,
-        policy_digest=policy.POLICY_DIGEST,
-        code_revision=revision,
-        panel_last_closed_month=last_closed_month,
-        first_month=months.min().date(),
-        last_month=last_closed_month,
-        input_fingerprint=input_fingerprint,
-        l_anchor=l_anchor,
-        rows_digest=rows_digest,
-        d_confirmed_count=d_confirmed_count,
-        d_candidate_count=d_candidate_count,
-        row_count=int(len(rows)),
+        input_fingerprint=inputs["input_fingerprint"],
+        resolve_pinned_anchor=resolve_pinned_anchor,
+        logger=LOGGER,
     )
-    return {
-        "publication": publication,
-        "rows": rows,
-        "last_closed_month": last_closed_month,
-        "input_fingerprint": input_fingerprint,
-        "rows_digest": rows_digest,
-        "l_anchor": l_anchor,
-        "resolved_l_anchor": resolved_l_anchor,
-        "pinned_l_anchor": previous_anchor,
-        "policy_l_anchor": policy_anchor,
-        "anchor_source": diagnostics.anchor_source,
-        "anchor_diagnostic_reason": diagnostics.diagnostic_reason,
-        "anchor_diagnostic_drift": diagnostic_drift,
-        "d_confirmed_count": d_confirmed_count,
-        "d_candidate_count": d_candidate_count,
-        "bucket_counts": {
-            str(bucket): int(count)
-            for bucket, count in rows["implied_bucket"].value_counts().items()
-        },
-    }
+    if "refusal" in built:
+        refusal = dict(built["refusal"])
+        reason = refusal.pop("reason")
+        return {"failure": _failure(
+            "implied_rating_gate_failed",
+            elapsed=time.monotonic() - started,
+            input_reasons=[reason],
+            **refusal,
+        )}
+    return built
+
+
+def _build_manifest() -> dict[str, Any]:
+    """The runtime stack evidence every plan/run result carries (never an identity input).
+
+    Collected once per invocation and logged in one line, so a production log
+    shows WHICH interpreter / numpy / lock digest / SIMD baseline computed the
+    digests it reports. See ``src.bonds.build_manifest``.
+    """
+    manifest = collect_build_manifest()
+    LOGGER.info("bond_market_implied_rating_v1 build manifest: %s", manifest_summary(manifest))
+    return manifest
 
 
 def _revision_or_failure(started: float) -> tuple[str | None, dict[str, Any] | None]:
@@ -523,9 +631,21 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
     and bucket histogram the next publication would carry.
     """
     started = time.monotonic()
+    # The manifest is collected FIRST so every result -- a plan, a current
+    # verdict or any typed refusal -- carries the stack it was computed on.
+    manifest = _build_manifest()
     revision, refusal = _revision_or_failure(started)
     if refusal is not None:
-        return refusal
+        return _with_manifest(refusal, manifest)
+    return _with_manifest(_plan(dsn, revision=revision, started=started), manifest)
+
+
+def _with_manifest(result: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """Attach the collected runtime manifest to a result/refusal (never an identity input)."""
+    return {**result, "build_manifest": manifest}
+
+
+def _plan(dsn: str | None, *, revision: str, started: float) -> dict[str, Any]:
     try:
         with connect(resolve_dsn(dsn)) as conn:
             gates = _gates(conn, started=started)
@@ -589,6 +709,7 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 "row_count": publication.row_count,
                 "d_confirmed_count": prepared["d_confirmed_count"],
                 "d_candidate_count": prepared["d_candidate_count"],
+                "latest_month_witnessed_count": prepared.get("latest_month_witnessed_count"),
                 "l_anchor": prepared["l_anchor"],
                 "resolved_l_anchor": prepared["resolved_l_anchor"],
                 "pinned_l_anchor": previous_anchor,
@@ -610,7 +731,10 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                         input_reasons=[f"{type(exc).__name__}"])
 
 
-def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
+def run(
+    dsn: str | None = None, *, as_of: date | None = None,
+    expectations: ApplyExpectations | None = None,
+) -> dict[str, Any]:
     """Publish the implied-rating product, or return a typed refusal.
 
     ``as_of`` is accepted for programmatic callers and ignored: the product's
@@ -619,12 +743,50 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
     (or the backfill CLI) is how one is asked for. ``WORKER_CALC_DATE`` is
     deliberately refused by ``run_worker`` (this ``run`` takes no ``calc_date``):
     a date the worker never reads must not be accepted from config.
+
+    ``expectations`` (the backfill CLI's ``--expect-*`` flags) are checked at
+    the earliest point each value is known and before any write; see
+    ``ApplyExpectations``. The ``BOND_IMPLIED_RATING_EXPECT_*`` service
+    variables (``EXPECTATION_ENV_VARS``) are parsed here as well -- they are
+    the only way to hand expectations to the deployed image through
+    ``python -m src.run_worker`` -- and merged with the programmatic ones
+    (a disagreement refuses). A malformed value refuses.
+
+    A FORCED republication (``BOND_IMPLIED_RATING_FORCE_REPUBLISH`` truthy,
+    i.e. a manual rebuild) must be digest-bound: ``rows_digest`` and
+    ``input_fingerprint`` expectations are REQUIRED, refused before any
+    connection or DDL otherwise. The daily Stage 7 call (not forced) needs
+    none, and honours any that are set.
+
+    Every result -- publication, current verdict or typed refusal -- carries
+    the runtime ``build_manifest`` collected at the start of the call.
     """
     started = time.monotonic()
+    manifest = _build_manifest()
     revision, refusal = _revision_or_failure(started)
     if refusal is not None:
-        return refusal
+        return _with_manifest(refusal, manifest)
     force_republish = _force_republish_requested()
+    try:
+        expectations = merge_expectations(expectations, expectations_from_env())
+    except ExpectationError as exc:
+        return _with_manifest(_expectation_error_failure(exc, started=started), manifest)
+    if force_republish:
+        missing = expectations.missing(FORCED_REQUIRED_EXPECTATIONS)
+        if missing:
+            return _with_manifest(_forced_without_digest_failure(missing, started=started), manifest)
+    result = _publish(
+        dsn, revision=revision, force_republish=force_republish,
+        expectations=expectations, started=started,
+    )
+    return _with_manifest(result, manifest)
+
+
+def _publish(
+    dsn: str | None, *, revision: str, force_republish: bool,
+    expectations: ApplyExpectations, started: float,
+) -> dict[str, Any]:
+    """The connected half of ``run``: gates, expectations, DDL, build, guards, materialize."""
     try:
         with connect(resolve_dsn(dsn)) as conn:
             gates = _gates(conn, started=started)
@@ -632,12 +794,22 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 return gates["failure"]
             parent = gates["parent"]
             pointer = gates["pointer"]
+            for field, actual in (
+                ("current_pointer", pointer),
+                ("panel_publication_id", parent["publication_id"]),
+            ):
+                refused = _expectation_mismatch(expectations, field, actual, started=started)
+                if refused is not None:
+                    return refused
             current, rebuild_reasons = _currentness(
                 conn, parent=parent, revision=revision, pointer=pointer
             )
             # The short-circuit runs BEFORE the rebuild: a daily hook that
             # sees the same panel, policy and code must not rebuild 3M rows.
             if not force_republish and current is not None:
+                refused = _unverifiable_expectations(expectations, started=started)
+                if refused is not None:
+                    return refused
                 return {
                     "state": "current",
                     "aborted": False,
@@ -657,6 +829,12 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 if "failure" in inputs:
                     return inputs["failure"]
                 if "current" in inputs:
+                    refused = _unverifiable_expectations(
+                        expectations, started=started,
+                        known_fingerprint=inputs["current"]["input_fingerprint"],
+                    )
+                    if refused is not None:
+                        return refused
                     return inputs["current"]
                 payload_kwargs["snapshot_inputs"] = inputs
             if "snapshot_inputs" not in payload_kwargs:
@@ -664,6 +842,14 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 if "failure" in inputs:
                     return inputs["failure"]
                 payload_kwargs["snapshot_inputs"] = inputs
+            # The snapshot is read and fingerprinted BEFORE the DDL replay, so an
+            # operator pin on the inputs refuses without touching the ledger.
+            refused = _expectation_mismatch(
+                expectations, "input_fingerprint",
+                payload_kwargs["snapshot_inputs"]["input_fingerprint"], started=started,
+            )
+            if refused is not None:
+                return refused
             install_schema(conn)
             # Commit the DDL at once: it takes AccessExclusiveLock on the shared
             # ledger (sec_derived_publications / sec_derived_current_pointers),
@@ -675,6 +861,11 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
             )
             if "failure" in prepared:
                 return prepared["failure"]
+            refused = _expectation_mismatch(
+                expectations, "rows_digest", prepared["rows_digest"], started=started
+            )
+            if refused is not None:
+                return refused
             publication: ImpliedRatingPublication = prepared["publication"]
             previous_anchor = prepared["pinned_l_anchor"]
             if policy.policy_l_anchor() is None and previous_anchor is not None and not math.isclose(
@@ -691,6 +882,26 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                     input_reasons=["anchor_drift"],
                     pinned_l_anchor=previous_anchor,
                     resolved_l_anchor=prepared["resolved_l_anchor"],
+                )
+            latest_witnessed = prepared.get("latest_month_witnessed_count")
+            if latest_witnessed == 0:
+                # The panel served its last closed month dark: every row of
+                # that month is carried/NOT_RATED and the whole history would
+                # be republished as if the market had closed a month it never
+                # saw. Refuse here -- after the build, so the digest the
+                # operator would have published is visible -- and before any
+                # write. Nothing about rows, policy or digests changes.
+                return _failure(
+                    "implied_rating_latest_month_unwitnessed",
+                    elapsed=time.monotonic() - started,
+                    input_reasons=["latest_month_unwitnessed"],
+                    panel_publication_id=parent["publication_id"],
+                    panel_last_closed_month=publication.panel_last_closed_month.isoformat(),
+                    latest_month_witnessed_count=0,
+                    publication_id=publication.publication_id,
+                    input_fingerprint=prepared["input_fingerprint"],
+                    rows_digest=prepared["rows_digest"],
+                    row_count=publication.row_count,
                 )
             result = materialize(
                 conn, publication, prepared["rows"], expected_pointer=pointer
@@ -724,6 +935,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 "row_count": result.row_count,
                 "d_confirmed_count": prepared["d_confirmed_count"],
                 "d_candidate_count": prepared["d_candidate_count"],
+                "latest_month_witnessed_count": latest_witnessed,
                 "l_anchor": prepared["l_anchor"],
                 "resolved_l_anchor": prepared["resolved_l_anchor"],
                 "pinned_l_anchor": previous_anchor,
