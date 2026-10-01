@@ -441,6 +441,30 @@ stays invisible for a week.
 `halted_by` lists every clause that fired, in severity order; `state` is the
 first of them. `coverage` carries `universe / swept / remaining / complete`.
 
+| `panel.input_relation_reasons` | Meaning |
+|--------------------------------|---------|
+| `closed_month_liquidity_absent:<YYYY-MM-01>` | A rebuilt closed month has rows but zero non-null `dollar_volume` rows. Panel `state=gate_failed`, `reason=panel_gate_failed`, `aborted=true`; the daily verdict is `panel_gate_failed`. Materialization is not called and the pointer is untouched. |
+
+**2026-10-01 — September-dark close.** The live tick query previously admitted
+only the open month. Finnhub candles carry NULL volume, and the immutable
+OSBAP/TRACE monthly backfill supplied no later usable volume, so rebuilding an
+open month as closed erased its tick-derived `dollar_volume`. An open month's
+non-empty liquidity frame masked that dark close; whole-frame emptiness was not
+a sufficient gate.
+
+Stage 6 now accepts tick liquidity for both rebuilt months, retaining live-over-
+historical priority. Tick USD volume is `sum(par_volume * price_median / 100)`;
+tick-covered CUSIP-months use summed print counts and actual traded days instead
+of candle-day counts. Pre-tick behavior is unchanged. The close gate refuses
+**zero non-null coverage only**, with no percentage threshold; open-month
+liquidity can legitimately be absent on day 1. Refusals report `liquidity_coverage`
+with `closed_month_rows`, `closed_month_dollar_volume_rows`, `open_month_rows`,
+and `open_month_dollar_volume_rows`; successful publication lineage records all
+four counts. The `panel_month_already_current` short-circuit does not rebuild or
+run this gate. `BOND_PANEL_FORCE_REPUBLISH` bypasses that short-circuit, **not**
+the close gate. Historical July/August repair requires a separate governed
+publication and is not performed by this fix.
+
 ### 4a. Why a held lock aborts instead of retrying
 
 Decided 2026-08-07. Both publication workers return `{"state": "locked"}` when
