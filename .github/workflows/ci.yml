@@ -166,6 +166,15 @@ jobs:
             tests/test_bond_default_diagnostic_publication.py
             tests/test_bond_default_source_bundle.py
             tests/test_bond_default_events_worker.py
+            tests/test_backfill_bond_market_implied_rating.py
+            tests/test_bond_build_manifest.py
+            tests/test_bond_market_implied_rating.py
+            tests/test_bond_market_implied_rating_apply_preconditions.py
+            tests/test_bond_market_implied_rating_check_worker.py
+            tests/test_bond_market_implied_rating_latest_month_guard.py
+            tests/test_bond_market_implied_rating_replay.py
+            tests/test_bond_market_implied_rating_worker.py
+            tests/test_verify_bond_market_implied_rating_publication.py
           )
           printf 'environment_mode=no-dsn\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
