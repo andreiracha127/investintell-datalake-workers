@@ -294,6 +294,36 @@ def test_db_shaped_month_builder_uses_observed_then_analytical_terms_and_one_spr
     assert row["amt_outstanding_k"] == pytest.approx(500_000.)
 
 
+@pytest.mark.parametrize("tick_reason", ["live_tick_median_valid_bps", "live_tick_missing_or_crossed_bps"])
+def test_db_month_builder_keeps_closed_month_tick_volume_without_candle_volume(tick_reason) -> None:
+    closed = pd.Timestamp("2026-09-01")
+    open_month = pd.Timestamp("2026-10-01")
+    daily = pd.DataFrame({
+        "cusip9": ["AAA", "AAA"], "day": [date(2026, 9, 30), date(2026, 10, 1)],
+        "price": [100.0, 101.0], "ytm": [0.05, 0.05], "volume": [None, None],
+    })
+    terms = pd.DataFrame({
+        "cusip9": ["AAA"], "coupon_rate": [5.0],
+        "maturity_date": [date(2031, 9, 1)], "amount_outstanding_k": [500_000.0],
+    })
+    sector = pd.DataFrame({"cusip9": ["AAA"], "issuer_id": ["issuer"]})
+    liquidity = pd.DataFrame({
+        "cusip9": ["AAA"], "month": [date(2026, 9, 1)],
+        "dollar_volume": [Decimal("350000")], "reason_code": [tick_reason],
+    })
+
+    rows = build_db_monthly_panel(
+        daily, terms, pd.DataFrame(), sector, liquidity, pd.DataFrame(),
+        months=[closed, open_month],
+    ).set_index("month")
+
+    assert rows.loc[closed, "dollar_volume"] == Decimal("350000")
+    # Stage 6 publishes this reason_code as liquidity_reason, independently of
+    # whether two-sided quotes exist; a one-sided tape still carries volume.
+    assert rows.loc[closed, "reason_code"] == tick_reason
+    assert pd.isna(rows.loc[open_month, "dollar_volume"])
+
+
 def test_db_month_builder_does_not_treat_unproven_vendor_amount_as_millions() -> None:
     terms = pd.DataFrame({
         "cusip9": ["AAA"],

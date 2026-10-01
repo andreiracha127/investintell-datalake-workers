@@ -282,7 +282,8 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
     assert "JOIN mapping m ON upper(btrim(l.cusip9)) = m.reference_cusip9" in liquidity_sql
     assert "), live AS" in liquidity_sql
     assert "l.month IN (%s, %s)" in liquidity_sql
-    assert "AND m.month = %s WHERE t.day >= %s AND t.day <= %s" in liquidity_sql
+    assert "date_trunc('month', t.day)::date = m.month WHERE t.day >= %s AND t.day <= %s" in liquidity_sql
+    assert "AND m.month = %s" not in liquidity_sql
     assert "all_rows AS (SELECT * FROM live UNION ALL SELECT * FROM historical)" in liquidity_sql
     assert lineage["distribution_rule"] == "rule_144a_and_reg_s"
     assert lineage["distribution_mapping_snapshot_id"] == REG_S_SNAPSHOT_ID
@@ -297,6 +298,44 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
     assert lineage["distribution_mapping_closed_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
     assert lineage["rating_feed_watermark"] == "2026-07-31T23:59:59Z"
+
+
+def test_db_loader_liquidity_params_bound_ticks_to_closed_and_open_months(monkeypatch) -> None:
+    captured = []
+
+    def frame(_conn, sql, params=()):
+        if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+            return pd.DataFrame({"reference_cusip9": ["REFERENCE1"]})
+        if sql.startswith("SELECT DISTINCT source_sha256"):
+            return pd.DataFrame({"source_sha256": ["a" * 64]})
+        if "bond_liquidity_monthly" in sql:
+            captured.append((sql, params))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+    monkeypatch.setattr(
+        bond_panel, "resolve_reg_s_cusip_map_from_db",
+        lambda *_args, **_kwargs: SimpleNamespace(resolutions={}, reason_by_reference={}),
+    )
+
+    bond_panel._load_inputs(
+        object(), pd.Timestamp("2026-09-01"), pd.Timestamp("2026-10-01"),
+        date(2026, 10, 1), mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+    )
+
+    assert len(captured) == 1
+    sql, params = captured[0]
+    assert sql.count("%s") == len(params) == 5
+    assert params[1:] == (
+        date(2026, 9, 1), date(2026, 10, 1), date(2026, 9, 1), date(2026, 10, 1),
+    )
+    assert {row["month"] for row in json.loads(params[0])} == {"2026-09-01", "2026-10-01"}
+    assert "date_trunc('month', t.day)::date = m.month" in sql
+    assert "AND m.month = %s" not in sql
+    assert "0 AS priority FROM bond_tick_daily" in sql
+    assert "1 AS priority FROM bond_liquidity_monthly" in sql
+    assert "SELECT DISTINCT ON (cusip9, month)" in sql
+    assert "ORDER BY cusip9, month, priority" in sql
 
 
 @pytest.mark.parametrize(
