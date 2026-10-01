@@ -70,7 +70,7 @@ def main() -> None:
             "|open_macro_v03_monitor|gamma_drift|ipca_production_gate"
             "|tiingo_fund_meta|mixed_quant_publication|mixed_quant_retention"
             "|bond_live_daily|bond_reference_terms|bond_panel_parity"
-            "|bond_market_implied_rating"
+            "|bond_market_implied_rating|bond_market_implied_rating_check"
             "|fomc_sep_ingestion)"
         )
     mod = importlib.import_module(f"src.workers.{worker}")
