@@ -37,6 +37,7 @@ DAILY_CLOSURE = (
     "src.bonds.implied_rating_replay",
     "src.bonds.build_manifest",
     "scripts.backfill_bond_market_implied_rating",
+    "scripts.verify_bond_market_implied_rating_publication",
 )
 
 
