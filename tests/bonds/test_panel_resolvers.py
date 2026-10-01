@@ -324,7 +324,7 @@ def test_db_month_builder_keeps_closed_month_tick_volume_without_candle_volume(t
     assert pd.isna(rows.loc[open_month, "dollar_volume"])
 
 
-def test_db_month_builder_uses_tick_prints_and_days_only_for_covered_cusip_months() -> None:
+def test_db_month_builder_uses_tick_prints_only_for_covered_cusip_months() -> None:
     closed = pd.Timestamp("2026-09-01")
     open_month = pd.Timestamp("2026-10-01")
     daily = pd.DataFrame({
@@ -353,8 +353,8 @@ def test_db_month_builder_uses_tick_prints_and_days_only_for_covered_cusip_month
         months=[closed, open_month],
     ).set_index(["cusip_id", "month"])
 
-    assert rows.loc[("AAA", closed), ["trade_count", "traded_days", "observed_days"]].tolist() == [17, 2, 3]
-    assert rows.loc[("AAA", open_month), ["trade_count", "traded_days", "observed_days"]].tolist() == [4, 1, 2]
+    assert rows.loc[("AAA", closed), ["trade_count", "traded_days", "observed_days"]].tolist() == [17, 3, 3]
+    assert rows.loc[("AAA", open_month), ["trade_count", "traded_days", "observed_days"]].tolist() == [4, 2, 2]
     # An uncovered CUSIP in a tick-covered month keeps its historical behavior.
     assert rows.loc[("BBB", closed), ["trade_count", "traded_days", "observed_days"]].tolist() == [2, 2, 2]
     assert pd.isna(rows.loc[("BBB", open_month), "trade_count"])
@@ -383,11 +383,58 @@ def test_db_month_builder_never_fabricates_candle_counts_for_tick_covered_month(
         daily, terms, pd.DataFrame(), sector, liquidity, pd.DataFrame(), months=[month],
     ).iloc[0]
 
-    assert row["traded_days"] == 2
+    if has_candles:
+        assert row["traded_days"] == 1
+    else:
+        assert pd.isna(row["traded_days"])
     if tick_count is None:
         assert pd.isna(row["trade_count"])
     else:
         assert row["trade_count"] == tick_count
+
+
+@pytest.mark.parametrize(
+    ("candle_days", "tick_days", "expected_reason"),
+    [(6, 4, "eligible"), (5, 1, "eligible"), (4, 6, "illiquid")],
+)
+@pytest.mark.parametrize("tick_count", [17, None], ids=["real_prints", "missing_tick_count"])
+def test_tick_coverage_never_changes_candle_days_or_eligibility(
+    candle_days, tick_days, expected_reason, tick_count,
+) -> None:
+    month = pd.Timestamp("2026-09-01")
+    daily = pd.DataFrame({
+        "cusip9": ["AAA"] * candle_days,
+        "day": pd.date_range(month, periods=candle_days),
+        "price": [100.0] * candle_days, "ytm": [0.05] * candle_days,
+        "volume": [None] * candle_days,
+    })
+    terms = pd.DataFrame({
+        "cusip9": ["AAA"], "coupon_rate": [5.0],
+        "maturity_date": [date(2031, 9, 1)], "amount_outstanding_k": [500_000.0],
+    })
+    sector = pd.DataFrame({
+        "cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10],
+        "currency": ["USD"], "asset_class": ["corporate"],
+    })
+    liquidity = pd.DataFrame({
+        "cusip9": ["AAA"], "month": [month],
+        "tick_trade_count": [tick_count], "tick_traded_days": [tick_days],
+    })
+    baseline = build_db_monthly_panel(
+        daily, terms, pd.DataFrame(), sector, pd.DataFrame(), pd.DataFrame(), months=[month],
+    )
+    covered = build_db_monthly_panel(
+        daily, terms, pd.DataFrame(), sector, liquidity, pd.DataFrame(), months=[month],
+    )
+
+    pd.testing.assert_series_equal(covered["traded_days"], baseline["traded_days"])
+    pd.testing.assert_series_equal(eligibility(covered), eligibility(baseline))
+    assert covered["traded_days"].tolist() == [candle_days]
+    assert eligibility(covered).tolist() == [expected_reason]
+    if tick_count is None:
+        assert pd.isna(covered.loc[0, "trade_count"])
+    else:
+        assert covered.loc[0, "trade_count"] == tick_count
 
 
 def test_db_month_builder_preserves_pre_tick_observation_counts() -> None:

@@ -454,9 +454,12 @@ a sufficient gate.
 
 Stage 6 now accepts tick liquidity for both rebuilt months, retaining live-over-
 historical priority. Tick USD volume is `sum(par_volume * price_median / 100)`;
-tick-covered CUSIP-months use summed print counts and actual traded days instead
-of candle-day counts. Pre-tick behavior is unchanged. The close gate refuses
-**zero non-null coverage only**, with no percentage threshold; open-month
+tick-covered CUSIP-months override only `trade_count` with summed print counts.
+`traded_days` keeps its existing candle-observed basis for eligibility: the tick
+lane fetches only the previous business day and never backfills, so tick days
+are a lower bound, not a replacement. `tick_traded_days` identifies tick coverage
+even when print counts are NULL. Pre-tick behavior is unchanged. The close gate
+refuses **zero non-null coverage only**, with no percentage threshold; open-month
 liquidity can legitimately be absent on day 1. Refusals report `liquidity_coverage`
 with `closed_month_rows`, `closed_month_dollar_volume_rows`, `open_month_rows`,
 and `open_month_dollar_volume_rows`; successful publication lineage records all
@@ -464,6 +467,31 @@ four counts. The `panel_month_already_current` short-circuit does not rebuild or
 run this gate. `BOND_PANEL_FORCE_REPUBLISH` bypasses that short-circuit, **not**
 the close gate. Historical July/August repair requires a separate governed
 publication and is not performed by this fix.
+
+**Required post-deploy September recovery — owner authorization required.**
+Production already published September closed / October open in panel publication
+`2bce7901` at **2026-10-01 09:50Z**, with all **20,416** rows reporting
+`monthly_liquidity_absent`. Deploying this fix alone leaves that publication
+`already_current` throughout October and does not run the new close gate.
+
+1. After merge and deploy, obtain explicit owner authorization for one panel
+   republish. Before **2026-11-01**, run the panel once with
+   `BOND_PANEL_FORCE_REPUBLISH=1` and an October `as_of` so the rebuilt window is
+   September closed / October open. Do not use this flag to bypass other gates.
+2. Verify that the replacement publication has September closed-month
+   `dollar_volume` coverage (approximately **9.5k of 10,208** September rows
+   expected from tick data), using `liquidity_coverage` / publication lineage and
+   the September snapshot. The expected coverage is an operational cross-check,
+   not a new percentage gate.
+3. Verify September RV fit diagnostics and resulting RV fit rows, not merely a
+   `published` or `current` status; record the replacement publication and counts.
+4. Remove `BOND_PANEL_FORCE_REPUBLISH` after the authorized one-time run and
+   verification. Do not leave the force flag enabled for later daily runs.
+
+If this September/October window is missed, September requires a separate
+owner-authorized, governed historical repair like July/August; the daily panel
+will no longer rebuild it. No production republish or historical repair is
+performed by the code correction itself.
 
 ### 4a. Why a held lock aborts instead of retrying
 

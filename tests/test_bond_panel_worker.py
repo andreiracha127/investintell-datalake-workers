@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
+import duckdb
 import pandas as pd
 import pytest
 
@@ -340,6 +341,134 @@ def test_db_loader_liquidity_params_bound_ticks_to_closed_and_open_months(monkey
     assert "trade_count" in bond_panel.REQUIRED_COLUMNS["bond_tick_daily"]
     assert "SELECT DISTINCT ON (cusip9, month)" in sql
     assert "ORDER BY cusip9, month, priority" in sql
+
+
+def test_db_loader_executes_monthly_liquidity_sql_without_dsn(monkeypatch) -> None:
+    closed = date(2026, 9, 1)
+    open_month = date(2026, 10, 1)
+    as_of = date(2026, 10, 2)
+    captured = []
+    resolution = SimpleNamespace(
+        reference_cusip9="REFERENCE1", reg_s_cusip9="EXEC00001", decision_id="decision-1",
+    )
+    monkeypatch.setattr(
+        bond_panel, "resolve_reg_s_cusip_map_from_db",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            resolutions={"REFERENCE1": resolution}, reason_by_reference={},
+        ),
+    )
+
+    with duckdb.connect(":memory:") as conn:
+        # Test-only compatibility for PostgreSQL's space-trim and JSON mapping
+        # transport. The complete production query (including the mapping CTE)
+        # executes unchanged except for psycopg placeholders becoming DuckDB's.
+        conn.execute("CREATE MACRO btrim(value) AS trim(value)")
+        conn.execute("CREATE TYPE jsonb AS JSON")
+        conn.execute("""
+            CREATE MACRO jsonb_to_recordset(payload) AS TABLE
+            SELECT value ->> 'reference_cusip9' AS reference_cusip9,
+                   value ->> 'execution_cusip9' AS execution_cusip9,
+                   value ->> 'distribution_rule' AS distribution_rule,
+                   value ->> 'decision_id' AS decision_id,
+                   CAST(value ->> 'month' AS DATE) AS month
+            FROM json_each(payload)
+        """)
+        conn.execute("""
+            CREATE TABLE bond_liquidity_monthly (
+                cusip9 VARCHAR, month DATE, quoted_days INTEGER,
+                rel_bid_ask_bps DOUBLE, dollar_volume DOUBLE,
+                quote_state VARCHAR, reason_code VARCHAR
+            );
+            CREATE TABLE bond_tick_daily (
+                cusip9 VARCHAR, day DATE, par_volume DOUBLE, price_median DOUBLE,
+                bid_ask_bps DOUBLE, trade_count BIGINT
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO bond_liquidity_monthly VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (" reference1 ", closed, 99, 999.0, 999.0, "quoted", "historical"),
+                ("REFERENCE1", open_month, 99, 999.0, 888.0, "quoted", "historical"),
+                ("HISTORY01", closed, 3, 15.0, 123.0, "quoted", "historical"),
+                ("HISTORY01", open_month, 4, 16.0, 456.0, "quoted", "historical"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO bond_tick_daily VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (" reference1 ", closed, 100_000.0, 90.0, 20.0, 2),
+                ("REFERENCE1", date(2026, 9, 30), 200_000.0, 110.0, 40.0, 3),
+                ("REFERENCE1", date(2026, 9, 10), None, 100.0, -5.0, 5),
+                ("REFERENCE1", date(2026, 9, 11), 100.0, None, None, 6),
+                ("REFERENCE1", open_month, 300_000.0, 105.0, -5.0, 7),
+                ("REFERENCE1", as_of, 100_000.0, 95.0, None, 11),
+                (" exec00001 ", date(2026, 9, 2), 1_000.0, 95.0, 10.0, 13),
+                ("EXEC00001", as_of, 2_000.0, 110.0, 30.0, 17),
+                # Exclude both bounds, including a future day in the open month.
+                ("REFERENCE1", date(2026, 8, 31), 1e9, 100.0, 1.0, 10_000),
+                ("REFERENCE1", date(2026, 10, 3), 1e9, 100.0, 1.0, 20_000),
+                ("REFERENCE1", date(2026, 11, 1), 1e9, 100.0, 1.0, 30_000),
+                ("HISTORY01", date(2026, 10, 3), 1e9, 100.0, 1.0, 40_000),
+                ("UNMAPPED1", closed, 1e9, 100.0, 1.0, 50_000),
+            ],
+        )
+
+        def frame(_conn, sql, params=()):
+            if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+                return pd.DataFrame({"reference_cusip9": ["REFERENCE1", "HISTORY01"]})
+            if sql.startswith("SELECT DISTINCT source_sha256"):
+                return pd.DataFrame({"source_sha256": ["a" * 64]})
+            if "bond_liquidity_monthly" in sql:
+                captured.append((sql, params))
+                return _conn.execute(sql.replace("%s", "?"), params).fetchdf()
+            return pd.DataFrame()
+
+        monkeypatch.setattr(bond_panel, "_frame", frame)
+        inputs, _lineage = bond_panel._load_inputs(
+            conn, pd.Timestamp(closed), pd.Timestamp(open_month), as_of,
+            mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+        )
+
+    assert len(captured) == 1
+    sql, params = captured[0]
+    assert sql.count("%s") == len(params) == 5
+    assert params[1:] == (closed, open_month, closed, as_of)
+    assert {row["month"] for row in json.loads(params[0])} == {"2026-09-01", "2026-10-01"}
+    rows = inputs["monthly_liquidity"].set_index(["cusip9", "month"])
+    assert set(rows.index) == {
+        (cusip9, pd.Timestamp(month))
+        for cusip9 in ("REFERENCE1", "EXEC00001", "HISTORY01")
+        for month in (closed, open_month)
+    }
+    september = rows.loc[("REFERENCE1", pd.Timestamp(closed))]
+    october = rows.loc[("REFERENCE1", pd.Timestamp(open_month))]
+    # Live wins even when historical quotes exist but live quotes do not.
+    assert september["dollar_volume"] == pytest.approx(100_000 * .9 + 200_000 * 1.1)
+    assert october["dollar_volume"] == pytest.approx(300_000 * 1.05 + 100_000 * .95)
+    assert september["tick_trade_count"] == 2 + 3 + 5 + 6
+    assert october["tick_trade_count"] == 7 + 11
+    assert september["tick_traded_days"] == 4
+    assert october["tick_traded_days"] == 2
+    assert september["quoted_days"] == 2
+    assert september["rel_bid_ask_bps"] == pytest.approx(30.0)
+    assert september["reason_code"] == "live_tick_median_valid_bps"
+    assert october["quoted_days"] == 0
+    assert pd.isna(october["rel_bid_ask_bps"])
+    assert october["quote_state"] == "unquoted"
+    assert october["reason_code"] == "live_tick_missing_or_crossed_bps"
+    for month, volume, count in [(closed, 950.0, 13), (open_month, 2200.0, 17)]:
+        reg_s = rows.loc[("EXEC00001", pd.Timestamp(month))]
+        assert reg_s["distribution_rule"] == "reg_s"
+        assert reg_s["reference_cusip9"] == "REFERENCE1"
+        assert reg_s["distribution_decision_id"] == "decision-1"
+        assert reg_s["dollar_volume"] == pytest.approx(volume)
+        assert reg_s["tick_trade_count"] == count
+    for month, volume in [(closed, 123.0), (open_month, 456.0)]:
+        historical = rows.loc[("HISTORY01", pd.Timestamp(month))]
+        assert historical["reason_code"] == "historical"
+        assert historical["dollar_volume"] == pytest.approx(volume)
+        assert pd.isna(historical["tick_trade_count"])
+        assert pd.isna(historical["tick_traded_days"])
 
 
 @pytest.mark.parametrize(
