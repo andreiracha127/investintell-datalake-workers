@@ -17,15 +17,23 @@
 # railway.toml both record 07:30 UTC, ~2h ahead of the 11:00 bond-chain). Service
 # variables are unchanged: WORKER=bond_live_daily, DATABASE_URL, FINNHUB_API_KEY, optional
 # WORKER_LIMIT / WORKER_CALC_DATE / BOND_TICK_TOP_N / BOND_IMPLIED_RATING_ENABLED /
-# BOND_IMPLIED_RATING_FORCE_REPUBLISH (see the runbook). The service MUST still deploy
+# BOND_IMPLIED_RATING_FORCE_REPUBLISH / BOND_IMPLIED_RATING_EXPECT_* (see the runbook; a
+# forced republish REQUIRES the rows-digest and input-fingerprint expectations and refuses
+# before any DDL without them). The service MUST still deploy
 # from the GitHub source: RAILWAY_GIT_COMMIT_SHA is the code revision (no .git in the
 # image; "unknown" refuses to publish).
 #
 # Deploying this file is an OPERATOR step requiring explicit owner authorization: it
 # changes the production image of a publishing service. A deploy is NOT a one-shot
 # execution here (unlike the artifact loader): the cron keeps firing the daily worker.
-# A one-off replay/determinism run uses `railway run` / a manual service restart with the
-# documented variables, never a change to this file.
+# The cron container exits between runs, so the deployed image cannot be reached with
+# `railway ssh`, and `railway run` executes LOCALLY, not on this image. A one-off
+# determinism check or digest-bound republication on the EXACT deployed image goes
+# through this same start command with WORKER temporarily set to
+# `bond_market_implied_rating_check` / `bond_market_implied_rating` plus the
+# BOND_IMPLIED_RATING_EXPECT_* variables, exactly as documented in
+# docs/runbooks/bond-market-implied-rating-republication.md §2.2 / §2.3 (owner-authorized,
+# every variable reverted afterwards). Never a change to this file.
 #
 # Railway rejects linking config-as-code files for NEW services; for an existing service
 # set "Config-as-code file path" to this file in the service settings. Verify a deploy in
