@@ -334,6 +334,10 @@ def test_db_loader_liquidity_params_bound_ticks_to_closed_and_open_months(monkey
     assert "AND m.month = %s" not in sql
     assert "0 AS priority FROM bond_tick_daily" in sql
     assert "1 AS priority FROM bond_liquidity_monthly" in sql
+    assert "sum(t.trade_count) AS tick_trade_count, count(*)::int AS tick_traded_days" in sql
+    assert "NULL::bigint AS tick_trade_count, NULL::int AS tick_traded_days" in sql
+    assert "reason_code, tick_trade_count, tick_traded_days FROM all_rows" in sql
+    assert "trade_count" in bond_panel.REQUIRED_COLUMNS["bond_tick_daily"]
     assert "SELECT DISTINCT ON (cusip9, month)" in sql
     assert "ORDER BY cusip9, month, priority" in sql
 

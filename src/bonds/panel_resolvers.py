@@ -417,6 +417,13 @@ def build_db_monthly_panel(
     if "dollar_volume_liquidity" in out:
         out["dollar_volume"] = out["dollar_volume"].combine_first(out["dollar_volume_liquidity"])
     out["traded_days"] = out.get("traded_days", out["observed_days"]).fillna(out["observed_days"])
+    if {"tick_trade_count", "tick_traded_days"}.issubset(out.columns):
+        # A tick row exists only for a bond-day with usable prints. Override per
+        # CUSIP-month, not globally: pre-tick months retain the existing proxy.
+        # A missing tick count stays missing rather than becoming candle days.
+        has_ticks = out["tick_traded_days"].notna()
+        out["trade_count"] = out["trade_count"].where(~has_ticks, out["tick_trade_count"])
+        out["traded_days"] = out["traded_days"].where(~has_ticks, out["tick_traded_days"])
     out["maturity_date"] = pd.to_datetime(out["maturity_date"], errors="coerce")
     out["bond_maturity"] = (out["maturity_date"] - out["month"]).dt.days / 365.25
     observed = out["ytm"].notna()
