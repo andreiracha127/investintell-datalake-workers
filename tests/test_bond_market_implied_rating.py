@@ -1353,8 +1353,20 @@ def test_worker_force_republish_bypasses_the_short_circuit(monkeypatch) -> None:
         snapshot=frame,
         anchor=None,
     )
+    # A forced run is digest-bound: without the two expectations it refuses before connecting.
     monkeypatch.setenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH", "1")
-    result = worker.run("postgresql://example")
+    for var in worker.EXPECTATION_ENV_VARS.values():
+        monkeypatch.delenv(var, raising=False)
+    refused = worker.run("postgresql://example")
+    assert refused["state"] == "precondition_failed"
+    assert refused["input_reasons"] == ["expected_rows_digest_required", "expected_input_fingerprint_required"]
+    assert "publication" not in captured
+    # Bound to what the read-only plan reports, the force flag bypasses the short-circuit.
+    planned = worker.plan("postgresql://example")
+    assert planned["state"] == "planned"
+    result = worker.run("postgresql://example", expectations=worker.ApplyExpectations(
+        rows_digest=planned["rows_digest"], input_fingerprint=planned["input_fingerprint"],
+    ))
     assert result["state"] in {"published", "published_no_defaults"}
     assert captured["expected_pointer"] == "pub-current"
 

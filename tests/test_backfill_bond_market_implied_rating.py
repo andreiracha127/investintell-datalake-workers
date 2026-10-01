@@ -12,6 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts import backfill_bond_market_implied_rating as cli  # noqa: E402
 
+DIGEST = "d" * 64
+FINGERPRINT = "f" * 64
+#: The minimum a digest-bound --apply accepts (both values from the accepted receipt).
+APPLY_BOUND = ["--apply", "--expect-rows-digest", DIGEST, "--expect-input-fingerprint", FINGERPRINT]
+
 
 def test_dry_run_reports_the_plan_without_touching_the_worker(monkeypatch, capsys) -> None:
     calls: dict[str, object] = {}
@@ -28,9 +33,10 @@ def test_dry_run_reports_the_plan_without_touching_the_worker(monkeypatch, capsy
 def test_apply_sets_the_force_flag_for_exactly_one_call(monkeypatch, capsys) -> None:
     seen: dict[str, object] = {}
 
-    def fake_run(dsn):
+    def fake_run(dsn, *, expectations):
         seen["env"] = os.environ.get(cli.FORCE_ENV)
         seen["dsn"] = dsn
+        seen["expectations"] = expectations
         return {"state": "published", "row_count": 9, "aborted": False}
 
     monkeypatch.setattr(cli.worker, "run", fake_run)
@@ -38,8 +44,11 @@ def test_apply_sets_the_force_flag_for_exactly_one_call(monkeypatch, capsys) -> 
     monkeypatch.setenv("DATABASE_URL", "postgresql://apply")
     monkeypatch.delenv(cli.FORCE_ENV, raising=False)
 
-    assert cli.main(["--apply"]) == 0
-    assert seen == {"env": "1", "dsn": "postgresql://apply"}
+    assert cli.main(APPLY_BOUND) == 0
+    assert seen == {
+        "env": "1", "dsn": "postgresql://apply",
+        "expectations": cli.worker.ApplyExpectations(rows_digest=DIGEST, input_fingerprint=FINGERPRINT),
+    }
     assert cli.FORCE_ENV not in os.environ
     assert json.loads(capsys.readouterr().out)["state"] == "published"
 
@@ -47,9 +56,82 @@ def test_apply_sets_the_force_flag_for_exactly_one_call(monkeypatch, capsys) -> 
 def test_apply_restores_a_pre_existing_force_value(monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://apply")
     monkeypatch.setenv(cli.FORCE_ENV, "operator-value")
-    monkeypatch.setattr(cli.worker, "run", lambda dsn: {"state": "published"})
-    assert cli.main(["--apply"]) == 0
+    monkeypatch.setattr(cli.worker, "run", lambda dsn, **kw: {"state": "published"})
+    assert cli.main(APPLY_BOUND) == 0
     assert os.environ[cli.FORCE_ENV] == "operator-value"
+
+
+# --------------------------------------------------------------------------- #
+# --apply is digest-bound: refused before the DSN is resolved without BOTH the
+# rows digest and the input fingerprint (64 lowercase hex each).
+# --------------------------------------------------------------------------- #
+def _arm_refusal_probes(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://must-not-be-resolved")
+    monkeypatch.setattr(cli, "resolve_dsn", lambda *a, **k: pytest.fail("DSN resolved before the refusal"))
+    monkeypatch.setattr(cli.worker, "run", lambda *a, **k: pytest.fail("worker ran despite the refusal"))
+    monkeypatch.setattr(cli.worker, "plan", lambda *a, **k: pytest.fail("plan ran despite the refusal"))
+    monkeypatch.delenv(cli.FORCE_ENV, raising=False)
+
+
+@pytest.mark.parametrize(
+    ("argv", "named"),
+    [
+        (["--apply"], ["--expect-rows-digest", "--expect-input-fingerprint"]),
+        (["--apply", "--expect-rows-digest", DIGEST], ["--expect-input-fingerprint"]),
+        (["--apply", "--expect-input-fingerprint", FINGERPRINT], ["--expect-rows-digest"]),
+        (["--apply", "--expect-current-pointer", "p1", "--expect-panel-publication", "panel"],
+         ["--expect-rows-digest", "--expect-input-fingerprint"]),
+    ],
+)
+def test_apply_without_both_digest_expectations_is_refused_before_dsn(monkeypatch, capsys, argv, named):
+    _arm_refusal_probes(monkeypatch)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(argv)
+    assert excinfo.value.code != 0
+    err = capsys.readouterr().err
+    assert "digest-bound" in err
+    for flag in named:
+        assert flag in err
+    assert cli.FORCE_ENV not in os.environ
+
+
+@pytest.mark.parametrize(
+    ("flag", "bad"),
+    [
+        ("--expect-rows-digest", "D" * 64),       # uppercase hex
+        ("--expect-rows-digest", "d" * 63),       # too short
+        ("--expect-rows-digest", "d" * 65),       # too long
+        ("--expect-rows-digest", "g" * 64),       # not hex
+        ("--expect-input-fingerprint", "F" * 64),
+        ("--expect-input-fingerprint", "sha256:" + "f" * 57),
+        ("--expect-input-fingerprint", ""),
+    ],
+)
+def test_apply_refuses_a_malformed_digest_or_fingerprint_before_dsn(monkeypatch, capsys, flag, bad):
+    _arm_refusal_probes(monkeypatch)
+    argv = ["--apply", "--expect-rows-digest", DIGEST, "--expect-input-fingerprint", FINGERPRINT]
+    argv[argv.index(flag) + 1] = bad
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(argv)
+    assert excinfo.value.code != 0
+    err = capsys.readouterr().err
+    assert flag in err
+    assert "64 lowercase hex" in err
+
+
+def test_determinism_check_also_refuses_a_malformed_digest(monkeypatch):
+    _arm_refusal_probes(monkeypatch)
+    monkeypatch.setattr(cli.replay, "determinism_check", lambda *a, **k: pytest.fail("ran"))
+    with pytest.raises(SystemExit):
+        cli.main(["--determinism-check", "--expect-rows-digest", "D" * 64])
+
+
+def test_determinism_check_does_not_require_the_digest_expectations(monkeypatch, capsys):
+    """The optional-expectations contract is unchanged for the read-only check."""
+    monkeypatch.setattr(cli.replay, "determinism_check", lambda dsn, **kwargs: (0, {"verdict": "deterministic"}))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://check")
+    assert cli.main(["--determinism-check"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"verdict": "deterministic"}
 
 
 @pytest.mark.parametrize(

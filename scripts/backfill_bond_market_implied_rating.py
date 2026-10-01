@@ -22,16 +22,22 @@ is process-independent (``--determinism-check``) or publishes it
     for exactly that call (the flag is removed afterwards), so the
     short-circuit cannot silently turn a requested rebuild into a no-op. The
     worker still refuses a stale pointer (compare-and-set) and an anchor drift.
-    ``--expect-current-pointer`` / ``--expect-panel-publication`` /
-    ``--expect-input-fingerprint`` / ``--expect-rows-digest`` pin what the
-    operator authorized: a mismatch refuses (``precondition_failed``) before
-    the DDL replay and before ``materialize``; the rows digest is the one
-    value only known after the build, so it is checked right before the write.
+    ``--apply`` is DIGEST-BOUND: ``--expect-rows-digest`` and
+    ``--expect-input-fingerprint`` (64 lowercase hex each, from the accepted
+    determinism receipt) are REQUIRED and the CLI refuses before resolving the
+    DSN without them. ``--expect-current-pointer`` /
+    ``--expect-panel-publication`` are optional pins. A mismatch refuses
+    (``precondition_failed``) before the DDL replay and before ``materialize``;
+    the rows digest is the one value only known after the build, so it is
+    checked right before the write.
 
 Nothing here touches tables other than the product's own relations and the
 shared derived-publication ledger the worker owns. Production execution is an
-authorized operator step (Railway private-network pattern); no secrets are
-printed.
+authorized operator step; on the deployed ``bond-live-daily`` image the same
+two operations run through ``python -m src.run_worker`` with
+``WORKER=bond_market_implied_rating_check`` / ``WORKER=bond_market_implied_rating``
+and the ``BOND_IMPLIED_RATING_EXPECT_*`` variables (see the runbook). No
+secrets are printed.
 """
 from __future__ import annotations
 
@@ -154,6 +160,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     if expectations.any() and not (args.apply or args.determinism_check):
         parser.error("--expect-* preconditions apply to --apply and --determinism-check only")
+    for field in worker.FORCED_REQUIRED_EXPECTATIONS:
+        value = getattr(expectations, field)
+        if value is not None:
+            try:
+                worker.validate_sha256_hex(field, value, source=f"--expect-{field.replace('_', '-')}")
+            except worker.ExpectationError as exc:
+                parser.error(f"{exc} (expected exactly 64 lowercase hex characters)")
+    if args.apply:
+        # A manual apply is digest-bound: it must state WHAT it publishes
+        # (the receipt's rows_digest and input_fingerprint) or it does not run.
+        # Checked before the DSN is even resolved; the worker enforces the same
+        # rule under BOND_IMPLIED_RATING_FORCE_REPUBLISH, so no path around it.
+        missing = expectations.missing(worker.FORCED_REQUIRED_EXPECTATIONS)
+        if missing:
+            flags = ", ".join(f"--expect-{field.replace('_', '-')}" for field in missing)
+            parser.error(
+                f"--apply is digest-bound and refuses without {flags}: take both values from "
+                "the accepted determinism receipt (docs/runbooks/"
+                "bond-market-implied-rating-republication.md §2.3)"
+            )
 
     dsn = resolve_dsn(args.dsn)
     if args.determinism_check:
@@ -171,10 +197,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(receipt, default=str, sort_keys=True))
         return code
     if args.apply:
-        run_kwargs = {"expectations": expectations} if expectations.any() else {}
         try:
             with forced_republish():
-                result = worker.run(dsn, **run_kwargs)
+                result = worker.run(dsn, expectations=expectations)
         except (psycopg.Error, ValueError) as exc:
             print(json.dumps({"state": "failed", "error": type(exc).__name__}), file=sys.stderr)
             return 2

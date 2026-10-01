@@ -16,7 +16,11 @@ cumulative, carry-forward and hysteresis are path-dependent), so every
 publication rewrites every closed month and the pointer flip is the only
 "delta". ``BOND_IMPLIED_RATING_FORCE_REPUBLISH=1`` bypasses the
 exact panel, policy and code identity short-circuit; the pointer CAS
-still refuses a stale predecessor.
+still refuses a stale predecessor. A forced run is a MANUAL republication
+and must be digest-bound: it requires ``rows_digest`` and
+``input_fingerprint`` expectations (``--expect-*`` on the backfill CLI, or
+``BOND_IMPLIED_RATING_EXPECT_*`` service variables through ``src.run_worker``
+on the deployed image) and refuses before any DDL without them.
 
 IDENTITY. ``uuid5(product | policy_version | policy_digest | code_revision |
 input_fingerprint)`` -- the same closed panel rows under the same code and
@@ -41,11 +45,13 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, Mapping
+from uuid import UUID
 
 import pandas as pd
 import psycopg
@@ -77,6 +83,22 @@ STAGE_COLUMNS: tuple[str, ...] = (
 # Verbatim from src/workers/bond_metrics.py: one ladder, one fleet.
 _REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
 
+FORCE_ENV = "BOND_IMPLIED_RATING_FORCE_REPUBLISH"
+
+#: Service variables that carry operator expectations through ``src.run_worker``
+#: (``WORKER=bond_market_implied_rating`` / ``..._check``), where no CLI flag can
+#: reach the deployed image. Same semantics as the backfill CLI's ``--expect-*``.
+EXPECTATION_ENV_VARS: dict[str, str] = {
+    "rows_digest": "BOND_IMPLIED_RATING_EXPECT_ROWS_DIGEST",
+    "input_fingerprint": "BOND_IMPLIED_RATING_EXPECT_INPUT_FINGERPRINT",
+    "panel_publication_id": "BOND_IMPLIED_RATING_EXPECT_PANEL_PUBLICATION",
+    "current_pointer": "BOND_IMPLIED_RATING_EXPECT_CURRENT_POINTER",
+}
+#: A forced (manual) republication is digest-bound: it must declare what it publishes.
+FORCED_REQUIRED_EXPECTATIONS: tuple[str, ...] = ("rows_digest", "input_fingerprint")
+_SHA256_FIELDS = frozenset({"rows_digest", "input_fingerprint"})
+_SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
+
 
 def _code_revision() -> str:
     for var in _REVISION_ENV_VARS:
@@ -97,7 +119,7 @@ def _code_revision() -> str:
 
 
 def _force_republish_requested() -> bool:
-    value = (os.getenv("BOND_IMPLIED_RATING_FORCE_REPUBLISH") or "").strip().lower()
+    value = (os.getenv(FORCE_ENV) or "").strip().lower()
     return value in {"1", "true"}
 
 
@@ -257,6 +279,98 @@ class ApplyExpectations:
                 self.panel_publication_id, self.current_pointer,
             )
         )
+
+    def missing(self, fields: tuple[str, ...]) -> list[str]:
+        return [field for field in fields if getattr(self, field) is None]
+
+
+class ExpectationError(ValueError):
+    """An expectation that cannot be honoured as written (malformed or conflicting).
+
+    Raised while PARSING expectations (CLI flags, service variables), i.e.
+    before any connection; the callers turn it into the typed
+    ``implied_rating_precondition_failed`` refusal or a CLI usage error.
+    """
+
+    def __init__(self, field: str, reason: str, *, value: Any = None, source: str | None = None) -> None:
+        self.field = field
+        self.reason = reason
+        self.value = value
+        self.source = source
+        where = f" ({source})" if source else ""
+        super().__init__(f"{field}{where}: {reason}: {value!r}")
+
+
+def validate_sha256_hex(field: str, value: str, *, source: str | None = None) -> str:
+    """A digest/fingerprint expectation is exactly 64 lowercase hex characters."""
+    if not isinstance(value, str) or not _SHA256_HEX.match(value):
+        raise ExpectationError(field, "not_sha256_hex", value=value, source=source)
+    return value
+
+
+def _validate_uuid(field: str, value: str, *, source: str | None = None) -> str:
+    try:
+        return str(UUID(value))
+    except (ValueError, AttributeError, TypeError):
+        raise ExpectationError(field, "not_uuid", value=value, source=source) from None
+
+
+def expectations_from_env(environ: Mapping[str, str] | None = None) -> ApplyExpectations:
+    """Parse ``BOND_IMPLIED_RATING_EXPECT_*`` into ``ApplyExpectations``.
+
+    Blank values count as unset (Railway keeps emptied variables as empty
+    strings). Digest/fingerprint values must be 64 lowercase hex; the two
+    publication ids must be UUIDs. Anything else raises ``ExpectationError``:
+    a malformed expectation refuses instead of silently expecting nothing.
+    """
+    env = os.environ if environ is None else environ
+    values: dict[str, str | None] = {}
+    for field, var in EXPECTATION_ENV_VARS.items():
+        raw = (env.get(var) or "").strip()
+        if not raw:
+            values[field] = None
+        elif field in _SHA256_FIELDS:
+            values[field] = validate_sha256_hex(field, raw, source=var)
+        else:
+            values[field] = _validate_uuid(field, raw, source=var)
+    return ApplyExpectations(**values)
+
+
+def merge_expectations(
+    explicit: ApplyExpectations | None, env: ApplyExpectations
+) -> ApplyExpectations:
+    """Programmatic expectations plus the service variables; a disagreement refuses."""
+    if explicit is None:
+        return env
+    merged: dict[str, str | None] = {}
+    for field in EXPECTATION_ENV_VARS:
+        given, from_env = getattr(explicit, field), getattr(env, field)
+        if given is not None and from_env is not None and given != from_env:
+            raise ExpectationError(
+                field, "conflict", value={"explicit": given, "env": from_env},
+                source=EXPECTATION_ENV_VARS[field],
+            )
+        merged[field] = given if given is not None else from_env
+    return ApplyExpectations(**merged)
+
+
+def _expectation_error_failure(exc: ExpectationError, *, started: float) -> dict[str, Any]:
+    reason = "conflict" if exc.reason == "conflict" else "malformed"
+    return _failure(
+        "implied_rating_precondition_failed", elapsed=time.monotonic() - started,
+        input_reasons=[f"expected_{exc.field}_{reason}"], expectation=exc.field,
+        env_var=exc.source, actual=exc.value, error=exc.reason,
+    )
+
+
+def _forced_without_digest_failure(missing: list[str], *, started: float) -> dict[str, Any]:
+    """A forced republication that does not say WHAT it publishes is refused before any DDL."""
+    return _failure(
+        "implied_rating_precondition_failed", elapsed=time.monotonic() - started,
+        input_reasons=[f"expected_{field}_required" for field in missing],
+        forced_republish=True, missing_expectations=missing,
+        env_vars=[EXPECTATION_ENV_VARS[field] for field in missing],
+    )
 
 
 def _precondition_failure(
@@ -517,10 +631,21 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
     and bucket histogram the next publication would carry.
     """
     started = time.monotonic()
+    # The manifest is collected FIRST so every result -- a plan, a current
+    # verdict or any typed refusal -- carries the stack it was computed on.
+    manifest = _build_manifest()
     revision, refusal = _revision_or_failure(started)
     if refusal is not None:
-        return refusal
-    manifest = _build_manifest()
+        return _with_manifest(refusal, manifest)
+    return _with_manifest(_plan(dsn, revision=revision, started=started), manifest)
+
+
+def _with_manifest(result: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """Attach the collected runtime manifest to a result/refusal (never an identity input)."""
+    return {**result, "build_manifest": manifest}
+
+
+def _plan(dsn: str | None, *, revision: str, started: float) -> dict[str, Any]:
     try:
         with connect(resolve_dsn(dsn)) as conn:
             gates = _gates(conn, started=started)
@@ -539,7 +664,7 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 if "failure" in inputs:
                     return inputs["failure"]
                 if "current" in inputs:
-                    return {**inputs["current"], "build_manifest": manifest}
+                    return inputs["current"]
                 payload_kwargs["snapshot_inputs"] = inputs
             if "snapshot_inputs" not in payload_kwargs:
                 inputs = _read_snapshot_inputs(conn, parent=parent, started=started)
@@ -595,7 +720,6 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 "anchor_drift": drift,
                 "current_pointer": pointer,
                 "bucket_counts": prepared["bucket_counts"],
-                "build_manifest": manifest,
                 "elapsed_seconds": round(time.monotonic() - started, 3),
             }
     except BondError as exc:
@@ -622,14 +746,47 @@ def run(
 
     ``expectations`` (the backfill CLI's ``--expect-*`` flags) are checked at
     the earliest point each value is known and before any write; see
-    ``ApplyExpectations``.
+    ``ApplyExpectations``. The ``BOND_IMPLIED_RATING_EXPECT_*`` service
+    variables (``EXPECTATION_ENV_VARS``) are parsed here as well -- they are
+    the only way to hand expectations to the deployed image through
+    ``python -m src.run_worker`` -- and merged with the programmatic ones
+    (a disagreement refuses). A malformed value refuses.
+
+    A FORCED republication (``BOND_IMPLIED_RATING_FORCE_REPUBLISH`` truthy,
+    i.e. a manual rebuild) must be digest-bound: ``rows_digest`` and
+    ``input_fingerprint`` expectations are REQUIRED, refused before any
+    connection or DDL otherwise. The daily Stage 7 call (not forced) needs
+    none, and honours any that are set.
+
+    Every result -- publication, current verdict or typed refusal -- carries
+    the runtime ``build_manifest`` collected at the start of the call.
     """
     started = time.monotonic()
+    manifest = _build_manifest()
     revision, refusal = _revision_or_failure(started)
     if refusal is not None:
-        return refusal
+        return _with_manifest(refusal, manifest)
     force_republish = _force_republish_requested()
-    manifest = _build_manifest()
+    try:
+        expectations = merge_expectations(expectations, expectations_from_env())
+    except ExpectationError as exc:
+        return _with_manifest(_expectation_error_failure(exc, started=started), manifest)
+    if force_republish:
+        missing = expectations.missing(FORCED_REQUIRED_EXPECTATIONS)
+        if missing:
+            return _with_manifest(_forced_without_digest_failure(missing, started=started), manifest)
+    result = _publish(
+        dsn, revision=revision, force_republish=force_republish,
+        expectations=expectations, started=started,
+    )
+    return _with_manifest(result, manifest)
+
+
+def _publish(
+    dsn: str | None, *, revision: str, force_republish: bool,
+    expectations: ApplyExpectations, started: float,
+) -> dict[str, Any]:
+    """The connected half of ``run``: gates, expectations, DDL, build, guards, materialize."""
     try:
         with connect(resolve_dsn(dsn)) as conn:
             gates = _gates(conn, started=started)
@@ -662,7 +819,6 @@ def run(
                     "panel_last_closed_month": parent["last_closed_month"].isoformat(),
                     "policy_digest": policy.POLICY_DIGEST,
                     "code_revision": revision,
-                    "build_manifest": manifest,
                     "elapsed_seconds": round(time.monotonic() - started, 3),
                 }
             payload_kwargs: dict[str, Any] = {}
@@ -679,7 +835,7 @@ def run(
                     )
                     if refused is not None:
                         return refused
-                    return {**inputs["current"], "build_manifest": manifest}
+                    return inputs["current"]
                 payload_kwargs["snapshot_inputs"] = inputs
             if "snapshot_inputs" not in payload_kwargs:
                 inputs = _read_snapshot_inputs(conn, parent=parent, started=started)
@@ -794,7 +950,6 @@ def run(
                     policy.POLICY_DIGEST, publication.code_revision,
                     prepared["input_fingerprint"],
                 ),
-                "build_manifest": manifest,
                 "elapsed_seconds": round(time.monotonic() - started, 3),
             }
     except BondError as exc:

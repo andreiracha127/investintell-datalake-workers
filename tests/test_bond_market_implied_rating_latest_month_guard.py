@@ -79,7 +79,19 @@ def _patch(monkeypatch, snapshot):
         return SimpleNamespace(publication_id=publication.publication_id, row_count=len(rows), reused=False)
 
     monkeypatch.setattr(worker, "materialize", materialize)
+    for var in worker.EXPECTATION_ENV_VARS.values():
+        monkeypatch.delenv(var, raising=False)
     return events
+
+
+def _bind_forced_run(monkeypatch, snapshot) -> dict:
+    """A forced run is digest-bound: pin the digest/fingerprint the read-only plan reports."""
+    planned = worker.plan("postgresql://example")
+    assert planned["state"] == "planned", planned
+    monkeypatch.setenv(worker.EXPECTATION_ENV_VARS["rows_digest"], planned["rows_digest"])
+    monkeypatch.setenv(worker.EXPECTATION_ENV_VARS["input_fingerprint"], planned["input_fingerprint"])
+    assert planned["input_fingerprint"] == policy.snapshot_fingerprint(snapshot)
+    return planned
 
 
 def test_pure_count_is_the_witnessed_rows_of_the_last_closed_month():
@@ -100,10 +112,10 @@ def test_pure_count_is_the_witnessed_rows_of_the_last_closed_month():
 def test_plan_reports_the_count_and_run_refuses_a_dark_last_month(monkeypatch):
     snapshot = _snapshot(dark_last_month=True)
     events = _patch(monkeypatch, snapshot)
-    planned = worker.plan("postgresql://example")
-    assert planned["state"] == "planned"
+    planned = _bind_forced_run(monkeypatch, snapshot)
     assert planned["latest_month_witnessed_count"] == 0
     assert planned["last_month"] == PARENT["last_closed_month"].isoformat()
+    assert planned["build_manifest"]["schema"] == "bond_build_manifest/1"
 
     result = worker.run("postgresql://example")
     assert result["state"] == "latest_month_unwitnessed"
@@ -117,16 +129,33 @@ def test_plan_reports_the_count_and_run_refuses_a_dark_last_month(monkeypatch):
     assert result["rows_digest"] == planned["rows_digest"]
     assert result["input_fingerprint"] == planned["input_fingerprint"]
     assert result["row_count"] == planned["row_count"]
+    # ... and the stack it was computed on (the digest-bound expectations matched).
+    assert result["build_manifest"]["schema"] == "bond_build_manifest/1"
+    assert result["build_manifest"]["packages"]["numpy"] == planned["build_manifest"]["packages"]["numpy"]
     assert "materialize" not in events
     assert events == ["install_schema"]  # the (idempotent) DDL replay precedes the build, as before
+
+
+def test_forced_run_on_a_dark_month_without_digest_expectations_refuses_first(monkeypatch):
+    """The digest requirement precedes the guard: no DDL, no build, typed reason."""
+    snapshot = _snapshot(dark_last_month=True)
+    events = _patch(monkeypatch, snapshot)
+    monkeypatch.setattr(worker, "connect", lambda _dsn: pytest.fail("connected without a digest"))
+    result = worker.run("postgresql://example")
+    assert result["state"] == "precondition_failed"
+    assert result["input_reasons"] == ["expected_rows_digest_required", "expected_input_fingerprint_required"]
+    assert result["build_manifest"]["schema"] == "bond_build_manifest/1"
+    assert events == []
 
 
 def test_run_publishes_a_witnessed_last_month_with_the_count(monkeypatch):
     snapshot = _snapshot(dark_last_month=False)
     events = _patch(monkeypatch, snapshot)
+    _bind_forced_run(monkeypatch, snapshot)
     result = worker.run("postgresql://example")
     assert result["state"] == "published_no_defaults"
     assert result["latest_month_witnessed_count"] == 2
+    assert result["build_manifest"]["schema"] == "bond_build_manifest/1"
     assert events == ["install_schema", "materialize"]
 
 

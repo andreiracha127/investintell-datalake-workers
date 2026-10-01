@@ -322,6 +322,10 @@ def child_environment(environ: dict[str, str]) -> dict[str, str]:
 def run_child(
     index: int, *, export: Path, sha256: str, work_dir: Path, timeout_s: int,
 ) -> dict[str, Any]:
+    # The child's cwd is ROOT (below), not the parent's: only absolute paths
+    # mean the same file on both sides.
+    work_dir = Path(work_dir).resolve()
+    export = Path(export).resolve()
     out = work_dir / f"child-{index}.json"
     rows_out = work_dir / f"child-{index}-rows.pkl"
     argv = [
@@ -407,11 +411,18 @@ def determinism_check(
     """Run the full G1(a) replay; return ``(exit_code, receipt)`` and write the receipt."""
     started = time.monotonic()
     started_at = datetime.now(UTC).isoformat()
-    work = Path(work_dir) if work_dir is not None else Path(
-        tempfile.mkdtemp(prefix="bond-implied-rating-replay-")
-    )
+    # Resolve every path to an ABSOLUTE one exactly once, here: the children
+    # run with cwd=ROOT, so a relative --work-dir / --receipt given from
+    # another cwd would otherwise name different files in parent and child.
+    work = (
+        Path(work_dir).expanduser() if work_dir is not None
+        else Path(tempfile.mkdtemp(prefix="bond-implied-rating-replay-"))
+    ).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    receipt_file = Path(receipt_path) if receipt_path is not None else work / "determinism_receipt.json"
+    receipt_file = (
+        Path(receipt_path).expanduser().resolve() if receipt_path is not None
+        else work / "determinism_receipt.json"
+    )
     parent_manifest = collect_build_manifest()
     LOGGER.info("determinism check parent pid=%s manifest: %s", os.getpid(), manifest_summary(parent_manifest))
     receipt: dict[str, Any] = {
@@ -524,7 +535,8 @@ def determinism_check(
 
 
 # --------------------------------------------------------------------------- #
-# Entry point (child mode only; the parent is driven by the backfill CLI)
+# Entry point (child mode only; the parent is driven by the backfill CLI or by
+# src.workers.bond_market_implied_rating_check on the deployed image)
 # --------------------------------------------------------------------------- #
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="replay child (internal)")

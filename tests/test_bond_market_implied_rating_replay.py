@@ -274,6 +274,40 @@ def test_determinism_check_runs_two_fresh_processes_and_writes_a_receipt(monkeyp
     assert conn.commits >= 2
 
 
+def test_determinism_check_resolves_relative_paths_once_from_a_cwd_outside_root(monkeypatch, tmp_path):
+    """The children chdir to ROOT: a relative --work-dir / --receipt given from another
+    cwd must still name the SAME files in parent and children (resolved to absolute once)."""
+    snapshot = _snapshot()
+    direct = _direct_build(snapshot)
+    _patch_capture(monkeypatch, snapshot=snapshot)
+    outside = tmp_path / "operator-cwd"
+    outside.mkdir()
+    assert replay.ROOT not in outside.parents and outside != replay.ROOT
+    monkeypatch.chdir(outside)
+    code, receipt = replay.determinism_check(
+        SECRET_DSN, work_dir=Path("relative-work"), receipt_path=Path("relative-work/receipt.json"),
+    )
+    assert code == 0, receipt
+    assert receipt["verdict"] == "deterministic"
+    assert receipt["rows_digest"] == direct["rows_digest"]
+    work = Path(receipt["work_dir"])
+    assert work.is_absolute() and work == (outside / "relative-work").resolve()
+    assert Path(receipt["receipt_path"]).is_absolute()
+    assert Path(receipt["receipt_path"]) == (outside / "relative-work" / "receipt.json").resolve()
+    assert Path(receipt["receipt_path"]).is_file()
+    assert Path(receipt["export"]["path"]).is_absolute()
+    assert Path(receipt["export"]["path"]).parent == work
+    for child in receipt["children"]:
+        assert Path(child["rows_path"]).is_absolute()
+        assert Path(child["rows_path"]).parent == work
+        assert Path(child["rows_path"]).is_file()
+    assert sorted(path.name for path in work.iterdir()) == [
+        "child-1-rows.pkl", "child-1.json", "child-2-rows.pkl", "child-2.json",
+        "receipt.json", "snapshot_export.pkl",
+    ]
+    assert not (replay.ROOT / "relative-work").exists()
+
+
 def test_determinism_check_reports_a_mismatch_between_children(monkeypatch, tmp_path):
     snapshot = _snapshot()
     _patch_capture(monkeypatch, snapshot=snapshot)
