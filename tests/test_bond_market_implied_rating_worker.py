@@ -353,7 +353,6 @@ def test_panel_only_change_with_different_inputs_reuses_the_read_and_fingerprint
 
     monkeypatch.setattr(worker, "_build_payload", real_build)
     monkeypatch.setattr(worker.policy, "snapshot_fingerprint", fingerprint)
-    monkeypatch.setattr(worker.policy, "market_anchor_for_snapshot", lambda *args, **kwargs: 5.0)
     monkeypatch.setattr(worker.policy, "build_publication_rows", rows)
     result = entrypoint("postgresql://example")
     assert result["state"] == ("published_no_defaults" if entrypoint is worker.run else "planned")
