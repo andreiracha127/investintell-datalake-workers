@@ -85,7 +85,7 @@ REQUIRED_COLUMNS = {
     "bond_yield_curve_daily": {"day", "tenor", "yield_pct"},
     "bond_issuer_sector": {"cusip9", "ff17num"},
     "bond_liquidity_monthly": {"cusip9", "month", "quoted_days", "rel_bid_ask_bps", "dollar_volume", "quote_state", "reason_code"},
-    "bond_tick_daily": {"cusip9", "day", "bid_ask_bps", "par_volume", "price_median"},
+    "bond_tick_daily": {"cusip9", "day", "trade_count", "bid_ask_bps", "par_volume", "price_median"},
     "bond_rating_static": {"cusip9", "rating_bucket", "rating_as_of_month", "rating_state", "reason_code", "source_sha256"},
     "bond_curated_universe": {"cusip9"},
     "sec_cusip_ticker_map": {"cusip", "issuer_cik"},
@@ -432,10 +432,10 @@ def _load_inputs(
         "monthly_liquidity": _frame(
             conn,
             mapping_cte
-            + ", historical AS (SELECT m.execution_cusip9 AS cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id AS distribution_decision_id, l.month, l.quoted_days, l.rel_bid_ask_bps, l.dollar_volume, l.quote_state, l.reason_code, 1 AS priority FROM bond_liquidity_monthly l JOIN mapping m ON upper(btrim(l.cusip9)) = m.reference_cusip9 AND l.month = m.month WHERE l.month IN (%s, %s)), "
-            "live AS (SELECT m.execution_cusip9 AS cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id AS distribution_decision_id, date_trunc('month', t.day)::date AS month, count(*) FILTER (WHERE t.bid_ask_bps >= 0)::int AS quoted_days, percentile_cont(.5) WITHIN GROUP (ORDER BY t.bid_ask_bps) FILTER (WHERE t.bid_ask_bps >= 0) AS rel_bid_ask_bps, sum(t.par_volume * t.price_median / 100.0) FILTER (WHERE t.par_volume IS NOT NULL AND t.price_median IS NOT NULL) AS dollar_volume, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'quoted' ELSE 'unquoted' END AS quote_state, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'live_tick_median_valid_bps' ELSE 'live_tick_missing_or_crossed_bps' END AS reason_code, 0 AS priority FROM bond_tick_daily t JOIN mapping m ON upper(btrim(t.cusip9)) = m.execution_cusip9 AND date_trunc('month', t.day)::date = m.month AND m.month = %s WHERE t.day >= %s AND t.day <= %s GROUP BY m.execution_cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id, date_trunc('month', t.day)::date), "
-            "all_rows AS (SELECT * FROM live UNION ALL SELECT * FROM historical) SELECT DISTINCT ON (cusip9, month) cusip9, distribution_rule, reference_cusip9, distribution_decision_id, month, quoted_days, rel_bid_ask_bps, dollar_volume, quote_state, reason_code FROM all_rows ORDER BY cusip9, month, priority",
-            (mapping_json, closed_month.date(), open_month.date(), open_month.date(), start, end),
+            + ", historical AS (SELECT m.execution_cusip9 AS cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id AS distribution_decision_id, l.month, l.quoted_days, l.rel_bid_ask_bps, l.dollar_volume, l.quote_state, l.reason_code, NULL::bigint AS tick_trade_count, NULL::int AS tick_traded_days, 1 AS priority FROM bond_liquidity_monthly l JOIN mapping m ON upper(btrim(l.cusip9)) = m.reference_cusip9 AND l.month = m.month WHERE l.month IN (%s, %s)), "
+            "live AS (SELECT m.execution_cusip9 AS cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id AS distribution_decision_id, date_trunc('month', t.day)::date AS month, count(*) FILTER (WHERE t.bid_ask_bps >= 0)::int AS quoted_days, percentile_cont(.5) WITHIN GROUP (ORDER BY t.bid_ask_bps) FILTER (WHERE t.bid_ask_bps >= 0) AS rel_bid_ask_bps, sum(t.par_volume * t.price_median / 100.0) FILTER (WHERE t.par_volume IS NOT NULL AND t.price_median IS NOT NULL) AS dollar_volume, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'quoted' ELSE 'unquoted' END AS quote_state, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'live_tick_median_valid_bps' ELSE 'live_tick_missing_or_crossed_bps' END AS reason_code, sum(t.trade_count) AS tick_trade_count, count(*)::int AS tick_traded_days, 0 AS priority FROM bond_tick_daily t JOIN mapping m ON upper(btrim(t.cusip9)) = m.execution_cusip9 AND date_trunc('month', t.day)::date = m.month WHERE t.day >= %s AND t.day <= %s GROUP BY m.execution_cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id, date_trunc('month', t.day)::date), "
+            "all_rows AS (SELECT * FROM live UNION ALL SELECT * FROM historical) SELECT DISTINCT ON (cusip9, month) cusip9, distribution_rule, reference_cusip9, distribution_decision_id, month, quoted_days, rel_bid_ask_bps, dollar_volume, quote_state, reason_code, tick_trade_count, tick_traded_days FROM all_rows ORDER BY cusip9, month, priority",
+            (mapping_json, closed_month.date(), open_month.date(), start, end),
         ),
     }
     rating_sources = _frame(
@@ -874,6 +874,8 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 parent["publication_id"],
             )
         if already_current and not force_republish:
+            # No rebuild: this short-circuit does not measure liquidity coverage
+            # or run the close-time gate below. Forced republishing does both.
             return {
                 "state": "current",
                 "aborted": False,
@@ -908,6 +910,32 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
             )
             if panel.empty:
                 return _failure("panel_failed", elapsed=time.monotonic() - started, input_reasons=["panel_rebuild_empty"], closed_month=closed_month.date().isoformat(), open_month=open_month.date().isoformat())
+            closed_rows = panel["month"].eq(closed_month)
+            open_rows = panel["month"].eq(open_month)
+            has_dollar_volume = panel.get(
+                "dollar_volume", pd.Series(index=panel.index, dtype=float)
+            ).notna()
+            liquidity_coverage = {
+                "closed_month_rows": int(closed_rows.sum()),
+                "closed_month_dollar_volume_rows": int((closed_rows & has_dollar_volume).sum()),
+                "open_month_rows": int(open_rows.sum()),
+                "open_month_dollar_volume_rows": int((open_rows & has_dollar_volume).sum()),
+            }
+            # Open-month liquidity can be absent on day 1. A non-empty liquidity
+            # frame is not enough: open-month ticks must not mask a dark close.
+            if (
+                liquidity_coverage["closed_month_rows"] > 0
+                and liquidity_coverage["closed_month_dollar_volume_rows"] == 0
+            ):
+                return _failure(
+                    "panel_gate_failed",
+                    elapsed=time.monotonic() - started,
+                    input_reasons=[f"closed_month_liquidity_absent:{closed_month:%Y-%m-01}"],
+                    closed_month=closed_month.date().isoformat(),
+                    open_month=open_month.date().isoformat(),
+                    liquidity_coverage=liquidity_coverage,
+                )
+            lineage.update({key: str(value) for key, value in liquidity_coverage.items()})
             panel["issuer_identity_state"] = panel["issuer_identity_state"].fillna("unresolved") if "issuer_identity_state" in panel else "unresolved"
             panel["liquidity_reason"] = panel["reason_code"].fillna("monthly_liquidity_absent") if "reason_code" in panel else "monthly_liquidity_absent"
             terms_present = panel.get("coupon_pct", pd.Series(index=panel.index, dtype=float)).notna() & panel.get("maturity_date", pd.Series(index=panel.index, dtype=object)).notna() & panel.get("amt_outstanding_k", pd.Series(index=panel.index, dtype=float)).notna()

@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
+import duckdb
 import pandas as pd
 import pytest
 
@@ -282,7 +283,8 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
     assert "JOIN mapping m ON upper(btrim(l.cusip9)) = m.reference_cusip9" in liquidity_sql
     assert "), live AS" in liquidity_sql
     assert "l.month IN (%s, %s)" in liquidity_sql
-    assert "AND m.month = %s WHERE t.day >= %s AND t.day <= %s" in liquidity_sql
+    assert "date_trunc('month', t.day)::date = m.month WHERE t.day >= %s AND t.day <= %s" in liquidity_sql
+    assert "AND m.month = %s" not in liquidity_sql
     assert "all_rows AS (SELECT * FROM live UNION ALL SELECT * FROM historical)" in liquidity_sql
     assert lineage["distribution_rule"] == "rule_144a_and_reg_s"
     assert lineage["distribution_mapping_snapshot_id"] == REG_S_SNAPSHOT_ID
@@ -297,6 +299,176 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
     assert lineage["distribution_mapping_closed_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
     assert lineage["rating_feed_watermark"] == "2026-07-31T23:59:59Z"
+
+
+def test_db_loader_liquidity_params_bound_ticks_to_closed_and_open_months(monkeypatch) -> None:
+    captured = []
+
+    def frame(_conn, sql, params=()):
+        if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+            return pd.DataFrame({"reference_cusip9": ["REFERENCE1"]})
+        if sql.startswith("SELECT DISTINCT source_sha256"):
+            return pd.DataFrame({"source_sha256": ["a" * 64]})
+        if "bond_liquidity_monthly" in sql:
+            captured.append((sql, params))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+    monkeypatch.setattr(
+        bond_panel, "resolve_reg_s_cusip_map_from_db",
+        lambda *_args, **_kwargs: SimpleNamespace(resolutions={}, reason_by_reference={}),
+    )
+
+    bond_panel._load_inputs(
+        object(), pd.Timestamp("2026-09-01"), pd.Timestamp("2026-10-01"),
+        date(2026, 10, 1), mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+    )
+
+    assert len(captured) == 1
+    sql, params = captured[0]
+    assert sql.count("%s") == len(params) == 5
+    assert params[1:] == (
+        date(2026, 9, 1), date(2026, 10, 1), date(2026, 9, 1), date(2026, 10, 1),
+    )
+    assert {row["month"] for row in json.loads(params[0])} == {"2026-09-01", "2026-10-01"}
+    assert "date_trunc('month', t.day)::date = m.month" in sql
+    assert "AND m.month = %s" not in sql
+    assert "0 AS priority FROM bond_tick_daily" in sql
+    assert "1 AS priority FROM bond_liquidity_monthly" in sql
+    assert "sum(t.trade_count) AS tick_trade_count, count(*)::int AS tick_traded_days" in sql
+    assert "NULL::bigint AS tick_trade_count, NULL::int AS tick_traded_days" in sql
+    assert "reason_code, tick_trade_count, tick_traded_days FROM all_rows" in sql
+    assert "trade_count" in bond_panel.REQUIRED_COLUMNS["bond_tick_daily"]
+    assert "SELECT DISTINCT ON (cusip9, month)" in sql
+    assert "ORDER BY cusip9, month, priority" in sql
+
+
+def test_db_loader_executes_monthly_liquidity_sql_without_dsn(monkeypatch) -> None:
+    closed = date(2026, 9, 1)
+    open_month = date(2026, 10, 1)
+    as_of = date(2026, 10, 2)
+    captured = []
+    resolution = SimpleNamespace(
+        reference_cusip9="REFERENCE1", reg_s_cusip9="EXEC00001", decision_id="decision-1",
+    )
+    monkeypatch.setattr(
+        bond_panel, "resolve_reg_s_cusip_map_from_db",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            resolutions={"REFERENCE1": resolution}, reason_by_reference={},
+        ),
+    )
+
+    with duckdb.connect(":memory:") as conn:
+        # Test-only compatibility for PostgreSQL's space-trim and JSON mapping
+        # transport. The complete production query (including the mapping CTE)
+        # executes unchanged except for psycopg placeholders becoming DuckDB's.
+        conn.execute("CREATE MACRO btrim(value) AS trim(value)")
+        conn.execute("CREATE TYPE jsonb AS JSON")
+        conn.execute("""
+            CREATE MACRO jsonb_to_recordset(payload) AS TABLE
+            SELECT value ->> 'reference_cusip9' AS reference_cusip9,
+                   value ->> 'execution_cusip9' AS execution_cusip9,
+                   value ->> 'distribution_rule' AS distribution_rule,
+                   value ->> 'decision_id' AS decision_id,
+                   CAST(value ->> 'month' AS DATE) AS month
+            FROM json_each(payload)
+        """)
+        conn.execute("""
+            CREATE TABLE bond_liquidity_monthly (
+                cusip9 VARCHAR, month DATE, quoted_days INTEGER,
+                rel_bid_ask_bps DOUBLE, dollar_volume DOUBLE,
+                quote_state VARCHAR, reason_code VARCHAR
+            );
+            CREATE TABLE bond_tick_daily (
+                cusip9 VARCHAR, day DATE, par_volume DOUBLE, price_median DOUBLE,
+                bid_ask_bps DOUBLE, trade_count BIGINT
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO bond_liquidity_monthly VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (" reference1 ", closed, 99, 999.0, 999.0, "quoted", "historical"),
+                ("REFERENCE1", open_month, 99, 999.0, 888.0, "quoted", "historical"),
+                ("HISTORY01", closed, 3, 15.0, 123.0, "quoted", "historical"),
+                ("HISTORY01", open_month, 4, 16.0, 456.0, "quoted", "historical"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO bond_tick_daily VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (" reference1 ", closed, 100_000.0, 90.0, 20.0, 2),
+                ("REFERENCE1", date(2026, 9, 30), 200_000.0, 110.0, 40.0, 3),
+                ("REFERENCE1", date(2026, 9, 10), None, 100.0, -5.0, 5),
+                ("REFERENCE1", date(2026, 9, 11), 100.0, None, None, 6),
+                ("REFERENCE1", open_month, 300_000.0, 105.0, -5.0, 7),
+                ("REFERENCE1", as_of, 100_000.0, 95.0, None, 11),
+                (" exec00001 ", date(2026, 9, 2), 1_000.0, 95.0, 10.0, 13),
+                ("EXEC00001", as_of, 2_000.0, 110.0, 30.0, 17),
+                # Exclude both bounds, including a future day in the open month.
+                ("REFERENCE1", date(2026, 8, 31), 1e9, 100.0, 1.0, 10_000),
+                ("REFERENCE1", date(2026, 10, 3), 1e9, 100.0, 1.0, 20_000),
+                ("REFERENCE1", date(2026, 11, 1), 1e9, 100.0, 1.0, 30_000),
+                ("HISTORY01", date(2026, 10, 3), 1e9, 100.0, 1.0, 40_000),
+                ("UNMAPPED1", closed, 1e9, 100.0, 1.0, 50_000),
+            ],
+        )
+
+        def frame(_conn, sql, params=()):
+            if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+                return pd.DataFrame({"reference_cusip9": ["REFERENCE1", "HISTORY01"]})
+            if sql.startswith("SELECT DISTINCT source_sha256"):
+                return pd.DataFrame({"source_sha256": ["a" * 64]})
+            if "bond_liquidity_monthly" in sql:
+                captured.append((sql, params))
+                return _conn.execute(sql.replace("%s", "?"), params).fetchdf()
+            return pd.DataFrame()
+
+        monkeypatch.setattr(bond_panel, "_frame", frame)
+        inputs, _lineage = bond_panel._load_inputs(
+            conn, pd.Timestamp(closed), pd.Timestamp(open_month), as_of,
+            mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+        )
+
+    assert len(captured) == 1
+    sql, params = captured[0]
+    assert sql.count("%s") == len(params) == 5
+    assert params[1:] == (closed, open_month, closed, as_of)
+    assert {row["month"] for row in json.loads(params[0])} == {"2026-09-01", "2026-10-01"}
+    rows = inputs["monthly_liquidity"].set_index(["cusip9", "month"])
+    assert set(rows.index) == {
+        (cusip9, pd.Timestamp(month))
+        for cusip9 in ("REFERENCE1", "EXEC00001", "HISTORY01")
+        for month in (closed, open_month)
+    }
+    september = rows.loc[("REFERENCE1", pd.Timestamp(closed))]
+    october = rows.loc[("REFERENCE1", pd.Timestamp(open_month))]
+    # Live wins even when historical quotes exist but live quotes do not.
+    assert september["dollar_volume"] == pytest.approx(100_000 * .9 + 200_000 * 1.1)
+    assert october["dollar_volume"] == pytest.approx(300_000 * 1.05 + 100_000 * .95)
+    assert september["tick_trade_count"] == 2 + 3 + 5 + 6
+    assert october["tick_trade_count"] == 7 + 11
+    assert september["tick_traded_days"] == 4
+    assert october["tick_traded_days"] == 2
+    assert september["quoted_days"] == 2
+    assert september["rel_bid_ask_bps"] == pytest.approx(30.0)
+    assert september["reason_code"] == "live_tick_median_valid_bps"
+    assert october["quoted_days"] == 0
+    assert pd.isna(october["rel_bid_ask_bps"])
+    assert october["quote_state"] == "unquoted"
+    assert october["reason_code"] == "live_tick_missing_or_crossed_bps"
+    for month, volume, count in [(closed, 950.0, 13), (open_month, 2200.0, 17)]:
+        reg_s = rows.loc[("EXEC00001", pd.Timestamp(month))]
+        assert reg_s["distribution_rule"] == "reg_s"
+        assert reg_s["reference_cusip9"] == "REFERENCE1"
+        assert reg_s["distribution_decision_id"] == "decision-1"
+        assert reg_s["dollar_volume"] == pytest.approx(volume)
+        assert reg_s["tick_trade_count"] == count
+    for month, volume in [(closed, 123.0), (open_month, 456.0)]:
+        historical = rows.loc[("HISTORY01", pd.Timestamp(month))]
+        assert historical["reason_code"] == "historical"
+        assert historical["dollar_volume"] == pytest.approx(volume)
+        assert pd.isna(historical["tick_trade_count"])
+        assert pd.isna(historical["tick_traded_days"])
 
 
 @pytest.mark.parametrize(
@@ -995,6 +1167,7 @@ def _stub_publishable_panel(
     *,
     closed: str = "2026-07-01",
     open_month: str = "2026-08-01",
+    dollar_volumes: tuple[float | None, float | None] = (1000.0, 500.0),
 ) -> list[dict[str, object]]:
     closed_at = pd.Timestamp(closed)
     open_at = pd.Timestamp(open_month)
@@ -1012,7 +1185,7 @@ def _stub_publishable_panel(
             "amt_outstanding_k": [500_000, 500_000],
             "traded_days": [10, 5],
             "trade_count": [10, 5],
-            "dollar_volume": [1000.0, 500.0],
+            "dollar_volume": list(dollar_volumes),
             "quoted_days": [1, 1],
             "rel_bid_ask_bps": [10.0, 10.0],
             "coupon_pct": [5.0, 5.0],
@@ -1073,6 +1246,83 @@ def _stub_publishable_panel(
     monkeypatch.setattr(bond_panel, "materialize_panel", materialize)
     monkeypatch.setattr(bond_panel, "_refresh_served_mirrors", lambda _dsn: "")
     return captured
+
+
+@pytest.mark.parametrize("open_volume", [500.0, None], ids=["open_ticks", "october_first_all_null"])
+@pytest.mark.parametrize("force_republish", [False, True], ids=["forward_delta", "forced_current"])
+def test_panel_refuses_dark_closed_month_before_materializing(
+    monkeypatch, open_volume, force_republish,
+) -> None:
+    parent = {
+        "publication_id": "current-reg-s" if force_republish else "prior-reg-s",
+        "parent_publication_id": "base-reg-s",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 9, 1) if force_republish else date(2026, 8, 1),
+        "open_month": date(2026, 10, 1) if force_republish else date(2026, 9, 1),
+        "snapshot_max_month": date(2026, 10, 1) if force_republish else date(2026, 9, 1),
+        "returns_max_month": date(2026, 9, 1) if force_republish else date(2026, 8, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    captured = _stub_publishable_panel(
+        monkeypatch, parent, closed="2026-09-01", open_month="2026-10-01",
+        dollar_volumes=(None, open_volume),
+    )
+    monkeypatch.setenv("BOND_PANEL_FORCE_REPUBLISH", "1" if force_republish else "0")
+    monkeypatch.setattr(
+        bond_panel, "build_snapshots",
+        lambda *_args, **_kwargs: pytest.fail("dark close must stop before building facts"),
+    )
+    monkeypatch.setattr(
+        bond_panel, "_refresh_served_mirrors",
+        lambda *_args: pytest.fail("refused publication must not refresh mirrors"),
+    )
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 10, 1))
+
+    assert outcome["state"] == "gate_failed"
+    assert outcome["reason"] == "panel_gate_failed"
+    assert outcome["aborted"] is True
+    assert outcome["input_relation_reasons"] == ["closed_month_liquidity_absent:2026-09-01"]
+    assert outcome["liquidity_coverage"] == {
+        "closed_month_rows": 1,
+        "closed_month_dollar_volume_rows": 0,
+        "open_month_rows": 1,
+        "open_month_dollar_volume_rows": int(open_volume is not None),
+    }
+    assert captured == []  # materialize owns pointer mutation; never reached
+
+
+@pytest.mark.parametrize("closed_volume", [1000.0, 0.0], ids=["positive", "non_null_zero"])
+def test_panel_allows_empty_open_liquidity_and_records_coverage(monkeypatch, closed_volume) -> None:
+    parent = {
+        "publication_id": "prior-reg-s",
+        "parent_publication_id": "base-reg-s",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 8, 1),
+        "open_month": date(2026, 9, 1),
+        "snapshot_max_month": date(2026, 9, 1),
+        "returns_max_month": date(2026, 8, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    captured = _stub_publishable_panel(
+        monkeypatch, parent, closed="2026-09-01", open_month="2026-10-01",
+        dollar_volumes=(closed_volume, None),
+    )
+    monkeypatch.delenv("BOND_PANEL_FORCE_REPUBLISH", raising=False)
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 10, 1))
+
+    assert outcome["state"] == "published", outcome
+    assert len(captured) == 1
+    assert {key: captured[0]["source_lineage"][key] for key in (
+        "closed_month_rows", "closed_month_dollar_volume_rows",
+        "open_month_rows", "open_month_dollar_volume_rows",
+    )} == {
+        "closed_month_rows": "1",
+        "closed_month_dollar_volume_rows": "1",
+        "open_month_rows": "1",
+        "open_month_dollar_volume_rows": "0",
+    }
 
 
 def test_panel_force_republish_env_bypasses_same_month_short_circuit(monkeypatch, caplog) -> None:
@@ -1677,6 +1927,15 @@ def test_panel_publishes_with_missing_execution_ratings_and_closed_month_signals
     assert included["liquidity_reason"] == "live_tick_median_valid_bps"
     assert included["terms_source"] == "bond_reference_terms"
     assert captured["first_month"] == date(2020, 1, 1)
+    assert {key: captured["source_lineage"][key] for key in (
+        "closed_month_rows", "closed_month_dollar_volume_rows",
+        "open_month_rows", "open_month_dollar_volume_rows",
+    )} == {
+        "closed_month_rows": "1",
+        "closed_month_dollar_volume_rows": "1",
+        "open_month_rows": "1",
+        "open_month_dollar_volume_rows": "1",
+    }
     assert outcome["distribution_mapping_coverage"] == {
         "mapped": 1,
         "rule_144a": 1,

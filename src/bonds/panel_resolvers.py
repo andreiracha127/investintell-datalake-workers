@@ -417,6 +417,13 @@ def build_db_monthly_panel(
     if "dollar_volume_liquidity" in out:
         out["dollar_volume"] = out["dollar_volume"].combine_first(out["dollar_volume_liquidity"])
     out["traded_days"] = out.get("traded_days", out["observed_days"]).fillna(out["observed_days"])
+    if {"tick_trade_count", "tick_traded_days"}.issubset(out.columns):
+        # Tick days identify covered CUSIP-months, even if print counts are NULL.
+        # Override only the print-count witness; pre-tick months keep the proxy.
+        # The non-backfilling tick lane gives a lower bound on days, so preserve
+        # the existing candle-observed traded_days used by eligibility.
+        has_ticks = out["tick_traded_days"].notna()
+        out["trade_count"] = out["trade_count"].where(~has_ticks, out["tick_trade_count"])
     out["maturity_date"] = pd.to_datetime(out["maturity_date"], errors="coerce")
     out["bond_maturity"] = (out["maturity_date"] - out["month"]).dt.days / 365.25
     observed = out["ytm"].notna()
