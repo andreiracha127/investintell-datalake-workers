@@ -50,6 +50,7 @@ import pandas as pd
 import psycopg
 
 from src.bonds import implied_rating as policy
+from src.bonds.build_manifest import collect_build_manifest, manifest_summary
 from src.bonds.errors import BondError
 from src.bonds.implied_rating import ANCHOR_DRIFT_ABS_TOL
 from src.bonds.implied_rating_materializer import (
@@ -472,6 +473,18 @@ def _build_payload(
     }
 
 
+def _build_manifest() -> dict[str, Any]:
+    """The runtime stack evidence every plan/run result carries (never an identity input).
+
+    Collected once per invocation and logged in one line, so a production log
+    shows WHICH interpreter / numpy / lock digest / SIMD baseline computed the
+    digests it reports. See ``src.bonds.build_manifest``.
+    """
+    manifest = collect_build_manifest()
+    LOGGER.info("bond_market_implied_rating_v1 build manifest: %s", manifest_summary(manifest))
+    return manifest
+
+
 def _revision_or_failure(started: float) -> tuple[str | None, dict[str, Any] | None]:
     """Resolve the code revision before any connection: identity needs it."""
     revision = _code_revision()
@@ -526,6 +539,7 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
     revision, refusal = _revision_or_failure(started)
     if refusal is not None:
         return refusal
+    manifest = _build_manifest()
     try:
         with connect(resolve_dsn(dsn)) as conn:
             gates = _gates(conn, started=started)
@@ -544,7 +558,7 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 if "failure" in inputs:
                     return inputs["failure"]
                 if "current" in inputs:
-                    return inputs["current"]
+                    return {**inputs["current"], "build_manifest": manifest}
                 payload_kwargs["snapshot_inputs"] = inputs
             if "snapshot_inputs" not in payload_kwargs:
                 inputs = _read_snapshot_inputs(conn, parent=parent, started=started)
@@ -599,6 +613,7 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 "anchor_drift": drift,
                 "current_pointer": pointer,
                 "bucket_counts": prepared["bucket_counts"],
+                "build_manifest": manifest,
                 "elapsed_seconds": round(time.monotonic() - started, 3),
             }
     except BondError as exc:
@@ -625,6 +640,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
     if refusal is not None:
         return refusal
     force_republish = _force_republish_requested()
+    manifest = _build_manifest()
     try:
         with connect(resolve_dsn(dsn)) as conn:
             gates = _gates(conn, started=started)
@@ -647,6 +663,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                     "panel_last_closed_month": parent["last_closed_month"].isoformat(),
                     "policy_digest": policy.POLICY_DIGEST,
                     "code_revision": revision,
+                    "build_manifest": manifest,
                     "elapsed_seconds": round(time.monotonic() - started, 3),
                 }
             payload_kwargs: dict[str, Any] = {}
@@ -657,7 +674,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 if "failure" in inputs:
                     return inputs["failure"]
                 if "current" in inputs:
-                    return inputs["current"]
+                    return {**inputs["current"], "build_manifest": manifest}
                 payload_kwargs["snapshot_inputs"] = inputs
             if "snapshot_inputs" not in payload_kwargs:
                 inputs = _read_snapshot_inputs(conn, parent=parent, started=started)
@@ -738,6 +755,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                     policy.POLICY_DIGEST, publication.code_revision,
                     prepared["input_fingerprint"],
                 ),
+                "build_manifest": manifest,
                 "elapsed_seconds": round(time.monotonic() - started, 3),
             }
     except BondError as exc:
