@@ -874,6 +874,8 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 parent["publication_id"],
             )
         if already_current and not force_republish:
+            # No rebuild: this short-circuit does not measure liquidity coverage
+            # or run the close-time gate below. Forced republishing does both.
             return {
                 "state": "current",
                 "aborted": False,
@@ -908,6 +910,32 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
             )
             if panel.empty:
                 return _failure("panel_failed", elapsed=time.monotonic() - started, input_reasons=["panel_rebuild_empty"], closed_month=closed_month.date().isoformat(), open_month=open_month.date().isoformat())
+            closed_rows = panel["month"].eq(closed_month)
+            open_rows = panel["month"].eq(open_month)
+            has_dollar_volume = panel.get(
+                "dollar_volume", pd.Series(index=panel.index, dtype=float)
+            ).notna()
+            liquidity_coverage = {
+                "closed_month_rows": int(closed_rows.sum()),
+                "closed_month_dollar_volume_rows": int((closed_rows & has_dollar_volume).sum()),
+                "open_month_rows": int(open_rows.sum()),
+                "open_month_dollar_volume_rows": int((open_rows & has_dollar_volume).sum()),
+            }
+            # Open-month liquidity can be absent on day 1. A non-empty liquidity
+            # frame is not enough: open-month ticks must not mask a dark close.
+            if (
+                liquidity_coverage["closed_month_rows"] > 0
+                and liquidity_coverage["closed_month_dollar_volume_rows"] == 0
+            ):
+                return _failure(
+                    "panel_gate_failed",
+                    elapsed=time.monotonic() - started,
+                    input_reasons=[f"closed_month_liquidity_absent:{closed_month:%Y-%m-01}"],
+                    closed_month=closed_month.date().isoformat(),
+                    open_month=open_month.date().isoformat(),
+                    liquidity_coverage=liquidity_coverage,
+                )
+            lineage.update({key: str(value) for key, value in liquidity_coverage.items()})
             panel["issuer_identity_state"] = panel["issuer_identity_state"].fillna("unresolved") if "issuer_identity_state" in panel else "unresolved"
             panel["liquidity_reason"] = panel["reason_code"].fillna("monthly_liquidity_absent") if "reason_code" in panel else "monthly_liquidity_absent"
             terms_present = panel.get("coupon_pct", pd.Series(index=panel.index, dtype=float)).notna() & panel.get("maturity_date", pd.Series(index=panel.index, dtype=object)).notna() & panel.get("amt_outstanding_k", pd.Series(index=panel.index, dtype=float)).notna()

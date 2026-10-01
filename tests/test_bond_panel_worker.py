@@ -995,6 +995,7 @@ def _stub_publishable_panel(
     *,
     closed: str = "2026-07-01",
     open_month: str = "2026-08-01",
+    dollar_volumes: tuple[float | None, float | None] = (1000.0, 500.0),
 ) -> list[dict[str, object]]:
     closed_at = pd.Timestamp(closed)
     open_at = pd.Timestamp(open_month)
@@ -1012,7 +1013,7 @@ def _stub_publishable_panel(
             "amt_outstanding_k": [500_000, 500_000],
             "traded_days": [10, 5],
             "trade_count": [10, 5],
-            "dollar_volume": [1000.0, 500.0],
+            "dollar_volume": list(dollar_volumes),
             "quoted_days": [1, 1],
             "rel_bid_ask_bps": [10.0, 10.0],
             "coupon_pct": [5.0, 5.0],
@@ -1073,6 +1074,83 @@ def _stub_publishable_panel(
     monkeypatch.setattr(bond_panel, "materialize_panel", materialize)
     monkeypatch.setattr(bond_panel, "_refresh_served_mirrors", lambda _dsn: "")
     return captured
+
+
+@pytest.mark.parametrize("open_volume", [500.0, None], ids=["open_ticks", "october_first_all_null"])
+@pytest.mark.parametrize("force_republish", [False, True], ids=["forward_delta", "forced_current"])
+def test_panel_refuses_dark_closed_month_before_materializing(
+    monkeypatch, open_volume, force_republish,
+) -> None:
+    parent = {
+        "publication_id": "current-reg-s" if force_republish else "prior-reg-s",
+        "parent_publication_id": "base-reg-s",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 9, 1) if force_republish else date(2026, 8, 1),
+        "open_month": date(2026, 10, 1) if force_republish else date(2026, 9, 1),
+        "snapshot_max_month": date(2026, 10, 1) if force_republish else date(2026, 9, 1),
+        "returns_max_month": date(2026, 9, 1) if force_republish else date(2026, 8, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    captured = _stub_publishable_panel(
+        monkeypatch, parent, closed="2026-09-01", open_month="2026-10-01",
+        dollar_volumes=(None, open_volume),
+    )
+    monkeypatch.setenv("BOND_PANEL_FORCE_REPUBLISH", "1" if force_republish else "0")
+    monkeypatch.setattr(
+        bond_panel, "build_snapshots",
+        lambda *_args, **_kwargs: pytest.fail("dark close must stop before building facts"),
+    )
+    monkeypatch.setattr(
+        bond_panel, "_refresh_served_mirrors",
+        lambda *_args: pytest.fail("refused publication must not refresh mirrors"),
+    )
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 10, 1))
+
+    assert outcome["state"] == "gate_failed"
+    assert outcome["reason"] == "panel_gate_failed"
+    assert outcome["aborted"] is True
+    assert outcome["input_relation_reasons"] == ["closed_month_liquidity_absent:2026-09-01"]
+    assert outcome["liquidity_coverage"] == {
+        "closed_month_rows": 1,
+        "closed_month_dollar_volume_rows": 0,
+        "open_month_rows": 1,
+        "open_month_dollar_volume_rows": int(open_volume is not None),
+    }
+    assert captured == []  # materialize owns pointer mutation; never reached
+
+
+@pytest.mark.parametrize("closed_volume", [1000.0, 0.0], ids=["positive", "non_null_zero"])
+def test_panel_allows_empty_open_liquidity_and_records_coverage(monkeypatch, closed_volume) -> None:
+    parent = {
+        "publication_id": "prior-reg-s",
+        "parent_publication_id": "base-reg-s",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 8, 1),
+        "open_month": date(2026, 9, 1),
+        "snapshot_max_month": date(2026, 9, 1),
+        "returns_max_month": date(2026, 8, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    captured = _stub_publishable_panel(
+        monkeypatch, parent, closed="2026-09-01", open_month="2026-10-01",
+        dollar_volumes=(closed_volume, None),
+    )
+    monkeypatch.delenv("BOND_PANEL_FORCE_REPUBLISH", raising=False)
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 10, 1))
+
+    assert outcome["state"] == "published", outcome
+    assert len(captured) == 1
+    assert {key: captured[0]["source_lineage"][key] for key in (
+        "closed_month_rows", "closed_month_dollar_volume_rows",
+        "open_month_rows", "open_month_dollar_volume_rows",
+    )} == {
+        "closed_month_rows": "1",
+        "closed_month_dollar_volume_rows": "1",
+        "open_month_rows": "1",
+        "open_month_dollar_volume_rows": "0",
+    }
 
 
 def test_panel_force_republish_env_bypasses_same_month_short_circuit(monkeypatch, caplog) -> None:
@@ -1677,6 +1755,15 @@ def test_panel_publishes_with_missing_execution_ratings_and_closed_month_signals
     assert included["liquidity_reason"] == "live_tick_median_valid_bps"
     assert included["terms_source"] == "bond_reference_terms"
     assert captured["first_month"] == date(2020, 1, 1)
+    assert {key: captured["source_lineage"][key] for key in (
+        "closed_month_rows", "closed_month_dollar_volume_rows",
+        "open_month_rows", "open_month_dollar_volume_rows",
+    )} == {
+        "closed_month_rows": "1",
+        "closed_month_dollar_volume_rows": "1",
+        "open_month_rows": "1",
+        "open_month_dollar_volume_rows": "1",
+    }
     assert outcome["distribution_mapping_coverage"] == {
         "mapped": 1,
         "rule_144a": 1,
