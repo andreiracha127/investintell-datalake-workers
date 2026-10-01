@@ -300,6 +300,7 @@ def child_main(*, export: Path, sha256: str, out: Path, rows_out: Path) -> int:
         "anchor_diagnostic_drift": built["anchor_diagnostic_drift"],
         "d_confirmed_count": built["d_confirmed_count"],
         "d_candidate_count": built["d_candidate_count"],
+        "latest_month_witnessed_count": built["latest_month_witnessed_count"],
         "bucket_counts": built["bucket_counts"],
         "rows_sha256": _sha256_file(rows_out),
         "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -373,7 +374,8 @@ def compare_children(results: list[dict[str, Any]]) -> list[str]:
     if first["pid"] == second["pid"]:
         reasons.append("same_pid")
     for key in ("rows_digest", "row_count", "publication_id", "d_confirmed_count",
-                "d_candidate_count", "l_anchor", "first_month", "last_month"):
+                "d_candidate_count", "latest_month_witnessed_count", "l_anchor",
+                "first_month", "last_month"):
         if first.get(key) != second.get(key):
             reasons.append(f"{key}_mismatch")
     rows_first = _load_rows(first)
@@ -511,6 +513,7 @@ def determinism_check(
         "resolved_l_anchor": first["resolved_l_anchor"],
         "d_confirmed_count": first["d_confirmed_count"],
         "d_candidate_count": first["d_candidate_count"],
+        "latest_month_witnessed_count": first["latest_month_witnessed_count"],
         "child_pids": [result["pid"] for result in results],
     })
     if expect_rows_digest is not None and expect_rows_digest != first["rows_digest"]:

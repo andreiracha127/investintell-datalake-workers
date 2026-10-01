@@ -56,7 +56,7 @@ from src.workers import bond_market_implied_rating as worker  # noqa: E402
 FORCE_ENV = "BOND_IMPLIED_RATING_FORCE_REPUBLISH"
 FAILURE_STATES = frozenset({
     "gate_failed", "publish_failed", "materialize_failed", "anchor_drift",
-    "precondition_failed",
+    "precondition_failed", "latest_month_unwitnessed",
 })
 
 

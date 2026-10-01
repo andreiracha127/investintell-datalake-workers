@@ -584,6 +584,7 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 "row_count": publication.row_count,
                 "d_confirmed_count": prepared["d_confirmed_count"],
                 "d_candidate_count": prepared["d_candidate_count"],
+                "latest_month_witnessed_count": prepared.get("latest_month_witnessed_count"),
                 "l_anchor": prepared["l_anchor"],
                 "resolved_l_anchor": prepared["resolved_l_anchor"],
                 "pinned_l_anchor": previous_anchor,
@@ -726,6 +727,26 @@ def run(
                     pinned_l_anchor=previous_anchor,
                     resolved_l_anchor=prepared["resolved_l_anchor"],
                 )
+            latest_witnessed = prepared.get("latest_month_witnessed_count")
+            if latest_witnessed == 0:
+                # The panel served its last closed month dark: every row of
+                # that month is carried/NOT_RATED and the whole history would
+                # be republished as if the market had closed a month it never
+                # saw. Refuse here -- after the build, so the digest the
+                # operator would have published is visible -- and before any
+                # write. Nothing about rows, policy or digests changes.
+                return _failure(
+                    "implied_rating_latest_month_unwitnessed",
+                    elapsed=time.monotonic() - started,
+                    input_reasons=["latest_month_unwitnessed"],
+                    panel_publication_id=parent["publication_id"],
+                    panel_last_closed_month=publication.panel_last_closed_month.isoformat(),
+                    latest_month_witnessed_count=0,
+                    publication_id=publication.publication_id,
+                    input_fingerprint=prepared["input_fingerprint"],
+                    rows_digest=prepared["rows_digest"],
+                    row_count=publication.row_count,
+                )
             result = materialize(
                 conn, publication, prepared["rows"], expected_pointer=pointer
             )
@@ -758,6 +779,7 @@ def run(
                 "row_count": result.row_count,
                 "d_confirmed_count": prepared["d_confirmed_count"],
                 "d_candidate_count": prepared["d_candidate_count"],
+                "latest_month_witnessed_count": latest_witnessed,
                 "l_anchor": prepared["l_anchor"],
                 "resolved_l_anchor": prepared["resolved_l_anchor"],
                 "pinned_l_anchor": previous_anchor,

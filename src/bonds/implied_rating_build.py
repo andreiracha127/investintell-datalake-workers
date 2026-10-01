@@ -42,6 +42,21 @@ def _refusal(reason: str, **extra: Any) -> dict[str, Any]:
     return {"refusal": {"reason": reason, **extra}}
 
 
+def latest_month_witnessed_count(rows: pd.DataFrame, *, month: date) -> int:
+    """Rows of ``month`` the state machine published as WITNESSED (not carried).
+
+    A closed month the producer served dark (every row carried / NOT_RATED)
+    yields 0: the publication would re-date every bucket to a month the
+    market never saw. Reported by plan() and the determinism receipt; run()
+    refuses to publish on 0 (``implied_rating_latest_month_unwitnessed``).
+    Pure reporting: it changes no row, policy or digest.
+    """
+    if rows.empty:
+        return 0
+    on_month = pd.to_datetime(rows["month"]).dt.normalize() == pd.Timestamp(month).normalize()
+    return int(rows.loc[on_month, "witnessed"].fillna(False).astype(bool).sum())
+
+
 def build_payload_from_snapshot(
     snapshot: pd.DataFrame,
     *,
@@ -59,7 +74,7 @@ def build_payload_from_snapshot(
     "last_closed_month", "input_fingerprint", "rows_digest", "l_anchor",
     "resolved_l_anchor", "pinned_l_anchor", "policy_l_anchor", "anchor_source",
     "anchor_diagnostic_reason", "anchor_diagnostic_drift", "d_confirmed_count",
-    "d_candidate_count", "bucket_counts"}``.
+    "d_candidate_count", "latest_month_witnessed_count", "bucket_counts"}``.
     """
     log = LOGGER if logger is None else logger
     try:
@@ -168,6 +183,9 @@ def build_payload_from_snapshot(
         "anchor_diagnostic_drift": diagnostic_drift,
         "d_confirmed_count": d_confirmed_count,
         "d_candidate_count": d_candidate_count,
+        "latest_month_witnessed_count": latest_month_witnessed_count(
+            rows, month=last_closed_month
+        ),
         "bucket_counts": {
             str(bucket): int(count)
             for bucket, count in rows["implied_bucket"].value_counts().items()
