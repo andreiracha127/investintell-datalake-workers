@@ -22,6 +22,11 @@ is process-independent (``--determinism-check``) or publishes it
     for exactly that call (the flag is removed afterwards), so the
     short-circuit cannot silently turn a requested rebuild into a no-op. The
     worker still refuses a stale pointer (compare-and-set) and an anchor drift.
+    ``--expect-current-pointer`` / ``--expect-panel-publication`` /
+    ``--expect-input-fingerprint`` / ``--expect-rows-digest`` pin what the
+    operator authorized: a mismatch refuses (``precondition_failed``) before
+    the DDL replay and before ``materialize``; the rows digest is the one
+    value only known after the build, so it is checked right before the write.
 
 Nothing here touches tables other than the product's own relations and the
 shared derived-publication ledger the worker owns. Production execution is an
@@ -51,6 +56,7 @@ from src.workers import bond_market_implied_rating as worker  # noqa: E402
 FORCE_ENV = "BOND_IMPLIED_RATING_FORCE_REPUBLISH"
 FAILURE_STATES = frozenset({
     "gate_failed", "publish_failed", "materialize_failed", "anchor_drift",
+    "precondition_failed",
 })
 
 
@@ -101,6 +107,26 @@ def main(argv: list[str] | None = None) -> int:
         "--apply", action="store_true",
         help="publish through the worker with the force-republish flag",
     )
+    expect = parser.add_argument_group(
+        "preconditions (--apply and --determinism-check): each set value must match "
+        "or the run refuses BEFORE any DDL replay or write",
+    )
+    expect.add_argument(
+        "--expect-current-pointer", default=None, metavar="UUID",
+        help="the product's current pointer must be exactly this publication id",
+    )
+    expect.add_argument(
+        "--expect-panel-publication", default=None, metavar="UUID",
+        help="the panel's current validated publication id must be exactly this",
+    )
+    expect.add_argument(
+        "--expect-input-fingerprint", default=None, metavar="SHA256",
+        help="the closed snapshot fingerprint must equal this value",
+    )
+    expect.add_argument(
+        "--expect-rows-digest", default=None, metavar="SHA256",
+        help="the rebuilt rows_digest must equal this value (checked before materialize)",
+    )
     check = parser.add_argument_group("determinism check")
     check.add_argument(
         "--receipt", default=None, metavar="PATH",
@@ -120,21 +146,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    expectations = worker.ApplyExpectations(
+        input_fingerprint=args.expect_input_fingerprint,
+        rows_digest=args.expect_rows_digest,
+        panel_publication_id=args.expect_panel_publication,
+        current_pointer=args.expect_current_pointer,
+    )
+    if expectations.any() and not (args.apply or args.determinism_check):
+        parser.error("--expect-* preconditions apply to --apply and --determinism-check only")
+
     dsn = resolve_dsn(args.dsn)
     if args.determinism_check:
         code, receipt = replay.determinism_check(
             dsn,
             work_dir=None if args.work_dir is None else Path(args.work_dir),
             receipt_path=None if args.receipt is None else Path(args.receipt),
+            expect_input_fingerprint=expectations.input_fingerprint,
+            expect_rows_digest=expectations.rows_digest,
+            expect_panel_publication=expectations.panel_publication_id,
+            expect_current_pointer=expectations.current_pointer,
             statement_timeout_s=args.statement_timeout_seconds,
             child_timeout_s=args.child_timeout_seconds,
         )
         print(json.dumps(receipt, default=str, sort_keys=True))
         return code
     if args.apply:
+        run_kwargs = {"expectations": expectations} if expectations.any() else {}
         try:
             with forced_republish():
-                result = worker.run(dsn)
+                result = worker.run(dsn, **run_kwargs)
         except (psycopg.Error, ValueError) as exc:
             print(json.dumps({"state": "failed", "error": type(exc).__name__}), file=sys.stderr)
             return 2

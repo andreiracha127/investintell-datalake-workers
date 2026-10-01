@@ -124,6 +124,8 @@ def test_determinism_check_delegates_to_the_replay_and_never_touches_the_worker(
     assert seen["dsn"] == "postgresql://check"
     assert seen["kwargs"] == {
         "work_dir": tmp_path, "receipt_path": tmp_path / "r.json",
+        "expect_input_fingerprint": None, "expect_rows_digest": None,
+        "expect_panel_publication": None, "expect_current_pointer": None,
         "statement_timeout_s": 120, "child_timeout_s": 60,
     }
     assert cli.FORCE_ENV not in os.environ

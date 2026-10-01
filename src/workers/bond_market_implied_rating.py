@@ -43,6 +43,7 @@ import math
 import os
 import subprocess
 import time
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -227,6 +228,88 @@ def _failure(
         "input_reasons": input_reasons or [],
         **extra,
     }
+
+
+@dataclass(frozen=True)
+class ApplyExpectations:
+    """Operator-declared facts a publication must match BEFORE it writes.
+
+    Each field is optional; a set field is compared at the earliest point the
+    value is known and a mismatch refuses with ``implied_rating_precondition_failed``
+    and ``input_reasons=["expected_<field>_mismatch"]``, before any DDL replay
+    or materialization: ``current_pointer`` and ``panel_publication_id`` right
+    after the gates, ``input_fingerprint`` right after the single snapshot
+    read (still before ``install_schema``), ``rows_digest`` after the build
+    and before ``materialize`` (it cannot be known earlier). A run that would
+    converge on an existing publication without building cannot verify a
+    fingerprint/digest expectation and refuses as ``..._unverifiable``.
+    """
+
+    input_fingerprint: str | None = None
+    rows_digest: str | None = None
+    panel_publication_id: str | None = None
+    current_pointer: str | None = None
+
+    def any(self) -> bool:
+        return any(
+            value is not None for value in (
+                self.input_fingerprint, self.rows_digest,
+                self.panel_publication_id, self.current_pointer,
+            )
+        )
+
+
+def _precondition_failure(
+    field: str, *, expected: Any, actual: Any, started: float, verifiable: bool = True
+) -> dict[str, Any]:
+    reason = f"expected_{field}_{'mismatch' if verifiable else 'unverifiable'}"
+    return _failure(
+        "implied_rating_precondition_failed", elapsed=time.monotonic() - started,
+        input_reasons=[reason], expectation=field, expected=expected, actual=actual,
+    )
+
+
+def _expectation_mismatch(
+    expectations: ApplyExpectations | None, field: str, actual: Any, *, started: float
+) -> dict[str, Any] | None:
+    """The typed refusal for one set expectation that does not match, else None."""
+    if expectations is None:
+        return None
+    expected = getattr(expectations, field)
+    if expected is None or expected == actual:
+        return None
+    return _precondition_failure(field, expected=expected, actual=actual, started=started)
+
+
+def _unverifiable_expectations(
+    expectations: ApplyExpectations | None, *, started: float,
+    known_fingerprint: str | None = None,
+) -> dict[str, Any] | None:
+    """A convergence/current result builds nothing: a digest expectation cannot be met.
+
+    The panel-convergence path HAS read and fingerprinted the snapshot, so an
+    ``input_fingerprint`` expectation is compared there (``known_fingerprint``);
+    the pre-read short-circuit cannot verify it at all.
+    """
+    if expectations is None:
+        return None
+    if expectations.input_fingerprint is not None:
+        if known_fingerprint is None:
+            return _precondition_failure(
+                "input_fingerprint", expected=expectations.input_fingerprint, actual=None,
+                started=started, verifiable=False,
+            )
+        refused = _expectation_mismatch(
+            expectations, "input_fingerprint", known_fingerprint, started=started
+        )
+        if refused is not None:
+            return refused
+    if expectations.rows_digest is not None:
+        return _precondition_failure(
+            "rows_digest", expected=expectations.rows_digest, actual=None,
+            started=started, verifiable=False,
+        )
+    return None
 
 
 def _read_snapshot(
@@ -523,7 +606,10 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                         input_reasons=[f"{type(exc).__name__}"])
 
 
-def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
+def run(
+    dsn: str | None = None, *, as_of: date | None = None,
+    expectations: ApplyExpectations | None = None,
+) -> dict[str, Any]:
     """Publish the implied-rating product, or return a typed refusal.
 
     ``as_of`` is accepted for programmatic callers and ignored: the product's
@@ -532,6 +618,10 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
     (or the backfill CLI) is how one is asked for. ``WORKER_CALC_DATE`` is
     deliberately refused by ``run_worker`` (this ``run`` takes no ``calc_date``):
     a date the worker never reads must not be accepted from config.
+
+    ``expectations`` (the backfill CLI's ``--expect-*`` flags) are checked at
+    the earliest point each value is known and before any write; see
+    ``ApplyExpectations``.
     """
     started = time.monotonic()
     revision, refusal = _revision_or_failure(started)
@@ -546,12 +636,22 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 return gates["failure"]
             parent = gates["parent"]
             pointer = gates["pointer"]
+            for field, actual in (
+                ("current_pointer", pointer),
+                ("panel_publication_id", parent["publication_id"]),
+            ):
+                refused = _expectation_mismatch(expectations, field, actual, started=started)
+                if refused is not None:
+                    return refused
             current, rebuild_reasons = _currentness(
                 conn, parent=parent, revision=revision, pointer=pointer
             )
             # The short-circuit runs BEFORE the rebuild: a daily hook that
             # sees the same panel, policy and code must not rebuild 3M rows.
             if not force_republish and current is not None:
+                refused = _unverifiable_expectations(expectations, started=started)
+                if refused is not None:
+                    return refused
                 return {
                     "state": "current",
                     "aborted": False,
@@ -572,6 +672,12 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 if "failure" in inputs:
                     return inputs["failure"]
                 if "current" in inputs:
+                    refused = _unverifiable_expectations(
+                        expectations, started=started,
+                        known_fingerprint=inputs["current"]["input_fingerprint"],
+                    )
+                    if refused is not None:
+                        return refused
                     return {**inputs["current"], "build_manifest": manifest}
                 payload_kwargs["snapshot_inputs"] = inputs
             if "snapshot_inputs" not in payload_kwargs:
@@ -579,6 +685,14 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 if "failure" in inputs:
                     return inputs["failure"]
                 payload_kwargs["snapshot_inputs"] = inputs
+            # The snapshot is read and fingerprinted BEFORE the DDL replay, so an
+            # operator pin on the inputs refuses without touching the ledger.
+            refused = _expectation_mismatch(
+                expectations, "input_fingerprint",
+                payload_kwargs["snapshot_inputs"]["input_fingerprint"], started=started,
+            )
+            if refused is not None:
+                return refused
             install_schema(conn)
             # Commit the DDL at once: it takes AccessExclusiveLock on the shared
             # ledger (sec_derived_publications / sec_derived_current_pointers),
@@ -590,6 +704,11 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
             )
             if "failure" in prepared:
                 return prepared["failure"]
+            refused = _expectation_mismatch(
+                expectations, "rows_digest", prepared["rows_digest"], started=started
+            )
+            if refused is not None:
+                return refused
             publication: ImpliedRatingPublication = prepared["publication"]
             previous_anchor = prepared["pinned_l_anchor"]
             if policy.policy_l_anchor() is None and previous_anchor is not None and not math.isclose(

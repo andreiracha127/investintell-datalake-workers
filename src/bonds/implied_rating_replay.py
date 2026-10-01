@@ -397,6 +397,7 @@ def _write_receipt(path: Path, receipt: dict[str, Any]) -> None:
 def determinism_check(
     dsn: str | None = None, *, work_dir: Path | None = None, receipt_path: Path | None = None,
     expect_input_fingerprint: str | None = None, expect_rows_digest: str | None = None,
+    expect_panel_publication: str | None = None, expect_current_pointer: str | None = None,
     statement_timeout_s: int = DEFAULT_STATEMENT_TIMEOUT_S,
     lock_timeout_s: int = DEFAULT_LOCK_TIMEOUT_S, idle_timeout_s: int = DEFAULT_IDLE_TIMEOUT_S,
     child_timeout_s: int = DEFAULT_CHILD_TIMEOUT_S,
@@ -423,6 +424,8 @@ def determinism_check(
         "expectations": {
             "input_fingerprint": expect_input_fingerprint,
             "rows_digest": expect_rows_digest,
+            "panel_publication_id": expect_panel_publication,
+            "current_pointer": expect_current_pointer,
         },
         "verdict": None,
         "mismatch_reasons": [],
@@ -465,8 +468,13 @@ def determinism_check(
         "snapshot_row_count": len(captured["snapshot"]),
         "pinned_l_anchor": _anchor_repr(captured["pinned_anchor"]),
     })
-    if expect_input_fingerprint is not None and expect_input_fingerprint != captured["input_fingerprint"]:
-        return finish(EXIT_MISMATCH, "mismatch", mismatch_reasons=["expected_input_fingerprint_mismatch"])
+    for field, expected, actual in (
+        ("current_pointer", expect_current_pointer, captured["pointer"]),
+        ("panel_publication_id", expect_panel_publication, parent["publication_id"]),
+        ("input_fingerprint", expect_input_fingerprint, captured["input_fingerprint"]),
+    ):
+        if expected is not None and expected != actual:
+            return finish(EXIT_MISMATCH, "mismatch", mismatch_reasons=[f"expected_{field}_mismatch"])
     try:
         export_path = work / "snapshot_export.pkl"
         export = write_export(
