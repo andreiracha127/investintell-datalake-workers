@@ -1,0 +1,22 @@
+{
+  "policy_version": "bond_default_owner_event_policy_v1",
+  "product": "bond_default_owner_evidence_v1",
+  "source_schema": "bond_default_review_export_v1",
+  "economic_authority": false,
+  "primary_expected_loss_numerator": false,
+  "rating_source": "optional_internal_market_implied_reference_only",
+  "accepted_event_basis": "owner_adjudicated_issue_scope",
+  "adjudication_authority": "verified_WorkOS_owner_in_Light_then_explicit_offline_operator_import",
+  "dispositions": ["accept", "reject", "not_a_default"],
+  "event_types": ["chapter_11", "chapter_7", "missed_payment_after_cure", "distressed_exchange"],
+  "review_chain_key": "proposal_id",
+  "multiple_issues_per_episode": true,
+  "agency_rating_packages_required": false,
+  "custody_split_filter": false,
+  "dual_review_required": false,
+  "market_price_interpretation": "market_recovery_proxy_not_realized",
+  "resolution_required_for_acceptance": false,
+  "auxiliary_binding_mismatch": "descriptive_warning_not_market_EL_blocker",
+  "recall_threshold": null,
+  "automatic_promotion": false
+}

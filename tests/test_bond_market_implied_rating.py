@@ -42,6 +42,22 @@ MONTHS = pd.date_range("2025-01-01", periods=8, freq="MS")
 MATURITY_FAR = date(2035, 1, 1)
 
 
+@pytest.fixture(autouse=True)
+def historical_unpinned_mechanics(request, monkeypatch):
+    """Preserve independent synthetic state-machine expectations at anchor 0.
+
+    Existing mechanics/legacy-worker tests exercise an explicit old unpinned
+    policy rather than accidentally retuning their price/spread fixtures for
+    the new production pin. Policy tests and the separate owner-anchor suite
+    exercise the actual fixed-authoritative policy without this fixture.
+    """
+    if not request.node.name.startswith("test_policy"):
+        monkeypatch.setitem(ir.POLICY["market_level"]["anchor"], "l_anchor", None)
+        monkeypatch.setitem(ir.POLICY["market_level"]["anchor"], "kind", "calibration_window_median_of_l")
+        # Synthetic legacy rows must not claim the new fixed-policy identity.
+        monkeypatch.setattr(ir, "POLICY_DIGEST", "28f70b9bd8f617fedf6104deb86cd518d43307e88b3bbd1fcf53aa1fae869a3b")
+
+
 def bond_rows(
     cusip: str,
     spreads: list[float],
@@ -116,13 +132,15 @@ def assert_ddl_invariants(rows: pd.DataFrame) -> None:
 # --------------------------------------------------------------------------- #
 # The frozen policy
 # --------------------------------------------------------------------------- #
-def test_policy_matches_the_declared_round() -> None:
+def test_policy_matches_the_owner_amended_round() -> None:
     assert ir.POLICY_VERSION == "bond_market_implied_rating_policy_v1"
     assert ir.POLICY["cuts_bps"] == ["60", "85", "125", "220", "380", "700"]
     assert ir.POLICY["spread"]["winsor_bps"] == ["5", "5000"]
     assert ir.POLICY["spread"]["duration_slope_b"] == "0.2"
     assert ir.POLICY["market_level"]["beta"] == "0.6"
     assert ir.POLICY["market_level"]["anchor"]["window_months"] == "36"
+    assert ir.POLICY["market_level"]["anchor"]["kind"] == "fixed_authoritative"
+    assert ir.POLICY["market_level"]["anchor"]["l_anchor"] == "-0.8864114120812487"
     assert ir.POLICY["hysteresis"] == {"delta_log": "0.10", "confirm_obs": "2", "h_months": "3"}
     assert ir.POLICY["carry_forward_k"] == "3"
     assert ir.POLICY["default"] == {
@@ -149,7 +167,7 @@ def test_policy_digest_is_canonical_and_stable() -> None:
     ).hexdigest()
     assert ir.POLICY_DIGEST == recomputed
     assert ir.POLICY_DIGEST == (
-        "28f70b9bd8f617fedf6104deb86cd518d43307e88b3bbd1fcf53aa1fae869a3b"
+        "4b752a3fc5d5222b398f1e2a073b7c428b068e77968f8fb79edd20957202a08a"
     )
     assert len(ir.POLICY_DIGEST) == 64
     assert set(ir.POLICY_DIGEST) <= set("0123456789abcdef")
@@ -160,7 +178,13 @@ def test_policy_digest_is_canonical_and_stable() -> None:
         Path(__file__).resolve().parents[1]
         / "docs" / "calibration" / "bond_market_implied_rating_round_declaration.md"
     ).read_text(encoding="utf-8")
-    assert ir.POLICY_DIGEST in declaration
+    assert "28f70b9bd8f617fedf6104deb86cd518d43307e88b3bbd1fcf53aa1fae869a3b" in declaration
+    amendment = (
+        Path(__file__).resolve().parents[1]
+        / "docs" / "calibration" / "bond_market_implied_rating_owner_amendment_2026-09-30.md"
+    ).read_text(encoding="utf-8")
+    assert ir.POLICY_DIGEST in amendment
+    assert "not a PASS" in amendment
     # The pre-owner-decision digest survives only as a tombstone, never as the
     # declared identity.
     superseded = "a23fd5115cd66abf54986b5189724d1f9497c3f8594c7ecf35855c5ca256983b"
@@ -373,40 +397,19 @@ def test_market_anchor_is_the_window_median_and_rejects_an_empty_window() -> Non
         ir.market_anchor(level, window_end_month="2030-01-01")
 
 
-def test_policy_anchor_pin_is_checked_against_the_closed_history(monkeypatch) -> None:
+def test_policy_anchor_is_authoritative_not_the_corrected_window_median() -> None:
     level = pd.Series(
         [1.0, 2.0], index=pd.to_datetime(["2026-07-01", "2026-08-01"])
     )
-    monkeypatch.setitem(
-        ir.POLICY["market_level"]["anchor"], "l_anchor", "1.5"
-    )
-    assert ir.market_anchor(level) == pytest.approx(1.5)
-    monkeypatch.setitem(
-        ir.POLICY["market_level"]["anchor"], "l_anchor", "9.5"
-    )
-    with pytest.raises(ValueError, match="new calibration round"):
-        ir.market_anchor(level)
+    assert ir.market_anchor(level) == -0.8864114120812487
+    assert ir.resolved_market_anchor(level) == 1.5
 
 
-@pytest.mark.parametrize(
-    ("resolved", "offset", "reproduced"),
-    [
-        (-0.8864114120812479, 8e-16, True),
-        (-0.8864114120812479, 1e-6, False),
-        (1e6, 1e-6, False),
-    ],
-)
-def test_policy_anchor_pin_uses_only_absolute_tolerance(
-    monkeypatch, resolved, offset, reproduced
-) -> None:
+@pytest.mark.parametrize("resolved", [-0.8864114120812479, -0.8864, 1e6])
+def test_policy_anchor_pin_remains_exact_regardless_of_diagnostic_drift(resolved) -> None:
     level = pd.Series([resolved], index=pd.to_datetime(["2026-08-01"]))
-    monkeypatch.setitem(ir.POLICY["market_level"]["anchor"], "l_anchor", str(resolved + offset))
-    if reproduced:
-        # A tolerance match returns the policy pin, never the local float.
-        assert ir.market_anchor(level) == float(str(resolved + offset))
-    else:
-        with pytest.raises(ir.AnchorNotReproduced, match="new calibration round"):
-            ir.market_anchor(level)
+    assert ir.market_anchor(level) == -0.8864114120812487
+    assert ir.resolved_market_anchor(level) == resolved
 
 
 def test_spread_norm_log_is_s_and_neutralized_score_is_the_market_adjustment() -> None:
@@ -1270,6 +1273,7 @@ class _FakeConnection:
 def _patch_worker(monkeypatch, *, panel=None, pointer=None, current=None, snapshot=None,
                   relations=None, anchor=None) -> dict[str, object]:
     captured: dict[str, object] = {}
+    monkeypatch.setattr(worker, "resolve_dsn", lambda _dsn: "postgresql://example")
     monkeypatch.setattr(worker, "connect", lambda _dsn: _FakeConnection())
     monkeypatch.setattr(worker, "install_schema", lambda _conn: None)
     monkeypatch.setattr(worker, "_relation_exists", lambda _conn, name: (relations or {}).get(name, True))
@@ -1447,7 +1451,7 @@ def test_worker_build_uses_the_pin_and_reports_the_resolved_anchor(
 
     def resolve_anchor(*args, **kwargs):
         calls.append("resolve")
-        return resolved
+        return ir.MarketAnchorDiagnostics(resolved, resolved, "calibration_window")
 
     def pinned_anchor(_conn):
         calls.append("pin")
@@ -1457,7 +1461,7 @@ def test_worker_build_uses_the_pin_and_reports_the_resolved_anchor(
         calls.append(("rows", l_anchor))
         return real_rows(snapshot, last_closed_month=last_closed_month, l_anchor=l_anchor)
 
-    monkeypatch.setattr(ir, "market_anchor_for_snapshot", resolve_anchor)
+    monkeypatch.setattr(ir, "market_anchor_diagnostics_for_snapshot", resolve_anchor)
     monkeypatch.setattr(worker, "current_pinned_anchor", pinned_anchor)
     monkeypatch.setattr(ir, "build_publication_rows", build_rows)
     if entrypoint is worker.plan:
@@ -1507,7 +1511,10 @@ def test_worker_plan_and_run_bind_only_a_bitwise_changed_inherited_anchor(
         pointer="pub-current" if previous_anchor is not None else None,
         snapshot=frame, anchor=previous_anchor,
     )
-    monkeypatch.setattr(ir, "market_anchor_for_snapshot", lambda *args, **kwargs: resolved)
+    monkeypatch.setattr(
+        ir, "market_anchor_diagnostics_for_snapshot",
+        lambda *args, **kwargs: ir.MarketAnchorDiagnostics(resolved, resolved, "calibration_window"),
+    )
     planned = worker.plan("postgresql://example")
     assert planned["state"] == "planned"
     assert "publication" not in captured
@@ -1546,7 +1553,10 @@ def test_worker_refuses_anchor_drift_beyond_absolute_tolerance(
                "last_closed_month": MONTHS[-1].date(), "open_month": None},
         pointer="pub-current", snapshot=frame, anchor=previous_anchor,
     )
-    monkeypatch.setattr(ir, "market_anchor_for_snapshot", lambda *args, **kwargs: resolved)
+    monkeypatch.setattr(
+        ir, "market_anchor_diagnostics_for_snapshot",
+        lambda *args, **kwargs: ir.MarketAnchorDiagnostics(resolved, resolved, "calibration_window"),
+    )
     monkeypatch.setattr(worker, "materialize", lambda *args, **kwargs: pytest.fail("drift published"))
     if entrypoint is worker.plan:
         monkeypatch.setattr(worker, "install_schema", lambda _conn: pytest.fail("plan DDL"))

@@ -335,24 +335,32 @@ def _build_payload(
     input_fingerprint = inputs["input_fingerprint"]
     last_closed_month = parent["last_closed_month"]
     try:
-        resolved_l_anchor = policy.market_anchor_for_snapshot(
+        diagnostics = policy.market_anchor_diagnostics_for_snapshot(
             snapshot, last_closed_month=last_closed_month
         )
+        policy_anchor = policy.policy_l_anchor()
+        resolved_l_anchor = (
+            None if diagnostics.resolved_l_anchor is None else policy.finite_anchor(
+                diagnostics.resolved_l_anchor, field="resolved_l_anchor"
+            )
+        )
+        l_anchor = policy.finite_anchor(diagnostics.l_anchor, field="chosen_l_anchor")
+        if policy_anchor is not None and l_anchor != policy_anchor:
+            raise policy.InvalidAnchor("chosen_l_anchor does not match the official policy pin")
     except policy.AnchorWindowEmpty:
-        # No witnessed spread inside the frozen calibration window: there is no
-        # honest anchor to pin, so the build refuses with its own typed reason
-        # instead of fabricating one or falling over as an unnamed ValueError.
+        # No genuine observed market level globally (or no window median under
+        # an explicitly unpinned policy). A fixed pin never invents witnesses.
         return {"failure": _failure(
             "implied_rating_gate_failed",
             elapsed=time.monotonic() - started,
             input_reasons=["no_market_level_observation"],
             panel_publication_id=parent["publication_id"],
         )}
-    except policy.AnchorNotReproduced:
+    except policy.InvalidAnchor:
         return {"failure": _failure(
             "implied_rating_gate_failed",
             elapsed=time.monotonic() - started,
-            input_reasons=["anchor_not_reproduced"],
+            input_reasons=["invalid_anchor"],
             panel_publication_id=parent["publication_id"],
         )}
     previous_anchor = (
@@ -366,16 +374,43 @@ def _build_payload(
     # build and every ledger reader behind that queued DDL. Nothing read so far
     # needs to stay locked -- materialize re-checks the pointer by CAS.
     conn.commit()
-    l_anchor = resolved_l_anchor
-    if previous_anchor is not None and math.isclose(
+    try:
+        if previous_anchor is not None:
+            previous_anchor = policy.finite_anchor(previous_anchor, field="pinned_l_anchor")
+    except policy.InvalidAnchor:
+        return {"failure": _failure(
+            "implied_rating_gate_failed", elapsed=time.monotonic() - started,
+            input_reasons=["invalid_anchor"],
+            panel_publication_id=parent["publication_id"],
+        )}
+    if policy_anchor is not None:
+        if previous_anchor is not None and not math.isclose(
+            previous_anchor, policy_anchor, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
+        ):
+            # A foreign current pin is not a corrected window median. Do not
+            # silently adopt it or treat a diagnostic drift as its authority.
+            return {"failure": _failure(
+                "implied_rating_gate_failed", elapsed=time.monotonic() - started,
+                input_reasons=["anchor_policy_mismatch"],
+                pinned_l_anchor=previous_anchor, policy_l_anchor=policy_anchor,
+                resolved_l_anchor=resolved_l_anchor,
+            )}
+        l_anchor = policy_anchor
+    elif previous_anchor is not None and resolved_l_anchor is not None and math.isclose(
         previous_anchor, resolved_l_anchor, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
     ):
-        # Preserve the exact build pin and historical scores across float paths.
+        # Historical unpinned policy: bind a bitwise-different inherited value.
         l_anchor = previous_anchor
+    diagnostic_drift = (
+        None if resolved_l_anchor is None else not math.isclose(
+            l_anchor, resolved_l_anchor, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
+        )
+    )
     LOGGER.info(
         "bond_market_implied_rating_v1 anchor: l_anchor=%s pinned_l_anchor=%s "
-        "resolved_l_anchor=%s",
+        "resolved_l_anchor=%s anchor_source=%s diagnostic_reason=%s",
         l_anchor, previous_anchor, resolved_l_anchor,
+        diagnostics.anchor_source, diagnostics.diagnostic_reason,
     )
     rows = policy.build_publication_rows(
         snapshot, last_closed_month=last_closed_month, l_anchor=l_anchor
@@ -393,7 +428,9 @@ def _build_payload(
             published_last_month=months.max().date().isoformat(),
         )}
     identity_kwargs: dict[str, float] = {}
-    if l_anchor.hex() != resolved_l_anchor.hex():
+    if policy_anchor is None and resolved_l_anchor is not None and l_anchor.hex() != resolved_l_anchor.hex():
+        # A fixed anchor is already bound canonically by POLICY_DIGEST. The
+        # diagnostic must not introduce a second, data-dependent identity pin.
         identity_kwargs["inherited_l_anchor"] = l_anchor
     publication = ImpliedRatingPublication(
         publication_id=publication_id_for(
@@ -422,6 +459,10 @@ def _build_payload(
         "l_anchor": l_anchor,
         "resolved_l_anchor": resolved_l_anchor,
         "pinned_l_anchor": previous_anchor,
+        "policy_l_anchor": policy_anchor,
+        "anchor_source": diagnostics.anchor_source,
+        "anchor_diagnostic_reason": diagnostics.diagnostic_reason,
+        "anchor_diagnostic_drift": diagnostic_drift,
         "d_confirmed_count": d_confirmed_count,
         "d_candidate_count": d_candidate_count,
         "bucket_counts": {
@@ -518,7 +559,8 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
             publication: ImpliedRatingPublication = prepared["publication"]
             previous_anchor = prepared["pinned_l_anchor"]
             drift = (
-                previous_anchor is not None
+                policy.policy_l_anchor() is None
+                and previous_anchor is not None
                 and not math.isclose(
                     previous_anchor, prepared["resolved_l_anchor"],
                     rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL,
@@ -550,6 +592,10 @@ def plan(dsn: str | None = None) -> dict[str, Any]:
                 "l_anchor": prepared["l_anchor"],
                 "resolved_l_anchor": prepared["resolved_l_anchor"],
                 "pinned_l_anchor": previous_anchor,
+                "policy_l_anchor": prepared.get("policy_l_anchor"),
+                "anchor_source": prepared.get("anchor_source"),
+                "anchor_diagnostic_reason": prepared.get("anchor_diagnostic_reason"),
+                "anchor_diagnostic_drift": prepared.get("anchor_diagnostic_drift"),
                 "anchor_drift": drift,
                 "current_pointer": pointer,
                 "bucket_counts": prepared["bucket_counts"],
@@ -631,7 +677,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 return prepared["failure"]
             publication: ImpliedRatingPublication = prepared["publication"]
             previous_anchor = prepared["pinned_l_anchor"]
-            if previous_anchor is not None and not math.isclose(
+            if policy.policy_l_anchor() is None and previous_anchor is not None and not math.isclose(
                 previous_anchor, prepared["resolved_l_anchor"],
                 rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL,
             ):
@@ -680,6 +726,11 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, Any]:
                 "d_candidate_count": prepared["d_candidate_count"],
                 "l_anchor": prepared["l_anchor"],
                 "resolved_l_anchor": prepared["resolved_l_anchor"],
+                "pinned_l_anchor": previous_anchor,
+                "policy_l_anchor": prepared.get("policy_l_anchor"),
+                "anchor_source": prepared.get("anchor_source"),
+                "anchor_diagnostic_reason": prepared.get("anchor_diagnostic_reason"),
+                "anchor_diagnostic_drift": prepared.get("anchor_diagnostic_drift"),
                 "bucket_counts": prepared["bucket_counts"],
                 "reused_publication": result.reused,
                 "rebuild_reasons": rebuild_reasons,

@@ -9,8 +9,9 @@ the served bond-panel snapshot grid into the monthly state series the
     -> bucket thresholds with hysteresis -> carry-forward -> spells
     -> D candidate / confirmation / standalone hard trigger -> cure
 
-The policy below is the DECLARED round policy of
-``docs/calibration/bond_market_implied_rating_round_declaration.md``. Every
+The policy below incorporates the local owner amendment of
+``docs/calibration/bond_market_implied_rating_owner_amendment_2026-09-30.md``;
+the historical declaration and failed rounds remain unchanged. Every
 number is a Decimal-exact string, ``POLICY_DIGEST`` is the canonical sha256 over
 ``POLICY_VERSION`` + ``POLICY``, and the digest is part of the publication
 identity: changing any value here mints a different publication and requires a
@@ -60,9 +61,9 @@ numbers but leaves these mechanisms open:
     exposure walk can tell "carried" from "gone". Month ``k + 1`` without a
     witness closes the spell with a WITHDRAWN row. A later witnessed month opens
     a NEW spell (new ``spell_id``), it never revives the withdrawn one.
-  * ``L_anchor`` is the median of the chained ``L`` over the policy's declared
-    calibration window, whose END month is frozen in the policy: a wall-clock
-    window would move the anchor and rewrite point-in-time buckets.
+  * ``L_anchor`` is the official fixed policy value. The median of chained
+    ``L`` over the frozen calibration window is diagnostic only: old data
+    corrections cannot choose another anchor or invalidate the fixed one.
 """
 from __future__ import annotations
 
@@ -70,6 +71,7 @@ import hashlib
 import json
 import math
 from collections import deque
+from dataclasses import dataclass
 from datetime import date
 from types import MappingProxyType
 from typing import Any
@@ -82,9 +84,9 @@ PRODUCT = "bond_market_implied_rating_v1"
 ANCHOR_DRIFT_ABS_TOL = 1e-9  # Log-spread units; not a policy parameter.
 
 #: The last closed bond-panel month at the round declaration. Frozen in the
-#: policy on purpose (see the module docstring): the calibration window is
-#: ``[window_end_month - 35, window_end_month]`` and every build must resolve
-#: the SAME anchor from the same closed history.
+#: policy on purpose (see the module docstring): the diagnostic window is
+#: ``[window_end_month - 35, window_end_month]``. Its recomputed median is not
+#: the source of authority for the owner's fixed anchor.
 CALIBRATION_WINDOW_END_MONTH = "2026-08-01"
 CALIBRATION_WINDOW_MONTHS = "36"
 
@@ -115,14 +117,13 @@ POLICY: MappingProxyType = MappingProxyType({
         "chain": "median_of_intersection_deltas",
         "beta": "0.6",
         "anchor": {
-            "kind": "calibration_window_median_of_l",
+            "kind": "fixed_authoritative",
             "window_months": CALIBRATION_WINDOW_MONTHS,
             "window_end_month": CALIBRATION_WINDOW_END_MONTH,
-            # The frozen VALUE (median of L over the window). It stays NULL
-            # until the calibration round resolves it; while NULL the worker
-            # derives it from the closed history and the publication pins it.
-            # Setting it is a POLICY change: a new digest, a new round.
-            "l_anchor": None,
+            # Owner amendment 2026-09-30: the published value is authoritative.
+            # The window median is diagnostic only. This new policy identity
+            # requires separately authorized republication; it is not a PASS.
+            "l_anchor": "-0.8864114120812487",
         },
     },
     "cuts_bps": ["60", "85", "125", "220", "380", "700"],
@@ -313,16 +314,96 @@ def market_level(
 
 
 class AnchorWindowEmpty(ValueError):
-    """The frozen calibration window carries no market-level observation.
+    """No observed market level globally or in a required legacy anchor window.
 
-    Typed separately from the generic ``ValueError`` so the worker can refuse
-    with ``no_market_level_observation`` instead of guessing an anchor from a
-    history that has none.
+    A fixed policy still refuses a globally dark history. An empty old window
+    with genuine observations elsewhere is instead an explicit missing
+    diagnostic; it does not invalidate the official fixed anchor.
     """
 
 
 class AnchorNotReproduced(ValueError):
-    """The policy's frozen anchor is not reproduced by the closed history."""
+    """Historical error type, retained for callers of the unpinned policy."""
+
+
+class InvalidAnchor(ValueError):
+    """An anchor or market-level diagnostic is not a finite numeric value."""
+
+
+class AnchorOverrideRejected(ValueError):
+    """A caller attempted to replace the authoritative policy anchor."""
+
+
+@dataclass(frozen=True)
+class MarketAnchorDiagnostics:
+    l_anchor: float
+    resolved_l_anchor: float | None
+    anchor_source: str
+    diagnostic_reason: str | None = None
+
+
+def finite_anchor(value: Any, *, field: str) -> float:
+    """Validate a pin without coercing booleans or accepting NaN/infinity."""
+    if isinstance(value, (bool, np.bool_)):
+        raise InvalidAnchor(f"{field} requires a finite numeric value")
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise InvalidAnchor(f"{field} requires a finite numeric value") from exc
+    if not math.isfinite(result):
+        raise InvalidAnchor(f"{field} requires a finite numeric value")
+    return result
+
+
+def policy_l_anchor() -> float | None:
+    """Official policy value, or None for an explicitly unpinned legacy policy."""
+    anchor_policy = POLICY["market_level"]["anchor"]
+    kind = anchor_policy["kind"]
+    if kind not in {"fixed_authoritative", "calibration_window_median_of_l"}:
+        raise InvalidAnchor("unsupported policy.anchor.kind")
+    pinned = anchor_policy.get("l_anchor")
+    if kind == "fixed_authoritative" and pinned is None:
+        raise InvalidAnchor("policy.l_anchor requires a finite fixed value")
+    return None if pinned is None else finite_anchor(pinned, field="policy.l_anchor")
+
+
+def _observed_market_level(level: pd.Series) -> pd.Series:
+    observed = level.dropna()
+    if observed.empty:
+        raise AnchorWindowEmpty("closed history has no market-level observation")
+    try:
+        finite = np.isfinite(observed.to_numpy(dtype="float64")).all()
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise InvalidAnchor("market_level_l requires finite observed values") from exc
+    if not finite:
+        raise InvalidAnchor("market_level_l requires finite observed values")
+    return observed
+
+
+def resolved_market_anchor(
+    level: pd.Series,
+    *,
+    window_end_month: str | None = None,
+    window_months: int | None = None,
+) -> float:
+    """Recomputed window median, exclusively a diagnostic under a fixed policy.
+
+    Dark months are excluded, not replaced by carried levels. An empty window
+    has no numeric diagnostic, even if genuine witnesses exist elsewhere.
+    """
+    anchor_policy = POLICY["market_level"]["anchor"]
+    end = pd.Timestamp(window_end_month or anchor_policy["window_end_month"]).normalize()
+    count = int(window_months if window_months is not None else anchor_policy["window_months"])
+    if count <= 0:
+        raise ValueError("anchor window_months must be positive")
+    start = pd.Timestamp(end - pd.DateOffset(months=count - 1)).normalize()
+    window = level.loc[(level.index >= start) & (level.index <= end)].dropna()
+    if window.empty:
+        raise AnchorWindowEmpty(
+            f"calibration window {start.date().isoformat()}..{end.date().isoformat()} "
+            "has no market-level observation"
+        )
+    return finite_anchor(window.median(), field="resolved_l_anchor")
 
 
 def market_anchor(
@@ -331,39 +412,20 @@ def market_anchor(
     window_end_month: str | None = None,
     window_months: int | None = None,
 ) -> float:
-    """Median of ``L`` over the frozen calibration window.
+    """Select the policy-authoritative anchor without requiring median equality.
 
-    The window is ``[window_end - (window_months - 1), window_end]`` inclusive,
-    over months with a non-empty witness set; dark months are excluded. A
-    window with no observation raises: an unanchored chain would silently move
-    every bucket.
+    The fixed pin does not manufacture a market level: at least one genuine,
+    finite observed level must exist in the closed history. The old window may
+    be dark or change after correction without invalidating the fixed policy.
+    An explicitly unpinned legacy policy still needs a measured window median.
     """
-    anchor_policy = POLICY["market_level"]["anchor"]
-    end = pd.Timestamp(window_end_month or anchor_policy["window_end_month"]).normalize()
-    count = int(window_months or int(anchor_policy["window_months"]))
-    start = pd.Timestamp(end - pd.DateOffset(months=count - 1)).normalize()
-    window = level.loc[(level.index >= start) & (level.index <= end)].dropna()
-    if window.empty:
-        raise AnchorWindowEmpty(
-            f"calibration window {start.date().isoformat()}..{end.date().isoformat()} "
-            "has no market-level observation"
-        )
-    resolved = float(window.median())
-    pinned = anchor_policy.get("l_anchor")
-    if pinned is not None and not math.isclose(
-        float(pinned), resolved, rel_tol=0.0, abs_tol=ANCHOR_DRIFT_ABS_TOL
-    ):
-        # The policy froze a value; the closed history no longer reproduces it
-        # (a forced panel republish rewrote window months). Publishing under the
-        # drifted anchor would silently rewrite every historical bucket.
-        raise AnchorNotReproduced(
-            f"policy l_anchor {float(pinned)!r} is not reproduced by the closed "
-            f"history ({resolved!r}); a new calibration round is required"
-        )
-    # Within tolerance the declared pin, not the locally resolved float, is the
-    # anchor: identical policy/input/revision builds must not depend on the
-    # environment's float path.
-    return resolved if pinned is None else float(pinned)
+    _observed_market_level(level)
+    pinned = policy_l_anchor()
+    if pinned is not None:
+        return pinned
+    return resolved_market_anchor(
+        level, window_end_month=window_end_month, window_months=window_months
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -837,6 +899,40 @@ def _closed_frame(
     return frame
 
 
+def market_anchor_diagnostics_for_snapshot(
+    snapshot: pd.DataFrame,
+    *,
+    last_closed_month: date | pd.Timestamp | str,
+    window_end_month: str | None = None,
+    window_months: int | None = None,
+) -> MarketAnchorDiagnostics:
+    """Select the official value and independently report the measured median.
+
+    Compute the closed market chain once. An empty diagnostic window is explicit
+    (None, ``anchor_window_empty``); it cannot defeat a fixed policy pin when
+    there are real observed levels elsewhere in the closed history.
+    """
+    frame = _closed_frame(snapshot, last_closed_month=last_closed_month)
+    level = market_level(
+        frame.loc[frame["witnessed"], ["cusip_id", "month", "spread_norm_log"]],
+        end=last_closed_month,
+    )
+    chosen = market_anchor(
+        level, window_end_month=window_end_month, window_months=window_months
+    )
+    try:
+        resolved = resolved_market_anchor(
+            level, window_end_month=window_end_month, window_months=window_months
+        )
+    except AnchorWindowEmpty:
+        # market_anchor already verified genuine observed levels and a policy
+        # pin; an unpinned policy cannot get here without a measured window.
+        return MarketAnchorDiagnostics(chosen, None, "fixed_policy", "anchor_window_empty")
+    return MarketAnchorDiagnostics(
+        chosen, resolved, "fixed_policy" if policy_l_anchor() is not None else "calibration_window"
+    )
+
+
 def market_anchor_for_snapshot(
     snapshot: pd.DataFrame,
     *,
@@ -844,21 +940,11 @@ def market_anchor_for_snapshot(
     window_end_month: str | None = None,
     window_months: int | None = None,
 ) -> float:
-    """Resolve the frozen calibration anchor from the closed snapshot grid.
-
-    The worker resolves it ONCE per build, pins it on the publication and refuses
-    to publish under a different anchor than the current one (a forced panel
-    republish that rewrote window months would otherwise silently re-bucket every
-    historical month).
-    """
-    frame = _closed_frame(snapshot, last_closed_month=last_closed_month)
-    level = market_level(
-        frame.loc[frame["witnessed"], ["cusip_id", "month", "spread_norm_log"]],
-        end=last_closed_month,
-    )
-    return market_anchor(
-        level, window_end_month=window_end_month, window_months=window_months
-    )
+    """Official build anchor; the measured window median is diagnostic only."""
+    return market_anchor_diagnostics_for_snapshot(
+        snapshot, last_closed_month=last_closed_month,
+        window_end_month=window_end_month, window_months=window_months,
+    ).l_anchor
 
 
 def build_publication_rows(
@@ -876,11 +962,15 @@ def build_publication_rows(
     normalized spread ``s`` and ``neutralized_score`` publishes
     ``x = s - beta*(L - L_anchor)``, which is what the state machine consumes;
     an audit can recompute either from the published ``market_level_l`` and the
-    build's pinned anchor. ``l_anchor`` overrides the frozen
-    calibration-window resolution for the calibration notebook (and for the
-    worker, which resolves it first so it can pin and guard it); when omitted
-    the policy resolves it from the closed history.
+    build's pinned anchor. Under the fixed policy, ``l_anchor`` may only
+    confirm the exact official value; no caller can replace it. Explicit
+    finite overrides remain supported for an unpinned legacy policy, whose
+    publication identity must separately bind any inherited value.
     """
+    pinned_anchor = policy_l_anchor()
+    supplied_anchor = None if l_anchor is None else finite_anchor(l_anchor, field="l_anchor")
+    if pinned_anchor is not None and supplied_anchor is not None and supplied_anchor != pinned_anchor:
+        raise AnchorOverrideRejected("l_anchor cannot override the authoritative policy anchor")
     if snapshot.empty:
         return pd.DataFrame(columns=[*PUBLICATION_COLUMNS])
     frame = _closed_frame(snapshot, last_closed_month=last_closed_month)
@@ -891,7 +981,10 @@ def build_publication_rows(
         frame.loc[frame["witnessed"], ["cusip_id", "month", "spread_norm_log"]],
         end=last_closed_month,
     )
-    resolved_anchor = market_anchor(level) if l_anchor is None else float(l_anchor)
+    _observed_market_level(level)
+    resolved_anchor = (
+        market_anchor(level) if supplied_anchor is None else supplied_anchor
+    )
     level = level.ffill()
     beta = _policy_float("market_level", "beta")
 
