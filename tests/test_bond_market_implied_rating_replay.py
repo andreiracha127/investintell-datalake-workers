@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import stat
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -78,7 +79,8 @@ def test_export_roundtrip_preserves_exact_types_and_fingerprint(tmp_path):
     )
     assert export["row_count"] == len(snapshot)
     assert export["columns"] == list(worker.STAGE_COLUMNS)
-    assert not os.access(export_path, os.W_OK) or os.name == "nt"  # read-only where chmod applies
+    if os.name != "nt":  # read-only mode bits (root ignores them, so test the bits, not access())
+        assert stat.S_IMODE(export_path.stat().st_mode) == 0o444
     roundtrip = replay.verify_export_roundtrip(
         export_path, sha256=export["sha256"], snapshot=snapshot, input_fingerprint=fingerprint
     )
