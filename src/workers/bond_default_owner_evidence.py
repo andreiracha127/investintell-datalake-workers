@@ -11,7 +11,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
-from src.bonds.default_events.owner_evidence import (
+from src.bonds.default_owner_evidence import (
     OwnerEvidenceError,
     binding_warnings,
     build_bundle,

@@ -9,6 +9,21 @@ agency-free policy **bond_default_owner_event_policy_v1**. It does not change
 agency rating contracts, rating/anchor workers, daily scheduling or any pointer.
 No production data, credentials, database or live WorkOS session was accessed.
 
+## Placement outside the legacy code digest
+
+The module lives at `src/bonds/default_owner_evidence.py` and its policy at
+`contracts/bond_default_owner_evidence/`. This is deliberate: the legacy
+`bond_default_events` code digest hashes `src/bonds/default_events/*.py` and every file
+under `contracts/bonds/`, and committed invocation manifests (for example
+`configs/bond_default_events/invocation_2026-08_v1.json`, which also carries an expected
+publication id) pin that digest. Adding this independent product inside those trees
+changed the digest and made the pinned legacy identity stale, which CI caught as
+`test_committed_invocation_manifest_plans_offline_against_the_current_tree`. Keeping the
+bridge outside them leaves the legacy pin and its executed-invocation identity untouched;
+a regression test asserts the bridge files are not covered by the legacy digest. The
+producer bytes changed with the move, so the producer SHA-256 recorded below for the
+latest source differs from the one quoted in earlier notes.
+
 Legal-event evidence is diagnostic/protective, **never the primary market-PD
 numerator**. An unreviewed proposal is not a default. Neither an implied D nor a
 valid suggested CUSIP, CIK, LEI, issuer name or CUSIP-6 admits a legal event.
@@ -24,7 +39,7 @@ configured subject as a parameter, **not authority inherited from JSON**.
 
 An authorized offline operator obtains a Light `bond_default_review_export_v1`
 artifact with `owner_sub`, `proposals`, `decisions`, `resolutions`,
-`accepted_events`, `payload_sha256`. The importer [owner_evidence](../../src/bonds/default_events/owner_evidence.py)
+`accepted_events`, `payload_sha256`. The importer [owner_evidence](../../src/bonds/default_owner_evidence.py)
 verifies the canonical SHA-256 of the entire export and each full decision and
 resolution request, then validates all identities and predecessor chains.
 **Hashes are integrity checks, not signatures or JWT proof.** The importer does
@@ -172,7 +187,7 @@ Run locally without real data or secrets:
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q tests/test_bond_default_owner_evidence.py
-.venv\Scripts\ruff.exe check src/bonds/default_events/owner_evidence.py `
+.venv\Scripts\ruff.exe check src/bonds/default_owner_evidence.py `
   src/workers/bond_default_owner_evidence.py tests/test_bond_default_owner_evidence.py
 ```
 
@@ -189,7 +204,7 @@ no operational roles, other tests' schemas or container lifecycle are changed.
 $env:DSH_OWNER_EVIDENCE_PG_TEST='1' # opt-in flag only; no environment DSN
 .venv\Scripts\python.exe -m pytest -q -s tests/test_bond_default_owner_evidence_pg.py `
   tests/test_bond_default_owner_evidence.py
-.venv\Scripts\ruff.exe check src/bonds/default_events/owner_evidence.py `
+.venv\Scripts\ruff.exe check src/bonds/default_owner_evidence.py `
   src/workers/bond_default_owner_evidence.py tests/test_bond_default_owner_evidence.py `
   tests/test_bond_default_owner_evidence_pg.py
 ```
@@ -210,7 +225,7 @@ Both correction test schemas, with suffixes
 `19cd1fa7930e4ba88b2ef3043369175c` and `b2772a1f4e674126ba37681219e3f73d`,
 and each schema's `ce_test_<suffix>_{owner,writer,reader}` roles were removed;
 absence was queried. Temporary shadows disappeared on connection close.
-For that historical SQL-only correction, [producer bytes](../../src/bonds/default_events/owner_evidence.py)
+For that historical SQL-only correction, the producer bytes (then at `src/bonds/default_events/owner_evidence.py`)
 were **not changed**: SHA-256
 `baeca798ab24515becf1f8872455a11faac6d130b82f277b150aa12cc8c2a3d0`.
 That hash and its evidence remain **historical**, not the corrected P2 source.
@@ -265,3 +280,25 @@ Before operational use, separately authorize installation/ACL review and trusted
 Light export acquisition/replay under pinned bytes. No production bridge, live
 source activation, authenticated transfer, live publication or economic activation is
 claimed; legacy SEC lineage, agency and custody gates were not fabricated or changed.
+
+## Placement correction and current producer (2026-10-01)
+
+CI on the first commit failed `test_committed_invocation_manifest_plans_offline_against_the_current_tree`:
+the bridge module and policy sat inside the trees hashed into the legacy
+`bond_default_events` code digest, so the pin in
+`configs/bond_default_events/invocation_2026-08_v1.json` went stale. Rather than repin a
+committed invocation that carries an expected publication id, the module moved to
+`src/bonds/default_owner_evidence.py` and the policy to
+`contracts/bond_default_owner_evidence/`. Verified on `origin/main` (`b8b9503`) and on this
+branch: the pin test passes on both, and the set of failing tests in the legacy
+default-events, resolve, publication and live-daily suites is identical (the 233 local
+failures come from this environment's minimal dependencies, for example `jsonschema`, and
+are the same on both). `test_same_month_historical_calc_date_also_defers_stage_six` fails
+on `origin/main` too: it assumes yesterday is in the same month as today, so it fails on the
+first day of any month and is unrelated to this change.
+
+Current producer SHA-256 (`src/bonds/default_owner_evidence.py`):
+`a97a9249defe42094c15105ea05c7609da7ab13beaf8918c0146fec29fc96324`. The bridge suite is
+207 passed with the four real-PostgreSQL tests executed (PG 16.15, synthetic data,
+test-owned resources removed). Earlier producer hashes above remain historical evidence of
+the sources they describe and are not relabelled.

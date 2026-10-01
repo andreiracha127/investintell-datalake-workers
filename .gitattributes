@@ -43,3 +43,9 @@ tests/fixtures/bond_default_events/nport/*.xml -whitespace
 tests/fixtures/bond_default_events/ncen/**/*.tsv -whitespace
 tests/fixtures/bond_default_events/ncen/xml/*.xml -whitespace
 configs/bond_default_events/** text eol=lf
+
+# Owner-adjudicated legal-default evidence (bond_default_owner_evidence_v1). Kept OUTSIDE
+# contracts/bonds and src/bonds/default_events on purpose: those trees are hashed into the
+# legacy bond_default_events code digest that committed invocation manifests pin, so a new
+# product placed there would silently invalidate a pinned legacy identity.
+contracts/bond_default_owner_evidence/** text eol=lf

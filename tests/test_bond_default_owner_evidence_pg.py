@@ -26,7 +26,7 @@ from test_bond_default_owner_evidence import (
     rehash,
 )
 
-from src.bonds.default_events.owner_evidence import (
+from src.bonds.default_owner_evidence import (
     PostgresOwnerEvidenceStore,
     build_bundle,
     canonical_json,

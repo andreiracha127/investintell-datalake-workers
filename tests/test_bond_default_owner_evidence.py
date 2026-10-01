@@ -12,7 +12,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 
-from src.bonds.default_events.owner_evidence import (
+from src.bonds.default_owner_evidence import (
     DECISION_FIELDS,
     RESOLUTION_FIELDS,
     OwnerEvidenceError,
@@ -117,7 +117,7 @@ def build(value=None, **kwargs):
 
 def producer_source_sha():
     # Fresh fixtures pin the runtime bytes, never a hardcoded current-code hash.
-    return hashlib.sha256((ROOT / "src/bonds/default_events/owner_evidence.py").read_bytes()).hexdigest()
+    return hashlib.sha256((ROOT / "src/bonds/default_owner_evidence.py").read_bytes()).hexdigest()
 
 
 def publication_pins(bundle):
@@ -1118,7 +1118,7 @@ def test_resolution_history_survives_supersession_without_projecting_into_a_curr
 
 def test_sql_and_policy_are_separate_append_only_agency_free_products():
     sql = (ROOT / "schemas/bond_default_owner_evidence_v1.sql").read_text(encoding="utf-8")
-    policy = json.loads((ROOT / "contracts/bonds/default_owner_event_policy_v1.json").read_text(encoding="utf-8"))
+    policy = json.loads((ROOT / "contracts/bond_default_owner_evidence/default_owner_event_policy_v1.json").read_text(encoding="utf-8"))
     assert policy["agency_rating_packages_required"] is False and policy["custody_split_filter"] is False
     assert policy["dual_review_required"] is False and policy["primary_expected_loss_numerator"] is False
     assert "bond_default_owner_events_v1_current" in sql
@@ -1153,3 +1153,26 @@ def test_store_custom_schema_quotes_all_persistence_queries_and_retains_row_lock
     assert all('"private_owner_evidence"."bond_default_owner_evidence_v1_' in statement for statement in persistence)
     assert any("FOR UPDATE" in statement for statement in persistence)
     assert all('"public".' not in statement for statement in persistence)
+
+
+def test_bridge_files_stay_outside_the_legacy_default_events_code_digest():
+    # The legacy bond_default_events code digest hashes src/bonds/default_events/*.py and every
+    # file under contracts/bonds/. Committed invocation manifests pin it (together with an expected
+    # publication id), so an independent product placed there would silently stale a pinned legacy
+    # identity. Pin the placement, not just the legacy digest value.
+    from src.bonds.default_events import source_bundle as legacy
+
+    covered = set(legacy.code_digest_files())
+    bridge = {
+        "src/bonds/default_owner_evidence.py",
+        "src/workers/bond_default_owner_evidence.py",
+        "schemas/bond_default_owner_evidence_v1.sql",
+        "contracts/bond_default_owner_evidence/default_owner_event_policy_v1.json",
+    }
+    for relative in bridge:
+        assert (ROOT / relative).is_file(), relative
+    assert not (bridge & covered)
+    assert not [path for path in covered if "owner_evidence" in path or "default_owner" in path]
+    # Both covered trees are still the ones the legacy digest actually hashes.
+    assert any(path.startswith("src/bonds/default_events/") for path in covered)
+    assert any(path.startswith("contracts/bonds/") for path in covered)

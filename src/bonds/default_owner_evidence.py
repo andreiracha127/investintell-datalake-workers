@@ -23,7 +23,12 @@ PRODUCT = "bond_default_owner_evidence_v1"
 EXPORT_VERSION = "bond_default_review_export_v1"
 POLICY_VERSION = "bond_default_owner_event_policy_v1"
 NAMESPACE = UUID("60f25eab-91f1-565b-bdb2-81bc91465e80")
-POLICY_PATH = Path(__file__).resolve().parents[3] / "contracts/bonds/default_owner_event_policy_v1.json"
+# Deliberately outside contracts/bonds and src/bonds/default_events: both are hashed into the
+# legacy bond_default_events code digest that committed invocation manifests pin.
+POLICY_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "contracts/bond_default_owner_evidence/default_owner_event_policy_v1.json"
+)
 SHA = re.compile(r"^[0-9a-f]{64}$")
 RATED = ("AAA", "AA", "A", "BBB", "BB", "B", "CCC")
 DECISION_FIELDS = {
