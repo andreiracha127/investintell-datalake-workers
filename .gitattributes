@@ -49,3 +49,8 @@ configs/bond_default_events/** text eol=lf
 # legacy bond_default_events code digest that committed invocation manifests pin, so a new
 # product placed there would silently invalidate a pinned legacy identity.
 contracts/bond_default_owner_evidence/** text eol=lf
+
+# bond-live-daily pinned image: the lock/Dockerfile sha256 recorded in every build
+# manifest and determinism receipt is over the raw bytes, so checkouts must not
+# rewrite line endings (the image is built from a Linux checkout).
+docker/bond-live-daily/** text eol=lf
