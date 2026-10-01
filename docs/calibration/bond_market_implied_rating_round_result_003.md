@@ -294,6 +294,15 @@ repository): `C:\Users\andre\AppData\Local\Temp\bde-phase34-20261001\g5g6\result
 (`c8e8d739d94b198f7e9fa6440b150e5d501ad405b8b7e9aa1066bbe6b791a01f`). This is the partial reading the
 owner asked for; it is not an acceptance decision.
 
+## 16. Post-round read-back of the stored anchor (added 2026-10-01 17:31 -03:00)
+
+After the owner-authorized `GRANT SELECT ON public.bond_market_implied_rating_v1_builds TO app_runtime`
+(executed 17:30 -03:00 as `worker_writer`), `builds.l_anchor` was read directly as `app_runtime` in a
+read-only transaction. All four publications store exactly the pin `-0.8864114120812487`
+(hex `-0x1.c5d7b773615a6p-1`): `bc13a5e4` (c541c35c), `2801b9d3` (c1a503a4), `a8b9a3d2` (b8b9503d)
+and `bddb0e8e` (b8b9503d, 2026-09). This replaces the §1/§10 statement that the stored pin was
+inferred from identity and not readable; the inferred value was correct.
+
 ## DG-4
 
 Recorded by the agent verbatim from the owner's message of 2026-10-01 14:35 -03:00 (the owner's
