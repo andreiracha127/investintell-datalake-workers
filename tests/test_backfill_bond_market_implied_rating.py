@@ -52,7 +52,14 @@ def test_apply_restores_a_pre_existing_force_value(monkeypatch) -> None:
     assert os.environ[cli.FORCE_ENV] == "operator-value"
 
 
-@pytest.mark.parametrize("conflicting", (["--apply", "--dry-run"],))
+@pytest.mark.parametrize(
+    "conflicting",
+    (
+        ["--apply", "--dry-run"],
+        ["--apply", "--determinism-check"],
+        ["--dry-run", "--determinism-check"],
+    ),
+)
 def test_modes_are_mutually_exclusive(conflicting, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
     with pytest.raises(SystemExit):
@@ -91,3 +98,43 @@ def test_forced_republish_context_manager_is_exception_safe(monkeypatch) -> None
             assert os.environ[cli.FORCE_ENV] == "1"
             raise RuntimeError("boom")
     assert cli.FORCE_ENV not in os.environ
+
+
+def test_determinism_check_delegates_to_the_replay_and_never_touches_the_worker(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    seen: dict[str, object] = {}
+    receipt = {"verdict": "deterministic", "rows_digest": "d" * 64, "child_pids": [11, 12]}
+
+    def determinism_check(dsn, **kwargs):
+        seen["dsn"] = dsn
+        seen["kwargs"] = kwargs
+        return 0, receipt
+
+    monkeypatch.setattr(cli.replay, "determinism_check", determinism_check)
+    monkeypatch.setattr(cli.worker, "run", lambda dsn: pytest.fail("determinism check must not publish"))
+    monkeypatch.setattr(cli.worker, "plan", lambda dsn: pytest.fail("determinism check is not a plan"))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://check")
+    monkeypatch.delenv(cli.FORCE_ENV, raising=False)
+
+    assert cli.main([
+        "--determinism-check", "--receipt", str(tmp_path / "r.json"), "--work-dir", str(tmp_path),
+        "--statement-timeout-seconds", "120", "--child-timeout-seconds", "60",
+    ]) == 0
+    assert seen["dsn"] == "postgresql://check"
+    assert seen["kwargs"] == {
+        "work_dir": tmp_path, "receipt_path": tmp_path / "r.json",
+        "statement_timeout_s": 120, "child_timeout_s": 60,
+    }
+    assert cli.FORCE_ENV not in os.environ
+    assert json.loads(capsys.readouterr().out) == receipt
+
+
+@pytest.mark.parametrize("code", (1, 2))
+def test_determinism_check_exit_code_is_the_replay_verdict(monkeypatch, capsys, code) -> None:
+    monkeypatch.setattr(
+        cli.replay, "determinism_check", lambda dsn, **kwargs: (code, {"verdict": "mismatch"})
+    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql://check")
+    assert cli.main(["--determinism-check"]) == code
+    assert json.loads(capsys.readouterr().out) == {"verdict": "mismatch"}
