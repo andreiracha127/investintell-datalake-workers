@@ -6,7 +6,7 @@ import copy
 import hashlib
 import json
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -170,6 +170,72 @@ def origin_violations(value):
                for c in p["citations"]):
             violations.add("proposal_citation_after_first_decision")
     return violations
+
+
+def market_price(month="2020-02-01", *, confirmed=True):
+    return {"month": month, "price_per_100": 35.0,
+            "source_publication_id": uid("distinct-market-publication-" + month),
+            "source_reference": "Synthetic market panel for " + month + "; not the January legal document",
+            "owner_confirmed": confirmed, "interpretation": "market_recovery_proxy_not_realized"}
+
+
+def market_export(*, status="accept", recorded_at="2020-02-01T00:00:00Z"):
+    value = export(status=status)
+    value["proposals"][0]["source_as_of"] = "2020-01-15T00:00:00Z"
+    d = value["decisions"][0]
+    d.update(recorded_at=recorded_at, event_date="2020-01-15", market_prices=[market_price()])
+    rehash_decision(d)
+    return rehash(value)
+
+
+def market_time_violations(value, *, knowledge_cutoff=None):
+    # Independent stdlib UTC/month-start oracle, not the producer's _prices/_instant.
+    violations = set()
+    cutoff_day = (datetime.fromisoformat(knowledge_cutoff).astimezone(UTC).date()
+                  if knowledge_cutoff is not None else None)
+    for kind in ("proposals", "decisions"):
+        for item in value[kind]:
+            instant = item["recorded_at"] if kind == "decisions" else item["source_as_of"]
+            local_day = datetime.fromisoformat(instant).astimezone(UTC).date() if instant is not None else None
+            for price in item["market_prices"]:
+                month = date.fromisoformat(price["month"])
+                if local_day is not None and month > local_day:
+                    violations.add("market_proxy_after_recording" if kind == "decisions"
+                                   else "market_proxy_after_knowledge_cutoff")
+                if cutoff_day is not None and month > cutoff_day:
+                    violations.add("market_proxy_after_knowledge_cutoff")
+    return violations
+
+
+def assert_export_hashes(value):
+    for d in value["decisions"]:
+        assert d["request_sha256"] == sha({key: d[key] for key in DECISION_FIELDS})
+    assert value["payload_sha256"] == sha({key: item for key, item in value.items() if key != "payload_sha256"})
+
+
+def seal_market_time_change(bundle, value, *, knowledge_cutoff=None):
+    # Fresh adversarial fixtures only. Recompute projection/link/pins/full SHA so
+    # replay reaches semantic chronology, not a stale request or bundle hash.
+    result = copy.deepcopy(bundle)
+    decisions = {d["decision_id"]: d for d in value["decisions"]}
+    for event in result["events"]:
+        d = decisions[event["decision_id"]]
+        event["recorded_at"] = d["recorded_at"]
+        event["market_prices"] = copy.deepcopy(d["market_prices"])
+        event["issue_link"]["request_sha256"] = d["request_sha256"]
+        event["link_sha256"] = sha(event["issue_link"])
+    result["issuer_mapping_digest"] = sha(sorted(
+        (e["issue_link"] for e in result["events"]), key=lambda item: item["decision_id"]))
+    result["events_sha256"] = sha(result["events"])
+    if knowledge_cutoff is not None:
+        result["knowledge_cutoff"] = datetime.fromisoformat(knowledge_cutoff).astimezone(UTC).isoformat()
+    result = seal_proposal_only_change(result, value)
+    assert_export_hashes(result["source_export"])
+    assert result["code_digest"] == producer_source_sha()
+    assert result["publication_id"] == oracle_publication_id(publication_pins(result))
+    assert result["events_sha256"] == sha(result["events"])
+    assert result["bundle_sha256"] == sha({key: item for key, item in result.items() if key != "bundle_sha256"})
+    return result
 
 
 def test_one_accepted_event_has_explicit_issue_proof_and_derived_mapping_digest():
@@ -345,6 +411,212 @@ def test_market_price_kept_as_confirmed_proxy_never_as_realized_recovery():
     rehash_decision(d)
     with pytest.raises(OwnerEvidenceError, match="market_price_is_not_realized"):
         build(rehash(value))
+
+
+@pytest.mark.parametrize("status", ["accept", "reject", "not_a_default"])
+@pytest.mark.parametrize("recorded_at", [
+    "2020-01-15T00:00:00Z", "2020-01-31T23:59:59.999999Z",
+    "2020-02-01T00:30:00+01:00", "2020-02-01T00:59:59.999999+01:00",
+], ids=["original-early-January", "before-month-boundary", "UTC-still-January", "one-microsecond-before-boundary"])
+def test_hashsealed_following_month_proxy_after_any_decision_recording_is_refused(status, recorded_at):
+    cutoff = "2020-01-31T23:59:59.999999Z"
+    value = market_export(status=status, recorded_at=recorded_at)
+    d = value["decisions"][0]
+    d["market_prices"] = [market_price("2020-01-01")]
+    rehash_decision(d)
+    valid_bundle = build_bundle(rehash(value), expected_owner_sub=OWNER, code_revision="synthetic-time-oracle",
+                                knowledge_cutoff=cutoff)
+    assert seal_market_time_change(valid_bundle, value) == valid_bundle
+    d["market_prices"] = [market_price()]
+    rehash_decision(d)
+    rehash(value)
+    assert_export_hashes(value)
+    assert d["citations"] == [citation()]  # A valid January legal document, not the distinct February market source.
+    assert d["market_prices"][0]["source_publication_id"] != d["citations"][0]["citation_id"]
+    assert d["market_prices"][0]["owner_confirmed"] is True  # Confirmation does not prove time availability.
+    assert market_time_violations(value, knowledge_cutoff=cutoff) == {
+        "market_proxy_after_recording", "market_proxy_after_knowledge_cutoff",
+    }
+    sealed = seal_market_time_change(valid_bundle, value)
+    before = copy.deepcopy(value)
+    conn = FakeConnection()
+    store = PostgresOwnerEvidenceStore(conn, expected_owner_sub=OWNER)
+    for operation in (
+        lambda: validate_export(value, expected_owner_sub=OWNER),
+        lambda: build_bundle(value, expected_owner_sub=OWNER, code_revision="synthetic-time-oracle",
+                             knowledge_cutoff=cutoff),
+        lambda: verify_bundle(sealed, expected_owner_sub=OWNER),
+        lambda: store.prepare(sealed),
+    ):
+        with pytest.raises(OwnerEvidenceError) as caught:
+            operation()
+        assert caught.value.code == str(caught.value) == "market_proxy_after_recording"
+    assert value == before  # Refuse, never drop or mutate the future price.
+    assert conn.statements == [] and conn.builds == conn.events == conn.receipts == {}
+
+
+@pytest.mark.parametrize("first_status", ["accept", "reject", "not_a_default"])
+@pytest.mark.parametrize("latest_status", ["accept", "reject", "not_a_default"])
+def test_supersession_cannot_hide_old_future_market_proxy(first_status, latest_status):
+    value = market_export(status=first_status)
+    first = value["decisions"][0]
+    latest = decision(status=latest_status, sequence=2, previous=first["decision_id"], label="market-supersession")
+    latest["recorded_at"] = "2020-03-01T00:00:00Z"
+    value["decisions"] = [latest, first]  # Serialization order is not review-chain order.
+    value["accepted_events"] = [latest] if latest_status == "accept" else []
+    valid_bundle = build(rehash(value))
+    first["recorded_at"] = "2020-01-15T00:00:00Z"
+    rehash_decision(first)
+    rehash(value)
+    assert_export_hashes(value)
+    assert latest["market_prices"] == []
+    assert market_time_violations(value) == {"market_proxy_after_recording"}
+    sealed = seal_market_time_change(valid_bundle, value)
+    conn = FakeConnection()
+    for operation in (
+        lambda: validate_export(value, expected_owner_sub=OWNER),
+        lambda: build(value),
+        lambda: verify_bundle(sealed, expected_owner_sub=OWNER),
+        lambda: PostgresOwnerEvidenceStore(conn, expected_owner_sub=OWNER).prepare(sealed),
+    ):
+        with pytest.raises(OwnerEvidenceError) as caught:
+            operation()
+        assert caught.value.code == "market_proxy_after_recording"
+    assert conn.statements == []
+
+
+@pytest.mark.parametrize("status", ["unreviewed", "accept", "reject", "not_a_default"])
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_known_proposal_source_as_of_also_bounds_its_market_proxies(status, confirmed):
+    value = export(zero=status == "unreviewed", status="accept" if status == "unreviewed" else status)
+    p = value["proposals"][0]
+    p["market_prices"] = [market_price("2020-01-01", confirmed=confirmed)]
+    valid_bundle = build(rehash(value))
+    p["market_prices"] = [market_price(confirmed=confirmed)]
+    rehash(value)
+    assert_export_hashes(value)
+    assert market_time_violations(value) == {"market_proxy_after_knowledge_cutoff"}
+    sealed = seal_market_time_change(valid_bundle, value)
+    for operation in (lambda: validate_export(value, expected_owner_sub=OWNER), lambda: build(value),
+                      lambda: verify_bundle(sealed, expected_owner_sub=OWNER)):
+        with pytest.raises(OwnerEvidenceError) as caught:
+            operation()
+        assert caught.value.code == "market_proxy_after_knowledge_cutoff"
+
+
+@pytest.mark.parametrize("with_reviewed_issue", [False, True])
+@pytest.mark.parametrize("confirmed", [False, True])
+@pytest.mark.parametrize("cutoff", [
+    "2020-01-31T23:59:59Z", "2020-01-31T20:59:59-03:00", "2020-02-01T05:29:59+05:30",
+], ids=["UTC", "negative-offset-equivalent", "positive-offset-equivalent"])
+def test_hashsealed_unreviewed_undated_proposal_future_price_obeys_global_bundle_cutoff(
+    with_reviewed_issue, confirmed, cutoff,
+):
+    value = export(zero=not with_reviewed_issue)
+    if with_reviewed_issue:
+        p = proposal("unreviewed-future-market")
+        value["proposals"].append(p)
+    else:
+        p = value["proposals"][0]
+    p["source_as_of"] = None
+    p["market_prices"] = [market_price(confirmed=confirmed)]
+    rehash(value)
+    assert_export_hashes(value)
+    assert not any(d["proposal_id"] == p["proposal_id"] for d in value["decisions"])
+    assert market_time_violations(value) == set()
+    assert validate_export(value, expected_owner_sub=OWNER) == value  # No invented legacy timestamp/global cutoff.
+    assert market_time_violations(value, knowledge_cutoff=cutoff) == {"market_proxy_after_knowledge_cutoff"}
+    valid_bundle = build_bundle(value, expected_owner_sub=OWNER, code_revision="synthetic-global-cutoff",
+                                knowledge_cutoff="2020-02-01T00:00:00Z")
+    sealed = seal_market_time_change(valid_bundle, value, knowledge_cutoff=cutoff)
+    before = copy.deepcopy(value)
+    conn = FakeConnection()
+    for operation in (
+        lambda: build_bundle(value, expected_owner_sub=OWNER, code_revision="synthetic-global-cutoff",
+                             knowledge_cutoff=cutoff),
+        lambda: verify_bundle(sealed, expected_owner_sub=OWNER),
+        lambda: PostgresOwnerEvidenceStore(conn, expected_owner_sub=OWNER).prepare(sealed),
+    ):
+        with pytest.raises(OwnerEvidenceError) as caught:
+            operation()
+        assert caught.value.code == str(caught.value) == "market_proxy_after_knowledge_cutoff"
+    assert value == before and conn.statements == []
+    assert conn.builds == conn.events == conn.receipts == {}
+
+
+@pytest.mark.parametrize("status", ["accept", "reject", "not_a_default"])
+@pytest.mark.parametrize("event_date,recorded_at,months", [
+    ("2020-01-15", "2020-01-15T00:00:00Z", ["2020-01-01"]),
+    ("2020-01-15", "2020-01-20T00:00:00Z", ["2020-01-01"]),
+    ("2020-01-15", "2020-02-01T00:00:00Z", ["2020-01-01", "2020-02-01"]),
+    ("2020-01-15", "2020-02-15T00:00:00Z", ["2020-02-01"]),
+    ("2020-01-15", "2020-01-31T21:00:00-03:00", ["2020-02-01"]),
+    ("2020-01-15", "2020-02-01T05:30:00+05:30", ["2020-02-01"]),
+    ("2020-12-15", "2020-12-15T00:00:00Z", ["2020-12-01"]),
+    ("2020-12-15", "2021-01-01T00:00:00Z", ["2020-12-01", "2021-01-01"]),
+    ("2020-02-29", "2020-03-01T00:00:00Z", ["2020-03-01"]),
+], ids=["same-event-day", "past-event-month", "following-month-start", "same-month-not-closed",
+        "negative-offset-UTC-February", "positive-offset-equivalent", "December-event-month",
+        "year-boundary", "leap-event-next-month"])
+def test_valid_market_month_starts_preserve_prices_without_inventing_full_month_closure(
+    status, event_date, recorded_at, months,
+):
+    value = market_export(status=status, recorded_at=recorded_at)
+    d = value["decisions"][0]
+    d["event_date"] = event_date
+    d["market_prices"] = [market_price(month) for month in months]
+    rehash_decision(d)
+    rehash(value)
+    before = copy.deepcopy(value)
+    assert market_time_violations(value, knowledge_cutoff=recorded_at) == set()
+    bundle = build_bundle(value, expected_owner_sub=OWNER, code_revision="synthetic-valid-time",
+                          knowledge_cutoff=recorded_at)
+    assert verify_bundle(bundle, expected_owner_sub=OWNER) == bundle
+    assert seal_market_time_change(bundle, value) == bundle  # Independent full sealing agrees for valid cases.
+    assert value == before == bundle["source_export"]
+    assert bundle["accepted_event_count"] == int(status == "accept")
+    if status == "accept":
+        assert bundle["events"][0]["market_prices"] == d["market_prices"]
+        assert bundle["events"][0]["realized_recovery_per_100"] is None
+        assert bundle["events"][0]["economic_authority"] is False
+
+
+@pytest.mark.parametrize("month,source_as_of,cutoff", [
+    ("2019-12-01", "2020-01-15T00:00:00Z", "2020-01-15T00:00:00Z"),
+    ("2020-01-01", "2020-01-15T00:00:00Z", "2020-01-15T00:00:00Z"),
+    ("2020-02-01", "2020-02-01T00:00:00Z", "2020-02-01T00:00:00Z"),
+    ("2020-02-01", "2020-01-31T21:00:00-03:00", "2020-02-01T05:30:00+05:30"),
+    ("2020-02-01", "2020-02-15T00:00:00Z", "2020-02-15T00:00:00Z"),
+    ("2020-01-01", None, "2020-01-15T00:00:00Z"),
+    ("2020-02-01", None, "2020-02-01T00:00:00Z"),
+], ids=["past-month", "observed-event-month", "exact-month-boundary", "offset-equivalent-boundary",
+        "same-month-not-closed", "undated-event-month", "undated-February-boundary"])
+def test_valid_unreviewed_proposal_prices_remain_visible_and_are_not_default_events(month, source_as_of, cutoff):
+    value = export(zero=True)
+    p = value["proposals"][0]
+    p["source_as_of"] = source_as_of
+    p["market_prices"] = [market_price(month, confirmed=False)]
+    rehash(value)
+    assert market_time_violations(value, knowledge_cutoff=cutoff) == set()
+    bundle = build_bundle(value, expected_owner_sub=OWNER, code_revision="synthetic-valid-proposal",
+                          knowledge_cutoff=cutoff)
+    assert verify_bundle(bundle, expected_owner_sub=OWNER) == bundle
+    assert bundle["source_export"] == value and bundle["events"] == []
+    assert bundle["accepted_event_count"] == 0 and bundle["economic_authority"] is False
+
+
+@pytest.mark.parametrize("change,code", [
+    (lambda price: price.update(owner_confirmed=False), "market_proxy_requires_owner_confirmation"),
+    (lambda price: price.update(month="2019-12-01"), "invalid_market_proxy_month"),
+])
+def test_time_valid_market_proxy_does_not_relax_confirmation_or_event_month_membership(change, code):
+    value = market_export()
+    d = value["decisions"][0]
+    change(d["market_prices"][0])
+    rehash_decision(d)
+    with pytest.raises(OwnerEvidenceError) as caught:
+        build(rehash(value))
+    assert caught.value.code == code
 
 
 def binding(month="2020-08-01"):
@@ -638,6 +910,32 @@ def test_cli_proposal_origin_refusal_is_sanitized_and_writes_no_bundle(tmp_path,
     assert not output.exists()
 
 
+@pytest.mark.parametrize("kind,code", [
+    ("decision", "market_proxy_after_recording"),
+    ("unreviewed-proposal", "market_proxy_after_knowledge_cutoff"),
+])
+def test_cli_future_market_proxy_refusal_is_sanitized_and_writes_no_bundle(tmp_path, capsys, kind, code):
+    cutoff = "2020-01-31T23:59:59Z"
+    if kind == "decision":
+        value = market_export(recorded_at="2020-01-15T00:00:00Z")
+        value["decisions"][0]["market_prices"][0]["source_reference"] = "SECRETLIKE synthetic future market source"
+        rehash_decision(value["decisions"][0])
+    else:
+        value = export(zero=True)
+        p = value["proposals"][0]
+        p["source_as_of"] = None
+        p["market_prices"] = [market_price(confirmed=False)]
+        p["market_prices"][0]["source_reference"] = "SECRETLIKE synthetic future market source"
+    rehash(value)
+    assert_export_hashes(value)
+    source, output = tmp_path / "future-market.json", tmp_path / "refused-market-bundle.json"
+    source.write_text(json.dumps(value), encoding="utf-8")
+    assert main(["--input", str(source), "--output", str(output), "--owner-sub", OWNER,
+                 "--code-revision", "synthetic-market-time", "--knowledge-cutoff", cutoff]) == 4
+    assert json.loads(capsys.readouterr().out) == {"state": "refused", "code": code}
+    assert not output.exists()
+
+
 def test_fresh_bundle_identity_pins_runtime_source_not_historical_producer_bytes():
     bundle = build()
     assert bundle["code_digest"] == producer_source_sha()
@@ -793,6 +1091,7 @@ def test_malformed_json_values_fail_loud_with_sanitized_refusal(field, bad):
 
 def test_repeated_distressed_market_prices_are_not_legal_events_without_owner_acceptance():
     value = export(zero=True)
+    value["proposals"][0]["source_as_of"] = "2020-02-01T00:00:00Z"
     value["proposals"][0]["market_prices"] = [
         {"month": month, "price_per_100": 25.0, "source_publication_id": uid("market-" + month),
          "source_reference": "Synthetic confirmed market-D series", "owner_confirmed": False,

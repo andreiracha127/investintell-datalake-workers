@@ -43,6 +43,14 @@ accepted head. The importer independently recomputes the accepted projection
 and rejects a supplied projection that disagrees; reject and not-a-default
 remain distinct in the preserved complete ledger.
 
+Market-proxy months are time-bounded: a proxy month start must be at or before
+the UTC date of the decision's recording instant, the proposal's known
+`source_as_of`, and the mandatory bundle knowledge cutoff, for every decision
+(including superseded, rejected and not-a-default records) and every proposal,
+including unreviewed ones. Owner confirmation is not time evidence, and no
+month-closure rule is invented. Refusals are the sanitized codes
+`market_proxy_after_recording` and `market_proxy_after_knowledge_cutoff`.
+
 After validating each proposal's decision chain, every known proposal
 `source_as_of` and every known proposal citation `public_at` must be at or before
 that proposal's **first recorded decision**, regardless of disposition or later

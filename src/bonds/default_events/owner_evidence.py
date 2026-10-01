@@ -194,13 +194,19 @@ def _citations(values: Any, registry: dict[str, Any], documents: dict[str, str],
         documents[source_id] = document_hash
 
 
-def _prices(values: Any, *, event_date: Any = None, require_confirmation: bool = False) -> None:
+def _prices(values: Any, *, event_date: Any = None, require_confirmation: bool = False,
+            recorded_at: datetime | None = None, knowledge_cutoff: datetime | None = None) -> None:
     months: set[date] = set()
     for raw in _list(values, 2):
         item = _object(raw, PRICE_FIELDS, "invalid_market_proxy_shape")
         month = _day(item["month"])
         _require(month.day == 1 and month not in months, "invalid_market_proxy_month")
         months.add(month)
+        # These are UTC instants from _instant. Bound the month start, not an
+        # invented full-month closure; confirmation alone is not time evidence.
+        _require(recorded_at is None or month <= recorded_at.date(), "market_proxy_after_recording")
+        _require(knowledge_cutoff is None or month <= knowledge_cutoff.date(),
+                 "market_proxy_after_knowledge_cutoff")
         _number(item["price_per_100"], positive=True)
         _text(item["source_reference"], "market_proxy_source_required", 512)
         if item["source_publication_id"] is not None:
@@ -276,11 +282,9 @@ def _validate_export(raw: Mapping[str, Any], *, expected_owner_sub: str) -> dict
         _require(suggestions == sorted(set(suggestions)), "noncanonical_proposed_cusips")
         for value in _list(proposal["uncertainties"], 100):
             _require(isinstance(value, str), "invalid_uncertainty")
-        if proposal["source_as_of"] is not None:
-            _instant(proposal["source_as_of"])
-        _citations(proposal["citations"], citations, documents, maximum=1000, minimum=0,
-                   cutoff=_instant(proposal["source_as_of"]) if proposal["source_as_of"] is not None else None)
-        _prices(proposal["market_prices"])
+        source_as_of = _instant(proposal["source_as_of"]) if proposal["source_as_of"] is not None else None
+        _citations(proposal["citations"], citations, documents, maximum=1000, minimum=0, cutoff=source_as_of)
+        _prices(proposal["market_prices"], knowledge_cutoff=source_as_of)
         proposals[proposal_id] = proposal
     decisions: dict[str, dict[str, Any]] = {}
     decision_chains: dict[str, list[dict[str, Any]]] = {}
@@ -318,7 +322,8 @@ def _validate_export(raw: Mapping[str, Any], *, expected_owner_sub: str) -> dict
             _require(all(item[field] is not None for field in
                          ("confirmed_cusip", "issue_scope", "event_date", "event_type", "seniority",
                           "security_status", "collateral_description")), "accepted_issue_evidence_required")
-        _prices(item["market_prices"], event_date=item["event_date"], require_confirmation=True)
+        _prices(item["market_prices"], event_date=item["event_date"], require_confirmation=True,
+                recorded_at=recorded_at)
         decisions[record_id] = item
         decision_chains.setdefault(proposal_id, []).append(item)
     for proposal_id, chain in decision_chains.items():
@@ -431,6 +436,10 @@ def build_bundle(raw: Mapping[str, Any], *, expected_owner_sub: str, code_revisi
     cutoff = _instant(knowledge_cutoff)
     for item in export["decisions"] + export["resolutions"]:
         _require(_instant(item["recorded_at"]) <= cutoff, "record_after_knowledge_cutoff")
+    # Bound the complete ledger, not only accepted event prices. Legacy proposals
+    # may lack source_as_of, but a final bundle always has this explicit cutoff.
+    for item in export["proposals"] + export["decisions"]:
+        _prices(item["market_prices"], knowledge_cutoff=cutoff)
     for proposal in export["proposals"]:
         if proposal["source_as_of"] is not None:
             _require(_instant(proposal["source_as_of"]) <= cutoff, "proposal_after_knowledge_cutoff")
