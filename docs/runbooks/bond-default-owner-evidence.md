@@ -90,7 +90,10 @@ matching constructs that cohort automatically.
 Acceptance does not require a resolution. Resolution additions preserve estimated
 versus realized valuation, form, date and citations. A current accepted event's
 `realized_recovery_per_100` is populated only by its latest explicitly realized
-resolution. Event-month/following-month confirmed market prices remain
+resolution: the last `realized` entry in the chain, even if a newer `estimated` entry
+follows it (a realized recovery is an observed fact, and the complete append-only history
+stays in the event's `resolutions`). An event whose resolutions are all estimated, or that
+has none, leaves the field empty. Event-month/following-month confirmed market prices remain
 `market_recovery_proxy_not_realized`; they never become realized LGD.
 
 An optional internal rating reference contains product, publication, policy,
@@ -298,7 +301,14 @@ on `origin/main` too: it assumes yesterday is in the same month as today, so it 
 first day of any month and is unrelated to this change.
 
 Current producer SHA-256 (`src/bonds/default_owner_evidence.py`):
-`a97a9249defe42094c15105ea05c7609da7ab13beaf8918c0146fec29fc96324`. The bridge suite is
-207 passed with the four real-PostgreSQL tests executed (PG 16.15, synthetic data,
-test-owned resources removed). Earlier producer hashes above remain historical evidence of
-the sources they describe and are not relabelled.
+`46c7cd0a7b5a5caccf7fcc37994f707a4fef763e827d6833f858359940f0d82b`. The bridge suite is
+213 passed with the four real-PostgreSQL tests executed (PG 16.15, synthetic data,
+test-owned resources removed). Earlier producer hashes above, including
+`a97a9249defe42094c15105ea05c7609da7ab13beaf8918c0146fec29fc96324` (placement fix, before the
+realized-recovery correction), remain historical evidence of the sources they describe and are
+not relabelled.
+
+A second review round raised that `realized_recovery_per_100` read only the chain head, so a
+later `estimated` resolution hid an earlier `realized` one. That contradicted the documented
+rule ("latest explicitly realized resolution"); the field now takes the last `realized` entry.
+Six ordering cases are pinned, including estimated-after-realized and all-estimated.

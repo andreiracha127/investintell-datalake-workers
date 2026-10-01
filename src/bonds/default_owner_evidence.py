@@ -433,6 +433,20 @@ def binding_warnings(reference: Mapping[str, Any] | None,
     return (code,)
 
 
+def latest_realized_recovery(resolutions: Sequence[Mapping[str, Any]]) -> Any:
+    """Recovery per 100 of the event's latest explicitly realized resolution, else ``None``.
+
+    ``resolutions`` is ordered by chain sequence. A later *estimated* resolution does not erase an
+    earlier *realized* one (a realized recovery is an observed fact; the full history stays in the
+    event's ``resolutions``). Estimated resolutions never populate this field, and neither does a
+    confirmed market proxy price.
+    """
+    for item in reversed(resolutions):
+        if item["valuation_basis"] == "realized":
+            return item["recovery_per_100"]
+    return None
+
+
 def build_bundle(raw: Mapping[str, Any], *, expected_owner_sub: str, code_revision: str,
                  knowledge_cutoff: str, rating_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Create deterministic PREPARED artifact; no database mutation or authentication claim."""
@@ -484,8 +498,7 @@ def build_bundle(raw: Mapping[str, Any], *, expected_owner_sub: str, code_revisi
             "security_status": decision["security_status"], "collateral_description": decision["collateral_description"],
             "evidence_sha256": evidence_digest, "link_sha256": link_digest, "issue_link": proof,
             "market_prices": decision["market_prices"], "resolutions": resolutions,
-            "realized_recovery_per_100": (resolutions[-1]["recovery_per_100"]
-                                          if resolutions and resolutions[-1]["valuation_basis"] == "realized" else None),
+            "realized_recovery_per_100": latest_realized_recovery(resolutions),
             "economic_authority": False,
         })
     events.sort(key=lambda item: item["event_id"])

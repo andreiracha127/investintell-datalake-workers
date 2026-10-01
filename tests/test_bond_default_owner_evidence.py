@@ -383,6 +383,36 @@ def test_optional_resolution_is_not_required_and_preserves_estimated_vs_realized
     assert bundle["events"][0]["resolutions"][0]["valuation_basis"] == basis
 
 
+@pytest.mark.parametrize("bases,values,expected", [
+    (("realized", "estimated"), (40.0, 55.0), 40.0),  # a later estimate does not erase a realized fact
+    (("estimated", "realized"), (55.0, 40.0), 40.0),
+    (("realized", "realized"), (40.0, 45.0), 45.0),  # latest realized wins among realized
+    (("realized", "estimated", "realized"), (40.0, 55.0, 47.5), 47.5),
+    (("estimated", "realized", "estimated"), (50.0, 41.0, 60.0), 41.0),
+    (("estimated", "estimated"), (50.0, 55.0), None),  # never realized: stays empty
+])
+def test_realized_recovery_is_the_latest_realized_resolution_not_the_chain_head(bases, values, expected):
+    # Runbook: the field is populated only by the event's latest explicitly realized resolution.
+    value = export()
+    decision_row = value["decisions"][0]
+    chain, previous = [], None
+    for index, (basis, recovery) in enumerate(zip(bases, values, strict=True), start=1):
+        item = resolution(decision_row, basis=basis, sequence=index, previous=previous,
+                          label=f"chain-{index}")
+        item["recovery_per_100"] = recovery
+        rehash_resolution(item)
+        chain.append(item)
+        previous = item["resolution_id"]
+    value["resolutions"] = chain
+    bundle = build(rehash(value))
+    event = bundle["events"][0]
+    assert event["realized_recovery_per_100"] == expected
+    # The complete append-only history is preserved, in sequence order, whatever the field shows.
+    assert [item["valuation_basis"] for item in event["resolutions"]] == list(bases)
+    assert event["economic_authority"] is False
+    assert verify_bundle(bundle, expected_owner_sub=OWNER) == bundle
+
+
 def test_resolution_issue_mismatch_or_fork_refused():
     value = export()
     r = resolution(value["decisions"][0])
