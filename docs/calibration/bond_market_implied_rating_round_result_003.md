@@ -3,24 +3,28 @@
 **Status at release (14:08): `needs-decision` (owner). Update 14:35: DG-4 recorded — ACCEPTED WITH
 CONDITIONS (see final section; condition met in §14).** The three blocking readings were executed with a
 recorded harness. **G1(a) PASS · G1(b) `NOT_REPRODUCIBLE_IN_THIS_ENVIRONMENT` · G9 PASS ·
-G10 not exact (`pending-owner-decision`, D-1).** Nothing was published, pinned or moved.
+G10 not exact (`pending-owner-decision`, D-1; accepted by the owner in DG-4 at 14:35).** Nothing was published, pinned or moved.
 This file is append-only and new: the declaration, round-001/002 results, the owner
 amendment and the historical harness are untouched. Only the owner records DG-4.
 
-- Executed: 2026-10-01, 11:15–14:06 (America/Sao_Paulo, UTC-03:00).
+- Executed: 2026-10-01, 11:15–14:06 (America/Sao_Paulo, UTC-03:00) for the G1/G9/G10 round (§0–§13).
+  Later appended sections: §14 parse-path condition re-run (14:37), §15 G5/G6 re-read (executed
+  17:57Z, evidence under `C:\Users\andre\AppData\Local\Temp\bde-phase34-20261001\g5g6`), §16 stored
+  anchor read-back (17:31).
 - Authority: `bde_g1_g9_g10_handoff_2026-10-01.md` (task scope), owner decisions
   `docs/planning/bond-default-el-owner-decisions-2026-09-30.md` (Light), owner amendment
   `docs/calibration/bond_market_implied_rating_owner_amendment_2026-09-30.md` (Workers).
-- Work root (all outputs): `C:\Users\andre\AppData\Local\Temp\bde-g1-g9-g10-20261001-1115`.
+- Work root (all outputs of §0–§14): `C:\Users\andre\AppData\Local\Temp\bde-g1-g9-g10-20261001-1115`;
+  §15–§16 evidence: `C:\Users\andre\AppData\Local\Temp\bde-phase34-20261001`.
 
 ## 0. Gate table
 
 | Gate | Reading | Evidence |
 | --- | --- | --- |
-| **G1(a)** determinism | **PASS** | Two builds in distinct, sequential, fresh processes (pid 59636, then 66400) from the same export: identical `rows_digest` `b42b110a…ab26`, 3,375,473 rows, 34 raw 100k-row partitions `DataFrame.equals` with identical dtypes (and identical pickle-partition SHA-256s), parquet round-trip digest exact, and the two parquet files are byte-identical (SHA-256 `17713367…a902`). Same source, input fingerprint, pin and numeric stack. |
+| **G1(a)** determinism | **PASS** | Two builds in distinct, sequential, fresh processes (pid 59636, then 66400) from the same export: identical `rows_digest` `b42b110a0c2e22307d25217519ce810d84d95eba42174e2b0eb8baf972c9ab26`, 3,375,473 rows, 34 raw 100k-row partitions `DataFrame.equals` with identical dtypes (and identical pickle-partition SHA-256s), parquet round-trip digest exact, and the two parquet files are byte-identical (SHA-256 `17713367…a902`). Same source, input fingerprint, pin and numeric stack. |
 | **G1(b)** historical reproduction of `a8b9a3d2` | **`NOT_REPRODUCIBLE_IN_THIS_ENVIRONMENT`** | Rebuilt `rows_digest` `b42b110a…` ≠ historical `0aece290…`. Row count equal (3,375,473). Input fingerprint equal (`7106396a…`). Source `b8b9503d` and policy `28f70b9b…` equal. Localised in §4: no key or discrete-column difference; 637 float cells in two columns differ by ≤ 1.78e-15. No rounding, re-pin or digest substitution was applied. |
 | **G9** positive control / default capacity | **PASS** | 2021-09..2026-08: 1,138 `d_confirmed` rows, 173 `d_candidate` rows (≥1 each); identical on rebuilt and stored rows. Exposure/floor table in §5. |
-| **G10** anchor reproducibility | **not exact — `pending-owner-decision`** | Median of `L` over witnessed months of 2023-09..2026-08 = `-0.8864114120812479`; pin `-0.8864114120812487`; \|diff\| = 8.88e-16; 34 of 36 months observable (2026-07, 2026-08 dark). Within the code's 1e-9 tolerance, which is reported as diagnostic only. Identical on rebuilt and stored rows. |
+| **G10** anchor reproducibility | **not exact — `pending-owner-decision` at release; accepted by the owner in DG-4 (pin authoritative, median diagnostic)** | Median of `L` over witnessed months of 2023-09..2026-08 = `-0.8864114120812479`; pin `-0.8864114120812487`; \|diff\| = 8.88e-16; 34 of 36 months observable (2026-07, 2026-08 dark). Within the code's 1e-9 tolerance, which is reported as diagnostic only. Identical on rebuilt and stored rows. |
 
 DG-4 acceptance: **ACCEPTED WITH CONDITIONS** by the owner at 2026-10-01 14:35 -03:00 — recorded
 verbatim in the final section; condition (parse-path re-run) met in §14.
@@ -322,3 +326,8 @@ Recorded by the agent verbatim from the owner's message of 2026-10-01 14:35 -03:
 
 Condition status: **met** (§14). Phase 3 is unlocked by this record; Phase 4 remains gated on the
 four items above. No Phase 3 or Phase 4 work was performed in this round.
+
+_Gate status update, 2026-10-01 18:58 -03:00:_ the G5/G6 re-read is done (§15, both `NOT_EVALUABLE`,
+benchmark insufficiency; any decision on that outcome is the owner's). The Phase 4 gates still open are
+the September-dark fix, the pinned Workers dependencies with the stack in the build manifest, and the
+authorized republication under `4b752a3f` with G1(a) on the production image.
