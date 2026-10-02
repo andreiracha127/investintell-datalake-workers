@@ -6,7 +6,8 @@ what the app serves.
 
 Railway service: **`bond-live-daily`** (project `investintell-db`, env
 `production`), `WORKER=bond_live_daily`, `restartPolicy=NEVER`,
-cron **`30 7 * * *` UTC**.
+cron **`0 5 * * *` UTC (05:00 UTC)**, configured by
+`railway.bond-live-daily.toml`. The shared root `railway.toml` is unchanged.
 
 ---
 
@@ -16,7 +17,7 @@ cron **`30 7 * * *` UTC**.
 |---|-------|--------|-------|
 | 1 | `candles` | `bond_observation_daily`, `bond_live_daily_sweep` | Per-CUSIP delta from that CUSIP's own watermark. ~10k calls at ~190/min ≈ 55 min. |
 | 2 | `curve` | `bond_yield_curve_daily` | 13 tenors, one call each. Each response is the tenor's whole history, folded between its own watermark and `calc_date` — backfills itself on a cold table, never past the requested day (§3c). |
-| 3 | `ticks` | `bond_tick_daily` | Previous session, the full curated universe by default. `BOND_TICK_TOP_N` is an explicit typed degradation only. Same consecutive-failure breaker as stage 1 — see §4b. |
+| 3 | `ticks` | `bond_tick_daily` | Previous two business days (D-1 then D-2), the full curated universe for each by default. `BOND_TICK_TOP_N` is an explicit typed degradation only. Same lane-wide consecutive-failure breaker as stage 1 — see §4b. |
 | 4 | `matview` | — | `REFRESH MATERIALIZED VIEW CONCURRENTLY bond_curated_securities`. |
 | 5 | `republish` | `bond_metric_v1`, `bond_serving_v1` | Invokes `bond_metrics.run()` then `bond_serving.run()`. |
 | 6 | `panel` | `bond_panel_v1` | Reads only production DB relations and atomically publishes the closed-month plus open-month delta after stage 5. |
@@ -37,10 +38,41 @@ rebuilding.
 
 ## 2. Cron placement
 
-`30 7 * * *` UTC. The sweep plus the republication runs ~80 min, finishing
-around 09:00 — a two-hour buffer before the chain at `0 11 * * *`. The two
-cannot corrupt each other (distinct advisory locks) but overlapping them would
-mean paying for the same publication twice.
+**Owner decision, 2026-10-01: `0 5 * * *` UTC (05:00 UTC).** The monthly panel
+and implied-rating publications should be ready before Light's first
+recommendation refresh at **08:30 UTC** (later refreshes: 09:30 / 10:30 / 11:30
+UTC). That provides a 3.5-hour execution window before the first Light refresh
+and a larger, six-hour window before the bond chain at `0 11 * * *`. Distinct
+advisory locks prevent corruption, but overlap would pay for publication twice.
+This service's live config-as-code is `railway.bond-live-daily.toml`; do not
+change the shared root `railway.toml` to move this cron.
+
+**Early tape risk and bounded recovery.** Observed ingestion fetched each day
+D's ticks on D+1 between **08:14 and 09:01 UTC**, around **7.5–8.5k daily rows**.
+That establishes successful later ingestion, not the provider's first availability:
+D-1 tape availability near the earlier tick-stage start (~05:45 UTC) is unknown.
+Ticks now supply closed-month `dollar_volume` and print counts to the panel, so
+missing tape must not be permanently lost merely because the first run was early.
+Stage 3 therefore requests **D-1 then D-2**, bounded by
+`TICK_LOOKBACK_BUSINESS_DAYS = 2`. Newest-first preserves the existing priority;
+the recovery day retries tape that arrived after its first attempt. Both dates
+come from repeated `previous_business_day` calls: weekends are skipped, but the
+helper deliberately has no holiday calendar; a weekday holiday can be an empty
+session. This is one-day recovery, not historical or multi-day-outage backfill.
+
+The tick sweep is expected to roughly double from **~40 to ~80 minutes**, with
+the same per-call rate limit and in-flight budget. The old ~80-minute *whole-run*
+assumption is no longer valid. Full elapsed time, including monthly Stage 6/7
+rebuilds, must be measured after an authorized rollout; the 08:30 target is not a
+wall-clock guarantee. The worker has no tick-stage wall-clock deadline to adjust.
+
+**Month-boundary residual:** recovery into `bond_tick_daily` does not itself
+rebuild an already-current monthly panel. Stage 6's `panel_month_already_current`
+short-circuit checks the closed/open month and config, not newly recovered tape.
+If the early close omits late month-end ticks, the next day's D-2 pass can restore
+DB coverage while the published panel (and its implied-rating inputs) remains
+unchanged. Any required same-window republication is a separate owner-authorized
+operation; this cron/backfill change does not alter that publication policy.
 
 ## 3. Environment
 
@@ -152,7 +184,8 @@ progress is read.
 
 Every lane this worker loads takes its ceiling from the requested date, not
 from what the table happens to hold: the candle window (`fetch_window` →
-`not_after`), the tick session (`previous_business_day(calc_date)`) and — since
+`not_after`), both tick sessions (two successive `previous_business_day` calls
+starting at `calc_date`) and — since
 2026-08-08 — the **activity ranking that chooses the tick cohort**
 (`[calc_date − 90d, calc_date]`, inclusive at both ends) and the **yield-curve
 fold** (`curve_points(..., not_after=calc_date)`).
@@ -456,8 +489,8 @@ Stage 6 now accepts tick liquidity for both rebuilt months, retaining live-over-
 historical priority. Tick USD volume is `sum(par_volume * price_median / 100)`;
 tick-covered CUSIP-months override only `trade_count` with summed print counts.
 `traded_days` keeps its existing candle-observed basis for eligibility: the tick
-lane fetches only the previous business day and never backfills, so tick days
-are a lower bound, not a replacement. `tick_traded_days` identifies tick coverage
+lane has only bounded D-1+D-2 recovery, not full historical backfill, so tick days
+remain a lower bound, not a replacement. `tick_traded_days` identifies tick coverage
 even when print counts are NULL. Pre-tick behavior is unchanged. The close gate
 refuses **zero non-null coverage only**, with no percentage threshold; open-month
 liquidity can legitimately be absent on day 1. Refusals report `liquidity_coverage`
@@ -500,8 +533,9 @@ their advisory lock is already held, and so does this worker for its own. The
 alternative was an in-process retry with backoff. It loses on three counts:
 
 * **Overlap is anomalous, not routine.** This service is a daily cron at
-  `30 7 * * *` with `restartPolicy=NEVER` — a deploy *is* the execution — and the
-  publication chain runs at `0 11 * * *`. A ~2-hour buffer separates them, so a
+  `0 5 * * *` with `restartPolicy=NEVER` — a deploy *is* the execution — and the
+  publication chain runs at `0 11 * * *`. Starts are six hours apart (§2); the
+  completion buffer depends on the doubled tick sweep and publication time. A
   collision means something already went wrong (a previous run still going, a
   manual rebuild, an operator restart). Retrying papers over exactly the event
   worth seeing.
@@ -576,11 +610,26 @@ SELECT p.publication_id, p.config_hash, p.snapshot_rows, p.rv_signal_rows,
  WHERE a.product='bond_panel_v1';                                 -- exact current pin
 ```
 
-One caveat when reading the FIRST morning: at 07:30 UTC the previous session's
-tape has not necessarily landed at the provider. A `max(day)` of D-2 on the
-first run is plausibly the provider's timing rather than a bug — the window
-re-reads its own watermark day, so the next run picks it up. Judge it on the
-second day, not the first.
+One caveat when reading the FIRST morning: a 05:00 UTC run may reach ticks
+before the previous session's tape is available (§2). A `max(day)` of D-2 can
+reflect provider timing, but the tick lane has **no watermark**: it explicitly
+re-requests D-1 as D-2 on the next business-day run. Inspect `ticks.days` for both
+sessions and their typed outcomes; a missing recovery after that window is an
+open coverage risk, not guaranteed eventual catch-up.
+
+The existing top-level tick counters are totals across bond-day attempts;
+`day` still names D-1 and `cohort` remains the per-day cohort size. `days` carries
+per-day `swept`, `traded`, `rows_upserted`, `failures`, `no_trades`, `successes`,
+`transient_failures`, the typed reason maps, API/discard counts, scope and timing.
+A breaker on the first day reports it as `state=aborted` and the recovery day as
+`state=skipped, reason=tick_breaker` with zero counters; the lane remains red.
+`rows_upserted` counts writes, not new unique rows. The schema primary key is
+`(cusip9, day)` and every `_TICK_UPSERT` field uses `EXCLUDED` replacement, never
+addition. A usable re-fetch with fewer prints/less volume replaces the old values
+(provider corrections are authoritative), so stored counts cannot inflate merely
+from re-reading. `loaded_at` can advance. Zero/no-usable tape still writes no row
+and does not delete an existing aggregate; provider retractions to zero therefore
+retain the last stored non-empty row under the existing policy.
 
 ### 4b. Why a provider outage stops the tick sweep too
 
@@ -594,17 +643,22 @@ cost is much larger, which is why the breaker is part of the full-universe
 contract rather than an optional optimization. The first 25 exhausted calls
 already establish the outage; no later call can change that diagnosis.
 
-The normal provider budget was declared before activation: at the measured
-~190 calls/minute, the ~10k candle lane is about 55 minutes and the full tick
-lane adds roughly another 55 minutes, for about 110 minutes total before the
-database-only stages. A positive `BOND_TICK_TOP_N` is therefore an emergency
-degradation with its own reason code, not the steady-state schedule.
+The earlier planning budget used ~190 calls/minute: ~55 minutes for the ~10k
+candle lane and ~55 minutes for **one** full tick day, ~110 minutes before the
+DB-only stages. With two full tick days that conservative arithmetic becomes
+~165 minutes before DB-only work. The newer observed tick-duration estimate is
+~40 minutes per day (~80 for two); neither estimate guarantees a monthly rebuild
+will finish before Light (§2). Rate limits, retry budgets and in-flight limits
+are unchanged. A positive `BOND_TICK_TOP_N` remains an emergency degradation with
+its own reason code, not the steady-state schedule.
 
-Stage 3 now uses the **same** constant and the same shape as stage 1:
-`MAX_CONSECUTIVE_FAILURES` (25) consecutive exhaustions abort the lane, the
-counter resets on any successful call, and what was loaded before the outage
-stays committed. Worst case drops to **25 × 126 s ≈ 52 min**, the same bound the
-candle sweep carries.
+Stage 3 uses the **same** constant and the same shape as stage 1:
+`MAX_CONSECUTIVE_FAILURES` (25) consecutive exhaustions or typed payload failures
+abort the entire two-day lane. The streak carries across the day boundary and
+resets on any successful call, including valid zero trades; committed work stays
+landed. The **25 × 126 s ≈ 52 min** figure is exhausted-call backoff alone, not a
+whole-run deadline: request timeouts and reported discarded prefetch calls add
+cost, and the recovery day does not get a fresh outage allowance.
 
 The abort is **red**, and it reuses `ticks_failed` rather than adding a state:
 
@@ -616,10 +670,11 @@ The abort is **red**, and it reuses `ticks_failed` rather than adding a state:
   whose prices landed cleanly and whose tape was cut short would otherwise send
   the operator to the wrong stage.
 
-Unlike stage 1 there is no watermark to resume from: tomorrow's run asks for
-tomorrow's session, so the tape of every bond the outage cut off is gone for
-good. That is why a partially covered cost lane is a failed run and not a
-progress report — the day's `bond_tick_daily` coverage is what it is.
+Unlike stage 1 there is no watermark to resume from. The bounded D-2 pass can
+recover an interrupted D-1 session on the next business-day run, but an outage or
+landing delay beyond the two requested sessions can still leave permanent holes.
+A partly covered cost lane is therefore still a failed run, not a progress report;
+read each day's coverage rather than assuming tomorrow must heal it.
 
 ### 4d. An empty lane is a lane that did no work — and how to tell it from a quiet day
 

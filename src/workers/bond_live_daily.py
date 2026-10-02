@@ -18,9 +18,9 @@ laundered into a green run:
                      a duration-targeted portfolio needs. Watermarked PER TENOR,
                      so a tenor the provider drops for a week recovers its own
                      gap instead of being trimmed at the front the others set.
-  3. ``ticks``    -- the previous session's two-sided trade tape for the most
-                     active bonds into ``bond_tick_daily``: what it COSTS to
-                     trade, which no price series can say.
+  3. ``ticks``    -- the previous two business days' two-sided trade tape for
+                     the curated universe into ``bond_tick_daily``: what it
+                     COSTS to trade, with one-day recovery for late tape.
   4. ``matview``  -- ``REFRESH MATERIALIZED VIEW CONCURRENTLY
                      bond_curated_securities``.
   5. ``republish``-- re-run ``bond_metrics`` then ``bond_serving`` so the served
@@ -124,9 +124,9 @@ its own lock across these same workers while each takes its own underneath.)
 
 A ``locked`` exit is a typed abort rather than an in-process retry, deliberately.
 This service is a daily cron with ``restartPolicy=NEVER`` (deploy IS execution)
-at 07:30 UTC and the publication chain runs at 11:00, so an overlap is anomalous
-rather than routine; both publication builds take MINUTES, so a seconds-scale
-backoff would only sleep and fail anyway. Note which of the two the objection
+at 05:00 UTC, ahead of Light's 08:30 refresh and the 11:00 publication chain,
+so an overlap is anomalous rather than routine; both publication builds take
+MINUTES, so a seconds-scale backoff would only sleep and fail anyway. Note which of the two the objection
 was to: HOLDING the lock while this run works is bounded by the work and costs
 an idle connection; WAITING on someone else's holds it for a time nothing
 bounds, on a run that has done nothing and may still do nothing. Failing loudly
@@ -177,7 +177,8 @@ CURVE_TENORS = ("1m", "2m", "3m", "4m", "6m", "1y", "2y", "3y", "5y", "7y", "10y
 
 #: Ticks are a full-universe daily obligation. ``BOND_TICK_TOP_N`` exists only
 #: as an explicit, reported emergency throttle; an unset value means every
-#: eligible resolved CUSIP is attempted.
+#: eligible resolved CUSIP is attempted for each requested day.
+TICK_LOOKBACK_BUSINESS_DAYS = 2
 
 #: Rows per commit. Long transactions hold back VACUUM for the WHOLE database
 #: (a trap this repo has already paid for), so the sweep commits in slices.
@@ -1128,25 +1129,82 @@ def _tick_payload_outcome(ticks: Any) -> str:
     return "ok"
 
 
+_TICK_COUNTERS = (
+    "swept", "traded", "rows_upserted", "transient_failures", "attempted_cusips",
+    "api_calls", "successes", "no_trades", "failures", "discarded_in_flight",
+)
+
+
 def _load_ticks(
     conn: psycopg.Connection, client: Any, universe: list[tuple[Any, ...]], today: _dt.date
 ) -> dict[str, Any]:
+    """Sweep D-1 then D-2, recovering late tape without unbounded backfill.
+
+    Keep the cohort/ranking bound on the requested calc_date for both days.
+    Re-fetches replace the stored aggregate, even if a provider revision has
+    fewer trades; the (cusip9, day) upsert never adds counts or volumes. As
+    before, zero/no-usable trades do not write or delete an existing row.
+    """
     started = time.monotonic()
     day = live_daily.previous_business_day(today)
     cohort, scope = _tick_scope(conn, universe, today)
     isin_by_cusip = {str(c): str(i) for c, i, _, _ in universe}
+    in_flight = _max_in_flight()
+    days: list[dict[str, Any]] = []
+    consecutive = 0
+    aborted = False
+    for _ in range(TICK_LOOKBACK_BUSINESS_DAYS):
+        if aborted:
+            # A breaker aborts the whole lane, not just one day. Report the
+            # unattempted recovery day rather than silently omitting it.
+            stats = {
+                "day": day.isoformat(), "cohort": len(cohort),
+                **dict.fromkeys(_TICK_COUNTERS, 0),
+                "failure_reasons": {}, "no_trade_reasons": {},
+                "max_in_flight": in_flight, "elapsed_seconds": 0.0,
+                "aborted": False, "state": "skipped", "reason": "tick_breaker",
+            }
+        else:
+            stats, consecutive = _load_tick_day(
+                conn, client, cohort, isin_by_cusip, day, in_flight, consecutive
+            )
+            aborted = stats["aborted"]
+            stats["state"] = "aborted" if aborted else "completed"
+        days.append({**stats, **scope})
+        day = live_daily.previous_business_day(day)
 
+    totals = {key: sum(stats[key] for stats in days) for key in _TICK_COUNTERS}
+    reasons: dict[str, dict[str, int]] = {}
+    for key in ("failure_reasons", "no_trade_reasons"):
+        reasons[key] = {}
+        for stats in days:
+            for reason, count in stats[key].items():
+                reasons[key][reason] = reasons[key].get(reason, 0) + count
+    return {
+        # Existing keys remain lane totals; day remains D-1 and cohort is the
+        # per-day cohort size. Swept/attempted_cusips now count bond-day attempts.
+        "day": days[0]["day"], "cohort": len(cohort), **totals, **reasons,
+        "days": days, "lookback_business_days": TICK_LOOKBACK_BUSINESS_DAYS,
+        "max_in_flight": in_flight, "elapsed_seconds": time.monotonic() - started,
+        **scope, "aborted": aborted,
+    }
+
+
+def _load_tick_day(
+    conn: psycopg.Connection, client: Any, cohort: list[str],
+    isin_by_cusip: Mapping[str, str], day: _dt.date, in_flight: int, consecutive: int,
+) -> tuple[dict[str, Any], int]:
+    """One day's ordered sweep; carry the failure streak across day boundaries."""
+    started = time.monotonic()
     swept = traded = upserted = failed = successes = no_trades = api_calls = 0
     failure_reasons: dict[str, int] = {}
     no_trade_reasons: dict[str, int] = {}
     transient_failures = 0
-    consecutive = 0
     aborted = False
     discarded_in_flight = 0
     # Fetched in blocks and judged in order: the requests overlap, the decisions
-    # do not. See ``_prefetch``; the client still meters emission to the
-    # provider's own budget, so this widens the pipe, not the tap.
-    in_flight = _max_in_flight()
+    # do not. See ``_prefetch``; the SAME client meters both days to the provider's
+    # own budget. The recovery day adds calls, not concurrency or emission rate.
     block_size = _block_size(in_flight)
     addressable = [c for c in cohort if isin_by_cusip.get(c)]
     for block_start in range(0, len(addressable), block_size):
@@ -1179,10 +1237,11 @@ def _load_ticks(
                     # client has already spent its whole retry ladder (measured
                     # 2026-08-07: 126s of backoff per exhausted logical request,
                     # plus the connect/read timeouts on top). Unbraked, an
-                    # outage walks the entire default 500-bond cohort to prove
-                    # what the first 25 calls already established: ~17.5h of
-                    # backoff alone, taken out of a morning that has to reach
-                    # the 11:00 publication window.
+                    # outage would walk both full-universe days to prove what
+                    # the first 25 calls already established, spending hours
+                    # past the 08:30 Light refresh and the 11:00 bond chain.
+                    # There is no wall-clock deadline here; the lane-wide
+                    # breaker bounds the failure streak, not total run time.
                     #
                     # Under prefetch the rest of THIS block was already fetched
                     # and is now thrown away: reported, because a discarded call
@@ -1224,8 +1283,6 @@ def _load_ticks(
                 conn.commit()
     conn.commit()
     return {
-        # Keep the existing counters while making both the work and the scope
-        # auditable in the run JSON.
         "day": day.isoformat(), "cohort": len(cohort), "swept": swept,
         "traded": traded, "rows_upserted": upserted,
         "transient_failures": transient_failures,
@@ -1235,14 +1292,8 @@ def _load_ticks(
         "discarded_in_flight": discarded_in_flight,
         "max_in_flight": in_flight,
         "elapsed_seconds": time.monotonic() - started,
-        **scope,
-        # Reported next to the counts, exactly as the candle sweep does it,
-        # because the two ways stage 3 comes up short read identically in the
-        # totals otherwise: "every call failed" and "the breaker stopped a lane
-        # that had already loaded 300 bonds" are the same ``transient_failures``
-        # arithmetic to nobody's eye but this flag's.
         "aborted": aborted,
-    }
+    }, consecutive
 
 
 # --------------------------------------------------------------------------- #

@@ -367,6 +367,20 @@ def test_side_two_is_the_ask_and_the_spread_is_relative_bps() -> None:
     assert len(agg.as_tuple()) == len(live_daily.TICK_COLUMNS)
 
 
+def test_repeated_and_revised_tape_are_complete_daily_aggregates() -> None:
+    tape = {"t": [1, 2], "p": [99.0, 101.0], "si": [1, 2], "v": [10, 20]}
+    original = live_daily.aggregate_ticks("912828XX1", DAY_2, tape)
+    assert original is not None
+    assert live_daily.aggregate_ticks("912828XX1", DAY_2, tape) == original
+    revised = live_daily.aggregate_ticks(
+        "912828XX1", DAY_2, {"t": [1], "p": [98.0], "si": [1], "v": [5]}
+    )
+    assert revised is not None
+    assert (revised.cusip9, revised.day) == (original.cusip9, original.day)
+    assert revised.trade_count == 1 and revised.par_volume == 5
+    assert revised.price_median == 98.0
+
+
 def test_a_one_sided_day_reports_no_spread_rather_than_a_zero() -> None:
     ticks = {"t": [1, 2], "p": [99.0, 99.5], "si": [1, 1], "v": [10, 10]}
     agg = live_daily.aggregate_ticks("912828XX1", DAY_2, ticks)
