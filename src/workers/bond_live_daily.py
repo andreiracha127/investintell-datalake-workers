@@ -124,9 +124,9 @@ its own lock across these same workers while each takes its own underneath.)
 
 A ``locked`` exit is a typed abort rather than an in-process retry, deliberately.
 This service is a daily cron with ``restartPolicy=NEVER`` (deploy IS execution)
-at 07:30 UTC and the publication chain runs at 11:00, so an overlap is anomalous
-rather than routine; both publication builds take MINUTES, so a seconds-scale
-backoff would only sleep and fail anyway. Note which of the two the objection
+at 05:00 UTC, ahead of Light's 08:30 refresh and the 11:00 publication chain,
+so an overlap is anomalous rather than routine; both publication builds take
+MINUTES, so a seconds-scale backoff would only sleep and fail anyway. Note which of the two the objection
 was to: HOLDING the lock while this run works is bounded by the work and costs
 an idle connection; WAITING on someone else's holds it for a time nothing
 bounds, on a run that has done nothing and may still do nothing. Failing loudly
@@ -1237,10 +1237,11 @@ def _load_tick_day(
                     # client has already spent its whole retry ladder (measured
                     # 2026-08-07: 126s of backoff per exhausted logical request,
                     # plus the connect/read timeouts on top). Unbraked, an
-                    # outage walks the entire default 500-bond cohort to prove
-                    # what the first 25 calls already established: ~17.5h of
-                    # backoff alone, taken out of a morning that has to reach
-                    # the 11:00 publication window.
+                    # outage would walk both full-universe days to prove what
+                    # the first 25 calls already established, spending hours
+                    # past the 08:30 Light refresh and the 11:00 bond chain.
+                    # There is no wall-clock deadline here; the lane-wide
+                    # breaker bounds the failure streak, not total run time.
                     #
                     # Under prefetch the rest of THIS block was already fetched
                     # and is now thrown away: reported, because a discarded call

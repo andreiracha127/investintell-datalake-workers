@@ -897,6 +897,20 @@ def test_a_tenor_already_past_the_replay_date_writes_nothing_rather_than_crashin
 
 
 # --------------------------------------------------------------------------- #
+# Dedicated service schedule
+# --------------------------------------------------------------------------- #
+def test_daily_service_cron_starts_at_0500_ahead_of_light_refresh() -> None:
+    import tomllib
+
+    config = tomllib.loads(
+        (bond_live_daily.ROOT / "railway.bond-live-daily.toml").read_text(encoding="utf-8")
+    )
+    assert config["deploy"]["cronSchedule"] == "0 5 * * *"
+    assert config["deploy"]["restartPolicyType"] == "never"
+    assert config["deploy"]["startCommand"] == "python -m src.run_worker"
+
+
+# --------------------------------------------------------------------------- #
 # Stage 3: ticks
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(

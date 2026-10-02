@@ -52,8 +52,9 @@ match.
   unset/false on `bond-live-daily` (default), and no permanent
   `WORKER=bond_market_implied_rating` service exists (§2.2/§2.3 set `WORKER`
   on `bond-live-daily` TEMPORARILY and revert it). Both the determinism check
-  and the apply are run OUTSIDE the daily window (`30 7 * * *` UTC, ~2 h run;
-  see `bond-live-daily.md` §2) so the panel pointer does not move under the
+  and the apply are run OUTSIDE the daily window (`0 5 * * *` UTC, 05:00 start;
+  the two-day tick sweep adds runtime — see `bond-live-daily.md` §2 and verify
+  the daily run has ended) so the panel pointer does not move under the
   read (`inputs_moved` / `panel_pointer_moved` refuse otherwise) and so the
   cron does not fire while the variables are overridden.
 - The operator can change service variables and restart the service (Railway
@@ -69,7 +70,8 @@ match.
 2. Deploy the merged commit. Expected in the build log, last step:
    `bond-live-daily image verified: python=3.13.12 numpy=2.5.1 pandas=3.0.3
    scipy=1.18.0 pyarrow=25.0.0 psycopg=3.3.3 lock_sha256=<16 hex>...`
-3. Confirm the schedule after the switch is still `30 7 * * *` UTC and the
+3. Confirm the schedule matches the 2026-10-01 owner decision, `0 5 * * *` UTC
+   (05:00 UTC, before Light's 08:30 refresh), and the
    restart policy is `never` (the file carries both; the dashboard shows the
    effective values).
 4. Record the stack. The service is a cron container that exits between runs,
@@ -106,8 +108,9 @@ writes: the session is `default_transaction_read_only=on` with bounded
 timeouts, the children get no DSN, and the module contains no
 `install_schema`/`materialize`.
 
-Procedure, on the `bond-live-daily` service, OUTSIDE the `30 7 * * *` UTC window
-(the daily run takes ~2 h; stay clear of it), each sub-step owner-authorized:
+Procedure, on the `bond-live-daily` service, OUTSIDE the `0 5 * * *` UTC window
+(05:00 start; verify completion rather than assuming the old ~2 h duration),
+each sub-step owner-authorized:
 
 1. Note the current value of `WORKER` (expected `bond_live_daily`) and that
    `BOND_IMPLIED_RATING_FORCE_REPUBLISH` and every `BOND_IMPLIED_RATING_EXPECT_*`
@@ -136,7 +139,7 @@ Procedure, on the `bond-live-daily` service, OUTSIDE the `30 7 * * *` UTC window
 5. Restore `WORKER=bond_live_daily` and REMOVE the `BOND_IMPLIED_RATING_EXPECT_*`
    variables. Verify the variable set is back to its pre-step-1 state.
 
-**The cron can fire during the override.** If 07:30 UTC arrives while
+**The cron can fire during the override.** If 05:00 UTC arrives while
 `WORKER=bond_market_implied_rating_check` is set, that day's daily run is
 replaced by a (harmless, read-only) determinism check and the daily chain does
 not run; a forced-apply override (§2.3) left in place would republish on every
@@ -208,7 +211,7 @@ worker refuses — before connecting, before any DDL — unless BOTH
 5. REMOVE `BOND_IMPLIED_RATING_FORCE_REPUBLISH` and every
    `BOND_IMPLIED_RATING_EXPECT_*` variable, restore `WORKER=bond_live_daily`,
    and verify the variable set is back to its pre-step-2 state. A forced-apply
-   override left in place would republish on every 07:30 UTC cron (the CAS and
+   override left in place would republish on every 05:00 UTC cron (the CAS and
    the digest expectations would refuse a second identical run, but the DDL
    replay and the lock on the ledger would still happen each time).
 
@@ -335,7 +338,7 @@ publication it reads is the UUID from 2.3. This runbook does not operate Light.
   identity.
 - **Variable override (2.2/2.3):** if a run was triggered with the wrong
   `WORKER` or the override was left in place, restore `WORKER=bond_live_daily`
-  and remove the force/expectation variables first; the next 07:30 UTC cron
+  and remove the force/expectation variables first; the next 05:00 UTC cron
   then runs the daily chain again. A check run wrote nothing; an apply run is
   covered by the publication rollback above.
 - **DDL replay (2.3 step 3):** idempotent and additive; there is nothing to roll

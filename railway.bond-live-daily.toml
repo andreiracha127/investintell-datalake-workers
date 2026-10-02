@@ -11,10 +11,12 @@
 # Nixpacks resolved on build day. This is the "pinned Workers deps + stack in build
 # manifest" gate of DG-4 Phase 4 (docs/runbooks/bond-market-implied-rating-republication.md).
 #
-# Behaviour is otherwise IDENTICAL to the shared config: same start command
-# (src.run_worker resolves WORKER), same restart policy, and the same cron the service
-# already runs on (`30 7 * * *` UTC: docs/runbooks/bond-live-daily.md and the root
-# railway.toml both record 07:30 UTC, ~2h ahead of the 11:00 bond-chain). Service
+# The start command (src.run_worker resolves WORKER) and restart policy are unchanged.
+# This dedicated file is the live bond-live-daily config-as-code. Owner decision
+# 2026-10-01: `0 5 * * *` UTC, so monthly panel/implied-rating publications can finish
+# before Light's 08:30 UTC refresh, with a larger buffer before the 11:00 bond-chain.
+# The tick lane sweeps D-1 + D-2 to recover late tape (docs/runbooks/bond-live-daily.md).
+# The shared root railway.toml is intentionally unchanged. Service
 # variables are unchanged: WORKER=bond_live_daily, DATABASE_URL, FINNHUB_API_KEY, optional
 # WORKER_LIMIT / WORKER_CALC_DATE / BOND_TICK_TOP_N / BOND_IMPLIED_RATING_ENABLED /
 # BOND_IMPLIED_RATING_FORCE_REPUBLISH / BOND_IMPLIED_RATING_EXPECT_* (see the runbook; a
@@ -47,4 +49,4 @@ dockerfilePath = "docker/bond-live-daily/Dockerfile"
 [deploy]
 startCommand = "python -m src.run_worker"
 restartPolicyType = "never"
-cronSchedule = "30 7 * * *"
+cronSchedule = "0 5 * * *"
