@@ -103,7 +103,7 @@ class FakeClient:
 
     def ticks(self, isin, day, **kwargs):
         self.tick_calls.append((isin, day))
-        return self._ticks.get(isin, {"t": []})
+        return self._ticks.get((isin, day), self._ticks.get(isin, {"t": []}))
 
     def stats(self):
         return {"http_calls": len(self.candle_calls)}
@@ -899,17 +899,139 @@ def test_a_tenor_already_past_the_replay_date_writes_nothing_rather_than_crashin
 # --------------------------------------------------------------------------- #
 # Stage 3: ticks
 # --------------------------------------------------------------------------- #
-def test_the_tick_lane_asks_for_the_previous_session_only() -> None:
-    conn = FakeConn({
-        "coalesce(sum(o.volume)": [("912828XX1", 1_000_000)],
-    })
+@pytest.mark.parametrize(
+    "today, expected_days",
+    [
+        (TODAY, ["2026-08-06", "2026-08-05"]),
+        (_dt.date(2026, 8, 10), ["2026-08-07", "2026-08-06"]),  # Monday
+        (_dt.date(2026, 8, 9), ["2026-08-07", "2026-08-06"]),   # Sunday
+        # previous_business_day is deliberately weekday-only: Labor Day is
+        # requested as an empty session, not skipped by an invented calendar.
+        (_dt.date(2026, 9, 8), ["2026-09-07", "2026-09-04"]),
+    ],
+)
+def test_the_tick_lane_requests_two_previous_business_days(today, expected_days) -> None:
+    conn = FakeConn({})
     client = FakeClient(ticks={"US912828XX10": {
         "t": [1, 2], "p": [99.0, 101.0], "si": [1, 2], "v": [10, 20],
     }})
-    stats = bond_live_daily._load_ticks(conn, client, UNIVERSE, TODAY)
-    assert client.tick_calls == [("US912828XX10", DAY.isoformat())]
-    assert stats["traded"] == 1 and stats["day"] == DAY.isoformat()
+    stats = bond_live_daily._load_ticks(conn, client, UNIVERSE, today)
+    assert client.tick_calls == [("US912828XX10", day) for day in expected_days]
+    assert stats["traded"] == 2 and stats["day"] == expected_days[0]
+    assert stats["lookback_business_days"] == 2
+    assert [day["day"] for day in stats["days"]] == expected_days
+    assert [params[1].isoformat() for _, params in conn.writes] == expected_days
+    assert all(day["state"] == "completed" for day in stats["days"])
     assert stats["aborted"] is False
+
+
+def test_tick_backfill_recovers_late_tape_and_reports_each_day() -> None:
+    prior = live_daily.previous_business_day(DAY)
+    client = FakeClient(ticks={
+        ("US912828XX10", DAY.isoformat()): {"t": [], "total": 0},
+        ("US912828XX10", prior.isoformat()): {
+            "t": [1], "p": [99.0], "si": [1], "v": [10],
+        },
+    })
+    stats = bond_live_daily._load_ticks(FakeConn({}), client, UNIVERSE, TODAY)
+    newest, recovery = stats["days"]
+    assert (newest["swept"], newest["traded"], newest["rows_upserted"]) == (1, 0, 0)
+    assert newest["no_trades"] == 1 and newest["failures"] == 0
+    assert newest["no_trade_reasons"] == {"valid_zero_trades": 1}
+    assert (recovery["swept"], recovery["traded"], recovery["rows_upserted"]) == (1, 1, 1)
+    assert recovery["no_trades"] == 0 and recovery["failures"] == 0
+    for key in bond_live_daily._TICK_COUNTERS:
+        assert stats[key] == sum(day[key] for day in stats["days"])
+
+    # DAY was empty on its first attempt; after the tape lands the next run
+    # requests it again as D-2 and writes its complete aggregate.
+    client._ticks[("US912828XX10", DAY.isoformat())] = {
+        "t": [1, 2], "p": [99.0, 100.0], "si": [1, 2], "v": [10, 20],
+    }
+    conn = FakeConn({})
+    next_run = bond_live_daily._load_ticks(
+        conn, client, UNIVERSE, TODAY + _dt.timedelta(days=1)
+    )
+    assert next_run["days"][1]["day"] == DAY.isoformat()
+    assert next_run["days"][1]["traded"] == next_run["days"][1]["rows_upserted"] == 1
+    assert [params[1] for _, params in conn.writes] == [DAY]
+
+
+def test_refetching_a_stored_tick_day_replaces_instead_of_inflating_counts() -> None:
+    """Execute the actual upsert offline (only bind/clock syntax is adapted)."""
+    import sqlite3
+
+    with sqlite3.connect(":memory:") as db:
+        db.create_function("now", 0, lambda: "2026-08-07T05:00:00Z")
+        db.execute(
+            f"CREATE TABLE bond_tick_daily ({', '.join(live_daily.TICK_COLUMNS)}, "
+            "loaded_at, PRIMARY KEY (cusip9, day))"
+        )
+
+        class Cursor(_Cursor):
+            def execute(self, sql, params=None):
+                assert sql == bond_live_daily._TICK_UPSERT
+                bound = tuple(p.isoformat() if isinstance(p, _dt.date) else p for p in params)
+                self.rowcount = db.execute(sql.replace("%s", "?"), bound).rowcount
+
+        class Conn(FakeConn):
+            def cursor(self):
+                return Cursor(self)
+
+            def commit(self):
+                db.commit()
+
+        conn = Conn({})
+        client = FakeClient(ticks={"US912828XX10": {
+            "t": [1, 2], "p": [99.0, 101.0], "si": [1, 2], "v": [10, 20],
+        }})
+        bond_live_daily._load_ticks(conn, client, UNIVERSE, TODAY)
+        read_sql = f"SELECT {', '.join(live_daily.TICK_COLUMNS)} FROM bond_tick_daily ORDER BY day"
+        stored = db.execute(read_sql).fetchall()
+        assert len(stored) == 2
+        bond_live_daily._load_ticks(conn, client, UNIVERSE, TODAY)
+        # loaded_at may refresh, but persisted keys/counts/values are identical.
+        assert db.execute(read_sql).fetchall() == stored
+
+        # A provider revision with fewer usable prints replaces, not adds or
+        # takes the maximum of, the previous aggregate for the overlapping day.
+        client._ticks = {"US912828XX10": {
+            "t": [1], "p": [98.0], "si": [1], "v": [5],
+        }}
+        bond_live_daily._load_ticks(conn, client, UNIVERSE, TODAY + _dt.timedelta(days=1))
+        assert db.execute(
+            "SELECT trade_count, par_volume, price_median FROM bond_tick_daily WHERE day = ?",
+            (DAY.isoformat(),),
+        ).fetchone() == (1, 5.0, 98.0)
+        assert db.execute("SELECT count(*) FROM bond_tick_daily").fetchone() == (3,)
+
+        # Preserve the pre-existing no-write policy for zero/no-usable tape.
+        client._ticks = {"US912828XX10": {"t": []}}
+        bond_live_daily._load_ticks(conn, client, UNIVERSE, TODAY)
+        assert db.execute(
+            "SELECT trade_count, par_volume FROM bond_tick_daily WHERE day = ?",
+            (DAY.isoformat(),),
+        ).fetchone() == (1, 5.0)
+
+
+def test_tick_backfill_keeps_the_same_prefetch_budget_per_call(monkeypatch) -> None:
+    monkeypatch.setenv("BOND_LIVE_MAX_IN_FLIGHT", "3")
+    universe, _ = _tick_cohort(60)
+    original = bond_live_daily._prefetch
+    calls: list[tuple[int, int]] = []
+
+    def prefetch(items, fetch, *, max_in_flight):
+        calls.append((len(items), max_in_flight))
+        return original(items, fetch, max_in_flight=max_in_flight)
+
+    monkeypatch.setattr(bond_live_daily, "_prefetch", prefetch)
+    client = FakeClient()
+    stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
+    assert stats["api_calls"] == len(client.tick_calls) == 120
+    assert stats["max_in_flight"] == 3
+    assert all(limit == 3 and size <= bond_live_daily._block_size(3) for size, limit in calls)
+    assert [day["api_calls"] for day in stats["days"]] == [60, 60]
+    assert all(day["max_in_flight"] == 3 for day in stats["days"])
 
 
 def test_the_default_tick_scope_attempts_every_eligible_resolved_cusip() -> None:
@@ -929,13 +1051,14 @@ def test_the_default_tick_scope_attempts_every_eligible_resolved_cusip() -> None
     # failures), and that is pinned directly on ``_prefetch``, including a case
     # where the fetches deliberately finish backwards.
     assert sorted(isin for isin, _ in client.tick_calls) == sorted(
-        row[1] for row in universe
+        row[1] for row in universe for _ in range(2)
     )
     assert stats["scope"] == "full_universe"
     assert stats["configured_top_n"] is None
     assert stats["degraded"] is False
-    assert stats["attempted_cusips"] == 3 and stats["api_calls"] == 3
-    assert stats["successes"] == 3 and stats["no_trades"] == 3
+    assert stats["attempted_cusips"] == 6 and stats["api_calls"] == 6
+    assert stats["successes"] == 6 and stats["no_trades"] == 6
+    assert all(day["cohort"] == 3 and day["swept"] == 3 for day in stats["days"])
     assert stats["failures"] == 0 and stats["elapsed_seconds"] >= 0
 
 
@@ -951,12 +1074,18 @@ def test_tick_payload_outcomes_distinguish_empty_error_malformed_and_zero_trades
 
     stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
 
-    assert stats["successes"] == 1 and stats["no_trades"] == 1
-    assert stats["failures"] == 3 and stats["transient_failures"] == 0
+    assert stats["successes"] == 2 and stats["no_trades"] == 2
+    assert stats["failures"] == 6 and stats["transient_failures"] == 0
     assert stats["failure_reasons"] == {
-        "api_empty": 1, "api_error": 1, "malformed_payload": 1,
+        "api_empty": 2, "api_error": 2, "malformed_payload": 2,
     }
-    assert stats["no_trade_reasons"] == {"valid_zero_trades": 1}
+    assert stats["no_trade_reasons"] == {"valid_zero_trades": 2}
+    for day in stats["days"]:
+        assert day["failures"] == 3 and day["no_trades"] == 1
+        assert day["failure_reasons"] == {
+            "api_empty": 1, "api_error": 1, "malformed_payload": 1,
+        }
+        assert day["no_trade_reasons"] == {"valid_zero_trades": 1}
     assert stats["aborted"] is False
 
 
@@ -1010,11 +1139,46 @@ def test_a_sustained_outage_stops_the_tick_sweep_instead_of_burning_the_day() ->
     universe, activity = _tick_cohort(60)
     conn = FakeConn({Q_ACTIVITY: activity})
 
-    stats = bond_live_daily._load_ticks(conn, _NoTape(), universe, TODAY)
+    client = _NoTape()
+    stats = bond_live_daily._load_ticks(conn, client, universe, TODAY)
 
     assert stats["aborted"] is True
     assert stats["swept"] == _finnhub.MAX_CONSECUTIVE_FAILURES
     assert stats["swept"] < stats["cohort"], "the sweep must stop, not finish"
+    assert {day for _, day in client.tick_calls} == {DAY.isoformat()}
+    first, skipped = stats["days"]
+    assert first["state"] == "aborted" and first["aborted"] is True
+    assert first["failure_reasons"] == {"transient_error": _finnhub.MAX_CONSECUTIVE_FAILURES}
+    assert skipped["day"] == live_daily.previous_business_day(DAY).isoformat()
+    assert skipped["state"] == "skipped" and skipped["reason"] == "tick_breaker"
+    assert all(skipped[key] == 0 for key in bond_live_daily._TICK_COUNTERS)
+    assert first["swept"] + first["discarded_in_flight"] == first["api_calls"]
+
+
+@pytest.mark.parametrize("payload", [{}, {"error": "unavailable"}, {"t": "bad"}])
+def test_payload_failure_breaker_also_skips_the_recovery_day(payload) -> None:
+    universe, _ = _tick_cohort(60)
+    client = FakeClient(ticks={row[1]: payload for row in universe})
+    stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
+    assert stats["aborted"] is True
+    assert stats["failures"] == _finnhub.MAX_CONSECUTIVE_FAILURES
+    assert stats["transient_failures"] == 0
+    assert stats["days"][1]["state"] == "skipped"
+    assert {day for _, day in client.tick_calls} == {DAY.isoformat()}
+
+
+def test_tick_breaker_failure_streak_carries_across_days(monkeypatch) -> None:
+    monkeypatch.setattr(bond_live_daily, "MAX_CONSECUTIVE_FAILURES", 3)
+    monkeypatch.setenv("BOND_LIVE_MAX_IN_FLIGHT", "1")
+    universe, _ = _tick_cohort(2)
+    client = _NoTape()
+    stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
+    assert stats["aborted"] is True and stats["api_calls"] == 3
+    first, second = stats["days"]
+    assert first["swept"] == first["failures"] == 2
+    assert first["state"] == "completed" and first["aborted"] is False
+    assert second["swept"] == second["failures"] == 1
+    assert second["state"] == "aborted" and second["aborted"] is True
 
 
 def test_one_bad_tick_call_among_good_ones_is_not_an_outage() -> None:
@@ -1043,8 +1207,8 @@ def test_one_bad_tick_call_among_good_ones_is_not_an_outage() -> None:
     stats = bond_live_daily._load_ticks(conn, _Flaky(), universe, TODAY)
 
     assert stats["aborted"] is False
-    assert stats["swept"] == 60 and stats["transient_failures"] == 30
-    assert stats["traded"] == 30
+    assert stats["swept"] == 120 and stats["transient_failures"] == 60
+    assert stats["traded"] == 60
 
 
 def test_an_outage_that_cut_the_tape_short_fails_a_run_whose_calls_mostly_worked(
@@ -1054,10 +1218,9 @@ def test_an_outage_that_cut_the_tape_short_fails_a_run_whose_calls_mostly_worked
 
     Ten bonds' tape landed and then the provider went away, so ``swept`` and
     ``transient_failures`` disagree and the "every call failed" clause never
-    fires -- while the cohort stops at bond 35 of 60. Unlike stage 1 there is no
-    tick watermark to resume from: tomorrow's run asks for tomorrow's session, so
-    the tape of every bond the outage cut off is gone for good. That is why a
-    truncated cost lane is a failed run rather than a progress report.
+    fires -- while the cohort stops at bond 35 of 60. The bounded D-2 recovery
+    can retry this session tomorrow, but only if the provider recovers in time.
+    A truncated cost lane remains a failed run rather than a progress report.
     """
     universe, activity = _tick_cohort(60)
     conn = FakeConn({Q_UNIVERSE: universe, Q_ACTIVITY: activity})
@@ -1148,8 +1311,10 @@ def test_a_replay_ranks_the_tick_cohort_on_the_day_it_asked_for(monkeypatch) -> 
 
     stats = bond_live_daily._load_ticks(conn, client, universe, replay)
 
+    day = live_daily.previous_business_day(replay)
     assert client.tick_calls == [
-        ("USACTIVETHEN0", live_daily.previous_business_day(replay).isoformat())
+        ("USACTIVETHEN0", day.isoformat()),
+        ("USACTIVETHEN0", live_daily.previous_business_day(day).isoformat()),
     ]
     assert stats["cohort"] == 1
 
@@ -1170,7 +1335,7 @@ def test_the_requested_day_s_own_session_counts_toward_the_cohort(monkeypatch) -
 
     bond_live_daily._load_ticks(conn, client, universe, TODAY)
 
-    assert [isin for isin, _ in client.tick_calls] == ["USONTHEDAYX0"]
+    assert [isin for isin, _ in client.tick_calls] == ["USONTHEDAYX0"] * 2
 
 
 # --------------------------------------------------------------------------- #
@@ -1756,7 +1921,7 @@ def test_a_tick_lane_that_failed_every_call_is_reported_not_swallowed(monkeypatc
         Q_ACTIVITY: [("912828XX1", 1_000_000)],
     })
     out = _drive_run(monkeypatch, conn=conn, client=_NoTape(curve=HEALTHY_CURVE))
-    assert out["ticks"]["swept"] == 1 and out["ticks"]["transient_failures"] == 1
+    assert out["ticks"]["swept"] == 2 and out["ticks"]["transient_failures"] == 2
     assert out["state"] == "ticks_failed"
     assert out["aborted"] is True
 
@@ -2375,7 +2540,9 @@ def test_an_explicit_tick_cap_is_reported_as_a_degraded_scope(monkeypatch) -> No
     assert stats["configured_top_n"] == 1
     assert stats["degraded"] is True
     assert stats["degraded_reason"] == "bounded_tick_scope"
-    assert stats["cohort"] == 1 and stats["attempted_cusips"] == 1
+    assert stats["cohort"] == 1 and stats["attempted_cusips"] == 2
+    assert all(day["scope"] == "bounded_top_n" for day in stats["days"])
+    assert all(day["degraded"] is True for day in stats["days"])
 
 
 def test_an_emergency_tick_cap_makes_the_run_verdict_non_green(monkeypatch) -> None:
