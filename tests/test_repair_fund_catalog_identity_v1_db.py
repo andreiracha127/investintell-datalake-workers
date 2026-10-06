@@ -438,3 +438,26 @@ def test_crosswalk_refresh_after_review_requires_a_new_approval(dsn, capsys):
     assert replanned["plan_sha256"] != planned["plan_sha256"]
     code, applied = _apply(capsys, replanned["plan_sha256"])
     assert code == 0 and applied["status"] == "applied"
+
+
+def test_provenance_change_after_review_requires_a_new_approval(dsn, capsys):
+    original = _rows(dsn)
+    _code, planned = _run(capsys)
+    with psycopg.connect(dsn) as conn:  # ticker/class untouched, provenance moved
+        conn.execute(
+            "UPDATE public.instrument_identity SET identity_sources = identity_sources "
+            '|| \'{"lei": {"source": "esma"}}\'::jsonb WHERE instrument_id = %s',
+            (_uid(2),),
+        )
+    touched = _rows(dsn)
+    code, refused = _apply(capsys, planned["plan_sha256"])
+    assert (code, refused["code"]) == (repair.EXIT_FAILED, "plan_sha256_mismatch")
+    assert _rows(dsn) == touched != original and _ledger(dsn) is None
+    _code, replanned = _run(capsys)
+    assert replanned["plan_sha256"] != planned["plan_sha256"]
+    code, applied = _apply(capsys, replanned["plan_sha256"])
+    assert code == 0 and applied["status"] == "applied"
+    registry = {r["instrument_id"]: r for r in _rows(dsn)["instrument_identity"]}
+    sources = registry[_uid(2)]["identity_sources"]
+    assert sources["lei"] == {"source": "esma"}  # the approved provenance survives
+    assert sources["ticker"]["repair"] == repair.REPAIR_VERSION

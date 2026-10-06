@@ -120,6 +120,7 @@ def test_registry_ticker_and_class_follow_the_iu_class_proven_by_sec():
             "ticker_after": "I10",
             "sec_class_id_before": "C000000010",
             "sec_class_id_after": "C000500010",
+            "identity_sources_before_sha256": None,  # column not snapshotted
         }
     ]
     assert plan.evidence == {_uid(10): SEC_AT.isoformat(timespec="microseconds")}
@@ -266,6 +267,26 @@ def test_plan_digest_binds_the_sec_evidence_it_writes_as_provenance():
         _uid(55): SEC_AT.isoformat(timespec="microseconds")
     }
     assert again.sha256() != plan.sha256()
+
+
+def test_plan_digest_binds_the_provenance_the_apply_merges_into():
+    # Another writer changing identity_sources after review (ticker/class
+    # untouched) must change the digest: the apply merges into that value.
+    entities = (sibling_class(56),)
+    instruments, funds, identity, sec = catalog(*entities, sec_extra=[iu_class_row(56)])
+    reviewed = {_uid(56): {"figi": {"source": "openfigi"}}}
+    touched = {_uid(56): {"figi": {"source": "openfigi"}, "lei": {"source": "esma"}}}
+    plan = repair.plan_repairs(instruments, funds, identity, sec, OBSERVED, reviewed)
+    again = repair.plan_repairs(instruments, funds, identity, sec, OBSERVED, touched)
+    (change,) = plan.ticker_changes
+    assert change["identity_sources_before_sha256"] == repair.provenance_sha256(
+        reviewed[_uid(56)]
+    )
+    assert again.sha256() != plan.sha256()
+    # Key order is not content: the same provenance gives the same digest.
+    reordered = {_uid(56): dict(reversed(list(touched[_uid(56)].items())))}
+    same = repair.plan_repairs(instruments, funds, identity, sec, OBSERVED, reordered)
+    assert same.sha256() == again.sha256()
 
 
 # ── guards ──────────────────────────────────────────────────────────────────

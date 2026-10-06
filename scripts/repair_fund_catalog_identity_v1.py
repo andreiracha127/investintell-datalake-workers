@@ -343,14 +343,27 @@ class _SecEvidence(generator._SecIndex):
         self.synced_at = [row["synced_at"] for row in rows]
 
 
+def provenance_sha256(value: object) -> str:
+    """Digest of one ``identity_sources`` value (canonical JSON, keys sorted)."""
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
 def plan_repairs(
     instruments: list[dict],
     funds: list[dict],
     identity: list[dict],
     sec: list[dict],
     observed_at: dt.datetime,
+    identity_sources: dict[str, object] | None = None,
 ) -> RepairPlan:
-    """The complete repair plan of one snapshot (pure; raw DB rows in)."""
+    """The complete repair plan of one snapshot (pure; raw DB rows in).
+
+    ``identity_sources`` (instrument id -> current value) binds the provenance
+    the apply merges into: each ticker change carries its digest, so a change
+    to that column after review changes the plan digest. ``None`` (no snapshot
+    of the column) records ``None``.
+    """
     iu = generator.canonical_source_rows(instruments, "instruments")
     fv = generator.canonical_source_rows(funds, "funds")
     reg = generator.canonical_source_rows(identity, "identity")
@@ -368,6 +381,12 @@ def plan_repairs(
         fv, reg = _with_tickers(fv, reg, batch)
     else:
         raise RepairError("ticker_plan_not_converged")
+    for row in ticker_changes:
+        row["identity_sources_before_sha256"] = (
+            None
+            if identity_sources is None
+            else provenance_sha256(identity_sources.get(row["instrument_id"]))
+        )
     return RepairPlan(
         isin_changes=isin_changes,
         ticker_changes=ticker_changes,
@@ -569,6 +588,7 @@ class Snapshot:
     sec: list[dict]
     cohort: set[str] | None
     etp_tickers: set[str] | None
+    identity_sources: dict[str, object]
 
 
 def _relation_present(cursor, name: str) -> bool:
@@ -591,7 +611,14 @@ def _read_catalog(cursor, decision_at: dt.datetime) -> Snapshot:
             "WHERE security_type = 'ETP' AND ticker IS NOT NULL"
         )
         etp = {row["ticker"] for row in cursor.fetchall()}
-    return Snapshot(decision_at, instruments, funds, identity, sec, cohort, etp)
+    # The provenance the apply merges into, read in the same snapshot.
+    cursor.execute(
+        "SELECT instrument_id, identity_sources FROM public.instrument_identity"
+    )
+    sources = {str(row["instrument_id"]): row["identity_sources"] for row in cursor}
+    return Snapshot(
+        decision_at, instruments, funds, identity, sec, cohort, etp, sources
+    )
 
 
 def _preflight(cursor) -> dict:
@@ -653,6 +680,7 @@ def _evaluate(snapshot: Snapshot) -> tuple[RepairPlan, dict, dict]:
         snapshot.identity,
         snapshot.sec,
         snapshot.decision_at,
+        snapshot.identity_sources,
     )
     before = classify(
         snapshot.instruments,

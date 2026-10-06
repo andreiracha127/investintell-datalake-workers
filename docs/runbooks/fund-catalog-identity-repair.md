@@ -36,8 +36,9 @@ registry ticker was overwritten, so they already describe the IU class.
   the crosswalk writer's lock; exit 4 if any is busy. It then:
   1. recomputes the plan and refuses on any `--plan-sha256` mismatch. The
      digest covers the SEC `synced_at` evidence written into
-     `identity_sources`, so a crosswalk refresh after review needs a new
-     dry run and approval;
+     `identity_sources` and a SHA-256 of each repaired row's current
+     `identity_sources`. A crosswalk refresh or a provenance change after
+     review needs a new dry run and approval;
   2. refuses if any ACTIVE fund would be demoted, or if a repaired registry
      row would end in an SEC integrity failure;
   3. writes the receipts, then the updates, each with a compare-and-swap on
