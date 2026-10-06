@@ -61,7 +61,7 @@ A8 at default + R9: N = 7,484 funds reach the SEC stage, bound ⌊N/10⌋ = 748,
 
 | source | role | pin |
 |---|---|---|
-| `public.sec_company_tickers_mf` | current SEC class/series/ticker (daily sync of `company_tickers_mf.json`), judged with the generator's 7-day freshness window; its newest daily batch (one `updated_at` per sync) is what SEC's ticker file lists today | read in the plan's own `REPEATABLE READ` snapshot |
+| `public.sec_company_tickers_mf` | current SEC class/series/ticker (daily sync of `company_tickers_mf.json`). Every rule reads only its newest daily batch (one `updated_at` per sync, 28,607 of the 28,620 rows younger than 7 days on 2026-10-06): a row left behind by the upsert-only sync was withdrawn from SEC's file even while the generator still calls it fresh | read in the plan's own `REPEATABLE READ` snapshot |
 | SEC *Investment Company Series and Class Information* 2023–2026 | every series/class not yet reclassified inactive, with tickers; the 2026 file (SEC update 2026-06-01) is "current-year" | sha256 in `SERIES_CLASS_FILES` of the script |
 | sec-api.io Query API (`485BPOS`, `485APOS`, `497`, `497K`, `497J`, `N-CEN`, `N-CSR(S)`, `NPORT-P`, `N-14`) | first/last filing showing a class under a ticker; newest filing listing a terminated class or series | accession numbers in `contracts/fund-identity-sec/evidence_v1.json` |
 | Tiingo daily meta (`/tiingo/daily/<ticker>`) | whether a ticker has a current price history (R2, R3, R5) | `tiingo_meta` in the evidence bundle, with `observed_at` |
@@ -90,7 +90,7 @@ Counts are instruments. "MV" is `funds_profile_mv` (8,268); "all" is every
 | 9 | SEC's ticker file contradicts the fund's own newer filings | 2 | 3 | R9 quarantine (opt-in, approved); OPTCX review |
 | 10 | terminated IU class whose live-class target Tiingo no longer prices | 5 | 7 | review |
 | 11 | IU and registry both on a terminated class | 9 | 23 | review |
-| 12 | ticker in the SEC June dataset but missing from `company_tickers_mf` | 33 | 33 | review (SEC source gap) |
+| 12 | ticker in the SEC June dataset but missing from SEC's current ticker file | 37 | 37 | review (SEC source gap) |
 | 13 | phase-B historical share-class siblings, inactive by design | 512 | 512 | none |
 | 14 | no ticker anywhere (variable-insurance portfolios) | 125 | 125 | review |
 | 15 | inactive fund with a SEC-current ticker but no Tiingo price history | 60 | 60 | review |
@@ -282,7 +282,9 @@ filing is from 2020–2025, and NAV stopped more than 90 days ago (Tiingo
 | PGIPX (PGIM ESG Short Duration) | S000076422 | 2025-09-23 | NPORT-P 0001752724-25-072036 (2025-03-27) |
 
 Tickers SEC never listed (UCITS, grantor trusts such as GLD) are never
-touched. `is_active := false` stops the daily `not_found`/`empty` fetches; no
+touched, and a deactivation always needs a dated NAV (newest NAV row or Tiingo
+observation) older than 90 days; without one the fund is only reported
+(`series_terminated_no_dated_nav`, none at this snapshot). `is_active := false` stops the daily `not_found`/`empty` fetches; no
 ACTIVE fund changes (all 152 already fail the SEC gate). Six funds whose
 series left SEC data but whose NAV is current (five Hodges funds, FAKDX) are
 listed under `series_terminated_nav_current`.
@@ -360,8 +362,8 @@ is not an integrity failure (it stops at `ticker.mismatch`); it is listed under
   FFFVX, FHQDX, DPUAX/DPUCX/DPUIX/DPUYX, CRERX/CRECX/CRSRX and others; most
   sit in series R6 deactivates or that already fail the gate; a live class
   has to be chosen where the series lives on.
-* **SEC source gap** (33 MV): the ticker is in the June 2026 dataset for the
-  registry series but not in `company_tickers_mf.json`: OBBCX (Tiingo `empty`,
+* **SEC source gap** (37 MV): the ticker is in the June 2026 dataset for the
+  registry series but not in the newest `company_tickers_mf.json` sync: OBBCX (Tiingo `empty`,
   probably terminated after June), ABREX, FAMYX, SOUCX. No catalog edit can
   satisfy the gate.
 * **Phase-B siblings** (512 MV): inactive share-class siblings
@@ -482,7 +484,11 @@ reads a plan file, derives the Tiingo tickers, (class, ticker) pairs, classes,
 series and R5 (series, registrant) pairs the plan rests on, fetches the
 missing ones (sec-api Query API, Form N-CEN API and full-text search, EDGAR
 documents and headers with `--sec-user-agent`, Tiingo meta; keys from
-`SEC_API_IO_KEY`/`TIINGO_API_KEY`), and writes a new bundle; `--offline`
+`SEC_API_IO_KEY`/`TIINGO_API_KEY`), and writes a new bundle. Prospectus
+search takes the newest 485BPOS filings across all phrases until every
+targeted series is covered by a filing header; the newest covering filing
+with a restriction sentence decides. `--refresh-sec` re-fetches every
+time-varying answer (newest/last filings, N-CEN, prospectus); `--offline`
 reassembles the committed bundle byte for byte from the caches. A new bundle
 needs a reviewed change of `EVIDENCE_SHA256`.
 
@@ -496,7 +502,7 @@ it.
 ## Dry run on production (before A + B)
 
 `--mode plan --quarantine-sec-contradictions` (the approved flags) on the
-live database at 2026-10-06 08:00 UTC, A and B not yet applied:
+live database at 2026-10-06 08:24 UTC, A and B not yet applied:
 
 | rule | rows (all) | in `funds_v` |
 |---|---:|---:|
@@ -521,8 +527,9 @@ digest.
 
 Prerequisites: the SEC sync ran within 7 days; the evidence bundle is less
 than 30 days old (R2, R3, R5 need its Tiingo observations; after 2026-11-05
-re-collect with `collect_fund_identity_sec_evidence --refresh-tiingo` and
-re-pin); no NAV ingestion run is active.
+re-collect with `collect_fund_identity_sec_evidence --refresh-tiingo
+--refresh-sec` and re-pin); no NAV ingestion run or SEC ticker sync is active
+(apply refuses otherwise).
 
 1. PR #149 (A + B): its dry run, then `--apply`.
 2. This repair, from `E:\tmp-deploy\api`:
@@ -568,7 +575,7 @@ with the same `railway run` prefix.
   VVPLX, VVPSX and WINC return to `funds_v` before their new series have
   eight quarters of look-through.
 * Decide whether the SEC gate may fall back to the series/class dataset for
-  the 33 `sec_current_source_gap` funds.
+  the 37 `sec_current_source_gap` funds.
 * Confirm no product reason lay behind the 2026-03-30 deactivation reversed by
   R5 for the 51 non-insurance funds.
 * 106 SEC-consistent funds whose symbols Tiingo does not carry need another

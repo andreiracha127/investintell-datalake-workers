@@ -555,3 +555,30 @@ def test_prospectus_restriction_classifier():
     assert not repair.prospectus_says_insurance_only(
         "Shares are offered to the general public and to insurance company separate accounts only.")
     assert not repair.prospectus_says_insurance_only(None)
+
+
+# Second review round ----------------------------------------------------------
+def test_withdrawn_rows_of_an_older_sync_batch_are_not_current():
+    # the class's only row is 5 days old while today's batch lists other classes
+    snap = snapshot([iu("a", "VTI", active=False)], [reg("a", "VTI", "S000000001", "C000000001")],
+                    [sec("C000000001", "S000000001", "VTI", synced=NOW - dt.timedelta(days=5)),
+                     sec("C000000009", "S000000009", "OTHER")])
+    plan, out = run(snap, ev=evidence({"VTI": tiingo_ok()}))
+    assert out == {} and plan.review["orphan_identity_not_sec_current"]
+
+
+def test_r6_needs_a_dated_nav_to_deactivate():
+    snap, hist = _dead(None, attempt=("not_found", None))
+    plan, out = run(snap, hist)
+    assert out == {} and plan.review["series_terminated_no_dated_nav"]
+
+
+def test_newest_prospectus_sentence_decides_insurance_status():
+    old = {"registrant_cik": "1", "accession_no": "OLD", "form_type": "485BPOS", "filed_at": "2025-04-24",
+           "series_ids": ["S000000001"],
+           "quote": "The fund is generally available only through variable annuity contracts."}
+    new = {**old, "accession_no": "NEW", "filed_at": "2026-04-24",
+           "quote": "Shares are offered only to funds of funds and insurance company separate accounts."}
+    assert _activated(evidence({"VTI": tiingo_ok()}, prospectus=[old, new]))
+    plan, out = run(_orphan(), ev=evidence({"VTI": tiingo_ok()}, prospectus=[new, {**old, "filed_at": "2026-05-01"}]))
+    assert out == {} and plan.review["orphan_insurance_only_class"]

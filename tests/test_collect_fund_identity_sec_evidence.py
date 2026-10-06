@@ -50,10 +50,19 @@ def test_insurance_targets_and_prospectus_parsing():
     assert collect.header_series(header) == ["S000002077", "S000002081"]
 
 
-def test_assemble_is_deterministic_and_loads_as_evidence(tmp_path):
+def _datasets(path=None):
+    import tempfile
+    from pathlib import Path
+
+    path = Path(path or tempfile.mkdtemp())
     for name, _sha in repair.SERIES_CLASS_FILES.values():
-        (tmp_path / name).write_bytes(name.encode())
-    (tmp_path / collect.TICKERS_JSON_NAME).write_bytes(b"{}")
+        (path / name).write_bytes(name.encode())
+    (path / collect.TICKERS_JSON_NAME).write_bytes(b"{}")
+    return path
+
+
+def test_assemble_is_deterministic_and_loads_as_evidence(tmp_path):
+    _datasets(tmp_path)
     filing = {"accessionNo": "0001-26-1", "formType": "497", "filedAt": "2026-09-29T00:00:00-04:00",
               "cik": "1", "classes": [{"series": "S1", "class": "C1", "ticker": "NEW", "name": "x"}]}
     sec = {"C1|NEW|first": {"filings": [filing]}, "C1|latest": {"filings": [filing]},
@@ -79,3 +88,16 @@ def test_assemble_is_deterministic_and_loads_as_evidence(tmp_path):
     assert evidence.insurance_prospectus["S1"][0]["accession_no"] == "P1"
     assert json.loads(raw)["sec_series_class_datasets"]["2026"]["sha256"] == hashlib.sha256(
         repair.SERIES_CLASS_FILES[2026][0].encode()).hexdigest()
+
+
+def test_assemble_reads_multi_filing_prospectus_entries_and_refresh_keys():
+    prospectus = {"cik|1": {"registrant_cik": "1", "wanted": ["S1", "S2"], "matches": [
+        {"accession_no": "P2", "form_type": "485BPOS", "filed_at": "2026-04-24", "document": "a.htm",
+         "quote": "The fund is available only through variable annuity contracts.",
+         "series_ids_header": ["S1"]},
+        {"accession_no": "P1", "form_type": "485BPOS", "filed_at": "2026-02-01", "document": None,
+         "quote": None, "series_ids_header": ["S2"]}]}}
+    doc = json.loads(collect.assemble({}, {}, _datasets(), "2026-10-06", {}, prospectus))
+    assert [p["accession_no"] for p in doc["insurance_prospectus"]] == ["P2"]  # no sentence, no evidence
+    assert collect._TIME_VARYING_SEC.search("C1|NEW|last") and collect._TIME_VARYING_SEC.search("S1|series_latest")
+    assert not collect._TIME_VARYING_SEC.search("C1|NEW|first")

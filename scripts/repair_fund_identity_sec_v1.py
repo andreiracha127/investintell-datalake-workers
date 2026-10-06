@@ -93,7 +93,10 @@ Information" CSVs (sha256 below; ``--sec-cache-dir``) and the committed
 evidence bundle (sec-api accession numbers + Tiingo observations, sha256
 below). ``public.sec_company_tickers_mf`` (the daily SEC sync the NAV policy
 generator reads) is the "current SEC" source, judged with the generator's
-7-day freshness window in the same snapshot.
+7-day freshness window in the same snapshot and, for every rule, restricted to
+the newest sync batch: the sync rewrites every listed class each day (one
+``updated_at``), so a row missing from the newest batch was withdrawn from
+SEC's ticker file even while it is younger than 7 days.
 
 Run from the repository root: ``python -m scripts.repair_fund_identity_sec_v1``.
 """
@@ -390,11 +393,12 @@ class SecRow:
 
 
 class CurrentSec:
-    """Rows of ``sec_company_tickers_mf`` fresh at the decision instant.
+    """What SEC's ticker file lists at the decision instant.
 
-    ``latest_by_ticker`` keeps only the newest sync batch: what SEC's ticker
-    file lists today, without the withdrawn rows the upsert-only sync leaves
-    behind for up to 7 days.
+    Only rows of the newest sync batch count (and never one older than the
+    generator's 7-day window): the upsert-only sync leaves withdrawn classes
+    behind for up to 7 days, and no rule may rename to, activate on or fill
+    from a withdrawn row. ``latest_by_ticker`` is kept as an alias.
     """
 
     def __init__(self, rows: list[dict], decision_at: dt.datetime):
@@ -410,12 +414,13 @@ class CurrentSec:
             class_id, series_id, ticker = (ident(row[k]) for k in ("class_id", "series_id", "ticker"))
             if not class_id or not series_id or not ticker:
                 continue
+            if newest is None or newest - synced > LATEST_BATCH_WINDOW:
+                continue  # withdrawn from SEC's ticker file before the newest sync
             sec_row = SecRow(class_id, series_id, ticker, cik10(row.get("cik")), synced)
             self.by_ticker[ticker].append(sec_row)
             self.by_class[class_id].append(sec_row)
             self.series.add(series_id)
-            if newest is not None and newest - synced <= LATEST_BATCH_WINDOW:
-                self.latest_by_ticker[ticker].append(sec_row)
+            self.latest_by_ticker[ticker].append(sec_row)
 
     def unique_ticker(self, ticker: str | None) -> SecRow | None:
         rows = self.by_ticker.get(ticker or "", [])
@@ -882,10 +887,12 @@ def insurance_status(evidence: Evidence, series: str, decision_at: dt.datetime) 
     ncen = evidence.ncen_series.get(series)
     proof: dict = {"ncen": None if not ncen else {
         k: ncen.get(k) for k in ("accession_no", "filed_at", "fund_types")}}
-    for filing in evidence.insurance_prospectus.get(series, []):
-        if prospectus_says_insurance_only(filing.get("quote")):
-            proof["prospectus"] = {k: filing.get(k) for k in ("accession_no", "form_type", "filed_at", "quote")}
-            return "insurance_only", proof
+    covering = sorted(evidence.insurance_prospectus.get(series, []),
+                      key=lambda f: str(f.get("filed_at") or ""), reverse=True)
+    if covering and prospectus_says_insurance_only(covering[0].get("quote")):
+        # The newest prospectus sentence covering the series speaks for it.
+        proof["prospectus"] = {k: covering[0].get(k) for k in ("accession_no", "form_type", "filed_at", "quote")}
+        return "insurance_only", proof
     if not ncen or not ncen.get("filed_at"):
         return "unverified", proof
     filed = dt.datetime.fromisoformat(str(ncen["filed_at"]))
@@ -984,8 +991,11 @@ def rule_r6_deactivate(state: _State, sec: CurrentSec, history: SecHistory, evid
             state.review("series_terminated_nav_current", iid, ticker=ticker, series=sorted(series),
                          newest_nav=newest.isoformat())
             continue
-        if iid not in state.snapshot.nav_last and attempt is None:
-            continue  # no NAV evidence read for this instrument
+        if newest is None:
+            # Never deactivate without a dated NAV that proves the stop.
+            state.review("series_terminated_no_dated_nav", iid, ticker=ticker, series=sorted(series),
+                         tiingo_attempt_status=attempt[0] if attempt else None)
+            continue
         facts = {
             "ticker": ticker,
             "series_ids": sorted(series),

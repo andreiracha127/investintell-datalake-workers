@@ -17,15 +17,20 @@ writes a NEW bundle:
 * sec-api.io Form N-CEN API: the newest N-CEN listing each series R5 judges
   (``fundTypes`` of Item C.3, where "Underlying fund" marks an underlying fund
   of an insurance separate account), first by registrant, then by series.
-* sec-api.io full-text search + EDGAR (``--sec-user-agent``): the newest
-  485BPOS of each such registrant mentioning insurance separate accounts, the
-  sentence restricting its shares (if any) and the series it covers (from the
-  EDGAR filing header). The repair decides from that sentence.
+* sec-api.io full-text search + EDGAR (``--sec-user-agent``): for each such
+  registrant, the 485BPOS filings mentioning insurance separate accounts,
+  newest first across all search phrases, until every targeted series is
+  covered by a filing header: the sentence restricting the shares (if any)
+  and the series each filing covers. The repair decides from the newest
+  filing with a restriction sentence covering a series.
 * The sha256 of the SEC series/class datasets and of ``company_tickers_mf.json``
   in ``--dataset-dir``.
 
 Every response is cached (JSON) in ``--cache-dir`` so a re-run only fetches
-what is missing (``--refresh-tiingo`` re-observes Tiingo). The database is
+what is missing. ``--refresh-tiingo`` re-observes Tiingo; ``--refresh-sec``
+drops the time-varying SEC answers (newest/last filings, N-CEN, prospectus
+searches) and keeps only the immutable first-filing ones: use both when
+collecting a later bundle. The database is
 never touched. Keys never reach stdout. The output must not exist; after a
 review, the operator re-pins ``EVIDENCE_SHA256`` in the repair script.
 
@@ -77,6 +82,9 @@ _SENTENCE_PATTERNS = (
                + _SENTENCE_TARGET + r"[^.]{0,160}\.", re.I),
 )
 _SERIES_HEADER = re.compile(r"(?:&lt;|<)SERIES-ID(?:&gt;|>)\s*(S\d{9})")
+MAX_PROSPECTUS_FILINGS = 12
+# Answers that change as registrants file: dropped by --refresh-sec.
+_TIME_VARYING_SEC = re.compile(r"\|(last|latest|series_latest)$")
 TICKERS_JSON_NAME = "company_tickers_mf_20261006.json"
 DATASET_URLS = {
     2026: ("investment-company-series-class-information/investment-company-series-class-2026.csv", "2026-06-01"),
@@ -187,8 +195,12 @@ def assemble(sec_cache: dict, tiingo_cache: dict, dataset_dir: Path, collected_o
                 ncen_series[series_id] = entry
     prospectus = []
     for value in (prospectus_cache or {}).values():
-        match = value.get("match")
-        if match and match.get("quote"):
+        matches = value.get("matches")
+        if matches is None:  # single-filing cache entries of the first collector
+            matches = [value["match"]] if value.get("match") else []
+        for match in matches:
+            if not match.get("quote"):
+                continue  # no restriction sentence found: says nothing either way
             prospectus.append({
                 "registrant_cik": value["registrant_cik"], "accession_no": match["accession_no"],
                 "form_type": match.get("form_type"), "filed_at": match.get("filed_at"),
@@ -353,43 +365,48 @@ def collect_prospectus(insurance: list, cache: dict, save, *, api_key: str, user
             time.sleep(0.2)  # SEC fair access: well under 10 requests per second
         return path.read_bytes()
 
-    for cik in sorted({str(int(c)) for _s, c in insurance}):
+    wanted_by_cik: dict[str, set[str]] = {}
+    for series, cik in insurance:
+        wanted_by_cik.setdefault(str(int(cik)), set()).add(series)
+    for cik, wanted in sorted(wanted_by_cik.items()):
         tag = f"cik|{cik}"
-        if tag in cache:
+        if set(cache.get(tag, {}).get("wanted", ())) >= wanted:
             continue
-        hit = None
-        for phrase in PROSPECTUS_PHRASES:
+        hits: dict[str, dict] = {}
+        for phrase in PROSPECTUS_PHRASES:  # every phrase, then the newest filings first
             result = api.get_filings({"query": phrase, "formTypes": ["485BPOS"], "ciks": [cik.zfill(10)],
                                       "startDate": "2024-01-01",
                                       "endDate": dt.date.today().isoformat()})
             time.sleep(0.3)
-            filings = sorted(result.get("filings", []), key=lambda f: f.get("filedAt") or "", reverse=True)
-            if filings:
-                hit = filings[0]
+            for filing in result.get("filings", []):
+                hits.setdefault(filing["accessionNo"], filing)
+        matches, covered = [], set()
+        for hit in sorted(hits.values(), key=lambda f: f.get("filedAt") or "", reverse=True)[:MAX_PROSPECTUS_FILINGS]:
+            if wanted <= covered:
                 break
-        if hit is None:
-            cache[tag] = {"registrant_cik": cik, "match": None}
-            save()
-            continue
-        accession = hit["accessionNo"]
-        folder = accession.replace("-", "")
-        index = json.loads(edgar(int(cik), folder, "index.json"))
-        documents = sorted(
-            (item for item in index["directory"]["item"]
-             if item["name"].lower().endswith((".htm", ".html")) and "index" not in item["name"].lower()),
-            key=lambda item: -int(item.get("size") or 0),
-        )
-        quote = document = None
-        for item in documents[:6]:
-            quote = extract_restriction(edgar(int(cik), folder, item["name"]).decode("utf-8", "replace"))
-            if quote:
-                document = item["name"]
-                break
-        headers = edgar(int(cik), folder, f"{accession}-index-headers.html").decode("utf-8", "replace")
-        cache[tag] = {"registrant_cik": cik, "match": {
-            "accession_no": accession, "form_type": hit.get("formType"), "filed_at": hit.get("filedAt"),
-            "document": document, "quote": quote, "series_ids_header": header_series(headers),
-        }}
+            accession = hit["accessionNo"]
+            folder = accession.replace("-", "")
+            series = header_series(
+                edgar(int(cik), folder, f"{accession}-index-headers.html").decode("utf-8", "replace"))
+            if not set(series) & (wanted - covered):
+                continue  # covers no targeted series that a newer filing left uncovered
+            index = json.loads(edgar(int(cik), folder, "index.json"))
+            documents = sorted(
+                (item for item in index["directory"]["item"]
+                 if item["name"].lower().endswith((".htm", ".html")) and "index" not in item["name"].lower()),
+                key=lambda item: -int(item.get("size") or 0),
+            )
+            quote = document = None
+            for item in documents[:6]:
+                quote = extract_restriction(edgar(int(cik), folder, item["name"]).decode("utf-8", "replace"))
+                if quote:
+                    document = item["name"]
+                    break
+            matches.append({"accession_no": accession, "form_type": hit.get("formType"),
+                            "filed_at": hit.get("filedAt"), "document": document, "quote": quote,
+                            "series_ids_header": series})
+            covered |= set(series)
+        cache[tag] = {"registrant_cik": cik, "wanted": sorted(wanted), "matches": matches}
         save()
 
 
@@ -434,6 +451,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--collected-on", default=dt.date.today().isoformat())
     parser.add_argument("--tiingo-pace", type=float, default=2.0, help="seconds between Tiingo requests")
     parser.add_argument("--refresh-tiingo", action="store_true")
+    parser.add_argument("--refresh-sec", action="store_true",
+                        help="re-fetch time-varying SEC answers (newest/last filings, N-CEN, prospectus)")
     parser.add_argument("--offline", action="store_true", help="assemble from the caches only")
     parser.add_argument("--sec-user-agent", default=os.environ.get("SEC_USER_AGENT"),
                         help="descriptive User-Agent with a contact e-mail for sec.gov (or SEC_USER_AGENT)")
@@ -447,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
     ncen_path, prospectus_path = args.cache_dir / NCEN_CACHE_NAME, args.cache_dir / PROSPECTUS_CACHE_NAME
     sec_cache, tiingo_cache = _load(sec_path), _load(tiingo_path)
     ncen_cache, prospectus_cache = _load(ncen_path), _load(prospectus_path)
+    if args.refresh_sec:
+        sec_cache = {k: v for k, v in sec_cache.items() if not _TIME_VARYING_SEC.search(k)}
+        ncen_cache, prospectus_cache = {}, {}
     if not args.offline:
         sec_key, tiingo_key = os.environ.get("SEC_API_IO_KEY"), os.environ.get("TIINGO_API_KEY")
         if not sec_key or not tiingo_key or not args.sec_user_agent:
