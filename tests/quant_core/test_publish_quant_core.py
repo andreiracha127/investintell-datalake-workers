@@ -96,6 +96,12 @@ def test_workflow_publishes_only_from_main_using_the_gate() -> None:
     assert "gh release create" in workflow
     assert "gh release upload" in workflow
     assert "GH_TOKEN: ${{ github.token }}" in workflow
+    # Recovery from a cancelled publish must end with the draft published, with
+    # the tag on the commit the uploaded wheel was verified against.
+    recovery = workflow.split("gh release upload", 1)[1].split("else", 1)[0]
+    assert "gh release edit" in recovery
+    assert "--draft=false" in recovery
+    assert '--target "$GITHUB_SHA"' in recovery
     # The decommissioned registry must not come back by accident.
     assert "pkg.dev" not in workflow
     assert "google-github-actions/auth" not in workflow
@@ -293,8 +299,10 @@ def test_real_build_matches_the_tracked_source(tmp_path: Path) -> None:
 ASSET_URL = "https://api.github.com/repos/owner/repo/releases/assets/1"
 
 
-def _release(*assets: dict[str, str]) -> bytes:
-    return json.dumps({"tag_name": "quant-core-v0.3.0", "assets": list(assets)}).encode()
+def _release(*assets: dict[str, str], draft: bool = False) -> bytes:
+    return json.dumps(
+        {"tag_name": "quant-core-v0.3.0", "draft": draft, "assets": list(assets)}
+    ).encode()
 
 
 def _asset(name: str = "investintell_quant_core-0.3.0-py3-none-any.whl",
@@ -346,6 +354,16 @@ def test_published_wheel_url_ignores_an_unfinished_upload(
 ) -> None:
     """A cancelled run leaves the asset in another state; it must not count."""
     _serve(monkeypatch, {"quant-core-v0.3.0": _release(_asset(state="open"))})
+
+    assert gate.published_wheel_url("token", "0.3.0") is None
+
+
+def test_published_wheel_url_treats_a_draft_as_unpublished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``gh release create`` publishes last: a cancelled run leaves a draft that
+    may already carry the whole wheel, which nobody vendoring it can see."""
+    _serve(monkeypatch, {"quant-core-v0.3.0": _release(_asset(), draft=True)})
 
     assert gate.published_wheel_url("token", "0.3.0") is None
 

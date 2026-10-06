@@ -789,10 +789,13 @@ jobs:
           --outdir dist/quant-core
           --github-output "$GITHUB_OUTPUT"
 
-      # A release that exists without a finished wheel asset is what a run
-      # cancelled mid-upload leaves behind (concurrency cancels in-progress runs
-      # on the next push); the preflight reads that as unpublished, and the
-      # upload replaces whatever partial asset is there.
+      # `gh release create` makes a draft, uploads into it and publishes it
+      # last, so a run cancelled midway (concurrency cancels in-progress runs on
+      # the next push) leaves a draft, possibly with a partial or even complete
+      # asset. The preflight reads a draft as unpublished; `gh release view`
+      # still finds it, so the recovery branch replaces the asset and then
+      # publishes the draft, pinning the tag to this commit — the one whose
+      # source the uploaded wheel was verified against.
       - name: Publish the verified wheel as a release asset
         if: steps.preflight.outputs.publish_needed == 'true'
         env:
@@ -803,6 +806,7 @@ jobs:
           set -euo pipefail
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$WHEEL" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --target "$GITHUB_SHA"
           else
             gh release create "$TAG" "$WHEEL" \
               --repo "$GITHUB_REPOSITORY" \

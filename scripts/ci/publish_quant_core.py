@@ -366,12 +366,15 @@ def _release_by_tag(token: str, tag: str) -> dict[str, Any] | None:
 def published_wheel_url(token: str, version: str) -> str | None:
     """Return the API download URL of the published wheel, or ``None`` if absent.
 
-    Only an asset GitHub reports as fully ``uploaded`` counts: an interrupted
-    upload leaves the release behind with the asset in another state, and that
-    must read as "not published" so the next run can finish the job.
+    Only an asset GitHub reports as fully ``uploaded``, on a release that is
+    not a draft, counts. ``gh release create`` makes a draft, uploads into it
+    and publishes it last, so a run cancelled midway leaves a draft that may
+    already carry the complete wheel; a draft is invisible to anyone vendoring
+    the wheel, so it must read as "not published" and the next run has to
+    publish it, not just top it up.
     """
     release = _release_by_tag(token, release_tag(version))
-    if release is None:
+    if release is None or release.get("draft"):
         return None
     wanted = wheel_filename(version)
     for asset in release.get("assets", []):
