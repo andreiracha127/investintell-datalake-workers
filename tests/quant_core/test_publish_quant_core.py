@@ -10,8 +10,11 @@ Two things are being protected here:
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -55,12 +58,29 @@ def test_tracked_sources_are_keyed_by_wheel_relative_path() -> None:
     assert all(name.startswith("investintell_quant_core/") for name in payload)
 
 
-def test_registry_coordinates_match_the_app_private_index() -> None:
-    """The app resolves this exact index; drifting apart would silently split them."""
-    assert gate.SIMPLE_INDEX == (
-        "https://southamerica-east1-python.pkg.dev"
-        "/investintell-research-analisys/python/simple/investintell-quant-core/"
+def test_release_coordinates_are_this_repository(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wheel is published as a release asset of the repo that builds it."""
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    monkeypatch.delenv("GITHUB_API_URL", raising=False)
+
+    assert gate.repository() == "andreiracha127/investintell-datalake-workers"
+    assert gate.api_url() == "https://api.github.com"
+    assert gate.release_tag("0.3.0") == "quant-core-v0.3.0"
+    assert gate.wheel_filename("0.3.0") == "investintell_quant_core-0.3.0-py3-none-any.whl"
+    assert gate.release_page_url("0.3.0") == (
+        "https://github.com/andreiracha127/investintell-datalake-workers"
+        "/releases/tag/quant-core-v0.3.0"
     )
+
+
+def test_release_coordinates_follow_the_runner_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_REPOSITORY", "someone/fork")
+    monkeypatch.setenv("GITHUB_API_URL", "https://ghe.example/api/v3/")
+
+    assert gate.repository() == "someone/fork"
+    assert gate.api_url() == "https://ghe.example/api/v3"
 
 
 def test_publish_is_pinned_to_main() -> None:
@@ -73,7 +93,13 @@ def test_workflow_publishes_only_from_main_using_the_gate() -> None:
     assert "quant-core-publish" in workflow
     assert "scripts/ci/publish_quant_core.py preflight" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
-    assert "twine upload" in workflow
+    assert "gh release create" in workflow
+    assert "gh release upload" in workflow
+    assert "GH_TOKEN: ${{ github.token }}" in workflow
+    # The decommissioned registry must not come back by accident.
+    assert "pkg.dev" not in workflow
+    assert "google-github-actions/auth" not in workflow
+    assert "twine" not in workflow
 
 
 # --------------------------------------------------------------------------- #
@@ -260,40 +286,115 @@ def test_real_build_matches_the_tracked_source(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Simple-index parsing
+# Release lookup
 # --------------------------------------------------------------------------- #
 
 
-SIMPLE_PAGE = """<!DOCTYPE html>
-<html><body>
-<a href="https://host/investintell_quant_core-0.3.0-py3-none-any.whl#sha256=abc"
-   data-requires-python="&gt;=3.11">investintell_quant_core-0.3.0-py3-none-any.whl</a><br/>
-</body></html>
-"""
+ASSET_URL = "https://api.github.com/repos/owner/repo/releases/assets/1"
+
+
+def _release(*assets: dict[str, str]) -> bytes:
+    return json.dumps({"tag_name": "quant-core-v0.3.0", "assets": list(assets)}).encode()
+
+
+def _asset(name: str = "investintell_quant_core-0.3.0-py3-none-any.whl",
+           state: str = "uploaded") -> dict[str, str]:
+    return {"name": name, "state": state, "url": ASSET_URL}
+
+
+def _serve(monkeypatch: pytest.MonkeyPatch, responses: dict[str, bytes]) -> list[str]:
+    """Stub the API: ``responses`` maps the tag to its release JSON; others 404."""
+    seen: list[str] = []
+
+    def fake_get(url: str, token: str, accept: str = "application/vnd.github+json") -> bytes:
+        seen.append(url)
+        tag = url.rsplit("/releases/tags/", 1)[1]
+        if tag not in responses:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
+        return responses[tag]
+
+    monkeypatch.setattr(gate, "_authorized_get", fake_get)
+    return seen
 
 
 def test_published_wheel_url_finds_the_declared_version(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(gate, "_authorized_get", lambda url, token: SIMPLE_PAGE.encode())
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    seen = _serve(monkeypatch, {"quant-core-v0.3.0": _release(_asset())})
 
-    url = gate.published_wheel_url("token", "0.3.0")
-
-    assert url is not None
-    assert url.startswith("https://host/investintell_quant_core-0.3.0-py3-none-any.whl")
+    assert gate.published_wheel_url("token", "0.3.0") == ASSET_URL
+    assert seen == ["https://api.github.com/repos/owner/repo/releases/tags/quant-core-v0.3.0"]
 
 
 def test_published_wheel_url_returns_none_for_an_unpublished_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(gate, "_authorized_get", lambda url, token: SIMPLE_PAGE.encode())
+    _serve(monkeypatch, {"quant-core-v0.3.0": _release(_asset())})
 
     assert gate.published_wheel_url("token", "0.4.0") is None
 
 
+def test_published_wheel_url_ignores_a_release_without_the_wheel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _serve(monkeypatch, {"quant-core-v0.3.0": _release(_asset(name="notes.txt"))})
+
+    assert gate.published_wheel_url("token", "0.3.0") is None
+
+
+def test_published_wheel_url_ignores_an_unfinished_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled run leaves the asset in another state; it must not count."""
+    _serve(monkeypatch, {"quant-core-v0.3.0": _release(_asset(state="open"))})
+
+    assert gate.published_wheel_url("token", "0.3.0") is None
+
+
+def test_published_wheel_url_propagates_other_http_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(url: str, token: str, accept: str = "") -> bytes:
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gate, "_authorized_get", forbidden)
+
+    with pytest.raises(urllib.error.HTTPError):
+        gate.published_wheel_url("token", "0.3.0")
+
+
+def test_token_is_dropped_when_a_redirect_leaves_the_api_host() -> None:
+    """Asset downloads bounce to signed storage URLs that reject a bearer token."""
+    handler = gate._DropAuthAcrossHosts()
+    request = urllib.request.Request(ASSET_URL, headers={"Authorization": "Bearer t"})
+
+    away = handler.redirect_request(
+        request, None, 302, "Found", {}, "https://objects.githubusercontent.com/x?sig=1"
+    )
+    assert away is not None and not away.has_header("Authorization")
+
+    same = handler.redirect_request(
+        request, None, 302, "Found", {}, "https://api.github.com/elsewhere"
+    )
+    assert same is not None and same.get_header("Authorization") == "Bearer t"
+
+
 def test_preflight_refuses_a_non_main_ref(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GITHUB_REF", "refs/heads/feat/something")
-    monkeypatch.setenv("GAR_ACCESS_TOKEN", "token")
+    monkeypatch.setenv("GH_TOKEN", "token")
 
     with pytest.raises(gate.VerificationError) as excinfo:
         gate.run_preflight(tmp_path / "dist", None, allow_dirty=True, root=ROOT)
 
     assert "refs/heads/main" in str(excinfo.value)
+
+
+def test_preflight_refuses_to_run_without_a_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("GITHUB_REF", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "")
+
+    with pytest.raises(gate.VerificationError) as excinfo:
+        gate.run_preflight(tmp_path / "dist", None, allow_dirty=True, root=ROOT)
+
+    assert "GH_TOKEN" in str(excinfo.value)

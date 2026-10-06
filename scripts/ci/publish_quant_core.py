@@ -1,7 +1,9 @@
 """Build, verify and publish ``investintell-quant-core`` from ``main``.
 
 The published wheel is the app's only source of quant-core code, so the wheel
-that reaches the private index must be reproducible from ``main``. This script
+it vendors must be reproducible from ``main``. Each version is published once,
+as the asset ``investintell_quant_core-<version>-py3-none-any.whl`` of the
+GitHub release tagged ``quant-core-v<version>`` on this repository. This script
 is the gate:
 
 ``verify``
@@ -11,7 +13,7 @@ is the gate:
     No network, no credentials — safe to run on every pull request.
 
 ``preflight``
-    ``verify`` plus a look at the registry. If the declared version is already
+    ``verify`` plus a look at the releases. If the declared version is already
     published, the published wheel is downloaded and compared content-wise
     against the freshly built one: a mismatch means someone published a build
     that ``main`` cannot reproduce, and the run fails. If the version is not
@@ -21,14 +23,18 @@ is the gate:
 Wheels are zip archives that embed file mtimes, so two builds of identical
 source are never byte-identical. Every comparison here is therefore over the
 *content* of each archive member, which is what actually gets imported.
+
+The wheel used to go to a private Google Artifact Registry index. That project
+was decommissioned with the move to Railway (the app vendors the wheel instead
+of resolving an index), and from 2026-08-10 the registry answered every
+authenticated read with 403, which kept this job red on every push to main.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
-import html.parser
+import json
 import os
 import re
 import shutil
@@ -37,10 +43,11 @@ import sys
 import tempfile
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Iterable, NamedTuple
+from typing import Any, Iterable, NamedTuple
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,13 +60,13 @@ CORE_PYPROJECT = PACKAGE_DIR / "pyproject.toml"
 VERSION_PY = PACKAGE_SRC / IMPORT_NAME / "version.py"
 ENGINE_PYPROJECT = ROOT / "services" / "quant_engine" / "pyproject.toml"
 
-REGISTRY_PROJECT = "investintell-research-analisys"
-REGISTRY_LOCATION = "southamerica-east1"
-REGISTRY_REPOSITORY = "python"
-SIMPLE_INDEX = (
-    f"https://{REGISTRY_LOCATION}-python.pkg.dev"
-    f"/{REGISTRY_PROJECT}/{REGISTRY_REPOSITORY}/simple/{PACKAGE_NAME}/"
-)
+# Releases live on the repository that builds the wheel. GitHub sets
+# GITHUB_REPOSITORY / GITHUB_API_URL on every run; the defaults keep the
+# read-only audit path usable from a local checkout.
+DEFAULT_REPOSITORY = "andreiracha127/investintell-datalake-workers"
+DEFAULT_API_URL = "https://api.github.com"
+RELEASE_TAG_PREFIX = "quant-core-v"
+TOKEN_ENV = "GH_TOKEN"
 
 PUBLISH_REF = "refs/heads/main"
 
@@ -282,59 +289,102 @@ def verify_wheel_against_sources(wheel: Path, version: str, root: Path = ROOT) -
 
 
 # --------------------------------------------------------------------------- #
-# Registry
+# GitHub releases
 # --------------------------------------------------------------------------- #
 
 
-class _SimpleIndexParser(html.parser.HTMLParser):
-    """Collect ``filename -> url`` from a PEP 503 simple index page."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.links: dict[str, str] = {}
-        self._href: str | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "a":
-            self._href = dict(attrs).get("href")
-
-    def handle_data(self, data: str) -> None:
-        if self._href is not None:
-            name = data.strip()
-            if name:
-                self.links[name] = self._href
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "a":
-            self._href = None
+def repository() -> str:
+    return os.environ.get("GITHUB_REPOSITORY", "").strip() or DEFAULT_REPOSITORY
 
 
-def _authorized_get(url: str, token: str) -> bytes:
-    credential = base64.b64encode(f"oauth2accesstoken:{token}".encode()).decode()
-    request = urllib.request.Request(url, headers={"Authorization": f"Basic {credential}"})
-    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - fixed https host
+def api_url() -> str:
+    return os.environ.get("GITHUB_API_URL", "").strip().rstrip("/") or DEFAULT_API_URL
+
+
+def release_tag(version: str) -> str:
+    return f"{RELEASE_TAG_PREFIX}{version}"
+
+
+def wheel_filename(version: str) -> str:
+    return f"{IMPORT_NAME}-{version}-py3-none-any.whl"
+
+
+def release_page_url(version: str) -> str:
+    """Where a human would look for the published wheel."""
+    return f"https://github.com/{repository()}/releases/tag/{release_tag(version)}"
+
+
+class _DropAuthAcrossHosts(urllib.request.HTTPRedirectHandler):
+    """Forward redirects without the token when they leave the API host.
+
+    Asset downloads answer with a 302 to a signed storage URL; that host
+    rejects requests carrying both its signature and an Authorization header,
+    and urllib would otherwise replay the header verbatim.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _host(newurl) != _host(req.full_url):
+            new.remove_header("Authorization")
+        return new
+
+
+def _host(url: str) -> str:
+    return urllib.parse.urlsplit(url).netloc.lower()
+
+
+_OPENER = urllib.request.build_opener(_DropAuthAcrossHosts())
+
+
+def _authorized_get(url: str, token: str, accept: str = "application/vnd.github+json") -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": accept,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with _OPENER.open(request, timeout=60) as response:  # noqa: S310 - fixed https host
         return response.read()
 
 
-def published_wheel_url(token: str, version: str, index_url: str = SIMPLE_INDEX) -> str | None:
-    """Return the download URL of the published wheel, or ``None`` if absent.
-
-    The simple index is queried on purpose: it is the exact view ``uv``/``pip``
-    use when resolving the app's ``investintell-quant-core==...`` pin.
-    """
+def _release_by_tag(token: str, tag: str) -> dict[str, Any] | None:
+    url = f"{api_url()}/repos/{repository()}/releases/tags/{urllib.parse.quote(tag)}"
     try:
-        page = _authorized_get(index_url, token)
+        payload = _authorized_get(url, token)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
         raise
-    parser = _SimpleIndexParser()
-    parser.feed(page.decode("utf-8"))
-    return parser.links.get(f"{IMPORT_NAME}-{version}-py3-none-any.whl")
+    release = json.loads(payload.decode("utf-8"))
+    if not isinstance(release, dict):
+        raise VerificationError([f"{url}: expected a release object, got {type(release).__name__}"])
+    return release
+
+
+def published_wheel_url(token: str, version: str) -> str | None:
+    """Return the API download URL of the published wheel, or ``None`` if absent.
+
+    Only an asset GitHub reports as fully ``uploaded`` counts: an interrupted
+    upload leaves the release behind with the asset in another state, and that
+    must read as "not published" so the next run can finish the job.
+    """
+    release = _release_by_tag(token, release_tag(version))
+    if release is None:
+        return None
+    wanted = wheel_filename(version)
+    for asset in release.get("assets", []):
+        if asset.get("name") == wanted and asset.get("state") == "uploaded":
+            url = asset.get("url")
+            if not url:
+                raise VerificationError([f"release asset {wanted} has no download url"])
+            return str(url)
+    return None
 
 
 def download(url: str, token: str, destination: Path) -> Path:
-    destination.write_bytes(_authorized_get(url, token))
+    destination.write_bytes(_authorized_get(url, token, accept="application/octet-stream"))
     return destination
 
 
@@ -371,16 +421,16 @@ def run_preflight(outdir: Path, github_output: Path | None, allow_dirty: bool,
                   require_published: bool = False, root: Path = ROOT) -> int:
     # GitHub always sets GITHUB_REF, so on CI this is a hard gate. Locally it is
     # unset, which leaves the read-only audit path usable from any checkout —
-    # uploading still needs the token only the main-gated job can mint.
+    # uploading still needs the write-scoped token only the main-gated job holds.
     ref = os.environ.get("GITHUB_REF")
     if ref is not None and ref != PUBLISH_REF:
         raise VerificationError(
             [f"publishing is only allowed from {PUBLISH_REF}, this run is on {ref}"]
         )
 
-    token = os.environ.get("GAR_ACCESS_TOKEN", "").strip()
+    token = os.environ.get(TOKEN_ENV, "").strip()
     if not token:
-        raise VerificationError(["GAR_ACCESS_TOKEN is empty; the registry cannot be checked"])
+        raise VerificationError([f"{TOKEN_ENV} is empty; the releases cannot be checked"])
 
     wheel = run_verify(outdir, allow_dirty, root)
     version = resolve_version(root)
@@ -390,11 +440,17 @@ def run_preflight(outdir: Path, github_output: Path | None, allow_dirty: bool,
         if require_published:
             raise VerificationError(
                 [
-                    f"{PACKAGE_NAME}=={version} is absent from the index the app resolves "
-                    f"({SIMPLE_INDEX}); the upload did not land"
+                    f"{PACKAGE_NAME}=={version} is absent from {release_page_url(version)} "
+                    f"(asset {wheel_filename(version)}); the upload did not land"
                 ]
             )
-        _emit(github_output, publish_needed="true", version=version, wheel=str(wheel))
+        _emit(
+            github_output,
+            publish_needed="true",
+            version=version,
+            tag=release_tag(version),
+            wheel=str(wheel),
+        )
         print(f"{PACKAGE_NAME}=={version} is not published yet; the verified wheel will be uploaded")
         return 0
 
@@ -416,7 +472,13 @@ def run_preflight(outdir: Path, github_output: Path | None, allow_dirty: bool,
             ]
         )
 
-    _emit(github_output, publish_needed="false", version=version, wheel=str(wheel))
+    _emit(
+        github_output,
+        publish_needed="false",
+        version=version,
+        tag=release_tag(version),
+        wheel=str(wheel),
+    )
     print(f"{PACKAGE_NAME}=={version} is already published and reproduces from this ref; nothing to do")
     return 0
 
@@ -432,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--allow-dirty", action="store_true")
 
     preflight = subparsers.add_parser(
-        "preflight", help="verify, then decide whether the registry needs this version"
+        "preflight", help="verify, then decide whether the releases need this version"
     )
     preflight.add_argument("--outdir", type=Path, default=ROOT / "dist" / "quant-core")
     preflight.add_argument("--github-output", type=Path, default=None)
@@ -440,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
     preflight.add_argument(
         "--require-published",
         action="store_true",
-        help="fail if the version is missing from the index (post-upload confirmation)",
+        help="fail if the version is missing from the releases (post-upload confirmation)",
     )
 
     args = parser.parse_args(argv)
