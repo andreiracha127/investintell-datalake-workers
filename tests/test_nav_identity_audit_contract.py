@@ -342,7 +342,12 @@ def test_repository_config_is_pinned_to_the_leaf():
     )
     assert config["sec"]["relation"] == contract.SEC_RELATION
     assert config["sec"]["query_contract_sha256"] == contract.SEC_QUERY_CONTRACT_SHA256
-    assert (
-        config["structural_daily_ceiling"] == contract.DEFAULT_STRUCTURAL_DAILY_CEILING
+    # The ceiling on P is re-pinned from a generation snapshot (the contract
+    # default is the pre-repair value); P is a subset of B, so it never exceeds
+    # the acknowledged baseline B = structural_baseline + accepted delta.
+    ceiling = config["structural_daily_ceiling"]
+    acknowledged = config["structural_baseline"] + (
+        config["accepted_structural_delta"] or 0
     )
+    assert type(ceiling) is int and ceiling <= acknowledged
     assert "active_ceiling" not in config
