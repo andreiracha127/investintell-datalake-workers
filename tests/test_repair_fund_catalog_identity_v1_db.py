@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import threading
 import uuid
 from pathlib import Path
 
@@ -461,3 +462,69 @@ def test_provenance_change_after_review_requires_a_new_approval(dsn, capsys):
     sources = registry[_uid(2)]["identity_sources"]
     assert sources["lei"] == {"source": "esma"}  # the approved provenance survives
     assert sources["ticker"]["repair"] == repair.REPAIR_VERSION
+
+
+def test_apply_stamps_every_write_after_the_locks_are_held(dsn, capsys):
+    # A catalog writer holds its lock when apply BEGINs and stamps a row just
+    # before committing; the repair's stamp must come after that commit (a
+    # transaction-start now() would predate it).
+    _code, planned = _run(capsys)
+    writer = psycopg.connect(dsn)
+    writer.execute(
+        "UPDATE public.instruments_universe SET name = name WHERE instrument_id = %s",
+        (_uid(3),),
+    )
+
+    def stamp_and_commit():
+        writer.execute(
+            "UPDATE public.instruments_universe SET updated_at = clock_timestamp() "
+            "WHERE instrument_id = %s",
+            (_uid(3),),
+        )
+        writer.commit()
+
+    timer = threading.Timer(1.5, stamp_and_commit)
+    timer.start()
+    try:
+        code, applied = _apply(capsys, planned["plan_sha256"])
+    finally:
+        timer.join()
+        writer.close()
+    assert code == 0 and applied["status"] == "applied"
+    with psycopg.connect(dsn, row_factory=dict_row) as conn:
+        stamp = conn.execute(
+            "SELECT decision_at FROM fund_catalog_identity_repair_runs WHERE run_id = %s",
+            (applied["run_id"],),
+        ).fetchone()["decision_at"]
+        receipts = conn.execute(
+            "SELECT (after_values ->> 'updated_at')::timestamptz AS stamped "
+            "FROM fund_catalog_identity_repair_receipts WHERE run_id = %s",
+            (applied["run_id"],),
+        ).fetchall()
+    rows = _rows(dsn)
+    iu = {r["instrument_id"]: r for r in rows["instruments_universe"]}
+    registry = {r["instrument_id"]: r for r in rows["instrument_identity"]}
+    assert stamp > iu[_uid(3)]["updated_at"]  # after the blocking writer committed
+    assert {r["stamped"] for r in receipts} == {stamp}
+    assert iu[_uid(1)]["updated_at"] == iu[_uid(2)]["updated_at"] == stamp
+    assert registry[_uid(2)]["updated_at"] == stamp
+    repaired_at = registry[_uid(2)]["identity_sources"]["ticker"]["repaired_at"]
+    assert dt.datetime.fromisoformat(repaired_at) == stamp
+
+
+def test_rollback_does_not_depend_on_the_sec_crosswalk(dsn, capsys):
+    original = _rows(dsn)
+    _code, planned = _run(capsys)
+    _code, applied = _apply(capsys, planned["plan_sha256"])
+    with (
+        psycopg.connect(dsn, autocommit=True) as holder,
+        psycopg.connect(dsn) as writer,
+    ):
+        holder.execute("SELECT pg_advisory_lock(%s)", (LOCK_SEC_COMPANY_TICKERS_MF,))
+        writer.execute("UPDATE public.sec_company_tickers_mf SET updated_at = now()")
+        code, rolled = _run(
+            capsys, "--rollback", applied["run_id"], "--confirm", repair.CONFIRM_TOKEN
+        )
+        writer.rollback()
+    assert code == 0 and rolled["status"] == "rolled_back"
+    assert _rows(dsn) == original

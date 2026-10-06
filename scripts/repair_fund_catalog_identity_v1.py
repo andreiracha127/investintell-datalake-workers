@@ -759,25 +759,30 @@ def write_plan_file(path: Path, snapshot: Snapshot, plan: RepairPlan) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _try_writer_locks(cursor) -> bool:
-    """INGESTION -> READINESS (the operator's order), then the SEC crosswalk writer."""
-    for key in (
-        LOCK_INSTRUMENT_INGESTION,
-        LOCK_FUND_NAV_READINESS,
-        LOCK_SEC_COMPANY_TICKERS_MF,
-    ):
+_NAV_WRITER_LOCKS = (LOCK_INSTRUMENT_INGESTION, LOCK_FUND_NAV_READINESS)
+
+
+def _try_writer_locks(cursor, keys: tuple[int, ...]) -> bool:
+    """Transaction advisory locks in the given order (the operator's NAV order first)."""
+    for key in keys:
         cursor.execute("SELECT pg_try_advisory_xact_lock(%s) AS ok", (key,))
         if cursor.fetchone()["ok"] is not True:
             return False
     return True
 
 
-def _begin_write(cursor) -> dt.datetime:
+def _begin_write(cursor, *, sec_evidence: bool) -> dt.datetime:
     """Table locks BEFORE the snapshot is taken, then the writer advisory locks.
 
-    The SEC crosswalk is the evidence the plan is judged on: SHARE mode blocks
-    every writer of it until COMMIT, so the evidence validated here is still
-    the live crosswalk when the repaired rows commit.
+    With ``sec_evidence`` (apply) the SEC crosswalk is locked too: it is the
+    evidence the plan is judged on, and SHARE mode blocks every writer of it
+    until COMMIT, so the evidence validated here is still the live crosswalk
+    when the repaired rows commit. Rollback never reads SEC evidence and takes
+    only the catalog and NAV writer locks.
+
+    Returns ``clock_timestamp()`` read after every lock is held: the single
+    stamp for receipts, provenance and ``updated_at`` (``now()`` would be the
+    pre-wait transaction start).
     """
     cursor.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
     cursor.execute("SET LOCAL statement_timeout = '300s'")
@@ -787,8 +792,11 @@ def _begin_write(cursor) -> dt.datetime:
         "LOCK TABLE public.instruments_universe, public.instrument_identity "
         "IN SHARE ROW EXCLUSIVE MODE"
     )
-    cursor.execute(f"LOCK TABLE {generator.SEC_RELATION} IN SHARE MODE")
-    if not _try_writer_locks(cursor):
+    keys = _NAV_WRITER_LOCKS
+    if sec_evidence:
+        cursor.execute(f"LOCK TABLE {generator.SEC_RELATION} IN SHARE MODE")
+        keys = (*keys, LOCK_SEC_COMPANY_TICKERS_MF)
+    if not _try_writer_locks(cursor, keys):
         raise LockBusy()
     cursor.execute("SELECT clock_timestamp() AS decision_at")
     return cursor.fetchone()["decision_at"]
@@ -799,7 +807,7 @@ INSERT INTO fund_catalog_identity_repair_receipts
     (run_id, relation, instrument_id, rule, before_values, after_values)
 SELECT %(run_id)s::uuid, 'instruments_universe', iu.instrument_id, %(rule)s::text,
        jsonb_build_object('isin', iu.isin, 'updated_at', iu.updated_at),
-       jsonb_build_object('isin', NULL, 'updated_at', now())
+       jsonb_build_object('isin', NULL, 'updated_at', %(stamp)s::timestamptz)
   FROM unnest(%(ids)s::uuid[], %(isins)s::text[]) AS p(instrument_id, isin)
   JOIN public.instruments_universe iu ON iu.instrument_id = p.instrument_id
   JOIN public.instrument_identity ii ON ii.instrument_id = p.instrument_id
@@ -809,7 +817,7 @@ SELECT %(run_id)s::uuid, 'instruments_universe', iu.instrument_id, %(rule)s::tex
 """
 _UPDATE_ISIN = """
 UPDATE public.instruments_universe iu
-   SET isin = NULL, updated_at = now()
+   SET isin = NULL, updated_at = %(stamp)s::timestamptz
   FROM fund_catalog_identity_repair_receipts r
  WHERE r.run_id = %(run_id)s::uuid AND r.relation = 'instruments_universe'
    AND iu.instrument_id = r.instrument_id
@@ -826,7 +834,7 @@ SELECT %(run_id)s::uuid, 'instrument_identity', ii.instrument_id, %(rule)s::text
            'ticker', p.ticker_after, 'sec_class_id', p.class_after,
            'identity_sources', ii.identity_sources
                || jsonb_build_object('ticker', pv.provenance, 'sec_class_id', pv.provenance),
-           'updated_at', now())
+           'updated_at', %(stamp)s::timestamptz)
   FROM unnest(%(ids)s::uuid[], %(series)s::text[], %(tickers_before)s::text[],
               %(classes_before)s::text[], %(tickers_after)s::text[],
               %(classes_after)s::text[], %(synced_at)s::text[])
@@ -837,7 +845,7 @@ SELECT %(run_id)s::uuid, 'instrument_identity', ii.instrument_id, %(rule)s::text
        SELECT jsonb_build_object(
            'source', 'sec_company_tickers_mf', 'observed_at', p.synced_at,
            'basis', 'instruments_universe.ticker', 'repair', %(version)s::text,
-           'repaired_at', now()) AS provenance) pv
+           'repaired_at', %(stamp)s::timestamptz) AS provenance) pv
  WHERE ii.ticker IS NOT DISTINCT FROM p.ticker_before
    AND ii.sec_class_id IS NOT DISTINCT FROM p.class_before
    AND ii.sec_series_id IS NOT DISTINCT FROM p.series
@@ -849,7 +857,7 @@ UPDATE public.instrument_identity ii
    SET ticker = r.after_values ->> 'ticker',
        sec_class_id = r.after_values ->> 'sec_class_id',
        identity_sources = r.after_values -> 'identity_sources',
-       updated_at = now()
+       updated_at = %(stamp)s::timestamptz
   FROM fund_catalog_identity_repair_receipts r
  WHERE r.run_id = %(run_id)s::uuid AND r.relation = 'instrument_identity'
    AND ii.instrument_id = r.instrument_id
@@ -902,6 +910,7 @@ def _write_plan(
     isin = sorted(plan.isin_changes, key=lambda row: row["instrument_id"])
     params = {
         "run_id": run_id,
+        "stamp": decision_at,
         "rule": RULE_ISIN,
         "ids": [row["instrument_id"] for row in isin],
         "isins": [row["isin_before"] for row in isin],
@@ -911,6 +920,7 @@ def _write_plan(
     tickers = sorted(plan.ticker_changes, key=lambda row: row["instrument_id"])
     params = {
         "run_id": run_id,
+        "stamp": decision_at,
         "rule": RULE_TICKER,
         "version": REPAIR_VERSION,
         "ids": [row["instrument_id"] for row in tickers],
@@ -929,7 +939,7 @@ def apply(dsn: str, plan_sha256: str) -> dict:
     """Recompute, verify and write the plan in ONE transaction."""
     with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
         with conn.cursor(row_factory=dict_row) as cursor:
-            decision_at = _begin_write(cursor)
+            decision_at = _begin_write(cursor, sec_evidence=True)
             committed = False
             try:
                 snapshot = _read_catalog(cursor, decision_at)
@@ -1034,7 +1044,7 @@ def rollback(dsn: str, run_id: str) -> dict:
     """Restore every before-value of one apply run, all or nothing."""
     with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
         with conn.cursor(row_factory=dict_row) as cursor:
-            decision_at = _begin_write(cursor)
+            decision_at = _begin_write(cursor, sec_evidence=False)
             committed = False
             try:
                 if not all(_relation_present(cursor, name) for name in _LEDGER):
