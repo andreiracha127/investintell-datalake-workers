@@ -20,15 +20,20 @@ writes a NEW bundle:
 * sec-api.io full-text search + EDGAR (``--sec-user-agent``): for each such
   registrant, the 485BPOS filings mentioning insurance separate accounts,
   newest first across all search phrases, until every targeted series is
-  covered by a filing header: the sentence restricting the shares (if any)
-  and the series each filing covers. The repair decides from the newest
+  covered by a filing header: the sentence restricting the shares (if any,
+  searched in every HTML document of the filing) and the series each filing
+  covers. The repair decides from the newest
   filing with a restriction sentence covering a series.
 * The sha256 of the SEC series/class datasets and of ``company_tickers_mf.json``
   in ``--dataset-dir``.
 
 Every response is cached (JSON) in ``--cache-dir`` so a re-run only fetches
-what is missing. ``--refresh-tiingo`` re-observes Tiingo; ``--refresh-sec``
-drops the time-varying SEC answers (newest/last filings, N-CEN, prospectus
+what is missing. Before writing, every answer the plan's targets need must be
+in the caches (``--offline`` included); otherwise nothing is written
+(``cache_incomplete``). A required answer that cannot be fetched (retries
+exhausted, Tiingo included) aborts the run the same way.
+``--refresh-tiingo`` re-observes Tiingo; ``--refresh-sec`` drops the
+time-varying SEC answers (newest/last filings, N-CEN, prospectus
 searches) and keeps only the immutable first-filing ones: use both when
 collecting a later bundle. The database is
 never touched. Keys never reach stdout. The output must not exist; after a
@@ -99,6 +104,8 @@ DATASET_BASE = "https://www.sec.gov/files/investment/data/other/"
 FORMS = ("497", "497K", "497J", "485BPOS", "485APOS", "N-CEN", "N-CSR", "N-CSRS", "NPORT-P", "N-14", "N-8F")
 FORM_QUERY = "(" + " OR ".join(f'formType:"{form}"' for form in FORMS) + ")"
 TIINGO_URL = "https://api.tiingo.com/tiingo/daily/{}"
+TIINGO_ATTEMPTS = 5
+TIINGO_BACKOFF_SECONDS = 120
 _TOKEN = re.compile(r"(token=)[^&\s\"']+")
 
 
@@ -410,7 +417,7 @@ def collect_prospectus(insurance: list, cache: dict, save, *, api_key: str, user
                 key=lambda item: -int(item.get("size") or 0),
             )
             quote = document = None
-            for item in documents[:6]:
+            for item in documents:  # every document: a small one may carry the sentence
                 quote = extract_restriction(edgar(int(cik), folder, item["name"]).decode("utf-8", "replace"))
                 if quote:
                     document = item["name"]
@@ -428,7 +435,7 @@ def collect_tiingo(tickers: list[str], cache: dict, save, *, api_key: str, pace:
     for ticker in tickers:
         if not refresh and "observed_at" in cache.get(ticker, {}):
             continue
-        while True:
+        for _attempt in range(TIINGO_ATTEMPTS):
             request = urllib.request.Request(TIINGO_URL.format(urllib.parse.quote(ticker)),
                                              headers={"Authorization": f"Token {api_key}"})
             try:
@@ -442,13 +449,40 @@ def collect_tiingo(tickers: list[str], cache: dict, save, *, api_key: str, pace:
             except (urllib.error.URLError, TimeoutError, ValueError):
                 result = {"status": "error"}
             if result["status"] in (429, "error"):
-                time.sleep(120)
+                time.sleep(TIINGO_BACKOFF_SECONDS)
                 continue
             break
+        else:
+            raise CollectionError(f"tiingo_exhausted:{ticker}")
         result["observed_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         cache[ticker] = result
         save()
         time.sleep(pace)
+
+
+def missing_cache_entries(targets: dict, sec_cache: dict, tiingo_cache: dict, ncen_cache: dict,
+                          prospectus_cache: dict) -> list[str]:
+    """Every answer the targets need that the caches do not hold (the collectors' own keys)."""
+    missing = []
+    for cls in sorted({c for c, _t in targets["pairs"]} | set(targets["classes"])):
+        missing += [tag for tag in (f"{cls}|latest",) if tag not in sec_cache]
+    for cls, ticker in targets["pairs"]:
+        missing += [tag for tag in (f"{cls}|{ticker}|first", f"{cls}|{ticker}|last") if tag not in sec_cache]
+    missing += [f"{s}|series_latest" for s in targets["series"] if f"{s}|series_latest" not in sec_cache]
+    missing += [f"tiingo|{t}" for t in targets["tiingo"] if "observed_at" not in tiingo_cache.get(t, {})]
+    wanted_by_cik: dict[str, set[str]] = {}
+    for series, cik in targets["insurance"]:
+        wanted_by_cik.setdefault(str(int(cik)), set()).add(series)
+    for cik, wanted in sorted(wanted_by_cik.items()):
+        filing = ncen_cache.get(f"cik|{cik}")
+        if filing is None:
+            missing.append(f"ncen|cik|{cik}")
+        else:
+            listed = {item["series_id"] for item in filing.get("series", [])}
+            missing += [f"ncen|series|{s}" for s in sorted(wanted - listed) if f"series|{s}" not in ncen_cache]
+        if not set(prospectus_cache.get(f"cik|{cik}", {}).get("wanted", ())) >= wanted:
+            missing.append(f"prospectus|cik|{cik}")
+    return missing
 
 
 def _load(path: Path) -> dict:
@@ -492,6 +526,11 @@ def main(argv: list[str] | None = None) -> int:
         except _KeysMissing:
             print(json.dumps({"status": "refused", "reason": "api_keys_or_user_agent_missing"}))
             return 3
+    missing = missing_cache_entries(targets, sec_cache, tiingo_cache, ncen_cache, prospectus_cache)
+    if missing:
+        print(json.dumps({"status": "refused", "reason": "cache_incomplete", "missing": len(missing),
+                          "first": missing[:10]}))
+        return 2
     raw = assemble(sec_cache, tiingo_cache, args.dataset_dir, args.collected_on,
                    ncen_cache, prospectus_cache)
     args.out.parent.mkdir(parents=True, exist_ok=True)

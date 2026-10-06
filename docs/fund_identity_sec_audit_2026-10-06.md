@@ -23,9 +23,9 @@ read from the same CTE as `fund_catalog_eligible_instruments_v`).
 |---|---:|---:|---:|---:|---:|
 | production today | 2,896 | 2,896 | 5,102 | 5,103 | 1 |
 | A + B | 7,348 | 7,348 | 7,410 | 7,411 | 6 |
-| A + B + default plan (R1, R2, R4–R8) | 7,466 | 7,444 | 7,487 | 7,488 | 2 |
-| **A + B + default + R9 (`--quarantine-sec-contradictions`): the approved plan** | **7,466** | **7,444** | **7,485** | **7,488** | **0** |
-| A + B + default + R3 (`--include-class-repoint`, later phase) + R9 | 7,489 | 7,467 | 7,508 | 7,511 | 0 |
+| A + B + default plan (R1, R2, R4–R8) | 7,466 | 7,444 | 7,487 | 7,487 | 2 |
+| **A + B + default + R9 (`--quarantine-sec-contradictions`): the approved plan** | **7,466** | **7,444** | **7,485** | **7,487** | **0** |
+| A + B + default + R3 (`--include-class-repoint`, later phase) + R9 | 7,489 | 7,467 | 7,508 | 7,510 | 0 |
 
 No fund that is ACTIVE in the published policy or under A + B loses that
 status under any of these plans. The approved plan gains 118 funds over
@@ -51,8 +51,8 @@ recompute them on the generation snapshot before pinning):
 | plan applied after A + B | `structural_daily_ceiling` ≥ | `accepted_structural_delta` |
 |---|---:|---:|
 | A + B only | 7,410 | 2,308 |
-| **default + R9 (approved)** | **7,485** | **2,385** |
-| default + R3 + R9 | 7,508 | 2,408 |
+| **default + R9 (approved)** | **7,485** | **2,384** |
+| default + R3 + R9 | 7,508 | 2,407 |
 
 A8 at default + R9: N = 7,484 funds reach the SEC stage, bound ⌊N/10⌋ = 748,
 `sec.stale` 18, `sec.missing` 0, integrity 0. Without R9 integrity stays 2.
@@ -61,12 +61,12 @@ A8 at default + R9: N = 7,484 funds reach the SEC stage, bound ⌊N/10⌋ = 748,
 
 | source | role | pin |
 |---|---|---|
-| `public.sec_company_tickers_mf` | current SEC class/series/ticker (daily sync of `company_tickers_mf.json`). Every rule reads only its newest daily batch (one `updated_at` per sync, 28,607 of the 28,620 rows younger than 7 days on 2026-10-06): a row left behind by the upsert-only sync was withdrawn from SEC's file even while the generator still calls it fresh. The plan refuses to run when the newest batch holds less than 95 % of those rows (a `limit` run of the sync commits only a prefix) | read in the plan's own `REPEATABLE READ` snapshot |
+| `public.sec_company_tickers_mf` | current SEC class/series/ticker (daily sync of `company_tickers_mf.json`). Every rule reads only its newest batch: one sync run upserts every class in one transaction, so the batch is the rows carrying exactly the newest `updated_at` (28,607 rows on 2026-10-06, plus 13 rows of earlier runs younger than 7 days). A row left behind by the upsert-only sync was withdrawn from SEC's file even while the generator still calls it fresh. That holds only for a complete run, and the sync takes a `WORKER_LIMIT` that commits a prefix: plan and apply refuse (`sec_latest_batch_not_the_ticker_file`) unless the newest batch equals, class for class, the sync worker's own parse of the `--sec-tickers-json` file. Rows whose class/series is not an EDGAR id (the worker's `<series>:<ticker>` key) are never used by a rule (none today) | read in the plan's own `REPEATABLE READ` snapshot |
 | SEC *Investment Company Series and Class Information* 2023–2026 | every series/class not yet reclassified inactive, with tickers; the 2026 file (SEC update 2026-06-01) is "current-year" | sha256 in `SERIES_CLASS_FILES` of the script |
 | sec-api.io Query API (`485BPOS`, `485APOS`, `497`, `497K`, `497J`, `N-CEN`, `N-CSR(S)`, `NPORT-P`, `N-14`) | first/last filing showing a class under a ticker; newest filing listing a terminated class or series | accession numbers in `contracts/fund-identity-sec/evidence_v1.json` |
 | Tiingo daily meta (`/tiingo/daily/<ticker>`) | whether a ticker has a current price history (R2, R3, R5) | `tiingo_meta` in the evidence bundle, with `observed_at` |
 | `nav_ingestion_attempts` run `244e8eea-5b3c-4d7d-b74d-2a29fc0428f1`, `nav_timeseries` | production Tiingo outcome and newest NAV date (R6) | same snapshot |
-| `company_tickers_mf.json` (2026-10-06 download) | cross-check of the DB sync: 28,608 rows, 1 row differs from the newest DB batch | sha256 in the evidence bundle |
+| `company_tickers_mf.json` | `--sec-tickers-json`, downloaded after the sync the plan reads: completeness gate of that batch. The 2026-10-06 download (28,608 payload rows, 28,607 classes after the worker's parse) equals the newest DB batch class for class | its sha256 is part of the plan digest (`pins.sec_ticker_file_sha256`); the 2026-10-06 copy is also in the evidence bundle |
 
 sec-api bandwidth used: 4.92 MB in October 2026 (about 600 Query API calls).
 Tiingo: about 590 meta requests, at most 0.5 requests per second.
@@ -82,8 +82,9 @@ Counts are instruments. "MV" is `funds_profile_mv` (8,268); "all" is every
 | 2 | ticker renamed, same SEC class | 26 | 28 | R2: rename IU (and registry) ticker |
 | 3 | IU ticker on a terminated share class; registry holds a live class of the series | 26 | 26 | R3 (opt-in, deferred to a later phase) + NAV rebase |
 | 4 | registry `conflict_state` on ticker/class that SEC settles | 2 | 2 | R4 |
-| 5 | inactive but live (SEC + Tiingo current), series has no active instrument, not insurance-only | 51 | 51 | R5: activate |
+| 5 | inactive but live (SEC + Tiingo current), series has no active instrument, not insurance-only | 50 | 50 | R5: activate |
 | 5b | same, but the class is offered only through insurance separate accounts (N-CEN / 485BPOS) | 23 | 23 | stays inactive (owner decision) |
+| 5c | same, but the registry row carries an unrelated conflict (FLDBX, `sec_private_fund_id`) | 1 | 1 | stays inactive (review) |
 | 6 | active but ticker and series gone from SEC, NAV stopped > 90 days | 7 | 152 | R6: deactivate |
 | 7 | registry row has ticker but no series/class | 0 | 20 | R7: fill from SEC |
 | 8 | ticker moved to another series (reorganization), fund files under the new one | 4 | 13 | R8: move registry series/class/CIK |
@@ -207,7 +208,8 @@ current SEC class of the registry series, Tiingo prices it through
 2026-10-01..05, and no other instrument of the series is active, so the
 series is invisible to the builder. Per the owner's decision, 23 of them
 (share classes offered only through insurance-company separate accounts)
-stay inactive and 51 are reactivated, VTI among them.
+stay inactive; FLDBX stays inactive on its registry conflict; 50 are
+reactivated, VTI among them.
 
 | ticker | series | SEC (`sec_company_tickers_mf`) | Tiingo `endDate` |
 |---|---|---|---|
@@ -219,8 +221,10 @@ stay inactive and 51 are reactivated, VTI among them.
 
 Both live classes of S000002848 are activated, as the catalog already carries
 an ETF class next to the canonical class for VNQ/VGSNX and BND/VBTLX. FLDBX
-is activated but stays UNKNOWN on its unrelated `sec_private_fund_id`
-conflict.
+is not activated: its registry row carries an unrelated `sec_private_fund_id`
+conflict, so the generator would stop it at `registry.conflict_state_not_empty`
+anyway, and an active row would count its series as represented for every
+later plan (review bucket `orphan_registry_conflict`).
 
 **Insurance-only exclusion.** Decided per series from pinned SEC evidence,
 never from names:
@@ -241,7 +245,7 @@ never from names:
 | Variable Insurance Products Fund (356494) | FFNMX (1) | N-CEN "Underlying fund"; 485BPOS 0000356494-26-000030 |
 | Voya Variable Products Trust (916403) | IIMOX (1) | N-CEN 0000940400-26-010020 "Underlying fund" |
 
-The 51 reactivated funds all have a current N-CEN (filed 2025-10 to 2026-09)
+The 50 reactivated funds all have a current N-CEN (filed 2025-10 to 2026-09)
 without the insurance flag: VTI and 8 other Vanguard index classes, 21
 Fidelity Covington ETFs, SPYI, ONEQ, 4 PIMCO Funds classes and retail funds
 such as DRFAX, RDVIX, COMIX, NSRKX. Transamerica Funds' 485BPOS mentions insurance
@@ -259,7 +263,10 @@ series; not a phase-B sibling; no product exclusion (`exclusion_reason`,
 `strategic_excluded_reason`, `is_institutional=false`); IU ticker = registry
 ticker = the single fresh SEC row of the registry series/class; Tiingo
 `endDate` within 7 days of an observation at most 30 days old; a pinned N-CEN
-for the series at most two years old; not insurance-only as above. Rows: 51.
+for the series at most two years old; not insurance-only as above; an empty
+registry `conflict_state`. Rows: 50. A fund that R7 or R8 brings into
+`funds_v` is judged by the next run, once the eligibility view lists it (none
+at this snapshot: the 22 funds R7/R8 add are all active).
 
 Review: 60 SEC-current orphans with no Tiingo prices (FEOTX/FEITX First
 Eagle Class T, HMCDX Harbor, XAOKX...: Tiingo knows the symbol but has no
@@ -467,7 +474,16 @@ firm- or series-level for many rows, so the order is indicative.
   `REPEATABLE READ` transaction re-plans on its own snapshot and refuses a
   different digest; compare-and-swap on every row's before-values; a receipt
   per row (before/after of every written column, rules, evidence); re-plans on
-  the written state and aborts unless it is empty; commits.
+  the written state, with the `funds_v` membership the plan was made on, and
+  aborts unless it is empty; commits. A fund R7/R8 just admitted to `funds_v`
+  is the next run's to activate, after its own review (the replay would
+  otherwise refuse every such apply).
+* Both modes need `--sec-tickers-json`: SEC's `company_tickers_mf.json`
+  downloaded after the sync the plan reads. The newest sync batch must equal
+  the worker's parse of it class for class, or the run refuses
+  (`sec_latest_batch_not_the_ticker_file`): a truncated (`WORKER_LIMIT`) sync,
+  an SEC update after the sync, or an older file. Its sha256 is part of the
+  digest, so plan and apply must use the same file.
 * `--mode rollback --rollback-run-id R --confirm repair_fund_identity_sec_v1`:
   restores run R's before-values byte for byte (compare-and-swap on its
   after-values) and records the rollback; one rollback per apply. A run with
@@ -491,11 +507,16 @@ documents and headers with `--sec-user-agent`, Tiingo meta; keys from
 `SEC_API_IO_KEY`/`TIINGO_API_KEY`), and writes a new bundle. Prospectus
 search scans every 485BPOS hit across all phrases, newest first, until every
 targeted series is covered by a filing header; the newest covering filing
-with a restriction sentence decides. `--refresh-sec` re-fetches every
-time-varying answer (newest/last filings, N-CEN, prospectus). A query that
-still fails after its retries aborts the run without writing a bundle;
-`--offline`
-reassembles the committed bundle byte for byte from the caches. A new bundle
+with a restriction sentence decides; every HTML document of a filing is
+searched for that sentence (a re-scan of the two covering filings without one,
+57 documents, found none, so the bundle is unchanged). `--refresh-sec`
+re-fetches every time-varying answer (newest/last filings, N-CEN,
+prospectus). A query that still fails after its retries (Tiingo included)
+aborts the run without writing a bundle, and so does any answer the plan's
+targets need that is not in the caches (`cache_incomplete`, `--offline`
+included). `--offline` reassembles the committed bundle byte for byte from
+the caches (checked against both the pre-A+B live plan and the post-A+B
+plan). A new bundle
 needs a reviewed change of `EVIDENCE_SHA256`.
 
 CI: `tests/test_repair_fund_identity_sec_v1.py`,
@@ -508,22 +529,24 @@ it.
 ## Dry run on production (before A + B)
 
 `--mode plan --quarantine-sec-contradictions` (the approved flags) on the
-live database at 2026-10-06 16:54 UTC, A and B not yet applied:
+live database at 2026-10-06 17:37 UTC, A and B not yet applied, with
+`--sec-tickers-json` the 2026-10-06 download (the completeness gate passed:
+the newest sync batch is that file, class for class):
 
 | rule | rows (all) | in `funds_v` |
 |---|---:|---:|
 | R1 | 6,134 | 4,684 |
 | R2 | 45 | 41 |
 | R4 | 2 | 2 |
-| R5 | 33 | 33 |
+| R5 | 32 | 32 |
 | R6 | 152 | 7 |
 | R7 | 20 | 0 |
 | R8 | 13 | 4 |
 | R9 | 2 | 2 |
 
-Generator ACTIVE 2,896 → 5,120 in memory (21 insurance-only classes held
-back); plan sha256
-`62dc8709d2a5113cc3fd7740140f08c48b12d48f35050b5041ba0741d14241ca`.
+Generator ACTIVE 2,896 → 5,120 in memory (21 insurance-only classes and
+FLDBX held back); plan sha256
+`ed1209c796ab0fe2440af623f81bf14049a28d1693d4538fe0e119140b88a19b`.
 R1 is a superset of rule A, so before A it also NULLs A's 5,285 rows; after
 A + B the plan shrinks to the one simulated above. A digest is only valid for
 the state it was computed on: re-run the plan after A + B and apply with that
@@ -531,11 +554,15 @@ digest.
 
 ## Apply order
 
-Prerequisites: the SEC sync ran within 7 days; the evidence bundle is less
-than 30 days old (R2, R3, R5 need its Tiingo observations; after 2026-11-05
-re-collect with `collect_fund_identity_sec_evidence --refresh-tiingo
---refresh-sec` and re-pin); no NAV ingestion run or SEC ticker sync is active
-(apply refuses otherwise).
+Prerequisites: the SEC sync ran within 7 days, as one complete run; the
+evidence bundle is less than 30 days old (R2, R3, R5 need its Tiingo
+observations; after 2026-11-05 re-collect with
+`collect_fund_identity_sec_evidence --refresh-tiingo --refresh-sec` and
+re-pin); no NAV ingestion run or SEC ticker sync is active (apply refuses
+otherwise). On the apply day, after the 03:30 UTC sync, download
+`https://www.sec.gov/files/company_tickers_mf.json` (with the SEC
+User-Agent) outside the repository, and run plan and apply before the next
+sync with that same file.
 
 1. PR #149 (A + B): its dry run, then `--apply`.
 2. This repair, from `E:\tmp-deploy\api`:
@@ -546,6 +573,7 @@ re-collect with `collect_fund_identity_sec_evidence --refresh-tiingo
      --with "psycopg[binary]" --with exchange_calendars==4.13.2 \
      python -m scripts.repair_fund_identity_sec_v1 \
      --sec-cache-dir E:/tmp-deploy/sec-cache \
+     --sec-tickers-json C:/path/outside/repo/company_tickers_mf.json \
      --db-host centerbeam.proxy.rlwy.net:36616 \
      --quarantine-sec-contradictions \
      --plan-file C:/path/outside/repo/plan.json
@@ -554,7 +582,12 @@ re-collect with `collect_fund_identity_sec_evidence --refresh-tiingo
    ```
 
    The SEC dataset files must be in `--sec-cache-dir` with the pinned sha256
-   (URLs in the evidence bundle).
+   (URLs in the evidence bundle). A refusal with
+   `sec_latest_batch_not_the_ticker_file` means the file and the newest sync
+   differ: download it again right after the next complete sync. A second
+   plan after the apply shows any follow-on R5 activation of funds R7/R8
+   admitted to `funds_v` (none expected at this snapshot); it is applied the
+   same way.
 3. (Later phase, not now) R3 with `--include-class-repoint`, followed by the
    governed NAV rebase of the repointed instruments
    (`scripts/rebase_fund_nav_window.py --mode plan`, then `--mode apply` in
@@ -583,6 +616,8 @@ with the same `railway run` prefix.
 * Decide whether the SEC gate may fall back to the series/class dataset for
   the 37 `sec_current_source_gap` funds.
 * Confirm no product reason lay behind the 2026-03-30 deactivation reversed by
-  R5 for the 51 non-insurance funds.
+  R5 for the 50 non-insurance funds.
+* FLDBX (live, inactive) waits on its `sec_private_fund_id` conflict; once
+  resolved, the next plan activates it through R5.
 * 106 SEC-consistent funds whose symbols Tiingo does not carry need another
   NAV provider.

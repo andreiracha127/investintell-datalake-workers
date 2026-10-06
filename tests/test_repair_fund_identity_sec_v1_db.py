@@ -137,6 +137,16 @@ def _seed(dsn: str) -> None:
                      (run_id, DEAD))
 
 
+def _ticker_file(dsn) -> repair.SecTickerFile:
+    """SEC's company_tickers_mf.json as the seeded sync would have fetched it."""
+    with psycopg.connect(dsn) as conn:
+        rows = conn.execute("SELECT cik, series_id, class_id, ticker FROM sec_company_tickers_mf "
+                            "ORDER BY class_id").fetchall()
+    payload = {"fields": ["cik", "seriesId", "classId", "symbol"],
+               "data": [[int(cik), series, cls, ticker] for cik, series, cls, ticker in rows]}
+    return repair.parse_sec_ticker_file(json.dumps(payload).encode())
+
+
 def _rows(dsn):
     with psycopg.connect(dsn) as conn:
         iu = conn.execute("SELECT instrument_id::text, to_jsonb(t) FROM instruments_universe t "
@@ -147,9 +157,10 @@ def _rows(dsn):
 
 
 def test_apply_is_receipted_idempotent_and_rolls_back_exactly(db):
-    ev = _evidence()
+    ev, tf = _evidence(), _ticker_file(db)
     pins = {"test": True}
-    plan, _snapshot, report = repair.run_plan(db, HISTORY, ev, pins, include_class_repoint=False)
+    plan, _snapshot, report = repair.run_plan(db, HISTORY, ev, pins, ticker_file=tf,
+                                              include_class_repoint=False)
     assert report["changes_by_rule"] == {
         "R1_iu_isin_edgar_identifier": 1, "R2_ticker_renamed_same_class": 2,
         "R4_conflict_resolved_by_sec": 1, "R5_activate_live_orphan": 1, "R6_deactivate_terminated": 1,
@@ -159,10 +170,11 @@ def test_apply_is_receipted_idempotent_and_rolls_back_exactly(db):
     before_iu, before_reg = _rows(db)
 
     with pytest.raises(repair.RepairError, match="plan_sha256_mismatch"):
-        repair.run_apply(db, HISTORY, ev, pins, include_class_repoint=False, expect_sha256="0" * 64)
+        repair.run_apply(db, HISTORY, ev, pins, ticker_file=tf, include_class_repoint=False,
+                         expect_sha256="0" * 64)
     assert _rows(db) == (before_iu, before_reg)  # refused apply wrote nothing
 
-    result = repair.run_apply(db, HISTORY, ev, pins, include_class_repoint=False,
+    result = repair.run_apply(db, HISTORY, ev, pins, ticker_file=tf, include_class_repoint=False,
                               expect_sha256=report["plan_sha256"])
     assert result["status"] == "committed"
     after_iu, after_reg = _rows(db)
@@ -173,9 +185,9 @@ def test_apply_is_receipted_idempotent_and_rolls_back_exactly(db):
             after_reg[HYG]["cik_unpadded"]) == ("S000016772", "C000046846", "0001100663", "1100663")
     assert after_reg[HYG]["identity_sources"]["sec_series_id"]["source"] == "sec_company_tickers_mf"
 
-    _plan, _snap, again = repair.run_plan(db, HISTORY, ev, pins, include_class_repoint=False)
+    _plan, _snap, again = repair.run_plan(db, HISTORY, ev, pins, ticker_file=tf, include_class_repoint=False)
     assert again["rows_changed"] == {}
-    noop = repair.run_apply(db, HISTORY, ev, pins, include_class_repoint=False,
+    noop = repair.run_apply(db, HISTORY, ev, pins, ticker_file=tf, include_class_repoint=False,
                             expect_sha256=again["plan_sha256"])
     assert noop["status"] == "noop"
 
@@ -193,9 +205,9 @@ def test_apply_is_receipted_idempotent_and_rolls_back_exactly(db):
 
 
 def test_rollback_refuses_rows_changed_after_apply(db):
-    ev = _evidence()
-    _plan, _snap, report = repair.run_plan(db, HISTORY, ev, {}, include_class_repoint=False)
-    result = repair.run_apply(db, HISTORY, ev, {}, include_class_repoint=False,
+    ev, tf = _evidence(), _ticker_file(db)
+    _plan, _snap, report = repair.run_plan(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False)
+    result = repair.run_apply(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False,
                               expect_sha256=report["plan_sha256"])
     with psycopg.connect(db, autocommit=True) as conn:
         conn.execute("UPDATE instruments_universe SET is_active = false WHERE instrument_id = %s", (VTI,))
@@ -204,13 +216,13 @@ def test_rollback_refuses_rows_changed_after_apply(db):
 
 
 def test_apply_refuses_while_the_sec_sync_or_ingestion_holds_its_lock(db):
-    ev = _evidence()
-    _plan, _snap, report = repair.run_plan(db, HISTORY, ev, {}, include_class_repoint=False)
+    ev, tf = _evidence(), _ticker_file(db)
+    _plan, _snap, report = repair.run_plan(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False)
     for key in repair.APPLY_LOCKS:
         with psycopg.connect(db, autocommit=True) as holder:
             holder.execute("SELECT pg_advisory_lock(%s)", (key,))
             with pytest.raises(repair.RepairError, match="writer_lock_busy"):
-                repair.run_apply(db, HISTORY, ev, {}, include_class_repoint=False,
+                repair.run_apply(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False,
                                  expect_sha256=report["plan_sha256"])
 
 
@@ -224,6 +236,7 @@ def test_repoint_rollback_is_refused_once_nav_moved_with_the_new_class(db):
                      "'0000898745', '898745')", (dead, live))
         conn.execute("INSERT INTO sec_company_tickers_mf (class_id, cik, series_id, ticker) "
                      "VALUES ('C000069149', '898745', 'S000023512', %s)", (live,))
+        conn.execute("UPDATE sec_company_tickers_mf SET updated_at = now()")  # one complete sync run
     history = repair.build_history([
         *[(y, c, s, k, t) for c, rows in HISTORY.classes.items() for y, s, k, t in rows],
         (2025, "C000111522", "S000023512", "0000898745", "PINUX"),
@@ -233,9 +246,10 @@ def test_repoint_rollback_is_refused_once_nav_moved_with_the_new_class(db):
     doc["tiingo_meta"][live] = doc["tiingo_meta"]["VTI"]
     raw = json.dumps(doc).encode()
     ev = repair.parse_evidence(raw, hashlib.sha256(raw).hexdigest())
-    _plan, _snap, report = repair.run_plan(db, history, ev, {}, include_class_repoint=True)
+    tf = _ticker_file(db)
+    _plan, _snap, report = repair.run_plan(db, history, ev, {}, ticker_file=tf, include_class_repoint=True)
     assert report["changes_by_rule"]["R3_iu_class_terminated_repoint"] == 1
-    result = repair.run_apply(db, history, ev, {}, include_class_repoint=True,
+    result = repair.run_apply(db, history, ev, {}, ticker_file=tf, include_class_repoint=True,
                               expect_sha256=report["plan_sha256"])
     with psycopg.connect(db, autocommit=True) as conn:
         run = uuid.uuid4()
@@ -245,3 +259,39 @@ def test_repoint_rollback_is_refused_once_nav_moved_with_the_new_class(db):
                      (run, dead))
     with pytest.raises(repair.RepairError, match="rollback_repoint_after_nav_writes"):
         repair.run_rollback(db, result["run_id"])
+
+
+def test_a_truncated_sec_sync_refuses_plan_and_apply(db):
+    ev, tf = _evidence(), _ticker_file(db)
+    _plan, _snap, report = repair.run_plan(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False)
+    with psycopg.connect(db, autocommit=True) as conn:  # a WORKER_LIMIT=2 run of the sync
+        conn.execute("UPDATE sec_company_tickers_mf SET updated_at = now() + interval '1 second' "
+                     "WHERE class_id IN ('C000007808', 'C000046846')")
+    before = _rows(db)
+    with pytest.raises(repair.RepairError, match="sec_latest_batch_not_the_ticker_file"):
+        repair.run_plan(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False)
+    with pytest.raises(repair.RepairError, match="sec_latest_batch_not_the_ticker_file"):
+        repair.run_apply(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False,
+                         expect_sha256=report["plan_sha256"])
+    assert _rows(db) == before
+
+
+def test_a_fund_r7_admits_to_funds_v_is_activated_by_the_next_run(db):
+    with psycopg.connect(db, autocommit=True) as conn:
+        conn.execute("UPDATE instruments_universe SET is_active = false WHERE instrument_id = %s", (HYG,))
+    doc = json.loads(_evidence_raw())
+    doc["tiingo_meta"]["HYG"] = doc["tiingo_meta"]["VTI"]
+    doc["ncen_series"]["S000016772"] = doc["ncen_series"]["S000002848"]
+    raw = json.dumps(doc).encode()
+    ev, tf = repair.parse_evidence(raw, hashlib.sha256(raw).hexdigest()), _ticker_file(db)
+    _plan, _snap, first = repair.run_plan(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False)
+    assert first["changes_by_rule"]["R7_registry_series_from_sec"] == 1  # HYG enters funds_v only now
+    # The in-transaction replay judges the plan's own rows: HYG's activation is not its residue.
+    applied = repair.run_apply(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False,
+                               expect_sha256=first["plan_sha256"])
+    assert applied["status"] == "committed"
+    _plan, _snap, second = repair.run_plan(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False)
+    assert second["changes_by_rule"] == {"R5_activate_live_orphan": 1}
+    assert repair.run_apply(db, HISTORY, ev, {}, ticker_file=tf, include_class_repoint=False,
+                            expect_sha256=second["plan_sha256"])["status"] == "committed"
+    assert _rows(db)[0][HYG]["is_active"] is True

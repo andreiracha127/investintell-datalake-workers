@@ -126,3 +126,86 @@ def test_an_exhausted_sec_query_aborts_collection(monkeypatch):
         collect.collect_sec(targets, {}, lambda: None, api_key="k")
     with pytest.raises(collect.CollectionError, match="ncen_query_exhausted"):
         collect.collect_ncen(targets["insurance"], {}, lambda: None, api_key="k")
+
+
+def _targets():
+    return {"tiingo": ["NEW"], "pairs": [("C000000001", "OLD")], "classes": [], "series": ["S000000009"],
+            "insurance": [("S000000001", "0000000042"), ("S000000002", "42")]}
+
+
+def _complete_caches():
+    sec = {"C000000001|latest": {}, "C000000001|OLD|first": {}, "C000000001|OLD|last": {},
+           "S000000009|series_latest": {}}
+    tiingo = {"NEW": {"status": 200, "observed_at": "2026-10-06T05:00:00+00:00"}}
+    ncen = {"cik|42": {"series": [{"series_id": "S000000001"}]}, "series|S000000002": {}}
+    prospectus = {"cik|42": {"wanted": ["S000000001", "S000000002"], "matches": []}}
+    return sec, tiingo, ncen, prospectus
+
+
+def test_every_planned_answer_must_be_cached_before_a_bundle_is_written(tmp_path, monkeypatch):
+    sec, tiingo, ncen, prospectus = _complete_caches()
+    assert collect.missing_cache_entries(_targets(), sec, tiingo, ncen, prospectus) == []
+    del sec["C000000001|OLD|first"]
+    tiingo["NEW"] = {"status": 429}
+    del ncen["series|S000000002"]
+    prospectus["cik|42"]["wanted"] = ["S000000001"]
+    assert collect.missing_cache_entries(_targets(), sec, tiingo, ncen, prospectus) == [
+        "C000000001|OLD|first", "tiingo|NEW", "ncen|series|S000000002", "prospectus|cik|42"]
+
+    # --offline refuses instead of writing a bundle from a partial cache.
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"changes": [], "review": {}}))
+    monkeypatch.setattr(collect, "targets_from_plan", lambda _plan: _targets())
+    out = tmp_path / "bundle.json"
+    code = collect.main(["--plan-file", str(plan), "--dataset-dir", str(tmp_path), "--cache-dir",
+                         str(tmp_path), "--out", str(out), "--offline"])
+    assert code == 2 and not out.exists()
+
+
+def test_tiingo_retries_are_bounded(monkeypatch):
+    import urllib.error
+
+    def unreachable(*_a, **_k):
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(collect.urllib.request, "urlopen", unreachable)
+    monkeypatch.setattr(collect.time, "sleep", lambda _s: None)
+    cache = {}
+    import pytest
+
+    with pytest.raises(collect.CollectionError, match="tiingo_exhausted:NEW"):
+        collect.collect_tiingo(["NEW"], cache, lambda: None, api_key="k", pace=0, refresh=False)
+    assert cache == {}
+
+
+def test_the_restriction_is_searched_in_every_document_of_the_filing(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    accession, folder = "0000000042-26-000001", "000000004226000001"
+    docs = tmp_path / "edgar"
+    docs.mkdir()
+    (docs / f"{folder}_{accession}-index-headers.html").write_text("&lt;SERIES-ID&gt;S000000001")
+    items = [{"name": f"exhibit{n}.htm", "size": str(1000 - n)} for n in range(8)]
+    (docs / f"{folder}_index.json").write_text(json.dumps({"directory": {"item": items}}))
+    for n in range(8):
+        (docs / f"{folder}_exhibit{n}.htm").write_text("<p>Nothing restrictive here.</p>")
+    (docs / f"{folder}_exhibit7.htm").write_text(
+        "<p>Shares of the Fund are offered only to separate accounts of insurance companies "
+        "to fund variable annuity contracts.</p>")
+
+    class Search:
+        def __init__(self, api_key):
+            pass
+
+        def get_filings(self, _query):
+            return {"filings": [{"accessionNo": accession, "formType": "485BPOS",
+                                 "filedAt": "2026-04-24T16:00:00-04:00"}]}
+
+    monkeypatch.setitem(sys.modules, "sec_api", types.SimpleNamespace(FullTextSearchApi=Search))
+    monkeypatch.setattr(collect.time, "sleep", lambda _s: None)
+    cache = {}
+    collect.collect_prospectus([("S000000001", "42")], cache, lambda: None, api_key="k",
+                               user_agent="ua", doc_dir=docs)
+    (match,) = cache["cik|42"]["matches"]
+    assert match["document"] == "exhibit7.htm" and "separate accounts" in match["quote"]

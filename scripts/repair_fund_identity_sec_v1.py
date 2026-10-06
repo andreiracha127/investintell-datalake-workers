@@ -39,6 +39,10 @@ A/B and corrects only what current SEC data proves unambiguously:
   covering the series whose text says its shares are offered only to
   insurance separate accounts / variable contracts; such classes stay
   inactive. Without a pinned N-CEN for the series no reactivation happens.
+  A registry row with a non-empty ``conflict_state`` is never activated (the
+  generator would stop it there, and its series would count as represented).
+  When R7/R8 bring a row into ``funds_v`` in the same apply, its activation is
+  planned by the next run, not this one.
 * ``R6 deactivate_terminated`` - ``is_active=true`` fund whose ticker and
   series are absent from current SEC data and from the current-year SEC
   series/class dataset, and whose NAV stopped more than 90 days ago: deactivate.
@@ -72,6 +76,11 @@ plan's ``review`` section and never changed.
 
 Modes
 -----
+Both ``plan`` and ``apply`` take ``--sec-tickers-json``: SEC's
+``company_tickers_mf.json`` as downloaded after the day's sync. The newest
+sync batch must be exactly the sync worker's own parse of that file (see
+below), and its sha256 is part of the plan digest.
+
 ``--mode plan`` (default): ONE ``REPEATABLE READ READ ONLY`` snapshot; prints
 counts, the plan digest and the generator's ACTIVE count before/after the plan
 (in memory). ``--plan-file`` writes the full plan (production identifiers; it
@@ -94,9 +103,16 @@ evidence bundle (sec-api accession numbers + Tiingo observations, sha256
 below). ``public.sec_company_tickers_mf`` (the daily SEC sync the NAV policy
 generator reads) is the "current SEC" source, judged with the generator's
 7-day freshness window in the same snapshot and, for every rule, restricted to
-the newest sync batch: the sync rewrites every listed class each day (one
-``updated_at``), so a row missing from the newest batch was withdrawn from
-SEC's ticker file even while it is younger than 7 days.
+the newest sync batch: one sync run upserts every listed class in one
+transaction (one ``now()``, so one exact ``updated_at``), and a row missing from
+the newest batch was withdrawn from SEC's ticker file even while it is younger
+than 7 days. That inference holds only for a complete run, and the sync takes a
+``WORKER_LIMIT`` that commits a prefix: the plan therefore refuses
+(``sec_latest_batch_not_the_ticker_file``) unless the newest batch equals,
+class for class, the worker's parse of the ``--sec-tickers-json`` file. Rows
+whose class or series is not an EDGAR identifier (the worker's
+``<series>:<ticker>`` fallback key for a payload row without a class id) are
+compared but never used by a rule.
 
 Run from the repository root: ``python -m scripts.repair_fund_identity_sec_v1``.
 """
@@ -192,14 +208,6 @@ RULES = (
     "R8_registry_series_moved_per_sec",
     "R9_quarantine_sec_self_contradiction",
 )
-# The SEC sync writes one batch per day with a single updated_at; a row missing
-# from the newest batch was withdrawn from company_tickers_mf.json. Rows within
-# this distance of the newest instant belong to the newest batch.
-LATEST_BATCH_WINDOW = dt.timedelta(hours=12)
-# The worker can be run with a row limit, which commits a partial prefix under a
-# new timestamp; the newest batch must hold (nearly) every row younger than the
-# 7-day window before it may stand for SEC's whole ticker file.
-SEC_BATCH_MIN_SHARE = 0.95
 _EDGAR_ID = re.compile(r"(?:S[0-9]{9}|C[0-9]{9}|[0-9]{1,10})\Z")
 _SEC_CLASS = re.compile(r"C[0-9]{9}\Z")
 _SEC_SERIES = re.compile(r"S[0-9]{9}\Z")
@@ -399,10 +407,12 @@ class SecRow:
 class CurrentSec:
     """What SEC's ticker file lists at the decision instant.
 
-    Only rows of the newest sync batch count (and never one older than the
-    generator's 7-day window): the upsert-only sync leaves withdrawn classes
-    behind for up to 7 days, and no rule may rename to, activate on or fill
-    from a withdrawn row. ``latest_by_ticker`` is kept as an alias.
+    Only rows of the newest sync batch count (its exact ``updated_at``; never
+    one older than the generator's 7-day window): the upsert-only sync leaves
+    withdrawn classes behind, and no rule may rename to, activate on or fill
+    from a withdrawn row. ``read_snapshot`` has already proven that batch to be
+    SEC's whole ticker file. Rows without EDGAR class/series identifiers are
+    skipped. ``latest_by_ticker`` is kept as an alias.
     """
 
     def __init__(self, rows: list[dict], decision_at: dt.datetime):
@@ -418,7 +428,9 @@ class CurrentSec:
             class_id, series_id, ticker = (ident(row[k]) for k in ("class_id", "series_id", "ticker"))
             if not class_id or not series_id or not ticker:
                 continue
-            if newest is None or newest - synced > LATEST_BATCH_WINDOW:
+            if not _SEC_CLASS.fullmatch(class_id) or not _SEC_SERIES.fullmatch(series_id):
+                continue  # e.g. the worker's "<series>:<ticker>" key: never an SEC class
+            if synced != newest:
                 continue  # withdrawn from SEC's ticker file before the newest sync
             sec_row = SecRow(class_id, series_id, ticker, cik10(row.get("cik")), synced)
             self.by_ticker[ticker].append(sec_row)
@@ -938,6 +950,12 @@ def rule_r5_activate(state: _State, sec: CurrentSec, evidence: Evidence) -> None
             state.review("orphan_deliberately_excluded", iid, ticker=ticker, series_id=series,
                          reason=row["excluded"])
             continue
+        if reg.get("conflict_state"):
+            # The generator stops it at registry.conflict_state_not_empty, and an
+            # active row would mark its series as represented.
+            state.review("orphan_registry_conflict", iid, ticker=ticker, series_id=series,
+                         conflict_keys=sorted(reg["conflict_state"]))
+            continue
         current = sec.unique_ticker(ticker)
         if ticker is None or ticker != ident(reg.get("ticker")) or current is None:
             state.review("orphan_identity_not_sec_current", iid, ticker=ticker, series_id=series)
@@ -1193,17 +1211,55 @@ NAV_LAST_QUERY = (
 )
 
 
-def assert_latest_sec_batch_complete(rows: list[dict], decision_at: dt.datetime) -> dict:
-    """Refuse to plan on a partial SEC refresh (``sec_company_tickers_mf.run(limit=...)``)."""
-    fresh = [r["synced_at"] for r in rows
-             if r["synced_at"] <= decision_at and decision_at - r["synced_at"] <= SEC_MAX_SYNCED_AGE]
-    if not fresh:
+@dataclass(frozen=True)
+class SecTickerFile:
+    """SEC's ``company_tickers_mf.json`` as the sync worker parses it."""
+
+    rows: dict[str, tuple[str, str, str]]  # worker class key -> (series_id, ticker, cik)
+    sha256: str
+
+
+def parse_sec_ticker_file(raw: bytes) -> SecTickerFile:
+    from src.workers.sec_company_tickers_mf import parse_company_tickers_mf
+
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        raise RepairError("sec_ticker_file_invalid", 3) from None
+    if not isinstance(payload, dict):
+        raise RepairError("sec_ticker_file_invalid", 3)
+    rows = {r.class_id: (r.series_id, r.ticker, r.cik) for r in parse_company_tickers_mf(payload)}
+    if not rows:
+        raise RepairError("sec_ticker_file_invalid", 3)
+    return SecTickerFile(rows, hashlib.sha256(raw).hexdigest())
+
+
+def load_sec_ticker_file(path: Path) -> SecTickerFile:
+    if not path.is_file():
+        raise RepairError("sec_ticker_file_missing", 3)
+    return parse_sec_ticker_file(path.read_bytes())
+
+
+def assert_latest_sec_batch_complete(rows: list[dict], decision_at: dt.datetime,
+                                     ticker_file: SecTickerFile) -> dict:
+    """Refuse unless the newest sync batch is SEC's whole ticker file.
+
+    A ``WORKER_LIMIT`` run commits a prefix of the file under its own instant,
+    and no share of rows tells a 99% prefix from a day's withdrawals. The batch
+    is therefore compared, class for class, with the worker's parse of the file
+    the operator downloaded after that sync: any truncation, later SEC update
+    or older file refuses the plan.
+    """
+    fresh = [r for r in rows if r["synced_at"] <= decision_at]
+    newest = max((r["synced_at"] for r in fresh), default=None)
+    if newest is None or decision_at - newest > SEC_MAX_SYNCED_AGE:
         raise RepairError("sec_crosswalk_not_fresh", 3)
-    newest = max(fresh)
-    latest = sum(1 for synced in fresh if newest - synced <= LATEST_BATCH_WINDOW)
-    if latest < SEC_BATCH_MIN_SHARE * len(fresh):
-        raise RepairError("sec_latest_batch_incomplete", 3)
-    return {"newest_sync": newest.isoformat(), "latest_batch_rows": latest, "fresh_rows": len(fresh)}
+    batch = {str(r["class_id"]): (str(r["series_id"]), str(r["ticker"]), str(r["cik"]))
+             for r in fresh if r["synced_at"] == newest}
+    if batch != ticker_file.rows:
+        raise RepairError("sec_latest_batch_not_the_ticker_file", 3)
+    return {"newest_sync": newest.isoformat(), "latest_batch_rows": len(batch),
+            "ticker_file_sha256": ticker_file.sha256}
 
 
 def _nav_candidates(snapshot: Snapshot, history: SecHistory) -> list[str]:
@@ -1219,7 +1275,7 @@ def _nav_candidates(snapshot: Snapshot, history: SecHistory) -> list[str]:
     return sorted(out)
 
 
-def read_snapshot(cursor, history: SecHistory) -> tuple[Snapshot, tuple]:
+def read_snapshot(cursor, history: SecHistory, ticker_file: SecTickerFile) -> tuple[Snapshot, tuple]:
     """Everything inside the caller's transaction (one snapshot)."""
     from scripts import generate_fund_nav_policy_v1 as generator
 
@@ -1238,7 +1294,7 @@ def read_snapshot(cursor, history: SecHistory) -> tuple[Snapshot, tuple]:
     attempts = {
         str(r["instrument_id"]): (r["status"], r["newest_observed_date"]) for r in cursor.fetchall()
     }
-    assert_latest_sec_batch_complete(sec_rows, decision_at)
+    assert_latest_sec_batch_complete(sec_rows, decision_at, ticker_file)
     snapshot = Snapshot(decision_at, iu, reg, funds, sec_rows, {}, attempts)
     candidates = _nav_candidates(snapshot, history)
     if candidates:
@@ -1322,7 +1378,7 @@ def _session_locks(cursor, keys: tuple[int, ...]) -> None:
 
 
 def run_plan(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
-             include_class_repoint: bool,
+             ticker_file: SecTickerFile, include_class_repoint: bool,
              quarantine_sec_contradictions: bool = False) -> tuple[Plan, Snapshot, dict]:
     import psycopg
     from psycopg.rows import dict_row
@@ -1333,7 +1389,7 @@ def run_plan(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
         with conn.cursor(row_factory=dict_row) as cursor:
             _begin(cursor, read_only=True)
             try:
-                snapshot, generator_rows = read_snapshot(cursor, history)
+                snapshot, generator_rows = read_snapshot(cursor, history, ticker_file)
             finally:
                 cursor.execute("ROLLBACK")
     plan = plan_repairs(snapshot, history, evidence, include_class_repoint=include_class_repoint,
@@ -1342,6 +1398,7 @@ def run_plan(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
     report = summarize(plan, snapshot)
     report["plan_sha256"] = plan_digest(plan, snapshot, pins)
     report["decision_at"] = snapshot.decision_at.isoformat()
+    report["pins"] = pins
     report["generator_before"] = classify_counts(instruments, funds_rows, identity_rows, sec_gen,
                                                  snapshot.decision_at)
     after = apply_plan_to_generator_rows(plan, snapshot, instruments, funds_rows, identity_rows)
@@ -1350,7 +1407,7 @@ def run_plan(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
 
 
 def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
-              include_class_repoint: bool, expect_sha256: str,
+              ticker_file: SecTickerFile, include_class_repoint: bool, expect_sha256: str,
               quarantine_sec_contradictions: bool = False) -> dict:
     import psycopg
     from psycopg.rows import dict_row
@@ -1361,7 +1418,7 @@ def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
             _begin(cursor, read_only=False)
             try:
                 cursor.execute(LEDGER_DDL.read_text(encoding="utf-8"))
-                snapshot, _rows = read_snapshot(cursor, history)
+                snapshot, _rows = read_snapshot(cursor, history, ticker_file)
                 plan = plan_repairs(snapshot, history, evidence,
                                     include_class_repoint=include_class_repoint,
                                     quarantine_sec_contradictions=quarantine_sec_contradictions)
@@ -1376,6 +1433,7 @@ def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
                 cursor.execute("SELECT to_jsonb(now()) AS now")
                 now_json = json.dumps(cursor.fetchone()["now"])
                 summary = summarize(plan, snapshot)
+                summary["pins"] = pins
                 cursor.execute(
                     "INSERT INTO fund_identity_sec_repair_runs "
                     "(run_id, kind, repair_version, plan_sha256, evidence_sha256, decision_at, counts) "
@@ -1396,7 +1454,12 @@ def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
                          change["rules"], json.dumps(before), json.dumps(after),
                          canonical(change["evidence"]).decode()),
                     )
-                replay, _rows = read_snapshot(cursor, history)
+                replay, _rows = read_snapshot(cursor, history, ticker_file)
+                # Idempotency of THIS plan: judge the written rows with the funds_v
+                # membership the plan was made on. A row R7/R8 has just admitted to
+                # funds_v (the eligibility view reads the new series) is the next
+                # run's to activate, after its own review.
+                replay.funds = set(snapshot.funds)
                 residual = plan_repairs(
                     replay, history, evidence, include_class_repoint=include_class_repoint,
                     quarantine_sec_contradictions=quarantine_sec_contradictions,
@@ -1537,6 +1600,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--mode", choices=("plan", "apply", "rollback"), default="plan")
     parser.add_argument("--sec-cache-dir", type=Path, help="directory with the pinned SEC series/class CSVs")
+    parser.add_argument("--sec-tickers-json", type=Path,
+                        help="SEC company_tickers_mf.json downloaded after the newest sync (plan/apply)")
     parser.add_argument("--include-class-repoint", action="store_true",
                         help="apply R3 (terminated IU class -> registry live class; needs NAV rebase)")
     parser.add_argument("--quarantine-sec-contradictions", action="store_true",
@@ -1561,18 +1626,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.sec_cache_dir is None:
             raise RepairError("sec_cache_dir_required", 3)
+        if args.sec_tickers_json is None:
+            raise RepairError("sec_tickers_json_required", 3)
         history, file_pins = load_history(args.sec_cache_dir)
         evidence = load_evidence()
-        pins = {"series_class_files": file_pins, "evidence_sha256": evidence.sha256}
+        ticker_file = load_sec_ticker_file(args.sec_tickers_json)
+        pins = {"series_class_files": file_pins, "evidence_sha256": evidence.sha256,
+                "sec_ticker_file_sha256": ticker_file.sha256}
         if args.mode == "apply":
             if args.confirm != CONFIRM_TOKEN or not args.expect_plan_sha256:
                 raise RepairError("apply_requires_confirm_and_plan_sha256")
-            _emit(run_apply(dsn, history, evidence, pins,
+            _emit(run_apply(dsn, history, evidence, pins, ticker_file=ticker_file,
                             include_class_repoint=args.include_class_repoint,
                             expect_sha256=args.expect_plan_sha256,
                             quarantine_sec_contradictions=args.quarantine_sec_contradictions))
             return 0
-        plan, snapshot, report = run_plan(dsn, history, evidence, pins,
+        plan, snapshot, report = run_plan(dsn, history, evidence, pins, ticker_file=ticker_file,
                                           include_class_repoint=args.include_class_repoint,
                                           quarantine_sec_contradictions=args.quarantine_sec_contradictions)
         if args.plan_file is not None:

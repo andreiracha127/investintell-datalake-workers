@@ -604,11 +604,55 @@ def test_r7_never_gives_one_sec_class_two_catalog_identities():
     assert ("instrument_identity", "a") not in out and plan.review["registry_class_taken"]
 
 
-def test_partial_sec_refresh_is_refused():
-    full = [sec(f"C{n:09d}", "S000000001", f"T{n}", synced=NOW - dt.timedelta(days=1)) for n in range(100)]
-    assert repair.assert_latest_sec_batch_complete(full, NOW)["latest_batch_rows"] == 100
-    partial = full + [sec("C000000001", "S000000001", "T1", synced=FRESH)]  # a limit=1 run today
-    with pytest.raises(repair.RepairError, match="sec_latest_batch_incomplete"):
-        repair.assert_latest_sec_batch_complete(partial[1:], NOW)
+def ticker_file(rows):
+    """company_tickers_mf.json carrying (class, series, ticker, cik) rows, through the worker parser."""
+    payload = {"fields": ["cik", "seriesId", "classId", "symbol"],
+               "data": [[int(cik), series, cls, ticker] for cls, series, ticker, cik in rows]}
+    return repair.parse_sec_ticker_file(json.dumps(payload).encode())
+
+
+def test_only_a_batch_equal_to_the_sec_ticker_file_is_accepted():
+    listed = [(f"C{n:09d}", "S000000001", f"T{n}", "1") for n in range(100)]
+    file = ticker_file(listed)
+    yesterday = NOW - dt.timedelta(days=1)
+    full = [sec(c, s, t, synced=yesterday, cik=k) for c, s, t, k in listed]
+    assert repair.assert_latest_sec_batch_complete(full, NOW, file)["latest_batch_rows"] == 100
+    # A WORKER_LIMIT run re-stamps a 99% prefix: no share of rows can tell it apart.
+    prefix = [dict(r, synced_at=FRESH) for r in full[:99]] + full[99:]
+    with pytest.raises(repair.RepairError, match="sec_latest_batch_not_the_ticker_file"):
+        repair.assert_latest_sec_batch_complete(prefix, NOW, file)
+    # SEC changed a mapping after the sync (or the file is older than the sync).
+    with pytest.raises(repair.RepairError, match="sec_latest_batch_not_the_ticker_file"):
+        repair.assert_latest_sec_batch_complete(full, NOW, ticker_file([*listed[:99], (
+            "C000000099", "S000000002", "T99", "1")]))
     with pytest.raises(repair.RepairError, match="sec_crosswalk_not_fresh"):
-        repair.assert_latest_sec_batch_complete([sec("C000000001", "S1", "T1", synced=STALE)], NOW)
+        repair.assert_latest_sec_batch_complete([sec("C000000001", "S1", "T1", synced=STALE)], NOW, file)
+    with pytest.raises(repair.RepairError, match="sec_ticker_file_invalid"):
+        repair.parse_sec_ticker_file(b'{"fields": [], "data": []}')
+
+
+def test_a_previous_run_hours_earlier_is_not_the_newest_batch():
+    # Two complete runs a few hours apart: the class dropped from the second
+    # keeps the first run's instant and must read as withdrawn.
+    snap = snapshot([iu("a", "VTI", active=False)], [reg("a", "VTI", "S000000001", "C000000001")],
+                    [sec("C000000001", "S000000001", "VTI", synced=FRESH - dt.timedelta(hours=2)),
+                     sec("C000000002", "S000000002", "OTHER", synced=FRESH)])
+    plan, out = run(snap, ev=evidence({"VTI": tiingo_ok()}))
+    assert out == {} and plan.review["orphan_identity_not_sec_current"]
+
+
+def test_the_workers_synthetic_class_key_is_never_an_sec_class():
+    # sec_company_tickers_mf stores "<series>:<ticker>" when SEC's row has no class id.
+    snap = snapshot([iu("a", "HYG")], [reg("a", "HYG", None, None, cik=None)],
+                    [sec("S000016772:HYG", "S000016772", "HYG", cik="1100663")], funds=set())
+    assert run(snap)[1] == {}
+
+
+def test_r5_never_activates_a_row_with_a_registry_conflict():
+    conflict = {"sec_private_fund_id": {"values": [{"value": "805-1"}, {"value": "805-2"}], "resolved": False}}
+    snap = snapshot([iu("a", "VTI", active=False)],
+                    [reg("a", "VTI", "S000000001", "C000000001", conflict=conflict)],
+                    [sec("C000000001", "S000000001", "VTI")])
+    plan, out = run(snap, ev=evidence({"VTI": tiingo_ok()}))
+    assert out == {}
+    assert plan.review["orphan_registry_conflict"][0]["conflict_keys"] == ["sec_private_fund_id"]
