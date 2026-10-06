@@ -1,6 +1,86 @@
 {
  "class_last_filings": [
   {
+   "accession_no": "0000914775-08-000092",
+   "class_id": "C000000824",
+   "filed_at": "2008-12-12T13:50:16-05:00",
+   "filer_cik": "846800",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000000332",
+   "ticker": "PEGBX"
+  },
+  {
+   "accession_no": "0000914775-08-000092",
+   "class_id": "C000000827",
+   "filed_at": "2008-12-12T13:50:16-05:00",
+   "filer_cik": "846800",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000000332",
+   "ticker": "DGITX"
+  },
+  {
+   "accession_no": "0001193125-25-201855",
+   "class_id": "C000002292",
+   "filed_at": "2025-09-12T09:35:46-04:00",
+   "filer_cik": "81251",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000000775",
+   "ticker": "PGNBX"
+  },
+  {
+   "accession_no": "0001193125-25-201855",
+   "class_id": "C000002304",
+   "filed_at": "2025-09-12T09:35:46-04:00",
+   "filer_cik": "81251",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000000777",
+   "ticker": "PNSBX"
+  },
+  {
+   "accession_no": "0001104659-12-048131",
+   "class_id": "C000008151",
+   "filed_at": "2012-07-10T09:30:53-04:00",
+   "filer_cik": "930007",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000002972",
+   "ticker": "PLABX"
+  },
+  {
+   "accession_no": "0001193125-25-201855",
+   "class_id": "C000010788",
+   "filed_at": "2025-09-12T09:35:46-04:00",
+   "filer_cik": "81251",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000003854",
+   "ticker": "PSLBX"
+  },
+  {
+   "accession_no": "0001193125-06-217330",
+   "class_id": "C000011574",
+   "filed_at": "2006-10-27T21:47:44-04:00",
+   "filer_cik": "873637",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000004131",
+   "ticker": "sbfax"
+  },
+  {
+   "accession_no": "0001193125-06-217330",
+   "class_id": "C000011576",
+   "filed_at": "2006-10-27T21:47:44-04:00",
+   "filer_cik": "873637",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000004131",
+   "ticker": "sfslx"
+  },
+  {
    "accession_no": "0001193125-26-412633",
    "class_id": "C000012097",
    "filed_at": "2026-10-02T17:39:04-04:00",
@@ -29,6 +109,16 @@
    "role": "latest_listing",
    "series_id": "S000006320",
    "ticker": "TGHNX"
+  },
+  {
+   "accession_no": "0000894189-19-000276",
+   "class_id": "C000017447",
+   "filed_at": "2019-01-18T17:06:56-05:00",
+   "filer_cik": "801444",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000006348",
+   "ticker": "TIVFX"
   },
   {
    "accession_no": "0001752724-25-001707",
@@ -79,6 +169,56 @@
    "role": "latest_listing",
    "series_id": "S000007169",
    "ticker": "PCPTX"
+  },
+  {
+   "accession_no": "0001752724-25-145182",
+   "class_id": "C000019593",
+   "filed_at": "2025-06-16T17:57:22-04:00",
+   "filer_cik": "898745",
+   "form_type": "N-CEN/A",
+   "role": "latest_listing",
+   "series_id": "S000007170",
+   "ticker": "PQARX"
+  },
+  {
+   "accession_no": "0000898432-17-000615",
+   "class_id": "C000023238",
+   "filed_at": "2017-06-01T17:00:56-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000008475",
+   "ticker": "HIGCX"
+  },
+  {
+   "accession_no": "0000898432-17-000617",
+   "class_id": "C000023284",
+   "filed_at": "2017-06-01T17:04:01-04:00",
+   "filer_cik": "771809",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000008487",
+   "ticker": "HRCPX"
+  },
+  {
+   "accession_no": "0000898432-17-000617",
+   "class_id": "C000023286",
+   "filed_at": "2017-06-01T17:04:01-04:00",
+   "filer_cik": "771809",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000008487",
+   "ticker": "HRCCX"
+  },
+  {
+   "accession_no": "0000898432-17-000617",
+   "class_id": "C000023287",
+   "filed_at": "2017-06-01T17:04:01-04:00",
+   "filer_cik": "771809",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000008487",
+   "ticker": "HRCIX"
   },
   {
    "accession_no": "0001193125-26-389306",
@@ -141,6 +281,26 @@
    "ticker": "GENZ"
   },
   {
+   "accession_no": "0000910472-26-015310",
+   "class_id": "C000059524",
+   "filed_at": "2026-09-28T15:28:40-04:00",
+   "filer_cik": "1420040",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000020976",
+   "ticker": "DCCGX"
+  },
+  {
+   "accession_no": "0000910472-26-015310",
+   "class_id": "C000059525",
+   "filed_at": "2026-09-28T15:28:40-04:00",
+   "filer_cik": "1420040",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000020976",
+   "ticker": "DNCGX"
+  },
+  {
    "accession_no": "0001752724-25-001707",
    "class_id": "C000063450",
    "filed_at": "2025-01-13T15:18:00-05:00",
@@ -151,6 +311,46 @@
    "ticker": "LTFLX"
   },
   {
+   "accession_no": "0000898432-17-000615",
+   "class_id": "C000068919",
+   "filed_at": "2017-06-01T17:00:56-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000008475",
+   "ticker": "HIGJX"
+  },
+  {
+   "accession_no": "0001752724-25-145182",
+   "class_id": "C000082036",
+   "filed_at": "2025-06-16T17:57:22-04:00",
+   "filer_cik": "898745",
+   "form_type": "N-CEN/A",
+   "role": "latest_listing",
+   "series_id": "S000027179",
+   "ticker": "PILIX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000082313",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000027283",
+   "ticker": "VVPLX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000082314",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000027284",
+   "ticker": "VVPSX"
+  },
+  {
    "accession_no": "0001752724-25-001707",
    "class_id": "C000085772",
    "filed_at": "2025-01-13T15:18:00-05:00",
@@ -159,6 +359,56 @@
    "role": "latest_listing",
    "series_id": "S000014242",
    "ticker": "PIOPX"
+  },
+  {
+   "accession_no": "0000754510-26-000248",
+   "class_id": "C000087887",
+   "filed_at": "2026-09-30T10:41:10-04:00",
+   "filer_cik": "754510",
+   "form_type": "497J",
+   "role": "latest_listing",
+   "series_id": "S000007192",
+   "ticker": "FRINX"
+  },
+  {
+   "accession_no": "0000754510-26-000248",
+   "class_id": "C000087891",
+   "filed_at": "2026-09-30T10:41:10-04:00",
+   "filer_cik": "754510",
+   "form_type": "497J",
+   "role": "latest_listing",
+   "series_id": "S000007192",
+   "ticker": "FRIRX"
+  },
+  {
+   "accession_no": "0000898432-17-000615",
+   "class_id": "C000103754",
+   "filed_at": "2017-06-01T17:00:56-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000008475",
+   "ticker": "HIGUX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000104683",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000033955",
+   "ticker": "GPGOX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000104685",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000033956",
+   "ticker": "GPIOX"
   },
   {
    "accession_no": "0001378872-26-001376",
@@ -211,6 +461,26 @@
    "ticker": "EISRX"
   },
   {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000126203",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000040698",
+   "ticker": "GPEOX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000126205",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000040699",
+   "ticker": "GPROX"
+  },
+  {
    "accession_no": "0000894189-26-025421",
    "class_id": "C000144551",
    "filed_at": "2026-09-23T16:41:07-04:00",
@@ -219,6 +489,16 @@
    "role": "latest_listing",
    "series_id": "S000046243",
    "ticker": "DEEP"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000157629",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000049923",
+   "ticker": "GPMCX"
   },
   {
    "accession_no": "0001378872-26-001348",
@@ -281,6 +561,76 @@
    "ticker": "CPTL"
   },
   {
+   "accession_no": "0001193125-26-302746",
+   "class_id": "C000182372",
+   "filed_at": "2026-07-14T10:44:14-04:00",
+   "filer_cik": "831114",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000057227",
+   "ticker": "OIODX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193343",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000058957",
+   "ticker": "HRCPX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193344",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000058957",
+   "ticker": "HRCCX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193345",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000058957",
+   "ticker": "HRCIX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193350",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000058958",
+   "ticker": "HIGJX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193353",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000058958",
+   "ticker": "HIGUX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193356",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000058958",
+   "ticker": "HIGCX"
+  },
+  {
    "accession_no": "0001145549-24-029756",
    "class_id": "C000193403",
    "filed_at": "2024-05-24T12:27:36-04:00",
@@ -309,6 +659,56 @@
    "role": "latest_listing",
    "series_id": "S000060055",
    "ticker": "DMXU"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000204323",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000062979",
+   "ticker": "FHJCX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000204338",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000062981",
+   "ticker": "FHDCX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000204392",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000062987",
+   "ticker": "FHRCX"
+  },
+  {
+   "accession_no": "0001410368-26-098742",
+   "class_id": "C000206040",
+   "filed_at": "2026-09-24T15:17:40-04:00",
+   "filer_cik": "809593",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000063601",
+   "ticker": "TIVFX"
+  },
+  {
+   "accession_no": "0000940400-26-023423",
+   "class_id": "C000207671",
+   "filed_at": "2026-06-12T10:59:19-04:00",
+   "filer_cik": "1645194",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000064209",
+   "ticker": "WINC"
   },
   {
    "accession_no": "0001752724-24-227615",
@@ -391,6 +791,56 @@
    "ticker": "TANKX"
   },
   {
+   "accession_no": "0001410368-26-090242",
+   "class_id": "C000221062",
+   "filed_at": "2026-08-31T09:25:29-04:00",
+   "filer_cik": "810893",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000069193",
+   "ticker": "PEGBX"
+  },
+  {
+   "accession_no": "0001145549-24-070826",
+   "class_id": "C000222772",
+   "filed_at": "2024-11-21T10:44:42-05:00",
+   "filer_cik": "789281",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000030463",
+   "ticker": "FFRFX"
+  },
+  {
+   "accession_no": "0001999371-26-021032",
+   "class_id": "C000224018",
+   "filed_at": "2026-09-22T13:18:25-04:00",
+   "filer_cik": "1742912",
+   "form_type": "485BPOS",
+   "role": "latest_listing",
+   "series_id": "S000070509",
+   "ticker": "SDFI"
+  },
+  {
+   "accession_no": "0001193125-26-302746",
+   "class_id": "C000225219",
+   "filed_at": "2026-07-14T10:44:14-04:00",
+   "filer_cik": "831114",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000070925",
+   "ticker": "STNC"
+  },
+  {
+   "accession_no": "0001580642-26-005691",
+   "class_id": "C000225466",
+   "filed_at": "2026-08-26T16:49:45-04:00",
+   "filer_cik": "1395397",
+   "form_type": "497",
+   "role": "latest_listing",
+   "series_id": "S000017840",
+   "ticker": "PLABX"
+  },
+  {
    "accession_no": "0001580642-26-005950",
    "class_id": "C000226138",
    "filed_at": "2026-09-03T10:28:29-04:00",
@@ -411,6 +861,16 @@
    "ticker": "ABND"
   },
   {
+   "accession_no": "0000910472-26-014421",
+   "class_id": "C000229059",
+   "filed_at": "2026-09-14T12:13:43-04:00",
+   "filer_cik": "1843841",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000071589",
+   "ticker": "DGITX"
+  },
+  {
    "accession_no": "0002048251-26-007156",
    "class_id": "C000232916",
    "filed_at": "2026-08-28T11:16:08-04:00",
@@ -429,6 +889,26 @@
    "role": "latest_listing",
    "series_id": "S000074754",
    "ticker": "RWLC"
+  },
+  {
+   "accession_no": "0001193125-26-302746",
+   "class_id": "C000233245",
+   "filed_at": "2026-07-14T10:44:14-04:00",
+   "filer_cik": "831114",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000074885",
+   "ticker": "OPTCX"
+  },
+  {
+   "accession_no": "0001398344-26-010534",
+   "class_id": "C000234280",
+   "filed_at": "2026-06-08T14:30:04-04:00",
+   "filer_cik": "1587982",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000075333",
+   "ticker": "OIODX"
   },
   {
    "accession_no": "0001193125-26-367641",
@@ -471,6 +951,26 @@
    "ticker": "STXF"
   },
   {
+   "accession_no": "0000910472-26-000227",
+   "class_id": "C000237954",
+   "filed_at": "2026-01-14T10:28:18-05:00",
+   "filer_cik": "1545440",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000077489",
+   "ticker": "SBTCX"
+  },
+  {
+   "accession_no": "0001193125-26-404854",
+   "class_id": "C000239897",
+   "filed_at": "2026-09-28T12:42:05-04:00",
+   "filer_cik": "891944",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000079062",
+   "ticker": "STNC"
+  },
+  {
    "accession_no": "0001752724-24-227615",
    "class_id": "C000240061",
    "filed_at": "2024-10-15T08:42:45-04:00",
@@ -479,6 +979,76 @@
    "role": "latest_listing",
    "series_id": "S000079155",
    "ticker": "FMRWX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000242514",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000080301",
+   "ticker": "FSZOX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000242538",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "latest_listing",
+   "series_id": "S000080304",
+   "ticker": "FSVJX"
+  },
+  {
+   "accession_no": "0000910472-26-015646",
+   "class_id": "C000242719",
+   "filed_at": "2026-09-29T15:51:49-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000080366",
+   "ticker": "GPEOX"
+  },
+  {
+   "accession_no": "0000910472-26-015645",
+   "class_id": "C000242724",
+   "filed_at": "2026-09-29T15:51:48-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000080370",
+   "ticker": "GPMCX"
+  },
+  {
+   "accession_no": "0000910472-26-015649",
+   "class_id": "C000242726",
+   "filed_at": "2026-09-29T15:51:51-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000080371",
+   "ticker": "GPGOX"
+  },
+  {
+   "accession_no": "0000910472-26-015648",
+   "class_id": "C000242728",
+   "filed_at": "2026-09-29T15:51:50-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000080372",
+   "ticker": "GPROX"
+  },
+  {
+   "accession_no": "0000910472-26-015652",
+   "class_id": "C000242732",
+   "filed_at": "2026-09-29T16:38:20-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000080374",
+   "ticker": "GPIOX"
   },
   {
    "accession_no": "0001410368-26-099856",
@@ -521,6 +1091,46 @@
    "ticker": "ZHOG"
   },
   {
+   "accession_no": "0001133228-26-012376",
+   "class_id": "C000246443",
+   "filed_at": "2026-09-08T15:52:32-04:00",
+   "filer_cik": "1970751",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000082984",
+   "ticker": "SFSLX"
+  },
+  {
+   "accession_no": "0001133228-26-012376",
+   "class_id": "C000246446",
+   "filed_at": "2026-09-08T15:52:32-04:00",
+   "filer_cik": "1970751",
+   "form_type": "N-CSRS",
+   "role": "latest_listing",
+   "series_id": "S000082984",
+   "ticker": "SBFAX"
+  },
+  {
+   "accession_no": "0000910472-26-000403",
+   "class_id": "C000248741",
+   "filed_at": "2026-01-26T12:30:24-05:00",
+   "filer_cik": "1873280",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000084370",
+   "ticker": "QDWN"
+  },
+  {
+   "accession_no": "0000910472-26-000404",
+   "class_id": "C000248742",
+   "filed_at": "2026-01-26T12:30:25-05:00",
+   "filer_cik": "1873280",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000084371",
+   "ticker": "QUP"
+  },
+  {
    "accession_no": "0001410368-26-099283",
    "class_id": "C000252172",
    "filed_at": "2026-09-25T10:40:51-04:00",
@@ -539,9 +1149,209 @@
    "role": "latest_listing",
    "series_id": "S000091539",
    "ticker": "RTHY"
+  },
+  {
+   "accession_no": "0001936157-26-000484",
+   "class_id": "C000259241",
+   "filed_at": "2026-09-28T10:29:34-04:00",
+   "filer_cik": "1936157",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000091565",
+   "ticker": "VVPLX"
+  },
+  {
+   "accession_no": "0001936157-26-000481",
+   "class_id": "C000259244",
+   "filed_at": "2026-09-28T10:29:32-04:00",
+   "filer_cik": "1936157",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000091566",
+   "ticker": "VVPSX"
+  },
+  {
+   "accession_no": "0001193125-26-074365",
+   "class_id": "C000264918",
+   "filed_at": "2026-02-26T10:43:14-05:00",
+   "filer_cik": "1587982",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000096131",
+   "ticker": "DASX"
+  },
+  {
+   "accession_no": "0001999371-26-019251",
+   "class_id": "C000265118",
+   "filed_at": "2026-08-31T07:27:36-04:00",
+   "filer_cik": "1924868",
+   "form_type": "497J",
+   "role": "latest_listing",
+   "series_id": "S000096290",
+   "ticker": "DASX"
+  },
+  {
+   "accession_no": "0001193125-26-322589",
+   "class_id": "C000266745",
+   "filed_at": "2026-07-29T11:19:39-04:00",
+   "filer_cik": "1587982",
+   "form_type": "NPORT-P",
+   "role": "latest_listing",
+   "series_id": "S000097552",
+   "ticker": "OPTCX"
+  },
+  {
+   "accession_no": "0001193125-26-407227",
+   "class_id": "C000278949",
+   "filed_at": "2026-09-29T15:52:51-04:00",
+   "filer_cik": "2137497",
+   "form_type": "497K",
+   "role": "latest_listing",
+   "series_id": "S000107974",
+   "ticker": "WINC"
+  },
+  {
+   "accession_no": "0001999371-26-021384",
+   "class_id": "C000279328",
+   "filed_at": "2026-09-28T07:48:37-04:00",
+   "filer_cik": "2043390",
+   "form_type": "497J",
+   "role": "latest_listing",
+   "series_id": "S000108348",
+   "ticker": "QUP"
+  },
+  {
+   "accession_no": "0001999371-26-021384",
+   "class_id": "C000279329",
+   "filed_at": "2026-09-28T07:48:37-04:00",
+   "filer_cik": "2043390",
+   "form_type": "497J",
+   "role": "latest_listing",
+   "series_id": "S000108349",
+   "ticker": "QDWN"
   }
  ],
  "class_ticker_filings": [
+  {
+   "accession_no": "0000075176-06-000004",
+   "class_id": "C000000824",
+   "filed_at": "2006-02-24T09:36:59-05:00",
+   "filer_cik": "819940",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000000332",
+   "ticker": "PEGBX"
+  },
+  {
+   "accession_no": "0000914775-08-000092",
+   "class_id": "C000000824",
+   "filed_at": "2008-12-12T13:50:16-05:00",
+   "filer_cik": "846800",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000000332",
+   "ticker": "PEGBX"
+  },
+  {
+   "accession_no": "0001167368-06-000019",
+   "class_id": "C000000827",
+   "filed_at": "2006-10-05T15:00:48-04:00",
+   "filer_cik": "890064",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000000332",
+   "ticker": "DGITX"
+  },
+  {
+   "accession_no": "0000914775-08-000092",
+   "class_id": "C000000827",
+   "filed_at": "2008-12-12T13:50:16-05:00",
+   "filer_cik": "846800",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000000332",
+   "ticker": "DGITX"
+  },
+  {
+   "accession_no": "0000928816-06-000877",
+   "class_id": "C000002292",
+   "filed_at": "2006-08-02T10:55:31-04:00",
+   "filer_cik": "81259",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000000775",
+   "ticker": "PGNBX"
+  },
+  {
+   "accession_no": "0001193125-25-201855",
+   "class_id": "C000002292",
+   "filed_at": "2025-09-12T09:35:46-04:00",
+   "filer_cik": "81251",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000000775",
+   "ticker": "PGNBX"
+  },
+  {
+   "accession_no": "0000928816-06-000877",
+   "class_id": "C000002304",
+   "filed_at": "2006-08-02T10:55:31-04:00",
+   "filer_cik": "81259",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000000777",
+   "ticker": "PNSBX"
+  },
+  {
+   "accession_no": "0001193125-25-201855",
+   "class_id": "C000002304",
+   "filed_at": "2025-09-12T09:35:46-04:00",
+   "filer_cik": "81251",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000000777",
+   "ticker": "PNSBX"
+  },
+  {
+   "accession_no": "0001104659-10-000510",
+   "class_id": "C000008151",
+   "filed_at": "2010-01-06T15:05:05-05:00",
+   "filer_cik": "930007",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000002972",
+   "ticker": "PLABX"
+  },
+  {
+   "accession_no": "0001104659-12-048131",
+   "class_id": "C000008151",
+   "filed_at": "2012-07-10T09:30:53-04:00",
+   "filer_cik": "930007",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000002972",
+   "ticker": "PLABX"
+  },
+  {
+   "accession_no": "0000928816-06-000877",
+   "class_id": "C000010788",
+   "filed_at": "2006-08-02T10:55:31-04:00",
+   "filer_cik": "81259",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000003854",
+   "ticker": "PSLBX"
+  },
+  {
+   "accession_no": "0001193125-25-201855",
+   "class_id": "C000010788",
+   "filed_at": "2025-09-12T09:35:46-04:00",
+   "filer_cik": "81251",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000003854",
+   "ticker": "PSLBX"
+  },
   {
    "accession_no": "0001193125-21-088533",
    "class_id": "C000012097",
@@ -643,6 +1453,26 @@
    "ticker": "TGHNX"
   },
   {
+   "accession_no": "0000894189-09-004344",
+   "class_id": "C000017447",
+   "filed_at": "2009-12-21T17:20:56-05:00",
+   "filer_cik": "801444",
+   "form_type": "485APOS",
+   "role": "first_with_ticker",
+   "series_id": "S000006348",
+   "ticker": "TIVFX"
+  },
+  {
+   "accession_no": "0000894189-19-000276",
+   "class_id": "C000017447",
+   "filed_at": "2019-01-18T17:06:56-05:00",
+   "filer_cik": "801444",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000006348",
+   "ticker": "TIVFX"
+  },
+  {
    "accession_no": "0000898745-09-000572",
    "class_id": "C000019056",
    "filed_at": "2009-12-30T16:00:34-05:00",
@@ -741,6 +1571,106 @@
    "role": "last_with_ticker",
    "series_id": "S000007169",
    "ticker": "PCPTX"
+  },
+  {
+   "accession_no": "0000898745-09-000572",
+   "class_id": "C000019593",
+   "filed_at": "2009-12-30T16:00:34-05:00",
+   "filer_cik": "898745",
+   "form_type": "485APOS",
+   "role": "first_with_ticker",
+   "series_id": "S000007170",
+   "ticker": "PQARX"
+  },
+  {
+   "accession_no": "0001752724-25-145182",
+   "class_id": "C000019593",
+   "filed_at": "2025-06-16T17:57:22-04:00",
+   "filer_cik": "898745",
+   "form_type": "N-CEN/A",
+   "role": "last_with_ticker",
+   "series_id": "S000007170",
+   "ticker": "PQARX"
+  },
+  {
+   "accession_no": "0000898432-08-000944",
+   "class_id": "C000023238",
+   "filed_at": "2008-09-23T16:40:04-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000008475",
+   "ticker": "HIGCX"
+  },
+  {
+   "accession_no": "0000898432-17-000615",
+   "class_id": "C000023238",
+   "filed_at": "2017-06-01T17:00:56-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000008475",
+   "ticker": "HIGCX"
+  },
+  {
+   "accession_no": "0000898432-08-000944",
+   "class_id": "C000023284",
+   "filed_at": "2008-09-23T16:40:04-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000008487",
+   "ticker": "HRCPX"
+  },
+  {
+   "accession_no": "0000898432-17-000617",
+   "class_id": "C000023284",
+   "filed_at": "2017-06-01T17:04:01-04:00",
+   "filer_cik": "771809",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000008487",
+   "ticker": "HRCPX"
+  },
+  {
+   "accession_no": "0000898432-08-000944",
+   "class_id": "C000023286",
+   "filed_at": "2008-09-23T16:40:04-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000008487",
+   "ticker": "HRCCX"
+  },
+  {
+   "accession_no": "0000898432-17-000617",
+   "class_id": "C000023286",
+   "filed_at": "2017-06-01T17:04:01-04:00",
+   "filer_cik": "771809",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000008487",
+   "ticker": "HRCCX"
+  },
+  {
+   "accession_no": "0000898432-08-000944",
+   "class_id": "C000023287",
+   "filed_at": "2008-09-23T16:40:04-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000008487",
+   "ticker": "HRCIX"
+  },
+  {
+   "accession_no": "0000898432-17-000617",
+   "class_id": "C000023287",
+   "filed_at": "2017-06-01T17:04:01-04:00",
+   "filer_cik": "771809",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000008487",
+   "ticker": "HRCIX"
   },
   {
    "accession_no": "0001193125-26-377124",
@@ -923,6 +1853,46 @@
    "ticker": "GENZ"
   },
   {
+   "accession_no": "0000910472-11-000974",
+   "class_id": "C000059524",
+   "filed_at": "2011-06-17T16:25:08-04:00",
+   "filer_cik": "1420040",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000020976",
+   "ticker": "DCCGX"
+  },
+  {
+   "accession_no": "0000910472-26-015310",
+   "class_id": "C000059524",
+   "filed_at": "2026-09-28T15:28:40-04:00",
+   "filer_cik": "1420040",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000020976",
+   "ticker": "DCCGX"
+  },
+  {
+   "accession_no": "0000910472-11-000974",
+   "class_id": "C000059525",
+   "filed_at": "2011-06-17T16:25:08-04:00",
+   "filer_cik": "1420040",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000020976",
+   "ticker": "DNCGX"
+  },
+  {
+   "accession_no": "0000910472-26-015310",
+   "class_id": "C000059525",
+   "filed_at": "2026-09-28T15:28:40-04:00",
+   "filer_cik": "1420040",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000020976",
+   "ticker": "DNCGX"
+  },
+  {
    "accession_no": "0000898745-09-000572",
    "class_id": "C000063450",
    "filed_at": "2009-12-30T16:00:34-05:00",
@@ -943,6 +1913,86 @@
    "ticker": "LTFLX"
   },
   {
+   "accession_no": "0000898432-08-001155",
+   "class_id": "C000068919",
+   "filed_at": "2008-11-12T16:20:48-05:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000008475",
+   "ticker": "HIGJX"
+  },
+  {
+   "accession_no": "0000898432-17-000615",
+   "class_id": "C000068919",
+   "filed_at": "2017-06-01T17:00:56-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000008475",
+   "ticker": "HIGJX"
+  },
+  {
+   "accession_no": "0001126328-10-000442",
+   "class_id": "C000082036",
+   "filed_at": "2010-09-16T16:41:59-04:00",
+   "filer_cik": "898745",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000027179",
+   "ticker": "PILIX"
+  },
+  {
+   "accession_no": "0001752724-25-145182",
+   "class_id": "C000082036",
+   "filed_at": "2025-06-16T17:57:22-04:00",
+   "filer_cik": "898745",
+   "form_type": "N-CEN/A",
+   "role": "last_with_ticker",
+   "series_id": "S000027179",
+   "ticker": "PILIX"
+  },
+  {
+   "accession_no": "0001193125-16-424638",
+   "class_id": "C000082313",
+   "filed_at": "2016-01-08T14:50:10-05:00",
+   "filer_cik": "915802",
+   "form_type": "N-CSRS",
+   "role": "first_with_ticker",
+   "series_id": "S000027283",
+   "ticker": "VVPLX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000082313",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000027283",
+   "ticker": "VVPLX"
+  },
+  {
+   "accession_no": "0001193125-16-424638",
+   "class_id": "C000082314",
+   "filed_at": "2016-01-08T14:50:10-05:00",
+   "filer_cik": "915802",
+   "form_type": "N-CSRS",
+   "role": "first_with_ticker",
+   "series_id": "S000027284",
+   "ticker": "VVPSX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000082314",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000027284",
+   "ticker": "VVPSX"
+  },
+  {
    "accession_no": "0000898745-10-000355",
    "class_id": "C000085772",
    "filed_at": "2010-06-16T14:12:39-04:00",
@@ -961,6 +2011,106 @@
    "role": "last_with_ticker",
    "series_id": "S000014242",
    "ticker": "PIOPX"
+  },
+  {
+   "accession_no": "0000880195-11-000146",
+   "class_id": "C000087887",
+   "filed_at": "2011-06-07T10:34:01-04:00",
+   "filer_cik": "754510",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000007192",
+   "ticker": "FRINX"
+  },
+  {
+   "accession_no": "0000754510-26-000248",
+   "class_id": "C000087887",
+   "filed_at": "2026-09-30T10:41:10-04:00",
+   "filer_cik": "754510",
+   "form_type": "497J",
+   "role": "last_with_ticker",
+   "series_id": "S000007192",
+   "ticker": "FRINX"
+  },
+  {
+   "accession_no": "0000880195-11-000146",
+   "class_id": "C000087891",
+   "filed_at": "2011-06-07T10:34:01-04:00",
+   "filer_cik": "754510",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000007192",
+   "ticker": "FRIRX"
+  },
+  {
+   "accession_no": "0000754510-26-000248",
+   "class_id": "C000087891",
+   "filed_at": "2026-09-30T10:41:10-04:00",
+   "filer_cik": "754510",
+   "form_type": "497J",
+   "role": "last_with_ticker",
+   "series_id": "S000007192",
+   "ticker": "FRIRX"
+  },
+  {
+   "accession_no": "0001193125-12-113993",
+   "class_id": "C000103754",
+   "filed_at": "2012-03-14T10:40:48-04:00",
+   "filer_cik": "798075",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000008475",
+   "ticker": "HIGUX"
+  },
+  {
+   "accession_no": "0000898432-17-000615",
+   "class_id": "C000103754",
+   "filed_at": "2017-06-01T17:00:56-04:00",
+   "filer_cik": "798075",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000008475",
+   "ticker": "HIGUX"
+  },
+  {
+   "accession_no": "0001193125-16-424638",
+   "class_id": "C000104683",
+   "filed_at": "2016-01-08T14:50:10-05:00",
+   "filer_cik": "915802",
+   "form_type": "N-CSRS",
+   "role": "first_with_ticker",
+   "series_id": "S000033955",
+   "ticker": "GPGOX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000104683",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000033955",
+   "ticker": "GPGOX"
+  },
+  {
+   "accession_no": "0001193125-16-424638",
+   "class_id": "C000104685",
+   "filed_at": "2016-01-08T14:50:10-05:00",
+   "filer_cik": "915802",
+   "form_type": "N-CSRS",
+   "role": "first_with_ticker",
+   "series_id": "S000033956",
+   "ticker": "GPIOX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000104685",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000033956",
+   "ticker": "GPIOX"
   },
   {
    "accession_no": "0001193125-26-062447",
@@ -1103,6 +2253,46 @@
    "ticker": "EISRX"
   },
   {
+   "accession_no": "0000915802-15-000101",
+   "class_id": "C000126203",
+   "filed_at": "2015-12-04T12:28:15-05:00",
+   "filer_cik": "915802",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000040698",
+   "ticker": "GPEOX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000126203",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000040698",
+   "ticker": "GPEOX"
+  },
+  {
+   "accession_no": "0000915802-15-000101",
+   "class_id": "C000126205",
+   "filed_at": "2015-12-04T12:28:15-05:00",
+   "filer_cik": "915802",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000040699",
+   "ticker": "GPROX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000126205",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000040699",
+   "ticker": "GPROX"
+  },
+  {
    "accession_no": "0000894189-20-004814",
    "class_id": "C000144551",
    "filed_at": "2020-06-22T16:49:45-04:00",
@@ -1141,6 +2331,26 @@
    "role": "last_with_ticker",
    "series_id": "S000046243",
    "ticker": "DVP"
+  },
+  {
+   "accession_no": "0001398344-15-004204",
+   "class_id": "C000157629",
+   "filed_at": "2015-07-02T15:25:29-04:00",
+   "filer_cik": "915802",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000049923",
+   "ticker": "GPMCX"
+  },
+  {
+   "accession_no": "0001049169-26-001803",
+   "class_id": "C000157629",
+   "filed_at": "2026-07-13T12:54:05-04:00",
+   "filer_cik": "915802",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000049923",
+   "ticker": "GPMCX"
   },
   {
    "accession_no": "0001193125-26-062444",
@@ -1363,6 +2573,146 @@
    "ticker": "KRMA"
   },
   {
+   "accession_no": "0001104659-17-028425",
+   "class_id": "C000182372",
+   "filed_at": "2017-05-01T16:38:29-04:00",
+   "filer_cik": "831114",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000057227",
+   "ticker": "OIODX"
+  },
+  {
+   "accession_no": "0001193125-26-302746",
+   "class_id": "C000182372",
+   "filed_at": "2026-07-14T10:44:14-04:00",
+   "filer_cik": "831114",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000057227",
+   "ticker": "OIODX"
+  },
+  {
+   "accession_no": "0000894189-18-002306",
+   "class_id": "C000193343",
+   "filed_at": "2018-04-16T10:52:19-04:00",
+   "filer_cik": "897111",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000058957",
+   "ticker": "HRCPX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193343",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000058957",
+   "ticker": "HRCPX"
+  },
+  {
+   "accession_no": "0000894189-18-002306",
+   "class_id": "C000193344",
+   "filed_at": "2018-04-16T10:52:19-04:00",
+   "filer_cik": "897111",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000058957",
+   "ticker": "HRCCX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193344",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000058957",
+   "ticker": "HRCCX"
+  },
+  {
+   "accession_no": "0000894189-18-002306",
+   "class_id": "C000193345",
+   "filed_at": "2018-04-16T10:52:19-04:00",
+   "filer_cik": "897111",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000058957",
+   "ticker": "HRCIX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193345",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000058957",
+   "ticker": "HRCIX"
+  },
+  {
+   "accession_no": "0000894189-18-002306",
+   "class_id": "C000193350",
+   "filed_at": "2018-04-16T10:52:19-04:00",
+   "filer_cik": "897111",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000058958",
+   "ticker": "HIGJX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193350",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000058958",
+   "ticker": "HIGJX"
+  },
+  {
+   "accession_no": "0000894189-18-002306",
+   "class_id": "C000193353",
+   "filed_at": "2018-04-16T10:52:19-04:00",
+   "filer_cik": "897111",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000058958",
+   "ticker": "HIGUX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193353",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000058958",
+   "ticker": "HIGUX"
+  },
+  {
+   "accession_no": "0000894189-18-002306",
+   "class_id": "C000193356",
+   "filed_at": "2018-04-16T10:52:19-04:00",
+   "filer_cik": "897111",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000058958",
+   "ticker": "HIGCX"
+  },
+  {
+   "accession_no": "0001133228-26-012251",
+   "class_id": "C000193356",
+   "filed_at": "2026-09-04T09:15:26-04:00",
+   "filer_cik": "897111",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000058958",
+   "ticker": "HIGCX"
+  },
+  {
    "accession_no": "0000894189-18-002280",
    "class_id": "C000193403",
    "filed_at": "2018-04-13T10:59:02-04:00",
@@ -1441,6 +2791,96 @@
    "role": "last_with_ticker",
    "series_id": "S000060055",
    "ticker": "EASG"
+  },
+  {
+   "accession_no": "0001193125-18-261783",
+   "class_id": "C000204323",
+   "filed_at": "2018-08-29T14:09:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000062979",
+   "ticker": "FHJCX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000204323",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000062979",
+   "ticker": "FHJCX"
+  },
+  {
+   "accession_no": "0001193125-18-261783",
+   "class_id": "C000204338",
+   "filed_at": "2018-08-29T14:09:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000062981",
+   "ticker": "FHDCX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000204338",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000062981",
+   "ticker": "FHDCX"
+  },
+  {
+   "accession_no": "0001193125-18-261783",
+   "class_id": "C000204392",
+   "filed_at": "2018-08-29T14:09:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000062987",
+   "ticker": "FHRCX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000204392",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000062987",
+   "ticker": "FHRCX"
+  },
+  {
+   "accession_no": "0001410368-26-098742",
+   "class_id": "C000206040",
+   "filed_at": "2026-09-24T15:17:40-04:00",
+   "filer_cik": "809593",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000063601",
+   "ticker": "TIVFX"
+  },
+  {
+   "accession_no": "0001145549-19-038268",
+   "class_id": "C000207671",
+   "filed_at": "2019-10-10T15:58:47-04:00",
+   "filer_cik": "1645194",
+   "form_type": "N-CEN",
+   "role": "first_with_ticker",
+   "series_id": "S000064209",
+   "ticker": "WINC"
+  },
+  {
+   "accession_no": "0000940400-26-023423",
+   "class_id": "C000207671",
+   "filed_at": "2026-06-12T10:59:19-04:00",
+   "filer_cik": "1645194",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000064209",
+   "ticker": "WINC"
   },
   {
    "accession_no": "0001379491-19-003746",
@@ -1663,6 +3103,106 @@
    "ticker": "TANKX"
   },
   {
+   "accession_no": "0001133228-20-005694",
+   "class_id": "C000221062",
+   "filed_at": "2020-09-08T12:17:11-04:00",
+   "filer_cik": "810893",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000069193",
+   "ticker": "PEGBX"
+  },
+  {
+   "accession_no": "0001410368-26-090242",
+   "class_id": "C000221062",
+   "filed_at": "2026-08-31T09:25:29-04:00",
+   "filer_cik": "810893",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000069193",
+   "ticker": "PEGBX"
+  },
+  {
+   "accession_no": "0001623632-20-001799",
+   "class_id": "C000222772",
+   "filed_at": "2020-10-26T10:55:10-04:00",
+   "filer_cik": "789281",
+   "form_type": "497K",
+   "role": "first_with_ticker",
+   "series_id": "S000030463",
+   "ticker": "FFRFX"
+  },
+  {
+   "accession_no": "0001145549-24-070826",
+   "class_id": "C000222772",
+   "filed_at": "2024-11-21T10:44:42-05:00",
+   "filer_cik": "789281",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000030463",
+   "ticker": "FFRFX"
+  },
+  {
+   "accession_no": "0000894189-20-010006",
+   "class_id": "C000224018",
+   "filed_at": "2020-12-29T13:07:14-05:00",
+   "filer_cik": "1742912",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000070509",
+   "ticker": "SDFI"
+  },
+  {
+   "accession_no": "0001999371-26-021032",
+   "class_id": "C000224018",
+   "filed_at": "2026-09-22T13:18:25-04:00",
+   "filer_cik": "1742912",
+   "form_type": "485BPOS",
+   "role": "last_with_ticker",
+   "series_id": "S000070509",
+   "ticker": "SDFI"
+  },
+  {
+   "accession_no": "0001398344-21-006826",
+   "class_id": "C000225219",
+   "filed_at": "2021-03-19T16:00:27-04:00",
+   "filer_cik": "831114",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000070925",
+   "ticker": "STNC"
+  },
+  {
+   "accession_no": "0001193125-26-302746",
+   "class_id": "C000225219",
+   "filed_at": "2026-07-14T10:44:14-04:00",
+   "filer_cik": "831114",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000070925",
+   "ticker": "STNC"
+  },
+  {
+   "accession_no": "0001145549-21-029459",
+   "class_id": "C000225466",
+   "filed_at": "2021-05-25T13:40:20-04:00",
+   "filer_cik": "1395397",
+   "form_type": "NPORT-P",
+   "role": "first_with_ticker",
+   "series_id": "S000017840",
+   "ticker": "PLABX"
+  },
+  {
+   "accession_no": "0001580642-26-005691",
+   "class_id": "C000225466",
+   "filed_at": "2026-08-26T16:49:45-04:00",
+   "filer_cik": "1395397",
+   "form_type": "497",
+   "role": "last_with_ticker",
+   "series_id": "S000017840",
+   "ticker": "PLABX"
+  },
+  {
    "accession_no": "0001580642-21-001200",
    "class_id": "C000226138",
    "filed_at": "2021-03-12T16:28:23-05:00",
@@ -1743,6 +3283,26 @@
    "ticker": "MUSI"
   },
   {
+   "accession_no": "0001580642-21-002475",
+   "class_id": "C000229059",
+   "filed_at": "2021-05-24T16:59:36-04:00",
+   "filer_cik": "1843841",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000071589",
+   "ticker": "DGITX"
+  },
+  {
+   "accession_no": "0000910472-26-014421",
+   "class_id": "C000229059",
+   "filed_at": "2026-09-14T12:13:43-04:00",
+   "filer_cik": "1843841",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000071589",
+   "ticker": "DGITX"
+  },
+  {
    "accession_no": "0001398344-21-023973",
    "class_id": "C000232916",
    "filed_at": "2021-12-15T17:16:38-05:00",
@@ -1821,6 +3381,36 @@
    "role": "last_with_ticker",
    "series_id": "S000074754",
    "ticker": "RWLC"
+  },
+  {
+   "accession_no": "0001398344-21-024665",
+   "class_id": "C000233245",
+   "filed_at": "2021-12-29T17:09:42-05:00",
+   "filer_cik": "831114",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000074885",
+   "ticker": "OPTCX"
+  },
+  {
+   "accession_no": "0001193125-26-302746",
+   "class_id": "C000233245",
+   "filed_at": "2026-07-14T10:44:14-04:00",
+   "filer_cik": "831114",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000074885",
+   "ticker": "OPTCX"
+  },
+  {
+   "accession_no": "0001398344-26-010534",
+   "class_id": "C000234280",
+   "filed_at": "2026-06-08T14:30:04-04:00",
+   "filer_cik": "1587982",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000075333",
+   "ticker": "OIODX"
   },
   {
    "accession_no": "0000894189-26-022439",
@@ -1983,6 +3573,26 @@
    "ticker": "STXF"
   },
   {
+   "accession_no": "0000910472-26-000227",
+   "class_id": "C000237954",
+   "filed_at": "2026-01-14T10:28:18-05:00",
+   "filer_cik": "1545440",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000077489",
+   "ticker": "SBTCX"
+  },
+  {
+   "accession_no": "0001193125-26-404854",
+   "class_id": "C000239897",
+   "filed_at": "2026-09-28T12:42:05-04:00",
+   "filer_cik": "891944",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000079062",
+   "ticker": "STNC"
+  },
+  {
    "accession_no": "0001379491-22-003898",
    "class_id": "C000240061",
    "filed_at": "2022-12-12T11:52:39-05:00",
@@ -2001,6 +3611,146 @@
    "role": "last_with_ticker",
    "series_id": "S000079155",
    "ticker": "FMRWX"
+  },
+  {
+   "accession_no": "0001193125-23-139522",
+   "class_id": "C000242514",
+   "filed_at": "2023-05-09T17:09:51-04:00",
+   "filer_cik": "880195",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000080301",
+   "ticker": "FSZOX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000242514",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000080301",
+   "ticker": "FSZOX"
+  },
+  {
+   "accession_no": "0001193125-23-139522",
+   "class_id": "C000242538",
+   "filed_at": "2023-05-09T17:09:51-04:00",
+   "filer_cik": "880195",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000080304",
+   "ticker": "FSVJX"
+  },
+  {
+   "accession_no": "0001752724-25-134309",
+   "class_id": "C000242538",
+   "filed_at": "2025-06-12T10:49:22-04:00",
+   "filer_cik": "880195",
+   "form_type": "N-CEN",
+   "role": "last_with_ticker",
+   "series_id": "S000080304",
+   "ticker": "FSVJX"
+  },
+  {
+   "accession_no": "0001580642-23-005688",
+   "class_id": "C000242719",
+   "filed_at": "2023-10-25T09:36:26-04:00",
+   "filer_cik": "1965454",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000080366",
+   "ticker": "GPEOX"
+  },
+  {
+   "accession_no": "0000910472-26-015646",
+   "class_id": "C000242719",
+   "filed_at": "2026-09-29T15:51:49-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000080366",
+   "ticker": "GPEOX"
+  },
+  {
+   "accession_no": "0001580642-23-005688",
+   "class_id": "C000242724",
+   "filed_at": "2023-10-25T09:36:26-04:00",
+   "filer_cik": "1965454",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000080370",
+   "ticker": "GPMCX"
+  },
+  {
+   "accession_no": "0000910472-26-015645",
+   "class_id": "C000242724",
+   "filed_at": "2026-09-29T15:51:48-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000080370",
+   "ticker": "GPMCX"
+  },
+  {
+   "accession_no": "0001580642-23-005688",
+   "class_id": "C000242726",
+   "filed_at": "2023-10-25T09:36:26-04:00",
+   "filer_cik": "1965454",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000080371",
+   "ticker": "GPGOX"
+  },
+  {
+   "accession_no": "0000910472-26-015649",
+   "class_id": "C000242726",
+   "filed_at": "2026-09-29T15:51:51-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000080371",
+   "ticker": "GPGOX"
+  },
+  {
+   "accession_no": "0001580642-23-005688",
+   "class_id": "C000242728",
+   "filed_at": "2023-10-25T09:36:26-04:00",
+   "filer_cik": "1965454",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000080372",
+   "ticker": "GPROX"
+  },
+  {
+   "accession_no": "0000910472-26-015648",
+   "class_id": "C000242728",
+   "filed_at": "2026-09-29T15:51:50-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000080372",
+   "ticker": "GPROX"
+  },
+  {
+   "accession_no": "0001580642-23-005688",
+   "class_id": "C000242732",
+   "filed_at": "2023-10-25T09:36:26-04:00",
+   "filer_cik": "1965454",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000080374",
+   "ticker": "GPIOX"
+  },
+  {
+   "accession_no": "0000910472-26-015652",
+   "class_id": "C000242732",
+   "filed_at": "2026-09-29T16:38:20-04:00",
+   "filer_cik": "1965454",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000080374",
+   "ticker": "GPIOX"
   },
   {
    "accession_no": "0001193125-26-245632",
@@ -2163,6 +3913,66 @@
    "ticker": "ZHOG"
   },
   {
+   "accession_no": "0001133228-26-012376",
+   "class_id": "C000246443",
+   "filed_at": "2026-09-08T15:52:32-04:00",
+   "filer_cik": "1970751",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000082984",
+   "ticker": "SFSLX"
+  },
+  {
+   "accession_no": "0001133228-26-012376",
+   "class_id": "C000246446",
+   "filed_at": "2026-09-08T15:52:32-04:00",
+   "filer_cik": "1970751",
+   "form_type": "N-CSRS",
+   "role": "last_with_ticker",
+   "series_id": "S000082984",
+   "ticker": "SBFAX"
+  },
+  {
+   "accession_no": "0001213900-25-015738",
+   "class_id": "C000248741",
+   "filed_at": "2025-02-20T17:20:29-05:00",
+   "filer_cik": "1873280",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000084370",
+   "ticker": "QDWN"
+  },
+  {
+   "accession_no": "0000910472-26-000403",
+   "class_id": "C000248741",
+   "filed_at": "2026-01-26T12:30:24-05:00",
+   "filer_cik": "1873280",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000084370",
+   "ticker": "QDWN"
+  },
+  {
+   "accession_no": "0001213900-25-015738",
+   "class_id": "C000248742",
+   "filed_at": "2025-02-20T17:20:29-05:00",
+   "filer_cik": "1873280",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000084371",
+   "ticker": "QUP"
+  },
+  {
+   "accession_no": "0000910472-26-000404",
+   "class_id": "C000248742",
+   "filed_at": "2026-01-26T12:30:25-05:00",
+   "filer_cik": "1873280",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000084371",
+   "ticker": "QUP"
+  },
+  {
    "accession_no": "0001193125-26-377103",
    "class_id": "C000252172",
    "filed_at": "2026-08-31T17:28:07-04:00",
@@ -2241,6 +4051,136 @@
    "role": "last_with_ticker",
    "series_id": "S000091539",
    "ticker": "RTHY"
+  },
+  {
+   "accession_no": "0001936157-26-000484",
+   "class_id": "C000259241",
+   "filed_at": "2026-09-28T10:29:34-04:00",
+   "filer_cik": "1936157",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000091565",
+   "ticker": "VVPLX"
+  },
+  {
+   "accession_no": "0001936157-26-000481",
+   "class_id": "C000259244",
+   "filed_at": "2026-09-28T10:29:32-04:00",
+   "filer_cik": "1936157",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000091566",
+   "ticker": "VVPSX"
+  },
+  {
+   "accession_no": "0001213900-26-020274",
+   "class_id": "C000264918",
+   "filed_at": "2026-02-25T13:01:19-05:00",
+   "filer_cik": "1587982",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000096131",
+   "ticker": "DASX"
+  },
+  {
+   "accession_no": "0001193125-26-074365",
+   "class_id": "C000264918",
+   "filed_at": "2026-02-26T10:43:14-05:00",
+   "filer_cik": "1587982",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000096131",
+   "ticker": "DASX"
+  },
+  {
+   "accession_no": "0001999371-26-018549",
+   "class_id": "C000265118",
+   "filed_at": "2026-08-24T14:58:44-04:00",
+   "filer_cik": "1924868",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000096290",
+   "ticker": "DASX"
+  },
+  {
+   "accession_no": "0001999371-26-019251",
+   "class_id": "C000265118",
+   "filed_at": "2026-08-31T07:27:36-04:00",
+   "filer_cik": "1924868",
+   "form_type": "497J",
+   "role": "last_with_ticker",
+   "series_id": "S000096290",
+   "ticker": "DASX"
+  },
+  {
+   "accession_no": "0001193125-26-322589",
+   "class_id": "C000266745",
+   "filed_at": "2026-07-29T11:19:39-04:00",
+   "filer_cik": "1587982",
+   "form_type": "NPORT-P",
+   "role": "last_with_ticker",
+   "series_id": "S000097552",
+   "ticker": "OPTCX"
+  },
+  {
+   "accession_no": "0001193125-26-407189",
+   "class_id": "C000278949",
+   "filed_at": "2026-09-29T15:48:25-04:00",
+   "filer_cik": "2137497",
+   "form_type": "497",
+   "role": "first_with_ticker",
+   "series_id": "S000107974",
+   "ticker": "WINC"
+  },
+  {
+   "accession_no": "0001193125-26-407227",
+   "class_id": "C000278949",
+   "filed_at": "2026-09-29T15:52:51-04:00",
+   "filer_cik": "2137497",
+   "form_type": "497K",
+   "role": "last_with_ticker",
+   "series_id": "S000107974",
+   "ticker": "WINC"
+  },
+  {
+   "accession_no": "0001999371-26-021211",
+   "class_id": "C000279328",
+   "filed_at": "2026-09-24T11:02:22-04:00",
+   "filer_cik": "2043390",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000108348",
+   "ticker": "QUP"
+  },
+  {
+   "accession_no": "0001999371-26-021384",
+   "class_id": "C000279328",
+   "filed_at": "2026-09-28T07:48:37-04:00",
+   "filer_cik": "2043390",
+   "form_type": "497J",
+   "role": "last_with_ticker",
+   "series_id": "S000108348",
+   "ticker": "QUP"
+  },
+  {
+   "accession_no": "0001999371-26-021211",
+   "class_id": "C000279329",
+   "filed_at": "2026-09-24T11:02:22-04:00",
+   "filer_cik": "2043390",
+   "form_type": "485BPOS",
+   "role": "first_with_ticker",
+   "series_id": "S000108349",
+   "ticker": "QDWN"
+  },
+  {
+   "accession_no": "0001999371-26-021384",
+   "class_id": "C000279329",
+   "filed_at": "2026-09-28T07:48:37-04:00",
+   "filer_cik": "2043390",
+   "form_type": "497J",
+   "role": "last_with_ticker",
+   "series_id": "S000108349",
+   "ticker": "QDWN"
   }
  ],
  "collected_on": "2026-10-06",
@@ -4678,6 +6618,20 @@
    "startDate": "2020-10-23",
    "status": 200
   },
+  "FFRSX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:27+00:00",
+   "startDate": "2010-12-06",
+   "status": 200
+  },
+  "FHCDX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:30+00:00",
+   "startDate": "2018-08-31",
+   "status": 200
+  },
   "FHDCX": {
    "endDate": "2024-12-18",
    "exchangeCode": "NMFQS",
@@ -4696,6 +6650,20 @@
    "endDate": "2024-12-18",
    "exchangeCode": "NMFQS",
    "observed_at": "2026-10-06T06:38:37+00:00",
+   "startDate": "2018-08-31",
+   "status": 200
+  },
+  "FHJKX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:32+00:00",
+   "startDate": "2018-08-31",
+   "status": 200
+  },
+  "FHKDX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:35+00:00",
    "startDate": "2018-08-31",
    "status": 200
   },
@@ -4876,6 +6844,20 @@
    "exchangeCode": "NMFQS",
    "observed_at": "2026-10-06T06:39:39+00:00",
    "startDate": "2023-05-16",
+   "status": 200
+  },
+  "FSVMX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:37+00:00",
+   "startDate": "2023-05-16",
+   "status": 200
+  },
+  "FSZJX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:39+00:00",
+   "startDate": "2023-05-25",
    "status": 200
   },
   "FSZOX": {
@@ -5817,6 +7799,13 @@
    "observed_at": "2026-10-06T06:45:18+00:00",
    "status": 200
   },
+  "PIIOX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:42+00:00",
+   "startDate": "2010-01-04",
+   "status": 200
+  },
   "PILIX": {
    "endDate": "2024-12-27",
    "exchangeCode": "NMFQS",
@@ -5925,6 +7914,27 @@
    "observed_at": "2026-10-06T06:45:56+00:00",
    "status": 200
   },
+  "PNARX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:44+00:00",
+   "startDate": "2004-06-01",
+   "status": 200
+  },
+  "PNGAX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:47+00:00",
+   "startDate": "1996-07-31",
+   "status": 200
+  },
+  "PNSAX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:49+00:00",
+   "startDate": "1998-01-02",
+   "status": 200
+  },
   "PNSBX": {
    "endDate": "2025-04-30",
    "exchangeCode": "NMFQS",
@@ -6014,6 +8024,13 @@
    "exchangeCode": "NMFQS",
    "observed_at": "2026-10-06T06:46:28+00:00",
    "startDate": "2008-01-02",
+   "status": 200
+  },
+  "PSLAX": {
+   "endDate": "2026-10-05",
+   "exchangeCode": "NMFQS",
+   "observed_at": "2026-10-06T07:30:51+00:00",
+   "startDate": "2000-01-03",
    "status": 200
   },
   "PSLBX": {

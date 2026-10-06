@@ -390,3 +390,100 @@ def test_committed_evidence_bundle_matches_its_pin():
     evidence = repair.load_evidence()
     assert evidence.sha256 == repair.EVIDENCE_SHA256
     assert evidence.tiingo and evidence.class_ticker_filings and evidence.series_last_filings
+
+
+# R8 / R9 --------------------------------------------------------------------
+OLDER = NOW - dt.timedelta(days=5)  # still inside the 7-day window, not the newest batch
+
+
+def _filing(cls, ticker, form, filed, role="last_with_ticker"):
+    return {"class_id": cls, "ticker": ticker, "series_id": None, "role": role,
+            "accession_no": f"0000000000-26-{filed.replace('-', '')[2:]}",
+            "form_type": form, "filed_at": filed}
+
+
+def _moved(active=True, funds=None):
+    return snapshot([iu("a", "VVPLX", active=active)],
+                    [reg("a", "VVPLX", "S000027283", "C000082313", cik="0000915802")],
+                    [sec("C000082313", "S000027283", "VVPLX", synced=OLDER, cik="915802"),
+                     sec("C000259241", "S000091565", "VVPLX", cik="1936157")], funds=funds)
+
+
+def test_r8_moves_the_registry_to_secs_newest_series_with_a_newer_filing():
+    ev = evidence(CURRENT, filings=[_filing("C000259241", "VVPLX", "NPORT-P", "2026-09-28"),
+                                    _filing("C000082313", "VVPLX", "N-CEN", "2026-07-13")])
+    _plan, out = run(_moved(), ev=ev)
+    after = out[("instrument_identity", "a")]["after"]
+    assert (after["sec_series_id"], after["sec_class_id"], after["cik_padded"]) == (
+        "S000091565", "C000259241", "0001936157")
+    assert out[("instrument_identity", "a")]["rules"] == [repair.RULES[7]]
+
+
+@pytest.mark.parametrize("filings", [
+    [],  # no filing at all
+    [_filing("C000259241", "VVPLX", "N-CEN", "2026-09-28")],  # census only
+    [_filing("C000259241", "VVPLX", "NPORT-P", "2026-07-01"),
+     _filing("C000082313", "VVPLX", "NPORT-P", "2026-09-28")],  # the fund still files under the old series
+])
+def test_r8_never_moves_when_the_funds_own_filings_disagree(filings):
+    plan, out = run(_moved(), ev=evidence(CURRENT, filings=filings))
+    assert out == {} and plan.review["series_moved_unproven"]
+
+
+def test_r9_quarantines_the_contradiction_once_and_only_when_asked():
+    filings = [_filing("C000259241", "VVPLX", "N-CEN", "2026-07-14"),
+               _filing("C000082313", "VVPLX", "NPORT-P", "2026-09-28")]
+    snap = _moved()
+    plan, out = run(snap, ev=evidence(CURRENT, filings=filings), quarantine_sec_contradictions=True)
+    change = out[("instrument_identity", "a")]
+    entry = change["after"]["conflict_state"]["sec_series_id"]
+    assert change["rules"] == [repair.RULES[8]] and entry["resolved"] is False
+    assert [v["value"] for v in entry["values"]] == ["S000027283", "S000091565"]
+    _apply(snap, plan)
+    again = repair.plan_repairs(snap, history([]), evidence(CURRENT, filings=filings),
+                                quarantine_sec_contradictions=True)
+    assert again.changes(snap) == []  # R4 keeps the key, R9 does not repeat
+
+
+def test_r8_reports_inactive_non_members_and_two_live_series():
+    ev = evidence(CURRENT, filings=[_filing("C000259241", "VVPLX", "NPORT-P", "2026-09-28")])
+    plan, out = run(_moved(active=False, funds=set()), ev=ev)
+    assert out == {} and plan.review["series_moved_inactive_instrument"]
+    both = snapshot([iu("a", "VVPLX")], [reg("a", "VVPLX", "S000027283", "C000082313")],
+                    [sec("C000082313", "S000099999", "VVPLX"), sec("C000259241", "S000091565", "VVPLX")])
+    plan, out = run(both, ev=ev)
+    assert out == {} and plan.review["series_moved_ambiguous"]
+
+
+def test_preview_rekeys_funds_v_only_through_the_eligibility_gate():
+    ev = evidence(CURRENT, filings=[_filing("C000259241", "VVPLX", "NPORT-P", "2026-09-28")])
+    snap = _moved()
+    plan = repair.plan_repairs(snap, history([]), ev)
+    funds = [{"instrument_id": "a", "series_id": "S000027283", "ticker": "VVPLX", "isin": None,
+              "cusip": None, "currency": "USD", "fund_type": "mutual_fund"}]
+    identity = [{"instrument_id": "a", "sec_series_id": "S000027283", "sec_class_id": "C000082313",
+                 "ticker": "VVPLX", "isin": None, "cusip_9": None, "figi": None,
+                 "resolution_status": "canonical", "conflict_state": {}}]
+    _i, kept, _r = repair.apply_plan_to_generator_rows(plan, snap, [], funds, identity,
+                                                      eligible_series={"S000091565"})
+    assert kept[0]["series_id"] == "S000091565"
+    _i, dropped, _r = repair.apply_plan_to_generator_rows(plan, snap, [], funds, identity,
+                                                         eligible_series=set())
+    assert dropped == []
+
+
+def test_r4_settles_a_conflict_left_on_a_terminated_class():
+    conflict = {
+        "ticker": {"values": [{"value": "VMCAX"}, {"value": "VTCLX"}], "resolved": False},
+        "sec_class_id": {"values": [{"value": "C000012134"}, {"value": "C000012135"}], "resolved": False},
+    }
+    snap = snapshot([iu("a", "VTCLX")],
+                    [reg("a", "VMCAX", "S000004384", "C000012134", cik="0000923202", conflict=conflict)],
+                    [sec("C000012135", "S000004384", "VTCLX", cik="923202")])
+    hist = history([(2024, "C000012134", "S000004384", "VMCAX"), (2026, "C000012135", "S000004384", "VTCLX")])
+    _plan, out = run(snap, hist)
+    after = out[("instrument_identity", "a")]["after"]
+    assert (after["ticker"], after["sec_class_id"], after["conflict_state"]) == ("VTCLX", "C000012135", {})
+    # the old class still current in SEC: not proven dead, nothing moves
+    live = history([(2026, "C000012134", "S000004384", "VMCAX"), (2026, "C000012135", "S000004384", "VTCLX")])
+    assert run(snap, live)[1] == {}

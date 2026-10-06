@@ -1,4 +1,4 @@
-"""Governed, SEC-proven repair of the fund catalog identity (rules R1-R7).
+"""Governed, SEC-proven repair of the fund catalog identity (rules R1-R9).
 
 Companion of ``repair_fund_catalog_identity_v1`` (rules A/B: series id stored
 as ISIN, registry share class aligned to the IU ticker). This repair runs AFTER
@@ -20,7 +20,12 @@ A/B and corrects only what current SEC data proves unambiguously:
   belongs to another class, so a governed NAV rebase must follow.
 * ``R4 conflict_resolved_by_sec`` - drop registry ``conflict_state`` keys of
   SEC identity fields (ticker/class/series/CIK) whose registry value now equals
-  the single current SEC row of the instrument's ticker.
+  the single current SEC row of the instrument's ticker. When the conflict is
+  only about ticker/class, the registry still holds a class SEC terminated
+  (absent from current SEC data and the current-year dataset) and the IU
+  ticker's single current SEC row in the registry series is one of the
+  observed values, the registry takes that row's ticker/class first (the
+  rule-B alignment, which B itself skips on conflicted rows).
 * ``R5 activate_live_orphan`` - ``is_active=false`` fund in ``funds_v`` whose
   series has no active instrument, that is not a phase-B historical sibling,
   that carries no product exclusion
@@ -35,6 +40,25 @@ A/B and corrects only what current SEC data proves unambiguously:
   class whose ticker (equal to the IU ticker) maps to exactly one current SEC
   class: fill series, class and CIK from that row. Whether the fund then enters
   ``funds_v`` stays the decision of the existing N-PORT eligibility gate.
+* ``R8 registry_series_moved_per_sec`` - the registry ticker equals the IU
+  ticker, and SEC's latest sync lists that ticker exactly once, under another
+  series (a fund reorganized into a new series/trust) while the registry's
+  old class/series no longer carries it, and a pinned prospectus/N-PORT
+  filing (not an N-CEN) shows the ticker under the new class AFTER the last
+  pinned filing showing it under the old class: move registry series, class
+  and CIK to SEC's current mapping (the owner chose alignment over a
+  ``conflict_state`` exclusion). Instruments that are neither active nor in
+  ``funds_v`` are only reported.
+* ``R9 quarantine_sec_self_contradiction`` (opt-in, ``--quarantine-sec-
+  contradictions``) - a ``funds_v`` fund that R8 refused because SEC's ticker
+  file maps its ticker to another series while the fund's own newer filings
+  keep it in the registry series (SEC contradicts itself) gets a
+  ``conflict_state.sec_series_id`` entry recording both values and the
+  filings. The fund then stops at ``registry.conflict_state_not_empty``
+  instead of being an SEC integrity failure; R4 never clears that key while
+  SEC still disagrees, and a rollback restores the row. ``funds_v`` re-keys to the new series, whose
+  membership is again the eligibility gate's decision. Until the withdrawn
+  row ages past the 7-day window the generator still sees both rows.
 
 Everything else SEC cannot settle (series reorganizations, SEC source gaps,
 classes chosen among phase-B siblings, non-SEC conflicts...) is reported in the
@@ -93,7 +117,7 @@ REPAIR_VERSION = "repair-fund-identity-sec-v1"
 CONFIRM_TOKEN = "repair_fund_identity_sec_v1"
 LEDGER_DDL = ROOT / "schemas" / "fund_identity_sec_repair_v1.sql"
 EVIDENCE_PATH = ROOT / "contracts" / "fund-identity-sec" / "evidence_v1.json"
-EVIDENCE_SHA256 = "e11194c04edd83826f5b7909d95d774b41fe127f79ec0f4af52211a1b1fd2b84"
+EVIDENCE_SHA256 = "babbcaafef1d2e1b2352716901346df09fad4eeb144b03438625c04bbfb1f10b"
 EVIDENCE_KIND = "fund-identity-sec-evidence-v1"
 # Instrument ingestion holds this session lock for a whole NAV run; tickers are
 # never renamed under a running sweep.
@@ -140,7 +164,13 @@ RULES = (
     "R5_activate_live_orphan",
     "R6_deactivate_terminated",
     "R7_registry_series_from_sec",
+    "R8_registry_series_moved_per_sec",
+    "R9_quarantine_sec_self_contradiction",
 )
+# The SEC sync writes one batch per day with a single updated_at; a row missing
+# from the newest batch was withdrawn from company_tickers_mf.json. Rows within
+# this distance of the newest instant belong to the newest batch.
+LATEST_BATCH_WINDOW = dt.timedelta(hours=12)
 _EDGAR_ID = re.compile(r"(?:S[0-9]{9}|C[0-9]{9}|[0-9]{1,10})\Z")
 _SEC_CLASS = re.compile(r"C[0-9]{9}\Z")
 _SEC_SERIES = re.compile(r"S[0-9]{9}\Z")
@@ -328,12 +358,19 @@ class SecRow:
 
 
 class CurrentSec:
-    """Rows of ``sec_company_tickers_mf`` fresh at the decision instant."""
+    """Rows of ``sec_company_tickers_mf`` fresh at the decision instant.
+
+    ``latest_by_ticker`` keeps only the newest sync batch: what SEC's ticker
+    file lists today, without the withdrawn rows the upsert-only sync leaves
+    behind for up to 7 days.
+    """
 
     def __init__(self, rows: list[dict], decision_at: dt.datetime):
         self.by_ticker: dict[str, list[SecRow]] = defaultdict(list)
         self.by_class: dict[str, list[SecRow]] = defaultdict(list)
+        self.latest_by_ticker: dict[str, list[SecRow]] = defaultdict(list)
         self.series: set[str] = set()
+        newest = max((r["synced_at"] for r in rows if r["synced_at"] <= decision_at), default=None)
         for row in rows:
             synced = row["synced_at"]
             if synced > decision_at or decision_at - synced > SEC_MAX_SYNCED_AGE:
@@ -345,6 +382,8 @@ class CurrentSec:
             self.by_ticker[ticker].append(sec_row)
             self.by_class[class_id].append(sec_row)
             self.series.add(series_id)
+            if newest is not None and newest - synced <= LATEST_BATCH_WINDOW:
+                self.latest_by_ticker[ticker].append(sec_row)
 
     def unique_ticker(self, ticker: str | None) -> SecRow | None:
         rows = self.by_ticker.get(ticker or "", [])
@@ -610,13 +649,144 @@ def rule_r7_registry_series(state: _State, sec: CurrentSec) -> None:
                 state.set_reg(iid, column, value, RULES[6], facts, current)
 
 
-def rule_r4_conflicts(state: _State, sec: CurrentSec) -> None:
+def _owned_by_other(state: _State, iid: str, column: str, value: str) -> bool:
+    return any(
+        other != iid and ident(row.get(column)) == value for other, row in state.reg.items()
+    )
+
+
+def _newest(filings: list[dict], *, skip_ncen: bool) -> str | None:
+    dates = [
+        str(f.get("filed_at"))[:10] for f in filings
+        if f.get("filed_at") and not (skip_ncen and str(f.get("form_type", "")).startswith("N-CEN"))
+    ]
+    return max(dates) if dates else None
+
+
+def _quarantine(state: _State, iid: str, reg: dict, series: str, new: SecRow,
+                filings: list[dict], old_filings: list[dict]) -> None:
+    conflict = reg.get("conflict_state")
+    conflict = dict(conflict) if isinstance(conflict, dict) else {}
+    if "sec_series_id" in conflict:
+        return  # already recorded: a re-run is a no-op
+    conflict["sec_series_id"] = {
+        "values": [
+            {"value": series, "source": "fund_filings", "filings": old_filings},
+            {"value": new.series_id, "source": "sec_company_tickers_mf",
+             "observed_at": new.synced_at.isoformat(), "filings": filings},
+        ],
+        "resolved": False,
+        "recorded_by": REPAIR_VERSION,
+    }
+    state.set_reg(iid, "conflict_state", conflict, RULES[8], {
+        "ticker": ident(reg.get("ticker")), "registry_series": series,
+        "sec_ticker_file_series": new.series_id, "fund_filings": old_filings,
+        "sec_ticker_file_filings": filings,
+    })
+
+
+def rule_r8_series_moved(state: _State, sec: CurrentSec, history: SecHistory,
+                         evidence: Evidence, *, quarantine: bool = False) -> None:
+    for iid in state.fund_ids():
+        reg = state.reg.get(iid)
+        ticker = ident(state.iu[iid].get("ticker"))
+        if reg is None or ticker is None or ticker != ident(reg.get("ticker")):
+            continue
+        series, class_id = ident(reg.get("sec_series_id")), ident(reg.get("sec_class_id"))
+        if series is None:
+            continue  # R7's domain
+        latest = sec.latest_by_ticker.get(ticker, [])
+        if not latest or any(row.series_id == series for row in latest):
+            continue
+        if len(latest) != 1:
+            state.review("series_moved_ambiguous", iid, ticker=ticker, registry_series=series,
+                         sec_series=sorted({r.series_id for r in latest}))
+            continue
+        (new,) = latest
+        if state.iu[iid].get("is_active") is not True and iid not in state.snapshot.funds:
+            state.review("series_moved_inactive_instrument", iid, ticker=ticker,
+                         registry_series=series, sec_series=new.series_id)
+            continue
+        years = sorted({
+            year for year, cls, ser in history.tickers.get(ticker, ())
+            if cls == new.class_id and ser == new.series_id
+        })
+        filings = _filings(evidence, new.class_id, ticker)
+        old_filings = _filings(evidence, class_id, ticker) if class_id else []
+        new_date = _newest(filings, skip_ncen=True)
+        old_date = _newest(old_filings, skip_ncen=False)
+        if new_date is None or (old_date is not None and new_date <= old_date):
+            # SEC's ticker file and the fund's own filings disagree about the
+            # live series: a choice for the owner, never a guess.
+            state.review("series_moved_unproven", iid, ticker=ticker, registry_series=series,
+                         sec_series=new.series_id, newest_new_filing=new_date,
+                         newest_old_filing=old_date)
+            if quarantine and iid in state.snapshot.funds:
+                _quarantine(state, iid, reg, series, new, filings, old_filings)
+            continue
+        if _owned_by_other(state, iid, "sec_class_id", new.class_id):
+            state.review("series_moved_class_taken", iid, ticker=ticker, sec_class=new.class_id)
+            continue
+        facts = {
+            "ticker": ticker, "old_series_id": series, "old_class_id": class_id,
+            "old_cik": cik10(reg.get("cik_padded")), "series_id": new.series_id,
+            "class_id": new.class_id, "cik": new.cik,
+            "sec_synced_at": new.synced_at.isoformat(),
+            "dataset_years_new_mapping": years, "filings": filings,
+            "old_class_filings": old_filings,
+            "funds_v_rekeyed_to_new_series": True,
+        }
+        values = {
+            "sec_series_id": new.series_id,
+            "sec_class_id": new.class_id,
+            "cik_padded": new.cik,
+            "cik_unpadded": str(int(new.cik)) if new.cik else None,
+        }
+        for column, value in values.items():
+            if value is not None and ident(reg.get(column)) != value:
+                state.set_reg(iid, column, value, RULES[7], facts, new)
+
+
+def _observed(conflict: dict, key: str) -> set:
+    entry = conflict.get(key)
+    if not isinstance(entry, dict):
+        return set()
+    return {ident(v.get("value")) for v in entry.get("values", []) if isinstance(v, dict)}
+
+
+def _settle_dead_class(state: _State, sec: CurrentSec, history: SecHistory, iid: str,
+                       reg: dict, conflict: dict, ticker: str | None) -> None:
+    """Align a conflicted registry row still on a terminated class (see R4)."""
+    current = sec.unique_ticker(ticker)
+    old_class = ident(reg.get("sec_class_id"))
+    if (
+        ticker is None or current is None or ticker == ident(reg.get("ticker"))
+        or not set(conflict) <= {"ticker", "sec_class_id"}
+        or current.series_id != ident(reg.get("sec_series_id"))
+        or old_class is None or sec.by_class.get(old_class)
+        or old_class in history.current_classes
+        or ticker not in _observed(conflict, "ticker")
+        or ("sec_class_id" in conflict and current.class_id not in _observed(conflict, "sec_class_id"))
+        or not _ticker_free(state, iid, ticker)
+        or _owned_by_other(state, iid, "sec_class_id", current.class_id)
+    ):
+        return
+    facts = {"ticker": ticker, "class_id": current.class_id, "terminated_class_id": old_class,
+             "observed": {k: sorted(v for v in _observed(conflict, k) if v) for k in conflict},
+             "sec_synced_at": current.synced_at.isoformat()}
+    state.set_reg(iid, "ticker", ticker, RULES[3], facts, current)
+    state.set_reg(iid, "sec_class_id", current.class_id, RULES[3], facts, current)
+
+
+def rule_r4_conflicts(state: _State, sec: CurrentSec, history: SecHistory | None = None) -> None:
     for iid in sorted(state.reg):
         reg = state.reg[iid]
         conflict = reg.get("conflict_state")
         if not isinstance(conflict, dict) or not conflict or iid not in state.iu:
             continue
         ticker = ident(state.iu[iid].get("ticker"))
+        if history is not None:
+            _settle_dead_class(state, sec, history, iid, reg, conflict, ticker)
         current = sec.unique_ticker(ticker)
         if ticker is None or ticker != ident(reg.get("ticker")) or current is None:
             continue
@@ -766,6 +936,10 @@ def review_catalog(state: _State, sec: CurrentSec, history: SecHistory) -> None:
             state.review("no_ticker", iid, series_id=series)
             continue
         rows = sec.by_ticker.get(ticker, [])
+        if ("instrument_identity", iid) in state.plan.rules and RULES[7] in state.plan.rules[
+            ("instrument_identity", iid)
+        ]:
+            continue
         if rows and series and all(r.series_id != series for r in rows):
             state.review("series_reorganized", iid, ticker=ticker, registry_series=series,
                          sec_series=sorted({r.series_id for r in rows}),
@@ -775,15 +949,20 @@ def review_catalog(state: _State, sec: CurrentSec, history: SecHistory) -> None:
 
 
 def plan_repairs(snapshot: Snapshot, history: SecHistory, evidence: Evidence,
-                 *, include_class_repoint: bool = False) -> Plan:
-    plan = Plan(options={"include_class_repoint": bool(include_class_repoint)})
+                 *, include_class_repoint: bool = False,
+                 quarantine_sec_contradictions: bool = False) -> Plan:
+    plan = Plan(options={
+        "include_class_repoint": bool(include_class_repoint),
+        "quarantine_sec_contradictions": bool(quarantine_sec_contradictions),
+    })
     state = _State(snapshot, plan)
     sec = CurrentSec(snapshot.sec, snapshot.decision_at)
     rule_r1_isin(state)
     rule_r2_renamed(state, sec, history, evidence)
     rule_r3_repoint(state, sec, history, evidence, enabled=include_class_repoint)
     rule_r7_registry_series(state, sec)
-    rule_r4_conflicts(state, sec)
+    rule_r8_series_moved(state, sec, history, evidence, quarantine=quarantine_sec_contradictions)
+    rule_r4_conflicts(state, sec, history)
     rule_r5_activate(state, sec, evidence)
     rule_r6_deactivate(state, sec, history, evidence)
     review_catalog(state, sec, history)
@@ -813,8 +992,16 @@ def summarize(plan: Plan, snapshot: Snapshot) -> dict:
 # Generator classification (in memory, no writes)
 # ---------------------------------------------------------------------------
 def apply_plan_to_generator_rows(plan: Plan, snapshot: Snapshot, instruments: list[dict],
-                                 funds: list[dict], identity: list[dict]) -> tuple[list, list, list]:
-    """The four generator sources as they would read after the plan."""
+                                 funds: list[dict], identity: list[dict], *,
+                                 eligible_series: set[str] | None = None) -> tuple[list, list, list]:
+    """The four generator sources as they would read after the plan.
+
+    ``funds_v`` is a view over the registry gated by N-PORT eligibility. When
+    ``eligible_series`` (series the gate admits) is given, a registry row whose
+    series the plan sets or moves enters/keeps its ``funds_v`` row only if the
+    new series is eligible; without it, ``funds_v`` membership is left as read
+    (series moves keep their row, re-keyed).
+    """
     iu_new, reg_new = plan.iu_after, plan.registry_after
     out_iu = []
     for row in instruments:
@@ -831,14 +1018,34 @@ def apply_plan_to_generator_rows(plan: Plan, snapshot: Snapshot, instruments: li
             row.update({k: new.get(k) for k in ("ticker", "sec_series_id", "sec_class_id", "conflict_state")})
         out_reg.append(row)
     out_funds = []
+    present = set()
     for row in funds:
         row = dict(row)
-        new = reg_new.get(str(row["instrument_id"]))
+        owner = str(row["instrument_id"])
+        present.add(owner)
+        new = reg_new.get(owner)
         if new is not None:
-            # funds_v projects NULLIF(btrim(registry.ticker), '').
+            # funds_v projects NULLIF(btrim(registry.ticker), '') and the registry series.
             ticker = new.get("ticker")
             row["ticker"] = ticker.strip() or None if isinstance(ticker, str) else ticker
+            series = ident(new.get("sec_series_id"))
+            if series != ident(row.get("series_id")):
+                if eligible_series is not None and series not in eligible_series:
+                    continue  # the gate would drop the re-keyed fund
+                row["series_id"] = series
         out_funds.append(row)
+    if eligible_series is not None:
+        by_id = {str(r["instrument_id"]): r for r in out_reg}
+        for owner, new in sorted(reg_new.items()):
+            series = ident(new.get("sec_series_id"))
+            if owner in present or series is None or series not in eligible_series:
+                continue
+            reg_row = by_id[owner]
+            out_funds.append({
+                "instrument_id": reg_row["instrument_id"], "series_id": series,
+                "ticker": ident(new.get("ticker")), "isin": reg_row.get("isin"),
+                "cusip": reg_row.get("cusip_9"), "currency": "USD", "fund_type": "etf",
+            })
     return out_iu, out_funds, out_reg
 
 
@@ -1000,7 +1207,8 @@ def _lock(cursor) -> None:
 
 
 def run_plan(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
-             include_class_repoint: bool) -> tuple[Plan, Snapshot, dict]:
+             include_class_repoint: bool,
+             quarantine_sec_contradictions: bool = False) -> tuple[Plan, Snapshot, dict]:
     import psycopg
     from psycopg.rows import dict_row
 
@@ -1013,7 +1221,8 @@ def run_plan(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
                 snapshot, generator_rows = read_snapshot(cursor, history)
             finally:
                 cursor.execute("ROLLBACK")
-    plan = plan_repairs(snapshot, history, evidence, include_class_repoint=include_class_repoint)
+    plan = plan_repairs(snapshot, history, evidence, include_class_repoint=include_class_repoint,
+                        quarantine_sec_contradictions=quarantine_sec_contradictions)
     instruments, funds_rows, identity_rows, sec_gen = generator_rows
     report = summarize(plan, snapshot)
     report["plan_sha256"] = plan_digest(plan, snapshot, pins)
@@ -1026,7 +1235,8 @@ def run_plan(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
 
 
 def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
-              include_class_repoint: bool, expect_sha256: str) -> dict:
+              include_class_repoint: bool, expect_sha256: str,
+              quarantine_sec_contradictions: bool = False) -> dict:
     import psycopg
     from psycopg.rows import dict_row
 
@@ -1038,7 +1248,8 @@ def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
                 cursor.execute(LEDGER_DDL.read_text(encoding="utf-8"))
                 snapshot, _rows = read_snapshot(cursor, history)
                 plan = plan_repairs(snapshot, history, evidence,
-                                    include_class_repoint=include_class_repoint)
+                                    include_class_repoint=include_class_repoint,
+                                    quarantine_sec_contradictions=quarantine_sec_contradictions)
                 digest = plan_digest(plan, snapshot, pins)
                 if digest != expect_sha256:
                     raise RepairError("plan_sha256_mismatch")
@@ -1071,8 +1282,10 @@ def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
                          canonical(change["evidence"]).decode()),
                     )
                 replay, _rows = read_snapshot(cursor, history)
-                residual = plan_repairs(replay, history, evidence,
-                                        include_class_repoint=include_class_repoint).changes(replay)
+                residual = plan_repairs(
+                    replay, history, evidence, include_class_repoint=include_class_repoint,
+                    quarantine_sec_contradictions=quarantine_sec_contradictions,
+                ).changes(replay)
                 if residual:
                     raise RepairError("apply_not_idempotent")
                 cursor.execute("COMMIT")
@@ -1179,6 +1392,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sec-cache-dir", type=Path, help="directory with the pinned SEC series/class CSVs")
     parser.add_argument("--include-class-repoint", action="store_true",
                         help="apply R3 (terminated IU class -> registry live class; needs NAV rebase)")
+    parser.add_argument("--quarantine-sec-contradictions", action="store_true",
+                        help="apply R9 (record conflict_state where SEC's ticker file contradicts the fund's filings)")
     parser.add_argument("--plan-file", type=Path, help="write the full plan JSON (outside any git checkout)")
     parser.add_argument("--confirm", default=None)
     parser.add_argument("--expect-plan-sha256", default=None)
@@ -1207,10 +1422,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise RepairError("apply_requires_confirm_and_plan_sha256")
             _emit(run_apply(dsn, history, evidence, pins,
                             include_class_repoint=args.include_class_repoint,
-                            expect_sha256=args.expect_plan_sha256))
+                            expect_sha256=args.expect_plan_sha256,
+                            quarantine_sec_contradictions=args.quarantine_sec_contradictions))
             return 0
         plan, snapshot, report = run_plan(dsn, history, evidence, pins,
-                                          include_class_repoint=args.include_class_repoint)
+                                          include_class_repoint=args.include_class_repoint,
+                                          quarantine_sec_contradictions=args.quarantine_sec_contradictions)
         if args.plan_file is not None:
             _reject_git_checkout(args.plan_file)
             payload = {"report": report, "changes": plan.changes(snapshot), "review": plan.review}
