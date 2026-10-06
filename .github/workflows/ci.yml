@@ -45,6 +45,8 @@ jobs:
           scripts/compose_fund_regulatory_serving_mappings.py
           scripts/verify_class_mappings_secapi.py
           scripts/verify_sec_regulatory_contract.py
+          scripts/rebase_fund_nav_window.py
+          scripts/rebase_fund_nav_cohort.py
           src/bonds
           src/db.py
           src/ncen
@@ -71,6 +73,8 @@ jobs:
           src/workers/fomc_sep_ingestion.py
           src/workers/fund_peer_groups.py
           src/workers/mixed_quant_publication.py
+          src/workers/nav_economic_rebase.py
+          src/workers/nav_rebase_cohort.py
           src/workers/ncen_ingestion.py
           src/workers/nport_holdings_identity_freshness.py
           src/workers/nport_ingestion.py
@@ -150,6 +154,7 @@ jobs:
             tests/test_rr1_derived_profiles_materializer.py
             tests/test_rr1_ingestion.py
             tests/test_run_worker_calc_date.py
+            tests/test_nav_rebase_cohort.py
             tests/test_sec_derived_work_units.py
             tests/test_sec_regulatory_contract.py
             tests/test_sec_regulatory_serving_contract.py
@@ -248,6 +253,8 @@ jobs:
           scripts/compose_fund_regulatory_serving_mappings.py
           scripts/verify_class_mappings_secapi.py
           scripts/verify_sec_regulatory_contract.py
+          scripts/rebase_fund_nav_window.py
+          scripts/rebase_fund_nav_cohort.py
           src/bonds
           src/db.py
           src/ncen
@@ -274,6 +281,8 @@ jobs:
           src/workers/fomc_sep_ingestion.py
           src/workers/fund_peer_groups.py
           src/workers/mixed_quant_publication.py
+          src/workers/nav_economic_rebase.py
+          src/workers/nav_rebase_cohort.py
           src/workers/ncen_ingestion.py
           src/workers/nport_holdings_identity_freshness.py
           src/workers/nport_ingestion.py

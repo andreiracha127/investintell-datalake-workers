@@ -203,6 +203,31 @@
 #                           verifica o catálogo, read-only, e falha alto.
 #                           Este arquivo NÃO cria o serviço: criar/agendar é
 #                           passo operacional (docs/fund_peer_groups_runbook.md).
+#   nav_rebase_cohort    -> NO CRON, EVER. One-off governed NAV rebase of the
+#                           readiness cohort on `maintenance-runner` (next to the
+#                           DB: a cohort plan is ~41k sequential statements, about
+#                           2.5 h over the public proxy). Drives the unchanged
+#                           scripts/rebase_fund_nav_window.py in-process: one plan,
+#                           allowlists of <= 20, re-plan on PLAN_STALE, stop on
+#                           exit 3/4/5, a Tiingo 429 or 3 failed batches in a
+#                           row. REFUSES to run unless
+#                           NAV_REBASE_CONFIRM=nav_rebase_cohort_v1, so a stray
+#                           deploy/restart of this shared start command cannot
+#                           start a rebase. Unset it after the run.
+#                           Env: WORKER=nav_rebase_cohort, NAV_REBASE_CONFIRM,
+#                           TIINGO_API_KEY, and the DSN: NAV_READINESS_DATABASE_URL,
+#                           or DATABASE_URL only with NAV_REBASE_ALLOW_DATABASE_URL=1.
+#                           Canary: NAV_REBASE_MAX_BATCHES=1 (and/or WORKER_LIMIT=n
+#                           = total instruments). Optional:
+#                           NAV_REBASE_RATE_PER_SECOND (<= 2.5),
+#                           NAV_REBASE_MAX_SECONDS (per batch, default 600),
+#                           NAV_REBASE_SCHEMA (default public), NAV_REBASE_DRY_RUN=1.
+#                           Run AFTER the day's nav-current-daily-chain, finish
+#                           before the 18:05 ET due roll, never overlapping
+#                           ingestion (writer locks -> LOCK_BUSY). Readiness is
+#                           republished by re-running nav-current-daily-chain.
+#                           Exit 0 only when every planned fund reconciled.
+#                           Runbook: docs/runbooks/nav-rebase-cohort.md.
 #
 # nixpacks auto-detects Python via requirements.txt.
 

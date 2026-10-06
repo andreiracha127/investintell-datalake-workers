@@ -323,7 +323,14 @@ def test_replan_storm_and_total_replans_are_capped(tmp_path):
     ("second", "exit_expected", "stop_code"),
     [
         # Exit 3: schema/access/dependency incompatible (decided by the CLI).
-        (lambda sha, ids: (3, {**rebase._empty_result(None), "code": "blocked_access"}), 3, "blocked_access"),
+        (
+            lambda sha, ids: (
+                3,
+                {**rebase._empty_result(None), "code": "blocked_access"},
+            ),
+            3,
+            "blocked_access",
+        ),
         # Exit 4 with commits earlier in this run: a lock stop AFTER work -> 5.
         (
             lambda sha, ids: _result(
