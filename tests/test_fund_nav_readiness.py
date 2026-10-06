@@ -939,3 +939,78 @@ def test_level_evidence_digest_vectors_are_frozen():
     assert level_evidence_digest(
         dt.date(2026, 9, 21), 5, None, None, None, None, None,
     ) == "bfa9840f79ad4dea3f7c680eeb2b7d52622a7ed4b9eb72635faa31a422addccb"
+
+
+def _snapshot_function_body() -> str:
+    ddl = (Path(__file__).parents[1] / "schemas" / "fund_nav_readiness_v1.sql").read_text(
+        encoding="utf-8"
+    )
+    start = ddl.index("CREATE OR REPLACE FUNCTION fund_nav_snapshot_current_at_v1(")
+    return ddl[start:ddl.index("$$ SECURITY DEFINER", start)]
+
+
+def test_snapshot_session_lag_literal_is_the_shared_constant():
+    """The SQL allowance and MAX_SNAPSHOT_SESSION_LAG cannot drift apart."""
+    import re
+
+    from src.workers._nav_policy import MAX_SNAPSHOT_SESSION_LAG
+
+    body = _snapshot_function_body()
+    bounds = re.findall(
+        r"AND (due|closed)_lag\.sessions <= (\d+)  -- MAX_SNAPSHOT_SESSION_LAG", body
+    )
+    assert sorted(bounds) == [
+        ("closed", str(MAX_SNAPSHOT_SESSION_LAG)),
+        ("due", str(MAX_SNAPSHOT_SESSION_LAG)),
+    ]
+    # Lag is never negative and never an exact-session pin any more.
+    assert "AND due.session_date >= run.as_of_session" in body
+    assert "AND closed.session_date >= run.latest_closed_session" in body
+    assert "due.session_date = run.as_of_session" not in body
+    assert "closed.session_date = run.latest_closed_session" not in body
+    # Session arithmetic counts the run's own calendar rows, never dates.
+    assert body.count("SELECT count(*) AS sessions FROM nav_valuation_schedules s") == 2
+
+
+def _manifest_signature() -> dict:
+    from scripts import fund_nav_readiness_schema as operator
+
+    return json.loads(operator.CATALOG_MANIFEST.read_text(encoding="utf-8"))["signature"]
+
+
+def test_predecessor_snapshot_body_is_repairable_and_nothing_else_is():
+    from scripts import fund_nav_readiness_schema as operator
+
+    expected = _manifest_signature()
+    key = operator.SNAPSHOT_FUNCTION_KEY
+    (predecessor,) = operator.PREDECESSOR_FUNCTION_BODIES[key]
+    assert expected["functions"][key]["body_sha256"] != predecessor
+
+    def with_function(**changes):
+        actual = json.loads(json.dumps(expected))
+        actual["functions"][key].update(changes)
+        return actual
+
+    assert operator.classify_catalog(expected, expected)[0] == "exact"
+    old = with_function(body_sha256=predecessor)
+    assert operator.classify_catalog(expected, old) == ("repairable", ["functions"])
+    assert operator.with_predecessor_bodies(expected, old) == expected
+    # An unknown body, or the predecessor body with any other attribute
+    # changed, is tampering: never repaired.
+    for tampered in (
+        with_function(body_sha256="0" * 64),
+        with_function(body_sha256=predecessor, public_execute=True),
+        with_function(body_sha256=predecessor, config=["search_path=@schema@, public"]),
+        with_function(body_sha256=predecessor, security_definer=False),
+    ):
+        assert operator.classify_catalog(expected, tampered)[0] == "incompatible"
+        assert operator.with_predecessor_bodies(expected, tampered) is tampered
+    # The predecessor body never excuses another divergence.
+    other = with_function(body_sha256=predecessor)
+    other["views"] = {}
+    assert operator.classify_catalog(expected, other)[0] == "incompatible"
+    # Other functions have no predecessor allowance.
+    foreign = json.loads(json.dumps(expected))
+    name = next(k for k in foreign["functions"] if k.startswith("fund_nav_readiness_freeze_v1"))
+    foreign["functions"][name]["body_sha256"] = predecessor
+    assert operator.classify_catalog(expected, foreign)[0] == "incompatible"
