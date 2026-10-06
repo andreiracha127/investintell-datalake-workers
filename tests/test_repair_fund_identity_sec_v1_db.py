@@ -1,7 +1,9 @@
-"""Apply/rollback of repair_fund_identity_sec_v1 on a disposable local Postgres.
+"""Apply/rollback of repair_fund_identity_sec_v1 on a real PostgreSQL.
 
-Runs only when FUND_IDENTITY_SEC_REPAIR_TEST_DSN points at a local database
-whose name starts with ``fund_identity_sec_test`` (it is dropped and rebuilt).
+Each test creates its own disposable database (``fund_identity_sec_disposable_*``)
+on the loopback server named by ``FUND_IDENTITY_SEC_REPAIR_TEST_DATABASE_URL``
+(or the CI ``SEC_TEST_DATABASE_URL``) and drops it afterwards; without either
+DSN the module is skipped.
 """
 
 from __future__ import annotations
@@ -14,16 +16,14 @@ import uuid
 
 import psycopg
 import pytest
+from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from scripts import repair_fund_identity_sec_v1 as repair
 
-DSN = os.environ.get("FUND_IDENTITY_SEC_REPAIR_TEST_DSN")
-pytestmark = pytest.mark.skipif(not DSN, reason="FUND_IDENTITY_SEC_REPAIR_TEST_DSN not set")
+ADMIN_DSN_ENV = ("FUND_IDENTITY_SEC_REPAIR_TEST_DATABASE_URL", "SEC_TEST_DATABASE_URL")
 
 SCHEMA = """
-DROP SCHEMA IF EXISTS public CASCADE;
-CREATE SCHEMA public;
 CREATE TABLE instruments_universe (
     instrument_id uuid PRIMARY KEY, instrument_type varchar NOT NULL, name varchar NOT NULL,
     isin varchar, ticker varchar, currency varchar NOT NULL DEFAULT 'USD',
@@ -62,22 +62,50 @@ HISTORY = repair.build_history([
 
 
 def _evidence():
+    raw = _evidence_raw()
+    return repair.parse_evidence(raw, hashlib.sha256(raw).hexdigest())
+
+
+def _evidence_raw() -> bytes:
     doc = {"kind": repair.EVIDENCE_KIND, "class_ticker_filings": [], "class_last_filings": [],
            "series_last_filings": [],
            "tiingo_meta": {t: {"status": 200, "endDate": dt.date.today().isoformat(),
                                "observed_at": dt.datetime.now(dt.timezone.utc).isoformat()}
-                           for t in ("VTI", "ACVU")}}
-    raw = json.dumps(doc).encode()
-    return repair.parse_evidence(raw, hashlib.sha256(raw).hexdigest())
+                           for t in ("VTI", "ACVU")},
+           "ncen_series": {"S000002848": {"fund_types": ["Exchange-Traded Fund", "Index Fund"],
+                                          "accession_no": "0000932471-26-000001",
+                                          "filed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                                          "registrant_cik": "36405"}},
+           "insurance_prospectus": []}
+    return json.dumps(doc).encode()
+
+
+@pytest.fixture(scope="module")
+def admin_dsn() -> str:
+    value = next((os.environ[name] for name in ADMIN_DSN_ENV if os.environ.get(name)), None)
+    if not value:
+        pytest.skip("no disposable PostgreSQL DSN")
+    assert psycopg.conninfo.conninfo_to_dict(value).get("host") in ("127.0.0.1", "localhost", "::1")
+    return value
 
 
 @pytest.fixture()
-def db():
-    info = psycopg.conninfo.conninfo_to_dict(DSN)
-    assert info.get("host") in ("127.0.0.1", "localhost", "::1")
-    assert info.get("dbname", "").startswith("fund_identity_sec_test")
+def db(admin_dsn):
+    name = f"fund_identity_sec_disposable_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(admin_dsn, autocommit=True) as admin:
+        admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    dsn = psycopg.conninfo.make_conninfo(admin_dsn, dbname=name)
+    try:
+        _seed(dsn)
+        yield dsn
+    finally:
+        with psycopg.connect(admin_dsn, autocommit=True) as admin:
+            admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+
+
+def _seed(dsn: str) -> None:
     conflict = {"ticker": {"values": [{"value": "QUVU"}, {"value": "ACVU"}], "resolved": False}}
-    with psycopg.connect(DSN, autocommit=True) as conn:
+    with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute(SCHEMA)
         rows = [(QUVU, "QUVU", "S000081376", True), (VTI, "VTI", None, False), (DEAD, "DEADX", None, True),
                 (HYG, "HYG", None, True)]
@@ -107,7 +135,6 @@ def db():
         conn.execute("INSERT INTO nav_ingestion_attempts (run_id, instrument_id, provider, status, "
                      "newest_observed_date) VALUES (%s, %s, 'tiingo', 'success_no_new', '2024-12-27')",
                      (run_id, DEAD))
-    yield DSN
 
 
 def _rows(dsn):
@@ -173,4 +200,48 @@ def test_rollback_refuses_rows_changed_after_apply(db):
     with psycopg.connect(db, autocommit=True) as conn:
         conn.execute("UPDATE instruments_universe SET is_active = false WHERE instrument_id = %s", (VTI,))
     with pytest.raises(repair.RepairError, match="compare_and_swap"):
+        repair.run_rollback(db, result["run_id"])
+
+
+def test_apply_refuses_while_the_sec_sync_or_ingestion_holds_its_lock(db):
+    ev = _evidence()
+    _plan, _snap, report = repair.run_plan(db, HISTORY, ev, {}, include_class_repoint=False)
+    for key in repair.APPLY_LOCKS:
+        with psycopg.connect(db, autocommit=True) as holder:
+            holder.execute("SELECT pg_advisory_lock(%s)", (key,))
+            with pytest.raises(repair.RepairError, match="writer_lock_busy"):
+                repair.run_apply(db, HISTORY, ev, {}, include_class_repoint=False,
+                                 expect_sha256=report["plan_sha256"])
+
+
+def test_repoint_rollback_is_refused_once_nav_moved_with_the_new_class(db):
+    dead, live = str(uuid.UUID(int=5)), "PINZX"
+    with psycopg.connect(db, autocommit=True) as conn:
+        conn.execute("INSERT INTO instruments_universe (instrument_id, instrument_type, name, ticker) "
+                     "VALUES (%s, 'fund', 'Overseas', 'PINUX')", (dead,))
+        conn.execute("INSERT INTO instrument_identity (instrument_id, sec_series_id, sec_class_id, ticker, "
+                     "cik_padded, cik_unpadded) VALUES (%s, 'S000023512', 'C000069149', %s, "
+                     "'0000898745', '898745')", (dead, live))
+        conn.execute("INSERT INTO sec_company_tickers_mf (class_id, cik, series_id, ticker) "
+                     "VALUES ('C000069149', '898745', 'S000023512', %s)", (live,))
+    history = repair.build_history([
+        *[(y, c, s, k, t) for c, rows in HISTORY.classes.items() for y, s, k, t in rows],
+        (2025, "C000111522", "S000023512", "0000898745", "PINUX"),
+        (2026, "C000069149", "S000023512", "0000898745", live),
+    ])
+    doc = json.loads(_evidence_raw())
+    doc["tiingo_meta"][live] = doc["tiingo_meta"]["VTI"]
+    raw = json.dumps(doc).encode()
+    ev = repair.parse_evidence(raw, hashlib.sha256(raw).hexdigest())
+    _plan, _snap, report = repair.run_plan(db, history, ev, {}, include_class_repoint=True)
+    assert report["changes_by_rule"]["R3_iu_class_terminated_repoint"] == 1
+    result = repair.run_apply(db, history, ev, {}, include_class_repoint=True,
+                              expect_sha256=report["plan_sha256"])
+    with psycopg.connect(db, autocommit=True) as conn:
+        run = uuid.uuid4()
+        conn.execute("INSERT INTO nav_ingestion_runs VALUES (%s, 'completed')", (run,))
+        conn.execute("INSERT INTO nav_ingestion_attempts (run_id, instrument_id, provider, status, "
+                     "newest_observed_date) VALUES (%s, %s, 'tiingo', 'success_new', current_date)",
+                     (run, dead))
+    with pytest.raises(repair.RepairError, match="rollback_repoint_after_nav_writes"):
         repair.run_rollback(db, result["run_id"])

@@ -48,9 +48,17 @@ def history(rows):
     return repair.build_history([(y, c, s, "0000000001", t) for y, c, s, t in rows])
 
 
-def evidence(tiingo=None, filings=None):
+RETAIL_NCEN = {"fund_types": ["Exchange-Traded Fund", "Index Fund"], "accession_no": "0000932471-26-001",
+               "filed_at": "2026-03-12T16:00:00-04:00", "registrant_cik": "36405"}
+# Every test series not named otherwise has a current, non-insurance N-CEN.
+NCEN_DEFAULT = {s: RETAIL_NCEN for s in ("S000000001", "S000002848", "S000081376", "S000000003")}
+
+
+def evidence(tiingo=None, filings=None, ncen=None, prospectus=None):
     doc = {"kind": repair.EVIDENCE_KIND, "tiingo_meta": tiingo or {},
-           "class_ticker_filings": filings or [], "class_last_filings": [], "series_last_filings": []}
+           "class_ticker_filings": filings or [], "class_last_filings": [], "series_last_filings": [],
+           "ncen_series": NCEN_DEFAULT if ncen is None else ncen,
+           "insurance_prospectus": prospectus or []}
     raw = json.dumps(doc).encode()
     return repair.parse_evidence(raw, hashlib.sha256(raw).hexdigest())
 
@@ -445,6 +453,12 @@ def test_r9_quarantines_the_contradiction_once_and_only_when_asked():
     assert again.changes(snap) == []  # R4 keeps the key, R9 does not repeat
 
 
+def test_r9_never_quarantines_without_the_funds_own_filings():
+    # no pinned filing at all: an unproven move, not an evidenced contradiction
+    plan, out = run(_moved(), ev=evidence(CURRENT), quarantine_sec_contradictions=True)
+    assert out == {} and plan.review["series_moved_unproven"]
+
+
 def test_r8_reports_inactive_non_members_and_two_live_series():
     ev = evidence(CURRENT, filings=[_filing("C000259241", "VVPLX", "NPORT-P", "2026-09-28")])
     plan, out = run(_moved(active=False, funds=set()), ev=ev)
@@ -487,3 +501,57 @@ def test_r4_settles_a_conflict_left_on_a_terminated_class():
     # the old class still current in SEC: not proven dead, nothing moves
     live = history([(2026, "C000012134", "S000004384", "VMCAX"), (2026, "C000012135", "S000004384", "VTCLX")])
     assert run(snap, live)[1] == {}
+
+
+# R5 insurance-only exclusion ------------------------------------------------
+UNDERLYING_NCEN = {"fund_types": ["Underlying fund"], "accession_no": "0000720318-26-000001",
+                   "filed_at": "2026-03-12T16:00:00-04:00", "registrant_cik": "720318"}
+
+
+def _activated(ev):
+    return ("instruments_universe", "a") in run(_orphan(), ev=ev)[1]
+
+
+def test_r5_keeps_insurance_only_series_inactive_on_ncen_evidence():
+    plan, out = run(_orphan(), ev=evidence({"VTI": tiingo_ok()}, ncen={"S000000001": UNDERLYING_NCEN}))
+    assert out == {}
+    entry = plan.review["orphan_insurance_only_class"][0]
+    assert entry["ncen"]["accession_no"] == "0000720318-26-000001" and entry["registrant_cik"] == "0000000001"
+    # an ETF used by insurers is still an exchange-traded fund: not insurance-only
+    etf = {**UNDERLYING_NCEN, "fund_types": ["Exchange-Traded Fund", "Underlying fund"]}
+    assert _activated(evidence({"VTI": tiingo_ok()}, ncen={"S000000001": etf}))
+
+
+def test_r5_keeps_insurance_only_series_inactive_on_prospectus_evidence():
+    insurance = {"registrant_cik": "918294", "accession_no": "0001999371-26-008879", "form_type": "485BPOS",
+                 "filed_at": "2026-04-24", "series_ids": ["S000000001"],
+                 "quote": "The fund is generally available only through variable annuity or variable "
+                          "life insurance contracts."}
+    plan, out = run(_orphan(), ev=evidence({"VTI": tiingo_ok()}, prospectus=[insurance]))
+    assert out == {} and plan.review["orphan_insurance_only_class"][0]["prospectus"]["accession_no"] == (
+        "0001999371-26-008879")
+    # a prospectus of another series, or a class sold through several channels, proves nothing
+    elsewhere = {**insurance, "series_ids": ["S000000099"]}
+    mixed = {**insurance, "quote": "I3 shares are only available to certain funds of funds, registered and "
+                                   "unregistered insurance company separate accounts and collective "
+                                   "investment trusts."}
+    assert _activated(evidence({"VTI": tiingo_ok()}, prospectus=[elsewhere]))
+    assert _activated(evidence({"VTI": tiingo_ok()}, prospectus=[mixed]))
+
+
+def test_r5_needs_a_current_ncen_to_prove_the_class_is_not_insurance_only():
+    plan, out = run(_orphan(), ev=evidence({"VTI": tiingo_ok()}, ncen={}))
+    assert out == {} and plan.review["orphan_insurance_status_unverified"]
+    old = {**RETAIL_NCEN, "filed_at": "2024-01-10T16:00:00-05:00"}
+    plan, out = run(_orphan(), ev=evidence({"VTI": tiingo_ok()}, ncen={"S000000001": old}))
+    assert out == {} and plan.review["orphan_insurance_status_unverified"]
+
+
+def test_prospectus_restriction_classifier():
+    assert repair.prospectus_says_insurance_only(
+        "Each fund offers its shares only to separate accounts of insurance companies that offer "
+        "variable annuity and variable life insurance products.")
+    assert not repair.prospectus_says_insurance_only("GICs are generally guaranteed only by the insurer.")
+    assert not repair.prospectus_says_insurance_only(
+        "Shares are offered to the general public and to insurance company separate accounts only.")
+    assert not repair.prospectus_says_insurance_only(None)

@@ -4184,7 +4184,3787 @@
   }
  ],
  "collected_on": "2026-10-06",
+ "insurance_prospectus": [
+  {
+   "accession_no": "0000356494-26-000030",
+   "document": "filing11795.htm",
+   "filed_at": "2026-04-20",
+   "form_type": "485BPOS",
+   "quote": "The fund offers its shares only to separate accounts of insurance companies that offer variable annuity and variable life insurance products.",
+   "registrant_cik": "356494",
+   "series_ids": [
+    "S000007716",
+    "S000007717",
+    "S000007718",
+    "S000007720",
+    "S000007721",
+    "S000044870",
+    "S000073966"
+   ]
+  },
+  {
+   "accession_no": "0000720318-26-000055",
+   "document": "filing11786.htm",
+   "filed_at": "2026-04-20",
+   "form_type": "485BPOS",
+   "quote": "Each fund offers its shares only to separate accounts of insurance companies that offer variable annuity and variable life insurance products.",
+   "registrant_cik": "720318",
+   "series_ids": [
+    "S000007736",
+    "S000007742",
+    "S000007747",
+    "S000007752",
+    "S000007753",
+    "S000007755",
+    "S000007756",
+    "S000007758",
+    "S000016757",
+    "S000016758",
+    "S000016759"
+   ]
+  },
+  {
+   "accession_no": "0001193125-26-082604",
+   "document": "d93604d485bpos.htm",
+   "filed_at": "2026-02-27",
+   "form_type": "485BPOS",
+   "quote": "I3 shares are only available to certain funds of funds, registered and unregistered insurance company separate accounts and collective investment trusts.",
+   "registrant_cik": "787623",
+   "series_ids": [
+    "S000007778",
+    "S000007785",
+    "S000007792",
+    "S000007793",
+    "S000007796",
+    "S000007798",
+    "S000007799",
+    "S000007800",
+    "S000007801",
+    "S000007806",
+    "S000007807",
+    "S000007808",
+    "S000026829",
+    "S000030315",
+    "S000030928",
+    "S000033683",
+    "S000036913",
+    "S000038166",
+    "S000038853",
+    "S000039595",
+    "S000039596",
+    "S000040645",
+    "S000041702",
+    "S000042771",
+    "S000042772",
+    "S000044274",
+    "S000044275",
+    "S000044276",
+    "S000045275",
+    "S000047479",
+    "S000054674",
+    "S000054676",
+    "S000054677",
+    "S000054678",
+    "S000054681",
+    "S000054682",
+    "S000054683",
+    "S000062055",
+    "S000067321",
+    "S000080097",
+    "S000080099"
+   ]
+  },
+  {
+   "accession_no": "0001193125-26-196319",
+   "document": "d869554d485bpos.htm",
+   "filed_at": "2026-04-30",
+   "form_type": "485BPOS",
+   "quote": "As long as Shares of the Funds are sold only to Insurance Companies, the term \u201cshareholder\u201d or \u201cshareholders\u201d in this Prospectus refers to an Insurance Company owning Shares of RIF.",
+   "registrant_cik": "824036",
+   "series_ids": [
+    "S000006863",
+    "S000006864",
+    "S000006865",
+    "S000006866",
+    "S000006867",
+    "S000017037",
+    "S000017038",
+    "S000017039",
+    "S000017040"
+   ]
+  },
+  {
+   "accession_no": "0001999371-26-008882",
+   "document": "isp-485bpos_042426.htm",
+   "filed_at": "2026-04-24",
+   "form_type": "485BPOS",
+   "quote": "The fund is generally available only through variable annuity or variable life insurance contracts.",
+   "registrant_cik": "918292",
+   "series_ids": [
+    "S000002100"
+   ]
+  },
+  {
+   "accession_no": "0001999371-26-008879",
+   "document": "eqs-485bpos_042426.htm",
+   "filed_at": "2026-04-24",
+   "form_type": "485BPOS",
+   "quote": "The fund is generally available only through variable annuity or variable life insurance contracts.",
+   "registrant_cik": "918294",
+   "series_ids": [
+    "S000002077",
+    "S000002078",
+    "S000002079",
+    "S000002080",
+    "S000002081",
+    "S000002083"
+   ]
+  },
+  {
+   "accession_no": "0001999371-26-008880",
+   "document": "ltp-485bpos_042426.htm",
+   "filed_at": "2026-04-24",
+   "form_type": "485BPOS",
+   "quote": "The fund is generally available only through variable annuity or variable life insurance contracts.",
+   "registrant_cik": "920467",
+   "series_ids": [
+    "S000002129"
+   ]
+  }
+ ],
  "kind": "fund-identity-sec-evidence-v1",
+ "ncen_series": {
+  "S000001114": {
+   "accession_no": "0000940400-26-000211",
+   "filed_at": "2026-01-14T16:37:57-05:00",
+   "fund_name": "AMG Montrusco Bolton Large Cap Growth Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "912036"
+  },
+  "S000001125": {
+   "accession_no": "0000940400-26-000211",
+   "filed_at": "2026-01-14T16:37:57-05:00",
+   "fund_name": "AMG River Road Mid Cap Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "912036"
+  },
+  "S000001129": {
+   "accession_no": "0000940400-26-000211",
+   "filed_at": "2026-01-14T16:37:57-05:00",
+   "fund_name": "AMG River Road Dividend All Cap Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "912036"
+  },
+  "S000001130": {
+   "accession_no": "0000940400-26-000211",
+   "filed_at": "2026-01-14T16:37:57-05:00",
+   "fund_name": "AMG River Road Small Cap Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "912036"
+  },
+  "S000001243": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Large Cap Core Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001244": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Small Cap Core Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001245": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Small Cap Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001246": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Small Cap Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001247": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Stock Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001249": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Arizona Tax-Exempt Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001250": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "California Intermediate Tax-Exempt Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001251": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "California Tax-Exempt Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001252": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Fixed Income Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001256": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "High Yield Fixed Income Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001258": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Intermediate Tax-Exempt Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001259": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Limited Term U.S. Government Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001260": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Tax-Exempt Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001261": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "U.S. Government Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001266": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "U.S. Government Money Market Fund",
+   "fund_types": [
+    "Money Market Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001267": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "U.S. Government Select Money Market Fund",
+   "fund_types": [
+    "Money Market Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001268": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "International Equity Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001269": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Income Equity Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001270": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "International Equity Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001271": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Large Cap Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000001273": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Mid Cap Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000002077": {
+   "accession_no": "0001099263-26-003175",
+   "filed_at": "2026-03-13T10:33:24-04:00",
+   "fund_name": "T. Rowe Price Equity Income Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "918294"
+  },
+  "S000002078": {
+   "accession_no": "0001099263-26-003175",
+   "filed_at": "2026-03-13T10:33:24-04:00",
+   "fund_name": "T. Rowe Price All-Cap Opportunities Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "918294"
+  },
+  "S000002079": {
+   "accession_no": "0001099263-26-003175",
+   "filed_at": "2026-03-13T10:33:24-04:00",
+   "fund_name": "T. Rowe Price Moderate Allocation Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "918294"
+  },
+  "S000002080": {
+   "accession_no": "0001099263-26-003175",
+   "filed_at": "2026-03-13T10:33:24-04:00",
+   "fund_name": "T. Rowe Price Mid-Cap Growth Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "918294"
+  },
+  "S000002081": {
+   "accession_no": "0001099263-26-003175",
+   "filed_at": "2026-03-13T10:33:24-04:00",
+   "fund_name": "T. Rowe Price Blue Chip Growth Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "918294"
+  },
+  "S000002083": {
+   "accession_no": "0001099263-26-003175",
+   "filed_at": "2026-03-13T10:33:24-04:00",
+   "fund_name": "T. Rowe Price Health Sciences Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "918294"
+  },
+  "S000002100": {
+   "accession_no": "0001099263-26-003186",
+   "filed_at": "2026-03-13T10:37:35-04:00",
+   "fund_name": "T. Rowe Price International Stock Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "918292"
+  },
+  "S000002129": {
+   "accession_no": "0001099263-26-003178",
+   "filed_at": "2026-03-13T10:34:38-04:00",
+   "fund_name": "T. Rowe Price Limited-Term Bond Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "920467"
+  },
+  "S000002820": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Passport Overseas Equity Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000002825": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Inception Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000002826": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "EMERGING MARKETS PORTFOLIO",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000002828": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "GROWTH PORTFOLIO",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000002830": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "GLOBAL FRANCHISE PORTFOLIO",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000002832": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "INTERNATIONAL EQUITY PORTFOLIO",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000002839": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD 500 INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002840": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD VALUE INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002841": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD EXTENDED MARKET INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002842": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD GROWTH INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002843": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD LARGE-CAP INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002844": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD MID-CAP INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002845": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD SMALL-CAP INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002846": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD SMALL-CAP GROWTH INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002847": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD SMALL-CAP VALUE INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000002848": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD TOTAL STOCK MARKET INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000003439": {
+   "accession_no": "0001193125-25-232999",
+   "filed_at": "2025-10-07T12:11:07-04:00",
+   "fund_name": "Davis New York Venture Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-07-31",
+   "registrant_cik": "71701"
+  },
+  "S000003440": {
+   "accession_no": "0001193125-25-232999",
+   "filed_at": "2025-10-07T12:11:07-04:00",
+   "fund_name": "Davis Research Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-07-31",
+   "registrant_cik": "71701"
+  },
+  "S000003441": {
+   "accession_no": "0001193125-26-003585",
+   "filed_at": "2026-01-06T09:59:35-05:00",
+   "fund_name": "Davis Global Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "71701"
+  },
+  "S000003631": {
+   "accession_no": "0000940400-26-009689",
+   "filed_at": "2026-03-05T15:50:59-05:00",
+   "fund_name": "Core Bond Series",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "751173"
+  },
+  "S000003632": {
+   "accession_no": "0000940400-26-009689",
+   "filed_at": "2026-03-05T15:50:59-05:00",
+   "fund_name": "Unconstrained Bond Series",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "751173"
+  },
+  "S000003634": {
+   "accession_no": "0000940400-26-009689",
+   "filed_at": "2026-03-05T15:50:59-05:00",
+   "fund_name": "High Yield Bond Series",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "751173"
+  },
+  "S000003638": {
+   "accession_no": "0000940400-26-009689",
+   "filed_at": "2026-03-05T15:50:59-05:00",
+   "fund_name": "Diversified Tax Exempt Series",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "751173"
+  },
+  "S000005358": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Emerging Markets Equity Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000005786": {
+   "accession_no": "0000857489-26-000003",
+   "filed_at": "2026-01-12T12:01:57-05:00",
+   "fund_name": "VANGUARD EMERGING MARKETS STOCK INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "857489"
+  },
+  "S000005787": {
+   "accession_no": "0000857489-26-000003",
+   "filed_at": "2026-01-12T12:01:57-05:00",
+   "fund_name": "VANGUARD EUROPEAN STOCK INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "857489"
+  },
+  "S000005788": {
+   "accession_no": "0000857489-26-000003",
+   "filed_at": "2026-01-12T12:01:57-05:00",
+   "fund_name": "VANGUARD PACIFIC STOCK INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "857489"
+  },
+  "S000006011": {
+   "accession_no": "0000035402-26-000574",
+   "filed_at": "2026-02-11T13:14:06-05:00",
+   "fund_name": "Fidelity Nasdaq Composite Index ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-11-30",
+   "registrant_cik": "205323"
+  },
+  "S000006850": {
+   "accession_no": "0002071691-26-000124",
+   "filed_at": "2026-01-12T09:51:43-05:00",
+   "fund_name": "Franklin Low Duration U.S. Government Securities Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "809707"
+  },
+  "S000006851": {
+   "accession_no": "0002071691-26-000124",
+   "filed_at": "2026-01-12T09:51:43-05:00",
+   "fund_name": "Franklin Convertible Securities Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "809707"
+  },
+  "S000006852": {
+   "accession_no": "0002071691-26-000124",
+   "filed_at": "2026-01-12T09:51:43-05:00",
+   "fund_name": "Franklin Equity Income Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "809707"
+  },
+  "S000006853": {
+   "accession_no": "0002071691-26-000124",
+   "filed_at": "2026-01-12T09:51:43-05:00",
+   "fund_name": "Franklin Floating Rate Daily Access Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "809707"
+  },
+  "S000006855": {
+   "accession_no": "0002071691-26-000124",
+   "filed_at": "2026-01-12T09:51:43-05:00",
+   "fund_name": "Franklin Low Duration Total Return Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "809707"
+  },
+  "S000006857": {
+   "accession_no": "0002071691-26-000124",
+   "filed_at": "2026-01-12T09:51:43-05:00",
+   "fund_name": "Franklin Total Return Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "809707"
+  },
+  "S000006863": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "U.S. Strategic Equity Fund",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000006864": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "U.S. Small Cap Equity Fund",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000006865": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "International Developed Markets Fund",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000006866": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "Global Real Estate Securities Fund",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000006867": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "Strategic Bond Fund",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000007716": {
+   "accession_no": "0000035402-26-001450",
+   "filed_at": "2026-03-12T16:51:47-04:00",
+   "fund_name": "VIP Equity-Income Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "356494"
+  },
+  "S000007717": {
+   "accession_no": "0000035402-26-001450",
+   "filed_at": "2026-03-12T16:51:47-04:00",
+   "fund_name": "VIP Growth Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "356494"
+  },
+  "S000007718": {
+   "accession_no": "0000035402-26-001450",
+   "filed_at": "2026-03-12T16:51:47-04:00",
+   "fund_name": "VIP High Income Portfolio",
+   "fund_types": [
+    "Fund of Funds",
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "356494"
+  },
+  "S000007720": {
+   "accession_no": "0000035402-26-001450",
+   "filed_at": "2026-03-12T16:51:47-04:00",
+   "fund_name": "VIP Overseas Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "356494"
+  },
+  "S000007721": {
+   "accession_no": "0000035402-26-001450",
+   "filed_at": "2026-03-12T16:51:47-04:00",
+   "fund_name": "VIP Value Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "356494"
+  },
+  "S000007736": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Consumer Discretionary Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000007742": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Health Care Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000007747": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Industrials Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000007752": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Energy Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000007753": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Real Estate Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000007755": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Technology Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000007756": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Utilities Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000007758": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Financials Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000007778": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica International Focus",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007785": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Capital Growth",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007792": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Multi-Managed Balanced",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007793": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica High Yield Bond",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007796": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Bond",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007798": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Government Money Market",
+   "fund_types": [
+    "Money Market Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007799": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Short-Term Bond",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007800": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Asset Allocation - Conservative Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007801": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Small/Mid Cap Value",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007806": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Asset Allocation - Growth Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007807": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Asset Allocation - Moderate Growth Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000007808": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Asset Allocation - Moderate Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000008638": {
+   "accession_no": "0000940400-26-010020",
+   "filed_at": "2026-03-13T11:44:03-04:00",
+   "fund_name": "VOYA MIDCAP OPPORTUNITIES PORTFOLIO",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "916403"
+  },
+  "S000008640": {
+   "accession_no": "0000940400-26-010020",
+   "filed_at": "2026-03-13T11:44:03-04:00",
+   "fund_name": "VOYA SMALLCAP OPPORTUNITIES PORTFOLIO",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "916403"
+  },
+  "S000009198": {
+   "accession_no": "0001410368-26-024761",
+   "filed_at": "2026-03-13T10:56:01-04:00",
+   "fund_name": "Emerging Markets Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "768847"
+  },
+  "S000009199": {
+   "accession_no": "0001410368-26-024761",
+   "filed_at": "2026-03-13T10:56:01-04:00",
+   "fund_name": "International Investors Gold Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "768847"
+  },
+  "S000009200": {
+   "accession_no": "0001410368-26-024761",
+   "filed_at": "2026-03-13T10:56:01-04:00",
+   "fund_name": "Global Resources Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "768847"
+  },
+  "S000009491": {
+   "accession_no": "0002000324-26-002270",
+   "filed_at": "2026-06-10T10:25:20-04:00",
+   "fund_name": "Pear Tree Polaris Foreign Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "722885"
+  },
+  "S000009492": {
+   "accession_no": "0002000324-26-002270",
+   "filed_at": "2026-06-10T10:25:20-04:00",
+   "fund_name": "Pear Tree Quality Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "722885"
+  },
+  "S000009493": {
+   "accession_no": "0002000324-26-002270",
+   "filed_at": "2026-06-10T10:25:20-04:00",
+   "fund_name": "Pear Tree Polaris Small Cap Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "722885"
+  },
+  "S000009505": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce Premier Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009506": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce Micro-Cap Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009507": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce Small-Cap Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009510": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce Small-Cap Total Return Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009512": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce Small-Cap Opportunity Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009513": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce Small-Cap Special Equity Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009516": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce Small-Cap Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009517": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce Smaller-Companies Growth Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009522": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce SMid-Cap Total Return Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000009675": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO All Asset All Authority Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009677": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Low Duration Income Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009678": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO International Bond Fund (U.S. Dollar-Hedged)",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009679": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO International Bond Fund (Unhedged)",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009681": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO RAE PLUS Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009682": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Global Bond Opportunities Fund (U.S. Dollar-Hedged)",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009684": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO GNMA and Government Securities Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009685": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO High Yield Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009686": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO All Asset Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009687": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO StocksPLUS International Fund (U.S. Dollar-Hedged)",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009688": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Investment Grade Credit Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009690": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Long-Term U.S. Government Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009691": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Low Duration Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009692": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Low Duration Fund II",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009693": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Low Duration ESG Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009694": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Moderate Duration Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009696": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Municipal Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009697": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO California Intermediate Municipal Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009698": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO New York Municipal Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009699": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Long-Term Real Return Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009700": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Real Return Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009701": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO RealEstateRealReturn Strategy Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009702": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Short Duration Municipal Income Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009703": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Short-Term Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009704": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO StocksPLUS Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009705": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO StocksPLUS Absolute Return Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009706": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO StocksPLUS Short Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009707": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Total Return Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009708": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO CommodityRealReturn Strategy Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009709": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Total Return Fund II",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009710": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Total Return ESG Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009713": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Emerging Markets Currency and Short-Term Investments Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009714": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Diversified Income Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009715": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Emerging Markets Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009844": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO ABS and Short-Term Investments Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009845": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Short-Term Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009847": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO U.S. Government and Short-Term Investments Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009848": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO EM Bond and Short-Term Investments Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009850": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO High Yield and Short-Term Investments Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009851": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO International Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009852": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Investment Grade Credit Bond Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009853": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Mortgage and Short-Term Investments Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009854": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Municipal Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009855": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Real Return Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000009904": {
+   "accession_no": "0000940400-26-000210",
+   "filed_at": "2026-01-14T16:37:56-05:00",
+   "fund_name": "AMG Veritas Global Focus Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "882443"
+  },
+  "S000009909": {
+   "accession_no": "0000940400-26-000210",
+   "filed_at": "2026-01-14T16:37:56-05:00",
+   "fund_name": "AMG River Road Large Cap Value Select Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "882443"
+  },
+  "S000009910": {
+   "accession_no": "0000940400-26-000210",
+   "filed_at": "2026-01-14T16:37:56-05:00",
+   "fund_name": "AMG Frontier Small Cap Growth Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "882443"
+  },
+  "S000009911": {
+   "accession_no": "0000940400-26-000210",
+   "filed_at": "2026-01-14T16:37:56-05:00",
+   "fund_name": "AMG Veritas China Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "882443"
+  },
+  "S000009914": {
+   "accession_no": "0000940400-26-000210",
+   "filed_at": "2026-01-14T16:37:56-05:00",
+   "fund_name": "AMG GW&K Core Bond ESG Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "882443"
+  },
+  "S000010253": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO StocksPLUS Small Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000012492": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Active M International Equity Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000012705": {
+   "accession_no": "0002071691-26-000124",
+   "filed_at": "2026-01-12T09:51:43-05:00",
+   "fund_name": "Franklin Managed Income Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "809707"
+  },
+  "S000012717": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Global Real Estate Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000012756": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD MID-CAP GROWTH INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000012757": {
+   "accession_no": "0000036405-26-000103",
+   "filed_at": "2026-03-12T16:42:03-04:00",
+   "fund_name": "VANGUARD MID-CAP VALUE INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "36405"
+  },
+  "S000012844": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO High Yield Municipal Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000013232": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Long Duration Total Return Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000013233": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Extended Duration Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000013234": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO California Short Duration Municipal Income Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000014410": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO StocksPLUS International Fund (Unhedged)",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000014591": {
+   "accession_no": "0001193125-26-003585",
+   "filed_at": "2026-01-06T09:59:35-05:00",
+   "fund_name": "Davis International Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "71701"
+  },
+  "S000014994": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Emerging Markets Local Currency and Bond Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000015790": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Bond Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000015871": {
+   "accession_no": "0000857489-26-000003",
+   "filed_at": "2026-01-12T12:01:57-05:00",
+   "fund_name": "VANGUARD FTSE ALL-WORLD EX-US INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "857489"
+  },
+  "S000016548": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Income Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000016733": {
+   "accession_no": "0000940400-26-000211",
+   "filed_at": "2026-01-14T16:37:57-05:00",
+   "fund_name": "AMG River Road Small-Mid Cap Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "912036"
+  },
+  "S000016757": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Consumer Staples Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000016758": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Materials Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000016759": {
+   "accession_no": "0000035402-26-001446",
+   "filed_at": "2026-03-12T16:51:41-04:00",
+   "fund_name": "VIP Communication Services Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "720318"
+  },
+  "S000017037": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "Moderate Strategy Fund",
+   "fund_types": [
+    "Fund of Funds",
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000017038": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "Balanced Strategy Fund",
+   "fund_types": [
+    "Fund of Funds",
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000017039": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "Aggressive Strategy Fund",
+   "fund_types": [
+    "Fund of Funds",
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000017040": {
+   "accession_no": "0001410368-26-023527",
+   "filed_at": "2026-03-12T11:21:23-04:00",
+   "fund_name": "Equity Aggressive Strategy Fund",
+   "fund_types": [
+    "Fund of Funds",
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "824036"
+  },
+  "S000018524": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Limited Term Tax-Exempt Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000018588": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO StocksPLUS Long Duration Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000019579": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "World Selection Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000021058": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO RAE Fundamental Advantage PLUS Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000021993": {
+   "accession_no": "0002000324-26-002270",
+   "filed_at": "2026-06-10T10:25:20-04:00",
+   "fund_name": "Pear Tree Polaris Foreign Value Small Cap Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "722885"
+  },
+  "S000022482": {
+   "accession_no": "0000857489-26-000003",
+   "filed_at": "2026-01-12T12:01:57-05:00",
+   "fund_name": "VANGUARD TOTAL WORLD STOCK INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "857489"
+  },
+  "S000022556": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Global Advantage Strategy Bond Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000022557": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Dynamic Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000023224": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Global Core Asset Allocation Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000023716": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO RAE PLUS EMG Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000024144": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Active M Emerging Markets Equity Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000024145": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Multi-Manager Global Real Estate Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000024285": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Long Duration Credit Bond Portfolio",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000024337": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Government Money Market Fund",
+   "fund_types": [
+    "Money Market Fund"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000024795": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO LOW DURATION OPPORTUNITIES FUND",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000025074": {
+   "accession_no": "0000857489-26-000003",
+   "filed_at": "2026-01-12T12:01:57-05:00",
+   "fund_name": "VANGUARD FTSE ALL-WORLD EX-US SMALL-CAP INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "857489"
+  },
+  "S000025202": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Long-Term Credit Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000025613": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Short-Term Floating NAV Portfolio II",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000025820": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Emerging Markets Corporate Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000025872": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Ultra-Short Fixed Income Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000025873": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Tax-Advantaged Ultra-Short Fixed Income Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000026479": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Multi-Manager High Yield Opportunity Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000026829": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica US Growth",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000027992": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "International Opportunity Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000027993": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Advantage Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000027995": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Global Opportunity Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000028928": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO CommoditiesPLUS Strategy Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000029608": {
+   "accession_no": "0001410368-26-024761",
+   "filed_at": "2026-03-13T10:56:01-04:00",
+   "fund_name": "CM Commodity Index Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "768847"
+  },
+  "S000029813": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO High Yield Spectrum Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000030007": {
+   "accession_no": "0000857489-26-000003",
+   "filed_at": "2026-01-12T12:01:57-05:00",
+   "fund_name": "VANGUARD GLOBAL EX-U.S. REAL ESTATE INDEX FUND",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "857489"
+  },
+  "S000030192": {
+   "accession_no": "0000940400-26-000211",
+   "filed_at": "2026-01-14T16:37:57-05:00",
+   "fund_name": "AMG GW&K Small/Mid Cap Growth Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "912036"
+  },
+  "S000030315": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Large Cap Value",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000030616": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Global Insight Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000030618": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "International Advantage Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000030672": {
+   "accession_no": "0001410368-26-022682",
+   "filed_at": "2026-03-11T12:23:35-04:00",
+   "fund_name": "Royce International Premier Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "709364"
+  },
+  "S000030928": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica International Equity",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000031641": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Low Duration Credit Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000032049": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Total Return Fund IV",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000032697": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO RAE PLUS Small Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000032698": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO RAE PLUS International Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000033427": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Global Tactical Asset Allocation Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000033596": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Credit Opportunities Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000033597": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Inflation Response Multi-Asset Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000033683": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Emerging Markets Debt",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000034605": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Low Duration Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000034606": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Moderate Duration Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000036913": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Small Cap Value",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000037048": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Short-Term Floating NAV Portfolio III",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000037096": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO California Municipal Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000037097": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO National Intermediate Municipal Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000037098": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Short Asset Investment Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000037667": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Multi-Manager Global Listed Infrastructure Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000038166": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Small Cap Growth",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000038441": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Mortgage Opportunities and Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000038853": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Intermediate Muni",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000038895": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Core Bond Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000038896": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "Short Bond Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000039595": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Sustainable Equity Income",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000039596": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica International Small Cap Value",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000039671": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Emerging Markets Full Spectrum Bond Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000040645": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Energy Infrastructure",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000041702": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica High Yield Muni",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000041864": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Global Stars Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000042145": {
+   "accession_no": "0000035402-25-000977",
+   "filed_at": "2025-10-14T09:02:29-04:00",
+   "fund_name": "Fidelity Series Commodity Strategy Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2025-07-31",
+   "registrant_cik": "28540"
+  },
+  "S000042771": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Floating Rate",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000042772": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Mid Cap Growth",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000042791": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO TRENDS Managed Futures Strategy Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000044274": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Inflation Opportunities",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000044275": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Core Bond",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000044276": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Multi-Asset Income",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000044870": {
+   "accession_no": "0000035402-26-001450",
+   "filed_at": "2026-03-12T16:51:47-04:00",
+   "fund_name": "VIP Floating Rate High Income Portfolio",
+   "fund_types": [
+    "Fund of Funds",
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "356494"
+  },
+  "S000045275": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Mid Cap Value Opportunities",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000047288": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO RAE Worldwide Long/Short PLUS Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000047473": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Emerging Markets Leaders Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000047479": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Strategic Income",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000048447": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Preferred and Capital Securities Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000051381": {
+   "accession_no": "0000940400-26-000211",
+   "filed_at": "2026-01-14T16:37:57-05:00",
+   "fund_name": "AMG River Road Focused Absolute Value Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "912036"
+  },
+  "S000051832": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Asia Opportunity Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000053786": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Global Concentrated Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000053787": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Global Core Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000053789": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "US Core Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000054674": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Asset Allocation Intermediate Horizon",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000054675": {
+   "accession_no": "0001410368-26-024975",
+   "filed_at": "2026-03-13T13:13:00-04:00",
+   "fund_name": "Transamerica Stock Index",
+   "fund_types": [
+    "Master-Feeder Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "787623"
+  },
+  "S000054676": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Asset Allocation Long Horizon",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000054677": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Asset Allocation Short Horizon",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000054678": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Balanced II",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000054681": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Large Core ESG",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000054682": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Large Growth",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000054683": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Large Value Opportunities",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000055816": {
+   "accession_no": "0002066578-26-002026",
+   "filed_at": "2026-06-10T12:52:32-04:00",
+   "fund_name": "U.S. Quality ESG Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "916620"
+  },
+  "S000055837": {
+   "accession_no": "0000035402-25-000977",
+   "filed_at": "2025-10-14T09:02:29-04:00",
+   "fund_name": "Fidelity Commodity Strategy Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2025-07-31",
+   "registrant_cik": "28540"
+  },
+  "S000057874": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Short Asset Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000059462": {
+   "accession_no": "0000035402-26-000063",
+   "filed_at": "2026-01-13T07:54:15-05:00",
+   "fund_name": "Fidelity International High Dividend ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "945908"
+  },
+  "S000059463": {
+   "accession_no": "0000035402-26-000063",
+   "filed_at": "2026-01-13T07:54:15-05:00",
+   "fund_name": "Fidelity International Value Factor ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "945908"
+  },
+  "S000059554": {
+   "accession_no": "0001410368-26-024761",
+   "filed_at": "2026-03-13T10:56:01-04:00",
+   "fund_name": "VanEck Morningstar Wide Moat Fund",
+   "fund_types": [
+    "Index Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "768847"
+  },
+  "S000062055": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica International Stock",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000063049": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Global Endurance Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000063205": {
+   "accession_no": "0000940400-26-009689",
+   "filed_at": "2026-03-05T15:50:59-05:00",
+   "fund_name": "Credit Series",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "751173"
+  },
+  "S000063840": {
+   "accession_no": "0000035402-25-000977",
+   "filed_at": "2025-10-14T09:02:29-04:00",
+   "fund_name": "Fidelity SAI Inflation-Focused Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-07-31",
+   "registrant_cik": "28540"
+  },
+  "S000064093": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO California Municipal Opportunistic Value Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000064095": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO National Municipal Opportunistic Value Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000064782": {
+   "accession_no": "0002000324-26-002270",
+   "filed_at": "2026-06-10T10:25:20-04:00",
+   "fund_name": "Pear Tree Polaris International Opportunities Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "722885"
+  },
+  "S000064787": {
+   "accession_no": "0000035402-26-000063",
+   "filed_at": "2026-01-13T07:54:15-05:00",
+   "fund_name": "Fidelity Emerging Markets Multifactor ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "945908"
+  },
+  "S000064788": {
+   "accession_no": "0000035402-26-000063",
+   "filed_at": "2026-01-13T07:54:15-05:00",
+   "fund_name": "Fidelity International Multifactor ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "945908"
+  },
+  "S000065236": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Global Permanence Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000066984": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Climate Bond Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000067259": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Developing Opportunity Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000067321": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Emerging Markets Equity",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000068163": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Permanence Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000069193": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO ESG Income Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000069546": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO All Asset: Multi-Real Fund",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000069547": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO All Asset: Multi-RAE PLUS Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000071783": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Sector Fund Series - AM",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000071787": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Sector Fund Series - H",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000071788": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Sector Fund Series - I",
+   "fund_types": [
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000072022": {
+   "accession_no": "0002000324-26-002270",
+   "filed_at": "2026-06-10T10:25:20-04:00",
+   "fund_name": "Pear Tree Essex Environmental Opportunities Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "722885"
+  },
+  "S000073597": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Clean Energy ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000073598": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Cloud Computing ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000073600": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Electric Vehicles and Future Transportation ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000073966": {
+   "accession_no": "0000035402-26-001450",
+   "filed_at": "2026-03-12T16:51:47-04:00",
+   "fund_name": "VIP Stock Selector Portfolio",
+   "fund_types": [
+    "Underlying fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "356494"
+  },
+  "S000074797": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Vitality Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000075902": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Crypto Industry and Digital Payments ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000075903": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Metaverse ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Index Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000076838": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "Emerging Markets ex China Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000076841": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "American Resilience Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000076842": {
+   "accession_no": "0001410368-26-023630",
+   "filed_at": "2026-03-12T12:30:27-04:00",
+   "fund_name": "International Resilience Portfolio",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "836487"
+  },
+  "S000077182": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO All Authority: Multi-RAE PLUS Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000077192": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Enhanced Income Aggregate Bond ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000077193": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Enhanced Income 1-3 Month T-Bill ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000077194": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS S&P 500(R) High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000079685": {
+   "accession_no": "0000035402-26-004841",
+   "filed_at": "2026-08-12T09:33:44-04:00",
+   "fund_name": "Fidelity Disruptive Automation ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-05-31",
+   "registrant_cik": "945908"
+  },
+  "S000079686": {
+   "accession_no": "0000035402-26-004841",
+   "filed_at": "2026-08-12T09:33:44-04:00",
+   "fund_name": "Fidelity Disruptive Communications ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-05-31",
+   "registrant_cik": "945908"
+  },
+  "S000079687": {
+   "accession_no": "0000035402-26-004841",
+   "filed_at": "2026-08-12T09:33:44-04:00",
+   "fund_name": "Fidelity Disruptive Finance ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-05-31",
+   "registrant_cik": "945908"
+  },
+  "S000079688": {
+   "accession_no": "0000035402-26-004841",
+   "filed_at": "2026-08-12T09:33:44-04:00",
+   "fund_name": "Fidelity Disruptive Medicine ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-05-31",
+   "registrant_cik": "945908"
+  },
+  "S000079689": {
+   "accession_no": "0000035402-26-004841",
+   "filed_at": "2026-08-12T09:33:44-04:00",
+   "fund_name": "Fidelity Disruptive Technology ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-05-31",
+   "registrant_cik": "945908"
+  },
+  "S000079690": {
+   "accession_no": "0000035402-26-004841",
+   "filed_at": "2026-08-12T09:33:44-04:00",
+   "fund_name": "Fidelity Disruptors ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Fund of Funds"
+   ],
+   "period_of_report": "2026-05-31",
+   "registrant_cik": "945908"
+  },
+  "S000079898": {
+   "accession_no": "0001410368-26-057980",
+   "filed_at": "2026-06-11T13:54:39-04:00",
+   "fund_name": "PIMCO Total Return Fund V",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2026-03-31",
+   "registrant_cik": "810893"
+  },
+  "S000080097": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica Long Credit",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000080099": {
+   "accession_no": "0001410368-26-000563",
+   "filed_at": "2026-01-12T16:14:00-05:00",
+   "fund_name": "Transamerica UltraShort Bond",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "787623"
+  },
+  "S000080974": {
+   "accession_no": "0000940400-26-009689",
+   "filed_at": "2026-03-05T15:50:59-05:00",
+   "fund_name": "Callodine Equity Income Series",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "751173"
+  },
+  "S000081251": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Bitcoin High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000081420": {
+   "accession_no": "0002071691-26-000124",
+   "filed_at": "2026-01-12T09:51:43-05:00",
+   "fund_name": "Franklin Long Duration Credit Fund",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "809707"
+  },
+  "S000081802": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced International ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000081803": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Mid Cap Core ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000081804": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Large Cap Core ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000081805": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Large Cap Growth ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000081806": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Large Cap Value ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000081807": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Small Cap Core ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000083903": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Nasdaq-100(R) High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000084049": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Nasdaq-100(R) Hedged Equity Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000084068": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Enhanced Income Credit Select ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000085554": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Russell 2000(R) High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000087779": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced U.S. All-Cap Equity ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000087780": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Emerging Markets ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000087781": {
+   "accession_no": "0000035402-26-000063",
+   "filed_at": "2026-01-13T07:54:15-05:00",
+   "fund_name": "Fidelity Fundamental Developed International ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "945908"
+  },
+  "S000087782": {
+   "accession_no": "0000035402-26-000063",
+   "filed_at": "2026-01-13T07:54:15-05:00",
+   "fund_name": "Fidelity Fundamental Global ex US ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "945908"
+  },
+  "S000087783": {
+   "accession_no": "0000035402-26-000063",
+   "filed_at": "2026-01-13T07:54:15-05:00",
+   "fund_name": "Fidelity Fundamental Emerging Markets ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-10-31",
+   "registrant_cik": "945908"
+  },
+  "S000088938": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Enhanced Income 20+ Year Treasury Bond ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000089464": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Real Estate High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000091457": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS S&P 500(R) Hedged Equity Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000091510": {
+   "accession_no": "0001410368-26-024761",
+   "filed_at": "2026-03-13T10:56:01-04:00",
+   "fund_name": "Onchain Economy ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "768847"
+  },
+  "S000092389": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Gold High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000092869": {
+   "accession_no": "0000940400-26-009689",
+   "filed_at": "2026-03-05T15:50:59-05:00",
+   "fund_name": "Systematic High Yield Bond Series",
+   "fund_types": [
+    "N/A"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "751173"
+  },
+  "S000094755": {
+   "accession_no": "0001410368-26-024761",
+   "filed_at": "2026-03-13T10:56:01-04:00",
+   "fund_name": "VanEck Emerging Markets Bond ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "768847"
+  },
+  "S000094887": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS MSCI EAFE High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund",
+    "Fund of Funds"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000096184": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Ethereum High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000097287": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS MLP & Energy Infrastructure High Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000097595": {
+   "accession_no": "0000894189-26-007901",
+   "filed_at": "2026-03-13T18:29:25-04:00",
+   "fund_name": "NEOS Long/Short Equity Income ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2025-12-31",
+   "registrant_cik": "1848758"
+  },
+  "S000102550": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Mid Cap Growth ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000102551": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Mid Cap Value ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000102552": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Small Cap Growth ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  },
+  "S000102553": {
+   "accession_no": "0000035402-26-005676",
+   "filed_at": "2026-09-11T08:56:50-04:00",
+   "fund_name": "Fidelity Enhanced Small Cap Value ETF",
+   "fund_types": [
+    "Exchange-Traded Fund"
+   ],
+   "period_of_report": "2026-06-30",
+   "registrant_cik": "945908"
+  }
+ },
  "notes": "Pinned inputs of scripts/repair_fund_identity_sec_v1.py. 'current SEC' is public.sec_company_tickers_mf read in the plan's own snapshot; these are the history/corroboration sources.",
  "sec_api": {
   "endpoint": "sec-api.io Query API",

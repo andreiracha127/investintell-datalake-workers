@@ -14,6 +14,13 @@ writes a NEW bundle:
   or R5 depends on, with the observation instant. R2/R3/R5 ignore an
   observation older than 30 days, so re-collect before applying a plan whose
   bundle has aged.
+* sec-api.io Form N-CEN API: the newest N-CEN listing each series R5 judges
+  (``fundTypes`` of Item C.3, where "Underlying fund" marks an underlying fund
+  of an insurance separate account), first by registrant, then by series.
+* sec-api.io full-text search + EDGAR (``--sec-user-agent``): the newest
+  485BPOS of each such registrant mentioning insurance separate accounts, the
+  sentence restricting its shares (if any) and the series it covers (from the
+  EDGAR filing header). The repair decides from that sentence.
 * The sha256 of the SEC series/class datasets and of ``company_tickers_mf.json``
   in ``--dataset-dir``.
 
@@ -32,6 +39,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import html
 import json
 import os
 import re
@@ -50,6 +58,25 @@ from scripts import repair_fund_identity_sec_v1 as repair  # noqa: E402
 
 SEC_CACHE_NAME = "secapi_evidence_20261006.json"
 TIINGO_CACHE_NAME = "tiingo_meta_20261006.json"
+NCEN_CACHE_NAME = "secapi_ncen_20261006.json"
+PROSPECTUS_CACHE_NAME = "secapi_insurance_prospectus_20261006.json"
+EDGAR = "https://www.sec.gov/Archives/edgar/data/{cik}/{folder}/{name}"
+PROSPECTUS_PHRASES = (
+    '"insurance company separate accounts"',
+    '"separate accounts of insurance companies"',
+    '"separate accounts of participating insurance companies"',
+    '"variable annuity contracts and variable life insurance policies"',
+)
+_SENTENCE_TARGET = (r"(separate accounts?|variable annuit\w*|variable life|insurance compan\w*|"
+                    r"insurance contracts?|insurance products?)")
+_SENTENCE_PATTERNS = (
+    re.compile(r"[^.]{0,160}\b(offer|offers|offered|sold|sells|available|issued|issues)\b[^.]{0,40}"
+               r"\b(only|exclusively|solely)\b\s+(to|through|as|for|by)\b[^.]{0,120}"
+               + _SENTENCE_TARGET + r"[^.]{0,160}\.", re.I),
+    re.compile(r"[^.]{0,160}\b(only|exclusively|solely)\s+(available|offered|sold)\b[^.]{0,120}"
+               + _SENTENCE_TARGET + r"[^.]{0,160}\.", re.I),
+)
+_SERIES_HEADER = re.compile(r"(?:&lt;|<)SERIES-ID(?:&gt;|>)\s*(S\d{9})")
 TICKERS_JSON_NAME = "company_tickers_mf_20261006.json"
 DATASET_URLS = {
     2026: ("investment-company-series-class-information/investment-company-series-class-2026.csv", "2026-06-01"),
@@ -102,16 +129,72 @@ def targets_from_plan(plan: dict) -> dict:
         for cls in (item.get("sec_class"), item.get("registry_class")):
             if cls:
                 pairs.add((cls, item["ticker"]))
+    # R5 rests on the insurance status of each candidate series.
+    insurance: set[tuple[str, str]] = set()
+    for change in plan.get("changes", []):
+        facts = change.get("evidence", {}).get(repair.RULES[4])
+        if isinstance(facts, dict) and facts.get("registrant_cik"):
+            insurance.add((facts["series_id"], facts["registrant_cik"]))
+    for bucket in ("orphan_insurance_only_class", "orphan_insurance_status_unverified"):
+        for item in review.get(bucket, []):
+            if item.get("registrant_cik"):
+                insurance.add((item["series_id"], item["registrant_cik"]))
     return {"tiingo": sorted(tiingo), "pairs": sorted(pairs), "classes": sorted(classes),
-            "series": sorted(series)}
+            "series": sorted(series), "insurance": sorted(insurance)}
+
+
+def extract_restriction(text: str) -> str | None:
+    """The first prospectus sentence restricting the shares to insurance channels."""
+    flat = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text))).replace("\ufffd", "'")
+    for pattern in _SENTENCE_PATTERNS:
+        match = pattern.search(flat)
+        if match:
+            parts = re.split(r"(?<=[a-z0-9)])\s+(?=[A-Z])", match.group(0).strip())
+            sentence = next(
+                (part for part in reversed(parts)
+                 if re.search(_SENTENCE_TARGET, part, re.I)
+                 and re.search(r"\b(only|exclusively|solely)\b", part, re.I)),
+                match.group(0).strip(),
+            )
+            return sentence[:300]
+    return None
+
+
+def header_series(header_html: str) -> list[str]:
+    """Series covered by a filing, from its EDGAR ``-index-headers.html``."""
+    return sorted(set(_SERIES_HEADER.findall(header_html)))
 
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def assemble(sec_cache: dict, tiingo_cache: dict, dataset_dir: Path, collected_on: str) -> bytes:
+def assemble(sec_cache: dict, tiingo_cache: dict, dataset_dir: Path, collected_on: str,
+             ncen_cache: dict | None = None, prospectus_cache: dict | None = None) -> bytes:
     """The bundle bytes (canonical: sorted keys, indent 1, trailing newline)."""
+    ncen_series: dict[str, dict] = {}
+    for filing in (ncen_cache or {}).values():
+        if not filing:
+            continue
+        for item in filing.get("series", []):
+            series_id = item.get("series_id")
+            entry = {"accession_no": filing["accession_no"], "filed_at": filing["filed_at"],
+                     "period_of_report": filing.get("period_of_report"),
+                     "registrant_cik": filing.get("registrant_cik"),
+                     "fund_name": item.get("name"), "fund_types": sorted(item.get("fund_types") or [])}
+            if series_id and (series_id not in ncen_series
+                              or entry["filed_at"] > ncen_series[series_id]["filed_at"]):
+                ncen_series[series_id] = entry
+    prospectus = []
+    for value in (prospectus_cache or {}).values():
+        match = value.get("match")
+        if match and match.get("quote"):
+            prospectus.append({
+                "registrant_cik": value["registrant_cik"], "accession_no": match["accession_no"],
+                "form_type": match.get("form_type"), "filed_at": match.get("filed_at"),
+                "document": match.get("document"), "quote": match["quote"],
+                "series_ids": match.get("series_ids_header") or match.get("series_ids") or [],
+            })
     pairs, latest, series = [], [], []
     for key, value in sorted(sec_cache.items()):
         parts = key.split("|")
@@ -158,6 +241,8 @@ def assemble(sec_cache: dict, tiingo_cache: dict, dataset_dir: Path, collected_o
         "class_last_filings": sorted(latest, key=lambda r: r["class_id"]),
         "series_last_filings": sorted(series, key=lambda r: r["series_id"]),
         "tiingo_meta": tiingo,
+        "ncen_series": dict(sorted(ncen_series.items())),
+        "insurance_prospectus": sorted(prospectus, key=lambda r: (r["registrant_cik"], r["accession_no"])),
     }
     return (json.dumps(doc, sort_keys=True, indent=1) + "\n").encode("ascii")
 
@@ -210,6 +295,104 @@ def collect_sec(targets: dict, cache: dict, save, *, api_key: str) -> None:
                set(), "desc", 1)
 
 
+def collect_ncen(insurance: list, cache: dict, save, *, api_key: str) -> None:
+    from sec_api import FormNcenApi
+
+    api = FormNcenApi(api_key=api_key)
+
+    def fetch(tag: str, query: str) -> dict:
+        if tag in cache:
+            return cache[tag]
+        for attempt in range(4):
+            try:
+                result = api.get_data({"query": query, "from": "0", "size": "1",
+                                       "sort": [{"filedAt": {"order": "desc"}}]})
+                break
+            except Exception as exc:  # noqa: BLE001 - the SDK raises bare Exception
+                print(json.dumps({"retry": tag, "error": _TOKEN.sub(r"\1REDACTED", str(exc))[:160]}))
+                time.sleep(2 + 3 * attempt)
+        else:
+            return {}
+        data = result.get("data", [])
+        cache[tag] = {} if not data else {
+            "accession_no": data[0].get("accessionNo"), "filed_at": data[0].get("filedAt"),
+            "form_type": data[0].get("formType"), "period_of_report": data[0].get("periodOfReport"),
+            "registrant_cik": str((data[0].get("registrantInfo") or {}).get("registrantCik") or ""),
+            "series": [{"series_id": m.get("mgmtInvSeriesId"), "name": m.get("mgmtInvFundName"),
+                        "fund_types": m.get("fundTypes") or []}
+                       for m in data[0].get("managementInvestmentQuestionSeriesInfo") or []],
+        }
+        save()
+        time.sleep(0.3)
+        return cache[tag]
+
+    by_cik: dict[str, set[str]] = {}
+    for series, cik in insurance:
+        by_cik.setdefault(str(int(cik)), set()).add(series)
+    for cik, wanted in sorted(by_cik.items()):
+        filing = fetch(f"cik|{cik}", f'registrantInfo.registrantCik:"{cik}"')
+        listed = {item["series_id"] for item in filing.get("series", [])}
+        for series in sorted(wanted - listed):
+            fetch(f"series|{series}", f'managementInvestmentQuestionSeriesInfo.mgmtInvSeriesId:"{series}"')
+
+
+def collect_prospectus(insurance: list, cache: dict, save, *, api_key: str, user_agent: str,
+                       doc_dir: Path) -> None:
+    from sec_api import FullTextSearchApi
+
+    api = FullTextSearchApi(api_key=api_key)
+    doc_dir.mkdir(parents=True, exist_ok=True)
+
+    def edgar(cik: int, folder: str, name: str) -> bytes:
+        path = doc_dir / f"{folder}_{name}"
+        if not path.is_file():
+            request = urllib.request.Request(EDGAR.format(cik=cik, folder=folder, name=name),
+                                             headers={"User-Agent": user_agent})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                path.write_bytes(response.read())
+            time.sleep(0.2)  # SEC fair access: well under 10 requests per second
+        return path.read_bytes()
+
+    for cik in sorted({str(int(c)) for _s, c in insurance}):
+        tag = f"cik|{cik}"
+        if tag in cache:
+            continue
+        hit = None
+        for phrase in PROSPECTUS_PHRASES:
+            result = api.get_filings({"query": phrase, "formTypes": ["485BPOS"], "ciks": [cik.zfill(10)],
+                                      "startDate": "2024-01-01",
+                                      "endDate": dt.date.today().isoformat()})
+            time.sleep(0.3)
+            filings = sorted(result.get("filings", []), key=lambda f: f.get("filedAt") or "", reverse=True)
+            if filings:
+                hit = filings[0]
+                break
+        if hit is None:
+            cache[tag] = {"registrant_cik": cik, "match": None}
+            save()
+            continue
+        accession = hit["accessionNo"]
+        folder = accession.replace("-", "")
+        index = json.loads(edgar(int(cik), folder, "index.json"))
+        documents = sorted(
+            (item for item in index["directory"]["item"]
+             if item["name"].lower().endswith((".htm", ".html")) and "index" not in item["name"].lower()),
+            key=lambda item: -int(item.get("size") or 0),
+        )
+        quote = document = None
+        for item in documents[:6]:
+            quote = extract_restriction(edgar(int(cik), folder, item["name"]).decode("utf-8", "replace"))
+            if quote:
+                document = item["name"]
+                break
+        headers = edgar(int(cik), folder, f"{accession}-index-headers.html").decode("utf-8", "replace")
+        cache[tag] = {"registrant_cik": cik, "match": {
+            "accession_no": accession, "form_type": hit.get("formType"), "filed_at": hit.get("filedAt"),
+            "document": document, "quote": quote, "series_ids_header": header_series(headers),
+        }}
+        save()
+
+
 def collect_tiingo(tickers: list[str], cache: dict, save, *, api_key: str, pace: float,
                    refresh: bool) -> None:
     for ticker in tickers:
@@ -252,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tiingo-pace", type=float, default=2.0, help="seconds between Tiingo requests")
     parser.add_argument("--refresh-tiingo", action="store_true")
     parser.add_argument("--offline", action="store_true", help="assemble from the caches only")
+    parser.add_argument("--sec-user-agent", default=os.environ.get("SEC_USER_AGENT"),
+                        help="descriptive User-Agent with a contact e-mail for sec.gov (or SEC_USER_AGENT)")
     args = parser.parse_args(argv)
     if args.out.exists():
         print(json.dumps({"status": "refused", "reason": "out_exists"}))
@@ -259,18 +444,27 @@ def main(argv: list[str] | None = None) -> int:
     plan = json.loads(args.plan_file.read_text(encoding="utf-8"))
     targets = targets_from_plan(plan)
     sec_path, tiingo_path = args.cache_dir / SEC_CACHE_NAME, args.cache_dir / TIINGO_CACHE_NAME
+    ncen_path, prospectus_path = args.cache_dir / NCEN_CACHE_NAME, args.cache_dir / PROSPECTUS_CACHE_NAME
     sec_cache, tiingo_cache = _load(sec_path), _load(tiingo_path)
+    ncen_cache, prospectus_cache = _load(ncen_path), _load(prospectus_path)
     if not args.offline:
         sec_key, tiingo_key = os.environ.get("SEC_API_IO_KEY"), os.environ.get("TIINGO_API_KEY")
-        if not sec_key or not tiingo_key:
-            print(json.dumps({"status": "refused", "reason": "api_keys_missing"}))
+        if not sec_key or not tiingo_key or not args.sec_user_agent:
+            print(json.dumps({"status": "refused", "reason": "api_keys_or_user_agent_missing"}))
             return 3
         collect_sec(targets, sec_cache, lambda: sec_path.write_text(json.dumps(sec_cache, indent=0)),
                     api_key=sec_key)
+        collect_ncen(targets["insurance"], ncen_cache,
+                     lambda: ncen_path.write_text(json.dumps(ncen_cache, indent=0)), api_key=sec_key)
+        collect_prospectus(targets["insurance"], prospectus_cache,
+                           lambda: prospectus_path.write_text(json.dumps(prospectus_cache, indent=0)),
+                           api_key=sec_key, user_agent=args.sec_user_agent,
+                           doc_dir=args.cache_dir / "edgar")
         collect_tiingo(targets["tiingo"], tiingo_cache,
                        lambda: tiingo_path.write_text(json.dumps(tiingo_cache, indent=0)),
                        api_key=tiingo_key, pace=args.tiingo_pace, refresh=args.refresh_tiingo)
-    raw = assemble(sec_cache, tiingo_cache, args.dataset_dir, args.collected_on)
+    raw = assemble(sec_cache, tiingo_cache, args.dataset_dir, args.collected_on,
+                   ncen_cache, prospectus_cache)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("xb") as handle:
         handle.write(raw)

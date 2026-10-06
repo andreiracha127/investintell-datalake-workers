@@ -30,9 +30,15 @@ A/B and corrects only what current SEC data proves unambiguously:
   series has no active instrument, that is not a phase-B historical sibling,
   that carries no product exclusion
   (``exclusion_reason``/``strategic_excluded_reason``/non-institutional), whose
-  ticker maps to exactly one current SEC class of its registry series, and
-  whose ticker has a current Tiingo price history in the pinned evidence:
-  activate it.
+  ticker maps to exactly one current SEC class of its registry series, whose
+  ticker has a current Tiingo price history in the pinned evidence, and whose
+  series is proven NOT to be offered only through insurance-company separate
+  accounts: activate it. Insurance-only is proven by the series' newest N-CEN
+  (Item C.3 fund type "Underlying fund", i.e. underlying fund of a variable
+  annuity/life separate account, and not an ETF) or by a pinned 485BPOS
+  covering the series whose text says its shares are offered only to
+  insurance separate accounts / variable contracts; such classes stay
+  inactive. Without a pinned N-CEN for the series no reactivation happens.
 * ``R6 deactivate_terminated`` - ``is_active=true`` fund whose ticker and
   series are absent from current SEC data and from the current-year SEC
   series/class dataset, and whose NAV stopped more than 90 days ago: deactivate.
@@ -111,17 +117,20 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.db import LOCK_INSTRUMENT_INGESTION, LOCK_SEC_COMPANY_TICKERS_MF  # noqa: E402
 from src.workers._nav_policy import SEC_MAX_SYNCED_AGE  # noqa: E402
 
 REPAIR_VERSION = "repair-fund-identity-sec-v1"
 CONFIRM_TOKEN = "repair_fund_identity_sec_v1"
 LEDGER_DDL = ROOT / "schemas" / "fund_identity_sec_repair_v1.sql"
 EVIDENCE_PATH = ROOT / "contracts" / "fund-identity-sec" / "evidence_v1.json"
-EVIDENCE_SHA256 = "babbcaafef1d2e1b2352716901346df09fad4eeb144b03438625c04bbfb1f10b"
+EVIDENCE_SHA256 = "a19d7d5d0865878ee0c1a3b1a70648cc50c6feb145df41ccabeb1baed520e407"
 EVIDENCE_KIND = "fund-identity-sec-evidence-v1"
-# Instrument ingestion holds this session lock for a whole NAV run; tickers are
-# never renamed under a running sweep.
-LOCK_INSTRUMENT_INGESTION = 900_331
+# Apply holds, for its whole transaction, the session locks of the NAV ingestion
+# run (tickers are never renamed under a running sweep) and of the SEC ticker
+# sync (the crosswalk the plan rests on cannot change before COMMIT).
+APPLY_LOCKS = (LOCK_INSTRUMENT_INGESTION, LOCK_SEC_COMPANY_TICKERS_MF)
+ROLLBACK_LOCKS = (LOCK_INSTRUMENT_INGESTION,)
 CURRENT_DATASET_YEAR = 2026
 # SEC "Investment Company Series and Class Information" (annual, all series and
 # classes not yet reclassified inactive). Pinned by sha256.
@@ -146,6 +155,19 @@ SERIES_CLASS_FILES: dict[int, tuple[str, str]] = {
 NAV_STALE_AFTER = dt.timedelta(days=90)
 TIINGO_CURRENT_WITHIN = dt.timedelta(days=7)
 EVIDENCE_MAX_AGE = dt.timedelta(days=30)
+# N-CEN is annual (due 75 days after the fiscal year end): two years covers a
+# late filer without accepting a fund's pre-reorganization census.
+NCEN_MAX_AGE = dt.timedelta(days=730)
+NCEN_UNDERLYING_FUND = "Underlying fund"
+NCEN_ETF = "Exchange-Traded Fund"
+_INSURANCE_TARGET = re.compile(
+    r"separate accounts?|variable annuit|variable life|insurance compan|insurance contracts?|"
+    r"insurance products?|insurance policies", re.I)
+_ONLY_WORD = re.compile(r"\b(only|exclusively|solely)\b", re.I)
+# A sentence that also names another channel does not say "insurance-only".
+_OTHER_CHANNELS = re.compile(
+    r"funds? of funds|collective investment|retirement plans?|institutional investors?|\b529\b|"
+    r"wrap (fee|program)|advisory (accounts?|programs?)|qualified plans?|general public", re.I)
 DEAD_TIINGO_STATUSES = frozenset(
     {"success_no_new", "empty", "not_found", "invalid_payload"}
 )
@@ -303,6 +325,10 @@ class Evidence:
     class_ticker_filings: dict[tuple[str, str], list[dict]]
     class_last_filings: dict[str, dict]
     series_last_filings: dict[str, dict]
+    # series_id -> newest N-CEN entry {fund_types, accession_no, filed_at, registrant_cik}
+    ncen_series: dict[str, dict] = field(default_factory=dict)
+    # series_id -> [485BPOS evidence {accession_no, filed_at, quote, registrant_cik}]
+    insurance_prospectus: dict[str, list[dict]] = field(default_factory=dict)
 
 
 def parse_evidence(raw: bytes, sha256: str) -> Evidence:
@@ -315,12 +341,18 @@ def parse_evidence(raw: bytes, sha256: str) -> Evidence:
     pairs: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for filing in doc.get("class_ticker_filings", []):
         pairs[(filing["class_id"], filing["ticker"])].append(filing)
+    prospectus: dict[str, list[dict]] = defaultdict(list)
+    for filing in doc.get("insurance_prospectus", []):
+        for series in filing.get("series_ids", []):
+            prospectus[series].append(filing)
     return Evidence(
         sha256=sha256,
         tiingo={k.upper(): v for k, v in doc.get("tiingo_meta", {}).items()},
         class_ticker_filings=dict(pairs),
         class_last_filings={f["class_id"]: f for f in doc.get("class_last_filings", [])},
         series_last_filings={f["series_id"]: f for f in doc.get("series_last_filings", [])},
+        ncen_series=dict(doc.get("ncen_series", {})),
+        insurance_prospectus=dict(prospectus),
     )
 
 
@@ -722,7 +754,9 @@ def rule_r8_series_moved(state: _State, sec: CurrentSec, history: SecHistory,
                          sec_series=new.series_id, registry_class=class_id,
                          sec_class=new.class_id, newest_new_filing=new_date,
                          newest_old_filing=old_date)
-            if quarantine and iid in state.snapshot.funds:
+            # Quarantine only what the fund's own filings corroborate: a pinned
+            # filing under the registry class, no newer one under SEC's class.
+            if quarantine and iid in state.snapshot.funds and old_date is not None:
                 _quarantine(state, iid, reg, series, new, filings, old_filings)
             continue
         if _owned_by_other(state, iid, "sec_class_id", new.class_id):
@@ -833,6 +867,38 @@ def _tiingo_current(evidence: Evidence, ticker: str, decision_at: dt.datetime) -
     return {"tiingo_end_date": end.isoformat(), "tiingo_observed_at": meta["observed_at"]}
 
 
+def prospectus_says_insurance_only(quote: object) -> bool:
+    """A prospectus sentence restricting the shares to insurance separate accounts."""
+    if not isinstance(quote, str):
+        return False
+    return bool(
+        _ONLY_WORD.search(quote) and _INSURANCE_TARGET.search(quote)
+        and not _OTHER_CHANNELS.search(quote)
+    )
+
+
+def insurance_status(evidence: Evidence, series: str, decision_at: dt.datetime) -> tuple[str, dict]:
+    """``insurance_only`` / ``not_insurance`` / ``unverified`` for one series, with its proof."""
+    ncen = evidence.ncen_series.get(series)
+    proof: dict = {"ncen": None if not ncen else {
+        k: ncen.get(k) for k in ("accession_no", "filed_at", "fund_types")}}
+    for filing in evidence.insurance_prospectus.get(series, []):
+        if prospectus_says_insurance_only(filing.get("quote")):
+            proof["prospectus"] = {k: filing.get(k) for k in ("accession_no", "form_type", "filed_at", "quote")}
+            return "insurance_only", proof
+    if not ncen or not ncen.get("filed_at"):
+        return "unverified", proof
+    filed = dt.datetime.fromisoformat(str(ncen["filed_at"]))
+    if filed.tzinfo is None:
+        filed = filed.replace(tzinfo=dt.timezone.utc)
+    if filed > decision_at + dt.timedelta(days=1) or decision_at - filed > NCEN_MAX_AGE:
+        return "unverified", proof
+    types = set(ncen.get("fund_types") or ())
+    if NCEN_UNDERLYING_FUND in types and NCEN_ETF not in types:
+        return "insurance_only", proof
+    return "not_insurance", proof
+
+
 def rule_r5_activate(state: _State, sec: CurrentSec, evidence: Evidence) -> None:
     series_of = {iid: ident(row.get("sec_series_id")) for iid, row in state.reg.items()}
     active_series = {
@@ -868,9 +934,17 @@ def rule_r5_activate(state: _State, sec: CurrentSec, evidence: Evidence) -> None
             state.review("orphan_no_current_tiingo_nav", iid, ticker=ticker, series_id=series,
                          tiingo=evidence.tiingo.get(ticker))
             continue
+        status, insurance = insurance_status(evidence, series, state.snapshot.decision_at)
+        if status != "not_insurance":
+            bucket = ("orphan_insurance_only_class" if status == "insurance_only"
+                      else "orphan_insurance_status_unverified")
+            state.review(bucket, iid, ticker=ticker, series_id=series,
+                         registrant_cik=current.cik, **insurance)
+            continue
         candidates[series].append((iid, {
             "ticker": ticker, "class_id": current.class_id, "series_id": series,
-            "sec_synced_at": current.synced_at.isoformat(), **tiingo,
+            "registrant_cik": current.cik, "sec_synced_at": current.synced_at.isoformat(),
+            **tiingo, **insurance,
         }))
     for _series, items in sorted(candidates.items()):
         # Every candidate is individually proven live; an orphan series with two
@@ -1201,10 +1275,17 @@ def _safe_rollback(cursor) -> None:
         pass
 
 
-def _lock(cursor) -> None:
-    cursor.execute("SELECT pg_try_advisory_xact_lock(%s) AS ok", (LOCK_INSTRUMENT_INGESTION,))
-    if cursor.fetchone()["ok"] is not True:
-        raise RepairError("instrument_ingestion_lock_busy", 4)
+def _session_locks(cursor, keys: tuple[int, ...]) -> None:
+    """Take every advisory lock BEFORE the snapshot exists (autocommit, session scope).
+
+    A writer that committed before the lock is visible to the snapshot taken
+    after it; one that wants to write afterwards waits for the connection to
+    close. Released when the connection closes.
+    """
+    for key in keys:
+        cursor.execute("SELECT pg_try_advisory_lock(%s) AS ok", (key,))
+        if cursor.fetchone()["ok"] is not True:
+            raise RepairError("writer_lock_busy", 4)
 
 
 def run_plan(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
@@ -1243,9 +1324,9 @@ def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
 
     with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
         with conn.cursor(row_factory=dict_row) as cursor:
+            _session_locks(cursor, APPLY_LOCKS)
             _begin(cursor, read_only=False)
             try:
-                _lock(cursor)
                 cursor.execute(LEDGER_DDL.read_text(encoding="utf-8"))
                 snapshot, _rows = read_snapshot(cursor, history)
                 plan = plan_repairs(snapshot, history, evidence,
@@ -1297,6 +1378,35 @@ def run_apply(dsn: str, history: SecHistory, evidence: Evidence, pins: dict, *,
             "plan_sha256": digest, **summary}
 
 
+def _refuse_repoint_rollback_after_nav_writes(cursor, run_id: uuid.UUID, applied_at) -> None:
+    """An R3 repoint cannot be undone in the catalog alone once NAV moved with it.
+
+    After the repoint, ingestion appends (and a governed rebase rewrites) the
+    NEW class's NAV under the instrument; restoring the old ticker would label
+    those rows with the terminated class. Any successful NAV write for a
+    repointed instrument after the apply run blocks the rollback; reverse the
+    NAV first (rebase back), then roll back.
+    """
+    cursor.execute(
+        "SELECT array_agg(instrument_id) AS ids FROM fund_identity_sec_repair_receipts "
+        "WHERE run_id = %s AND relation = 'instruments_universe' AND %s = ANY(rules)",
+        (run_id, RULES[2]),
+    )
+    ids = cursor.fetchone()["ids"]
+    if not ids:
+        return
+    cursor.execute("SELECT to_regclass('public.nav_ingestion_attempts') IS NOT NULL AS present")
+    if cursor.fetchone()["present"] is not True:
+        return
+    cursor.execute(
+        "SELECT count(*) AS n FROM public.nav_ingestion_attempts "
+        "WHERE instrument_id = ANY(%s) AND persisted_at > %s AND status = 'success_new'",
+        (ids, applied_at),
+    )
+    if cursor.fetchone()["n"]:
+        raise RepairError("rollback_repoint_after_nav_writes")
+
+
 def run_rollback(dsn: str, run_id: str) -> dict:
     import psycopg
     from psycopg.rows import dict_row
@@ -1304,16 +1414,17 @@ def run_rollback(dsn: str, run_id: str) -> dict:
     target = uuid.UUID(run_id)
     with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
         with conn.cursor(row_factory=dict_row) as cursor:
+            _session_locks(cursor, ROLLBACK_LOCKS)
             _begin(cursor, read_only=False)
             try:
-                _lock(cursor)
                 cursor.execute(LEDGER_DDL.read_text(encoding="utf-8"))
                 cursor.execute(
-                    "SELECT kind, plan_sha256, evidence_sha256 FROM fund_identity_sec_repair_runs "
-                    "WHERE run_id = %s", (target,))
+                    "SELECT kind, plan_sha256, evidence_sha256, created_at "
+                    "FROM fund_identity_sec_repair_runs WHERE run_id = %s", (target,))
                 run = cursor.fetchone()
                 if run is None or run["kind"] != "apply":
                     raise RepairError("rollback_run_not_found")
+                _refuse_repoint_rollback_after_nav_writes(cursor, target, run["created_at"])
                 cursor.execute("SELECT clock_timestamp() AS t")
                 decision_at = cursor.fetchone()["t"]
                 cursor.execute(

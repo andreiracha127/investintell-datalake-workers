@@ -41,6 +41,8 @@ jobs:
           python -m compileall -q
           scripts/verify_mixed_quant_contract.py
           scripts/load_bond_reference_terms.py
+          scripts/repair_fund_identity_sec_v1.py
+          scripts/collect_fund_identity_sec_evidence.py
           scripts/sync_sec_regulatory_contract.py
           scripts/compose_fund_regulatory_serving_mappings.py
           scripts/verify_class_mappings_secapi.py
@@ -142,6 +144,9 @@ jobs:
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
             tests/test_fund_peer_groups.py
+            tests/test_repair_fund_identity_sec_v1.py
+            tests/test_repair_fund_identity_sec_v1_db.py
+            tests/test_collect_fund_identity_sec_evidence.py
             tests/test_open_macro_v03_chain.py
             tests/test_ncen_ingestion.py
             tests/test_nport_schema.py
@@ -244,6 +249,8 @@ jobs:
           python -m compileall -q
           scripts/verify_mixed_quant_contract.py
           scripts/load_bond_reference_terms.py
+          scripts/repair_fund_identity_sec_v1.py
+          scripts/collect_fund_identity_sec_evidence.py
           scripts/sync_sec_regulatory_contract.py
           scripts/compose_fund_regulatory_serving_mappings.py
           scripts/verify_class_mappings_secapi.py
@@ -354,6 +361,9 @@ jobs:
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
             tests/test_finnhub_client.py
+            tests/test_repair_fund_identity_sec_v1.py
+            tests/test_repair_fund_identity_sec_v1_db.py
+            tests/test_collect_fund_identity_sec_evidence.py
             tests/test_fomc_sep_ingestion.py
             tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
@@ -413,6 +423,7 @@ jobs:
             tests/test_nport_effective_views.py
             tests/test_open_macro_v03_resolution_ledger.py
             tests/test_risk_metrics_peer_cohort_guard.py
+            tests/test_repair_fund_identity_sec_v1_db.py
             tests/test_rr1_effective_views.py
             tests/test_rr1_fee_profiles.py
             tests/test_sec_derived_publications.py

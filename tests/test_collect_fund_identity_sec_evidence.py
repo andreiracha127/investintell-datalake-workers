@@ -32,6 +32,22 @@ def test_targets_cover_every_input_a_plan_rests_on():
     assert {("C2", "DEADX"), ("C3", "VVPLX"), ("C4", "VVPLX"), ("C5", "PINUX"),
             ("C6", "STNC"), ("C7", "STNC")} <= set(targets["pairs"])
     assert targets["classes"] == ["C2", "C4", "C5"] and targets["series"] == ["S1"]
+    assert targets["insurance"] == []
+
+
+def test_insurance_targets_and_prospectus_parsing():
+    plan = {"changes": [{"evidence": {repair.RULES[4]: {"series_id": "S9", "registrant_cik": "0000036405",
+                                                        "ticker": "VTI"}}}],
+            "review": {"orphan_insurance_status_unverified": [{"series_id": "S8", "registrant_cik": "0000918294",
+                                                               "ticker": "QAAAJX"}]}}
+    assert collect.targets_from_plan(plan)["insurance"] == [("S8", "0000918294"), ("S9", "0000036405")]
+    page = ("<p>RISKS</p><p>T. ROWE PRICE QAOSWX All-Cap Opportunities Portfolio The fund is generally "
+            "available only through variable annuity or variable life insurance contracts. Other text.</p>")
+    assert collect.extract_restriction(page) == (
+        "The fund is generally available only through variable annuity or variable life insurance contracts.")
+    assert collect.extract_restriction("<p>Shares are offered to everyone.</p>") is None
+    header = "&lt;SERIES-ID&gt;S000002081 x &lt;SERIES-ID&gt;S000002077 &lt;SERIES-ID&gt;S000002081"
+    assert collect.header_series(header) == ["S000002077", "S000002081"]
 
 
 def test_assemble_is_deterministic_and_loads_as_evidence(tmp_path):
@@ -44,11 +60,22 @@ def test_assemble_is_deterministic_and_loads_as_evidence(tmp_path):
            "S1|series_latest": {"filings": [filing]}}
     tiingo = {"NEW": {"status": 200, "endDate": "2026-10-05", "observed_at": "2026-10-06T06:00:00+00:00"},
               "UNSTAMPED": {"status": 200}}
-    raw = collect.assemble(sec, tiingo, tmp_path, "2026-10-06")
-    assert raw == collect.assemble(dict(reversed(sec.items())), tiingo, tmp_path, "2026-10-06")
+    ncen = {"cik|1": {"accession_no": "N1", "filed_at": "2026-03-12T16:00:00-04:00", "registrant_cik": "1",
+                      "series": [{"series_id": "S1", "name": "x", "fund_types": ["Underlying fund"]}]},
+            "series|S1": {"accession_no": "N0", "filed_at": "2025-03-12T16:00:00-04:00", "registrant_cik": "1",
+                          "series": [{"series_id": "S1", "name": "x", "fund_types": []}]}}
+    prospectus = {"cik|1": {"registrant_cik": "1", "match": {
+        "accession_no": "P1", "form_type": "485BPOS", "filed_at": "2026-04-24", "document": "d.htm",
+        "quote": "The fund is available only through variable annuity contracts.",
+        "series_ids_header": ["S1"]}}, "cik|2": {"registrant_cik": "2", "match": None}}
+    raw = collect.assemble(sec, tiingo, tmp_path, "2026-10-06", ncen, prospectus)
+    assert raw == collect.assemble(dict(reversed(sec.items())), tiingo, tmp_path, "2026-10-06",
+                                   dict(reversed(ncen.items())), prospectus)
     evidence = repair.parse_evidence(raw, hashlib.sha256(raw).hexdigest())
     assert set(evidence.tiingo) == {"NEW"}
     assert evidence.class_ticker_filings[("C1", "NEW")][0]["role"] == "first_with_ticker"
     assert evidence.class_last_filings["C1"]["accession_no"] == "0001-26-1"
+    assert evidence.ncen_series["S1"]["accession_no"] == "N1"  # newest N-CEN wins
+    assert evidence.insurance_prospectus["S1"][0]["accession_no"] == "P1"
     assert json.loads(raw)["sec_series_class_datasets"]["2026"]["sha256"] == hashlib.sha256(
         repair.SERIES_CLASS_FILES[2026][0].encode()).hexdigest()
