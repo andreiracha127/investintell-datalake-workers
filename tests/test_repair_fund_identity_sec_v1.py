@@ -23,7 +23,8 @@ def iu(iid, ticker, *, active=True, isin=None, historical=False, kind="fund", ex
 def reg(iid, ticker, series, cls, *, cik="0000000001", conflict=None):
     return iid, {"instrument_id": iid, "sec_series_id": series, "sec_class_id": cls, "ticker": ticker,
                  "cik_padded": cik, "cik_unpadded": str(int(cik)) if cik else None,
-                 "conflict_state": conflict if conflict is not None else {}, "identity_sources": {}}
+                 "conflict_state": conflict if conflict is not None else {}, "identity_sources": {},
+                 "resolution_status": "canonical"}
 
 
 def sec(cls, series, ticker, synced=FRESH, cik="1"):
@@ -685,3 +686,35 @@ def test_r9_never_overwrites_a_conflict_state_that_is_not_an_object():
     snap.registry["a"]["conflict_state"] = ["legacy", "evidence"]
     plan, out = run(snap, ev=evidence(CURRENT, filings=filings), quarantine_sec_contradictions=True)
     assert out == {} and plan.review["quarantine_conflict_state_not_object"]
+
+
+# Seventh review round ---------------------------------------------------------
+@pytest.mark.parametrize("state", [[], False, 0, 5, True, "x", None])
+def test_r5_treats_every_non_object_conflict_state_as_a_conflict(state):
+    snap = _orphan()
+    snap.registry["a"]["conflict_state"] = state
+    plan, out = run(snap, ev=evidence({"VTI": tiingo_ok()}))
+    assert out == {} and plan.review["orphan_registry_conflict"]
+
+
+def test_r5_needs_a_canonical_registry_row():
+    snap = _orphan()
+    snap.registry["a"]["resolution_status"] = "candidate"
+    plan, out = run(snap, ev=evidence({"VTI": tiingo_ok()}))
+    assert out == {} and plan.review["orphan_registry_not_canonical"]
+
+
+@pytest.mark.parametrize("padded,unpadded", [(None, "999"), ("0001100663", "999"), ("bad", None)])
+def test_r7_reviews_any_stored_cik_form_that_disagrees(padded, unpadded):
+    snap = snapshot([iu("a", "HYG")], [reg("a", "HYG", None, None, cik=None)],
+                    [sec("C000046846", "S000016772", "HYG", cik="1100663")], funds=set())
+    snap.registry["a"].update(cik_padded=padded, cik_unpadded=unpadded)
+    plan, out = run(snap)
+    assert out == {} and plan.review["registry_cik_disagrees_with_sec"]
+
+
+def test_r8_never_reads_a_deregistration_as_the_new_series_continuing():
+    ev = evidence(CURRENT, filings=[_filing("C000259241", "VVPLX", "N-8F", "2026-09-28"),
+                                    _filing("C000082313", "VVPLX", "NPORT-P", "2026-07-13")])
+    plan, out = run(_moved(), ev=ev)
+    assert out == {} and plan.review["series_moved_unproven"]

@@ -264,9 +264,10 @@ series; not a phase-B sibling; no product exclusion (`exclusion_reason`,
 `strategic_excluded_reason`, `is_institutional=false`); IU ticker = registry
 ticker = the single fresh SEC row of the registry series/class; Tiingo
 `endDate` within 7 days of an observation at most 30 days old; a pinned N-CEN
-for the series at most two years old; not insurance-only as above; an empty
-registry `conflict_state`; no other IU or registry row claims the ticker
-(the generator would stop either at `registry.conflict_state_not_empty` or
+for the series at most two years old; not insurance-only as above; a
+`canonical` registry row whose `conflict_state` is an empty object; no other
+IU or registry row claims the ticker (the generator would stop it at
+`registry.status_not_canonical`, `registry.conflict_state_not_empty` or
 `ticker.global_conflict`). Rows: 50. A fund that R7 or R8 brings into
 `funds_v` is judged by the next run, once the eligibility view lists it (none
 at this snapshot: the 22 funds R7/R8 add are all active).
@@ -306,8 +307,10 @@ listed under `series_terminated_nav_current`.
 MBB, SGOV, MUB, HYG, GOVT, VTIP, IWO, ICVT, AFIF, IWP, QAI, PCLO, BIL, ASMF,
 EMB, LQD. Each ticker has exactly one fresh SEC row (HYG →
 S000016772/C000046846, SGOV → S000068768/C000219740, both CIK 1100663) and
-no other registry row holds that class (otherwise `registry_class_taken`). R7
-fills series, class and CIK; 17 of the series pass the eligibility gate, so
+no other registry row holds that class (otherwise `registry_class_taken`);
+a stored CIK in either form that is malformed or names another registrant
+goes to review (`registry_cik_disagrees_with_sec`). R7 fills series, class
+and CIK; 17 of the series pass the eligibility gate, so
 those funds join `funds_v` and become ACTIVE. Rows: 20 registry rows.
 
 ### 8. Ticker moved to another series (R8) and SEC self-contradictions (R9)
@@ -318,7 +321,8 @@ SEC's ticker file now lists under a different series and registrant than the
 registry. The fund's own filings decide whether that is a real move.
 
 **Real moves (R8).** SEC's newest sync lists the ticker once, under the new
-series, and a prospectus or N-PORT filing (not an N-CEN) shows the ticker
+series, and a prospectus or N-PORT filing (not an N-CEN, never an N-8F
+deregistration application) shows the ticker
 under the new class and series after the newest filing showing it under the
 old class and registry series:
 

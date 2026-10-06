@@ -689,9 +689,12 @@ def rule_r7_registry_series(state: _State, sec: CurrentSec) -> None:
         current = sec.unique_ticker(ticker)
         if ticker is None or current is None or ident(reg.get("ticker")) not in (None, ticker):
             continue
-        if cik10(reg.get("cik_padded")) not in (None, current.cik):
+        stored = [reg.get(c) for c in ("cik_padded", "cik_unpadded") if ident(reg.get(c)) is not None]
+        if any(cik10(value) != current.cik for value in stored):
+            # A malformed or different registrant in either form is evidence to review.
             state.review("registry_cik_disagrees_with_sec", iid, ticker=ticker,
-                         registry_cik=reg.get("cik_padded"), sec_cik=current.cik)
+                         registry_cik=reg.get("cik_padded"),
+                         registry_cik_unpadded=reg.get("cik_unpadded"), sec_cik=current.cik)
             continue
         if not _ticker_free(state, iid, ticker):
             continue
@@ -719,9 +722,15 @@ def _owned_by_other(state: _State, iid: str, column: str, value: str) -> bool:
 
 
 def _newest(filings: list[dict], *, skip_ncen: bool) -> str | None:
+    """Newest filing date; ``skip_ncen`` keeps only forms that corroborate a live series.
+
+    N-CEN (a census that relisted STNC/OIODX) and N-8F (an application to
+    deregister) never show a series continuing.
+    """
     dates = [
         str(f.get("filed_at"))[:10] for f in filings
-        if f.get("filed_at") and not (skip_ncen and str(f.get("form_type", "")).startswith("N-CEN"))
+        if f.get("filed_at") and not (
+            skip_ncen and str(f.get("form_type", "")).upper().startswith(("N-CEN", "N-8F")))
     ]
     return max(dates) if dates else None
 
@@ -959,11 +968,20 @@ def rule_r5_activate(state: _State, sec: CurrentSec, evidence: Evidence) -> None
             state.review("orphan_deliberately_excluded", iid, ticker=ticker, series_id=series,
                          reason=row["excluded"])
             continue
-        if reg.get("conflict_state"):
-            # The generator stops it at registry.conflict_state_not_empty, and an
-            # active row would mark its series as represented.
+        status = reg.get("resolution_status")
+        if not isinstance(status, str) or status.strip() != "canonical":
+            # The generator stops it at registry.status_not_canonical.
+            state.review("orphan_registry_not_canonical", iid, ticker=ticker, series_id=series,
+                         resolution_status=status)
+            continue
+        conflict = reg.get("conflict_state")
+        if type(conflict) is not dict or conflict:
+            # The generator stops it at registry.conflict_state_not_empty (any
+            # non-object state included), and an active row would mark its
+            # series as represented.
             state.review("orphan_registry_conflict", iid, ticker=ticker, series_id=series,
-                         conflict_keys=sorted(reg["conflict_state"]))
+                         conflict_keys=sorted(conflict) if type(conflict) is dict
+                         else f"<{type(conflict).__name__}>")
             continue
         current = sec.unique_ticker(ticker)
         if ticker is None or ticker != ident(reg.get("ticker")) or current is None:
@@ -1202,7 +1220,7 @@ IU_QUERY = (
 )
 REGISTRY_QUERY = (
     "SELECT instrument_id, sec_series_id, sec_class_id, ticker, cik_padded, cik_unpadded, "
-    "conflict_state, identity_sources FROM public.instrument_identity"
+    "conflict_state, identity_sources, resolution_status FROM public.instrument_identity"
 )
 # funds_v rows only appear for a filled series after the eligibility view sees it;
 # the in-memory "after" classification therefore never invents funds_v rows.
