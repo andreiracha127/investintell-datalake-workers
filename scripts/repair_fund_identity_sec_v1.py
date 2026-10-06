@@ -719,7 +719,8 @@ def rule_r8_series_moved(state: _State, sec: CurrentSec, history: SecHistory,
             # SEC's ticker file and the fund's own filings disagree about the
             # live series: a choice for the owner, never a guess.
             state.review("series_moved_unproven", iid, ticker=ticker, registry_series=series,
-                         sec_series=new.series_id, newest_new_filing=new_date,
+                         sec_series=new.series_id, registry_class=class_id,
+                         sec_class=new.class_id, newest_new_filing=new_date,
                          newest_old_filing=old_date)
             if quarantine and iid in state.snapshot.funds:
                 _quarantine(state, iid, reg, series, new, filings, old_filings)

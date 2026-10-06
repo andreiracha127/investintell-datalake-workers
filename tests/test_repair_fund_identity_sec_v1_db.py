@@ -53,7 +53,7 @@ CREATE TABLE nav_ingestion_attempts (run_id uuid NOT NULL, instrument_id uuid NO
     persisted_at timestamptz NOT NULL DEFAULT clock_timestamp());
 """
 
-QUVU, VTI, DEAD = (str(uuid.UUID(int=i)) for i in (1, 2, 3))
+QUVU, VTI, DEAD, HYG = (str(uuid.UUID(int=i)) for i in (1, 2, 3, 4))
 HISTORY = repair.build_history([
     (2025, "C000244148", "S000081376", "0001501825", "QUVU"),
     (2026, "C000007808", "S000002848", "0000036405", "VTI"),
@@ -79,7 +79,8 @@ def db():
     conflict = {"ticker": {"values": [{"value": "QUVU"}, {"value": "ACVU"}], "resolved": False}}
     with psycopg.connect(DSN, autocommit=True) as conn:
         conn.execute(SCHEMA)
-        rows = [(QUVU, "QUVU", "S000081376", True), (VTI, "VTI", None, False), (DEAD, "DEADX", None, True)]
+        rows = [(QUVU, "QUVU", "S000081376", True), (VTI, "VTI", None, False), (DEAD, "DEADX", None, True),
+                (HYG, "HYG", None, True)]
         for iid, ticker, isin, active in rows:
             conn.execute(
                 "INSERT INTO instruments_universe (instrument_id, instrument_type, name, isin, ticker, is_active) "
@@ -94,9 +95,12 @@ def db():
                 "INSERT INTO instrument_identity (instrument_id, sec_series_id, sec_class_id, ticker, "
                 "cik_padded, cik_unpadded, conflict_state) VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (iid, series, cls, ticker, cik, str(int(cik)), Jsonb(state)))
+        # A benchmark-proxy registry row: ticker only (R7 fills series/class/CIK).
+        conn.execute("INSERT INTO instrument_identity (instrument_id, ticker) VALUES (%s, 'HYG')", (HYG,))
         conn.execute("INSERT INTO sec_company_tickers_mf (class_id, cik, series_id, ticker) VALUES "
                      "('C000244148', '1501825', 'S000081376', 'ACVU'), "
-                     "('C000007808', '36405', 'S000002848', 'VTI')")
+                     "('C000007808', '36405', 'S000002848', 'VTI'), "
+                     "('C000046846', '1100663', 'S000016772', 'HYG')")
         conn.execute("INSERT INTO nav_timeseries VALUES (%s, '2024-12-27', 10)", (DEAD,))
         run_id = uuid.uuid4()
         conn.execute("INSERT INTO nav_ingestion_runs VALUES (%s, 'completed')", (run_id,))
@@ -122,6 +126,7 @@ def test_apply_is_receipted_idempotent_and_rolls_back_exactly(db):
     assert report["changes_by_rule"] == {
         "R1_iu_isin_edgar_identifier": 1, "R2_ticker_renamed_same_class": 2,
         "R4_conflict_resolved_by_sec": 1, "R5_activate_live_orphan": 1, "R6_deactivate_terminated": 1,
+        "R7_registry_series_from_sec": 1,
     }
     assert report["generator_after"]["active"] == report["generator_before"]["active"] + 2
     before_iu, before_reg = _rows(db)
@@ -137,6 +142,9 @@ def test_apply_is_receipted_idempotent_and_rolls_back_exactly(db):
     assert after_iu[QUVU]["ticker"] == "ACVU" and after_iu[QUVU]["isin"] is None
     assert after_reg[QUVU]["ticker"] == "ACVU" and after_reg[QUVU]["conflict_state"] == {}
     assert after_iu[VTI]["is_active"] is True and after_iu[DEAD]["is_active"] is False
+    assert (after_reg[HYG]["sec_series_id"], after_reg[HYG]["sec_class_id"], after_reg[HYG]["cik_padded"],
+            after_reg[HYG]["cik_unpadded"]) == ("S000016772", "C000046846", "0001100663", "1100663")
+    assert after_reg[HYG]["identity_sources"]["sec_series_id"]["source"] == "sec_company_tickers_mf"
 
     _plan, _snap, again = repair.run_plan(db, HISTORY, ev, pins, include_class_repoint=False)
     assert again["rows_changed"] == {}
@@ -146,12 +154,12 @@ def test_apply_is_receipted_idempotent_and_rolls_back_exactly(db):
 
     with psycopg.connect(db, autocommit=True) as conn:
         receipts = conn.execute("SELECT count(*) FROM fund_identity_sec_repair_receipts").fetchone()[0]
-        assert receipts == 4  # QUVU (IU + registry), VTI, DEADX
+        assert receipts == 5  # QUVU (IU + registry), VTI, DEADX, HYG (registry)
         with pytest.raises(psycopg.errors.RaiseException):
             conn.execute("UPDATE fund_identity_sec_repair_receipts SET rules = rules")
 
     rolled = repair.run_rollback(db, result["run_id"])
-    assert rolled["rows_restored"] == 4
+    assert rolled["rows_restored"] == 5
     assert _rows(db) == (before_iu, before_reg)  # byte-exact, updated_at included
     with pytest.raises(psycopg.errors.UniqueViolation):
         repair.run_rollback(db, result["run_id"])  # one rollback per apply

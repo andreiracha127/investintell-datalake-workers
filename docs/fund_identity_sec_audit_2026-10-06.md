@@ -66,8 +66,8 @@ integrity 2.
 | `nav_ingestion_attempts` run `244e8eea-5b3c-4d7d-b74d-2a29fc0428f1`, `nav_timeseries` | production Tiingo outcome and newest NAV date (R6) | same snapshot |
 | `company_tickers_mf.json` (2026-10-06 download) | cross-check of the DB sync: 28,608 rows, 1 row differs from the newest DB batch | sha256 in the evidence bundle |
 
-sec-api bandwidth used: 4.92 MB in October 2026 (about 570 Query API calls).
-Tiingo: about 580 meta requests.
+sec-api bandwidth used: 4.92 MB in October 2026 (about 600 Query API calls).
+Tiingo: about 590 meta requests, at most 0.5 requests per second.
 
 ## Findings
 
@@ -440,6 +440,14 @@ firm- or series-level for many rows, so the order is indicative.
 ticker is checked against all IU and registry rows (`uq_iu_ticker`). The
 ledger tables are append-only (row and truncate triggers).
 
+`scripts/collect_fund_identity_sec_evidence.py` regenerates the bundle: it
+reads a plan file, derives the Tiingo tickers, (class, ticker) pairs, classes
+and series the plan rests on (137, 111, 36 and 156 for the live plan),
+fetches the missing ones (sec-api Query API, Tiingo meta; keys from
+`SEC_API_IO_KEY`/`TIINGO_API_KEY`), and writes a new bundle; `--offline`
+reassembles the committed bundle byte for byte from the caches. A new bundle
+needs a reviewed change of `EVIDENCE_SHA256`.
+
 ## Dry run on production (before A + B)
 
 `--mode plan --include-class-repoint --quarantine-sec-contradictions` on the
@@ -467,8 +475,9 @@ digest.
 ## Apply order
 
 Prerequisites: the SEC sync ran within 7 days; the evidence bundle is less
-than 30 days old (R2, R3, R5 need its Tiingo observations); no NAV ingestion
-run is active.
+than 30 days old (R2, R3, R5 need its Tiingo observations; after 2026-11-05
+re-collect with `collect_fund_identity_sec_evidence --refresh-tiingo` and
+re-pin); no NAV ingestion run is active.
 
 1. PR #149 (A + B): its dry run, then `--apply`.
 2. This repair, from `E:\tmp-deploy\api`:
