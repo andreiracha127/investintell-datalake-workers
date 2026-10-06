@@ -5,7 +5,7 @@ that keep most funds out of the builder. The NAV policy generator
 (`scripts/generate_fund_nav_policy_v1.py`) classifies them `UNKNOWN`, and the
 builder only admits funds whose lifecycle evidence says `ACTIVE`. Lifecycle
 evidence is immutable per policy version, so the repair takes effect only after
-a NEW policy version is built, audited and published (sections 4 to 7).
+a NEW policy version is built, audited and published (sections 5 to 8).
 
 ## 1. The defects and the rules
 
@@ -49,11 +49,27 @@ registry ticker was overwritten, so they already describe the IU class.
   restores them byte for byte, all or nothing, only if every touched row still
   holds the run's after-values.
 
-## 3. Repair procedure (production)
+## 3. Consumers and their follow-ups
 
-Run from the repository root of a clean clone at the merged SHA, with
-`NAV_READINESS_DATABASE_URL` set to the `worker_writer` DSN. Avoid these
-windows:
+Checked in this repository and in Light (backend and frontend).
+
+| Consumer | Effect | Follow-up |
+|---|---|---|
+| `funds_profile_mv`, `funds_list_mv`, `fund_class_resolution_mv` (`fund_ticker`), `fund_benchmark_candidates_mv` | Project `funds_v.ticker` | REFRESH (section 4) |
+| `src/sec_serving/app_composition.py` `CASCADE_SQL` | Uses registry `sec_class_id`/`ticker` as cascade source #1 for `fund_regulatory_serving_instrument_mappings`, which feeds the served rr1 fee, mandate and operating facts by class. Publications are immutable. | Takes effect at the next `scripts/compose_fund_regulatory_serving_mappings.py` publication |
+| Light fund pages, search, portfolio ticker resolution | `Fund.ticker` (`funds_v.ticker`) becomes the IU class. Search by the old registry ticker resolves through `class_ticker`, not `Fund.ticker`. ETF OHLCV and the Tiingo description follow the IU class, which is the class whose NAV is ingested. | None; intended |
+| `funds_v.fund_type` (ETP join on the registry ticker) | 15 ETP-membership flips, all Vanguard series whose IU ticker is the ETF class (VONV, VTEB, VIGI, MGK, ...). At most 3 change type (mutual_fund -> etf); the rest are already `etf` through `sec_etfs`. | None; intended |
+| `instruments_universe.isin` readers (`lookthrough.py`, `nport_lookthrough.py`) | Match holding ISINs with `= ANY` / joins. NULL never matches; nothing reads an S-id from `isin` as a series key. | None |
+| N-PORT look-through, holdings, fixed income, active share | Keyed by `sec_series_id`, which is unchanged | None |
+| Fund slugs | Generated from `name`; immutable | None |
+
+## 4. Repair procedure (production)
+
+Run from the repository root of a clean clone at the merged SHA (`core.autocrlf
+false`), with `NAV_READINESS_DATABASE_URL` set to the `worker_writer` DSN. Run
+it inside Railway's network (e.g. `railway ssh` into a workers service at that
+SHA), or point the DSN at the public TCP proxy host when running outside it.
+Avoid these windows:
 
 - 03:30 UTC Tue-Sat, when `nav-current-daily-chain` runs (apply exits 4 if a
   NAV writer holds its lock);
@@ -81,7 +97,7 @@ python -m scripts.repair_fund_catalog_identity_v1 --apply \
   --confirm repair_fund_catalog_identity_v1 --plan-sha256 <plan_sha256>
 
 # 3. Verify: the plan is now empty, and classification.before reports the
-#    repaired catalog (ACTIVE and the A4/A8 numbers used in section 5).
+#    repaired catalog (ACTIVE and the A4/A8 numbers used in section 6).
 python -m scripts.repair_fund_catalog_identity_v1
 
 # Rollback, only if needed:
@@ -89,9 +105,8 @@ python -m scripts.repair_fund_catalog_identity_v1 --rollback <run_id> \
   --confirm repair_fund_catalog_identity_v1
 ```
 
-Refresh the Light read models in the order of Light's `fund-classification`
-job, or let its 08:00 UTC cron do it. `funds_profile_mv`, `funds_list_mv` and
-`fund_class_resolution_mv` project `funds_v.ticker`:
+Then refresh the Light read models listed in section 3, in the order Light's
+`fund-classification` job uses, or let its 08:00 UTC cron do it:
 
 ```sql
 REFRESH MATERIALIZED VIEW funds_profile_mv;
@@ -100,7 +115,7 @@ REFRESH MATERIALIZED VIEW fund_class_resolution_mv;
 REFRESH MATERIALIZED VIEW fund_benchmark_candidates_mv;
 ```
 
-## 4. Blocker before any new policy can be published: A8 integrity
+## 5. Blocker before any new policy can be published: A8 integrity
 
 The strict audit requires zero SEC integrity first failures (contract round 7,
 `integrity_ceiling = 0`), and the operator refuses publication otherwise.
@@ -116,7 +131,7 @@ registry `conflict_state`, which moves them to the pre-claim failure
 `registry.conflict_state_not_empty`; they stay `UNKNOWN` either way. The other
 is to align them to SEC's current mapping. This repair does neither.
 
-## 5. Audit config re-pin (reviewed commit to this repository)
+## 6. Audit config re-pin (reviewed commit to this repository)
 
 The operator pins the SHA-256 of `configs/nav_identity_audit_v3.json`. Take
 the A4 numbers from the post-apply dry run (`classification.before.gates.a4`).
@@ -134,12 +149,18 @@ Also confirm or re-pin `builder.light_revision`, the cohort query and
 `stage1_quotas`. The config is pinned to Light `aeb59337`; Light `main` has
 moved since.
 
-## 6. Build and audit a new policy version (POSIX host only)
+## 7. Build and audit a new policy version (POSIX host only)
 
 `build` refuses non-POSIX hosts and needs a private custody root: mode 0700,
 outside any git checkout. Reuse the requested coverage of `2026-09-25.3`
 (sessions 2024-01-02..2027-12-31). The SEC crosswalk must have been synced
-within 7 days, otherwise `sec_source_stale` aborts the build.
+within 7 days, otherwise `sec_source_stale` aborts the build. Confirm the
+requested coverage against `generation.requested_coverage_start`/`_end` of
+the published `2026-09-25.3` artifact in custody.
+
+A3 compares against the previous policy. `2026-09-25.3` has 2,899 ACTIVE,
+but the catalog yielded 2,896 on 2026-10-06 before any repair. Those 3 are
+SEC drift, not this repair, and the audit will ask for them to be explained.
 
 ```bash
 R=/srv/nav-custody/<YYYY-MM-DD>; install -d -m 700 "$R"
@@ -162,7 +183,7 @@ python -m scripts.verify_fund_nav_identity_v2 \
   --custody-root "$R" --output "$R/audit.json" --canary-output "$R/canary.json"
 ```
 
-## 7. Publish (governed operator), then re-run the chain
+## 8. Publish (governed operator), then re-run the chain
 
 ```bash
 SQL=$(sha256sum schemas/fund_nav_readiness_v1.sql | cut -d' ' -f1)
