@@ -47,6 +47,7 @@ jobs:
           scripts/verify_sec_regulatory_contract.py
           scripts/rebase_fund_nav_window.py
           scripts/rebase_fund_nav_cohort.py
+          scripts/repair_fund_catalog_identity_v1.py
           src/bonds
           src/db.py
           src/ncen
@@ -182,6 +183,8 @@ jobs:
             tests/test_bond_market_implied_rating_replay.py
             tests/test_bond_market_implied_rating_worker.py
             tests/test_verify_bond_market_implied_rating_publication.py
+            tests/test_repair_fund_catalog_identity_v1.py
+            tests/test_repair_fund_catalog_identity_v1_db.py
           )
           printf 'environment_mode=no-dsn\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
@@ -255,6 +258,7 @@ jobs:
           scripts/verify_sec_regulatory_contract.py
           scripts/rebase_fund_nav_window.py
           scripts/rebase_fund_nav_cohort.py
+          scripts/repair_fund_catalog_identity_v1.py
           src/bonds
           src/db.py
           src/ncen
@@ -400,6 +404,8 @@ jobs:
             tests/test_bond_default_events_worker.py
             tests/test_bond_default_publication_db.py
             tests/test_bond_default_diagnostic_publication_db.py
+            tests/test_repair_fund_catalog_identity_v1.py
+            tests/test_repair_fund_catalog_identity_v1_db.py
           )
           db_tests=(
             tests/test_fomc_sep_ingestion.py
@@ -428,6 +434,7 @@ jobs:
             tests/test_sec_regulatory_mandate.py
             tests/test_bond_default_publication_db.py
             tests/test_bond_default_diagnostic_publication_db.py
+            tests/test_repair_fund_catalog_identity_v1_db.py
             tests/test_bond_default_source_bundle.py
             tests/test_bond_default_events_worker.py
           )
