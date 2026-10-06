@@ -54,3 +54,7 @@ contracts/bond_default_owner_evidence/** text eol=lf
 # manifest and determinism receipt is over the raw bytes, so checkouts must not
 # rewrite line endings (the image is built from a Linux checkout).
 docker/bond-live-daily/** text eol=lf
+
+# Pinned SEC/Tiingo evidence of scripts/repair_fund_identity_sec_v1.py; the script
+# checks its sha256 over the raw bytes.
+contracts/fund-identity-sec/** text eol=lf
