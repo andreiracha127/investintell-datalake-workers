@@ -656,3 +656,23 @@ def test_r5_never_activates_a_row_with_a_registry_conflict():
     plan, out = run(snap, ev=evidence({"VTI": tiingo_ok()}))
     assert out == {}
     assert plan.review["orphan_registry_conflict"][0]["conflict_keys"] == ["sec_private_fund_id"]
+
+
+# Fifth review round -----------------------------------------------------------
+def test_r2_never_fills_a_class_another_registry_row_owns():
+    snap = snapshot([iu("a", "OLD"), iu("b", "STALE")],
+                    [reg("a", "OLD", "S000000001", None), reg("b", "STALE", "S000000001", "C000000001")],
+                    [sec("C000000001", "S000000001", "NEW")])
+    hist = history([(2026, "C000000001", "S000000001", "OLD")])
+    plan, out = run(snap, hist)
+    assert ("instruments_universe", "a") not in out and ("instrument_identity", "a") not in out
+    assert plan.review["ticker_renamed_class_taken"][0]["class_id"] == "C000000001"
+
+
+def test_r5_never_activates_a_ticker_another_row_claims():
+    snap = snapshot([iu("a", "VTI", active=False), iu("b", "VTIX")],
+                    [reg("a", "VTI", "S000000001", "C000000001"), reg("b", "VTI", "S000000009", None)],
+                    [sec("C000000001", "S000000001", "VTI")], funds={"a"})
+    plan, out = run(snap, ev=evidence({"VTI": tiingo_ok()}))
+    assert ("instruments_universe", "a") not in out
+    assert plan.review["orphan_ticker_claimed_elsewhere"][0]["ticker"] == "VTI"

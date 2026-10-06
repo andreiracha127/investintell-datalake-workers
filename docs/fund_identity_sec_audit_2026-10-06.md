@@ -144,8 +144,9 @@ Rule: the IU ticker has no fresh SEC row; the registry class (or, without one,
 the single class the pinned dataset ties to the old ticker in the registry
 series) has exactly one fresh SEC row with another ticker in the same series;
 a pinned dataset row or filing proves the old ticker was that class; the new
-ticker belongs to no other IU or registry row; Tiingo has a current history
-for the new ticker. Then `instruments_universe.ticker` and, when different,
+ticker belongs to no other IU or registry row; a class taken from the dataset
+is owned by no other registry row; Tiingo has a current history for the new
+ticker. Then `instruments_universe.ticker` and, when different,
 `instrument_identity.ticker` (and an empty `sec_class_id`) take the SEC values,
 with `identity_sources` stamped `sec_company_tickers_mf`. Same class, same NAV
 series: no rebase (Tiingo opened some new symbols on the rename date, e.g.
@@ -264,7 +265,9 @@ series; not a phase-B sibling; no product exclusion (`exclusion_reason`,
 ticker = the single fresh SEC row of the registry series/class; Tiingo
 `endDate` within 7 days of an observation at most 30 days old; a pinned N-CEN
 for the series at most two years old; not insurance-only as above; an empty
-registry `conflict_state`. Rows: 50. A fund that R7 or R8 brings into
+registry `conflict_state`; no other IU or registry row claims the ticker
+(the generator would stop either at `registry.conflict_state_not_empty` or
+`ticker.global_conflict`). Rows: 50. A fund that R7 or R8 brings into
 `funds_v` is judged by the next run, once the eligibility view lists it (none
 at this snapshot: the 22 funds R7/R8 add are all active).
 

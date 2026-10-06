@@ -39,8 +39,9 @@ A/B and corrects only what current SEC data proves unambiguously:
   covering the series whose text says its shares are offered only to
   insurance separate accounts / variable contracts; such classes stay
   inactive. Without a pinned N-CEN for the series no reactivation happens.
-  A registry row with a non-empty ``conflict_state`` is never activated (the
-  generator would stop it there, and its series would count as represented).
+  A registry row with a non-empty ``conflict_state``, or whose ticker another
+  IU or registry row claims, is never activated (the generator would stop it
+  there, and its series would count as represented).
   When R7/R8 bring a row into ``funds_v`` in the same apply, its activation is
   planned by the next run, not this one.
 * ``R6 deactivate_terminated`` - ``is_active=true`` fund whose ticker and
@@ -603,6 +604,10 @@ def rule_r2_renamed(state: _State, sec: CurrentSec, history: SecHistory, evidenc
         if sec.unique_ticker(new) is None or not _ticker_free(state, iid, new):
             state.review("ticker_renamed_target_taken", iid, ticker=old, new_ticker=new)
             continue
+        if ident(reg.get("sec_class_id")) is None and _owned_by_other(state, iid, "sec_class_id", class_id):
+            # One SEC share class, one catalog identity (as R7 and R8).
+            state.review("ticker_renamed_class_taken", iid, ticker=old, new_ticker=new, class_id=class_id)
+            continue
         tiingo = _tiingo_current(evidence, new, state.snapshot.decision_at)
         if tiingo is None:
             # Never trade a working NAV feed for a symbol the provider does not serve yet.
@@ -959,6 +964,11 @@ def rule_r5_activate(state: _State, sec: CurrentSec, evidence: Evidence) -> None
         current = sec.unique_ticker(ticker)
         if ticker is None or ticker != ident(reg.get("ticker")) or current is None:
             state.review("orphan_identity_not_sec_current", iid, ticker=ticker, series_id=series)
+            continue
+        if not _ticker_free(state, iid, ticker):
+            # The generator rejects it at ticker.global_conflict, and an active row
+            # would count its series as represented.
+            state.review("orphan_ticker_claimed_elsewhere", iid, ticker=ticker, series_id=series)
             continue
         if current.series_id != series or ident(reg.get("sec_class_id")) not in (None, current.class_id):
             state.review("orphan_identity_not_sec_current", iid, ticker=ticker, series_id=series)
