@@ -24,7 +24,11 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from scripts import repair_fund_catalog_identity_v1 as repair
-from src.db import LOCK_INSTRUMENT_INGESTION
+from src.db import (
+    LOCK_FUND_NAV_READINESS,
+    LOCK_INSTRUMENT_INGESTION,
+    LOCK_SEC_COMPANY_TICKERS_MF,
+)
 from tests._nav_identity_fixtures import synthetic_cusip, synthetic_isin
 
 ROOT = Path(__file__).parents[1]
@@ -362,13 +366,24 @@ def test_ledger_is_append_only(dsn, capsys):
                 conn.execute(statement)
 
 
-def test_rollback_refuses_when_a_repaired_row_changed_since(dsn, capsys):
+@pytest.mark.parametrize(
+    ("table", "assignment", "n"),
+    [
+        ("instrument_identity", "ticker = 'MANUAL'", 2),
+        # Another writer touched only the timestamp: still a conflict.
+        ("instrument_identity", "updated_at = now() + interval '1 second'", 2),
+        ("instruments_universe", "updated_at = now() + interval '1 second'", 1),
+    ],
+)
+def test_rollback_refuses_when_a_repaired_row_changed_since(
+    dsn, capsys, table, assignment, n
+):
     _code, planned = _run(capsys)
     _code, applied = _apply(capsys, planned["plan_sha256"])
     with psycopg.connect(dsn) as conn:
         conn.execute(
-            "UPDATE public.instrument_identity SET ticker = 'MANUAL' WHERE instrument_id = %s",
-            (_uid(2),),
+            f"UPDATE public.{table} SET {assignment} WHERE instrument_id = %s",
+            (_uid(n),),
         )
     changed = _rows(dsn)
     code, refused = _run(
@@ -379,11 +394,47 @@ def test_rollback_refuses_when_a_repaired_row_changed_since(dsn, capsys):
     assert _ledger(dsn) == (1, 3)
 
 
-def test_apply_is_lock_busy_while_a_nav_writer_holds_its_lock(dsn, capsys):
+@pytest.mark.parametrize(
+    "lock",
+    [LOCK_INSTRUMENT_INGESTION, LOCK_FUND_NAV_READINESS, LOCK_SEC_COMPANY_TICKERS_MF],
+)
+def test_apply_is_lock_busy_while_a_writer_holds_its_lock(dsn, capsys, lock):
     original = _rows(dsn)
     _code, planned = _run(capsys)
     with psycopg.connect(dsn, autocommit=True) as holder:
-        holder.execute("SELECT pg_advisory_lock(%s)", (LOCK_INSTRUMENT_INGESTION,))
+        holder.execute("SELECT pg_advisory_lock(%s)", (lock,))
         code, busy = _apply(capsys, planned["plan_sha256"])
     assert (code, busy["status"]) == (repair.EXIT_LOCK_BUSY, "lock_busy")
     assert _rows(dsn) == original and _ledger(dsn) is None
+
+
+def test_apply_waits_out_an_in_flight_crosswalk_write_then_reports_busy(dsn, capsys):
+    # An uncommitted SEC upsert holds the crosswalk: the apply cannot take its
+    # SHARE lock, so it never validates against a snapshot that write will
+    # invalidate at COMMIT.
+    original = _rows(dsn)
+    _code, planned = _run(capsys)
+    with psycopg.connect(dsn) as writer:
+        writer.execute("UPDATE public.sec_company_tickers_mf SET updated_at = now()")
+        code, busy = _apply(capsys, planned["plan_sha256"])
+        writer.rollback()
+    assert (code, busy["status"]) == (repair.EXIT_LOCK_BUSY, "lock_busy")
+    assert _rows(dsn) == original and _ledger(dsn) is None
+
+
+def test_crosswalk_refresh_after_review_requires_a_new_approval(dsn, capsys):
+    original = _rows(dsn)
+    _code, planned = _run(capsys)
+    with psycopg.connect(dsn) as conn:  # the SEC worker's upsert moves updated_at
+        conn.execute(
+            "UPDATE public.sec_company_tickers_mf "
+            "SET updated_at = updated_at + interval '1 hour'"
+        )
+    code, refused = _apply(capsys, planned["plan_sha256"])
+    assert (code, refused["code"]) == (repair.EXIT_FAILED, "plan_sha256_mismatch")
+    assert _rows(dsn) == original and _ledger(dsn) is None
+    _code, replanned = _run(capsys)
+    assert replanned["changes"] == planned["changes"]
+    assert replanned["plan_sha256"] != planned["plan_sha256"]
+    code, applied = _apply(capsys, replanned["plan_sha256"])
+    assert code == 0 and applied["status"] == "applied"

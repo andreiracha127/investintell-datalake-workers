@@ -253,6 +253,21 @@ def test_plan_digest_is_independent_of_row_order():
     assert len(plan.sha256()) == 64
 
 
+def test_plan_digest_binds_the_sec_evidence_it_writes_as_provenance():
+    # A crosswalk refresh that only moves updated_at leaves every row change
+    # identical but changes the provenance written: it needs a new approval.
+    refreshed = SEC_AT + dt.timedelta(hours=6)
+    plan, _rows = _plan(sibling_class(55), sec_extra=[iu_class_row(55)])
+    again, _rows = _plan(
+        sibling_class(55), sec_extra=[iu_class_row(55, synced=refreshed)]
+    )
+    assert again.ticker_changes == plan.ticker_changes
+    assert plan.changes()["sec_evidence"] == {
+        _uid(55): SEC_AT.isoformat(timespec="microseconds")
+    }
+    assert again.sha256() != plan.sha256()
+
+
 # ── guards ──────────────────────────────────────────────────────────────────
 
 

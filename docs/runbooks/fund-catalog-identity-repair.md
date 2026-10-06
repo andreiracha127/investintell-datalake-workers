@@ -29,10 +29,15 @@ registry ticker was overwritten, so they already describe the IU class.
 - **Dry run is the default.** It reads ONE `REPEATABLE READ READ ONLY`
   snapshot and never assigns an xid. It prints aggregates and digests only;
   `--plan-output` writes the per-row plan to a new file.
-- **Apply runs in ONE transaction.** It takes `LOCK TABLE ... SHARE ROW
-  EXCLUSIVE` before the snapshot, then the NAV writer advisory locks
-  (ingestion, then readiness; exit 4 if busy). It then:
-  1. recomputes the plan and refuses on any `--plan-sha256` mismatch;
+- **Apply runs in ONE transaction.** Before the snapshot it takes `LOCK
+  TABLE ... SHARE ROW EXCLUSIVE` on the two catalog tables and `SHARE` on
+  `sec_company_tickers_mf`, so the SEC evidence cannot change before COMMIT.
+  Then it takes the NAV writer advisory locks (ingestion, then readiness) and
+  the crosswalk writer's lock; exit 4 if any is busy. It then:
+  1. recomputes the plan and refuses on any `--plan-sha256` mismatch. The
+     digest covers the SEC `synced_at` evidence written into
+     `identity_sources`, so a crosswalk refresh after review needs a new
+     dry run and approval;
   2. refuses if any ACTIVE fund would be demoted, or if a repaired registry
      row would end in an SEC integrity failure;
   3. writes the receipts, then the updates, each with a compare-and-swap on
@@ -47,7 +52,8 @@ registry ticker was overwritten, so they already describe the IU class.
   (`schemas/fund_catalog_identity_repair_v1.sql`) stores every before/after
   value, including `updated_at` and `identity_sources`. `--rollback RUN_ID`
   restores them byte for byte, all or nothing, only if every touched row still
-  holds the run's after-values.
+  holds the run's after-values, `updated_at` included. A row any other writer
+  touched since the repair is refused.
 
 ## 3. Consumers and their follow-ups
 

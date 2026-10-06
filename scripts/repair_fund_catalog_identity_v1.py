@@ -37,9 +37,11 @@ Modes (one at a time):
   (instrument ids, before/after values) to a NEW file.
 * ``--apply --confirm repair_fund_catalog_identity_v1 --plan-sha256 HEX``: ONE
   transaction. Locks ``instruments_universe`` and ``instrument_identity``
-  (SHARE ROW EXCLUSIVE) and the NAV writer advisory locks (ingestion ->
-  readiness), recomputes the plan and refuses unless its digest equals
-  ``--plan-sha256``, refuses if any ACTIVE fund would be demoted or a
+  (SHARE ROW EXCLUSIVE) and the SEC crosswalk (SHARE, so its evidence cannot
+  change before COMMIT), then the NAV writer advisory locks (ingestion ->
+  readiness) and the crosswalk writer's lock; recomputes the plan and refuses
+  unless its digest (which covers the SEC evidence) equals
+  ``--plan-sha256``; refuses if any ACTIVE fund would be demoted or a
   repaired registry row would end in an SEC integrity failure (contradictions
   that (a) merely unmasks pre-exist and are reported, never written), writes
   one append-only receipt per changed row
@@ -50,7 +52,8 @@ Modes (one at a time):
   classification, then COMMITs. An empty plan is a no-op (nothing written).
 * ``--rollback RUN_ID --confirm repair_fund_catalog_identity_v1``: ONE
   transaction restoring every before-value of that apply run exactly, only if
-  every touched row still holds the run's after-values; appends its own run
+  every touched row still holds the run's after-values (``updated_at``
+  included, so a row any other writer touched since is refused); appends its own run
   and receipts. A second rollback of the same run is a no-op.
 
 DSN only from ``--dsn-env`` (default ``NAV_READINESS_DATABASE_URL``).
@@ -90,7 +93,11 @@ from scripts.nav_identity_audit_contract import (
     SEC_MISSING_CODE,
     SEC_STALE_CODE,
 )
-from src.db import LOCK_FUND_NAV_READINESS, LOCK_INSTRUMENT_INGESTION
+from src.db import (
+    LOCK_FUND_NAV_READINESS,
+    LOCK_INSTRUMENT_INGESTION,
+    LOCK_SEC_COMPANY_TICKERS_MF,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_SQL = ROOT / "schemas" / "fund_catalog_identity_repair_v1.sql"
@@ -141,6 +148,13 @@ class RepairPlan:
     evidence: dict[str, str] = field(default_factory=dict)
 
     def changes(self) -> dict:
+        """The approved document: rows, values AND the SEC evidence they rest on.
+
+        ``sec_evidence`` is the ``synced_at`` of the SEC row proving each
+        ticker repair (it is written into ``identity_sources``), so a crosswalk
+        refresh between review and apply changes the digest and needs a new
+        approval.
+        """
         return {
             "repair_version": REPAIR_VERSION,
             "instruments_universe": sorted(
@@ -149,6 +163,7 @@ class RepairPlan:
             "instrument_identity": sorted(
                 self.ticker_changes, key=lambda row: row["instrument_id"]
             ),
+            "sec_evidence": dict(sorted(self.evidence.items())),
         }
 
     def sha256(self) -> str:
@@ -585,6 +600,9 @@ def _preflight(cursor) -> dict:
         "'UPDATE') AS iu_update, has_table_privilege(current_user, "
         "'public.instrument_identity', 'UPDATE') AS registry_update, "
         "has_schema_privilege(current_user, 'public', 'CREATE') AS schema_create, "
+        # LOCK ... IN SHARE MODE needs UPDATE, DELETE or TRUNCATE on the relation.
+        "has_table_privilege(current_user, 'public.sec_company_tickers_mf', "
+        "'UPDATE,DELETE,TRUNCATE') AS sec_share_lock, "
         "to_regclass('public.fund_catalog_identity_repair_runs') IS NOT NULL "
         "AS ledger_present"
     )
@@ -702,7 +720,6 @@ def write_plan_file(path: Path, snapshot: Snapshot, plan: RepairPlan) -> str:
         "decision_at": generator.utc_text(snapshot.decision_at),
         "plan_sha256": plan.sha256(),
         "changes": plan.changes(),
-        "sec_synced_at": dict(sorted(plan.evidence.items())),
         "excluded": {
             family: dict(sorted(counter.items()))
             for family, counter in plan.excluded.items()
@@ -714,9 +731,13 @@ def write_plan_file(path: Path, snapshot: Snapshot, plan: RepairPlan) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _try_nav_writer_locks(cursor) -> bool:
-    """INGESTION -> READINESS transaction locks, the operator's order."""
-    for key in (LOCK_INSTRUMENT_INGESTION, LOCK_FUND_NAV_READINESS):
+def _try_writer_locks(cursor) -> bool:
+    """INGESTION -> READINESS (the operator's order), then the SEC crosswalk writer."""
+    for key in (
+        LOCK_INSTRUMENT_INGESTION,
+        LOCK_FUND_NAV_READINESS,
+        LOCK_SEC_COMPANY_TICKERS_MF,
+    ):
         cursor.execute("SELECT pg_try_advisory_xact_lock(%s) AS ok", (key,))
         if cursor.fetchone()["ok"] is not True:
             return False
@@ -724,7 +745,12 @@ def _try_nav_writer_locks(cursor) -> bool:
 
 
 def _begin_write(cursor) -> dt.datetime:
-    """Table locks BEFORE the snapshot is taken, then the NAV writer locks."""
+    """Table locks BEFORE the snapshot is taken, then the writer advisory locks.
+
+    The SEC crosswalk is the evidence the plan is judged on: SHARE mode blocks
+    every writer of it until COMMIT, so the evidence validated here is still
+    the live crosswalk when the repaired rows commit.
+    """
     cursor.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
     cursor.execute("SET LOCAL statement_timeout = '300s'")
     cursor.execute("SET LOCAL lock_timeout = '10s'")
@@ -733,7 +759,8 @@ def _begin_write(cursor) -> dt.datetime:
         "LOCK TABLE public.instruments_universe, public.instrument_identity "
         "IN SHARE ROW EXCLUSIVE MODE"
     )
-    if not _try_nav_writer_locks(cursor):
+    cursor.execute(f"LOCK TABLE {generator.SEC_RELATION} IN SHARE MODE")
+    if not _try_writer_locks(cursor):
         raise LockBusy()
     cursor.execute("SELECT clock_timestamp() AS decision_at")
     return cursor.fetchone()["decision_at"]
@@ -927,6 +954,8 @@ SELECT %(new_run)s::uuid, 'instruments_universe', iu.instrument_id, %(rule)s::te
   JOIN public.instruments_universe iu ON iu.instrument_id = r.instrument_id
  WHERE r.run_id = %(run_id)s::uuid AND r.relation = 'instruments_universe'
    AND iu.isin IS NOT DISTINCT FROM (r.after_values ->> 'isin')
+   AND iu.updated_at IS NOT DISTINCT FROM
+       (r.after_values ->> 'updated_at')::timestamptz
 """
 _ROLLBACK_ISIN = """
 UPDATE public.instruments_universe iu
@@ -936,6 +965,8 @@ UPDATE public.instruments_universe iu
  WHERE r.run_id = %(run_id)s::uuid AND r.relation = 'instruments_universe'
    AND iu.instrument_id = r.instrument_id
    AND iu.isin IS NOT DISTINCT FROM (r.after_values ->> 'isin')
+   AND iu.updated_at IS NOT DISTINCT FROM
+       (r.after_values ->> 'updated_at')::timestamptz
 """
 _ROLLBACK_RECEIPT_TICKER = """
 INSERT INTO fund_catalog_identity_repair_receipts
@@ -951,6 +982,8 @@ SELECT %(new_run)s::uuid, 'instrument_identity', ii.instrument_id, %(rule)s::tex
    AND ii.ticker IS NOT DISTINCT FROM (r.after_values ->> 'ticker')
    AND ii.sec_class_id IS NOT DISTINCT FROM (r.after_values ->> 'sec_class_id')
    AND ii.identity_sources = r.after_values -> 'identity_sources'
+   AND ii.updated_at IS NOT DISTINCT FROM
+       (r.after_values ->> 'updated_at')::timestamptz
 """
 _ROLLBACK_TICKER = """
 UPDATE public.instrument_identity ii
@@ -964,6 +997,8 @@ UPDATE public.instrument_identity ii
    AND ii.ticker IS NOT DISTINCT FROM (r.after_values ->> 'ticker')
    AND ii.sec_class_id IS NOT DISTINCT FROM (r.after_values ->> 'sec_class_id')
    AND ii.identity_sources = r.after_values -> 'identity_sources'
+   AND ii.updated_at IS NOT DISTINCT FROM
+       (r.after_values ->> 'updated_at')::timestamptz
 """
 
 
