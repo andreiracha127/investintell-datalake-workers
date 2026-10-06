@@ -718,3 +718,26 @@ def test_r8_never_reads_a_deregistration_as_the_new_series_continuing():
                                     _filing("C000082313", "VVPLX", "NPORT-P", "2026-07-13")])
     plan, out = run(_moved(), ev=ev)
     assert out == {} and plan.review["series_moved_unproven"]
+
+
+# Eighth review round ----------------------------------------------------------
+def test_r8_never_follows_a_reused_ticker_away_from_a_current_registry_class():
+    # The registry class is still listed (renamed VVPLY); VVPLX now names another fund.
+    snap = snapshot([iu("a", "VVPLX")],
+                    [reg("a", "VVPLX", "S000027283", "C000082313", cik="0000915802")],
+                    [sec("C000082313", "S000027283", "VVPLY", cik="915802"),
+                     sec("C000259241", "S000091565", "VVPLX", cik="1936157")])
+    ev = evidence(CURRENT, filings=[_filing("C000259241", "VVPLX", "NPORT-P", "2026-09-28"),
+                                    _filing("C000082313", "VVPLX", "N-CEN", "2026-07-13")])
+    plan, out = run(snap, ev=ev)
+    assert ("instrument_identity", "a") not in out
+    assert plan.review["series_moved_registry_class_current"][0]["registry_class_ticker"] == "VVPLY"
+
+
+@pytest.mark.parametrize("sources", [["legacy"], True, "x", 0, False])
+def test_registry_provenance_of_an_unexpected_shape_refuses_the_plan(sources):
+    snap = snapshot([iu("a", "HYG")], [reg("a", "HYG", None, None, cik=None)],
+                    [sec("C000046846", "S000016772", "HYG", cik="1100663")], funds=set())
+    snap.registry["a"]["identity_sources"] = sources
+    with pytest.raises(repair.RepairError, match="registry_identity_sources_not_object"):
+        run(snap)

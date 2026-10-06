@@ -85,7 +85,14 @@ _SENTENCE_PATTERNS = (
                + _SENTENCE_TARGET + r"[^.]{0,160}\.", re.I),
     re.compile(r"[^.]{0,160}\b(only|exclusively|solely)\s+(available|offered|sold)\b[^.]{0,120}"
                + _SENTENCE_TARGET + r"[^.]{0,160}\.", re.I),
+    # Tried last, so it never displaces a sentence the patterns above find.
+    re.compile(r"[^.]{0,160}\b(purchased|purchase|held|owned|acquired|bought)\b[^.]{0,40}"
+               r"\b(only|exclusively|solely)\b\s+(by|through|to)\b[^.]{0,120}"
+               + _SENTENCE_TARGET + r"[^.]{0,160}\.", re.I),
 )
+# Full-text search returns at most this many hits per page (ordered by relevance).
+FTS_PAGE_SIZE = 100
+FTS_MAX_PAGES = 20
 _SERIES_HEADER = re.compile(r"(?:&lt;|<)SERIES-ID(?:&gt;|>)\s*(S\d{9})")
 # Answers that change as registrants file: dropped by --refresh-sec.
 class CollectionError(RuntimeError):
@@ -383,21 +390,32 @@ def collect_prospectus(insurance: list, cache: dict, save, *, api_key: str, user
         if set(cache.get(tag, {}).get("wanted", ())) >= wanted:
             continue
         hits: dict[str, dict] = {}
-        for phrase in PROSPECTUS_PHRASES:  # every phrase, then the newest filings first
-            for attempt in range(4):
-                try:
-                    result = api.get_filings({"query": phrase, "formTypes": ["485BPOS"],
-                                              "ciks": [cik.zfill(10)], "startDate": "2024-01-01",
-                                              "endDate": dt.date.today().isoformat()})
+        for phrase in PROSPECTUS_PHRASES:  # every phrase and page, then the newest filings first
+            page = 1
+            while True:
+                for attempt in range(4):
+                    try:
+                        result = api.get_filings({"query": phrase, "formTypes": ["485BPOS"],
+                                                  "ciks": [cik.zfill(10)], "startDate": "2024-01-01",
+                                                  "endDate": dt.date.today().isoformat(),
+                                                  "page": str(page)})
+                        break
+                    except Exception as exc:  # noqa: BLE001 - the SDK raises bare Exception
+                        print(json.dumps({"retry": tag,
+                                          "error": _TOKEN.sub(r"\1REDACTED", str(exc))[:160]}))
+                        time.sleep(2 + 3 * attempt)
+                else:
+                    raise CollectionError(f"prospectus_search_exhausted:{tag}")
+                time.sleep(0.3)
+                filings = result.get("filings", [])
+                for filing in filings:
+                    hits.setdefault(filing["accessionNo"], filing)
+                total = int((result.get("total") or {}).get("value") or 0)
+                if not filings or page * FTS_PAGE_SIZE >= total:
                     break
-                except Exception as exc:  # noqa: BLE001 - the SDK raises bare Exception
-                    print(json.dumps({"retry": tag, "error": _TOKEN.sub(r"\1REDACTED", str(exc))[:160]}))
-                    time.sleep(2 + 3 * attempt)
-            else:
-                raise CollectionError(f"prospectus_search_exhausted:{tag}")
-            time.sleep(0.3)
-            for filing in result.get("filings", []):
-                hits.setdefault(filing["accessionNo"], filing)
+                page += 1
+                if page > FTS_MAX_PAGES:
+                    raise CollectionError(f"prospectus_search_too_many_hits:{tag}")
         matches, covered = [], set()
         # Every hit, newest first, until every targeted series is covered: only an
         # exhaustive scan may record the whole ``wanted`` set as searched.

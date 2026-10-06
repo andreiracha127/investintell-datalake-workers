@@ -321,8 +321,10 @@ SEC's ticker file now lists under a different series and registrant than the
 registry. The fund's own filings decide whether that is a real move.
 
 **Real moves (R8).** SEC's newest sync lists the ticker once, under the new
-series, and a prospectus or N-PORT filing (not an N-CEN, never an N-8F
-deregistration application) shows the ticker
+series, the registry class is no longer listed (a still-listed class means
+the symbol was reused or the class renamed: review
+`series_moved_registry_class_current`), and a prospectus or N-PORT filing
+(not an N-CEN, never an N-8F deregistration application) shows the ticker
 under the new class and series after the newest filing showing it under the
 old class and registry series:
 
@@ -503,6 +505,12 @@ firm- or series-level for many rows, so the order is indicative.
 * `--include-class-repoint` enables R3, `--quarantine-sec-contradictions`
   enables R9. Both are part of the digest.
 
+Connections go through `src.db.resolve_dsn` after the `--db-host` override,
+so the fleet's `DB_TLS_*` client certificates apply as for every worker. A
+registry row whose `identity_sources` is not a JSON object refuses the plan
+(`registry_identity_sources_not_object`) rather than losing that provenance;
+none exists today.
+
 `instruments_universe` and `instrument_identity` have no triggers; every new
 ticker is checked against all IU and registry rows (`uq_iu_ticker`). The
 ledger tables are append-only (row and truncate triggers).
@@ -515,8 +523,9 @@ documents and headers with `--sec-user-agent`, Tiingo meta; keys from
 `SEC_API_IO_KEY`/`TIINGO_API_KEY`), and writes a new bundle. Prospectus
 search scans every 485BPOS hit across all phrases, newest first, until every
 targeted series is covered by a filing header; the newest covering filing
-with a restriction sentence decides; every HTML document of a filing is
-searched for that sentence (a re-scan of the two covering filings without one,
+with a restriction sentence decides; every result page of every phrase is
+read (full-text search ranks by relevance, 100 hits a page) and every HTML
+document of a filing is searched for that sentence (a re-scan of the two covering filings without one,
 57 documents, found none, so the bundle is unchanged). `--refresh-sec`
 re-fetches every time-varying answer (newest/last filings, N-CEN,
 prospectus). A query that still fails after its retries (Tiingo included)

@@ -209,3 +209,46 @@ def test_the_restriction_is_searched_in_every_document_of_the_filing(tmp_path, m
                                user_agent="ua", doc_dir=docs)
     (match,) = cache["cik|42"]["matches"]
     assert match["document"] == "exhibit7.htm" and "separate accounts" in match["quote"]
+
+
+def test_a_purchase_restriction_is_recognized():
+    quote = collect.extract_restriction(
+        "<p>Shares may be purchased only by insurance company separate accounts.</p>")
+    assert quote and repair.prospectus_says_insurance_only(quote)
+
+
+def test_prospectus_search_reads_every_result_page(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    accession, folder = "0000000042-26-000009", "000000004226000009"
+    docs = tmp_path / "edgar"
+    docs.mkdir()
+    (docs / f"{folder}_{accession}-index-headers.html").write_text("&lt;SERIES-ID&gt;S000000001")
+    (docs / f"{folder}_index.json").write_text(json.dumps({"directory": {"item": [
+        {"name": "prospectus.htm", "size": "10"}]}}))
+    (docs / f"{folder}_prospectus.htm").write_text(
+        "<p>The Fund offers its shares only to separate accounts of insurance companies.</p>")
+    old = [{"accessionNo": f"0000000042-24-{n:06d}", "formType": "485BPOS", "filedAt": "2024-02-01"}
+           for n in range(100)]
+    pages = []
+
+    class Search:
+        def __init__(self, api_key):
+            pass
+
+        def get_filings(self, query):
+            pages.append(query["page"])
+            if query["page"] == "1":  # relevance order: the newest filing is on page 2
+                return {"total": {"value": 101}, "filings": old}
+            return {"total": {"value": 101}, "filings": [
+                {"accessionNo": accession, "formType": "485BPOS", "filedAt": "2026-04-24T16:00:00-04:00"}]}
+
+    monkeypatch.setitem(sys.modules, "sec_api", types.SimpleNamespace(FullTextSearchApi=Search))
+    monkeypatch.setattr(collect.time, "sleep", lambda _s: None)
+    cache = {}
+    collect.collect_prospectus([("S000000001", "42")], cache, lambda: None, api_key="k",
+                               user_agent="ua", doc_dir=docs)
+    assert "2" in pages
+    (match,) = cache["cik|42"]["matches"]
+    assert match["accession_no"] == accession and match["quote"]

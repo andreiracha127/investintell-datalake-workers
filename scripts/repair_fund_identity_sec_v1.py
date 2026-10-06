@@ -535,7 +535,11 @@ class _State:
         row = self.reg[iid]
         row[column] = value
         if source is not None and column in REGISTRY_PLANNED[:5]:
-            sources = dict(row.get("identity_sources") or {})
+            existing = row.get("identity_sources")
+            if existing is not None and type(existing) is not dict:
+                # Never normalize (and so erase) provenance of an unexpected shape.
+                raise RepairError("registry_identity_sources_not_object", 3)
+            sources = dict(existing or {})
             sources[column] = {
                 "source": "sec_company_tickers_mf",
                 "observed_at": source.synced_at.isoformat(),
@@ -802,6 +806,14 @@ def rule_r8_series_moved(state: _State, sec: CurrentSec, history: SecHistory,
             # filing under the registry class, no newer one under SEC's class.
             if quarantine and iid in state.snapshot.funds and old_date is not None:
                 _quarantine(state, iid, reg, series, new, filings, old_filings)
+            continue
+        if class_id and sec.by_class.get(class_id):
+            # The registry class is still listed (under another ticker): the symbol
+            # was reused by another fund, or the class was renamed. Moving would
+            # relabel this instrument and its NAV history as the other fund.
+            state.review("series_moved_registry_class_current", iid, ticker=ticker,
+                         registry_class=class_id, registry_class_ticker=sec.by_class[class_id][0].ticker,
+                         sec_class=new.class_id)
             continue
         if _owned_by_other(state, iid, "sec_class_id", new.class_id):
             state.review("series_moved_class_taken", iid, ticker=ticker, sec_class=new.class_id)
@@ -1655,7 +1667,10 @@ def main(argv: list[str] | None = None) -> int:
         dsn = os.environ.get(args.dsn_env)
         if not dsn:
             raise RepairError("dsn_missing", 3)
-        dsn = override_host(dsn, args.db_host)
+        from src.db import resolve_dsn
+
+        # The fleet's DB_TLS_* client certificates, exactly as every worker connects.
+        dsn = resolve_dsn(override_host(dsn, args.db_host))
         if args.mode == "rollback":
             if args.confirm != CONFIRM_TOKEN or not args.rollback_run_id:
                 raise RepairError("rollback_requires_confirm_and_run_id")
