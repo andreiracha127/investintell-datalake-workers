@@ -91,8 +91,11 @@ python -m scripts.fund_nav_readiness_schema --mode check "${PINS[@]}"
 ```
 
 Verify the live read model afterwards: `SELECT bool_and(snapshot_current) FROM
-fund_nav_readiness_current_v1 WHERE admissible` is true between 22:05 UTC and
-the next publication.
+fund_nav_readiness_current_v1 WHERE admissible` stays true after 22:05 UTC. It
+stays true until the next ingestion writes NAV rows for the new session. Each
+write advances that instrument's NAV head revision, and the unchanged head pin
+makes it stale until readiness is republished. That ingestion-to-publication
+window is the outage that remains each morning.
 
 ## Rollback
 
