@@ -40,6 +40,17 @@ WHAT WAS ADDED to the rescued original, and nothing else:
   leaving the table uncompressed until a background policy job gets to it.
 * ``verify_isin_fill()`` — a post-load check, with a configurable floor. Its
   absence is why two bad quarters went unnoticed for one and two years.
+* ``--dry-run`` (2026-10) — the same checks, offline, before anything is written:
+  header order (``COPY ... HEADER true`` skips the header, it does not read it),
+  every value coerced through ``STAGE_DDL``'s types, the target's NOT NULLs, the
+  rows the INSERT's own WHERE would drop, conflict-key duplicates, and the ISIN
+  floor. No connection is opened.
+* ``--new-series-only`` (2026-10) — insert a ``(report_date, series_id)`` only
+  when the table has no row for it yet. For monthly top-ups that revisit a
+  report_date as late filers arrive: ``ON CONFLICT DO NOTHING`` alone would graft
+  an amendment's new keys onto the original filing's rows. Requires every series
+  of a report_date to sit in ONE CSV (``tools.nport_secapi.convert`` guarantees
+  it); a series split across two parallel CSVs would load only the first half.
 
 Lifecycle:
   1. prep()      — drop compression policy + decompress the affected chunks so
@@ -61,8 +72,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import collections
 import concurrent.futures
+import csv
 import datetime as dt
+import decimal
 import glob
 import os
 import sys
@@ -107,6 +121,21 @@ SELECT {', '.join(CSV_COLS)}, lpad(cik, 10, '0'), %(ts)s
 FROM _nport_stage
 WHERE report_date <= current_date AND series_id IS NOT NULL
   AND report_date = ANY(%(dates)s::date[])
+ON CONFLICT (report_date, series_id, cusip) DO NOTHING
+"""
+
+_QUALIFIED = ", ".join(f"s.{c}" for c in CSV_COLS)
+
+INSERT_NEW_SERIES_SQL = f"""
+INSERT INTO {TABLE} ({', '.join(CSV_COLS)}, cik_padded, created_at)
+SELECT {_QUALIFIED}, lpad(s.cik, 10, '0'), %(ts)s
+FROM _nport_stage s
+WHERE s.report_date <= current_date AND s.series_id IS NOT NULL
+  AND s.report_date = ANY(%(dates)s::date[])
+  AND NOT EXISTS (
+    SELECT 1 FROM {TABLE} h
+    WHERE h.report_date = s.report_date AND h.series_id = s.series_id
+  )
 ON CONFLICT (report_date, series_id, cusip) DO NOTHING
 """
 
@@ -186,9 +215,17 @@ def delete_report_dates(dsn: str, report_dates: list[str]) -> int:
     return deleted
 
 
-def load_one(dsn: str, path: str, ts: dt.datetime, report_dates: list[str] | None = None) -> tuple[str, int]:
+def load_one(
+    dsn: str,
+    path: str,
+    ts: dt.datetime,
+    report_dates: list[str] | None = None,
+    new_series_only: bool = False,
+) -> tuple[str, int]:
     name = os.path.basename(path)
-    sql = INSERT_SCOPED_SQL if report_dates else INSERT_SQL
+    if new_series_only and not report_dates:
+        raise ValueError("new_series_only requires an explicit report_date list")
+    sql = INSERT_NEW_SERIES_SQL if new_series_only else (INSERT_SCOPED_SQL if report_dates else INSERT_SQL)
     params: dict = {"ts": ts}
     if report_dates:
         params["dates"] = report_dates
@@ -251,10 +288,176 @@ def verify_isin_fill(
     return readings, [r for r in readings if r["isin_fill"] < floor]
 
 
+_BOOL_TOKENS = {"t", "true", "y", "yes", "on", "1", "f", "false", "n", "no", "off", "0"}
+_BIGINT = (-(2**63), 2**63 - 1)
+#: STAGE_DDL's non-text columns, and the target's NOT NULL columns the INSERT
+#: does not filter on (a NULL there fails the whole CSV's transaction).
+_DATE_COLS = ("report_date",)
+_BIGINT_COLS = ("market_value",)
+_NUMERIC_COLS = ("quantity", "pct_of_nav")
+_BOOL_COLS = ("is_restricted",)
+_NOT_NULL_INSERTED = ("cik", "cusip")
+
+
+def _coerce_errors(rec: dict) -> list[tuple[str, str]]:
+    """Type errors COPY into ``STAGE_DDL`` would raise for one row."""
+    errors = []
+    for col in _DATE_COLS:
+        if rec[col]:
+            try:
+                dt.date.fromisoformat(rec[col])
+            except ValueError:
+                errors.append((f"type:{col}", rec[col]))
+    for col in _BIGINT_COLS:
+        if rec[col]:
+            try:
+                if not _BIGINT[0] <= int(rec[col]) <= _BIGINT[1]:
+                    errors.append((f"range:{col}", rec[col]))
+            except ValueError:
+                errors.append((f"type:{col}", rec[col]))
+    for col in _NUMERIC_COLS:
+        if rec[col]:
+            try:
+                if not decimal.Decimal(rec[col]).is_finite():
+                    errors.append((f"nonfinite:{col}", rec[col]))
+            except decimal.InvalidOperation:
+                errors.append((f"type:{col}", rec[col]))
+    for col in _BOOL_COLS:
+        if rec[col] and rec[col].strip().lower() not in _BOOL_TOKENS:
+            errors.append((f"type:{col}", rec[col]))
+    return errors
+
+
+def check_csv(
+    path: str,
+    report_dates: list[str] | None = None,
+    today: dt.date | None = None,
+    max_examples: int = 5,
+) -> dict:
+    """Offline plan for one CSV: what COPY + INSERT would do, without a database.
+
+    Mirrors the write path rule by rule: COPY (FORMAT csv) turns an unquoted
+    empty field into NULL; ``STAGE_DDL`` coerces types; the INSERT's WHERE drops
+    future dates, NULL series and (scoped) other report_dates; the target's NOT
+    NULLs reject the whole CSV; ``ON CONFLICT DO NOTHING`` drops repeated keys.
+    """
+    today = today or dt.date.today()
+    scope = set(report_dates or ())
+    csv.field_size_limit(2**31 - 1)
+    out: dict = {
+        "file": os.path.basename(path), "rows": 0, "would_insert": 0,
+        "header_ok": False, "errors": collections.Counter(), "examples": [],
+        "dropped": collections.Counter(), "conflict_key_dupes": 0, "per_report_date": {},
+    }
+    per: dict = collections.defaultdict(lambda: {"rows": 0, "isin": 0, "series": set()})
+    seen: set[tuple[str, str, str]] = set()
+
+    def bad(kind: str, line: int, detail: str) -> None:
+        out["errors"][kind] += 1
+        if len(out["examples"]) < max_examples:
+            out["examples"].append(f"line {line}: {kind}: {detail[:120]}")
+
+    with open(path, encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh)
+        header = next(reader, None)
+        out["header_ok"] = header == CSV_COLS
+        if not out["header_ok"]:
+            bad("header", 1, f"{header!r} != {CSV_COLS!r}")
+            return _finish_check(out, per)
+        for line, row in enumerate(reader, start=2):
+            out["rows"] += 1
+            if len(row) != len(CSV_COLS):
+                bad("width", line, f"{len(row)} fields")
+                continue
+            rec = dict(zip(CSV_COLS, row))
+            errors = _coerce_errors(rec)
+            for kind, value in errors:
+                bad(kind, line, value)
+            if errors:
+                continue
+            rd, series = rec["report_date"], rec["series_id"]
+            if not rd or dt.date.fromisoformat(rd) > today:
+                out["dropped"]["future_or_null_report_date"] += 1
+                continue
+            if not series:
+                out["dropped"]["null_series_id"] += 1
+                continue
+            if scope and rd not in scope:
+                out["dropped"]["outside_only_report_dates"] += 1
+                continue
+            missing = [c for c in _NOT_NULL_INSERTED if not rec[c]]
+            if missing:
+                bad("not_null:" + ",".join(missing), line, repr(row[:4]))
+                continue
+            key = (rd, series, rec["cusip"])
+            if key in seen:
+                out["conflict_key_dupes"] += 1
+                continue
+            seen.add(key)
+            out["would_insert"] += 1
+            bucket = per[rd]
+            bucket["rows"] += 1
+            bucket["series"].add(series)
+            if rec["isin"]:
+                bucket["isin"] += 1
+    return _finish_check(out, per)
+
+
+def _finish_check(out: dict, per: dict) -> dict:
+    out["per_report_date"] = {
+        rd: {"rows": b["rows"], "isin": b["isin"], "series": len(b["series"]),
+             "isin_fill": round(b["isin"] / b["rows"], 4) if b["rows"] else 0.0}
+        for rd, b in sorted(per.items())
+    }
+    out["errors"] = dict(out["errors"])
+    out["dropped"] = dict(out["dropped"])
+    return out
+
+
+def dry_run(files: list[str], report_dates: list[str], floor: float, min_rows: int = 1000) -> int:
+    """``check_csv`` over ``files``: 0 when loadable, 2 when the load would fail or degrade.
+
+    The ISIN reading is the one ``verify_isin_fill`` takes after a load, taken
+    before it instead - over the rows the INSERT would keep, which is what the
+    table will hold for a report_date that is empty today.
+    """
+    failing = 0
+    merged: dict[str, dict] = {}
+    for path in files:
+        result = check_csv(path, report_dates or None)
+        _log(f"  {result['file']:<24} rows={result['rows']:>10,} would_insert={result['would_insert']:>10,} "
+             f"dupes={result['conflict_key_dupes']:,} dropped={result['dropped']} errors={result['errors']}")
+        for example in result["examples"]:
+            _log(f"      {example}")
+        if result["errors"]:
+            failing += 1
+        for rd, r in result["per_report_date"].items():
+            m = merged.setdefault(rd, {"rows": 0, "isin": 0, "series": 0})
+            m["rows"] += r["rows"]
+            m["isin"] += r["isin"]
+            m["series"] += r["series"]
+    below = []
+    for rd, m in sorted(merged.items()):
+        fill = m["isin"] / m["rows"] if m["rows"] else 0.0
+        judged = m["rows"] >= min_rows
+        if judged and fill < floor:
+            below.append((rd, round(fill, 4)))
+        _log(f"  plan {rd}  rows={m['rows']:>10,}  series={m['series']:>6,}  isin_fill={fill:.4f}"
+             f"{'' if judged else '  (too thin to judge)'}")
+    if failing:
+        _log(f"DRY RUN REFUSES: {failing} CSV(s) would fail COPY/INSERT")
+    if below:
+        _log(f"DRY RUN REFUSES: report_date(s) below the {floor:.2f} ISIN fill floor: {below}")
+    if failing or below:
+        return 2
+    _log("dry run clean: nothing was written")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed-dir", required=True)
-    ap.add_argument("--dsn", required=True)
+    ap.add_argument("--dsn", default=None, help="target DSN (not needed with --dry-run)")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--skip-matview", action="store_true")
     ap.add_argument("--cleanup-placeholders", action="store_true")
@@ -268,6 +471,15 @@ def main(argv: list[str] | None = None) -> int:
         help="DELETE the --only-report-dates before loading. Required for a repair: "
              "ON CONFLICT DO NOTHING means a plain reload cannot displace bad rows.",
     )
+    ap.add_argument(
+        "--new-series-only", action="store_true",
+        help="insert a (report_date, series_id) only if the table has none of it yet; requires "
+             "--only-report-dates and one CSV per series (monthly top-up mode)",
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true",
+        help="validate the CSVs offline against the write path and exit; opens no connection",
+    )
     ap.add_argument("--verify-floor", type=float, default=DEFAULT_FILL_FLOOR)
     ap.add_argument("--no-verify", action="store_true", help="skip the post-load ISIN fill check")
     args = ap.parse_args(argv)
@@ -275,6 +487,12 @@ def main(argv: list[str] | None = None) -> int:
     report_dates = [d.strip() for d in args.only_report_dates.split(",") if d.strip()]
     if args.delete_first and not report_dates:
         ap.error("--delete-first requires --only-report-dates; refusing an unscoped DELETE")
+    if args.new_series_only and not report_dates:
+        ap.error("--new-series-only requires --only-report-dates")
+    if args.delete_first and args.new_series_only:
+        ap.error("--delete-first and --new-series-only contradict each other")
+    if not args.dsn and not args.dry_run:
+        ap.error("--dsn is required unless --dry-run")
 
     ts = dt.datetime.now(dt.UTC).replace(microsecond=0)
     files = sorted(glob.glob(os.path.join(args.seed_dir, "*.csv")))
@@ -284,6 +502,11 @@ def main(argv: list[str] | None = None) -> int:
     _log(f"parallel load: {len(files)} files, {args.workers} workers, ts={ts.isoformat()}")
     if report_dates:
         _log(f"scope: report_date IN {report_dates}")
+    if not files:
+        _log(f"REFUSING: no CSV matched in {args.seed_dir} (--only={args.only!r})")
+        return 1
+    if args.dry_run:
+        return dry_run(files, report_dates, args.verify_floor)
     _log(f"ROLLBACK handle: DELETE FROM {TABLE} WHERE created_at = '{ts.isoformat()}';")
 
     chunks = prep(args.dsn, report_dates or None)
@@ -293,7 +516,10 @@ def main(argv: list[str] | None = None) -> int:
     total = 0
     failures = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(load_one, args.dsn, p, ts, report_dates or None): p for p in files}
+        futs = {
+            ex.submit(load_one, args.dsn, p, ts, report_dates or None, args.new_series_only): p
+            for p in files
+        }
         for fut in concurrent.futures.as_completed(futs):
             try:
                 _, n = fut.result()

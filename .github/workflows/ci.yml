@@ -600,6 +600,7 @@ jobs:
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
           tests/test_nport_dera_tooling.py
+          tests/test_nport_secapi_tooling.py
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
           tests/test_yahoo_sector.py
@@ -622,9 +623,15 @@ jobs:
           tools/nport_dera/nport_bulk_parse.py
           tools/nport_dera/nport_merge.py
           tools/nport_dera/nport_parallel_load.py
+          tools/nport_secapi/__init__.py
+          tools/nport_secapi/convert.py
+          tools/nport_secapi/download.py
+          tools/nport_secapi/validate.py
+          src/workers/nport_secapi_monthly.py
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
           tests/test_nport_dera_tooling.py
+          tests/test_nport_secapi_tooling.py
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
           tests/test_yahoo_sector.py
@@ -646,6 +653,11 @@ jobs:
           tools/nport_dera/nport_bulk_parse.py
           tools/nport_dera/nport_merge.py
           tools/nport_dera/nport_parallel_load.py
+          tools/nport_secapi/__init__.py
+          tools/nport_secapi/convert.py
+          tools/nport_secapi/download.py
+          tools/nport_secapi/validate.py
+          src/workers/nport_secapi_monthly.py
 
       - name: Verify certified input pack
         if: steps.changes.outputs.quant_changed == 'true'

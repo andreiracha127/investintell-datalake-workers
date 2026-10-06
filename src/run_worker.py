@@ -57,6 +57,7 @@ def main() -> None:
             "|nport_ingestion|ncen_ingestion|rr1_ingestion"
             "|nport_fixed_income_secapi_recovery"
             "|nport_fixed_income_secapi_fallback"
+            "|nport_secapi_monthly"
             "|nport_v2_publication_chain"
             "|rr1_derived_profiles|sec_regulatory_serving"
             "|screener_metrics|fund_factors|fund_institutional_reveal"

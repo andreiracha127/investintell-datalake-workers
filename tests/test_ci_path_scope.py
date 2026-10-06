@@ -31,6 +31,9 @@ def test_nport_only_paths_select_only_nport() -> None:
         "tests/test_openfigi.py",
         "tests/test_yahoo_sector.py",
         "tests/test_backfill_nport_holding_attributes.py",
+        "tools/nport_secapi/convert.py",
+        "tests/fixtures/nport_secapi/form-nport/2026/2026-07.jsonl",
+        "src/workers/nport_secapi_monthly.py",
     ],
 )
 def test_nport_enrichment_helpers_select_only_nport(path: str) -> None:
