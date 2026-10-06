@@ -676,3 +676,12 @@ def test_r5_never_activates_a_ticker_another_row_claims():
     plan, out = run(snap, ev=evidence({"VTI": tiingo_ok()}))
     assert ("instruments_universe", "a") not in out
     assert plan.review["orphan_ticker_claimed_elsewhere"][0]["ticker"] == "VTI"
+
+
+def test_r9_never_overwrites_a_conflict_state_that_is_not_an_object():
+    filings = [_filing("C000259241", "VVPLX", "N-CEN", "2026-07-14"),
+               _filing("C000082313", "VVPLX", "NPORT-P", "2026-09-28")]
+    snap = _moved()
+    snap.registry["a"]["conflict_state"] = ["legacy", "evidence"]
+    plan, out = run(snap, ev=evidence(CURRENT, filings=filings), quarantine_sec_contradictions=True)
+    assert out == {} and plan.review["quarantine_conflict_state_not_object"]

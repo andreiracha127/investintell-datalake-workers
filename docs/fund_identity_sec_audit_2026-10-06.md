@@ -489,7 +489,8 @@ firm- or series-level for many rows, so the order is indicative.
   digest, so plan and apply must use the same file.
 * `--mode rollback --rollback-run-id R --confirm repair_fund_identity_sec_v1`:
   restores run R's before-values byte for byte (compare-and-swap on its
-  after-values) and records the rollback; one rollback per apply. A run with
+  after-values, in the reverse of the apply's write order) and records the
+  rollback; one rollback per apply. A run with
   R3 repoints is refused once any NAV was written for a repointed instrument
   after the apply (the NAV would then belong to the new class), and stays
   refused: NAV attempts are append-only, so a later reverse rebase cannot be

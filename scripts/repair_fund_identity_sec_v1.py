@@ -729,7 +729,11 @@ def _newest(filings: list[dict], *, skip_ncen: bool) -> str | None:
 def _quarantine(state: _State, iid: str, reg: dict, series: str, new: SecRow,
                 filings: list[dict], old_filings: list[dict]) -> None:
     conflict = reg.get("conflict_state")
-    conflict = dict(conflict) if isinstance(conflict, dict) else {}
+    if conflict is not None and not isinstance(conflict, dict):
+        # The generator rejects a non-object state on its own; never overwrite it.
+        state.review("quarantine_conflict_state_not_object", iid, ticker=ident(reg.get("ticker")))
+        return
+    conflict = dict(conflict or {})
     if "sec_series_id" in conflict:
         return  # already recorded: a re-run is a no-op
     conflict["sec_series_id"] = {
@@ -1539,7 +1543,12 @@ def run_rollback(dsn: str, run_id: str) -> dict:
                     "SELECT relation, instrument_id, rules, before_values, after_values "
                     "FROM fund_identity_sec_repair_receipts WHERE run_id = %s "
                     "ORDER BY relation, instrument_id", (target,))
-                receipts = cursor.fetchall()
+                # Undo in the exact reverse of the apply's write order (Plan.changes:
+                # instruments_universe then instrument_identity, each by instrument
+                # id): every intermediate state existed, so unique keys never clash.
+                apply_order = {"instruments_universe": 0, "instrument_identity": 1}
+                receipts = sorted(cursor.fetchall(), reverse=True,
+                                  key=lambda r: (apply_order[r["relation"]], str(r["instrument_id"])))
                 new_run = uuid.uuid4()
                 cursor.execute(
                     "INSERT INTO fund_identity_sec_repair_runs (run_id, kind, repair_version, "
