@@ -196,6 +196,10 @@ RULES = (
 # from the newest batch was withdrawn from company_tickers_mf.json. Rows within
 # this distance of the newest instant belong to the newest batch.
 LATEST_BATCH_WINDOW = dt.timedelta(hours=12)
+# The worker can be run with a row limit, which commits a partial prefix under a
+# new timestamp; the newest batch must hold (nearly) every row younger than the
+# 7-day window before it may stand for SEC's whole ticker file.
+SEC_BATCH_MIN_SHARE = 0.95
 _EDGAR_ID = re.compile(r"(?:S[0-9]{9}|C[0-9]{9}|[0-9]{1,10})\Z")
 _SEC_CLASS = re.compile(r"C[0-9]{9}\Z")
 _SEC_SERIES = re.compile(r"S[0-9]{9}\Z")
@@ -536,10 +540,12 @@ class _State:
         return sorted(iid for iid, row in self.iu.items() if ident(row.get("instrument_type")) == "FUND")
 
 
-def _filings(evidence: Evidence, class_id: str, ticker: str) -> list[dict]:
+def _filings(evidence: Evidence, class_id: str, ticker: str, series: str | None = None) -> list[dict]:
+    """Pinned filings listing ``class_id`` under ``ticker`` (and under ``series`` when given)."""
     return [
         {k: f.get(k) for k in ("accession_no", "form_type", "filed_at", "role")}
         for f in evidence.class_ticker_filings.get((class_id, ticker), [])
+        if series is None or ident(f.get("series_id")) == series
     ]
 
 
@@ -672,6 +678,9 @@ def rule_r7_registry_series(state: _State, sec: CurrentSec) -> None:
             continue
         if not _ticker_free(state, iid, ticker):
             continue
+        if _owned_by_other(state, iid, "sec_class_id", current.class_id):
+            state.review("registry_class_taken", iid, ticker=ticker, class_id=current.class_id)
+            continue
         facts = {"ticker": ticker, "series_id": current.series_id, "class_id": current.class_id,
                  "cik": current.cik, "sec_synced_at": current.synced_at.isoformat()}
         values = {
@@ -748,8 +757,8 @@ def rule_r8_series_moved(state: _State, sec: CurrentSec, history: SecHistory,
             year for year, cls, ser in history.tickers.get(ticker, ())
             if cls == new.class_id and ser == new.series_id
         })
-        filings = _filings(evidence, new.class_id, ticker)
-        old_filings = _filings(evidence, class_id, ticker) if class_id else []
+        filings = _filings(evidence, new.class_id, ticker, new.series_id)
+        old_filings = _filings(evidence, class_id, ticker, series) if class_id else []
         new_date = _newest(filings, skip_ncen=True)
         old_date = _newest(old_filings, skip_ncen=False)
         if new_date is None or (old_date is not None and new_date <= old_date):
@@ -1184,6 +1193,19 @@ NAV_LAST_QUERY = (
 )
 
 
+def assert_latest_sec_batch_complete(rows: list[dict], decision_at: dt.datetime) -> dict:
+    """Refuse to plan on a partial SEC refresh (``sec_company_tickers_mf.run(limit=...)``)."""
+    fresh = [r["synced_at"] for r in rows
+             if r["synced_at"] <= decision_at and decision_at - r["synced_at"] <= SEC_MAX_SYNCED_AGE]
+    if not fresh:
+        raise RepairError("sec_crosswalk_not_fresh", 3)
+    newest = max(fresh)
+    latest = sum(1 for synced in fresh if newest - synced <= LATEST_BATCH_WINDOW)
+    if latest < SEC_BATCH_MIN_SHARE * len(fresh):
+        raise RepairError("sec_latest_batch_incomplete", 3)
+    return {"newest_sync": newest.isoformat(), "latest_batch_rows": latest, "fresh_rows": len(fresh)}
+
+
 def _nav_candidates(snapshot: Snapshot, history: SecHistory) -> list[str]:
     """Active funds whose ticker is absent from current SEC data (R6 prefilter)."""
     sec = CurrentSec(snapshot.sec, snapshot.decision_at)
@@ -1216,6 +1238,7 @@ def read_snapshot(cursor, history: SecHistory) -> tuple[Snapshot, tuple]:
     attempts = {
         str(r["instrument_id"]): (r["status"], r["newest_observed_date"]) for r in cursor.fetchall()
     }
+    assert_latest_sec_batch_complete(sec_rows, decision_at)
     snapshot = Snapshot(decision_at, iu, reg, funds, sec_rows, {}, attempts)
     candidates = _nav_candidates(snapshot, history)
     if candidates:
@@ -1394,8 +1417,10 @@ def _refuse_repoint_rollback_after_nav_writes(cursor, run_id: uuid.UUID, applied
     After the repoint, ingestion appends (and a governed rebase rewrites) the
     NEW class's NAV under the instrument; restoring the old ticker would label
     those rows with the terminated class. Any successful NAV write for a
-    repointed instrument after the apply run blocks the rollback; reverse the
-    NAV first (rebase back), then roll back.
+    repointed instrument after the apply run blocks the rollback, and it stays
+    blocked: attempts are append-only, so a later reverse rebase cannot be told
+    apart from forward writes here. Undo such a repoint forward instead (a new
+    reviewed repoint plus its own governed rebase).
     """
     cursor.execute(
         "SELECT array_agg(instrument_id) AS ids FROM fund_identity_sec_repair_receipts "

@@ -101,3 +101,28 @@ def test_assemble_reads_multi_filing_prospectus_entries_and_refresh_keys():
     assert [p["accession_no"] for p in doc["insurance_prospectus"]] == ["P2"]  # no sentence, no evidence
     assert collect._TIME_VARYING_SEC.search("C1|NEW|last") and collect._TIME_VARYING_SEC.search("S1|series_latest")
     assert not collect._TIME_VARYING_SEC.search("C1|NEW|first")
+
+
+def test_an_exhausted_sec_query_aborts_collection(monkeypatch):
+    import sys
+    import types
+
+    class Failing:
+        def __init__(self, api_key):
+            pass
+
+        def get_filings(self, _query):
+            raise Exception("API error: 500 - token=SECRET")
+
+        get_data = get_filings
+
+    monkeypatch.setitem(sys.modules, "sec_api", types.SimpleNamespace(
+        QueryApi=Failing, FormNcenApi=Failing, FullTextSearchApi=Failing))
+    monkeypatch.setattr(collect.time, "sleep", lambda _s: None)
+    targets = {"pairs": [("C1", "OLD")], "classes": [], "series": [], "insurance": [("S1", "1")]}
+    import pytest
+
+    with pytest.raises(collect.CollectionError, match="sec_query_exhausted"):
+        collect.collect_sec(targets, {}, lambda: None, api_key="k")
+    with pytest.raises(collect.CollectionError, match="ncen_query_exhausted"):
+        collect.collect_ncen(targets["insurance"], {}, lambda: None, api_key="k")

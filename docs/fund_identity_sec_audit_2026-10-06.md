@@ -61,7 +61,7 @@ A8 at default + R9: N = 7,484 funds reach the SEC stage, bound ⌊N/10⌋ = 748,
 
 | source | role | pin |
 |---|---|---|
-| `public.sec_company_tickers_mf` | current SEC class/series/ticker (daily sync of `company_tickers_mf.json`). Every rule reads only its newest daily batch (one `updated_at` per sync, 28,607 of the 28,620 rows younger than 7 days on 2026-10-06): a row left behind by the upsert-only sync was withdrawn from SEC's file even while the generator still calls it fresh | read in the plan's own `REPEATABLE READ` snapshot |
+| `public.sec_company_tickers_mf` | current SEC class/series/ticker (daily sync of `company_tickers_mf.json`). Every rule reads only its newest daily batch (one `updated_at` per sync, 28,607 of the 28,620 rows younger than 7 days on 2026-10-06): a row left behind by the upsert-only sync was withdrawn from SEC's file even while the generator still calls it fresh. The plan refuses to run when the newest batch holds less than 95 % of those rows (a `limit` run of the sync commits only a prefix) | read in the plan's own `REPEATABLE READ` snapshot |
 | SEC *Investment Company Series and Class Information* 2023–2026 | every series/class not yet reclassified inactive, with tickers; the 2026 file (SEC update 2026-06-01) is "current-year" | sha256 in `SERIES_CLASS_FILES` of the script |
 | sec-api.io Query API (`485BPOS`, `485APOS`, `497`, `497K`, `497J`, `N-CEN`, `N-CSR(S)`, `NPORT-P`, `N-14`) | first/last filing showing a class under a ticker; newest filing listing a terminated class or series | accession numbers in `contracts/fund-identity-sec/evidence_v1.json` |
 | Tiingo daily meta (`/tiingo/daily/<ticker>`) | whether a ticker has a current price history (R2, R3, R5) | `tiingo_meta` in the evidence bundle, with `observed_at` |
@@ -295,7 +295,8 @@ listed under `series_terminated_nav_current`.
 `backfill_benchmark_proxy_etfs`, plus AFIF, PCLO, ASMF): TIP, IWS, BIZD, IWN,
 MBB, SGOV, MUB, HYG, GOVT, VTIP, IWO, ICVT, AFIF, IWP, QAI, PCLO, BIL, ASMF,
 EMB, LQD. Each ticker has exactly one fresh SEC row (HYG →
-S000016772/C000046846, SGOV → S000068768/C000219740, both CIK 1100663). R7
+S000016772/C000046846, SGOV → S000068768/C000219740, both CIK 1100663) and
+no other registry row holds that class (otherwise `registry_class_taken`). R7
 fills series, class and CIK; 17 of the series pass the eligibility gate, so
 those funds join `funds_v` and become ACTIVE. Rows: 20 registry rows.
 
@@ -308,7 +309,8 @@ registry. The fund's own filings decide whether that is a real move.
 
 **Real moves (R8).** SEC's newest sync lists the ticker once, under the new
 series, and a prospectus or N-PORT filing (not an N-CEN) shows the ticker
-under the new class after the newest filing showing it under the old class:
+under the new class and series after the newest filing showing it under the
+old class and registry series:
 
 | ticker | registry series (old) | SEC series (CIK) | new-series filing | newest old-class filing |
 |---|---|---|---|---|
@@ -470,8 +472,10 @@ firm- or series-level for many rows, so the order is indicative.
   restores run R's before-values byte for byte (compare-and-swap on its
   after-values) and records the rollback; one rollback per apply. A run with
   R3 repoints is refused once any NAV was written for a repointed instrument
-  after the apply (the NAV would then belong to the new class): reverse the
-  NAV first.
+  after the apply (the NAV would then belong to the new class), and stays
+  refused: NAV attempts are append-only, so a later reverse rebase cannot be
+  told apart. Such a repoint is undone forward, with a new reviewed repoint
+  and its own rebase.
 * `--include-class-repoint` enables R3, `--quarantine-sec-contradictions`
   enables R9. Both are part of the digest.
 
@@ -485,10 +489,12 @@ series and R5 (series, registrant) pairs the plan rests on, fetches the
 missing ones (sec-api Query API, Form N-CEN API and full-text search, EDGAR
 documents and headers with `--sec-user-agent`, Tiingo meta; keys from
 `SEC_API_IO_KEY`/`TIINGO_API_KEY`), and writes a new bundle. Prospectus
-search takes the newest 485BPOS filings across all phrases until every
+search scans every 485BPOS hit across all phrases, newest first, until every
 targeted series is covered by a filing header; the newest covering filing
 with a restriction sentence decides. `--refresh-sec` re-fetches every
-time-varying answer (newest/last filings, N-CEN, prospectus); `--offline`
+time-varying answer (newest/last filings, N-CEN, prospectus). A query that
+still fails after its retries aborts the run without writing a bundle;
+`--offline`
 reassembles the committed bundle byte for byte from the caches. A new bundle
 needs a reviewed change of `EVIDENCE_SHA256`.
 
@@ -502,7 +508,7 @@ it.
 ## Dry run on production (before A + B)
 
 `--mode plan --quarantine-sec-contradictions` (the approved flags) on the
-live database at 2026-10-06 08:24 UTC, A and B not yet applied:
+live database at 2026-10-06 16:54 UTC, A and B not yet applied:
 
 | rule | rows (all) | in `funds_v` |
 |---|---:|---:|

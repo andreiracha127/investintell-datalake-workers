@@ -82,8 +82,11 @@ _SENTENCE_PATTERNS = (
                + _SENTENCE_TARGET + r"[^.]{0,160}\.", re.I),
 )
 _SERIES_HEADER = re.compile(r"(?:&lt;|<)SERIES-ID(?:&gt;|>)\s*(S\d{9})")
-MAX_PROSPECTUS_FILINGS = 12
 # Answers that change as registrants file: dropped by --refresh-sec.
+class CollectionError(RuntimeError):
+    """A required answer could not be fetched: never write a partial bundle."""
+
+
 _TIME_VARYING_SEC = re.compile(r"\|(last|latest|series_latest)$")
 TICKERS_JSON_NAME = "company_tickers_mf_20261006.json"
 DATASET_URLS = {
@@ -289,7 +292,7 @@ def collect_sec(targets: dict, cache: dict, save, *, api_key: str) -> None:
                 print(json.dumps({"retry": tag, "error": _TOKEN.sub(r"\1REDACTED", str(exc))[:160]}))
                 time.sleep(2 + 3 * attempt)
         else:
-            return
+            raise CollectionError(f"sec_query_exhausted:{tag}")
         cache[tag] = {"total": (result.get("total") or {}).get("value"),
                       "filings": [_slim(f, classes) for f in result.get("filings", [])]}
         save()
@@ -324,7 +327,7 @@ def collect_ncen(insurance: list, cache: dict, save, *, api_key: str) -> None:
                 print(json.dumps({"retry": tag, "error": _TOKEN.sub(r"\1REDACTED", str(exc))[:160]}))
                 time.sleep(2 + 3 * attempt)
         else:
-            return {}
+            raise CollectionError(f"ncen_query_exhausted:{tag}")
         data = result.get("data", [])
         cache[tag] = {} if not data else {
             "accession_no": data[0].get("accessionNo"), "filed_at": data[0].get("filedAt"),
@@ -374,14 +377,24 @@ def collect_prospectus(insurance: list, cache: dict, save, *, api_key: str, user
             continue
         hits: dict[str, dict] = {}
         for phrase in PROSPECTUS_PHRASES:  # every phrase, then the newest filings first
-            result = api.get_filings({"query": phrase, "formTypes": ["485BPOS"], "ciks": [cik.zfill(10)],
-                                      "startDate": "2024-01-01",
-                                      "endDate": dt.date.today().isoformat()})
+            for attempt in range(4):
+                try:
+                    result = api.get_filings({"query": phrase, "formTypes": ["485BPOS"],
+                                              "ciks": [cik.zfill(10)], "startDate": "2024-01-01",
+                                              "endDate": dt.date.today().isoformat()})
+                    break
+                except Exception as exc:  # noqa: BLE001 - the SDK raises bare Exception
+                    print(json.dumps({"retry": tag, "error": _TOKEN.sub(r"\1REDACTED", str(exc))[:160]}))
+                    time.sleep(2 + 3 * attempt)
+            else:
+                raise CollectionError(f"prospectus_search_exhausted:{tag}")
             time.sleep(0.3)
             for filing in result.get("filings", []):
                 hits.setdefault(filing["accessionNo"], filing)
         matches, covered = [], set()
-        for hit in sorted(hits.values(), key=lambda f: f.get("filedAt") or "", reverse=True)[:MAX_PROSPECTUS_FILINGS]:
+        # Every hit, newest first, until every targeted series is covered: only an
+        # exhaustive scan may record the whole ``wanted`` set as searched.
+        for hit in sorted(hits.values(), key=lambda f: f.get("filedAt") or "", reverse=True):
             if wanted <= covered:
                 break
             accession = hit["accessionNo"]
@@ -470,21 +483,15 @@ def main(argv: list[str] | None = None) -> int:
         sec_cache = {k: v for k, v in sec_cache.items() if not _TIME_VARYING_SEC.search(k)}
         ncen_cache, prospectus_cache = {}, {}
     if not args.offline:
-        sec_key, tiingo_key = os.environ.get("SEC_API_IO_KEY"), os.environ.get("TIINGO_API_KEY")
-        if not sec_key or not tiingo_key or not args.sec_user_agent:
+        try:
+            _collect_online(args, targets, sec_cache, tiingo_cache, ncen_cache, prospectus_cache,
+                            sec_path, tiingo_path, ncen_path, prospectus_path)
+        except CollectionError as exc:
+            print(json.dumps({"status": "refused", "reason": str(exc)}))
+            return 2
+        except _KeysMissing:
             print(json.dumps({"status": "refused", "reason": "api_keys_or_user_agent_missing"}))
             return 3
-        collect_sec(targets, sec_cache, lambda: sec_path.write_text(json.dumps(sec_cache, indent=0)),
-                    api_key=sec_key)
-        collect_ncen(targets["insurance"], ncen_cache,
-                     lambda: ncen_path.write_text(json.dumps(ncen_cache, indent=0)), api_key=sec_key)
-        collect_prospectus(targets["insurance"], prospectus_cache,
-                           lambda: prospectus_path.write_text(json.dumps(prospectus_cache, indent=0)),
-                           api_key=sec_key, user_agent=args.sec_user_agent,
-                           doc_dir=args.cache_dir / "edgar")
-        collect_tiingo(targets["tiingo"], tiingo_cache,
-                       lambda: tiingo_path.write_text(json.dumps(tiingo_cache, indent=0)),
-                       api_key=tiingo_key, pace=args.tiingo_pace, refresh=args.refresh_tiingo)
     raw = assemble(sec_cache, tiingo_cache, args.dataset_dir, args.collected_on,
                    ncen_cache, prospectus_cache)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -493,6 +500,29 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({"status": "written", "out": str(args.out), "sha256": hashlib.sha256(raw).hexdigest(),
                       "targets": {k: len(v) for k, v in targets.items()}}))
     return 0
+
+
+class _KeysMissing(Exception):
+    pass
+
+
+def _collect_online(args, targets, sec_cache, tiingo_cache, ncen_cache, prospectus_cache,
+                    sec_path, tiingo_path, ncen_path, prospectus_path) -> None:
+    """Fetch every missing answer; an exhausted required query aborts the whole run."""
+    sec_key, tiingo_key = os.environ.get("SEC_API_IO_KEY"), os.environ.get("TIINGO_API_KEY")
+    if not sec_key or not tiingo_key or not args.sec_user_agent:
+        raise _KeysMissing
+    collect_sec(targets, sec_cache, lambda: sec_path.write_text(json.dumps(sec_cache, indent=0)),
+                api_key=sec_key)
+    collect_ncen(targets["insurance"], ncen_cache,
+                 lambda: ncen_path.write_text(json.dumps(ncen_cache, indent=0)), api_key=sec_key)
+    collect_prospectus(targets["insurance"], prospectus_cache,
+                       lambda: prospectus_path.write_text(json.dumps(prospectus_cache, indent=0)),
+                       api_key=sec_key, user_agent=args.sec_user_agent,
+                       doc_dir=args.cache_dir / "edgar")
+    collect_tiingo(targets["tiingo"], tiingo_cache,
+                   lambda: tiingo_path.write_text(json.dumps(tiingo_cache, indent=0)),
+                   api_key=tiingo_key, pace=args.tiingo_pace, refresh=args.refresh_tiingo)
 
 
 if __name__ == "__main__":

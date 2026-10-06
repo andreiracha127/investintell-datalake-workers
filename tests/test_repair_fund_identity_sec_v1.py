@@ -404,8 +404,11 @@ def test_committed_evidence_bundle_matches_its_pin():
 OLDER = NOW - dt.timedelta(days=5)  # still inside the 7-day window, not the newest batch
 
 
+SERIES_OF_CLASS = {"C000259241": "S000091565", "C000082313": "S000027283"}
+
+
 def _filing(cls, ticker, form, filed, role="last_with_ticker"):
-    return {"class_id": cls, "ticker": ticker, "series_id": None, "role": role,
+    return {"class_id": cls, "ticker": ticker, "series_id": SERIES_OF_CLASS.get(cls), "role": role,
             "accession_no": f"0000000000-26-{filed.replace('-', '')[2:]}",
             "form_type": form, "filed_at": filed}
 
@@ -582,3 +585,30 @@ def test_newest_prospectus_sentence_decides_insurance_status():
     assert _activated(evidence({"VTI": tiingo_ok()}, prospectus=[old, new]))
     plan, out = run(_orphan(), ev=evidence({"VTI": tiingo_ok()}, prospectus=[new, {**old, "filed_at": "2026-05-01"}]))
     assert out == {} and plan.review["orphan_insurance_only_class"]
+
+
+# Third review round -----------------------------------------------------------
+def test_r8_filing_must_list_the_class_under_the_destination_series():
+    elsewhere = {**_filing("C000259241", "VVPLX", "NPORT-P", "2026-09-28"), "series_id": "S000099999"}
+    plan, out = run(_moved(), ev=evidence(CURRENT, filings=[elsewhere]))
+    assert out == {} and plan.review["series_moved_unproven"]
+    under_new = {**elsewhere, "series_id": "S000091565"}
+    assert ("instrument_identity", "a") in run(_moved(), ev=evidence(CURRENT, filings=[under_new]))[1]
+
+
+def test_r7_never_gives_one_sec_class_two_catalog_identities():
+    snap = snapshot([iu("a", "HYG"), iu("b", "HYGOLD")],
+                    [reg("a", "HYG", None, None, cik=None), reg("b", "HYGOLD", "S000016772", "C000045000")],
+                    [sec("C000045000", "S000016772", "HYG", cik="1100663")], funds=set())
+    plan, out = run(snap)
+    assert ("instrument_identity", "a") not in out and plan.review["registry_class_taken"]
+
+
+def test_partial_sec_refresh_is_refused():
+    full = [sec(f"C{n:09d}", "S000000001", f"T{n}", synced=NOW - dt.timedelta(days=1)) for n in range(100)]
+    assert repair.assert_latest_sec_batch_complete(full, NOW)["latest_batch_rows"] == 100
+    partial = full + [sec("C000000001", "S000000001", "T1", synced=FRESH)]  # a limit=1 run today
+    with pytest.raises(repair.RepairError, match="sec_latest_batch_incomplete"):
+        repair.assert_latest_sec_batch_complete(partial[1:], NOW)
+    with pytest.raises(repair.RepairError, match="sec_crosswalk_not_fresh"):
+        repair.assert_latest_sec_batch_complete([sec("C000000001", "S1", "T1", synced=STALE)], NOW)
