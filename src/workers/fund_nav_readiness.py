@@ -935,6 +935,7 @@ def run(dsn: str) -> dict[str, Any]:
                 )
                 fingerprints = []
                 ready_count = 0
+                active_count = 0
                 for instrument_id in instrument_ids:
                     (
                         lifecycle,
@@ -979,6 +980,7 @@ def run(dsn: str) -> dict[str, Any]:
                     cur.execute(insert_sql, tuple(row[name] for name in _ROW_FIELDS))
                     fingerprints.append((str(instrument_id), row["input_fingerprint"]))
                     ready_count += int(row["admissible"])
+                    active_count += int(row["fund_status"] == "ACTIVE")
                 cur.execute(
                     """SELECT count(*) AS n FROM fund_nav_readiness_v1 WHERE run_id=%s""",
                     (run_id,),
@@ -1046,4 +1048,5 @@ def run(dsn: str) -> dict[str, Any]:
                 "as_of_session": grid[-1].isoformat(),
                 "instrument_count": len(instrument_ids),
                 "ready_count": ready_count,
+                "active_count": active_count,
             }

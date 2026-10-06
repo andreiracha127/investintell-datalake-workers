@@ -134,6 +134,14 @@ def main() -> None:
     # then fail, so the truncation is visible as a failure and not just a log line.
     if worker in NAV_PUBLICATION_LANES and stats.get("published") is not True:
         sys.exit(1)
+    # Coverage alarm (see src/workers/_nav_coverage.py): the snapshot is published,
+    # but a cohort that is mostly UNKNOWN or not admissible must not run green.
+    if worker == "nav_current_daily_chain" and (stats.get("coverage") or {}).get("alarm"):
+        print(
+            json.dumps({"worker": worker, "event": "nav_coverage_alarm", **stats["coverage"]}),
+            flush=True,
+        )
+        sys.exit(1)
     if stats.get("aborted") or stats.get("status") == "lock_busy" or stats.get("state") in {
         "failed", "conflict", "blocked"
     } or (

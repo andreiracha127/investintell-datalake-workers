@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from src.db import LOCK_FUND_NAV_CURRENT_CHAIN, advisory_lock, connect
 from src.workers import (
+    _nav_coverage,
     fund_nav_readiness,
     instrument_ingestion,
     matview_refresh,
@@ -58,6 +59,8 @@ def run(
     readiness_runner: Callable[..., dict[str, Any]] = fund_nav_readiness.run,
 ) -> dict[str, Any]:
     """Policy/calendar -> attempts/NAV -> coverage -> risk -> atomic pointer."""
+    # A malformed coverage floor is a configuration error: fail before any work.
+    min_active_share, min_ready_share = _nav_coverage.floors_from_env()
     with connect(dsn) as guard:
         with advisory_lock(guard, LOCK_FUND_NAV_CURRENT_CHAIN) as acquired:
             if not acquired:
@@ -110,4 +113,11 @@ def run(
                 "readiness_run_id": snapshot["run_id"],
                 "sample_id": snapshot["sample_id"],
                 "ready_count": snapshot["ready_count"],
+                # Measured after the pointer is published; run_worker fails the
+                # run on an alarm so the platform shows it, the snapshot stays.
+                "coverage": _nav_coverage.assess_coverage(
+                    snapshot,
+                    min_active_share=min_active_share,
+                    min_ready_share=min_ready_share,
+                ),
             }
