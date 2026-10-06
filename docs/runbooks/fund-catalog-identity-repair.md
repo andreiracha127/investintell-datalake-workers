@@ -163,11 +163,21 @@ outside any git checkout. Reuse the requested coverage of `2026-09-25.3`
 (sessions 2024-01-02..2027-12-31). The SEC crosswalk must have been synced
 within 7 days, otherwise `sec_source_stale` aborts the build. Confirm the
 requested coverage against `generation.requested_coverage_start`/`_end` of
-the published `2026-09-25.3` artifact in custody.
+the published `2026-09-25.3` artifact in custody. The database does not keep
+`generation`; without the artifact, confirm calendar identity instead (A1
+`calendar_identical_to_previous` checks exactly that).
 
-A3 compares against the previous policy. `2026-09-25.3` has 2,899 ACTIVE,
-but the catalog yielded 2,896 on 2026-10-06 before any repair. Those 3 are
-SEC drift, not this repair, and the audit will ask for them to be explained.
+A3 compares against the previous policy, which must be the current pointer
+(the operator refuses anything else with `current_pointer_not_previous`).
+Since the 2026-10-06 Round7 revision the auditor admits a published v3 as the
+previous policy: both generator labels v3, every evidence reference the v3
+catalog reference, and `generation.policy_hash` equal to the recomputed hash.
+If the pointer's artifact is not in custody, rebuild it from production: the
+non-evidence fields of this build with `policy_version` set to the pointer's
+version (the recomputed hash must equal `nav_policy_versions.policy_hash`),
+the rows of `nav_instrument_policy_evidence` for that version, and a
+`generation` block holding only `generator_version` and that `policy_hash`.
+`2026-09-25.3` has 2,899 ACTIVE.
 
 ```bash
 R=/srv/nav-custody/<YYYY-MM-DD>; install -d -m 700 "$R"
@@ -186,7 +196,7 @@ python -m scripts.verify_fund_nav_identity_v2 \
   --policy-file "$R/policy.json" --source-snapshot-file "$R/source-snapshot.json" \
   --dsn-env NAV_READINESS_DATABASE_URL --capture-output "$R/capture.json" \
   --audit-config configs/nav_identity_audit_v3.json \
-  --previous-policy-file "$R/previous-v1-policy.json" --previous-policy-sha256 <sha256> \
+  --previous-policy-file "$R/previous-policy.json" --previous-policy-sha256 <sha256> \
   --custody-root "$R" --output "$R/audit.json" --canary-output "$R/canary.json"
 ```
 
