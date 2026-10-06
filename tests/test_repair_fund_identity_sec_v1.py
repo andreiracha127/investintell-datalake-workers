@@ -63,8 +63,11 @@ def changes(plan, snap):
     return {(c["relation"], c["instrument_id"]): c for c in plan.changes(snap)}
 
 
+CURRENT = {t: tiingo_ok() for t in ("NEW", "LIVEX", "ACVU", "ADME", "VTI")}
+
+
 def run(snap, hist=None, ev=None, **kw):
-    plan = repair.plan_repairs(snap, hist or history([]), ev or evidence(), **kw)
+    plan = repair.plan_repairs(snap, hist or history([]), ev or evidence(CURRENT), **kw)
     return plan, changes(plan, snap)
 
 
@@ -115,7 +118,7 @@ def test_r2_accepts_pinned_filing_when_dataset_lacks_old_ticker():
               "role": "last_with_ticker", "accession_no": "0000894189-19-007478",
               "form_type": "N-14", "filed_at": "2019-11-06"}
     assert run(snap)[1] == {}  # unproven: no dataset row, no filing
-    _plan, out = run(snap, ev=evidence(filings=[filing]))
+    _plan, out = run(snap, ev=evidence(CURRENT, filings=[filing]))
     assert out[("instruments_universe", "a")]["after"]["ticker"] == "ADME"
 
 
@@ -128,6 +131,16 @@ def test_r2_ignores_stale_sec_rows_and_unproven_classes():
     fresh = snapshot([iu("a", "OLD")], [reg("a", "NEW", "S000000001", "C000000001")],
                      [sec("C000000001", "S000000001", "NEW")])
     assert run(fresh, other_class)[1] == {}
+
+
+def test_r2_keeps_the_old_ticker_until_tiingo_serves_the_new_one():
+    snap = snapshot([iu("a", "OLD")], [reg("a", "NEW", "S000000001", "C000000001")],
+                    [sec("C000000001", "S000000001", "NEW")])
+    hist = history([(2025, "C000000001", "S000000001", "OLD")])
+    for meta in ({}, {"NEW": {"status": 200, "observed_at": "2026-10-06T05:00:00+00:00"}},
+                 {"NEW": tiingo_ok(end="2026-06-08")}):
+        plan, out = run(snap, hist, ev=evidence(meta))
+        assert out == {} and plan.review["ticker_renamed_no_current_tiingo"]
 
 
 def test_r2_target_taken_or_series_moved_goes_to_review():
@@ -160,6 +173,12 @@ def test_r3_is_review_only_unless_enabled():
     _plan, out = run(snap, hist, include_class_repoint=True)
     change = out[("instruments_universe", "a")]
     assert change["after"]["ticker"] == "LIVEX" and change["rules"] == [repair.RULES[2]]
+
+
+def test_r3_requires_a_current_tiingo_history_for_the_live_class():
+    snap, hist = _repoint_case()
+    plan, out = run(snap, hist, ev=evidence({}), include_class_repoint=True)
+    assert out == {} and plan.review["class_repoint_no_current_tiingo"]
 
 
 def test_r3_requires_the_old_class_to_be_terminated():
@@ -292,7 +311,7 @@ def test_replan_after_apply_is_a_noop_and_digest_is_stable():
         nav_last={"c": dt.date(2024, 1, 2)}, attempts={"c": ("empty", None)},
     )
     hist = history([(2025, "C000244148", "S000081376", "QUVU"), (2024, "C000000003", "S000000003", "DEADX")])
-    ev = evidence({"VTI": tiingo_ok()})
+    ev = evidence({"VTI": tiingo_ok(), "ACVU": tiingo_ok()})
     plan = repair.plan_repairs(snap, hist, ev)
     pins = {"x": 1}
     assert repair.plan_digest(plan, snap, pins) == repair.plan_digest(
@@ -321,7 +340,7 @@ def test_series_class_parser_handles_bom_null_tickers_and_malformed_rows():
 def test_generator_rows_follow_the_plan_and_keep_the_projection():
     snap = snapshot([iu("a", "OLD")], [reg("a", "OLD", "S000000001", None)],
                     [sec("C000000001", "S000000001", "NEW")])
-    plan = repair.plan_repairs(snap, history([(2026, "C000000001", "S000000001", "OLD")]), evidence())
+    plan = repair.plan_repairs(snap, history([(2026, "C000000001", "S000000001", "OLD")]), evidence(CURRENT))
     instruments = [{"instrument_id": "a", "instrument_type": "fund", "ticker": "OLD", "isin": None,
                     "currency": "USD", "is_active": True}]
     funds = [{"instrument_id": "a", "series_id": "S000000001", "ticker": "OLD", "isin": None,

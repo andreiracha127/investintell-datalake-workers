@@ -64,8 +64,9 @@ HISTORY = repair.build_history([
 def _evidence():
     doc = {"kind": repair.EVIDENCE_KIND, "class_ticker_filings": [], "class_last_filings": [],
            "series_last_filings": [],
-           "tiingo_meta": {"VTI": {"status": 200, "endDate": dt.date.today().isoformat(),
-                                   "observed_at": dt.datetime.now(dt.timezone.utc).isoformat()}}}
+           "tiingo_meta": {t: {"status": 200, "endDate": dt.date.today().isoformat(),
+                               "observed_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+                           for t in ("VTI", "ACVU")}}
     raw = json.dumps(doc).encode()
     return repair.parse_evidence(raw, hashlib.sha256(raw).hexdigest())
 

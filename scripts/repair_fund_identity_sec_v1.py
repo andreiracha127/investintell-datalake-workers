@@ -9,13 +9,14 @@ A/B and corrects only what current SEC data proves unambiguously:
   an ISIN under any format rule: set it NULL (a superset of rule A).
 * ``R2 ticker_renamed_same_class`` - the IU ticker left current SEC data, the
   SAME share class (registry class, or the class the pinned SEC dataset ties to
-  the old ticker) is current under a new ticker in the same series: rename the
-  IU ticker (and the registry ticker when it still holds the old one).
+  the old ticker) is current under a new ticker in the same series, and Tiingo
+  serves the new ticker: rename the IU ticker (and the registry ticker when it
+  still holds the old one).
 * ``R3 iu_class_terminated_repoint`` (opt-in, ``--include-class-repoint``) -
   the IU ticker's class was terminated (absent from current SEC data AND from
   the current-year SEC series/class dataset) while the registry declares a live
-  class of the same series whose current ticker the registry already holds:
-  repoint the IU ticker to that class. The instrument's NAV history then
+  class of the same series whose current ticker the registry already holds and
+  Tiingo serves: repoint the IU ticker to that class. The instrument's NAV history then
   belongs to another class, so a governed NAV rebase must follow.
 * ``R4 conflict_resolved_by_sec`` - drop registry ``conflict_state`` keys of
   SEC identity fields (ticker/class/series/CIK) whose registry value now equals
@@ -508,10 +509,16 @@ def rule_r2_renamed(state: _State, sec: CurrentSec, history: SecHistory, evidenc
         if sec.unique_ticker(new) is None or not _ticker_free(state, iid, new):
             state.review("ticker_renamed_target_taken", iid, ticker=old, new_ticker=new)
             continue
+        tiingo = _tiingo_current(evidence, new, state.snapshot.decision_at)
+        if tiingo is None:
+            # Never trade a working NAV feed for a symbol the provider does not serve yet.
+            state.review("ticker_renamed_no_current_tiingo", iid, ticker=old, new_ticker=new,
+                         tiingo=evidence.tiingo.get(new))
+            continue
         facts = {
             "class_id": class_id, "series_id": current.series_id, "old_ticker": old,
             "new_ticker": new, "sec_synced_at": current.synced_at.isoformat(),
-            "dataset_years_with_old_ticker": years, "filings": filings,
+            "dataset_years_with_old_ticker": years, "filings": filings, **tiingo,
         }
         state.set_iu(iid, "ticker", new, RULES[1], facts)
         if ident(reg.get("ticker")) != new:
@@ -552,6 +559,11 @@ def rule_r3_repoint(state: _State, sec: CurrentSec, history: SecHistory, evidenc
         if sec.unique_ticker(live.ticker) is None or not _ticker_free(state, iid, live.ticker):
             state.review("class_repoint_target_taken", iid, ticker=old, new_ticker=live.ticker)
             continue
+        tiingo = _tiingo_current(evidence, live.ticker, state.snapshot.decision_at)
+        if tiingo is None:
+            state.review("class_repoint_no_current_tiingo", iid, ticker=old, new_ticker=live.ticker,
+                         tiingo=evidence.tiingo.get(live.ticker))
+            continue
         facts = {
             "terminated_class_id": old_class, "series_id": series, "old_ticker": old,
             "live_class_id": class_id, "new_ticker": live.ticker,
@@ -559,6 +571,7 @@ def rule_r3_repoint(state: _State, sec: CurrentSec, history: SecHistory, evidenc
             "old_class_dataset_years": sorted({y for y, *_ in history.classes.get(old_class, ())}),
             "old_class_last_filing": evidence.class_last_filings.get(old_class),
             "nav_rebase_required": True,
+            **tiingo,
         }
         if not enabled:
             state.review("class_repoint_candidate", iid, **facts)
