@@ -1610,6 +1610,12 @@ FOR EACH ROW EXECUTE FUNCTION fund_nav_readiness_pointer_stamp_v1();
 -- NAV head, current hold or replaced risk can still make an older t false.
 -- Instants are server clock readings inside the writing transaction, not
 -- commit timestamps; readers only see committed transactions.
+-- Session lag (MAX_SNAPSHOT_SESSION_LAG = 1, src/workers/_nav_policy.py,
+-- mirrored by Light): a snapshot for session D stays current while the due
+-- session is D or the next session of its own calendar, and the closed session
+-- is at most one session past the pinned latest_closed_session. Lag counts
+-- nav_valuation_schedules rows after the pinned session, never calendar days;
+-- a negative lag (wall clock behind the snapshot) is never current.
 CREATE OR REPLACE FUNCTION fund_nav_snapshot_current_at_v1(
     subject_id uuid, selected_run_id uuid, evaluated_at timestamptz
 ) RETURNS boolean LANGUAGE sql STABLE AS $$
@@ -1624,8 +1630,10 @@ SELECT COALESCE((
        AND published_risk.policy_id = run.policy_id
        AND published_risk.policy_version = run.policy_version
        AND published_risk.policy_hash = run.policy_hash
-       AND due.session_date = run.as_of_session
-       AND closed.session_date = run.latest_closed_session
+       AND due.session_date >= run.as_of_session
+       AND due_lag.sessions <= 1  -- MAX_SNAPSHOT_SESSION_LAG
+       AND closed.session_date >= run.latest_closed_session
+       AND closed_lag.sessions <= 1  -- MAX_SNAPSHOT_SESSION_LAG
        AND due.session_date BETWEEN policy.coverage_start AND policy.coverage_end
        AND active.evidence_id IS NOT DISTINCT FROM r.lifecycle_evidence_id
        AND COALESCE(nav_head.revision_id, 0) = r.nav_revision_id
@@ -1681,6 +1689,17 @@ SELECT COALESCE((
           AND s.valuation_close_at <= $3
         ORDER BY s.session_date DESC LIMIT 1
     ) closed ON true
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS sessions FROM nav_valuation_schedules s
+        WHERE s.calendar_id = run.calendar_id AND s.calendar_version = run.calendar_version
+          AND s.session_date > run.as_of_session AND s.session_date <= due.session_date
+    ) due_lag ON true
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS sessions FROM nav_valuation_schedules s
+        WHERE s.calendar_id = run.calendar_id AND s.calendar_version = run.calendar_version
+          AND s.session_date > run.latest_closed_session
+          AND s.session_date <= closed.session_date
+    ) closed_lag ON true
     LEFT JOIN LATERAL (
         SELECT e.evidence_id FROM nav_instrument_policy_evidence e
         WHERE e.instrument_id = r.instrument_id AND e.policy_id = r.policy_id
