@@ -178,12 +178,17 @@ python scripts\build_bond_panel_coupon_pit_returns.py `
 
 Review `manifest.json` before anything else happens:
 
-- `mode == contractual_then_pit`; `counts.dropped_rows_no_pit_basis == 0`
-  (the emitter refuses otherwise: a non-zero count means some row has no
-  finite inversion up to its month and no terms — decide per row, do not
-  republish around it);
-- `reconciliation.max_relative_diff` and
-  `price_return_reproduction.max_relative_diff` at float32 noise (≈ 1e-7);
+- `mode == contractual_then_pit`; `counts.dropped_rows_no_pit_basis` and
+  `dropped_keys`: rows whose CUSIP has no finite inversion up to that month
+  and no contractual coupon get no return row (the resolver's own outcome —
+  the stored history priced them off later months). The PIT-only preview
+  drops 16 rows, all `49306SAA4` 2004-03 … 2006-02; a contractual coupon
+  for that CUSIP removes the drop. The keys are pinned (digest) and the
+  finalize gate admits exactly those absences; more than 1,000 refuses;
+- `price_return_reproduction.max_relative_diff` ≈ 1e-7 and
+  `reconciliation.max_abs_diff` ≈ 6e-6 coupon points (float32 noise of the
+  frozen pack; the reconciliation's *relative* maximum is large only on
+  near-zero coupons and is covered by the absolute floor);
 - `counts.cusips_with_contractual_coupon` vs `counts.cusips_in_scope`, and
   `inputs.terms_export.coupon_type_distribution_with_coupon` (the `Variable`
   question above);
@@ -318,9 +323,33 @@ limitation of `coupon/12/P` carry on names whose coupons may not be paid; the
 convention is the owner's, and the basis is now declared per row in
 `coupon_basis.parquet`.
 
-### 4.2 Full-scale preview (PIT-only, offline, the pinned v2 production export)
+### 4.2 Full-scale preview (PIT-only, offline, the pinned v2 production export, 2026-10-07)
 
-See the PR body: `scripts/build_bond_panel_coupon_pit_returns.py --out …`
-without `--terms` builds the `pit_only_preview` artifact from the same pinned
-inputs (never an input to the republication); its manifest carries the
-full-history delta distribution and the reconciliation maxima.
+`scripts/build_bond_panel_coupon_pit_returns.py --out …` without `--terms`
+(the `pit_only_preview` the emitter refuses; pandas 3.0.1 / numpy 2.2.6 /
+pyarrow 23.0.1):
+
+- scope: 2,801,208 observed rows ≤ 2026-06 (no typed-exit rows in that
+  range), 64,053 CUSIPs; 9,704 rows after the cutoff verbatim; **every row's
+  `price_return` reproduced (max 1.1e-7 relative) and every row's stored
+  carry reproduced under the stored basis (max 6.3e-6 coupon points)**;
+- 2,801,192 rows repriced on the PIT basis, 16 dropped (above);
+- 2,345,970 rows move by more than 1e-4 bp/mo; **95.4 % move by < 0.1 bp/mo,
+  99.3 % by < 1 bp/mo**; p50 |Δ| 0.0025 bp, p90 0.040 bp, p99 0.59 bp, mean
+  +0.35 bp/mo; `suspect` rows 3,245 → 3,246;
+- the tail: 5,248 rows > 10 bp, 1,333 > 100 bp, 123 > 1,000 bp (max
+  +67,237 bp, min −4,512 bp). These are defaulted names at previous prices
+  of 0.006–50 % of par (p50 16, p90 49): `coupon/12/P` explodes as P → 0,
+  the stored full-history median had often clipped their coupon to 0 (37 %
+  of the > 100 bp rows), and the first PIT months rest on one or two
+  inversions. Almost all are already `suspect`. The contractual convention
+  replaces the inversion, not the `coupon/12/P` form; a carry floor for
+  defaulted prices is an owner policy question, not part of A2-01;
+- by year, the mean move is +0.5 … +4.7 bp/mo in 2002–2005 and 2008–2010
+  (the distressed cohorts) and ≤ 0.35 bp/mo elsewhere; p99 |Δ| is below 2 bp
+  from 2006 on.
+
+With the owner's terms export, rows of CUSIPs that carry a contractual
+coupon take it instead of the PIT median (6 of the 7 sampled CUSIPs do); the
+manifest reports `contractual_rows` / `pit_rows` and the per-year carry
+sums the finalize gate compares.

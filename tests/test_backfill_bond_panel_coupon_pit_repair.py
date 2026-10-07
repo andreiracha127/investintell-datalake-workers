@@ -30,13 +30,14 @@ def _v2_dir(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     directory = tmp_path / "unit_repair_v2"
     directory.mkdir(parents=True)
     months = pd.date_range("2020-01-01", periods=60, freq="MS")
+    ddd_months = pd.date_range("2021-01-01", periods=6, freq="MS")
     panel = pd.DataFrame({
-        "month": list(months.date) * 2,
-        "cusip_id": ["AAA000001"] * 60 + ["BBB000002"] * 60,
-        "price": [100.0] * 30 + [70.0] * 30 + [100.0] * 60,
-        "ytm": [0.05] * 30 + [0.18] * 30 + [0.05] * 60,
-        "maturity_years": [8.0] * 120,
-        "coupon_pct": [None] * 120,
+        "month": list(months.date) * 2 + list(ddd_months.date),
+        "cusip_id": ["AAA000001"] * 60 + ["BBB000002"] * 60 + ["DDD000004"] * 6,
+        "price": [100.0] * 30 + [70.0] * 30 + [100.0] * 60 + [100.0 + i for i in range(6)],
+        "ytm": [0.05] * 30 + [0.18] * 30 + [0.05] * 60 + [None, None, None, 0.05, 0.05, 0.05],
+        "maturity_years": [8.0] * 126,
+        "coupon_pct": [None] * 126,
     })
     panel["month"] = pd.to_datetime(panel["month"])
     inversion = coupon_from_price_ytm(panel["price"], panel["ytm"], panel["maturity_years"])
@@ -76,7 +77,9 @@ def _artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, terms: bool = 
         "terms_export_sha256": (manifest["inputs"]["terms_export"] or {}).get("sha256"),
         "per_year_digest": manifest["per_year_digest"],
         "counts": {key: manifest["counts"][key] for key in repair.COUPON_PIT_PINNED_COUNT_KEYS},
+        "dropped_keys_digest": manifest["dropped_keys_digest"],
     }
+    assert manifest["counts"]["dropped_rows_no_pit_basis"] == 2  # DDD's two months without a PIT basis
     return out, pins
 
 
@@ -93,6 +96,12 @@ def test_artifacts_refuse_unpinned_preview_and_drifted_inputs(tmp_path: Path, mo
         repair.CouponPitArtifacts.open(out, expected={**pins, "terms_export_sha256": "0" * 64})
     with pytest.raises(backfill.PlanError, match="coupon_pit_counts_mismatch"):
         repair.CouponPitArtifacts.open(out, expected={**pins, "counts": {**pins["counts"], "repriced_rows": 1}})
+    with pytest.raises(backfill.PlanError, match="coupon_pit_dropped_keys_digest_mismatch"):
+        repair.CouponPitArtifacts.open(out, expected={**pins, "dropped_keys_digest": "0" * 64})
+    monkeypatch.setattr(repair, "COUPON_PIT_DROPPED_ROWS_BOUND", 1)
+    with pytest.raises(backfill.PlanError, match="coupon_pit_dropped_rows_exceed_bound"):
+        repair.CouponPitArtifacts.open(out, expected=pins)
+    monkeypatch.setattr(repair, "COUPON_PIT_DROPPED_ROWS_BOUND", 1_000)
     preview, preview_pins = _artifact(tmp_path / "preview", monkeypatch, terms=False)
     with pytest.raises(backfill.PlanError, match="coupon_pit_preview_artifact_refused"):
         repair.CouponPitArtifacts.open(preview, expected=preview_pins)
@@ -127,6 +136,8 @@ def test_prepare_sql_verifies_the_live_head_and_declares_counts_without_moving_t
     assert "head.last_closed_month > '2026-06-01'::date" in sql
     assert backfill.UNIT_REPAIR_EXPECTED_PUBLICATION_ID in sql and backfill.UNIT_REPAIR_ROOT_BASE_PUBLICATION_ID in sql
     assert f"v_returns_before <> {plan.counts['rows_at_or_before_cutoff']}" in sql
+    assert plan.dropped_rows == 2
+    assert f"{plan.counts['rows_at_or_before_cutoff'] - 2} + v_returns_after" in sql
     assert "INSERT INTO bond_panel_publications" in sql and "'prepared'" in sql
     assert "bond_panel_app_pointer SET" not in sql and "UPDATE bond_panel_app_pointer" not in sql
     assert plan.input_fingerprint in sql and plan.publication_id in sql and HEAD in sql
@@ -145,7 +156,7 @@ def test_copy_sql_is_verbatim_and_scopes_returns_to_months_after_the_cutoff(tmp_
     assert "ROW(candidate.month, candidate.cusip_id" in snapshot
     returns = repair.render_coupon_pit_copy_sql(plan, artifacts, "returns")
     assert "source.month > '2026-06-01'::date" in returns
-    assert f"candidate.returns_rows - {plan.counts['rows_at_or_before_cutoff']}" in returns
+    assert f"candidate.returns_rows - {plan.counts['rows_at_or_before_cutoff'] - plan.dropped_rows}" in returns
     with pytest.raises(ValueError, match="unknown_surface"):
         repair.render_coupon_pit_copy_sql(plan, artifacts, "other")  # type: ignore[arg-type]
 
@@ -161,7 +172,7 @@ def test_batch_sql_loads_marked_artifact_rows_and_is_replay_safe(tmp_path: Path,
     assert "'surface','returns_coupon_pit'" in first and "'done',false" in first
     assert "coupon_pit_repair" in first and "frozen" in first  # artifact payload kept, marker added
     assert pins["artifact_sha256"][builder.OUTPUT_RETURNS] in first
-    total = plan.counts["rows_at_or_before_cutoff"]
+    total = plan.counts["rows_at_or_before_cutoff"] - plan.dropped_rows
     last = repair.render_coupon_pit_batch_sql(plan, artifacts, start_after=total - 1, limit=5)
     assert "'done',true" in last and f"'committed_through',{total}" in last
     # Repriced carry for AAA at 2021-01 (contractual 6.5 over the previous price 100): 6.5/12/100.
@@ -184,6 +195,10 @@ def test_finalize_sql_gates_keys_price_identity_carry_and_then_cas_and_refreshes
         "candidate.payload @> jsonb_build_object('coupon_pit_repair'",
         "coupon pit artifact/DB per-year carry mismatch",
         "coupon pit source ancestry does not reach the unit-repair child and the frozen root",
+        "coupon pit dropped key present in the child",
+        "coupon pit dropped key set does not match the pinned count",
+        "SELECT 1 FROM pg_temp.coupon_pit_dropped_keys dropped",
+        '"cusip_id":"DDD000004","month":"2021-02-01"',
         "coupon pit pointer compare-and-swap lost",
         "REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_returns_v1_mat;",
         "REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_snapshot_v1_mat;",

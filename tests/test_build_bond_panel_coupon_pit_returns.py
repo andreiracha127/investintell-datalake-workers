@@ -36,7 +36,15 @@ def _panel_rows() -> list[dict[str, object]]:
     rows.append({"month": pd.Timestamp("2026-07-01").date(), "cusip_id": "AAA000001", "price": 71.0, "ytm": 0.18, "maturity_years": 7.7, "coupon_pct": 5.0})
     rows.append({"month": pd.Timestamp("2023-01-01").date(), "cusip_id": "CCC000003", "price": 99.0, "ytm": 0.04, "maturity_years": None, "coupon_pct": None})
     rows.append({"month": pd.Timestamp("2023-02-01").date(), "cusip_id": "CCC000003", "price": 99.5, "ytm": 0.04, "maturity_years": None, "coupon_pct": None})
+    # A bond whose first three months carry no YTM: the stored basis took its coupon
+    # from the later months (look-ahead); under PIT the first two return months have
+    # no basis and get no row.
+    for index, month in enumerate(pd.date_range("2021-01-01", periods=6, freq="MS")):
+        rows.append({"month": month.date(), "cusip_id": "DDD000004", "price": 100.0 + index, "ytm": None if index < 3 else 0.05, "maturity_years": 5.0, "coupon_pct": None})
     return rows
+
+
+DROPPED_KEYS = [{"cusip_id": "DDD000004", "month": "2021-02-01"}, {"cusip_id": "DDD000004", "month": "2021-03-01"}]
 
 
 def _stored_returns(panel: pd.DataFrame) -> pd.DataFrame:
@@ -101,13 +109,19 @@ def test_pit_only_preview_reprices_only_the_fallback_carry(tmp_path: Path) -> No
     produced = pq.read_table(out / builder.OUTPUT_RETURNS).to_pandas()
     assert manifest["mode"] == "pit_only_preview"
     assert produced.columns.tolist() == stored.columns.tolist()
-    assert len(produced) == len(stored) == manifest["counts"]["returns_rows_out"]
-    assert manifest["counts"]["dropped_rows_no_pit_basis"] == 0
+    # The two DDD months without a PIT basis get no row; everything else keeps its order.
+    assert manifest["counts"]["dropped_rows_no_pit_basis"] == 2
+    assert manifest["dropped_keys"] == DROPPED_KEYS
+    assert manifest["dropped_keys_digest"] == builder._canonical_digest(DROPPED_KEYS)
+    dropped = {(key["cusip_id"], pd.Timestamp(key["month"])) for key in DROPPED_KEYS}
+    stored_kept = stored[[(c, pd.Timestamp(m)) not in dropped for c, m in zip(stored["cusip_id"], stored["month"])]].reset_index(drop=True)
+    assert len(produced) == len(stored_kept) == len(stored) - 2 == manifest["counts"]["returns_rows_out"]
     assert manifest["counts"]["contractual_rows"] == 0
     assert manifest["counts"]["pit_rows"] == manifest["counts"]["repriced_rows"]
     # Keys, price_return, typed exits, identity and post-cutoff rows: verbatim, same order.
     for column in ("month", "cusip_id", "price_return", "exit_basis", "exit_reason", "distribution_rule", "reference_cusip9", "payload", "publication_id"):
-        pd.testing.assert_series_equal(produced[column], stored[column], check_names=False)
+        pd.testing.assert_series_equal(produced[column], stored_kept[column], check_names=False)
+    stored = stored_kept
     produced["month"] = pd.to_datetime(produced["month"])
     stored["month"] = pd.to_datetime(stored["month"])
     aaa = produced[produced["cusip_id"].eq("AAA000001")].set_index("month")
@@ -127,7 +141,10 @@ def test_pit_only_preview_reprices_only_the_fallback_carry(tmp_path: Path) -> No
     bbb_stored = stored[stored["cusip_id"].eq("BBB000002")]
     assert bbb["carry_return"].to_numpy() == pytest.approx(bbb_stored["carry_return"].to_numpy(), abs=1e-12)
     basis = pq.read_table(out / builder.OUTPUT_BASIS).to_pandas()
-    assert set(basis["basis"]) == {"pit"}
+    assert set(basis["basis"]) == {"pit", "none"}
+    assert sorted(basis.loc[basis["basis"].eq("none"), "month"].astype(str)) == ["2021-02-01", "2021-03-01"]
+    ddd = produced[produced["cusip_id"].eq("DDD000004")]
+    assert pd.to_datetime(ddd["month"]).min() == pd.Timestamp("2021-04-01")
     assert manifest["outputs"][builder.OUTPUT_RETURNS]["sha256"] == hashlib.sha256((out / builder.OUTPUT_RETURNS).read_bytes()).hexdigest()
     assert manifest["reconciliation"]["max_abs_diff"] <= builder.RECONCILIATION_TOLERANCE[0]
     assert manifest["price_return_reproduction"]["max_abs_diff"] <= builder.PRICE_RETURN_TOLERANCE[0]

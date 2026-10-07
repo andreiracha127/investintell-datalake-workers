@@ -101,6 +101,11 @@ COUPON_PIT_REQUIRED_MODE = "contractual_then_pit"
 COUPON_PIT_AFFECTED_SURFACES: tuple[Surface, ...] = ("returns",)
 COUPON_PIT_ARTIFACT_FILES = (OUTPUT_RETURNS, OUTPUT_BASIS, OUTPUT_MANIFEST)
 COUPON_PIT_PINNED_COUNT_KEYS = ("returns_rows_out", "rows_at_or_before_cutoff", "rows_after_cutoff", "scope_rows", "repriced_rows", "exit_rows_at_or_before_cutoff")
+# Rows with no inversion at or before their month and no contractual coupon get
+# no return row (the resolver's own outcome).  Their keys are pinned and the
+# finalize gate admits exactly those absences; more than this many means the
+# inputs are not the history this contract describes.
+COUPON_PIT_DROPPED_ROWS_BOUND = 1_000
 COUPON_PIT_FIRST_MONTH = "2002-07-01"
 COUPON_PIT_RETURNS_FIRST_MONTH = "2002-08-01"
 COUPON_PIT_CARRY_SUM_TOLERANCE = 1e-6
@@ -159,8 +164,16 @@ class CouponPitArtifacts:
         if terms.get("sha256") != pins["terms_export_sha256"]:
             raise PlanError("coupon_pit_terms_export_sha256_mismatch")
         counts = manifest.get("counts") or {}
-        if int(counts.get("dropped_rows_no_pit_basis", -1)) != 0:
-            raise PlanError("coupon_pit_dropped_rows_not_supported")
+        dropped = int(counts.get("dropped_rows_no_pit_basis", -1))
+        dropped_keys = manifest.get("dropped_keys")
+        if dropped < 0 or not isinstance(dropped_keys, list) or len(dropped_keys) != dropped:
+            raise PlanError("coupon_pit_dropped_keys_inconsistent")
+        if dropped > COUPON_PIT_DROPPED_ROWS_BOUND:
+            raise PlanError("coupon_pit_dropped_rows_exceed_bound")
+        if any(not isinstance(key, dict) or set(key) != {"cusip_id", "month"} for key in dropped_keys):
+            raise PlanError("coupon_pit_dropped_keys_malformed")
+        if manifest.get("dropped_keys_digest") != _canonical_digest(dropped_keys) or manifest.get("dropped_keys_digest") != pins["dropped_keys_digest"]:
+            raise PlanError("coupon_pit_dropped_keys_digest_mismatch")
         pinned_counts = {key: int(counts[key]) for key in COUPON_PIT_PINNED_COUNT_KEYS if key in counts}
         if pinned_counts != {key: int(value) for key, value in pins["counts"].items()}:
             raise PlanError("coupon_pit_counts_mismatch")
@@ -208,6 +221,8 @@ class CouponPitPlan:
     per_year: tuple[dict[str, Any], ...]
     per_year_digest: str
     resolver_sha256: str
+    dropped_rows: int
+    dropped_keys_digest: str
     contract: str = COUPON_PIT_CONTRACT
     code_revision: str = COUPON_PIT_CODE_REVISION
     root_base_publication_id: str = UNIT_REPAIR_ROOT_BASE_PUBLICATION_ID
@@ -231,6 +246,8 @@ class CouponPitPlan:
             "per_year_carry_digest": self.per_year_digest,
             "per_year": [dict(item) for item in self.per_year],
             "resolver_sha256": self.resolver_sha256,
+            "dropped_rows": self.dropped_rows,
+            "dropped_keys_digest": self.dropped_keys_digest,
             "coupon_convention": COUPON_CONVENTION,
         }
 
@@ -249,6 +266,8 @@ def _fingerprint_payload(plan: CouponPitPlan) -> dict[str, Any]:
         "per_year_carry_digest": plan.per_year_digest,
         "counts": dict(sorted(plan.counts.items())),
         "resolver_sha256": plan.resolver_sha256,
+        "dropped_rows": plan.dropped_rows,
+        "dropped_keys_digest": plan.dropped_keys_digest,
     }
 
 
@@ -275,6 +294,10 @@ def _validate_plan(plan: CouponPitPlan, artifacts: CouponPitArtifacts) -> None:
         or plan.per_year_digest != pins["per_year_digest"]
         or plan.per_year_digest != _canonical_digest({"per_year": list(plan.per_year)})
         or plan.counts != {key: int(value) for key, value in pins["counts"].items()}
+        or plan.dropped_rows != int(artifacts.manifest["counts"]["dropped_rows_no_pit_basis"])
+        or plan.dropped_rows > COUPON_PIT_DROPPED_ROWS_BOUND
+        or plan.dropped_keys_digest != pins["dropped_keys_digest"]
+        or plan.dropped_keys_digest != _canonical_digest(artifacts.manifest["dropped_keys"])
         or plan.root_base_publication_id != UNIT_REPAIR_ROOT_BASE_PUBLICATION_ID
         or plan.unit_repair_child_publication_id != UNIT_REPAIR_EXPECTED_PUBLICATION_ID
     ):
@@ -296,6 +319,8 @@ def build_coupon_pit_plan(artifacts: CouponPitArtifacts, *, from_head_publicatio
         per_year=tuple(dict(item) for item in manifest["per_year"]),
         per_year_digest=str(manifest["per_year_digest"]),
         resolver_sha256=str(manifest["inputs"]["resolver_sha256"]),
+        dropped_rows=int(manifest["counts"]["dropped_rows_no_pit_basis"]),
+        dropped_keys_digest=str(manifest["dropped_keys_digest"]),
     )
     fingerprint = _canonical_digest(_fingerprint_payload(plan))
     publication_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{PRODUCT}:coupon-pit-repair:{fingerprint}"))
@@ -318,6 +343,8 @@ def _marker(plan: CouponPitPlan) -> dict[str, Any]:
         "per_year_carry_digest": plan.per_year_digest,
         "counts": dict(sorted(plan.counts.items())),
         "resolver_sha256": plan.resolver_sha256,
+        "dropped_rows": plan.dropped_rows,
+        "dropped_keys_digest": plan.dropped_keys_digest,
     }
 
 
@@ -395,6 +422,7 @@ def render_coupon_pit_prepare_sql(plan: CouponPitPlan, artifacts: CouponPitArtif
     marker = _sql_json(_marker(plan))
     cutoff = _sql_string(plan.cutoff)
     before = plan.counts["rows_at_or_before_cutoff"]
+    loaded = before - plan.dropped_rows
     return f"""\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL ROLE worker_writer;
@@ -422,7 +450,7 @@ BEGIN
     SELECT count(*) INTO v_rating_pit FROM bond_panel_current_rating_pit_v1;
     INSERT INTO bond_panel_publications (publication_id, parent_publication_id, publication_status, config_hash, input_fingerprint, code_revision, first_month, last_closed_month, open_month, snapshot_rows, rv_signal_rows, returns_rows, ratings_pit_rows, source_lineage, gate_evidence)
     SELECT {child}::uuid, {head}::uuid, 'prepared', {_sql_string(plan.config_hash)}, {_sql_string(plan.input_fingerprint)}, {_sql_string(plan.code_revision)}, head.first_month, head.last_closed_month, head.open_month,
-           v_snapshot, v_rv_signal, {before} + v_returns_after, v_rating_pit,
+           v_snapshot, v_rv_signal, {loaded} + v_returns_after, v_rating_pit,
            head.source_lineage || jsonb_build_object('coupon_pit_repair', {marker}::jsonb),
            jsonb_build_object('coupon_pit_repair', {marker}::jsonb, 'live_counts', jsonb_build_object('snapshot', v_snapshot, 'rv_signal', v_rv_signal, 'returns_after_cutoff', v_returns_after, 'rating_pit', v_rating_pit))
     FROM bond_panel_publications head
@@ -442,7 +470,7 @@ BEGIN
           AND candidate.open_month = head.open_month
           AND candidate.snapshot_rows = v_snapshot
           AND candidate.rv_signal_rows = v_rv_signal
-          AND candidate.returns_rows = {before} + v_returns_after
+          AND candidate.returns_rows = {loaded} + v_returns_after
           AND candidate.ratings_pit_rows = v_rating_pit
           AND candidate.source_lineage @> jsonb_build_object('coupon_pit_repair', {marker}::jsonb)
           AND candidate.gate_evidence @> jsonb_build_object('coupon_pit_repair', {marker}::jsonb)
@@ -496,7 +524,7 @@ def render_coupon_pit_copy_sql(plan: CouponPitPlan, artifacts: CouponPitArtifact
     declared = {
         "snapshot": "candidate.snapshot_rows", "rv_signal": "candidate.rv_signal_rows",
         "rating_pit": "candidate.ratings_pit_rows",
-        "returns": f"candidate.returns_rows - {plan.counts['rows_at_or_before_cutoff']}",
+        "returns": f"candidate.returns_rows - {plan.counts['rows_at_or_before_cutoff'] - plan.dropped_rows}",
     }[surface]
     return f"""\\set ON_ERROR_STOP on
 BEGIN;
@@ -558,7 +586,7 @@ def _artifact_rows(artifacts: CouponPitArtifacts, plan: CouponPitPlan, *, start_
     finally:
         conn.close()
         state.cleanup()
-    if total != plan.counts["rows_at_or_before_cutoff"]:
+    if total != plan.counts["rows_at_or_before_cutoff"] - plan.dropped_rows:
         raise PlanError("coupon_pit_artifact_rows_at_or_before_cutoff_mismatch")
     marker = _marker(plan)
     rows: list[dict[str, Any]] = []
@@ -642,6 +670,7 @@ def render_coupon_pit_finalize_sql(plan: CouponPitPlan, artifacts: CouponPitArti
     marker = _sql_json(_marker(plan))
     cutoff = _sql_string(plan.cutoff)
     aggregates = _sql_string(_expected_per_year_json(plan))
+    dropped_keys = _sql_string(json.dumps(list(artifacts.manifest["dropped_keys"]), sort_keys=True, separators=(",", ":")))
     invalid_identity = (
         "f.distribution_rule IS NULL"
         " OR f.reference_cusip9 IS NULL OR btrim(f.reference_cusip9) = ''"
@@ -725,7 +754,10 @@ GROUP BY f.month;"""
             FROM (SELECT month, cusip_id, total_return, price_return, carry_return, exit_basis, exit_reason, suspect, payload
                   FROM bond_panel_returns WHERE publication_id = {child}::uuid AND month = v_month) candidate
             FULL JOIN ({source_projection}) source USING (month, cusip_id)
-            WHERE candidate.month IS NULL OR source.month IS NULL
+            WHERE (candidate.month IS NULL AND NOT EXISTS (
+                       SELECT 1 FROM pg_temp.coupon_pit_dropped_keys dropped
+                       WHERE dropped.month = source.month AND dropped.cusip_id = source.cusip_id))
+               OR source.month IS NULL
                OR candidate.price_return IS DISTINCT FROM source.price_return
                OR candidate.exit_basis IS DISTINCT FROM source.exit_basis
                OR candidate.exit_reason IS DISTINCT FROM source.exit_reason
@@ -820,6 +852,18 @@ BEGIN
        OR NOT EXISTS (SELECT 1 FROM pg_temp.coupon_pit_source_ancestry WHERE publication_id = {_sql_string(plan.unit_repair_child_publication_id)}::uuid)
        OR NOT EXISTS (SELECT 1 FROM pg_temp.coupon_pit_source_ancestry WHERE publication_id = {_sql_string(plan.root_base_publication_id)}::uuid)
     THEN RAISE EXCEPTION 'coupon pit source ancestry does not reach the unit-repair child and the frozen root'; END IF;
+    -- The pinned keys the artifact dropped (no inversion at or before the month,
+    -- no contractual coupon): absent from the child by contract, and nowhere else.
+    CREATE TEMP TABLE coupon_pit_dropped_keys (month date NOT NULL, cusip_id text NOT NULL, PRIMARY KEY (month, cusip_id)) ON COMMIT DROP;
+    INSERT INTO pg_temp.coupon_pit_dropped_keys (month, cusip_id)
+    SELECT month, cusip_id FROM jsonb_to_recordset({dropped_keys}::jsonb) AS dropped(month date, cusip_id text);
+    IF (SELECT count(*) FROM pg_temp.coupon_pit_dropped_keys) <> {plan.dropped_rows} THEN
+        RAISE EXCEPTION 'coupon pit dropped key set does not match the pinned count';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM bond_panel_returns f JOIN pg_temp.coupon_pit_dropped_keys dropped USING (month, cusip_id)
+        WHERE f.publication_id = {child}::uuid
+    ) THEN RAISE EXCEPTION 'coupon pit dropped key present in the child'; END IF;
     CREATE TEMP TABLE coupon_pit_month_stats (surface text NOT NULL, month date NOT NULL, rows bigint NOT NULL, bad_identity boolean, PRIMARY KEY (surface, month)) ON COMMIT DROP;
 {summaries}
     RAISE NOTICE 'coupon pit finalize: summaries filled months=% elapsed_ms=%', (SELECT count(*) FROM pg_temp.coupon_pit_month_stats), round(extract(epoch FROM clock_timestamp() - v_started) * 1000);

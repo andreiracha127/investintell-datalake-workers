@@ -318,7 +318,11 @@ def reprice(
         "scope_rows": int(len(scope)),
         "repriced_rows": int(len(kept)),
         "dropped_rows_no_pit_basis": int(len(dropped)),
-        "dropped_keys_digest": _canonical_digest([[c, m.strftime("%Y-%m-%d")] for c, m in zip(dropped["cusip_id"], dropped["month"])]),
+        # The resolver's own outcome where no inversion exists at or before t: no
+        # return row.  The keys are listed so the republication can pin exactly
+        # these absences; a key set this small is evidence, not data.
+        "dropped_keys": [{"cusip_id": str(c), "month": m.strftime("%Y-%m-%d")} for c, m in zip(dropped["cusip_id"], dropped["month"])],
+        "dropped_keys_digest": _canonical_digest([{"cusip_id": str(c), "month": m.strftime("%Y-%m-%d")} for c, m in zip(dropped["cusip_id"], dropped["month"])]),
         "contractual_rows": int(kept["basis"].eq("contractual").sum()),
         "pit_rows": int(kept["basis"].eq("pit").sum()),
         "cusips_in_scope": int(scope.index.get_level_values("cusip_id").nunique()),
@@ -450,6 +454,7 @@ def build(
             "suspect_before": evidence["suspect_before"],
             "suspect_after": evidence["suspect_after"],
         },
+        "dropped_keys": evidence["dropped_keys"],
         "dropped_keys_digest": evidence["dropped_keys_digest"],
         "reconciliation": evidence["reconciliation"],
         "price_return_reproduction": evidence["price_return_reproduction"],
