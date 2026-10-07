@@ -59,6 +59,16 @@ def structural_preflight(problem: CompiledProblem) -> PreflightResult:
                 constraint_label="S",
             )
         )
+    elif not np.allclose(problem.S, np.round(problem.S), atol=tolerance, rtol=0.0):
+        # Non-negative unit columns can still split a category across sleeves
+        # (e.g. 0.5/0.5); only a 0/1 matrix is an assignment.
+        issues.append(
+            AllocatorIssue(
+                code=AllocatorErrorCode.POLICY_INFEASIBLE,
+                message="S must be a 0/1 assignment matrix",
+                constraint_label="S",
+            )
+        )
     if (problem.M < -tolerance).any() or not np.allclose(
         problem.M.sum(axis=0), 1.0, atol=tolerance, rtol=0.0
     ):

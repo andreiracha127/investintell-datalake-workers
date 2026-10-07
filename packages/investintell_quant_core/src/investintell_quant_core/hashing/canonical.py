@@ -58,9 +58,13 @@ def normalize_logical_value(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, float):
         if math.isnan(value):
-            return None
+            # Distinct from ``None`` so a NaN field never hashes like a missing one.
+            return "NaN"
         if math.isinf(value):
             return str(value)
-        return round(value, 12)
+        rounded = round(value, 12)
+        # ``-0.0 == 0.0`` but serializes differently; same convention as
+        # ``a3.metrics.canonical_metric_value``.
+        return 0.0 if rounded == 0 else rounded
     return value
 

@@ -1026,6 +1026,182 @@ def _write_grid_feature_inputs(tmp_path: Path, monkeypatch) -> tuple[Path, Path]
     return feature_dir / "feature_manifest.json", catalog
 
 
+def _a31_row(config_hash: str, **metrics: float) -> dict:
+    row = {
+        "a31_config_hash": config_hash,
+        "candidate_revision_change_rate": 0.10,
+        "growth_sign_revision_change_days": 10.0,
+        "inflation_sign_revision_change_days": 10.0,
+        "transition_timing_displacement_median": 10.0,
+        "candidate_flips_per_year": 10.0,
+        "distance_from_ref": 10.0,
+    }
+    row.update(metrics)
+    return row
+
+
+def test_a31_pareto_sort_key_treats_non_finite_metrics_as_worst() -> None:
+    nan_row = _a31_row("hA", growth_sign_revision_change_days=float("nan"))
+    finite_row = _a31_row("hB", growth_sign_revision_change_days=5.0)
+
+    assert ch.none_last(float("nan")) == math.inf
+    assert ch.none_last(float("-inf")) == math.inf
+    assert ch.none_last(None) == math.inf
+
+    forward = sorted([nan_row, finite_row], key=ch.a31_pareto_sort_key)
+    backward = sorted([finite_row, nan_row], key=ch.a31_pareto_sort_key)
+
+    assert forward == backward
+    assert forward[-1] is nan_row
+
+
+def _a31_grid_rows() -> list[dict]:
+    """Audit grid: ``dominated`` is strictly worse than ``dominator`` on all six."""
+    rows = [
+        _a31_row(
+            "hD",
+            candidate_revision_change_rate=0.009,
+            growth_sign_revision_change_days=990.0,
+            inflation_sign_revision_change_days=990.0,
+            transition_timing_displacement_median=990.0,
+            candidate_flips_per_year=990.0,
+            distance_from_ref=990.0,
+        ),
+        _a31_row(
+            "hX",
+            candidate_revision_change_rate=0.010,
+            growth_sign_revision_change_days=999.0,
+            inflation_sign_revision_change_days=999.0,
+            transition_timing_displacement_median=999.0,
+            candidate_flips_per_year=999.0,
+            distance_from_ref=999.0,
+        ),
+    ] + [
+        _a31_row(
+            f"h{i}",
+            candidate_revision_change_rate=0.020 + 0.001 * i,
+            growth_sign_revision_change_days=1.0,
+            inflation_sign_revision_change_days=1.0,
+            transition_timing_displacement_median=1.0,
+            candidate_flips_per_year=1.0,
+            distance_from_ref=1.0,
+        )
+        for i in range(6)
+    ]
+    for row in rows:
+        row["result_classification"] = "smoke_ok"
+    return rows
+
+
+def test_mark_a31_pareto_keeps_dominated_rows_off_the_front() -> None:
+    updated, pareto_rows = ch.mark_a31_pareto(_a31_grid_rows())
+    by_hash = {row["a31_config_hash"]: row for row in updated}
+
+    # Fronts: {hD, h0} non-dominated; hX (by hD) and h1 (by h0) in front 2;
+    # h2..h5 form a chain of singleton fronts 3..6.
+    assert {h: by_hash[h]["pareto_rank"] for h in ("hD", "h0", "hX", "h1", "h2")} == {
+        "hD": 1, "h0": 1, "hX": 2, "h1": 2, "h2": 3,
+    }
+    assert by_hash["hX"]["a31_selection_status"] != "a31_pareto_candidate"
+    assert by_hash["hD"]["a31_selection_status"] == "a31_pareto_candidate"
+    assert by_hash["h0"]["a31_selection_status"] == "a31_pareto_candidate"
+    # The shortlist fills front by front, ordered by the priority key inside a front.
+    assert [row["a31_config_hash"] for row in pareto_rows] == ["hD", "h0", "hX", "h1", "h2"]
+    assert [row["a31_selection_order"] for row in pareto_rows] == [1, 2, 3, 4, 5]
+    assert [row["a31_selection_status"] for row in pareto_rows] == [
+        "a31_pareto_candidate",
+        "a31_pareto_candidate",
+        "a31_dominated_candidate",
+        "a31_dominated_candidate",
+        "a31_dominated_candidate",
+    ]
+    assert by_hash["h5"]["a31_selection_status"] == "a31_screened_out"
+    assert by_hash["h5"]["a31_selection_reason"] == "dominated"
+    assert all(row["a31_selection_policy_version"] == "a31_selection_policy_v2" for row in updated)
+    assert all(not row["frozen"] and not row["production_candidate"] for row in pareto_rows)
+
+
+def test_mark_a31_pareto_v1_reproduces_the_historical_lexicographic_shortlist() -> None:
+    updated, pareto_rows = ch.mark_a31_pareto(
+        _a31_grid_rows(), policy_version="a31_selection_policy_v1"
+    )
+    by_hash = {row["a31_config_hash"]: row for row in updated}
+
+    assert [row["a31_config_hash"] for row in pareto_rows] == ["hD", "hX", "h0", "h1", "h2"]
+    assert by_hash["hX"]["a31_selection_status"] == "a31_pareto_candidate"
+    assert by_hash["hX"]["pareto_rank"] == 2
+    assert "a31_selection_policy_version" not in by_hash["hX"]
+    with pytest.raises(ValueError, match="unknown A31 selection policy"):
+        ch.mark_a31_pareto(_a31_grid_rows(), policy_version="a31_selection_policy_v9")
+
+
+def test_a31_non_dominated_fronts_partition_three_fronts() -> None:
+    vectors = [
+        (1.0, 3.0), (3.0, 1.0),  # front 1: trade off against each other
+        (2.0, 4.0), (4.0, 2.0),  # front 2: dominated by (1,3) and (3,1) respectively
+        (5.0, 5.0),              # front 3: dominated by everything
+    ]
+    assert ch.a31_non_dominated_fronts(vectors) == [[0, 1], [2, 3], [4]]
+    assert ch.a31_non_dominated_fronts([]) == []
+
+    rows = [
+        _a31_row(
+            f"h{i}",
+            candidate_revision_change_rate=rate,
+            growth_sign_revision_change_days=days,
+            result_classification="smoke_ok",
+        )
+        for i, (rate, days) in enumerate(vectors)
+    ]
+    updated, _ = ch.mark_a31_pareto(rows)
+    assert {row["a31_config_hash"]: row["pareto_rank"] for row in updated} == {
+        "h0": 1, "h1": 1, "h2": 2, "h3": 2, "h4": 3,
+    }
+
+
+def test_a31_dominance_treats_float_noise_as_a_tie() -> None:
+    base = (0.1, 10.0, 10.0, 10.0, 10.0, 10.0)
+    noisy = (0.1 + 5e-13, 10.0, 10.0, 10.0, 10.0, 10.0)
+    better = (0.1 - 1e-9, 10.0, 10.0, 10.0, 10.0, 10.0)
+
+    assert not ch.a31_dominates(base, noisy)
+    assert not ch.a31_dominates(noisy, base)
+    assert ch.a31_dominates(better, base)
+    assert not ch.a31_dominates(base, better)
+
+    rows = [
+        _a31_row("hA", candidate_revision_change_rate=0.1, result_classification="smoke_ok"),
+        _a31_row("hB", candidate_revision_change_rate=0.1 + 5e-13, result_classification="smoke_ok"),
+    ]
+    updated, pareto_rows = ch.mark_a31_pareto(rows)
+    assert [row["pareto_rank"] for row in updated] == [1, 1]
+    assert [row["a31_selection_status"] for row in pareto_rows] == [
+        "a31_pareto_candidate",
+        "a31_pareto_candidate",
+    ]
+
+
+def test_mark_a31_pareto_is_invariant_to_input_order() -> None:
+    rows = _a31_grid_rows()
+    rows.append(_a31_row("hN", growth_sign_revision_change_days=float("nan"), result_classification="smoke_ok"))
+    rows.append(_a31_row("hM", transition_timing_displacement_median=None, result_classification="smoke_ok"))
+    rows.append(_a31_row("hF", result_classification="smoke_execution_failed"))
+
+    forward = ch.mark_a31_pareto(list(rows))
+    backward = ch.mark_a31_pareto(list(reversed(rows)))
+
+    assert forward == backward
+    by_hash = {row["a31_config_hash"]: row for row in forward[0]}
+    assert by_hash["hN"]["a31_selection_status"] == "a31_screened_out"
+    assert by_hash["hN"]["a31_selection_reason"] == "non_finite_selection_metric"
+    assert by_hash["hN"]["pareto_rank"] is None
+    # A missing metric ranks worst but stays in the fronts (here dominated by h0).
+    assert by_hash["hM"]["pareto_rank"] is not None
+    assert by_hash["hM"]["a31_selection_reason"] == "dominated"
+    assert by_hash["hF"]["a31_selection_reason"] == "smoke_execution_failed"
+    assert {row["a31_config_hash"] for row in forward[1]}.isdisjoint({"hN", "hM", "hF"})
+
+
 def test_a31_grid_only_writes_artifacts_and_resumes(tmp_path, monkeypatch) -> None:
     manifest, catalog = _write_grid_feature_inputs(tmp_path, monkeypatch)
     out = tmp_path / "grid"

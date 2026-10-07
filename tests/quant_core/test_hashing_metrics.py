@@ -44,6 +44,26 @@ def test_logical_payload_hash_matches_legacy_harness() -> None:
     assert logical_payload_hash(payload) == ch.logical_payload_hash(payload)
 
 
+def test_negative_zero_canonicalizes_to_zero() -> None:
+    assert logical_payload_hash({"x": -0.0}) == logical_payload_hash({"x": 0.0})
+    assert logical_records_hash([{"x": -0.0}]) == logical_records_hash([{"x": 0.0}])
+    # The legacy harness canonicalizer follows the same convention.
+    assert logical_records_hash([{"x": -0.0}]) == ch.logical_records_hash([{"x": -0.0}])
+
+
+def test_nan_field_is_distinct_from_a_missing_field() -> None:
+    nan_rows = [{"x": float("nan")}, {"x": 1.0}]
+    missing_rows = [{}, {"x": 1.0}]
+    null_rows = [{"x": None}, {"x": 1.0}]
+
+    assert logical_records_hash(nan_rows) != logical_records_hash(missing_rows)
+    assert logical_records_hash(nan_rows) != logical_records_hash(null_rows)
+    assert logical_records_hash(nan_rows) == logical_records_hash(
+        [{"x": float("nan")}, {"x": 1.0}]
+    )
+    assert logical_records_hash(nan_rows) == ch.logical_records_hash(nan_rows)
+
+
 def test_metric_hash_policy_canonicalizes_float_noise() -> None:
     left = [{"fold": "full", "value": 0.39246263518212093}]
     right = [{"fold": "full", "value": 0.39246263518212104}]
