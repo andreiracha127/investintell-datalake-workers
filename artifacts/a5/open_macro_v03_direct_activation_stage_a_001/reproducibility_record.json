@@ -12,7 +12,7 @@
  },
  "job_identity": {
   "clean_tree": true,
-  "image_id": "sha256:bffe3e47af922b8fb318bf138d1ae9e51b4a4b28e18fe8684568f032574891bf",
+  "image_id": "sha256:f595b616aad571a36598402d5858f2798b6bfc949dfa5699a866f7f56083637e",
   "tree_hashes": {
    "harness/__init__.py": "c22a86e07e0b5054e2916327cc80c255f543ba2b",
    "harness/dark_launch/__init__.py": "320a2e0b2868173e5b1e6a1345dfaee464829987",
@@ -24,7 +24,7 @@
    "harness/direct_activation/measure_stage_a.py": "181579f8aac72738bc633f6a680be77949e48be2",
    "harness/direct_activation/measure_stage_a_child.py": "2128ec472f474420dad08975b44b2eb60f305c23",
    "harness/phase0q/__init__.py": "c07e032c2c2fb087a8d2d391bf3ec123e9e9ac23",
-   "harness/phase0q/decision.py": "47b245dd61764e9964ac993057fdc7c417621b0e",
+   "harness/phase0q/decision.py": "e9f95284fe19d6c738ffc1f2c76c30b1c90946dc",
    "harness/phase0q/decision_v3.py": "5dd2e91edf3518b896860b1d51e87131e4a347ea",
    "harness/phase0q/pit.py": "e965e021dae84b36678fed6a420f8880b09fbb0d",
    "harness/phase0q/sleeve.py": "c52f96031c668fdc5cea8b60716d6a5b6a05fb0d",
@@ -53,11 +53,11 @@
    "src/quadrant_confidence_v2.py": "80f33bc25d0025e2a77623e23c6b7f8a8f43949a",
    "src/quadrant_hysteresis.py": "2541620401eca7b8ec7b0ed8afa90accd12dd5f6",
    "src/quadrant_market_observation.py": "94483a25b4c2cf5445d25ad3c673f50c0aa19ed5",
-   "src/quadrant_score.py": "eb99a17fc672a721f3c593209e55bfa7e830fb8f",
+   "src/quadrant_score.py": "756a9247f1db9feff276c115483f08f1499354f5",
    "src/quadrant_snapshot.py": "a695d810ce29cf5a4f220c6f05406cb08a9de5dd",
    "src/quadrant_staleness.py": "1742c488b649f86d2252b3d20b92a9c0b476069c"
   },
-  "worker_commit": "bd82ee3ed2abb6cf918cb4cabac6d11dfb3c9030"
+  "worker_commit": "ddfeacf6f3d8c955ab80fab6a1d9c57c045c3093"
  },
  "legs": {
   "container": {
@@ -67,65 +67,65 @@
      "exit_code": 0,
      "index": 0,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1343672320,
+     "memory_peak_bytes": 1343582208,
      "platform": "linux",
-     "wall_ms": 122640.088
+     "wall_ms": 136725.81
     },
     {
      "exit_code": 0,
      "index": 1,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1344016384,
+     "memory_peak_bytes": 1342873600,
      "platform": "linux",
-     "wall_ms": 103102.336
+     "wall_ms": 152334.585
     },
     {
      "exit_code": 0,
      "index": 2,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1343508480,
+     "memory_peak_bytes": 1343483904,
      "platform": "linux",
-     "wall_ms": 97953.167
+     "wall_ms": 186026.715
     },
     {
      "exit_code": 0,
      "index": 3,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1343827968,
+     "memory_peak_bytes": 1343164416,
      "platform": "linux",
-     "wall_ms": 97898.146
+     "wall_ms": 109342.513
     },
     {
      "exit_code": 0,
      "index": 4,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1343229952,
+     "memory_peak_bytes": 1343942656,
      "platform": "linux",
-     "wall_ms": 102016.128
+     "wall_ms": 92161.087
     },
     {
      "exit_code": 0,
      "index": 5,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1343692800,
+     "memory_peak_bytes": 1343385600,
      "platform": "linux",
-     "wall_ms": 95799.012
+     "wall_ms": 144369.527
     },
     {
      "exit_code": 0,
      "index": 6,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1343987712,
+     "memory_peak_bytes": 1343205376,
      "platform": "linux",
-     "wall_ms": 98408.97
+     "wall_ms": 166892.931
     },
     {
      "exit_code": 0,
      "index": 7,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1343303680,
+     "memory_peak_bytes": 1343623168,
      "platform": "linux",
-     "wall_ms": 96266.786
+     "wall_ms": 149612.597
     }
    ]
   },
@@ -136,70 +136,70 @@
      "exit_code": 0,
      "index": 0,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1345855488,
+     "memory_peak_bytes": 1345875968,
      "platform": "win32",
-     "wall_ms": 97845.247
+     "wall_ms": 106399.081
     },
     {
      "exit_code": 0,
      "index": 1,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1346506752,
+     "memory_peak_bytes": 1346076672,
      "platform": "win32",
-     "wall_ms": 97349.439
+     "wall_ms": 121428.451
     },
     {
      "exit_code": 0,
      "index": 2,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1345789952,
+     "memory_peak_bytes": 1345724416,
      "platform": "win32",
-     "wall_ms": 91513.806
+     "wall_ms": 137765.925
     },
     {
      "exit_code": 0,
      "index": 3,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1345736704,
+     "memory_peak_bytes": 1346670592,
      "platform": "win32",
-     "wall_ms": 104309.134
+     "wall_ms": 147207.392
     },
     {
      "exit_code": 0,
      "index": 4,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1345908736,
+     "memory_peak_bytes": 1345847296,
      "platform": "win32",
-     "wall_ms": 105462.086
+     "wall_ms": 147921.764
     },
     {
      "exit_code": 0,
      "index": 5,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1345761280,
+     "memory_peak_bytes": 1345794048,
      "platform": "win32",
-     "wall_ms": 100296.727
+     "wall_ms": 134970.45
     },
     {
      "exit_code": 0,
      "index": 6,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1346072576,
+     "memory_peak_bytes": 1346334720,
      "platform": "win32",
-     "wall_ms": 102540.232
+     "wall_ms": 99073.357
     },
     {
      "exit_code": 0,
      "index": 7,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1345789952,
+     "memory_peak_bytes": 1346473984,
      "platform": "win32",
-     "wall_ms": 101810.72
+     "wall_ms": 109560.293
     }
    ]
   }
  },
- "live_validation_record_sha256": "d30e5324439b727b1630c76fdfdfdbefb1f289981c8c86538338e12c1465926e",
+ "live_validation_record_sha256": "f5027246709c7699a2385dc9d50db24f0ce1c023b7e73984ccfd67f30faccf54",
  "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
  "mismatch_count": 0,
  "runs_per_leg": 8,
