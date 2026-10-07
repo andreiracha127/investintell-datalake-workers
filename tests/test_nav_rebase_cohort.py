@@ -504,6 +504,20 @@ def test_plan_failures_stop_before_any_apply(tmp_path):
     assert (code, summary["stop_code"]) == (2, "PLAN_FILE_MISMATCH")
 
 
+@pytest.mark.parametrize("reason", ["PROVIDER_SESSION_PENDING", "PROVIDER_SESSION_PENDING_WITH_ERRORS"])
+def test_provider_session_pending_stops_cohort_as_retryable_without_apply(tmp_path, reason):
+    pending = FakeOperator(
+        [], plan_exit=(2, {**rebase._empty_result(None), "code": reason,
+                          "retryable": True})
+    )
+    code, summary, lines = _run(pending, tmp_path)
+    assert (code, summary["stop_code"], summary["retryable"]) == (
+        2, reason, True
+    )
+    assert summary["batches"] == 0 and pending.applies == []
+    assert lines[0]["event"] == "plan" and lines[0]["code"] == reason
+
+
 def test_interrupt_between_operator_calls_stops_with_exit_5(tmp_path):
     def applier(sha, chunk, n):
         if n == 2:

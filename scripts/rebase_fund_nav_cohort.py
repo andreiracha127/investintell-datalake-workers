@@ -618,6 +618,7 @@ class _Cohort:
             "exit": exit_status,
             "clean": clean,
             "stop_code": stop.code if stop else None,
+            "retryable": bool(stop and stop.code in rebase.RETRYABLE_CODES),
             "dry_run": self.config.dry_run,
             "plans": self.plans,
             "replans": self.replans,

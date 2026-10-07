@@ -703,6 +703,7 @@ def test_ordered_chain_publishes_only_after_coverage_and_risk(monkeypatch):
     monkeypatch.setattr(
         chain, "_due_session", lambda *_args: events.append("policy") or "2026-09-08"
     )
+    monkeypatch.setattr(chain, "_provider_session", lambda *_a, **_k: {"pending": False})
     monkeypatch.setattr(
         chain.matview_refresh,
         "_refresh_all",
@@ -834,6 +835,7 @@ def test_chain_never_reports_success_without_pinned_publication(
     monkeypatch.setattr(chain, "connect", lambda *_args: Guard())
     monkeypatch.setattr(chain, "advisory_lock", lock)
     monkeypatch.setattr(chain, "_due_session", lambda *_args: "2026-09-08")
+    monkeypatch.setattr(chain, "_provider_session", lambda *_a, **_k: {"pending": False})
     monkeypatch.setattr(
         chain.matview_refresh, "_refresh_all", lambda *_a: ["fund_nav_coverage_mv"]
     )

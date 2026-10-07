@@ -45,6 +45,7 @@ from src.db import (
     LOCK_INSTRUMENT_INGESTION,
     LOCK_NAV_ECONOMIC_REBASE,
 )
+from src.workers._nav_coverage import floors_from_env
 from src.workers._nav_policy import (
     ENDPOINTS,
     PROFILE,
@@ -54,6 +55,7 @@ from src.workers._nav_policy import (
     level_evidence_digest,
     resolve_policy_and_grid,
 )
+from src.workers._nav_provider_session import assess_provider_session
 from src.workers._nav_sanitize import sanitize_nav_series
 from src.workers._tiingo import (
     DEFAULT_RATE_PER_S,
@@ -96,6 +98,8 @@ RETRYABLE_CODES = frozenset(
     {
         "PROVIDER_RATE_LIMITED",
         "PROVIDER_TRANSIENT_ERROR",
+        "PROVIDER_SESSION_PENDING",
+        "PROVIDER_SESSION_PENDING_WITH_ERRORS",
         "LOCK_BUSY",
         "BUDGET_EXHAUSTED",
         "DATABASE_ERROR",
@@ -396,6 +400,14 @@ def build_rebase_plan(
         cur.execute("SELECT to_regclass('funds_profile_mv') IS NOT NULL AS present")
         if not cur.fetchone()["present"]:
             raise RebaseError("COHORT_UNAVAILABLE")
+        provider_session = assess_provider_session(
+            conn, policy_pins, grid, closed, decision_at,
+            min_active_share=floors_from_env()[0],
+        )
+        if provider_session["majority_pending"] and provider_session["failed_attempt_count"]:
+            raise RebaseError("PROVIDER_SESSION_PENDING_WITH_ERRORS")
+        if provider_session["pending"]:
+            raise RebaseError("PROVIDER_SESSION_PENDING")
         cur.execute("SELECT instrument_id FROM funds_profile_mv ORDER BY instrument_id")
         cohort = {str(row["instrument_id"]) for row in cur.fetchall()}
         cur.execute("SELECT to_regclass('instruments_universe') IS NOT NULL AS present")
