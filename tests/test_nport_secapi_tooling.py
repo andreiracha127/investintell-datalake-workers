@@ -163,10 +163,11 @@ def test_a_reused_seed_directory_keeps_no_stale_csv(tmp_path):
 
 def test_loader_dry_run_accepts_converter_output(converted, capsys):
     out, _ = converted
+    # The fixture is ISIN-poor by design (every key branch); this is about loadability.
     rc = loader.main(["--seed-dir", str(out), "--only", "2026-05-31.csv",
-                      "--only-report-dates", "2026-05-31", "--dry-run"])
+                      "--only-report-dates", "2026-05-31", "--dry-run", "--verify-floor", "0"])
     assert rc == 0
-    assert "dry run clean" in capsys.readouterr().out
+    assert "dry run clean (offline: models no rows" in capsys.readouterr().out
 
 
 def test_loader_dry_run_catches_what_copy_would_reject(tmp_path):
@@ -208,6 +209,143 @@ def test_loader_dry_run_refuses_a_key_carried_by_two_csvs(tmp_path, capsys):
     assert loader.dry_run(files, ["2026-05-31"], 0.9) == 2
     assert "1 conflict key(s) repeat across CSVs" in capsys.readouterr().out
     assert loader.dry_run(files[:1], ["2026-05-31"], 0.9) == 0
+
+
+_ROW = {
+    "report_date": "2026-05-31", "cik": "0000000101", "cusip": "123456789", "isin": "US1234567890",
+    "issuer_name": "A", "asset_class": "EC", "sector": "CORP", "market_value": "1", "quantity": "1",
+    "currency": "USD", "pct_of_nav": "1", "is_restricted": "false", "fair_value_level": "1", "series_id": "S1",
+}
+
+
+def _line(**values: str) -> str:
+    """One raw CSV line: values are written verbatim, so '""' is a quoted empty field."""
+    return ",".join({**_ROW, **values}[c] for c in CSV_COLS)
+
+
+def _seed(directory: Path, name: str, lines: list[str]) -> str:
+    path = directory / name
+    path.write_text(",".join(CSV_COLS) + "\n" + "".join(line + "\n" for line in lines), encoding="utf-8")
+    return str(path)
+
+
+def _table(**state) -> loader.TableState:
+    return loader.TableState(**{"today": dt.date(2026, 10, 6), "matview_exists": True, "source": "test", **state})
+
+
+def test_dry_run_reads_nulls_and_dates_the_way_copy_does(tmp_path):
+    path = _seed(tmp_path, "a.csv", [
+        _line(cusip="C1", market_value='""'),        # quoted empty in a bigint: COPY rejects the CSV
+        _line(cusip="C2", series_id='""'),           # quoted empty series: '' IS NOT NULL, inserted
+        _line(cusip="C3", cik='""'),                 # quoted empty cik: satisfies NOT NULL
+        _line(cusip=""),                             # unquoted empty cusip: NULL, fails NOT NULL
+        _line(cusip="C3", report_date="20260531"),   # the same date to the table: a repeated key
+        _line(cusip="C6", issuer_name='"A, ""B"""'),  # quoted delimiter and quote
+        _line(cusip="C7", issuer_name="A\x00B"),     # PostgreSQL text cannot hold NUL
+        '"2026-05-31,unterminated',
+    ])
+    result = loader.check_csv(path, ["2026-05-31"], today=dt.date(2026, 10, 6))
+    assert result["errors"] == {"type:market_value": 1, "not_null:cusip": 1, "unparseable": 2}
+    assert (result["would_insert"], result["conflict_key_dupes"], result["dropped"]) == (3, 1, {})
+
+
+def test_dry_run_verdict_is_the_post_load_verify(tmp_path):
+    thin = _seed(tmp_path, "a.csv", [_line(isin=""), _line(cusip="C2")])  # 2 rows, fill 0.5
+    assert loader.dry_run([thin], ["2026-05-31"], 0.9) == 2  # no size exemption: the verify has none
+    assert loader.dry_run([thin], ["2026-05-31"], 0.9, verify=False) == 0  # --no-verify / unscoped
+    june = _seed(tmp_path, "b.csv", [_line(report_date="2026-06-30")])
+    assert loader.dry_run([june], ["2026-06-30"], 0.9) == 0
+    assert loader.dry_run([june], ["2026-06-30", "2026-07-31"], 0.9) == 2  # a scope date left empty reads 0
+
+
+def test_dry_run_models_cleanup_placeholders(tmp_path):
+    path = _seed(tmp_path, "a.csv", [_line(), _line(cusip=loader.PLACEHOLDER_CUSIP, isin="")])
+    assert loader.dry_run([path], ["2026-05-31"], 0.9) == 2
+    assert loader.dry_run([path], ["2026-05-31"], 0.9, cleanup=True) == 0  # deleted before the verify
+
+
+def test_new_series_only_dry_run_plans_against_the_table(tmp_path, monkeypatch, capsys):
+    """A revisit: the table's S1 has no ISIN, the CSV's corrected S1 is skipped by the load."""
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _seed(seed, "2026-05-31.csv", [_line(cusip=f"C{i}") for i in range(9)] + [_line(series_id="S2")])
+    reads = []
+
+    def fake_state(dsn, report_dates, *, rows, keys, cleanup):
+        reads.append((dsn, report_dates, rows, keys, cleanup))
+        return _table(series={"2026-05-31": {"S1"}}, counts={"2026-05-31": [9, 0]})
+
+    monkeypatch.setattr(loader, "read_table_state", fake_state)
+    argv = ["--seed-dir", str(seed), "--only-report-dates", "2026-05-31", "--dsn", "x", "--workers", "1",
+            "--skip-matview", "--new-series-only", "--dry-run"]
+    assert loader.main(argv) == 2  # after the load the date holds 9 + 1 rows, 1 with an ISIN
+    assert reads == [("x", ["2026-05-31"], True, False, False)]
+    assert "'series_already_loaded': 9" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        loader.main([a for a in argv if a not in ("--dsn", "x")])  # no table, no plan
+
+
+def test_plain_dry_run_skips_the_keys_the_table_holds(tmp_path, monkeypatch):
+    path = _seed(tmp_path, "a.csv", [_line(cusip="K1"), _line(cusip="K2")])
+    state = _table(series={"2026-05-31": {"S1"}}, counts={"2026-05-31": [3, 0]}, keys={("2026-05-31", "S1", "K1")})
+    monkeypatch.setattr(loader, "read_table_state", lambda *_, **__: state)
+    assert loader.check_csv(path, ["2026-05-31"], plan=loader._Plan(state))["dropped"] == {"key_already_loaded": 1}
+    assert loader.dry_run([path], ["2026-05-31"], 0.9, dsn="x", skip_matview=True) == 2  # 3 + 1 rows, 1 ISIN
+
+
+def test_dry_run_refuses_what_the_parallel_load_would_decide_by_timing(tmp_path, monkeypatch):
+    a = _seed(tmp_path, "a.csv", [_line(cusip="C1")])
+    b = _seed(tmp_path, "b.csv", [_line(cusip="C2")])  # same series, another CSV
+    monkeypatch.setattr(loader, "read_table_state", lambda *_, **__: _table())
+    assert loader.dry_run([a, b], ["2026-05-31"], 0.9, dsn="x", new_series_only=True, skip_matview=True) == 2
+    assert loader.dry_run([a, b], ["2026-05-31"], 0.9, dsn="x", skip_matview=True) == 0  # distinct keys
+
+
+def test_dry_run_refuses_a_missing_matview_unless_skipped(tmp_path, monkeypatch):
+    path = _seed(tmp_path, "a.csv", [_line()])
+    monkeypatch.setattr(loader, "read_table_state", lambda *_, **__: _table(matview_exists=False))
+    assert loader.dry_run([path], ["2026-05-31"], 0.9, dsn="x") == 2  # finalize() would fail after the commit
+    assert loader.dry_run([path], ["2026-05-31"], 0.9, dsn="x", skip_matview=True) == 0
+
+
+class _StateCursor:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute(self, sql, params=None):
+        pass
+
+    def fetchone(self):
+        return dt.date(2026, 10, 6), True
+
+    def fetchall(self):
+        return self.rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _StateConn(_StateCursor):
+    read_only = False
+
+    def cursor(self, name=None):
+        return _StateCursor(self.rows)
+
+
+def test_table_state_counts_what_the_verify_will_count(monkeypatch):
+    rows = [  # report_date, series, placeholder cusip, has ISIN, rows
+        (dt.date(2026, 5, 31), "S1", False, True, 5),
+        (dt.date(2026, 5, 31), "S1", True, False, 2),
+        (dt.date(2026, 5, 31), "S2", True, False, 3),  # only placeholder rows: still a series the table holds
+    ]
+    monkeypatch.setattr(loader.psycopg, "connect", lambda *a, **k: _StateConn(rows))
+    kept = loader.read_table_state("x", ["2026-05-31"], rows=True, keys=False, cleanup=False)
+    cleaned = loader.read_table_state("x", ["2026-05-31"], rows=True, keys=False, cleanup=True)
+    assert kept.series == cleaned.series == {"2026-05-31": {"S1", "S2"}}
+    assert (kept.counts, cleaned.counts) == ({"2026-05-31": [10, 5]}, {"2026-05-31": [5, 5]})
 
 
 def test_loader_flag_contract():
@@ -320,6 +458,13 @@ def test_dataset_listing_failure_never_leaks_the_key(tmp_path):
         download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None)
     printed = "".join(traceback.format_exception(err.value))
     assert key not in printed and "token=***" in printed
+
+
+def test_worker_dry_run_is_the_load_plus_dry_run(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(worker.loader, "main", lambda argv: calls.append(argv) or 0)
+    assert worker.load_report_date("dsn", tmp_path, "2026-05-31") == 0
+    assert calls[0] == [*calls[1], "--dry-run"] and "--new-series-only" in calls[1]
 
 
 def test_worker_lock_id_registered_and_unique():

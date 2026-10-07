@@ -21,8 +21,9 @@ WHAT ONE RUN DOES (as of ``calc_date``, month M)
    consecutive runs while its late filers trickle in. Earlier dates are left to
    an operator: a late filing for them would decompress a cold chunk.
 4. For each target date with series the table does not have yet: the loader's
-   offline ``--dry-run`` gate, then ``nport_parallel_load --new-series-only``
-   scoped to that one date. ``--new-series-only`` is what makes revisiting safe:
+   ``--dry-run`` with the load's own arguments (it reads the table, writes
+   nothing, and refuses whatever the load or its verify would reject), then
+   ``nport_parallel_load --new-series-only`` scoped to that one date. ``--new-series-only`` is what makes revisiting safe:
    a series already loaded is never touched, so an amendment cannot graft new
    keys onto the original filing's rows the way ``ON CONFLICT DO NOTHING`` alone
    would. The loader's own post-load ISIN verify still runs.
@@ -123,12 +124,18 @@ def existing_series(dsn: str, report_date: str) -> set[str]:
 
 
 def load_report_date(dsn: str, seed_dir: Path, report_date: str) -> int:
-    """Offline gate, then one scoped, new-series-only loader run. Returns its exit code."""
-    common = ["--seed-dir", str(seed_dir), "--only", f"{report_date}.csv", "--only-report-dates", report_date]
-    rc = loader.main([*common, "--dry-run"])
+    """The loader's dry run over exactly the load's arguments, then the load. Returns the exit code.
+
+    Same argv, so the plan is the load's own: the series the table already holds
+    are left out of it, and its ISIN verdict is the post-load verify's, over the
+    whole date.
+    """
+    args = ["--seed-dir", str(seed_dir), "--only", f"{report_date}.csv", "--only-report-dates", report_date,
+            "--dsn", dsn, "--workers", "1", "--skip-matview", "--new-series-only"]
+    rc = loader.main([*args, "--dry-run"])
     if rc != 0:
         return rc
-    return loader.main([*common, "--dsn", dsn, "--workers", "1", "--skip-matview", "--new-series-only"])
+    return loader.main(args)
 
 
 def refresh_ranges(loaded: list[str], failed: set[str]) -> list[tuple[str, str]]:

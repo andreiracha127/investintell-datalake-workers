@@ -51,7 +51,11 @@ replace them, pass `--overwrite`.
 
 Load **one report_date per run**. `--only` matters: without it, every run COPYs
 every CSV in the directory, even though the INSERT is scoped. Run the
-`--dry-run` first. It opens no connection. `$DSN` is the read-write datalake DSN
+`--dry-run` first, with the load's own arguments. It writes nothing. Through
+`--dsn` it reads the series and keys the date already holds, which the load will
+skip. It refuses whatever the load or its ISIN verify would reject. Without
+`--dsn` it models a table with no rows on the date, and says so.
+`$DSN` is the read-write datalake DSN
 (`market`, through `centerbeam.proxy.rlwy.net:36616` from outside Railway). Run
 from this branch's worktree with an interpreter that has `psycopg` (`py -3.13` on
 the operator box). Start with `2026-05-29`: at 58k rows it pays the full chunk
@@ -60,7 +64,7 @@ decompress/recompress, so it calibrates the timing before the 2M-row date.
 ```
 for d in 2026-05-29 2026-05-31 2026-06-30 2026-07-31; do
   python -m tools.nport_dera.nport_parallel_load --seed-dir E:\tmp-deploy\nport-q3-seed \
-      --only $d.csv --only-report-dates $d --dry-run
+      --dsn "$DSN" --workers 4 --skip-matview --only $d.csv --only-report-dates $d --dry-run
   python -m tools.nport_dera.nport_parallel_load --seed-dir E:\tmp-deploy\nport-q3-seed \
       --dsn "$DSN" --workers 4 --skip-matview --only $d.csv --only-report-dates $d
 done
@@ -137,8 +141,9 @@ M, a run:
 
 1. downloads containers M-3..M;
 2. converts them, report_dates from M-5 to M-3;
-3. for each date with series the table lacks, runs the loader `--dry-run`, then
-   `--new-series-only`, one date per invocation, with the loader's ISIN verify;
+3. for each date with series the table lacks, runs the loader `--dry-run` with the
+   load's own arguments, then `--new-series-only`, one date per invocation, with
+   the loader's ISIN verify;
 4. refreshes `cagg_nport_series_profile` over the loaded dates, never across a date whose load failed.
 
 Each report_date is revisited by three consecutive runs while its late filers
