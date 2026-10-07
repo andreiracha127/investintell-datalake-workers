@@ -220,6 +220,22 @@ RECEIPT_ADMISSION_SQLSTATE = "NV409"
 # digest() with is normalized to this token in the catalog (only that proven
 # namespace, only in the helper body).
 PGCRYPTO_TOKEN = "<pgcrypto_schema>"
+# Owned functions whose exact previous body the idempotent DDL replaces in
+# place (CREATE OR REPLACE keeps owner and ACL). A function is an upgradable
+# predecessor only when its body hash is listed here AND every other catalog
+# attribute equals the manifest; any other body stays incompatible, so a
+# tampered body is never "repaired".
+SNAPSHOT_FUNCTION_KEY = (
+    "fund_nav_snapshot_current_at_v1(subject_id uuid, selected_run_id uuid, "
+    "evaluated_at timestamp with time zone)"
+)
+PREDECESSOR_FUNCTION_BODIES = {
+    # Round4 exact-session predicate (DDL 687b019c...), before the one-session
+    # lag allowance (MAX_SNAPSHOT_SESSION_LAG).
+    SNAPSHOT_FUNCTION_KEY: frozenset(
+        {"572502da969dd03214d4857e0fce53f8fdc84d94c6e5594a7537397511ff38b8"}
+    ),
+}
 # N6 access profile: the Light read runtime.
 ACCESS_PROFILE = "light_app_runtime_v1"
 ACCESS_ROLE = "app_runtime"
@@ -866,9 +882,44 @@ def classify_catalog(expected: dict, actual: dict) -> tuple[str, list[str]]:
       fragment (``round3_receipt_candidate``), which ``_check`` downgrades to
       incompatible unless the ledger is empty. A partially present or
       reshaped additive object is incompatible.
+    * repairable, too: a schema that is exact/repairable once each owned
+      function carrying a listed predecessor body (``PREDECESSOR_FUNCTION_BODIES``,
+      every other attribute identical) is read as its expected entry.
     * incompatible: anything else; no DDL or maintenance may run.
     """
-    return _classify_catalog(expected, actual, additive=True)
+    compatibility, mismatches = _classify_catalog(expected, actual, additive=True)
+    if compatibility == "incompatible":
+        upgraded = with_predecessor_bodies(expected, actual)
+        if upgraded is not actual:
+            base, _ = _classify_catalog(expected, upgraded, additive=True)
+            if base in ("exact", "repairable"):
+                return "repairable", mismatches
+    return compatibility, mismatches
+
+
+def with_predecessor_bodies(expected: dict, actual: dict) -> dict:
+    """``actual`` with each exact predecessor function read as its expected entry.
+
+    Returns ``actual`` itself (same object) when no owned function differs from
+    the manifest only by a listed predecessor ``body_sha256``.
+    """
+    functions = actual.get("functions")
+    wanted = expected.get("functions")
+    if not isinstance(functions, dict) or not isinstance(wanted, dict):
+        return actual
+    replaced = dict(functions)
+    for key, bodies in PREDECESSOR_FUNCTION_BODIES.items():
+        present, target = functions.get(key), wanted.get(key)
+        if (
+            isinstance(present, dict)
+            and isinstance(target, dict)
+            and present.get("body_sha256") in bodies
+            and {**present, "body_sha256": target.get("body_sha256")} == target
+        ):
+            replaced[key] = target
+    if replaced == functions:
+        return actual
+    return {**actual, "functions": replaced}
 
 
 def _classify_catalog(
@@ -1342,7 +1393,7 @@ def _check(conn, schema: str) -> dict:
         actual = catalog_signature(conn, schema)
         compatibility, mismatches = classify_catalog(manifest["signature"], actual)
         receipt_upgrade = compatibility == "repairable" and round3_receipt_candidate(
-            manifest["signature"], actual
+            manifest["signature"], with_predecessor_bodies(manifest["signature"], actual)
         )
         if receipt_upgrade and conn.execute(
             sql.SQL("SELECT EXISTS (SELECT 1 FROM {}.{})").format(

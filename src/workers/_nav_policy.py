@@ -16,6 +16,11 @@ from types import MappingProxyType
 from typing import Any
 
 PROFILE = "current_daily_nav_v1"
+# A readiness snapshot published for session D stays current while the due
+# (and closed) session is at most this many sessions of its own calendar past
+# the snapshot's pinned session. The literal in fund_nav_snapshot_current_at_v1
+# and Light's ``MAX_SNAPSHOT_SESSION_LAG`` must equal it (tests pin both).
+MAX_SNAPSHOT_SESSION_LAG = 1
 FEATURE_DEFINITION_VERSION = "risk_metrics_nav_v1"
 CALENDAR_FIELDS = ("calendar_id", "calendar_version", "calendar_source")
 RISK_RUN_SCOPES = ("current_full", "diagnostic")
