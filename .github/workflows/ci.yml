@@ -841,6 +841,11 @@ jobs:
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
           tests/test_nport_dera_tooling.py
+          tests/test_nport_secapi_tooling.py
+          tests/test_nport_secapi_contract.py
+          tests/test_nport_secapi_download_review.py
+          tests/test_nport_atomic_contract.py
+          tests/test_nport_key_index.py
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
           tests/test_yahoo_sector.py
@@ -863,9 +868,22 @@ jobs:
           tools/nport_dera/nport_bulk_parse.py
           tools/nport_dera/nport_merge.py
           tools/nport_dera/nport_parallel_load.py
+          tools/nport_dera/key_index.py
+          tools/nport_secapi/__init__.py
+          tools/nport_secapi/convert.py
+          tools/nport_secapi/download.py
+          tools/nport_secapi/validate.py
+          tools/nport_secapi/contract.py
+          src/workers/nport_secapi_monthly.py
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
           tests/test_nport_dera_tooling.py
+          tests/test_nport_secapi_tooling.py
+          tests/test_nport_secapi_contract.py
+          tests/test_nport_secapi_download_review.py
+          tests/test_nport_atomic_contract.py
+          tests/test_nport_key_index.py
+          tests/test_nport_parallel_load_timescale.py
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
           tests/test_yahoo_sector.py
@@ -887,6 +905,39 @@ jobs:
           tools/nport_dera/nport_bulk_parse.py
           tools/nport_dera/nport_merge.py
           tools/nport_dera/nport_parallel_load.py
+          tools/nport_dera/key_index.py
+          tools/nport_secapi/__init__.py
+          tools/nport_secapi/convert.py
+          tools/nport_secapi/download.py
+          tools/nport_secapi/validate.py
+          tools/nport_secapi/contract.py
+          src/workers/nport_secapi_monthly.py
+
+      - name: Start disposable N-PORT Timescale database
+        if: steps.changes.outputs.nport_changed == 'true'
+        run: |
+          docker run --detach --name nport-loader-proof --memory 512m --cpus 1 \
+            --env POSTGRES_PASSWORD=nport_local_proof --env POSTGRES_DB=nport_proof \
+            --publish 127.0.0.1:54329:5432 timescale/timescaledb:2.27.2-pg18 \
+            postgres -c shared_buffers=32MB -c work_mem=4MB -c maintenance_work_mem=32MB
+          for attempt in {1..30}; do
+            # The entrypoint's temporary Unix-socket server precedes database creation.
+            # Only the final server accepts TCP connections.
+            if docker exec nport-loader-proof pg_isready -h 127.0.0.1 -U postgres -d nport_proof; then break; fi
+            sleep 1
+          done
+          docker exec nport-loader-proof psql -h 127.0.0.1 -U postgres -d nport_proof -v ON_ERROR_STOP=1 \
+            -c "ALTER DATABASE nport_proof SET nport_loader_proof.disposable = 'on'"
+
+      - name: Verify N-PORT atomic loader on TimescaleDB 2.27.2 / PostgreSQL 18
+        if: steps.changes.outputs.nport_changed == 'true'
+        env:
+          NPORT_TEST_DATABASE_URL: postgresql://postgres:nport_local_proof@127.0.0.1:54329/nport_proof
+        run: python -m pytest tests/test_nport_parallel_load_timescale.py -q -rs
+
+      - name: Remove disposable N-PORT Timescale database
+        if: always() && steps.changes.outputs.nport_changed == 'true'
+        run: docker rm --force nport-loader-proof
 
       - name: Verify certified input pack
         if: steps.changes.outputs.quant_changed == 'true'

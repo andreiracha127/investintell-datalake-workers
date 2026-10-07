@@ -352,3 +352,18 @@ LOCK_FUND_NAV_CURRENT_CHAIN = 900_361
 # INGESTION -> READINESS transaction locks. No other worker takes it. 900_362
 # is the next free id after LOCK_FUND_NAV_CURRENT_CHAIN (no other use in repo).
 LOCK_NAV_ECONOMIC_REBASE = 900_362
+# Monthly sec-api.io top-up of sec_nport_holdings (src/workers/nport_secapi_monthly).
+# Held on an autocommit connection for the whole download -> convert -> per-date
+# load -> cagg refresh run, so two runs never decompress and load the same chunk
+# at once. 900_363 is the next free id after LOCK_NAV_ECONOMIC_REBASE, found by
+# grepping this whole file.
+LOCK_NPORT_SECAPI_MONTHLY = 900_363
+# Transaction-level lock tools/nport_dera/nport_parallel_load takes around every
+# --new-series-only INSERT (its NEW_SERIES_LOCK, which must equal this), from
+# any process: two concurrent NOT EXISTS checks for the same absent series would
+# both pass and graft two filings into one series. Next free id after 900_363.
+LOCK_NPORT_NEW_SERIES_INSERT = 900_364
+# Loader lifecycle session mutex protects compression maintenance across
+# standalone invocations while disjoint date COPY transactions run in parallel.
+# Lock order: monthly worker 900_363 -> lifecycle 900_365 -> insert 900_364.
+LOCK_NPORT_LOAD = 900_365
