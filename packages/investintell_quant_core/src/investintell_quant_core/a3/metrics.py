@@ -12,7 +12,10 @@ from investintell_quant_core.hashing.canonical import logical_payload_hash, logi
 FLOAT_TOLERANCE = 1e-12
 FLOAT_REL_TOLERANCE = 1e-12
 METRIC_HASH_FLOAT_DECIMALS = 12
-METRICS_HASH_POLICY_VERSION = "qc_a3_metrics_float_canonical_v1"
+# v2 (quant-core 0.3.1): ``hashing.canonical`` folds -0.0 into 0.0 and tags NaN
+# and the infinities as ``{"$float": ...}`` instead of ``null`` / ``"inf"``, so a
+# digest over a payload that carried any of those does not reproduce v1.
+METRICS_HASH_POLICY_VERSION = "qc_a3_metrics_float_canonical_v2"
 BUNDLE_EVALUATION_HASH_POLICY_VERSION = "qc_a3_parity_bundle_v1"
 QC_A3_BRIDGE_SCHEMA_VERSION = 1
 
