@@ -211,7 +211,16 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
         if manifest["report_dates"][rd]["partial"]:
             entry["result"] = "partial"  # cannot happen inside the window; refuse rather than assume
             continue
-        new = _csv_series(seed_dir / f"{rd}.csv") - existing_series(dsn, rd)
+        csv_series = _csv_series(seed_dir / f"{rd}.csv")
+        if not csv_series or len(csv_series) != manifest["report_dates"][rd]["series"]:
+            # The converter counted filings whose holdings it could not emit:
+            # an upstream shape change, not a date with nothing new.
+            entry["result"] = "failed"
+            entry["reason"] = f"CSV holds {len(csv_series)} series, the manifest {manifest['report_dates'][rd]['series']}"
+            failed.add(rd)
+            LOGGER.error("nport_secapi_monthly: report_date %s: %s", rd, entry["reason"])
+            continue
+        new = csv_series - existing_series(dsn, rd)
         entry["new_series"] = len(new)
         if not new:
             entry["result"] = "no_new_series"
@@ -220,9 +229,9 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
             entry["result"] = "deferred_by_limit"
             continue
         # The value checks the manual workflow runs before a load (pct_of_nav
-        # sums, units, foreign dates); the loader's dry run checks loadability
-        # and ISIN fill, not values.
-        problems = validator.verdict(validator.profile_csv(str(seed_dir / f"{rd}.csv")))
+        # sums, units, foreign dates), over the series the load will insert;
+        # the loader's dry run checks loadability and ISIN fill, not values.
+        problems = validator.verdict(validator.profile_csv(str(seed_dir / f"{rd}.csv"), only_series=new))
         if problems:
             entry["result"] = "failed"
             entry["validation"] = problems

@@ -61,6 +61,10 @@ WHAT WAS ADDED to the rescued original, and nothing else:
   an amendment's new keys onto the original filing's rows. Requires every series
   of a report_date to sit in ONE CSV (``tools.nport_secapi.convert`` guarantees
   it); a series split across two parallel CSVs would load only the first half.
+  Each such INSERT holds ``NEW_SERIES_LOCK`` until it commits, so two loader
+  processes cannot both find the same series absent. Not combinable with
+  ``--cleanup-placeholders``: a series held only by placeholder rows counts as
+  present, is skipped, and is then deleted.
 
 Lifecycle:
   1. prep()      — drop compression policy + decompress the affected chunks so
@@ -72,7 +76,9 @@ Lifecycle:
   5. verify      — ISIN fill per report_date against the floor.
 
 COPY releases the GIL on socket I/O, so threads give real network parallelism.
-No advisory lock (it would serialize the workers); rely on idempotency for safety.
+No advisory lock around a load (it would serialize the workers); rely on
+idempotency for safety. The exception is the --new-series-only INSERT itself,
+which takes ``NEW_SERIES_LOCK`` until its commit (COPY still runs in parallel).
 
 Usage:
   python -m tools.nport_dera.nport_parallel_load --seed-dir DIR --dsn DSN --workers 8 \
@@ -108,6 +114,10 @@ PLACEHOLDER_CUSIP = "000000000"
 #: ``src/workers/nport_identifier_coverage.DEFAULT_FLOOR`` — same number, same
 #: 28 pp of daylight between the worst clean and the best degraded reading.
 DEFAULT_FILL_FLOOR = 0.90
+
+#: ``src.db.LOCK_NPORT_NEW_SERIES_INSERT`` (this tool does not import ``src``).
+#: Transaction-level: held from just before a --new-series-only INSERT to its commit.
+NEW_SERIES_LOCK = 900_364
 
 STAGE_DDL = """
 CREATE TEMP TABLE _nport_stage (
@@ -261,6 +271,9 @@ def load_one(
         params["dates"] = report_dates
     # Each worker uses ON COMMIT DROP temp table; one transaction per CSV.
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        if new_series_only:
+            # The INSERT's snapshot must postdate the lock wait (see below).
+            conn.isolation_level = psycopg.IsolationLevel.READ_COMMITTED
         cur.execute(STAGE_DDL)
         with open(path, encoding="utf-8", newline="") as fh:
             with cur.copy(
@@ -269,6 +282,11 @@ def load_one(
             ) as cp:
                 while chunk := fh.read(1 << 20):
                     cp.write(chunk)
+        if new_series_only:
+            # Serialize the NOT EXISTS check with its own commit, across every
+            # loader process: two concurrent loads of one absent series would
+            # otherwise both find it absent and graft two filings together.
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (NEW_SERIES_LOCK,))
         cur.execute(sql, params)
         inserted = cur.rowcount
         conn.commit()
@@ -659,6 +677,8 @@ def dry_run(
     verify = bool(report_dates) if verify is None else verify
     if new_series_only and not dsn:
         raise ValueError("a --new-series-only plan needs --dsn: it depends on the series the table holds")
+    if new_series_only and cleanup:
+        raise ValueError("--new-series-only and --cleanup-placeholders cannot be combined")
     if dsn:
         state = read_table_state(dsn, report_dates, rows=bool(report_dates) and not delete_first,
                                  keys=not new_series_only, cleanup=cleanup)
@@ -761,6 +781,9 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--new-series-only requires --only-report-dates")
     if args.delete_first and args.new_series_only:
         ap.error("--delete-first and --new-series-only contradict each other")
+    if args.new_series_only and args.cleanup_placeholders:
+        ap.error("--new-series-only and --cleanup-placeholders cannot be combined: a series held only by "
+                 "placeholder rows counts as present, is skipped, then deleted")
     if not args.dsn and not args.dry_run:
         ap.error("--dsn is required unless --dry-run")
     if args.dry_run and args.new_series_only and not args.dsn:

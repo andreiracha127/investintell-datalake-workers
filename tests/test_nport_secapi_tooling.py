@@ -348,6 +348,62 @@ def test_table_state_counts_what_the_verify_will_count(monkeypatch):
     assert (kept.counts, cleaned.counts) == ({"2026-05-31": [10, 5]}, {"2026-05-31": [5, 5]})
 
 
+class _LoadCursor:
+    rowcount = 1
+
+    def __init__(self, log: list[str]):
+        self.log = log
+
+    def execute(self, sql, params=None):
+        self.log.append(" ".join(sql.split()))
+
+    @contextmanager
+    def copy(self, sql):
+        self.log.append("COPY")
+        yield type("Copy", (), {"write": lambda self, chunk: None})()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _LoadConn(_LoadCursor):
+    isolation_level = None
+
+    def cursor(self):
+        return _LoadCursor(self.log)
+
+    def commit(self):
+        self.log.append("COMMIT")
+
+
+def test_new_series_inserts_are_serialized_across_processes(tmp_path, monkeypatch):
+    from src import db
+
+    assert loader.NEW_SERIES_LOCK == db.LOCK_NPORT_NEW_SERIES_INSERT
+    ids = [v for k, v in vars(db).items() if k.startswith("LOCK_") and isinstance(v, int)]
+    assert ids.count(loader.NEW_SERIES_LOCK) == 1
+    path = _seed(tmp_path, "a.csv", [_line()])
+    for new_series_only in (True, False):
+        conn = _LoadConn([])
+        monkeypatch.setattr(loader.psycopg, "connect", lambda *a, **k: conn)
+        loader.load_one("x", path, dt.datetime(2026, 10, 7), ["2026-05-31"], new_series_only)
+        steps = [s.split(" ")[0] if not s.startswith("SELECT pg_advisory") else "LOCK" for s in conn.log]
+        assert steps == (["CREATE", "COPY", "LOCK", "INSERT", "COMMIT"] if new_series_only
+                         else ["CREATE", "COPY", "INSERT", "COMMIT"])
+        assert (conn.isolation_level == loader.psycopg.IsolationLevel.READ_COMMITTED) is new_series_only
+
+
+def test_new_series_only_refuses_placeholder_cleanup(tmp_path):
+    with pytest.raises(SystemExit):
+        loader.main(["--seed-dir", str(tmp_path), "--dsn", "x", "--only-report-dates", "2026-05-31",
+                     "--new-series-only", "--cleanup-placeholders"])
+    with pytest.raises(ValueError):
+        loader.dry_run([], ["2026-05-31"], 0.9, dsn="x", new_series_only=True, cleanup=True)
+
+
 def test_loader_flag_contract():
     with pytest.raises(SystemExit):
         loader.main(["--seed-dir", ".", "--dsn", "x", "--new-series-only"])  # unscoped
@@ -540,14 +596,16 @@ def test_worker_skips_dates_with_nothing_new_and_reports_failures(wired):
     assert stats["state"] == "failed" and wired["refresh"] == []
 
 
-def _converter_writing(csvs: dict[str, list[list[str]]]):
+def _converter_writing(csvs: dict[str, list[list[str]]], manifest_series: dict[str, int] | None = None):
     """A stand-in for ``convert.convert`` that writes these rows, one complete CSV per report_date."""
     def fake_convert(paths, out_dir, *, min_report_date, partial_months):
         Path(out_dir).mkdir(parents=True)
         for rd, rows in csvs.items():
             with open(Path(out_dir) / f"{rd}.csv", "w", encoding="utf-8", newline="") as fh:
                 csv.writer(fh).writerows([CSV_COLS, *rows])
-        return {"report_dates": {rd: {"rows": len(rows), "series": 1, "partial": False} for rd, rows in csvs.items()},
+        series = {rd: len({r[-1] for r in rows}) for rd, rows in csvs.items()} | (manifest_series or {})
+        return {"report_dates": {rd: {"rows": len(rows), "series": series[rd], "partial": False}
+                                 for rd, rows in csvs.items()},
                 "excluded_report_dates": {}}
     return fake_convert
 
@@ -574,6 +632,26 @@ def test_worker_validates_values_before_it_loads(wired, monkeypatch):
     assert stats["report_dates"]["2026-05-31"]["result"] == "failed"
     assert "above 1000%" in stats["report_dates"]["2026-05-31"]["validation"][0]
     assert stats["state"] == "failed"
+
+
+def test_worker_validates_only_the_series_it_will_insert(wired, monkeypatch):
+    """A revisit: ten loaded series sum to 100, the one new series has no pct_of_nav at all."""
+    row = ["2026-05-31", "0000000101", "123456789", "US1", "A", "EC", "CORP", "1", "1", "USD", "1", "false", "1"]
+    loaded = [[*row, f"S{s}"] for s in range(10) for _ in range(100)]
+    late = [[*row[:10], "", *row[11:], "S10"] for _ in range(1000)]
+    monkeypatch.setattr(worker.converter, "convert", _converter_writing({"2026-05-31": loaded + late}))
+    wired["existing"]["2026-05-31"] = {f"S{s}" for s in range(10)}
+    stats = worker.run("dsn", calc_date="2026-09-10")
+    assert wired["loads"] == []  # 10 of 11 series sum to 100 over the whole CSV; 0 of 1 among the new
+    assert stats["report_dates"]["2026-05-31"]["result"] == "failed"
+
+
+def test_worker_fails_a_complete_date_whose_csv_lost_its_series(wired, monkeypatch):
+    """The converter counted two series' filings and emitted no holding for either."""
+    monkeypatch.setattr(worker.converter, "convert",
+                        _converter_writing({"2026-05-31": []}, manifest_series={"2026-05-31": 2}))
+    stats = worker.run("dsn", calc_date="2026-09-10")
+    assert stats["report_dates"]["2026-05-31"]["result"] == "failed" and stats["state"] == "failed"
 
 
 def test_worker_fails_when_conversion_yields_no_target_date(wired, monkeypatch):

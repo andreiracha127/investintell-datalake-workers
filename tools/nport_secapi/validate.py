@@ -37,7 +37,8 @@ ISIN_FLOOR = 0.90
 MIN_JUDGED_ROWS = 1000
 
 
-def profile_csv(path: str) -> dict:
+def profile_csv(path: str, only_series: set[str] | None = None) -> dict:
+    """Profile ``path``; with ``only_series``, only those series' rows (what a ``--new-series-only`` load inserts)."""
     csv.field_size_limit(2**31 - 1)
     expected_date = os.path.basename(path)[:10]
     pct = collections.defaultdict(Decimal)
@@ -50,6 +51,8 @@ def profile_csv(path: str) -> dict:
         if reader.fieldnames != CSV_COLS:
             raise SystemExit(f"{path}: header {reader.fieldnames} != {CSV_COLS}")
         for row in reader:
+            if only_series is not None and row["series_id"] not in only_series:
+                continue
             out["rows"] += 1
             dates[row["report_date"]] += 1
             series = row["series_id"]
