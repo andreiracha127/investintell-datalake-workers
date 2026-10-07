@@ -1,0 +1,5512 @@
+{
+  "capturedAt": "2026-10-07T03:21:30.813258+00:00",
+  "project": {
+    "id": "35fa36a3-2641-42b2-b48b-540eac0597c6",
+    "name": "investintell-db",
+    "prDeploys": false,
+    "botPrEnvironments": false
+  },
+  "environment": {
+    "id": "5a1a1355-7b6e-49a1-970a-09e0c44fd156",
+    "name": "production",
+    "projectId": "35fa36a3-2641-42b2-b48b-540eac0597c6",
+    "configEtag": "01905c1704c67165f660167cac5d4d5729a195a358a66c65b81e77b85cd78eba",
+    "iacPartials": {
+      "service.customer-services-api": "customer-services",
+      "service.customer-services-backup": "customer-services",
+      "service.customer-services-postgres": "customer-services",
+      "service.customer-services-connector": "customer-services",
+      "volume.customer-services-backup-spool": "customer-services",
+      "volume.customer-services-postgres-data": "customer-services",
+      "bucket.customer-services-target-backups": "customer-services",
+      "service.customer-services-reconciliation": "customer-services"
+    }
+  },
+  "services": [
+    {
+      "name": "active-share-metrics",
+      "owner": "investintell-workers",
+      "serviceId": "30547b49-ba38-4ea9-92b2-04b616efabd7",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "12a0c8dd-47c7-46c6-b813-f5945dc61c25",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "20 9 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENBLAS_NUM_THREADS",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "20 9 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENBLAS_NUM_THREADS",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "12a0c8dd-47c7-46c6-b813-f5945dc61c25",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "b9dcfd57-a3d9-468d-acc0-570a5b3c2bc2",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "20 9 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T09:20:00.000Z"
+    },
+    {
+      "name": "analytics-refresh-chain",
+      "owner": "investintell-workers",
+      "serviceId": "f70725ec-64b2-4ca1-809b-470397a74d3c",
+      "configuredConfigFile": "railway.toml",
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "2593434d-82f6-4ab0-b0b3-a7686df8ca6a",
+      "current": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 9 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "MKL_NUM_THREADS",
+          "NUMEXPR_NUM_THREADS",
+          "OMP_NUM_THREADS",
+          "OPENBLAS_NUM_THREADS",
+          "PGOPTIONS",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 9 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "MKL_NUM_THREADS",
+          "NUMEXPR_NUM_THREADS",
+          "OMP_NUM_THREADS",
+          "OPENBLAS_NUM_THREADS",
+          "PGOPTIONS",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "2593434d-82f6-4ab0-b0b3-a7686df8ca6a",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "ecf6bfb6-b03c-4e45-b62a-2d6afb2af5bc",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 9 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T09:00:00.000Z"
+    },
+    {
+      "name": "benchmark-ingest",
+      "owner": "investintell-workers",
+      "serviceId": "5fdd9bb2-941e-458e-b73d-8a356c0027d6",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "e1de1ae7-cdd8-4ffb-a836-8fa55e5095fc",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "30 5 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "30 5 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "e1de1ae7-cdd8-4ffb-a836-8fa55e5095fc",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "5206dbc1-8a77-4fa7-aea4-26fee55f509d",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "30 5 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T05:30:00.000Z"
+    },
+    {
+      "name": "bond-chain",
+      "owner": "investintell-workers",
+      "serviceId": "6fca05e1-d90b-4d34-afe8-bd62fe481b87",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "b25e0151-1aad-4ea7-950a-25c48f11688e",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS"
+        },
+        "deploy": {
+          "cronSchedule": "0 11 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DAILY_CHAIN_STAGES",
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 11 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DAILY_CHAIN_STAGES",
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "b25e0151-1aad-4ea7-950a-25c48f11688e",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "a912022a-4778-404a-9fc2-5361c5272b4a",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 11 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T11:00:00.000Z"
+    },
+    {
+      "name": "bond-default-events",
+      "owner": "investintell-workers",
+      "serviceId": "005eda88-a3ac-4eab-be8e-495c8e318743",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": null,
+      "resolvedDeploymentId": "8598a43f-696e-4e33-8fdf-08f3da544f3c",
+      "current": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.workers.bond_default_events",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "BOND_DEFAULT_EVENTS_CODE_DIGEST",
+          "BOND_DEFAULT_EVENTS_MANIFEST",
+          "BOND_DEFAULT_EVENTS_MODE",
+          "BOND_DEFAULT_EVENTS_SCHEMA",
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "Dockerfile",
+          "buildCommand": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.workers.bond_default_events",
+          "useLegacyStacker": false,
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "BOND_DEFAULT_EVENTS_CODE_DIGEST",
+          "BOND_DEFAULT_EVENTS_MANIFEST",
+          "BOND_DEFAULT_EVENTS_MODE",
+          "BOND_DEFAULT_EVENTS_SCHEMA",
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "8598a43f-696e-4e33-8fdf-08f3da544f3c",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "b5e1ab90-8ea2-4536-858a-2a5cc4b0bed7",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": null,
+          "startCommand": "python -m src.workers.bond_default_events",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "bond-live-daily",
+      "owner": "investintell-workers",
+      "serviceId": "e673db8e-e81b-44de-bd20-f2a31ac95b08",
+      "configuredConfigFile": "/railway.bond-live-daily.toml",
+      "resolvedConfigFile": "/railway.bond-live-daily.toml",
+      "resolvedDeploymentId": "c562a660-65a3-4510-ac44-99582585ca92",
+      "current": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "30 7 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "BOND_IMPLIED_RATING_ENABLED",
+          "BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID",
+          "DATABASE_URL",
+          "FINNHUB_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "DOCKERFILE",
+          "dockerfilePath": "docker/bond-live-daily/Dockerfile",
+          "buildCommand": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 5 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "BOND_IMPLIED_RATING_ENABLED",
+          "BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID",
+          "DATABASE_URL",
+          "FINNHUB_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "c562a660-65a3-4510-ac44-99582585ca92",
+        "status": "SUCCESS",
+        "deploymentStopped": false,
+        "instances": [
+          {
+            "id": "c51a4ca6-2c96-471b-ba34-60af22453a31",
+            "status": "CREATED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "docker/bond-live-daily/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 5 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T07:30:00.000Z"
+    },
+    {
+      "name": "certified-rebuild-runner",
+      "owner": "investintell-workers",
+      "serviceId": "0984bd50-192a-4e41-9633-86d1d970261d",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": null,
+      "resolvedDeploymentId": null,
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m scripts.rebuild_ipca_factor_pack",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_HISTORY_SHARD",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m scripts.rebuild_ipca_factor_pack",
+          "useLegacyStacker": false,
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_HISTORY_SHARD",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": null,
+        "status": null,
+        "deploymentStopped": null,
+        "instances": [],
+        "build": {},
+        "deploy": {}
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "characteristics",
+      "owner": "investintell-workers",
+      "serviceId": "d5656a83-de01-4015-8a10-a06408d3649e",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "30e5f357-4ce2-4c43-b37e-59fd6c16dd99",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 5 2 * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "PGOPTIONS",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 5 2 * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "PGOPTIONS",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "30e5f357-4ce2-4c43-b37e-59fd6c16dd99",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "8f7138c8-804e-42e8-af92-2ad735c205b8",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 5 2 * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-11-02T05:00:00.000Z"
+    },
+    {
+      "name": "credit-regime",
+      "owner": "investintell-workers",
+      "serviceId": "86880896-ea75-43f5-9ccd-110ef8fe3e6b",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "8601e1bc-ec91-4076-803f-4aff8a24255b",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "30 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "30 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "8601e1bc-ec91-4076-803f-4aff8a24255b",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "c34651f5-150f-4440-a941-76470cf7aa3b",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "30 6 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T06:30:00.000Z"
+    },
+    {
+      "name": "eod-prices-warmer",
+      "owner": "investintell-workers",
+      "serviceId": "fbe4561e-7e17-4c4e-9f65-8c001b40c05c",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "76d7c333-00df-4281-9233-593fb34eb6d8",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "10 1,13,21 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER",
+          "WORKER_LIMIT"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "10 1,13,21 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER",
+          "WORKER_LIMIT"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "76d7c333-00df-4281-9233-593fb34eb6d8",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "e2d9e6b5-16e0-416e-b4fa-2557203c029c",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "10 1,13,21 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T13:10:00.000Z"
+    },
+    {
+      "name": "factor-model",
+      "owner": "investintell-workers",
+      "serviceId": "0537aa19-7b2f-409e-bff9-9d9ac3898b6c",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "9795355e-61eb-4250-b29e-a1aaf49d5015",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 6 2 * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 6 2 * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "9795355e-61eb-4250-b29e-a1aaf49d5015",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "92a3ec03-0036-481f-b26a-49837a4b4f78",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 6 2 * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-11-02T06:00:00.000Z"
+    },
+    {
+      "name": "fund-factors",
+      "owner": "investintell-workers",
+      "serviceId": "8376d41f-5f09-470b-9395-1efb861838f8",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "84e2f849-7717-4de8-a91f-a37deba75b41",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "30 6 2 * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "30 6 2 * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "84e2f849-7717-4de8-a91f-a37deba75b41",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "fb5f838b-1b84-4717-a7fe-c6325b4615e8",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "30 6 2 * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-11-02T06:30:00.000Z"
+    },
+    {
+      "name": "fund-institutional-reveal",
+      "owner": "investintell-workers",
+      "serviceId": "5dbaaa34-576e-472d-ab7c-3ab7929c8f0d",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "a4f15cb4-2643-440a-94b9-feff0ad2b590",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "a4f15cb4-2643-440a-94b9-feff0ad2b590",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "34dfbe63-2f2d-4421-b049-d633e62410e7",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 0 29 2 *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2028-02-29T00:00:00.000Z"
+    },
+    {
+      "name": "fund-peer-groups",
+      "owner": "investintell-workers",
+      "serviceId": "446c2095-b824-4dc7-8d82-7c19968ab585",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "438dc119-845c-4f67-a6c9-ab7122ca6b66",
+      "current": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 7 15 2,5,8,11 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 7 15 2,5,8,11 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "438dc119-845c-4f67-a6c9-ab7122ca6b66",
+        "status": "SUCCESS",
+        "deploymentStopped": false,
+        "instances": [
+          {
+            "id": "6adf3f52-27b2-4aab-b334-069f2571e1e0",
+            "status": "CREATED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 7 15 2,5,8,11 *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-11-15T07:00:00.000Z"
+    },
+    {
+      "name": "instrument-ingestion",
+      "owner": "investintell-workers",
+      "serviceId": "ca9633f8-c960-48e5-96b5-dab8141326dc",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "03966286-9e45-4d3f-bf06-a07afda506c7",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "03966286-9e45-4d3f-bf06-a07afda506c7",
+        "status": "SUCCESS",
+        "deploymentStopped": false,
+        "instances": [
+          {
+            "id": "ff64c770-5047-4c0b-8947-f9aa0f181af3",
+            "status": "RUNNING"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": null,
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "livefeed",
+      "owner": "investintell-workers",
+      "serviceId": "0597ac76-0df1-4e8e-9573-789105f861c3",
+      "configuredConfigFile": "railway.livefeed.toml",
+      "resolvedConfigFile": "/railway.livefeed.toml",
+      "resolvedDeploymentId": "ae3325a9-ac06-460d-a386-6d5613163acd",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "healthcheckPath": "/health",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "ALWAYS",
+          "runtime": "V2",
+          "startCommand": "python -m src.workers.livefeed",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "PORT",
+          "TIINGO_API_KEY"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "healthcheckPath": "/health",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "ALWAYS",
+          "runtime": "V2",
+          "startCommand": "python -m src.workers.livefeed",
+          "useLegacyStacker": false,
+          "healthcheckTimeout": 120,
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "PORT",
+          "TIINGO_API_KEY"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "ae3325a9-ac06-460d-a386-6d5613163acd",
+        "status": "SUCCESS",
+        "deploymentStopped": false,
+        "instances": [
+          {
+            "id": "20ec9c45-3f3c-459d-bcf4-b472aeb1e96d",
+            "status": "RUNNING"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": null,
+          "startCommand": "python -m src.workers.livefeed",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": "/health",
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "ALWAYS",
+          "healthcheckTimeout": 120,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "macro-ingestion",
+      "owner": "investintell-workers",
+      "serviceId": "f6d2b687-3164-4dd3-b507-30964a1ee6a7",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "42cf5786-3722-4aa2-9f77-a39b69007542",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 5 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "FRED_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 5 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "FRED_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "42cf5786-3722-4aa2-9f77-a39b69007542",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "b11f40fd-c081-45dd-8956-708a06a87556",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 5 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T05:00:00.000Z"
+    },
+    {
+      "name": "macro-vintage",
+      "owner": "investintell-workers",
+      "serviceId": "c0f5f17a-a609-44e6-96a1-b3365965090c",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "2de9dd89-031f-4d4b-b511-0ba496fa14fa",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "15 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "FRED_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "15 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "FRED_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "2de9dd89-031f-4d4b-b511-0ba496fa14fa",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "ab429edb-4f82-4480-a017-5dd8b6a470c0",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "15 6 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T06:15:00.000Z"
+    },
+    {
+      "name": "maintenance-runner",
+      "owner": "investintell-workers",
+      "serviceId": "a5a8e833-29af-482d-b002-a6475f40bf17",
+      "configuredConfigFile": "railway.toml",
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "ee365e1a-ba08-499b-8ca4-071b3c073313",
+      "current": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "preDeployCommand": [],
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "MAINTENANCE_RUNNER_NOTE",
+          "NAV_REBASE_ALLOW_DATABASE_URL",
+          "NAV_REBASE_CONFIRM",
+          "NAV_REBASE_MAX_BATCHES",
+          "NAV_REBASE_RATE_PER_SECOND",
+          "OPENFIGI_API_KEY",
+          "PGOPTIONS",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "preDeployCommand": [],
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "MAINTENANCE_RUNNER_NOTE",
+          "NAV_REBASE_ALLOW_DATABASE_URL",
+          "NAV_REBASE_CONFIRM",
+          "NAV_REBASE_MAX_BATCHES",
+          "NAV_REBASE_RATE_PER_SECOND",
+          "OPENFIGI_API_KEY",
+          "PGOPTIONS",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "ee365e1a-ba08-499b-8ca4-071b3c073313",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "e94da780-bb28-468f-86c8-40b3e85329f9",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 0 29 2 *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": [],
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2028-02-29T00:00:00.000Z"
+    },
+    {
+      "name": "matview-refresh",
+      "owner": "investintell-workers",
+      "serviceId": "2627360a-2f6d-494c-9e04-0164acae210b",
+      "configuredConfigFile": "/railway.toml",
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "b3dc2085-9c95-4201-82d9-a125f134007d",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "30 10 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "PGOPTIONS",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "30 10 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "PGOPTIONS",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "b3dc2085-9c95-4201-82d9-a125f134007d",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "8e0a1d59-a6dc-4af3-8651-c747fe758299",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "30 10 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T10:30:00.000Z"
+    },
+    {
+      "name": "mixed-quant-publication",
+      "owner": "investintell-workers",
+      "serviceId": "44668000-f061-4be7-b2e7-a2136414e351",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "0d0f10f2-5c53-4f48-9c5d-04dc943bcefb",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS"
+        },
+        "deploy": {
+          "cronSchedule": "0 3 2 * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "CODE_REVISION",
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 3 2 * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "CODE_REVISION",
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "0d0f10f2-5c53-4f48-9c5d-04dc943bcefb",
+        "status": "CRASHED",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "445421a4-826c-4e4e-bb5d-f8e8f477233c",
+            "status": "CRASHED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 3 2 * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-11-02T03:00:00.000Z"
+    },
+    {
+      "name": "momentum-metrics",
+      "owner": "investintell-workers",
+      "serviceId": "6a147075-2e99-49f3-a875-c87af9076d76",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "f3191831-960c-4255-b348-d7145837f92e",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENBLAS_NUM_THREADS",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENBLAS_NUM_THREADS",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "f3191831-960c-4255-b348-d7145837f92e",
+        "status": "SUCCESS",
+        "deploymentStopped": false,
+        "instances": [
+          {
+            "id": "d041f08f-0da4-49e0-9a92-b84e2818a8c9",
+            "status": "CREATED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 0 29 2 *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2028-02-29T00:00:00.000Z"
+    },
+    {
+      "name": "nav-current-daily-chain",
+      "owner": "investintell-workers",
+      "serviceId": "8d022e5a-2e05-4280-af64-f4d064920e8a",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": null,
+      "resolvedDeploymentId": "2ccbc2ff-0441-4c6c-a1c8-8b9b485fec97",
+      "current": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "30 7 * * 2-6",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENBLAS_NUM_THREADS",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "30 7 * * 2-6",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENBLAS_NUM_THREADS",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "2ccbc2ff-0441-4c6c-a1c8-8b9b485fec97",
+        "status": "SUCCESS",
+        "deploymentStopped": false,
+        "instances": [
+          {
+            "id": "4ec40a57-cbfc-464a-953f-ac7f8a9616bb",
+            "status": "CREATED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "30 7 * * 2-6",
+          "startCommand": null,
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T07:30:00.000Z"
+    },
+    {
+      "name": "nport-cusip-enrichment",
+      "owner": "investintell-workers",
+      "serviceId": "c3aeee2b-7992-4fdf-8ef4-df3d3da49781",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "c3ccbc44-243f-47a0-aa41-c83cd81ec0b7",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 3 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "INVESTINTELL_DB_URL",
+          "OPENFIGI_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 3 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "INVESTINTELL_DB_URL",
+          "OPENFIGI_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "c3ccbc44-243f-47a0-aa41-c83cd81ec0b7",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "e38fe978-09a9-4926-b911-10d2ad265f45",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 3 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-08T03:00:00.000Z"
+    },
+    {
+      "name": "nport-fixed-income",
+      "owner": "investintell-workers",
+      "serviceId": "20a4fe44-2d4a-444a-9d42-76f8f6ae21d1",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "84ca50e4-435b-442d-815c-422dda970f8c",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_FI_SECAPI_APPROVED_SOURCE_HASH",
+          "NPORT_FI_SECAPI_SOURCE_RUN_ID",
+          "NPORT_SECAPI_MAX_ACCESSIONS",
+          "NPORT_SECAPI_MAX_API_CALLS",
+          "NPORT_SECAPI_REQUEST_INTERVAL_SECONDS",
+          "NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID",
+          "NPORT_SECAPI_SOURCE_RUN_ID",
+          "SEC_API_IO_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_FI_SECAPI_APPROVED_SOURCE_HASH",
+          "NPORT_FI_SECAPI_SOURCE_RUN_ID",
+          "NPORT_SECAPI_MAX_ACCESSIONS",
+          "NPORT_SECAPI_MAX_API_CALLS",
+          "NPORT_SECAPI_REQUEST_INTERVAL_SECONDS",
+          "NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID",
+          "NPORT_SECAPI_SOURCE_RUN_ID",
+          "SEC_API_IO_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": null,
+        "status": null,
+        "deploymentStopped": null,
+        "instances": [],
+        "build": {},
+        "deploy": {}
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "nport-fixed-income-secapi-fallback",
+      "owner": "investintell-workers",
+      "serviceId": "c233b4c9-4e89-41bf-9cbf-70d0638a683e",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "4543b698-652b-4938-a333-04e264e1765a",
+      "current": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_FI_SECAPI_APPROVED_SOURCE_HASH",
+          "NPORT_FI_SECAPI_SOURCE_RUN_ID",
+          "NPORT_SECAPI_FALLBACK_CONCURRENCY",
+          "NPORT_SECAPI_FALLBACK_MAX_ACCESSIONS",
+          "NPORT_SECAPI_FALLBACK_MAX_API_CALLS",
+          "NPORT_SECAPI_FALLBACK_REQUEST_INTERVAL_SECONDS",
+          "NPORT_SECAPI_MAX_ACCESSIONS",
+          "NPORT_SECAPI_MAX_API_CALLS",
+          "NPORT_SECAPI_REQUEST_INTERVAL_SECONDS",
+          "NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID",
+          "NPORT_SECAPI_SOURCE_RUN_ID",
+          "SEC_API_IO_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "restartPolicyType": "NEVER",
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_FI_SECAPI_APPROVED_SOURCE_HASH",
+          "NPORT_FI_SECAPI_SOURCE_RUN_ID",
+          "NPORT_SECAPI_FALLBACK_CONCURRENCY",
+          "NPORT_SECAPI_FALLBACK_MAX_ACCESSIONS",
+          "NPORT_SECAPI_FALLBACK_MAX_API_CALLS",
+          "NPORT_SECAPI_FALLBACK_REQUEST_INTERVAL_SECONDS",
+          "NPORT_SECAPI_MAX_ACCESSIONS",
+          "NPORT_SECAPI_MAX_API_CALLS",
+          "NPORT_SECAPI_REQUEST_INTERVAL_SECONDS",
+          "NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID",
+          "NPORT_SECAPI_SOURCE_RUN_ID",
+          "SEC_API_IO_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "4543b698-652b-4938-a333-04e264e1765a",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "ae2b6240-3a32-4f26-b33c-5b360d9e2630",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": null,
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "nport-history-1",
+      "owner": "investintell-workers",
+      "serviceId": "edfd426d-fbef-4ef1-93e8-c983a77392d9",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "db87e5aa-3732-4d9a-8788-234471858669",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python scripts/rebuild_nport_history.py",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_HISTORY_SHARD",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_HISTORY_SHARD",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "db87e5aa-3732-4d9a-8788-234471858669",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "5dd0924b-c835-4479-89ef-d9789990ca90",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": null,
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "nport-history-2",
+      "owner": "investintell-workers",
+      "serviceId": "977520ef-8969-4dfd-b874-5f77475cbc14",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "05a3c7a0-e33f-49e6-b093-3d75986faa1f",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python scripts/rebuild_nport_history.py",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_HISTORY_SHARD",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "NPORT_HISTORY_SHARD",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "05a3c7a0-e33f-49e6-b093-3d75986faa1f",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "bc6cd281-34bf-422b-9422-632891572724",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": null,
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "nport-lookthrough",
+      "owner": "investintell-workers",
+      "serviceId": "046943d9-73f2-482e-abc8-7158364a0358",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "ebec2f37-1c69-4b6a-8fcc-d8b6088aa6bc",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "ebec2f37-1c69-4b6a-8fcc-d8b6088aa6bc",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "372a23a3-8db6-44b7-8015-5348af4e3bbb",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 6 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T06:00:00.000Z"
+    },
+    {
+      "name": "nport-v2-publication-chain",
+      "owner": "investintell-workers",
+      "serviceId": "262e6f52-306a-42c4-b23e-7e6d144ee5dc",
+      "configuredConfigFile": "railway.toml",
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "ac397e0e-1d05-4fdc-b2cf-52b13a3e32aa",
+      "current": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "PGOPTIONS",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "PGOPTIONS",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": null,
+        "status": null,
+        "deploymentStopped": null,
+        "instances": [],
+        "build": {},
+        "deploy": {}
+      },
+      "nextCronRunAt": "2028-02-29T00:00:00.000Z"
+    },
+    {
+      "name": "open-macro-v03-chain",
+      "owner": "investintell-workers",
+      "serviceId": "8c297e33-bd76-463a-8f0c-5fb7c5dce7e3",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "bf0c7b04-1468-43cf-85d1-33f414a3e728",
+      "current": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "45 7 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "branch": "main",
+          "checkSuites": false,
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "45 7 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "bf0c7b04-1468-43cf-85d1-33f414a3e728",
+        "status": "SUCCESS",
+        "deploymentStopped": false,
+        "instances": [
+          {
+            "id": "d55d9bc6-5ecb-40fa-a70b-7f2cb53fbfe6",
+            "status": "CREATED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "45 7 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T07:45:00.000Z"
+    },
+    {
+      "name": "open-macro-v04-pit-evidence",
+      "owner": "investintell-workers",
+      "serviceId": "2f01a6d1-50cb-4792-b240-42fa375736b6",
+      "configuredConfigFile": "/railway.open-macro-v04-pit-evidence.toml",
+      "resolvedConfigFile": "/railway.open-macro-v04-pit-evidence.toml",
+      "resolvedDeploymentId": "f1838e18-dd35-46f6-b6bd-c8b4cbd99227",
+      "current": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "15 10 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPEN_MACRO_V04_EVIDENCE_ACCESS_PROFILE",
+          "OPEN_MACRO_V04_EVIDENCE_START_MONTH",
+          "OPEN_MACRO_V04_PIT_EVIDENCE_ENABLED",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "15 10 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPEN_MACRO_V04_EVIDENCE_ACCESS_PROFILE",
+          "OPEN_MACRO_V04_EVIDENCE_START_MONTH",
+          "OPEN_MACRO_V04_PIT_EVIDENCE_ENABLED",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "f1838e18-dd35-46f6-b6bd-c8b4cbd99227",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "a95068c9-b860-4fac-a215-12d38eab397b",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "15 10 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T10:15:00.000Z"
+    },
+    {
+      "name": "open-macro-v04-worker",
+      "owner": "investintell-workers",
+      "serviceId": "9d74992c-741c-4d50-8a67-8a4a8d834ce3",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "5ce3b88f-4753-4f67-a72e-3cdca98ee569",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "45 8 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "45 8 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "5ce3b88f-4753-4f67-a72e-3cdca98ee569",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "5956a556-c074-49b4-a463-f8d2b9e09f4e",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "45 8 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T08:45:00.000Z"
+    },
+    {
+      "name": "regime-composite",
+      "owner": "investintell-workers",
+      "serviceId": "e90f31ec-2ee7-4204-9959-b104ca090435",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "aa69970c-949c-4a94-ba9d-d8c48d8ffc6e",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 7 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "FRED_API_KEY",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 7 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "FRED_API_KEY",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "aa69970c-949c-4a94-ba9d-d8c48d8ffc6e",
+        "status": "FAILED",
+        "deploymentStopped": true,
+        "instances": [],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 7 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T07:00:00.000Z"
+    },
+    {
+      "name": "regime-gate",
+      "owner": "investintell-workers",
+      "serviceId": "74852294-f171-4603-a92e-9cbddcafb3f5",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "88668904-1bf1-45c3-8343-63d8fbf94857",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "50 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "50 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "88668904-1bf1-45c3-8343-63d8fbf94857",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "c1d1882f-5323-44cc-a62e-ff6e89383493",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "50 6 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T06:50:00.000Z"
+    },
+    {
+      "name": "risk-metrics",
+      "owner": "investintell-workers",
+      "serviceId": "3969d0de-db06-42eb-8952-50623df5d034",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "dc6e09d0-bec2-4b77-aca1-fe283a57e8ad",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENBLAS_NUM_THREADS",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 0 29 2 *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENBLAS_NUM_THREADS",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "dc6e09d0-bec2-4b77-aca1-fe283a57e8ad",
+        "status": "SUCCESS",
+        "deploymentStopped": false,
+        "instances": [
+          {
+            "id": "141249a1-3495-4e28-a6c7-59f96acac397",
+            "status": "CREATED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 0 29 2 *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2028-02-29T00:00:00.000Z"
+    },
+    {
+      "name": "screener-metrics",
+      "owner": "investintell-workers",
+      "serviceId": "b563e485-a8bb-45a9-854c-0f51dd2ee74c",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "04353cc1-3b5e-428b-8b4a-e3bbd5fda3fd",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 10 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 10 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "04353cc1-3b5e-428b-8b4a-e3bbd5fda3fd",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "61a5cf98-8951-4687-bf09-c9db5e4a6ff8",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 10 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T10:00:00.000Z"
+    },
+    {
+      "name": "sec-13f-publication-chain",
+      "owner": "investintell-workers",
+      "serviceId": "9e9a0f88-ed97-4e25-bb64-bb2bec20867c",
+      "configuredConfigFile": "railway.toml",
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "3791d20c-37a5-4945-9c43-a9eb778b7ba4",
+      "current": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 8 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "EDGAR_IDENTITY",
+          "PGOPTIONS",
+          "SEC_13F_REFRESH_ONLY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 8 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "EDGAR_IDENTITY",
+          "PGOPTIONS",
+          "SEC_13F_REFRESH_ONLY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "3791d20c-37a5-4945-9c43-a9eb778b7ba4",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "c20e8e57-8fda-4f0d-b850-efd86fd16f8d",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "RAILPACK",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "UNSPECIFIED",
+          "numReplicas": 1,
+          "cronSchedule": null,
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T08:00:00.000Z"
+    },
+    {
+      "name": "sec-company-tickers-mf",
+      "owner": "investintell-workers",
+      "serviceId": "0dd6841a-fcb5-4387-a67d-ea97ac07dc57",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "e4744bba-5853-4cbc-b80b-3b1a9d2bf24c",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "30 3 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "EDGAR_IDENTITY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "30 3 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "EDGAR_IDENTITY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "e4744bba-5853-4cbc-b80b-3b1a9d2bf24c",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "346d7414-f30b-4bfc-a360-899a23e21c83",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "30 3 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T03:30:00.000Z"
+    },
+    {
+      "name": "semantic-indexer",
+      "owner": "investintell-workers",
+      "serviceId": "b97794e3-c2cb-4a2f-8986-28f3dddfa92b",
+      "configuredConfigFile": "/railway.semantic-indexer.toml",
+      "resolvedConfigFile": "/railway.semantic-indexer.toml",
+      "resolvedDeploymentId": "298acf3e-b9d4-4122-a07e-decf828dc91d",
+      "current": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENAI_API_KEY",
+          "SEMANTIC_CHUNKING_VERSION",
+          "SEMANTIC_CHUNK_OVERLAP_TOKENS",
+          "SEMANTIC_EMBEDDING_DIMENSIONS",
+          "SEMANTIC_EMBEDDING_MODEL",
+          "SEMANTIC_EMBED_CONCURRENCY",
+          "SEMANTIC_INDEX_PLAN_ONLY",
+          "SEMANTIC_INDEX_PREFLIGHT_ONLY",
+          "SEMANTIC_MAX_CHUNK_TOKENS",
+          "SEMANTIC_MAX_EMBEDDING_TOKENS",
+          "SEMANTIC_SOURCE_SELECTION_VERSION",
+          "SEMANTIC_WINDOW_END",
+          "SEMANTIC_WINDOW_START",
+          "SOURCE_DATABASE_URL",
+          "WORKER",
+          "WORKER_LIMIT"
+        ]
+      },
+      "effective": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "restartPolicyType": "NEVER",
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "OPENAI_API_KEY",
+          "SEMANTIC_CHUNKING_VERSION",
+          "SEMANTIC_CHUNK_OVERLAP_TOKENS",
+          "SEMANTIC_EMBEDDING_DIMENSIONS",
+          "SEMANTIC_EMBEDDING_MODEL",
+          "SEMANTIC_EMBED_CONCURRENCY",
+          "SEMANTIC_INDEX_PLAN_ONLY",
+          "SEMANTIC_INDEX_PREFLIGHT_ONLY",
+          "SEMANTIC_MAX_CHUNK_TOKENS",
+          "SEMANTIC_MAX_EMBEDDING_TOKENS",
+          "SEMANTIC_SOURCE_SELECTION_VERSION",
+          "SEMANTIC_WINDOW_END",
+          "SEMANTIC_WINDOW_START",
+          "SOURCE_DATABASE_URL",
+          "WORKER",
+          "WORKER_LIMIT"
+        ]
+      },
+      "runtime": {
+        "deploymentId": null,
+        "status": null,
+        "deploymentStopped": null,
+        "instances": [],
+        "build": {},
+        "deploy": {}
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "stock-daily-returns",
+      "owner": "investintell-workers",
+      "serviceId": "28b52bb8-bb3b-403f-86c4-e1138bfd9340",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "f0ef3ad5-771b-4b4a-8160-cfb953be380a",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "20 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "20 6 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "f0ef3ad5-771b-4b4a-8160-cfb953be380a",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "fee19fe9-9cf1-4036-864b-ebb8b8253d25",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "20 6 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T06:20:00.000Z"
+    },
+    {
+      "name": "stock-fundamentals-statements",
+      "owner": "investintell-workers",
+      "serviceId": "4e020190-5476-47be-a188-f7bc82fa7b7f",
+      "configuredConfigFile": "/railway.stock-fundamentals-statements.toml",
+      "resolvedConfigFile": "/railway.stock-fundamentals-statements.toml",
+      "resolvedDeploymentId": "6c011108-ef07-498f-82da-32e31bcd342f",
+      "current": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "0 7 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": null,
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "0 7 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "startCommand": "python -m src.run_worker",
+          "useLegacyStacker": false,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "6c011108-ef07-498f-82da-32e31bcd342f",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "1630f641-3a54-480a-8b3f-dcc8ea0702fd",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "0 7 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T07:00:00.000Z"
+    },
+    {
+      "name": "tiingo-fund-meta",
+      "owner": "investintell-workers",
+      "serviceId": "b4974c3a-0711-4eb3-b199-198f5d8a5c19",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "0579b23b-d07a-48b8-9ca1-3da34b754d8c",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "restartPolicyType": "NEVER",
+          "cronSchedule": null,
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "TIINGO_API_KEY",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "0579b23b-d07a-48b8-9ca1-3da34b754d8c",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "a44d9b67-efe3-44a9-b044-cea8728ce13c",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": null,
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "preDeployTimeoutSeconds": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": null
+    },
+    {
+      "name": "treasury-ingestion",
+      "owner": "investintell-workers",
+      "serviceId": "a9eed5b1-4149-41e7-a9d0-9a96c221f8ee",
+      "configuredConfigFile": null,
+      "resolvedConfigFile": "/railway.toml",
+      "resolvedDeploymentId": "4c1cf168-e547-4208-9f90-c265ddf475c4",
+      "current": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "RAILPACK"
+        },
+        "deploy": {
+          "cronSchedule": "5 5 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "effective": {
+        "source": {
+          "repo": "andreiracha127/investintell-datalake-workers",
+          "type": "github"
+        },
+        "build": {
+          "buildEnvironment": "V3",
+          "builder": "NIXPACKS",
+          "buildCommand": null,
+          "dockerfilePath": null,
+          "watchPatterns": []
+        },
+        "deploy": {
+          "cronSchedule": "5 5 * * *",
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "restartPolicyType": "NEVER",
+          "runtime": "V2",
+          "useLegacyStacker": false,
+          "startCommand": "python -m src.run_worker",
+          "preDeployCommand": null,
+          "preDeployTimeoutSeconds": null,
+          "healthcheckPath": null,
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": 10,
+          "sleepApplication": false,
+          "overlapSeconds": null,
+          "drainingSeconds": null
+        },
+        "tracing": null,
+        "groupId": null,
+        "volumeAttachments": null,
+        "variables": [
+          "DATABASE_URL",
+          "WORKER"
+        ]
+      },
+      "runtime": {
+        "deploymentId": "4c1cf168-e547-4208-9f90-c265ddf475c4",
+        "status": "SUCCESS",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "148a32ab-e70b-4fc7-ae8c-10b55b8fcb6d",
+            "status": "EXITED"
+          }
+        ],
+        "build": {
+          "builder": "DOCKERFILE",
+          "buildCommand": null,
+          "nixpacksPlan": null,
+          "watchPatterns": [],
+          "dockerfilePath": "/Dockerfile",
+          "buildEnvironment": "V3",
+          "nixpacksConfigPath": null
+        },
+        "deploy": {
+          "region": null,
+          "runtime": "V2",
+          "numReplicas": 1,
+          "cronSchedule": "5 5 * * *",
+          "startCommand": "python -m src.run_worker",
+          "limitOverride": null,
+          "overlapSeconds": null,
+          "drainingSeconds": null,
+          "healthcheckPath": null,
+          "preDeployCommand": null,
+          "sleepApplication": false,
+          "useLegacyStacker": false,
+          "ipv6EgressEnabled": false,
+          "multiRegionConfig": {
+            "us-west2": {
+              "numReplicas": 1
+            }
+          },
+          "requiredMountPath": null,
+          "restartPolicyType": "NEVER",
+          "healthcheckTimeout": null,
+          "restartPolicyMaxRetries": null
+        }
+      },
+      "nextCronRunAt": "2026-10-07T05:05:00.000Z"
+    }
+  ],
+  "unmanagedServices": [
+    "agent-dev-real-api",
+    "api",
+    "bond-credit-dry-c541c35-2346z",
+    "bond-implied-r002-preflight-52dbe889-1636z",
+    "bond-recommendation-refresh",
+    "cloudflared-tunnel",
+    "customer-services-api",
+    "customer-services-backup",
+    "customer-services-connector",
+    "customer-services-postgres",
+    "customer-services-reconciliation",
+    "evidence-copy-to-bucket",
+    "fund-classification",
+    "fundamentals-mv-refresh",
+    "market-clean-serial",
+    "operational-projection-sync",
+    "pgvector",
+    "proxy-etf-daily",
+    "redis",
+    "web"
+  ]
+}

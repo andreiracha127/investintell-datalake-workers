@@ -58,3 +58,6 @@ docker/bond-live-daily/** text eol=lf
 # Pinned SEC/Tiingo evidence of scripts/repair_fund_identity_sec_v1.py; the script
 # checks its sha256 over the raw bytes.
 contracts/fund-identity-sec/** text eol=lf
+
+# Railway authoring, snapshots and checks use portable LF endings.
+.railway/* text eol=lf
