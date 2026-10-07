@@ -228,7 +228,7 @@ def _parent_return_anchor(conn: Any, closed_month: pd.Timestamp) -> pd.DataFrame
 
 
 IMPLIED_RATING_RELATIONS = (
-    "bond_market_implied_rating_v1_current",
+    "bond_market_implied_rating_v1",
     "bond_market_implied_rating_app_pointer",
     "bond_market_implied_rating_publications",
 )
@@ -267,17 +267,20 @@ def _read_default_flat_windows(conn: Any, cusips: list[str]) -> tuple[pd.DataFra
     )
     if publication.empty:
         return default_flat_windows(None), {"default_flat_source": "unpublished"}
+    head = publication.iloc[0]
+    # Pin both row reads to the captured immutable publication: under READ COMMITTED
+    # the current view can advance independently of the lineage read above.
     rows = _frame(
         conn,
         "SELECT r.cusip_id, r.month, r.implied_bucket, r.witnessed, r.spell_id, r.d_confirmed, r.d_event_month "
-        "FROM bond_market_implied_rating_v1_current r "
-        "WHERE r.cusip_id = ANY(%s) "
-        "AND r.cusip_id IN (SELECT d.cusip_id FROM bond_market_implied_rating_v1_current d WHERE d.implied_bucket = 'D') "
+        "FROM bond_market_implied_rating_v1 r "
+        "WHERE r.publication_id = %s AND r.cusip_id = ANY(%s) "
+        "AND r.cusip_id IN (SELECT d.cusip_id FROM bond_market_implied_rating_v1 d "
+        "WHERE d.publication_id = r.publication_id AND d.implied_bucket = 'D') "
         "AND (r.implied_bucket = 'D' OR (r.witnessed AND r.implied_bucket IN ('AAA','AA','A','BBB','BB','B','CCC')))",
-        (cusips,),
+        (str(head["publication_id"]), cusips),
     )
     windows = default_flat_windows(rows)
-    head = publication.iloc[0]
     return windows, {
         "default_flat_source": f"bond_market_implied_rating_v1:{head['publication_id']}",
         "default_flat_policy_digest": str(head["policy_digest"]),

@@ -2011,7 +2011,7 @@ class _RelationConn:
 
 
 def test_default_flat_source_is_optional_and_named_in_the_lineage(monkeypatch) -> None:
-    windows, lineage = bond_panel._default_flat_windows(_RelationConn(["bond_market_implied_rating_v1_current"]), ["DFLT"])
+    windows, lineage = bond_panel._default_flat_windows(_RelationConn(["bond_market_implied_rating_v1"]), ["DFLT"])
     assert windows.empty and lineage == {"default_flat_source": "absent"}
 
     frames = iter([
@@ -2036,7 +2036,7 @@ def test_default_flat_source_is_optional_and_named_in_the_lineage(monkeypatch) -
         "default_flat_basis": "point_in_time",
         "default_flat_windows": "1",
     }
-    assert queries[1][1] == (["DFLT", "PAID"],)
+    assert queries[1][1] == ("bc13a5e4-7f1a-54fa-8a5b-68862df4020b", ["DFLT", "PAID"])
     assert "implied_bucket = 'D'" in queries[1][0]
 
     monkeypatch.setattr(bond_panel, "_frame", lambda *_args, **_kwargs: pd.DataFrame(columns=["publication_id", "policy_digest", "last_month"]))
@@ -2044,10 +2044,54 @@ def test_default_flat_source_is_optional_and_named_in_the_lineage(monkeypatch) -
     assert windows.empty and lineage == {"default_flat_source": "unpublished"}
 
 
+def test_default_flat_windows_pin_rows_when_implied_rating_pointer_advances(monkeypatch) -> None:
+    captured_id = "bc13a5e4-7f1a-54fa-8a5b-68862df4020b"
+    advanced_id = "dc13a5e4-7f1a-54fa-8a5b-68862df4020b"
+    pointer_id = captured_id
+    publication_rows = {
+        captured_id: _implied_d_rows("DFLT", "2026-04-01", ["2026-05-01", "2026-06-01"]),
+        advanced_id: _implied_d_rows("DFLT", "2026-07-01", ["2026-08-01"]),
+    }
+    row_queries = []
+
+    def frame(_conn, sql, params=()):
+        nonlocal pointer_id
+        if "JOIN bond_market_implied_rating_publications" in sql:
+            head = pd.DataFrame({
+                "publication_id": [pointer_id], "policy_digest": ["ab" * 32],
+                "last_month": [date(2026, 6, 1)],
+            })
+            # A concurrent publication commits before the next READ COMMITTED read.
+            pointer_id = advanced_id
+            return head
+        row_queries.append((sql, params))
+        selected_id = pointer_id if "bond_market_implied_rating_v1_current" in sql else params[0]
+        return publication_rows[selected_id]
+
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+
+    windows, lineage = bond_panel._default_flat_windows(_RelationConn([]), ["DFLT"])
+
+    assert pointer_id == advanced_id
+    assert windows["event_month"].tolist() == [pd.Timestamp("2026-04-01")]
+    assert windows["confirmation_month"].tolist() == [pd.Timestamp("2026-05-01")]
+    assert lineage == {
+        "default_flat_source": f"bond_market_implied_rating_v1:{captured_id}",
+        "default_flat_policy_digest": "ab" * 32,
+        "default_flat_last_month": "2026-06-01",
+        "default_flat_basis": "point_in_time",
+        "default_flat_windows": "1",
+    }
+    sql, params = row_queries[0]
+    assert params == (captured_id, ["DFLT"])
+    assert "r.publication_id = %s" in sql
+    assert "d.publication_id = r.publication_id" in sql
+
+
 def test_a_failing_default_flat_source_fails_the_run_by_name() -> None:
     class _Broken:
         def execute(self, *_args, **_kwargs):
-            raise RuntimeError("permission denied for view bond_market_implied_rating_v1_current")
+            raise RuntimeError("permission denied for table bond_market_implied_rating_v1")
 
     with pytest.raises(ValueError, match="^default_flat_source:RuntimeError$"):
         bond_panel._default_flat_windows(_Broken(), ["DFLT"])
