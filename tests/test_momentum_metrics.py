@@ -141,8 +141,7 @@ def test_compute_momentum_flat_nav_blends_flow_alone():
     assert out["blended_momentum_score"] == out["flow_momentum_score"]
 
 
-def test_run_writes_nulls_for_an_unscored_fund(monkeypatch):
-    calc_date = dt.date(2024, 6, 28)
+def _run_single_fund(monkeypatch, calc_date, points, nport_flows, nport_as_of):
     written: list[tuple] = []
 
     class _Conn:
@@ -161,21 +160,51 @@ def test_run_writes_nulls_for_an_unscored_fund(monkeypatch):
         written.extend(rows)
         return len(rows)
 
-    flat = [mm.NavAumPoint(calc_date - dt.timedelta(days=259 - i), 1.0, None) for i in range(260)]
     monkeypatch.setattr(mm, "connect", _connect)
     monkeypatch.setattr(mm, "advisory_lock", _lock)
     monkeypatch.setattr(mm, "_resolve_calc_date", lambda _conn, _date: calc_date)
-    monkeypatch.setattr(mm, "_target_instruments", lambda *_a: [("flat-fund", None)])
-    monkeypatch.setattr(mm, "_fetch_nport_flow_pct_assets", lambda *_a: ([], None))
-    monkeypatch.setattr(mm, "_fetch_nav_aum", lambda *_a: flat)
+    monkeypatch.setattr(mm, "_target_instruments", lambda *_a: [("flat-fund", "S000001")])
+    monkeypatch.setattr(mm, "_fetch_nport_flow_pct_assets", lambda *_a: (nport_flows, nport_as_of))
+    monkeypatch.setattr(mm, "_fetch_nav_aum", lambda *_a: points)
     monkeypatch.setattr(mm, "_upsert", _upsert)
     monkeypatch.setattr(mm, "_refresh_read_models", lambda _dsn: None)
+    return mm.run("dsn"), written
 
-    stats = mm.run("dsn")
+
+def test_run_writes_nulls_for_an_unscored_fund(monkeypatch):
+    calc_date = dt.date(2024, 6, 28)
+    flat = [mm.NavAumPoint(calc_date - dt.timedelta(days=259 - i), 1.0, None) for i in range(260)]
+
+    stats, written = _run_single_fund(monkeypatch, calc_date, flat, [], None)
 
     assert stats["scored"] == 0
     assert stats["upserted"] == 1
-    assert written == [("flat-fund", calc_date, None, *([None] * len(mm.MOMENTUM_COLUMNS)))]
+    (row,) = written
+    values = dict(zip(mm.MOMENTUM_COLUMNS, row[3:]))
+    for column in ("rsi_14", "bb_position", "nav_momentum_score", "blended_momentum_score"):
+        assert values[column] is None
+    expected = mm.compute_momentum(flat, [], nport_as_of=None, calc_date=calc_date)
+    assert values == {column: expected.get(column) for column in mm.MOMENTUM_COLUMNS}
+
+
+def test_run_keeps_independent_metrics_for_an_unscored_fund(monkeypatch):
+    calc_date = dt.date(2024, 6, 28)
+    flat = [mm.NavAumPoint(calc_date - dt.timedelta(days=259 - i), 1.0, None) for i in range(260)]
+    flows = [0.8, -0.3, 1.1, 0.4]
+    as_of = dt.date(2024, 5, 31)
+
+    stats, written = _run_single_fund(monkeypatch, calc_date, flat, flows, as_of)
+
+    expected = mm.compute_momentum(flat, flows, nport_as_of=as_of, calc_date=calc_date)
+    assert expected["blended_momentum_score"] is None
+    assert expected["nport_flow_momentum_score"] is not None
+    (row,) = written
+    values = dict(zip(mm.MOMENTUM_COLUMNS, row[3:]))
+    assert stats["scored"] == 0
+    assert values["blended_momentum_score"] is None
+    assert values["nport_flow_momentum_score"] == expected["nport_flow_momentum_score"]
+    assert values["dtw_drift_score"] == expected["dtw_drift_score"]
+    assert values == {column: expected.get(column) for column in mm.MOMENTUM_COLUMNS}
 
 
 def test_compute_nav_momentum_sets_blended_to_nav_when_flow_missing():

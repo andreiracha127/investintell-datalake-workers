@@ -512,12 +512,13 @@ def run(
                     nport_as_of=nport_as_of,
                     calc_date=cdate,
                 )
-                if metrics["blended_momentum_score"] is None:
-                    # Unscored (short history, or a NAV that does not move and
-                    # no flow proxy): write NULLs, so a rerun for the same
-                    # calc_date cannot leave an earlier score in place.
-                    metrics = dict.fromkeys(MOMENTUM_COLUMNS)
-                else:
+                # Every column is written, so a rerun for the same calc_date
+                # replaces earlier values: an unscored fund (short history, or a
+                # NAV that does not move and no flow proxy) gets NULL NAV/blended
+                # scores while independent metrics (drift, N-PORT flow) keep
+                # their computed values.
+                metrics = {column: metrics.get(column) for column in MOMENTUM_COLUMNS}
+                if metrics["blended_momentum_score"] is not None:
                     scored += 1
                 rows.append(
                     (
