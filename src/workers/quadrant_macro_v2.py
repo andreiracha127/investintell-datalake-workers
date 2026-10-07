@@ -1,6 +1,17 @@
 # src/workers/quadrant_macro_v2.py
 """MacroReleaseAxisModel v2 — the confidence_v2.0 quadrant stream
-(model_version macro_quadrant_us_v2).
+(model_version macro_quadrant_us_v2.1).
+
+Stream identity (quant audit 2026-10-07): ``macro_quadrant_us_v2`` rows (pre-audit
+coverage, z-only provenance hash) stay frozen; ``macro_quadrant_us_v2.1`` carries the
+frozen §6 historyCoverage factor in the coverage — which also enters every
+walk-back filter observation's q_data — and, in ``source_vintage_hash``, the nValid
+counts plus BOTH axes' full (score, q_data) observation sequences (see
+``quadrant_macro._vintage_hash``): a PIT backfill that moves one of the earlier
+walk-back months changes the filter result, so it must change the identity even
+when today's z-maps and counts do not move. The confidence identifiers
+(``confidence_v2.0`` / ``kalman_joint_posterior_v2``) are unchanged: the policy did
+not move, its coverage input did.
 
 SOURCING IS THE FROZEN v1 PATH UNCHANGED: the same PIT vintage read, the same
 two-stage transform (economic_transform_id -> robust_z via standardized_latest),
@@ -30,7 +41,7 @@ from src.workers.quadrant_macro import (
     _vintage_hash,
 )
 
-MODEL_VERSION = "macro_quadrant_us_v2"
+MODEL_VERSION = "macro_quadrant_us_v2.1"  # v2 = frozen rows; see the module docstring
 
 
 def _axis_observations(
@@ -48,8 +59,8 @@ def _axis_observations(
     for k in range(V2_FILTER_HISTORY_MONTHS - 1, -1, -1):
         t = decision_time - _dt.timedelta(days=30 * k)
         scored = _score_axis(conn, axis, t)
-        score, _, z_by, _, _ = scored
-        coverage = _coverage(z_by, specs)
+        score, _, z_by, _, _, n_valid = scored
+        coverage = _coverage(z_by, specs, n_valid)
         observations.append((score, coverage if score is not None else None))
         if k == 0:
             current = scored
@@ -78,11 +89,12 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
 
             g_obs, g_now = _axis_observations(conn, "growth", decision_time)
             i_obs, i_now = _axis_observations(conn, "inflation", decision_time)
-            g_score, g_contrib, g_z, g_av, g_exp = g_now
-            i_score, i_contrib, i_z, i_av, i_exp = i_now
+            g_score, g_contrib, g_z, g_av, g_exp, g_nvalid = g_now
+            i_score, i_contrib, i_z, i_av, i_exp, i_nvalid = i_now
 
             g_specs, i_specs = _axis_specs("growth"), _axis_specs("inflation")
-            g_cov, i_cov = _coverage(g_z, g_specs), _coverage(i_z, i_specs)
+            g_cov = _coverage(g_z, g_specs, g_nvalid)
+            i_cov = _coverage(i_z, i_specs, i_nvalid)
             g_fresh = i_fresh = 1.0
             g_health = 1.0 if g_score is not None else 0.0
             i_health = 1.0 if i_score is not None else 0.0
@@ -103,7 +115,10 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 input_available_ats=[*g_av, *i_av],
                 critical_expiries=critical_expiries,
                 model_version=MODEL_VERSION,
-                source_vintage_hash=_vintage_hash(g_z, i_z, as_of),
+                source_vintage_hash=_vintage_hash(
+                    g_z, i_z, as_of, g_nvalid, i_nvalid,
+                    confidence_inputs=(("growth_observations", g_obs),
+                                       ("inflation_observations", i_obs))),
             )
             qa.upsert_snapshot(
                 conn, qa.snapshot_to_record(snap),
