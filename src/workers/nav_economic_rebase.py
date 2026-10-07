@@ -179,6 +179,11 @@ class RebaseLimits:
             and 0 < self.rate_per_second <= MAX_RATE_PER_SECOND
         ):
             raise RebaseError("RATE_INVALID")
+        # The CLI validates limits inside its config-error boundary, before work.
+        try:
+            floors_from_env()
+        except ValueError:
+            raise RebaseError("COVERAGE_FLOORS_INVALID") from None
         return self
 
     def canonical(self) -> dict:
