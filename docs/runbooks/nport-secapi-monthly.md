@@ -46,6 +46,9 @@ python -m tools.nport_secapi.convert --out E:\tmp-deploy\nport-q3-seed \
 python -m tools.nport_secapi.validate E:\tmp-deploy\nport-q3-seed
 ```
 
+`convert` refuses a `--out` that already holds CSVs or a `manifest.json`. To
+replace them, pass `--overwrite`.
+
 Load **one report_date per run**. `--only` matters: without it, every run COPYs
 every CSV in the directory, even though the INSERT is scoped. Run the
 `--dry-run` first. It opens no connection. `$DSN` is the read-write datalake DSN

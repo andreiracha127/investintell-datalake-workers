@@ -87,6 +87,7 @@ import argparse
 import collections
 import csv
 import datetime as dt
+import glob
 import gzip
 import hashlib
 import json
@@ -360,6 +361,27 @@ def _new_counter() -> collections.Counter:
     return collections.Counter()
 
 
+def _clear_previous_seed(out_dir: str, overwrite: bool) -> None:
+    """Refuse, or with ``overwrite`` remove, the CSVs and manifest of an earlier run.
+
+    The loader and ``validate`` read every ``*.csv`` in the directory: a date
+    left by an earlier, wider run would be validated and loaded as this run's.
+    Only seed files are removed, never the directory.
+    """
+    stale = sorted(glob.glob(os.path.join(out_dir, "*.csv")))
+    if os.path.exists(os.path.join(out_dir, "manifest.json")):
+        stale.append(os.path.join(out_dir, "manifest.json"))
+    if not stale:
+        return
+    if not overwrite:
+        raise FileExistsError(
+            f"{out_dir} already holds a seed ({len(stale)} file(s), e.g. {os.path.basename(stale[0])}); "
+            "use an empty directory or --overwrite"
+        )
+    for path in stale:
+        os.remove(path)
+
+
 def convert(
     paths: list[str],
     out_dir: str,
@@ -368,6 +390,7 @@ def convert(
     report_dates: set[str] | None = None,
     partial_months: set[str] | None = None,
     key_policy: KeyPolicy = DERA_POLICY,
+    overwrite: bool = False,
 ) -> dict:
     """Write ``<out_dir>/<report_date>.csv`` for every in-scope report_date.
 
@@ -376,11 +399,13 @@ def convert(
     late filing for an already-loaded month is visible instead of silent.
     ``partial_months`` names containers that are still filling (the current
     month): a report_date whose main publication month is partial is flagged.
+    ``out_dir`` must not hold a previous seed unless ``overwrite`` removes it.
     """
     paths = sorted(paths, key=container_month)
     months = [container_month(p) for p in paths]
     if len(set(months)) != len(months):
         raise ValueError(f"the same container month was given twice: {months}")
+    _clear_previous_seed(out_dir, overwrite)
     partial_months = set(partial_months or ())
     scan_result = scan(paths)
 
@@ -556,6 +581,8 @@ def main(argv: list[str] | None = None) -> int:
         help="dera (default): the rule every existing row was keyed with; strict: placeholder "
              "identifiers do not fold distinct holdings together (see module docstring)",
     )
+    ap.add_argument("--overwrite", action="store_true",
+                    help="replace the CSVs and manifest.json of an earlier run in --out")
     args = ap.parse_args(argv)
 
     months = [container_month(p) for p in args.containers]
@@ -568,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = convert(
         args.containers, args.out, min_report_date=args.min_report_date,
         report_dates=report_dates, partial_months=partial, key_policy=POLICIES[args.key_policy],
+        overwrite=args.overwrite,
     )
     _print_summary(manifest)
     return 0

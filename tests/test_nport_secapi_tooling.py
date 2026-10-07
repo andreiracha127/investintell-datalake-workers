@@ -152,6 +152,15 @@ def test_output_is_deterministic_and_reads_gzip(tmp_path):
         assert (a / name).read_bytes() == (b / name).read_bytes()
 
 
+def test_a_reused_seed_directory_keeps_no_stale_csv(tmp_path):
+    """The loader and validate glob *.csv: a date from an earlier, wider run must not survive."""
+    convert.convert(CONTAINERS, str(tmp_path), min_report_date="2026-05-01")
+    with pytest.raises(FileExistsError):
+        convert.convert(CONTAINERS, str(tmp_path), report_dates={"2026-06-30"})
+    convert.convert(CONTAINERS, str(tmp_path), report_dates={"2026-06-30"}, overwrite=True)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["2026-06-30.csv", "manifest.json"]
+
+
 def test_loader_dry_run_accepts_converter_output(converted, capsys):
     out, _ = converted
     rc = loader.main(["--seed-dir", str(out), "--only", "2026-05-31.csv",
