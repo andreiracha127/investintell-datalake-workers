@@ -44,6 +44,7 @@ NPORT_PATTERNS = (
     # The sec-api.io monthly feed into the same write path (2026-10).
     "tools/nport_secapi/*.py",
     "tests/fixtures/nport_secapi/*/*/*.jsonl",
+    "tests/fixtures/nport_secapi/*/*/*.jsonl.gz",
     "tests/test_nport_*.py",
     "tests/test_openfigi.py",
     "tests/test_yahoo_sector.py",

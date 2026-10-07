@@ -27,7 +27,9 @@ WHAT ONE RUN DOES (as of ``calc_date``, month M)
    keys onto the original filing's rows the way ``ON CONFLICT DO NOTHING`` alone
    would. The loader's own post-load ISIN verify still runs.
 5. ``CALL refresh_continuous_aggregate('cagg_nport_series_profile', ...)`` over
-   the loaded window. The cagg's own policy (``start_offset`` NULL, every 6 h)
+   each run of loaded dates that no failed date interrupts. A date the loader's
+   verify rejected has already committed its rows; a range bracketing it would
+   materialize them. The cagg's own policy (``start_offset`` NULL, every 6 h)
    would get there; the call makes it immediate.
 
 One report_date per loader invocation, as the identifier-coverage runbook
@@ -38,8 +40,9 @@ NO CRON IS CONFIGURED. ``railway.nport-secapi-monthly.toml`` documents the
 proposed schedule; attaching it to a service is an operator decision.
 
 Env: ``SEC_API_IO_KEY`` (required), ``DATABASE_URL``. Optional
-``NPORT_SECAPI_CACHE_DIR`` keeps the containers between runs (size-checked
-re-sync); without it they go to a temp dir that is removed afterwards.
+``NPORT_SECAPI_CACHE_DIR`` keeps the containers between runs (re-fetched when
+the remote size or ``updatedAt`` changes); without it they go to a temp dir that
+is removed afterwards.
 ``WORKER_CALC_DATE`` pins M; ``WORKER_LIMIT`` caps how many report_dates load.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict``. ``state`` is
@@ -128,6 +131,26 @@ def load_report_date(dsn: str, seed_dir: Path, report_date: str) -> int:
     return loader.main([*common, "--dsn", dsn, "--workers", "1", "--skip-matview", "--new-series-only"])
 
 
+def refresh_ranges(loaded: list[str], failed: set[str]) -> list[tuple[str, str]]:
+    """``[start, end)`` per maximal run of ``loaded`` dates with no ``failed`` date inside.
+
+    A failed load may have committed rows (the loader's post-load verify exits 2
+    after the commit); no range may cover it.
+    """
+    ranges: list[tuple[str, str]] = []
+    run: list[str] = []
+    for rd in sorted(set(loaded) | failed):
+        if rd in failed:
+            if run:
+                ranges.append((run[0], run[-1]))
+            run = []
+        else:
+            run.append(rd)
+    if run:
+        ranges.append((run[0], run[-1]))
+    return [(lo, (dt.date.fromisoformat(hi) + dt.timedelta(days=1)).isoformat()) for lo, hi in ranges]
+
+
 def refresh_cagg(dsn: str, start: str, end: str) -> None:
     """Re-materialize the cagg over [start, end). A procedure: no transaction block."""
     with connect(dsn, autocommit=True) as conn:
@@ -169,7 +192,7 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
     }
     targets = [rd for rd in manifest["report_dates"] if rd <= plan.report_date_to]
     loaded: list[str] = []
-    failed = 0
+    failed: set[str] = set()
     for rd in targets:
         entry: dict[str, Any] = {"csv_rows": manifest["report_dates"][rd]["rows"],
                                  "csv_series": manifest["report_dates"][rd]["series"]}
@@ -182,7 +205,7 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
         if not new:
             entry["result"] = "no_new_series"
             continue
-        if limit is not None and len(loaded) + failed >= limit:
+        if limit is not None and len(loaded) + len(failed) >= limit:
             entry["result"] = "deferred_by_limit"
             continue
         rc = load_report_date(dsn, seed_dir, rd)
@@ -194,13 +217,13 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
             # 2 from the dry run means nothing was written; 1/2 from the load
             # itself means it was, and the loader's verify did not pass it.
             entry["result"] = "failed"
-            failed += 1
+            failed.add(rd)
             LOGGER.error("nport_secapi_monthly: report_date %s loader exit %s", rd, rc)
     if loaded:
-        lo = min(loaded)
-        hi = (dt.date.fromisoformat(max(loaded)) + dt.timedelta(days=1)).isoformat()
-        refresh_cagg(dsn, lo, hi)
-        stats["cagg_refreshed"] = [lo, hi]
+        stats["cagg_refreshed"] = []
+        for lo, hi in refresh_ranges(loaded, failed):
+            refresh_cagg(dsn, lo, hi)
+            stats["cagg_refreshed"].append([lo, hi])
         for rd, counts in report_date_counts(dsn, loaded).items():
             stats["report_dates"][rd]["table_after"] = counts
     stats["state"] = "failed" if failed else ("ok" if loaded else "noop")

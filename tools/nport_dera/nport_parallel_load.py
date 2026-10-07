@@ -44,7 +44,9 @@ WHAT WAS ADDED to the rescued original, and nothing else:
   header order (``COPY ... HEADER true`` skips the header, it does not read it),
   every value coerced through ``STAGE_DDL``'s types, the target's NOT NULLs, the
   rows the INSERT's own WHERE would drop, conflict-key duplicates, and the ISIN
-  floor. No connection is opened.
+  floor. No connection is opened. A conflict key carried by two selected CSVs
+  is refused: the parallel load keeps whichever copy commits first
+  (``tools.nport_dera.nport_merge`` exists to remove exactly that).
 * ``--new-series-only`` (2026-10) — insert a ``(report_date, series_id)`` only
   when the table has no row for it yet. For monthly top-ups that revisit a
   report_date as late filers arrive: ``ON CONFLICT DO NOTHING`` alone would graft
@@ -333,6 +335,7 @@ def check_csv(
     report_dates: list[str] | None = None,
     today: dt.date | None = None,
     max_examples: int = 5,
+    earlier_keys: set[tuple[str, str, str]] | None = None,
 ) -> dict:
     """Offline plan for one CSV: what COPY + INSERT would do, without a database.
 
@@ -340,6 +343,10 @@ def check_csv(
     empty field into NULL; ``STAGE_DDL`` coerces types; the INSERT's WHERE drops
     future dates, NULL series and (scoped) other report_dates; the target's NOT
     NULLs reject the whole CSV; ``ON CONFLICT DO NOTHING`` drops repeated keys.
+
+    ``earlier_keys`` holds the conflict keys of the CSVs already checked for the
+    same load. A key found there counts as ``cross_file_dupes`` and is left out
+    of the plan; this CSV's keys are added to it.
     """
     today = today or dt.date.today()
     scope = set(report_dates or ())
@@ -347,7 +354,8 @@ def check_csv(
     out: dict = {
         "file": os.path.basename(path), "rows": 0, "would_insert": 0,
         "header_ok": False, "errors": collections.Counter(), "examples": [],
-        "dropped": collections.Counter(), "conflict_key_dupes": 0, "per_report_date": {},
+        "dropped": collections.Counter(), "conflict_key_dupes": 0, "cross_file_dupes": 0,
+        "per_report_date": {},
     }
     per: dict = collections.defaultdict(lambda: {"rows": 0, "isin": 0, "series": set()})
     seen: set[tuple[str, str, str]] = set()
@@ -393,6 +401,9 @@ def check_csv(
             if key in seen:
                 out["conflict_key_dupes"] += 1
                 continue
+            if earlier_keys is not None and key in earlier_keys:
+                out["cross_file_dupes"] += 1
+                continue
             seen.add(key)
             out["would_insert"] += 1
             bucket = per[rd]
@@ -400,6 +411,8 @@ def check_csv(
             bucket["series"].add(series)
             if rec["isin"]:
                 bucket["isin"] += 1
+    if earlier_keys is not None:
+        earlier_keys |= seen
     return _finish_check(out, per)
 
 
@@ -419,14 +432,20 @@ def dry_run(files: list[str], report_dates: list[str], floor: float, min_rows: i
 
     The ISIN reading is the one ``verify_isin_fill`` takes after a load, taken
     before it instead - over the rows the INSERT would keep, which is what the
-    table will hold for a report_date that is empty today.
+    table will hold for a report_date that is empty today. A key repeated across
+    ``files`` refuses the plan: which copy the table keeps would depend on
+    worker timing, so no offline reading can stand for it.
     """
     failing = 0
+    cross_file = 0
+    earlier_keys: set[tuple[str, str, str]] = set()
     merged: dict[str, dict] = {}
     for path in files:
-        result = check_csv(path, report_dates or None)
+        result = check_csv(path, report_dates or None, earlier_keys=earlier_keys)
+        cross_file += result["cross_file_dupes"]
         _log(f"  {result['file']:<24} rows={result['rows']:>10,} would_insert={result['would_insert']:>10,} "
-             f"dupes={result['conflict_key_dupes']:,} dropped={result['dropped']} errors={result['errors']}")
+             f"dupes={result['conflict_key_dupes']:,} cross_file_dupes={result['cross_file_dupes']:,} "
+             f"dropped={result['dropped']} errors={result['errors']}")
         for example in result["examples"]:
             _log(f"      {example}")
         if result["errors"]:
@@ -448,7 +467,10 @@ def dry_run(files: list[str], report_dates: list[str], floor: float, min_rows: i
         _log(f"DRY RUN REFUSES: {failing} CSV(s) would fail COPY/INSERT")
     if below:
         _log(f"DRY RUN REFUSES: report_date(s) below the {floor:.2f} ISIN fill floor: {below}")
-    if failing or below:
+    if cross_file:
+        _log(f"DRY RUN REFUSES: {cross_file:,} conflict key(s) repeat across CSVs; the parallel load would keep "
+             "whichever copy commits first. Merge each report_date into one CSV (tools.nport_dera.nport_merge).")
+    if failing or below or cross_file:
         return 2
     _log("dry run clean: nothing was written")
     return 0

@@ -24,6 +24,7 @@ import datetime as dt
 import gzip
 import json
 import shutil
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -184,6 +185,22 @@ def test_loader_dry_run_catches_what_copy_would_reject(tmp_path):
     assert loader.dry_run([str(bad)], ["2026-05-31"], 0.9) == 2
 
 
+def test_loader_dry_run_refuses_a_key_carried_by_two_csvs(tmp_path, capsys):
+    row = ["2026-05-31", "0000000101", "123456789", "US1234567890", "A", "EC", "CORP", "1", "1", "USD", "1",
+           "false", "1", "S1"]
+    files = []
+    for name, isin in (("a.csv", "US1234567890"), ("b.csv", "")):  # same key, different content
+        path = tmp_path / name
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(CSV_COLS)
+            writer.writerow([*row[:3], isin, *row[4:]])
+        files.append(str(path))
+    assert loader.dry_run(files, ["2026-05-31"], 0.9) == 2
+    assert "1 conflict key(s) repeat across CSVs" in capsys.readouterr().out
+    assert loader.dry_run(files[:1], ["2026-05-31"], 0.9) == 0
+
+
 def test_loader_flag_contract():
     with pytest.raises(SystemExit):
         loader.main(["--seed-dir", ".", "--dsn", "x", "--new-series-only"])  # unscoped
@@ -202,16 +219,35 @@ def test_validate_profiles_percentages_as_percent(converted):
     assert profile["pct_sum_median"] == 100.0 and validate.verdict(profile) == []
 
 
+def test_validate_judges_series_without_any_percentage(tmp_path):
+    seed = tmp_path / "2026-05-31.csv"
+    row = ["2026-05-31", "0000000101", "123456789", "US1234567890", "A", "EC", "CORP", "1000", "1", "USD", "",
+           "false", "1", "S1"]
+    with open(seed, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(CSV_COLS)
+        writer.writerow([*row[:10], "100", *row[11:]])  # S1 sums to 100
+        writer.writerow([*row[:2], "987654321", *row[3:13], "S2"])  # S2: market value, no pct_of_nav
+    profile = validate.profile_csv(str(seed))
+    assert profile["series"] == 2 and profile["pct_sum_within_5"] == 0.5 and profile["pct_sum_within_10"] == 0.5
+
+
 class _FakeDatasets:
-    def __init__(self, payloads: dict[str, bytes], failures: list[Exception] | None = None):
+    def __init__(self, payloads: dict[str, bytes], failures: list[Exception] | None = None,
+                 listing_error: Exception | None = None):
         self.payloads = payloads
         self.failures = list(failures or [])
+        self.listing_error = listing_error
+        self.updated: dict[str, str] = {}
         self.calls: list[str] = []
 
     def get_dataset_details(self, name):
         assert name == "form-nport"
+        if self.listing_error is not None:
+            raise self.listing_error
         return {"containers": [
-            {"key": key, "size": len(body), "updatedAt": "2026-10-06", "downloadUrl": f"https://x/{key}"}
+            {"key": key, "size": len(body), "updatedAt": self.updated.get(key, "2026-10-06"),
+             "downloadUrl": f"https://x/{key}"}
             for key, body in self.payloads.items()
         ]}
 
@@ -240,6 +276,24 @@ def test_download_selects_months_and_resyncs_by_size(tmp_path):
     assert grown["bytes_transferred"] == 12
 
 
+def test_download_refetches_a_same_size_republication(tmp_path):
+    key = "2026/2026-07.jsonl.gz"
+    fake = _FakeDatasets({key: b"seven"})
+    download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None)
+    fake.payloads[key], fake.updated[key] = b"SEVEN", "2026-10-07"  # corrected, same length
+    again = download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None)
+    assert again["bytes_transferred"] == 5
+    assert Path(again["containers"][0]["path"]).read_bytes() == b"SEVEN"
+
+
+def test_download_requires_every_requested_month(tmp_path):
+    fake = _FakeDatasets({"2026/2026-06.jsonl.gz": b"six", "2026/2026-08.jsonl.gz": b"eight"})
+    with pytest.raises(RuntimeError, match=r"\['2026-07'\]"):
+        download.download_months("2026-06", "2026-08", str(tmp_path), datasets=fake, log=lambda m: None)
+    assert fake.calls == []  # nothing fetched for a window that cannot be complete
+    assert download.months_between("2025-11", "2026-02") == ["2025-11", "2025-12", "2026-01", "2026-02"]
+
+
 def test_download_never_leaks_the_key(tmp_path):
     key = "a" * 64
     fake = _FakeDatasets({"2026/2026-07.jsonl.gz": b"x"},
@@ -248,6 +302,15 @@ def test_download_never_leaks_the_key(tmp_path):
         download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None)
     assert key not in str(err.value) and "token=***" in str(err.value)
     assert download.month_of("2026/2026-07.jsonl.gz") == "2026-07"  # not the '2026/20' prefix
+
+
+def test_dataset_listing_failure_never_leaks_the_key(tmp_path):
+    key = "b" * 64
+    fake = _FakeDatasets({}, listing_error=Exception(f"API error: 500 - https://api.sec-api.io/d?token={key}"))
+    with pytest.raises(RuntimeError) as err:
+        download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None)
+    printed = "".join(traceback.format_exception(err.value))
+    assert key not in printed and "token=***" in printed
 
 
 def test_worker_lock_id_registered_and_unique():
@@ -321,6 +384,25 @@ def test_worker_skips_dates_with_nothing_new_and_reports_failures(wired):
     assert stats["report_dates"]["2026-06-30"]["result"] == "no_new_series"
     assert stats["report_dates"]["2026-05-31"]["result"] == "failed"
     assert stats["state"] == "failed" and wired["refresh"] == []
+
+
+def test_worker_never_refreshes_across_a_failed_date(wired, monkeypatch):
+    """A date the loader's verify rejected has committed rows; no refresh range may cover it."""
+    dates = ["2026-04-30", "2026-05-31", "2026-06-30"]
+
+    def fake_convert(paths, out_dir, *, min_report_date, partial_months):
+        Path(out_dir).mkdir(parents=True)
+        for rd in dates:
+            with open(Path(out_dir) / f"{rd}.csv", "w", encoding="utf-8", newline="") as fh:
+                csv.writer(fh).writerows([CSV_COLS, [rd, *[""] * 12, f"S-{rd}"]])
+        return {"report_dates": {rd: {"rows": 1, "series": 1, "partial": False} for rd in dates},
+                "excluded_report_dates": {}}
+
+    monkeypatch.setattr(worker.converter, "convert", fake_convert)
+    wired["rc"]["2026-05-31"] = 2  # post-load verify: rows committed, run failed
+    stats = worker.run("dsn", calc_date="2026-09-10")
+    assert stats["state"] == "failed"
+    assert wired["refresh"] == [("2026-04-30", "2026-05-01"), ("2026-06-30", "2026-07-01")]
 
 
 def test_worker_refuses_a_date_whose_main_month_it_does_not_have(wired):

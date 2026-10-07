@@ -5,12 +5,13 @@ NPORT-P filings made public in July 2026) and refreshed daily, so the current
 month's container keeps growing until the month ends.
 
 ``sec_api.Datasets.download`` is all-or-nothing (94 containers, ~7.5 GB for
-``form-nport``). This module lists the containers through the SDK, keeps only
-the requested months, and fetches each one through the SDK's own atomic
-``.tmp``-then-rename writer, which also skips a file whose local size already
-matches the remote - so a re-run is a cheap sync and a grown partial month is
-fetched again. The SDK retries three times over ~3 s; transient failures here
-get a longer backoff on top.
+``form-nport``). This module lists the containers through the SDK, requires
+every requested month to be listed, and fetches each one through the SDK's own
+atomic ``.tmp``-then-rename writer. A container already on disk is reused only
+when its size and the remote ``updatedAt`` recorded beside it (``<file>.meta.json``)
+both still match, so a re-run is a cheap sync, and a grown partial month or a
+same-size republication is fetched again. The SDK retries three times over
+~3 s; transient failures here get a longer backoff on top.
 
 The API key travels as a ``?token=`` query parameter, so any exception text
 that carries a URL carries the key. Everything printed goes through ``scrub``.
@@ -82,6 +83,30 @@ def _datasets(api_key: str) -> Any:
     return Datasets(api_key=api_key)
 
 
+def months_between(month_from: str, month_to: str) -> list[str]:
+    """Every ``YYYY-MM`` from ``month_from`` to ``month_to``, inclusive."""
+    def index(month: str) -> int:
+        year, mon = month.split("-")
+        return int(year) * 12 + int(mon) - 1
+
+    return [f"{i // 12:04d}-{i % 12 + 1:02d}" for i in range(index(month_from), index(month_to) + 1)]
+
+
+def _meta_path(dest: Path) -> Path:
+    return dest.with_name(dest.name + ".meta.json")
+
+
+def _cached(dest: Path, size: Any, updated_at: Any) -> bool:
+    """True when ``dest`` is the remote revision: same size and same recorded ``updatedAt``."""
+    if not dest.exists() or (size is not None and dest.stat().st_size != size):
+        return False
+    try:
+        meta = json.loads(_meta_path(dest).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return meta.get("size") == size and meta.get("updatedAt") == updated_at
+
+
 def select_containers(containers: list[dict], month_from: str, month_to: str) -> list[dict]:
     picked = []
     for container in containers:
@@ -110,10 +135,15 @@ def download_months(
     and ``updatedAt``, and whether bytes were actually ``transferred``.
     """
     ds = datasets if datasets is not None else _datasets(api_key or "")
-    detail = ds.get_dataset_details(DATASET)
+    try:
+        detail = ds.get_dataset_details(DATASET)
+    except Exception as exc:  # the SDK raises bare Exception; its text may carry a URL
+        raise RuntimeError(f"{DATASET}: dataset listing failed: {scrub(exc)}") from None
     selected = select_containers(detail.get("containers") or [], month_from, month_to)
-    if not selected:
-        raise RuntimeError(f"no {DATASET} container between {month_from} and {month_to}")
+    missing = sorted(set(months_between(month_from, month_to)) - {c["month"] for c in selected})
+    if missing or not selected:
+        # A partial listing would convert an incomplete window and report it clean.
+        raise RuntimeError(f"{DATASET}: no container listed for month(s) {missing or [month_from, month_to]}")
     planned = sum(int(c.get("size") or 0) for c in selected)
     log(f"{DATASET}: {len(selected)} container(s) {month_from}..{month_to}, {planned / 1e6:.1f} MB remote")
 
@@ -122,7 +152,7 @@ def download_months(
     for container in selected:
         dest = Path(out_dir) / DATASET / container["key"]
         size = container.get("size")
-        present = dest.exists() and (size is None or dest.stat().st_size == size)
+        present = _cached(dest, size, container.get("updatedAt"))
         entry = {
             "month": container["month"], "key": container["key"], "path": str(dest),
             "size": size, "updatedAt": container.get("updatedAt"), "transferred": False,
@@ -151,6 +181,10 @@ def download_months(
         got = dest.stat().st_size
         if size is not None and got != size:
             raise RuntimeError(f"{container['key']}: size {got} != remote {size}")
+        # Recorded only after the bytes are verified: a crash in between leaves
+        # the old revision on record, so the next run fetches again.
+        _meta_path(dest).write_text(json.dumps({"size": size, "updatedAt": container.get("updatedAt")}),
+                                    encoding="utf-8")
         transferred += got
         entry["transferred"] = True
         log(f"  {container['key']:<24} {got / 1e6:9.1f} MB  fetched")

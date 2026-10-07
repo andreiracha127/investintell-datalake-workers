@@ -8,7 +8,7 @@ monthly `form-nport` bulk dataset through the existing loader.
 
 | piece | what it does |
 |---|---|
-| `tools/nport_secapi/download.py` | fetches monthly containers with the `sec_api` SDK; size-checked re-sync |
+| `tools/nport_secapi/download.py` | fetches monthly containers with the `sec_api` SDK; every requested month must be listed; re-fetches when the remote size or `updatedAt` changes |
 | `tools/nport_secapi/convert.py` | containers to one loader CSV per report_date plus `manifest.json` |
 | `tools/nport_secapi/validate.py` | offline value sanity: pct_of_nav sums, ISIN fill, USD totals |
 | `tools/nport_dera/nport_parallel_load.py` | the only write path; now with `--dry-run` and `--new-series-only` |
@@ -136,7 +136,7 @@ M, a run:
 2. converts them, report_dates from M-5 to M-3;
 3. for each date with series the table lacks, runs the loader `--dry-run`, then
    `--new-series-only`, one date per invocation, with the loader's ISIN verify;
-4. refreshes `cagg_nport_series_profile` over the loaded window.
+4. refreshes `cagg_nport_series_profile` over the loaded dates, never across a date whose load failed.
 
 Each report_date is revisited by three consecutive runs while its late filers
 arrive. Series already loaded are never touched. Cost: with `compress_after 3

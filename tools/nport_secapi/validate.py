@@ -53,6 +53,9 @@ def profile_csv(path: str) -> dict:
             out["rows"] += 1
             dates[row["report_date"]] += 1
             series = row["series_id"]
+            # Every observed series is judged, so one with no percentages at
+            # all sums to 0 and fails the band instead of leaving the sample.
+            pct.setdefault(series, Decimal(0))
             if row["pct_of_nav"]:
                 pct[series] += Decimal(row["pct_of_nav"])
             else:
