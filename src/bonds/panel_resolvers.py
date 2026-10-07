@@ -239,7 +239,41 @@ def coupon_from_price_ytm(price: pd.Series, ytm: pd.Series, maturity_years: pd.S
 
 
 def bond_coupons(panel: pd.DataFrame) -> pd.Series:
-    return coupon_from_price_ytm(panel["pr"], panel["ytm"], panel["bond_maturity"]).groupby(panel["cusip_id"], observed=True).transform("median")
+    """Point-in-time per-bond coupon (annual % of par), aligned to ``panel.index``.
+
+    One convention, shared with Light's ``app.bond_optimizer.returns.bond_coupons``
+    (BOND-01 fix on ``fix/bond-optimizer-pinned-audit`` @ ``b61f019e``):
+
+    - a row's contractual ``coupon_pct`` is used where the panel carries a
+      finite one (``build_db_monthly_panel`` merges
+      ``bond_reference_terms.coupon_rate`` into that column);
+    - otherwise the coupon at month t is the median of the price/YTM
+      inversions observed at months <= t for that cusip (expanding, in month
+      order), never of the bond's full history: no month's carry is priced off
+      later observations, so a later distressed tail cannot move an earlier
+      month's coupon (audit A2-01).
+
+    Alignment is positional, so the caller may pass an unsorted panel or one
+    whose index is not unique; every output row keeps its input row's label.
+    """
+    est = pd.Series(
+        coupon_from_price_ytm(panel["pr"], panel["ytm"], panel["bond_maturity"]).to_numpy(dtype=float)
+    )
+    keys = panel[["cusip_id", "month"]].reset_index(drop=True)
+    order = keys.sort_values(["cusip_id", "month"], kind="mergesort").index
+    pit = (
+        est.loc[order]
+        .groupby(keys["cusip_id"].loc[order], observed=True)
+        .expanding()
+        .median()
+        .droplevel(0)
+        .reindex(est.index)
+    )
+    pit = pd.Series(pit.to_numpy(dtype=float), index=panel.index)
+    if "coupon_pct" not in panel.columns:
+        return pit
+    contractual = pd.to_numeric(panel["coupon_pct"], errors="coerce").astype(float)
+    return contractual.where(np.isfinite(contractual), pit)
 
 
 def monthly_returns(
@@ -249,11 +283,7 @@ def monthly_returns(
     if "coupon_pct" in panel:
         columns.append("coupon_pct")
     df = panel[columns].copy().sort_values(["cusip_id", "month"])
-    implied_coupon = bond_coupons(panel.loc[df.index])
-    contractual_coupon = pd.to_numeric(
-        df.get("coupon_pct", pd.Series(np.nan, index=df.index)), errors="coerce"
-    )
-    df["coupon"] = contractual_coupon.combine_first(implied_coupon)
+    df["coupon"] = bond_coupons(df)
     group = df.groupby("cusip_id", observed=True)
     previous_price, previous_month = group["pr"].shift(), group["month"].shift()
     consecutive = (df["month"] - previous_month).dt.days.between(28, 31)
