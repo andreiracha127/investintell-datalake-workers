@@ -314,16 +314,18 @@ def test_auditor_gate_checks_must_be_the_round7_checks(monkeypatch):
 
 
 def test_round7_leaves_ddl_and_catalog_unchanged():
-    """Round5-7 are runtime-only. The schema artifacts are pinned: Round4 plus
-    the snapshot session-lag predicate (MAX_SNAPSHOT_SESSION_LAG), the only
-    change since; the audit contract itself is untouched by it."""
+    """Pin the current governed schema; the audit contract stays unchanged.
+
+    Catalog pins include the snapshot rollback and active policy expiry guards,
+    regenerated and verified on the pinned disposable reference server.
+    """
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     catalog = (ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json").read_bytes()
     assert hashlib.sha256(ddl).hexdigest() == (
-        "daf13576421d744a081f3d5478fb6c273bc5b21be7778d3d6833173a1cba2533"
+        "26cb3d70aed6d8c97a777ae8d415c60ac5b963e29a5e865ad82618c340478de2"
     )
     assert hashlib.sha256(catalog).hexdigest() == (
-        "cbbd886b2290184925e0a9c4d6417c63c41818c9d60a63c9394aa0cb72556704"
+        "a00f1ab66009c485a8fde4ddc4a9d46eba36beb02c15846aff1b0065d52df4d9"
     )
 
 

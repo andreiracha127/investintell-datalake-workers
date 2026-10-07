@@ -1,5 +1,9 @@
 # Runbook: NAV readiness snapshot session lag (schema apply)
 
+For the current schema and apply procedure, use
+[NAV readiness lifecycle](nav-readiness-lifecycle.md). The pins and residual
+head-gap description below record the earlier session-lag release.
+
 ## What changes
 
 `fund_nav_snapshot_current_at_v1` used to require the due session to equal the

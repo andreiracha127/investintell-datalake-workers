@@ -2436,7 +2436,9 @@ def test_db_rejects_partial_reset_unattributed_and_ungoverned_stamps(test_dsn, s
         ).fetchone()[0] == 0
 
 
-def _publish_rollover(conn, iid, grid, *, version="v2", tweak_index=None):
+def _publish_rollover(
+    conn, iid, grid, *, version="v2", tweak_index=None, valid_through=None
+):
     sessions = []
     for index, day in enumerate(grid):
         close = dt.datetime.combine(day, dt.time(20), dt.timezone.utc)
@@ -2453,10 +2455,11 @@ def _publish_rollover(conn, iid, grid, *, version="v2", tweak_index=None):
             annualization_sessions,required_nav_kind,required_return_semantics,
             modeling_currency,currency_treatment,source_reference,published_at)
            VALUES ('synthetic',%s,%s,'current_daily_nav_v1','daily','NYSE-TEST',%s,
-                   %s,'America/New_York',%s,%s,clock_timestamp()+interval '1 day',
+                   %s,'America/New_York',%s,%s,
+                   COALESCE(%s,clock_timestamp()+interval '1 day'),
                    %s,%s,400,252,'adjusted','observed_interval_log_ratio','USD',
                    'native_only',%s,NULL)""",
-        (version, "b" * 64, version, SOURCE, grid[0], grid[-1], len(sessions),
+        (version, "b" * 64, version, SOURCE, grid[0], grid[-1], valid_through, len(sessions),
          calendar_digest(sessions), SOURCE),
     )
     for day, close, due, _ in sessions:
@@ -2492,13 +2495,16 @@ def test_rollover_accepts_equivalent_old_stamps_without_restamp(
 ):
     iid, grid, _ = _seed(test_dsn, schema)
     monkeypatch.setattr(readiness, "connect", lambda dsn: _connect(dsn, schema))
+    prior = readiness.run(test_dsn)
     with _connect(test_dsn, schema) as conn:
         head = _head(conn, iid)
         _publish_rollover(conn, iid, grid, tweak_index=tweak_index)
     # N3: the v1-pinned risk run is not evidence for the v2 readiness policy.
-    assert readiness.run(test_dsn)["ready_count"] == 0
+    refused = readiness.run(test_dsn)
+    assert refused["published"] is False and refused["retryable"] is True
+    assert refused["reason"] == "RETURN_SAMPLE_NOT_CURRENT"
     with _connect(test_dsn, schema) as conn:
-        assert _reason(conn, iid) != "NAV_POLICY_UNAVAILABLE"
+        assert conn.execute("SELECT run_id::text FROM fund_nav_readiness_current").fetchone()[0] == prior["run_id"]
         nav_rows = conn.execute(
             "SELECT nav_date, nav FROM nav_timeseries WHERE instrument_id=%s "
             "ORDER BY nav_date",
@@ -3712,7 +3718,7 @@ def test_mv_success_with_unpublished_nav_keeps_analytics_green_and_nav_chain_blo
     readiness_calls = []
     nav = chain.run(
         dsn,
-        ingestion_runner=lambda *_a, **_k: {"ingestion_run_id": "stub"},
+        ingestion_runner=lambda *_a, **_k: {"ingestion_run_id": str(uuid.UUID(int=1))},
         risk_runner=lambda *_a, **_k: limited,
         readiness_runner=lambda *_a: readiness_calls.append(1),
     )
@@ -3945,7 +3951,7 @@ def test_future_diagnostic_served_by_mv_blocks_current_publication_until_recover
     )
     assert chain.run(
         dsn,
-        ingestion_runner=lambda *_a, **_k: {"ingestion_run_id": "stub"},
+        ingestion_runner=lambda *_a, **_k: {"ingestion_run_id": str(uuid.UUID(int=1))},
         risk_runner=lambda *_a, **_k: current,
         readiness_runner=lambda *_a: pytest.fail("readiness must not run"),
     ) == {

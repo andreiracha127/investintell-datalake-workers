@@ -703,6 +703,7 @@ def test_ordered_chain_publishes_only_after_coverage_and_risk(monkeypatch):
     monkeypatch.setattr(
         chain, "_due_session", lambda *_args: events.append("policy") or "2026-09-08"
     )
+    monkeypatch.setattr(chain, "_provider_session", lambda *_a, **_k: {"pending": False})
     monkeypatch.setattr(
         chain.matview_refresh,
         "_refresh_all",
@@ -834,6 +835,7 @@ def test_chain_never_reports_success_without_pinned_publication(
     monkeypatch.setattr(chain, "connect", lambda *_args: Guard())
     monkeypatch.setattr(chain, "advisory_lock", lock)
     monkeypatch.setattr(chain, "_due_session", lambda *_args: "2026-09-08")
+    monkeypatch.setattr(chain, "_provider_session", lambda *_a, **_k: {"pending": False})
     monkeypatch.setattr(
         chain.matview_refresh, "_refresh_all", lambda *_a: ["fund_nav_coverage_mv"]
     )
@@ -978,12 +980,13 @@ def _manifest_signature() -> dict:
     return json.loads(operator.CATALOG_MANIFEST.read_text(encoding="utf-8"))["signature"]
 
 
-def test_predecessor_snapshot_body_is_repairable_and_nothing_else_is():
+@pytest.mark.parametrize("predecessor_index", [0, 1])
+def test_predecessor_snapshot_body_is_repairable_and_nothing_else_is(predecessor_index):
     from scripts import fund_nav_readiness_schema as operator
 
     expected = _manifest_signature()
     key = operator.SNAPSHOT_FUNCTION_KEY
-    (predecessor,) = operator.PREDECESSOR_FUNCTION_BODIES[key]
+    predecessor = sorted(operator.PREDECESSOR_FUNCTION_BODIES[key])[predecessor_index]
     assert expected["functions"][key]["body_sha256"] != predecessor
 
     def with_function(**changes):

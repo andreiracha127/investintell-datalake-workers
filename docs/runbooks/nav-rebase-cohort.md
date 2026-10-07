@@ -61,6 +61,8 @@ few minutes.
      committed something);
    - operator exit 5: budget, lock or interrupt after work;
    - a Tiingo 429 (`PROVIDER_RATE_LIMITED`), exit 5;
+   - a proven provider publication gap (`PROVIDER_SESSION_PENDING`), exit 2
+     with `retryable: true`, before a plan file or apply; retry after NAVs arrive;
    - a configuration error code (`PROVIDER_NOT_CONFIGURED`, `DSN_REQUIRED`,
      plan hash or limits mismatch, and similar), exit 2;
    - 3 batches in a row without progress, exit 2.
@@ -95,9 +97,15 @@ run the driver again.
   excludes a fund as `NAV_STALE` when its last NAV date is before the due
   session.
 - **Finish before 18:05 America/New_York, when the due session rolls.** After
-  that roll every fund is `NAV_STALE` until the next chain run. A re-plan after
-  the roll drops the rest of the queue as `NAV_STALE`, and the run ends
-  non-zero.
+  that roll the provider may still return the previous session. The planner
+  now stops with `PROVIDER_SESSION_PENDING` when fresh successful Tiingo
+  observations prove a single-session gap for a majority of ACTIVE funds.
+  An older or missing history does not count as provider-pending evidence;
+  fresh failed/empty/invalid attempts change the stop to explicit failure
+  `PROVIDER_SESSION_PENDING_WITH_ERRORS` and still prevent plan/apply. An
+  ACTIVE-share regression prevents this provider-gap handling. Without the
+  proof, the ordinary `NAV_STALE` exclusions remain. See
+  [NAV readiness lifecycle](nav-readiness-lifecycle.md).
 - **The NYSE close (16:00 ET, earlier on half days) rolls the closed session.**
   That makes the plan stale once; the driver re-plans automatically.
 - **Do not overlap with `instrument_ingestion` / `nav-current-daily-chain`.**

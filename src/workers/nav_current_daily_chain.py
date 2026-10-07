@@ -1,12 +1,14 @@
-"""Explicit, unscheduled current-daily publication order; no cron is enabled.
+"""Explicit current-daily publication order; scheduling is external.
 
 Result contract (W2/W3): contention at any stage is
 ``{"status": "lock_busy", "state": "lock_busy", "published": false,
 "retryable": true}``; an expected, non-busy dependency outcome that prevents
 publication is ``{"status": "blocked", "state": "blocked", "published": false,
-"retryable": <bool>, "reason": <code>}``; unexpected errors propagate. Only a
-real risk publication for the pinned due session followed by a readiness
-pointer for that same session is ``published: true``.
+"retryable": <bool>, "reason": <code>}``. Proven provider publication lag
+returns ``status/state: deferred``, ``published: false``, ``retryable: true``
+and ``reason: PROVIDER_SESSION_PENDING`` before risk invalidates its pointer.
+Unexpected errors propagate. Only a real risk publication for the pinned due
+session followed by a readiness pointer for that same session is published.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from src.workers import (
     matview_refresh,
     risk_metrics,
 )
+from src.workers._nav_provider_session import assess_provider_session
 
 LOCK_BUSY_RESULT = fund_nav_readiness.LOCK_BUSY_RESULT
 
@@ -51,6 +54,23 @@ def _due_session(dsn: str) -> str:
     return grid[-1].isoformat()
 
 
+def _provider_session(
+    dsn: str, as_of: str, ingestion_run_id: str | None, *, min_active_share: float
+) -> dict[str, Any]:
+    with connect(dsn) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        decision_at = conn.execute("SELECT clock_timestamp()").fetchone()[0]
+        policy, grid, closed = fund_nav_readiness._policy_and_grid(conn, decision_at)
+        if grid[-1].isoformat() != as_of:
+            return {"pending": False, "reason": "DUE_SESSION_CHANGED"}
+        result = assess_provider_session(
+            conn, policy, grid, closed, decision_at,
+            ingestion_run_id=ingestion_run_id, min_active_share=min_active_share,
+        )
+        conn.rollback()
+    return result
+
+
 def run(
     dsn: str,
     *,
@@ -73,6 +93,29 @@ def run(
                 return _lock_busy("instrument_ingestion")
             if ingest.get("skipped") or ingest.get("aborted"):
                 raise RuntimeError("NAV_DATA_UNAVAILABLE: ingestion run incomplete")
+            provider_session = _provider_session(
+                dsn, as_of, ingest.get("ingestion_run_id"),
+                min_active_share=min_active_share,
+            )
+            if provider_session.get("reason") == "DUE_SESSION_CHANGED":
+                return _blocked("instrument_ingestion", "DUE_SESSION_CHANGED", True)
+            if provider_session.get("majority_pending") and provider_session["failed_attempt_count"]:
+                return {
+                    **_blocked("provider_session", "PROVIDER_SESSION_PENDING_WITH_ERRORS", True),
+                    "as_of_session": as_of,
+                    "ingestion_run_id": ingest.get("ingestion_run_id"),
+                    "provider_session": provider_session,
+                }
+            if provider_session["pending"]:
+                # Risk generation invalidates its old pointer before computing;
+                # defer before it (and before any readiness publication).
+                return {
+                    "status": "deferred", "state": "deferred", "published": False,
+                    "retryable": True, "reason": "PROVIDER_SESSION_PENDING",
+                    "blocked_stage": "provider_session", "as_of_session": as_of,
+                    "ingestion_run_id": ingest.get("ingestion_run_id"),
+                    "provider_session": provider_session,
+                }
             refreshed = matview_refresh._refresh_all(dsn, ["fund_nav_coverage_mv"])
             if refreshed != ["fund_nav_coverage_mv"]:
                 raise RuntimeError("NAV_DATA_UNAVAILABLE: coverage MV not refreshed")
@@ -99,7 +142,9 @@ def run(
             if snapshot.get("status") == "lock_busy":
                 return _lock_busy("fund_nav_readiness")
             if snapshot.get("state") != "complete" or snapshot.get("published") is not True:
-                return _blocked("fund_nav_readiness", "READINESS_NOT_PUBLISHED", True)
+                return _blocked(
+                    "fund_nav_readiness", snapshot.get("reason") or "READINESS_NOT_PUBLISHED", True
+                )
             if snapshot.get("as_of_session") != as_of:
                 return _blocked("fund_nav_readiness", "DUE_SESSION_CHANGED", True)
             return {

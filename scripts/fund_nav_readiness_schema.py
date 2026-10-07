@@ -46,6 +46,12 @@ baseline plus this transaction's own insertions. A plan digest already bound
 to a receipt is ``publication_plan_consumed``. Legacy versions with evidence
 and no receipt are rollback-only (pointer moves), never republished here.
 
+Policy inputs are typed and streamed into connection-private temporary tables
+before the publication transaction takes the NAV writer locks. Under those
+locks, the document digest, plan, audit window and current database state are
+revalidated; immutable conflict checks and missing-row inserts are set-based.
+The policy, lifecycle evidence, pointer and receipt still commit atomically.
+
 Run from the repository root: ``python -m scripts.fund_nav_readiness_schema``.
 """
 
@@ -233,7 +239,12 @@ PREDECESSOR_FUNCTION_BODIES = {
     # Round4 exact-session predicate (DDL 687b019c...), before the one-session
     # lag allowance (MAX_SNAPSHOT_SESSION_LAG).
     SNAPSHOT_FUNCTION_KEY: frozenset(
-        {"572502da969dd03214d4857e0fce53f8fdc84d94c6e5594a7537397511ff38b8"}
+        {
+            "572502da969dd03214d4857e0fce53f8fdc84d94c6e5594a7537397511ff38b8",
+            # One-session allowance, before snapshot-owned policy and the
+            # proof that post-snapshot NAV inserts leave the prefix intact.
+            "05d84187af5f05f628f1a881e99ef9bb1870fa7dbb74ceb29f241dbb9443f3c2",
+        }
     ),
 }
 # N6 access profile: the Light read runtime.
@@ -1458,6 +1469,84 @@ def _check(conn, schema: str) -> dict:
 PRE_DDL_BLOCKS = ("incompatible_schema", "blocked_access")
 
 
+def _stage_policy(conn, evidence: dict) -> None:
+    """Upload typed input before the governed transaction takes writer locks.
+
+    Only private temporary relations are written here. The governed apply uses
+    an autocommit connection, so this transaction finishes before its BEGIN.
+    Programmatic callers may already own a transaction; their staging stays in
+    that transaction and never commits their work. The document digest binds
+    the staged inputs to the policy revalidated under the locks.
+    """
+    document_digest = canonical_digest(evidence)
+    sessions = [
+        (
+            evidence["calendar_id"], evidence["calendar_version"],
+            dt.date.fromisoformat(row["session_date"]),
+            dt.datetime.fromisoformat(row["valuation_close_at"]),
+            dt.datetime.fromisoformat(row["nav_due_at"]),
+            evidence["calendar_source"],
+            row.get("source_reference") or evidence["source_reference"],
+        )
+        for row in evidence["sessions"]
+    ]
+    lifecycle = [
+        (
+            uuid.UUID(row["instrument_id"]), evidence["policy_id"], evidence["policy_version"],
+            dt.datetime.fromisoformat(row["known_at"]),
+            dt.datetime.fromisoformat(row["effective_at"]), row["fund_status"],
+            row["valuation_frequency"], bool(row["identity_verified"]),
+            bool(row["return_basis_verified"]), bool(row["currency_verified"]),
+            row["evidence_reference"],
+        )
+        for row in evidence["instrument_evidence"]
+    ]
+    with conn.transaction():
+        conn.execute(
+            """DROP TABLE IF EXISTS pg_temp.nav_policy_stage_meta,
+                   pg_temp.nav_policy_stage_sessions, pg_temp.nav_policy_stage_evidence;
+               CREATE TEMP TABLE nav_policy_stage_meta (
+                   document_digest text NOT NULL,
+                   session_count bigint NOT NULL, evidence_count bigint NOT NULL
+               ) ON COMMIT PRESERVE ROWS;
+               CREATE TEMP TABLE nav_policy_stage_sessions (
+                   calendar_id varchar(128) NOT NULL, calendar_version varchar(64) NOT NULL,
+                   session_date date NOT NULL, valuation_close_at timestamptz NOT NULL,
+                   nav_due_at timestamptz NOT NULL, calendar_source text NOT NULL,
+                   source_reference text NOT NULL,
+                   PRIMARY KEY (calendar_id, calendar_version, session_date)
+               ) ON COMMIT PRESERVE ROWS;
+               CREATE TEMP TABLE nav_policy_stage_evidence (
+                   instrument_id uuid NOT NULL, policy_id text NOT NULL,
+                   policy_version text NOT NULL, known_at timestamptz NOT NULL,
+                   effective_at timestamptz NOT NULL, fund_status text NOT NULL,
+                   valuation_frequency text NOT NULL, identity_verified boolean NOT NULL,
+                   return_basis_verified boolean NOT NULL, currency_verified boolean NOT NULL,
+                   evidence_reference text NOT NULL,
+                   PRIMARY KEY (instrument_id, policy_id, policy_version, known_at, effective_at)
+               ) ON COMMIT PRESERVE ROWS"""
+        )
+        with conn.cursor() as cursor:
+            with cursor.copy(
+                "COPY pg_temp.nav_policy_stage_sessions FROM STDIN"
+            ) as stream:
+                for row in sessions:
+                    stream.write_row(row)
+            with cursor.copy(
+                "COPY pg_temp.nav_policy_stage_evidence FROM STDIN"
+            ) as stream:
+                for row in lifecycle:
+                    stream.write_row(row)
+        conn.execute(
+            "INSERT INTO pg_temp.nav_policy_stage_meta VALUES (%s, %s, %s)",
+            (document_digest, len(sessions), len(lifecycle)),
+        )
+        conn.execute(
+            "ANALYZE pg_temp.nav_policy_stage_sessions; "
+            "ANALYZE pg_temp.nav_policy_stage_evidence"
+        )
+
+
 def _publish_policy(conn, evidence: dict) -> tuple[str, bool]:
     """Insert/verify immutable policy evidence and point current at it.
 
@@ -1465,24 +1554,33 @@ def _publish_policy(conn, evidence: dict) -> tuple[str, bool]:
     is already current changes nothing (no pointer UPDATE, so no new stamp).
     Thin wrapper over ``_publish_policy_tx`` (one implementation).
     """
+    _stage_policy(conn, evidence)
     policy_hash, changed, _inserted = _publish_policy_tx(conn, evidence)
     return policy_hash, changed
 
 
 def _publish_policy_tx(conn, evidence: dict) -> tuple[str, bool, int]:
-    """``_publish_policy`` plus the number of lifecycle rows THIS call inserted.
+    """Publish already staged inputs with a fixed number of SQL round trips.
 
-    ``inserted_evidence_rows`` sums the ``rowcount`` of each successful INSERT
-    into ``nav_instrument_policy_evidence`` made here; rows that already
-    existed, schedules, the version row and the pointer are never counted. The
-    governed publication compares it with the target partition's count after
-    the receipt (``_assert_target_partition_count``).
+    All conflict checks run in the caller's transaction after its writer locks.
+    Only the lifecycle INSERT's rowcount contributes to the post-receipt target
+    partition count. Existing rows, schedules, version and pointer never do.
     """
+    staged = conn.execute(
+        """SELECT document_digest, session_count, evidence_count,
+                  (SELECT count(*) FROM pg_temp.nav_policy_stage_sessions),
+                  (SELECT count(*) FROM pg_temp.nav_policy_stage_evidence)
+           FROM pg_temp.nav_policy_stage_meta"""
+    ).fetchall()
+    if staged != [(
+        canonical_digest(evidence), len(evidence["sessions"]),
+        len(evidence["instrument_evidence"]), len(evidence["sessions"]),
+        len(evidence["instrument_evidence"]),
+    )]:
+        raise ValueError("policy_stage_document_mismatch")
     policy_hash = policy_content_digest(evidence)
     pid, ver = evidence["policy_id"], evidence["policy_version"]
-    changed = False
-    inserted_evidence_rows = 0
-    changed |= conn.execute(
+    changed = conn.execute(
         """INSERT INTO nav_policy_versions
             (policy_id,policy_version,policy_hash,readiness_profile,valuation_frequency,
              calendar_id,calendar_version,calendar_source,timezone,sample_intervals,
@@ -1493,24 +1591,14 @@ def _publish_policy_tx(conn, evidence: dict) -> tuple[str, bool, int]:
              VALUES (%s,%s,%s,%s,'daily',%s,%s,%s,%s,400,252,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL)
            ON CONFLICT (policy_id,policy_version) DO NOTHING""",
         (
-            pid,
-            ver,
-            policy_hash,
-            "current_daily_nav_v1",
-            evidence["calendar_id"],
-            evidence["calendar_version"],
-            evidence["calendar_source"],
-            evidence["timezone"],
-            evidence["coverage_start"],
-            evidence["coverage_end"],
-            evidence["valid_through"],
-            evidence["calendar_session_count"],
-            evidence["calendar_digest"],
-            evidence["required_nav_kind"],
-            evidence["required_return_semantics"],
-            evidence["modeling_currency"],
-            evidence["currency_treatment"],
-            evidence["source_reference"],
+            pid, ver, policy_hash, "current_daily_nav_v1",
+            evidence["calendar_id"], evidence["calendar_version"],
+            evidence["calendar_source"], evidence["timezone"],
+            evidence["coverage_start"], evidence["coverage_end"],
+            evidence["valid_through"], evidence["calendar_session_count"],
+            evidence["calendar_digest"], evidence["required_nav_kind"],
+            evidence["required_return_semantics"], evidence["modeling_currency"],
+            evidence["currency_treatment"], evidence["source_reference"],
         ),
     ).rowcount > 0
     existing = conn.execute(
@@ -1519,96 +1607,72 @@ def _publish_policy_tx(conn, evidence: dict) -> tuple[str, bool, int]:
     ).fetchone()
     if existing[0] != policy_hash:
         raise ValueError("immutable_policy_conflict")
-    for session in evidence["sessions"]:
-        fields = (
-            evidence["calendar_id"],
-            evidence["calendar_version"],
-            session["session_date"],
-            session["valuation_close_at"],
-            session["nav_due_at"],
-            evidence["calendar_source"],
-            session.get("source_reference") or evidence["source_reference"],
-        )
-        saved = conn.execute(
-            """SELECT valuation_close_at,nav_due_at,calendar_source,source_reference
-               FROM nav_valuation_schedules WHERE calendar_id=%s AND calendar_version=%s
-                 AND session_date=%s""",
-            fields[:3],
-        ).fetchone()
-        if saved is None:
-            conn.execute(
-                """INSERT INTO nav_valuation_schedules
-                   (calendar_id,calendar_version,session_date,valuation_close_at,nav_due_at,
-                    calendar_source,source_reference) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                fields,
-            )
-            changed = True
-            saved = conn.execute(
-                """SELECT valuation_close_at,nav_due_at,calendar_source,source_reference
-                   FROM nav_valuation_schedules WHERE calendar_id=%s AND calendar_version=%s
-                     AND session_date=%s""",
-                fields[:3],
-            ).fetchone()
-        if saved != (
-            dt.datetime.fromisoformat(fields[3]),
-            dt.datetime.fromisoformat(fields[4]),
-            fields[5],
-            fields[6],
-        ):
-            raise ValueError("immutable_session_conflict")
+    if conn.execute(
+        """SELECT EXISTS (
+               SELECT 1 FROM pg_temp.nav_policy_stage_sessions s
+               JOIN nav_valuation_schedules p
+                 USING (calendar_id, calendar_version, session_date)
+               WHERE (p.valuation_close_at, p.nav_due_at, p.calendar_source, p.source_reference)
+                 IS DISTINCT FROM
+                     (s.valuation_close_at, s.nav_due_at, s.calendar_source, s.source_reference)
+           )"""
+    ).fetchone()[0]:
+        raise ValueError("immutable_session_conflict")
+    # Filter before INSERT: even an ON CONFLICT no-op would invoke the freeze
+    # trigger of a calendar already shared by another published policy.
+    changed |= conn.execute(
+        """INSERT INTO nav_valuation_schedules
+               (calendar_id,calendar_version,session_date,valuation_close_at,nav_due_at,
+                calendar_source,source_reference)
+           SELECT s.* FROM pg_temp.nav_policy_stage_sessions s
+           WHERE NOT EXISTS (
+               SELECT 1 FROM nav_valuation_schedules p
+               WHERE (p.calendar_id, p.calendar_version, p.session_date)
+                   = (s.calendar_id, s.calendar_version, s.session_date)
+           )"""
+    ).rowcount > 0
     persisted_sessions = conn.execute(
-        """SELECT session_date,valuation_close_at,nav_due_at,source_reference
+        """SELECT session_date,valuation_close_at,nav_due_at,source_reference,calendar_source
            FROM nav_valuation_schedules WHERE calendar_id=%s AND calendar_version=%s
            ORDER BY session_date""",
         (evidence["calendar_id"], evidence["calendar_version"]),
     ).fetchall()
+    # A row inserted by another connection after the conflict check may have
+    # been skipped by INSERT. calendar_source is outside calendar_digest, so
+    # verify it on the persisted rows as well before publishing the version.
+    if any(row[4] != evidence["calendar_source"] for row in persisted_sessions):
+        raise ValueError("immutable_session_conflict")
     if (
         len(persisted_sessions) != evidence["calendar_session_count"]
-        or calendar_digest(persisted_sessions) != evidence["calendar_digest"]
+        or calendar_digest([row[:4] for row in persisted_sessions]) != evidence["calendar_digest"]
     ):
         raise ValueError("published_calendar_digest_mismatch")
-    for row in evidence["instrument_evidence"]:
-        saved = conn.execute(
-            """SELECT effective_at,fund_status,valuation_frequency,identity_verified,
-                      return_basis_verified,currency_verified,evidence_reference
-               FROM nav_instrument_policy_evidence
-                WHERE instrument_id=%s AND policy_id=%s AND policy_version=%s
-                  AND known_at=%s AND effective_at=%s""",
-            (row["instrument_id"], pid, ver, row["known_at"], row["effective_at"]),
-        ).fetchone()
-        expected = (
-            dt.datetime.fromisoformat(row["effective_at"]),
-            row["fund_status"],
-            row["valuation_frequency"],
-            bool(row["identity_verified"]),
-            bool(row["return_basis_verified"]),
-            bool(row["currency_verified"]),
-            row["evidence_reference"],
-        )
-        if saved is not None and saved != expected:
-            raise ValueError("immutable_instrument_evidence_conflict")
-        if saved is None:
-            inserted_evidence_rows += conn.execute(
-                """INSERT INTO nav_instrument_policy_evidence
+    if conn.execute(
+        """SELECT EXISTS (
+               SELECT 1 FROM pg_temp.nav_policy_stage_evidence s
+               JOIN nav_instrument_policy_evidence p
+                 USING (instrument_id, policy_id, policy_version, known_at, effective_at)
+               WHERE (p.fund_status, p.valuation_frequency, p.identity_verified,
+                      p.return_basis_verified, p.currency_verified, p.evidence_reference)
+                 IS DISTINCT FROM
+                     (s.fund_status, s.valuation_frequency, s.identity_verified,
+                      s.return_basis_verified, s.currency_verified, s.evidence_reference)
+           )"""
+    ).fetchone()[0]:
+        raise ValueError("immutable_instrument_evidence_conflict")
+    inserted_evidence_rows = conn.execute(
+        """INSERT INTO nav_instrument_policy_evidence
                (instrument_id,policy_id,policy_version,known_at,effective_at,fund_status,
                 valuation_frequency,identity_verified,return_basis_verified,
                 currency_verified,evidence_reference)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (
-                    row["instrument_id"],
-                    pid,
-                    ver,
-                    row["known_at"],
-                    row["effective_at"],
-                    row["fund_status"],
-                    row["valuation_frequency"],
-                    bool(row["identity_verified"]),
-                    bool(row["return_basis_verified"]),
-                    bool(row["currency_verified"]),
-                    row["evidence_reference"],
-                ),
-            ).rowcount
-            changed = True
+           SELECT s.* FROM pg_temp.nav_policy_stage_evidence s
+           WHERE NOT EXISTS (
+               SELECT 1 FROM nav_instrument_policy_evidence p
+               WHERE (p.instrument_id, p.policy_id, p.policy_version, p.known_at, p.effective_at)
+                   = (s.instrument_id, s.policy_id, s.policy_version, s.known_at, s.effective_at)
+           )"""
+    ).rowcount
+    changed |= inserted_evidence_rows > 0
     changed |= conn.execute(
         """UPDATE nav_policy_versions SET published_at=clock_timestamp()
            WHERE policy_id=%s AND policy_version=%s AND published_at IS NULL""",
@@ -2105,16 +2169,24 @@ def _policy_facts_exact(conn, evidence: dict) -> bool:
         != evidence["calendar_digest"]
     ):
         return False
-    for row in evidence["instrument_evidence"]:
-        saved = conn.execute(
-            """SELECT fund_status, valuation_frequency, identity_verified,
-                      return_basis_verified, currency_verified, evidence_reference
+    persisted_lifecycle = {
+        (str(row[0]), row[1], row[2]): tuple(row[3:])
+        for row in conn.execute(
+            """SELECT instrument_id, known_at, effective_at, fund_status,
+                      valuation_frequency, identity_verified, return_basis_verified,
+                      currency_verified, evidence_reference
                FROM nav_instrument_policy_evidence
-               WHERE instrument_id=%s AND policy_id=%s AND policy_version=%s
-                 AND known_at=%s AND effective_at=%s""",
-            (row["instrument_id"], pid, ver, row["known_at"], row["effective_at"]),
-        ).fetchone()
-        if saved != (
+               WHERE policy_id=%s AND policy_version=%s""",
+            (pid, ver),
+        ).fetchall()
+    }
+    for row in evidence["instrument_evidence"]:
+        key = (
+            str(uuid.UUID(row["instrument_id"])),
+            dt.datetime.fromisoformat(row["known_at"]),
+            dt.datetime.fromisoformat(row["effective_at"]),
+        )
+        if persisted_lifecycle.get(key) != (
             row["fund_status"],
             row["valuation_frequency"],
             bool(row["identity_verified"]),
@@ -3373,10 +3445,12 @@ def _plan_already_committed(
 
 def _apply_dml(conn, out, finish, evidence, ids, start, end, digest, plan, supplied,
                stale, *, audit=None):
-    """One DML transaction: locks INGESTION->READINESS before any write."""
+    """Stage private inputs, then lock INGESTION->READINESS for governed DML."""
     requested = {"policy": evidence is not None, "maintenance": bool(ids)}
     if evidence is not None and audit is None:
         raise ValueError("audit_receipt_required")
+    if evidence is not None:
+        _stage_policy(conn, evidence)
     conn.execute("BEGIN")
     try:
         conn.execute("SET LOCAL statement_timeout = '60s'")
