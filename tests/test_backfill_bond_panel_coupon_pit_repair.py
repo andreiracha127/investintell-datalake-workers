@@ -1,6 +1,7 @@
 """The coupon-PIT repair emitter: pinned artifact, deterministic child, verbatim copies, gated finalize."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import uuid
@@ -61,7 +62,21 @@ def _v2_dir(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return directory, hashes
 
 
-def _artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, terms: bool = True) -> tuple[Path, dict[str, object]]:
+def _implied_rows(tmp_path: Path) -> Path:
+    """bond_market_implied_rating_v1 rows: AAA candidate 2022-12, confirmed 2023-01, never cured."""
+    rows = [
+        {"month": pd.Timestamp(month), "cusip_id": "AAA000001", "implied_bucket": bucket, "witnessed": True, "spell_id": 1,
+         "d_candidate": bucket == "D" or month == "2022-12-01", "d_confirmed": bucket == "D",
+         "d_event_month": pd.Timestamp("2022-12-01") if bucket == "D" else pd.NaT,
+         "policy_version": "bond_market_implied_rating_policy_v1", "policy_digest": "ab" * 32}
+        for month, bucket in (("2022-11-01", "CCC"), ("2022-12-01", "CCC"), ("2023-01-01", "D"), ("2023-02-01", "D"))
+    ]
+    path = tmp_path / "implied_rows.parquet"
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame(rows), preserve_index=False), path)
+    return path
+
+
+def _artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, terms: bool = True, default_events: bool = True) -> tuple[Path, dict[str, object]]:
     """Build a real v3 artifact with the builder and derive the authorization pins from its manifest."""
     v2, hashes = _v2_dir(tmp_path)
     monkeypatch.setattr(builder, "EXPECTED_SHA256_UNIT_REPAIR_V2", {**backfill.EXPECTED_SHA256_UNIT_REPAIR_V2, **hashes})
@@ -70,11 +85,13 @@ def _artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, terms: bool = 
     if terms:
         terms_path = tmp_path / "bond_reference_terms_coupons.csv"
         terms_path.write_text("cusip9,coupon_rate,coupon_type\nAAA000001,6.5,Fixed\n", encoding="utf-8")
+    events_path = _implied_rows(tmp_path) if default_events else None
     out = tmp_path / "coupon_pit_v3"
-    manifest = builder.build(v2, out, terms_path)
+    manifest = builder.build(v2, out, terms_path, default_events_path=events_path)
     pins = {
         "artifact_sha256": {name: hashlib.sha256((out / name).read_bytes()).hexdigest() for name in repair.COUPON_PIT_ARTIFACT_FILES},
         "terms_export_sha256": (manifest["inputs"]["terms_export"] or {}).get("sha256"),
+        "default_events_sha256": (manifest["inputs"]["default_events"] or {}).get("sha256"),
         "per_year_digest": manifest["per_year_digest"],
         "counts": {key: manifest["counts"][key] for key in repair.COUPON_PIT_PINNED_COUNT_KEYS},
         "dropped_keys_digest": manifest["dropped_keys_digest"],
@@ -98,6 +115,12 @@ def test_artifacts_refuse_unpinned_preview_and_drifted_inputs(tmp_path: Path, mo
         repair.CouponPitArtifacts.open(out, expected={**pins, "counts": {**pins["counts"], "repriced_rows": 1}})
     with pytest.raises(backfill.PlanError, match="coupon_pit_dropped_keys_digest_mismatch"):
         repair.CouponPitArtifacts.open(out, expected={**pins, "dropped_keys_digest": "0" * 64})
+    with pytest.raises(backfill.PlanError, match="coupon_pit_default_events_sha256_mismatch"):
+        repair.CouponPitArtifacts.open(out, expected={**pins, "default_events_sha256": "0" * 64})
+    # The runbook's template once lacked dropped_keys_digest: a missing pin is refused by name.
+    for key in repair.COUPON_PIT_PIN_KEYS:
+        with pytest.raises(backfill.ArtifactPinError, match=f"coupon_pit_pin_keys_missing:{key}"):
+            repair.CouponPitArtifacts.open(out, expected={name: value for name, value in pins.items() if name != key})
     monkeypatch.setattr(repair, "COUPON_PIT_DROPPED_ROWS_BOUND", 1)
     with pytest.raises(backfill.PlanError, match="coupon_pit_dropped_rows_exceed_bound"):
         repair.CouponPitArtifacts.open(out, expected=pins)
@@ -105,6 +128,9 @@ def test_artifacts_refuse_unpinned_preview_and_drifted_inputs(tmp_path: Path, mo
     preview, preview_pins = _artifact(tmp_path / "preview", monkeypatch, terms=False)
     with pytest.raises(backfill.PlanError, match="coupon_pit_preview_artifact_refused"):
         repair.CouponPitArtifacts.open(preview, expected=preview_pins)
+    no_default_flat, no_default_flat_pins = _artifact(tmp_path / "no_default_flat", monkeypatch, default_events=False)
+    with pytest.raises(backfill.PlanError, match="coupon_pit_preview_artifact_refused"):
+        repair.CouponPitArtifacts.open(no_default_flat, expected=no_default_flat_pins)
 
 
 def test_plan_is_deterministic_for_the_bound_head_and_pinned_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,8 +143,13 @@ def test_plan_is_deterministic_for_the_bound_head_and_pinned_artifact(tmp_path: 
     other_head = repair.build_coupon_pit_plan(artifacts, from_head_publication_id=str(uuid.uuid4()))
     assert other_head.publication_id != plan.publication_id
     evidence = plan.evidence()
-    assert evidence["contract"] == "returns_coupon_pit_repair_v1"
-    assert evidence["code_revision"] == "t3_returns_coupon_pit_repair_v1"
+    assert evidence["contract"] == "returns_coupon_pit_repair_v2"
+    assert evidence["code_revision"] == "t3_returns_coupon_pit_repair_v2"
+    assert evidence["default_events_sha256"] == pins["default_events_sha256"]
+    assert "d_event_month" in evidence["default_flat_rule"]
+    # The default-events source is part of the child identity.
+    swapped = repair._fingerprint_payload(dataclasses.replace(plan, default_events_sha256="0" * 64))
+    assert repair._canonical_digest(swapped) != plan.input_fingerprint
     assert evidence["config_hash"] == backfill.UNIT_REPAIR_CONFIG_HASH
     assert evidence["unit_repair_child_publication_id"] == backfill.UNIT_REPAIR_EXPECTED_PUBLICATION_ID
     assert evidence["counts"]["dropped_rows_no_pit_basis"] if "dropped_rows_no_pit_basis" in evidence["counts"] else True
@@ -141,7 +172,14 @@ def test_prepare_sql_verifies_the_live_head_and_declares_counts_without_moving_t
     assert "INSERT INTO bond_panel_publications" in sql and "'prepared'" in sql
     assert "bond_panel_app_pointer SET" not in sql and "UPDATE bond_panel_app_pointer" not in sql
     assert plan.input_fingerprint in sql and plan.publication_id in sql and HEAD in sql
-    assert "'coupon_pit_repair'" in sql and "t3_returns_coupon_pit_repair_v1" in sql
+    assert "'coupon_pit_repair'" in sql and "t3_returns_coupon_pit_repair_v2" in sql
+    # The dropped keys become tombstones of the child, so the served view cannot
+    # fall back to the head's look-ahead row for them.
+    assert "coupon pit prepare requires the returns tombstone DDL" in sql
+    assert "INSERT INTO bond_panel_returns_tombstone (publication_id, month, cusip_id, reason, payload)" in sql
+    assert '"cusip_id":"DDD000004","month":"2021-02-01"' in sql
+    assert f"WHERE publication_id = '{plan.publication_id}'::uuid) <> 2" in sql
+    assert "coupon pit tombstones must equal the pinned dropped keys" in sql
 
 
 def test_copy_sql_is_verbatim_and_scopes_returns_to_months_after_the_cutoff(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,7 +225,7 @@ def test_finalize_sql_gates_keys_price_identity_carry_and_then_cas_and_refreshes
     plan = repair.build_coupon_pit_plan(artifacts, from_head_publication_id=HEAD)
     sql = repair.render_coupon_pit_finalize_sql(plan, artifacts)
     for needle in (
-        "LOCK TABLE bond_panel_snapshot, bond_panel_rv_signal, bond_panel_returns, bond_panel_rating_pit IN SHARE MODE",
+        "LOCK TABLE bond_panel_snapshot, bond_panel_rv_signal, bond_panel_returns, bond_panel_rating_pit, bond_panel_returns_tombstone IN SHARE MODE",
         "candidate.price_return IS DISTINCT FROM source.price_return",
         "candidate.exit_basis IS DISTINCT FROM source.exit_basis",
         "abs(candidate.total_return - (candidate.price_return + candidate.carry_return)) > 1e-12",
@@ -198,6 +236,11 @@ def test_finalize_sql_gates_keys_price_identity_carry_and_then_cas_and_refreshes
         "coupon pit dropped key present in the child",
         "coupon pit dropped key set does not match the pinned count",
         "SELECT 1 FROM pg_temp.coupon_pit_dropped_keys dropped",
+        "coupon pit tombstones must equal the pinned dropped keys",
+        "JOIN pg_temp.coupon_pit_source_ancestry tomb_ancestry USING (publication_id)",
+        "coupon pit dropped key still served after the pointer switch",
+        "coupon pit served returns count differs from the child declaration",
+        "coupon pit finalize requires the returns tombstone DDL",
         '"cusip_id":"DDD000004","month":"2021-02-01"',
         "coupon pit pointer compare-and-swap lost",
         "REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_returns_v1_mat;",
@@ -207,6 +250,7 @@ def test_finalize_sql_gates_keys_price_identity_carry_and_then_cas_and_refreshes
         assert needle in sql, needle
     assert sql.index("coupon pit artifact/DB per-year carry mismatch") < sql.index("SET publication_status = 'validated'") < sql.index("UPDATE bond_panel_app_pointer") < sql.index("COMMIT;")
     assert sql.index("COMMIT;") < sql.index("REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_rv_signal_v1_mat;")
+    assert sql.index("UPDATE bond_panel_app_pointer") < sql.index("coupon pit dropped key still served after the pointer switch") < sql.index("COMMIT;")
     expected = json.loads(repair._expected_per_year_json(plan))
     assert {item["year"] for item in expected} == {2020, 2021, 2022, 2023, 2024}
     assert all(item["sum_carry_after"] != item["sum_carry_before"] for item in expected if item["year"] >= 2020)
@@ -237,8 +281,15 @@ def test_cli_refuses_unpinned_artifacts_and_emits_when_pinned(tmp_path: Path, mo
 
 def test_authorization_constants_are_frozen_until_the_artifact_exists() -> None:
     assert repair.COUPON_PIT_EXPECTED_ARTIFACT is None
-    assert repair.COUPON_PIT_CONTRACT == "returns_coupon_pit_repair_v1"
-    assert repair.COUPON_PIT_CODE_REVISION == "t3_returns_coupon_pit_repair_v1"
+    assert repair.COUPON_PIT_CONTRACT == "returns_coupon_pit_repair_v2"
+    assert repair.COUPON_PIT_CODE_REVISION == "t3_returns_coupon_pit_repair_v2"
+    assert repair.COUPON_PIT_REQUIRED_MODE == "contractual_then_pit_default_flat"
+    # The pin template the runbook documents (section 3.3) carries exactly these keys.
+    assert repair.COUPON_PIT_PIN_KEYS == ("artifact_sha256", "terms_export_sha256", "default_events_sha256", "per_year_digest", "dropped_keys_digest", "counts")
+    runbook = Path("docs/runbooks/bond-panel-coupon-pit-republication.md").read_text(encoding="utf-8")
+    template = runbook.split("COUPON_PIT_EXPECTED_ARTIFACT = {", 1)[1].split("\n}\n", 1)[0]
+    for key in repair.COUPON_PIT_PIN_KEYS:
+        assert f'"{key}"' in template, key
     assert repair.COUPON_PIT_CUTOFF == "2026-06-01"
     assert repair.COUPON_PIT_AFFECTED_SURFACES == ("returns",)
     assert repair.COUPON_PIT_DEFAULT_ARTIFACT_DIRECTORY == backfill.UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY / "coupon_pit_v3"

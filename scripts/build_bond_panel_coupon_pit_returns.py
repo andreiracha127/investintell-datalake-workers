@@ -24,18 +24,29 @@ directory receives ``bond_monthly_returns.parquet`` (v3, same 13-column schema
 and row order as v2), ``coupon_basis.parquet`` (the per-row audit trail) and
 ``manifest.json`` (digests, counts, reconciliation and delta evidence).
 
+A bond in default trades flat (owner decision, 2026-10-07): inside a confirmed
+market-implied default window (``--default-events``, rows of
+``bond_market_implied_rating_v1``; :func:`src.bonds.panel_resolvers.default_flat_windows`)
+the carry is 0 and the total return is the price return, from the episode's
+``d_event_month`` (the REALIZED basis: the historical rebuild knows the event
+even though the market confirmed it 0-3 months later) until the cure.  Flat
+rows carry ``carry_basis = default_flat`` in ``coupon_basis.parquet`` and in
+their returns payload.
+
 Usage:
     python scripts/build_bond_panel_coupon_pit_returns.py \\
         --artifact-dir <unit_repair_v2> --out <unit_repair_v2>/coupon_pit_v3 \\
-        [--terms <bond_reference_terms_coupons.csv>]
+        [--terms <bond_reference_terms_coupons.csv>] [--default-events <implied_rows.parquet>]
 
 Without ``--terms`` the output is a PIT-only PREVIEW (manifest ``mode`` =
-``pit_only_preview``): useful to measure the bias at full scale without a
-production read, never an input to the republication.
+``pit_only_preview``); without ``--default-events`` the mode has no
+``_default_flat`` suffix.  Only ``contractual_then_pit_default_flat`` is an
+input to the republication; every other mode is a preview.
 """
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import importlib.metadata
 import json
@@ -48,6 +59,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,16 +72,34 @@ from scripts.backfill_bond_panel_history import (  # noqa: E402
     UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY,
     UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID,
 )
-from src.bonds.panel_resolvers import bond_coupons, coupon_from_price_ytm  # noqa: E402
+from src.bonds.panel_resolvers import (  # noqa: E402
+    bond_coupons,
+    coupon_from_price_ytm,
+    default_flat,
+    default_flat_windows,
+)
 
-CONTRACT = "returns_coupon_pit_repair_v1"
-MANIFEST_VERSION = "bond_panel_coupon_pit_v3_manifest_v1"
+# v2: the default-flat rule changes the carry of every row inside a confirmed
+# default window, so it is part of the artifact identity (contract, manifest
+# version, the emitter's code revision and fingerprint).
+CONTRACT = "returns_coupon_pit_repair_v2"
+MANIFEST_VERSION = "bond_panel_coupon_pit_v3_manifest_v2"
 COUPON_CONVENTION = (
     "contractual coupon_pct (bond_reference_terms.coupon_rate) where finite, else the "
     "expanding (months <= t) median of coupon_from_price_ytm per CUSIP in month order; "
     "src.bonds.panel_resolvers.bond_coupons, one convention with Light "
-    "app.bond_optimizer.returns.bond_coupons"
+    "app.bond_optimizer.returns.bond_coupons; carry 0 inside a confirmed default window"
 )
+DEFAULT_FLAT_RULE = (
+    "owner decision 2026-10-07: a bond in default trades flat and pays no coupon. Inside a "
+    "confirmed bond_market_implied_rating_v1 D episode (d_confirmed) carry = 0 and total = price "
+    "return, from the episode's d_event_month (first stored D row only where d_event_month is "
+    "null) until the first witnessed rated row after its last D row; candidates never flatten; "
+    "src.bonds.panel_resolvers.default_flat_windows / default_flat"
+)
+DEFAULT_FLAT_BASIS = "realized"
+DEFAULT_EVENT_COLUMNS = ("cusip_id", "month", "implied_bucket", "witnessed", "spell_id", "d_confirmed", "d_event_month")
+DEFAULT_EVENT_IDENTITY_COLUMNS = ("policy_version", "policy_digest")
 STORED_BASIS = (
     "months <= 2025-03-01: per-CUSIP median of coupon_from_price_ytm over ALL snapshot "
     "months <= 2025-03-01 (Light pre-BOND-01 full-history median, T3 base); "
@@ -188,6 +218,71 @@ def load_terms(path: Path) -> tuple[pd.Series, dict[str, Any]]:
     return pd.Series(coupon.to_numpy(), index=pd.Index(frame["cusip9"].astype(str)), name="coupon_rate"), evidence
 
 
+def _read_default_event_rows(path: Path) -> pd.DataFrame:
+    """The D-state columns of the implied-rating rows, for CUSIPs with a D row only."""
+    wanted = [*DEFAULT_EVENT_COLUMNS, *DEFAULT_EVENT_IDENTITY_COLUMNS]
+    if path.suffix.lower() == ".parquet":
+        names = set(pq.ParquetFile(path).schema_arrow.names)
+        missing = [column for column in DEFAULT_EVENT_COLUMNS if column not in names]
+        if missing:
+            raise BuildError(f"default_events_missing_columns:{','.join(missing)}")
+        table = pq.read_table(path, columns=[column for column in wanted if column in names])
+        in_default = pc.equal(table["implied_bucket"], "D")
+        defaulted = pc.unique(pc.filter(table["cusip_id"], in_default))
+        table = table.filter(pc.is_in(table["cusip_id"], value_set=defaulted))
+        frame = table.to_pandas()
+    else:
+        frame = pd.read_csv(path, dtype={"cusip_id": "string", "implied_bucket": "string"})
+        missing = [column for column in DEFAULT_EVENT_COLUMNS if column not in frame.columns]
+        if missing:
+            raise BuildError(f"default_events_missing_columns:{','.join(missing)}")
+        for column in ("witnessed", "d_confirmed"):
+            frame[column] = frame[column].map(lambda value: str(value).strip().lower() in {"true", "t", "1"})
+        frame = frame[frame["cusip_id"].isin(frame.loc[frame["implied_bucket"].eq("D"), "cusip_id"].unique())]
+        frame = frame.loc[:, [column for column in wanted if column in frame.columns]]
+    return frame.reset_index(drop=True)
+
+
+def load_default_events(path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """The market-implied default windows from ``bond_market_implied_rating_v1`` rows.
+
+    The file is one publication's rows (parquet or CSV with the publication
+    columns); only the D-state columns are read. A file mixing policy digests
+    is refused: the windows would silently blend two producers.
+    """
+    rows = _read_default_event_rows(path)
+    try:
+        windows = default_flat_windows(rows)
+    except ValueError as exc:
+        raise BuildError(f"default_events_invalid:{exc}") from exc
+    identity: dict[str, Any] = {}
+    for column in DEFAULT_EVENT_IDENTITY_COLUMNS:
+        values = sorted({str(value) for value in rows[column].dropna()}) if column in rows else []
+        if len(values) > 1:
+            raise BuildError(f"default_events_mixed_{column}")
+        identity[column] = values[0] if values else None
+    lag = (
+        (windows["confirmation_month"].dt.year - windows["event_month"].dt.year) * 12
+        + windows["confirmation_month"].dt.month - windows["event_month"].dt.month
+    )
+    evidence: dict[str, Any] = {
+        "path": path.name,
+        "sha256": _sha256(path),
+        **identity,
+        "rows_of_defaulted_cusips": int(len(rows)),
+        "d_rows": int(rows["implied_bucket"].eq("D").sum()),
+        "episodes": int(len(windows)),
+        "cusips": int(windows["cusip_id"].nunique()),
+        "episodes_cured": int(windows["cure_month"].notna().sum()),
+        "episodes_open": int(windows["cure_month"].isna().sum()),
+        "event_month_source": {str(k): int(v) for k, v in windows["event_month_source"].value_counts().sort_index().items()},
+        "confirmation_lag_months": {str(int(k)): int(v) for k, v in lag.value_counts().sort_index().items()},
+        "event_month_min": windows["event_month"].min().strftime("%Y-%m-%d") if len(windows) else None,
+        "event_month_max": windows["event_month"].max().strftime("%Y-%m-%d") if len(windows) else None,
+    }
+    return windows, evidence
+
+
 def _load_panel(path: Path, cutoff: pd.Timestamp) -> pd.DataFrame:
     table = pq.read_table(path, columns=PANEL_COLUMNS)
     panel = table.to_pandas()
@@ -219,14 +314,24 @@ def _stored_basis_coupon(panel: pd.DataFrame, inversion: pd.Series) -> pd.Series
     return pd.concat([combined, entrant.loc[missing]])
 
 
+def _no_row(repriced: pd.DataFrame) -> pd.Series:
+    """No coupon basis at or before the month and not flat: the resolver produces no return row."""
+    return repriced["basis"].eq("none") & ~repriced["carry_basis"].eq("default_flat")
+
+
 def reprice(
     panel: pd.DataFrame,
     returns: pd.DataFrame,
     terms: pd.Series | None,
     *,
     cutoff: pd.Timestamp,
+    default_windows: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Re-price the observed rows at or before ``cutoff``; keep every other row verbatim."""
+    """Re-price the observed rows at or before ``cutoff``; keep every other row verbatim.
+
+    Rows inside a confirmed default window (``default_windows``, realized basis)
+    trade flat: carry 0, whatever the coupon basis, so a flat row is never dropped.
+    """
     scope = returns[(returns["month"] <= cutoff) & returns["exit_basis"].eq("observed")].copy()
     scope = scope.set_index(["cusip_id", "month"]).sort_index()
     keyed = panel.set_index(["cusip_id", "month"])
@@ -269,16 +374,24 @@ def reprice(
     basis_all = np.where(np.isfinite(effective.to_numpy()), "contractual", np.where(np.isfinite(new_coupon_all.to_numpy()), "pit", "none"))
     basis = pd.Series(basis_all, index=keyed.index).loc[scope.index].to_numpy()
 
+    keys = pd.DataFrame({"cusip_id": scope.index.get_level_values("cusip_id"), "month": scope.index.get_level_values("month")})
+    realized = default_flat(keys, default_windows, basis=DEFAULT_FLAT_BASIS)
+    flat = realized["default_flat"].to_numpy(dtype=bool)
+    confirmed_by_then = default_flat(keys, default_windows, basis="point_in_time")["default_flat"].to_numpy(dtype=bool)
     carry_before = scope["carry_return"].to_numpy(dtype=float)
-    carry_after = new_coupon / 12.0 / rows["previous_price"].to_numpy()
+    carry_coupon = new_coupon / 12.0 / rows["previous_price"].to_numpy()
+    carry_after = np.where(flat, 0.0, carry_coupon)
     total_after = scope["price_return"].to_numpy(dtype=float) + carry_after
     repriced = pd.DataFrame({
-        "cusip_id": scope.index.get_level_values("cusip_id"),
-        "month": scope.index.get_level_values("month"),
+        "cusip_id": keys["cusip_id"].to_numpy(),
+        "month": keys["month"].to_numpy(),
         "previous_price": rows["previous_price"].to_numpy(),
         "coupon_stored": stored_expected,
         "coupon_new": new_coupon,
         "basis": basis,
+        "carry_basis": np.where(flat, "default_flat", "coupon"),
+        "default_event_month": realized["default_event_month"].to_numpy(),
+        "carry_coupon": carry_coupon,
         "carry_before": carry_before,
         "carry_after": carry_after,
         "total_before": scope["total_return"].to_numpy(dtype=float),
@@ -287,8 +400,10 @@ def reprice(
         "suspect_after": np.abs(total_after) > SUSPECT_ABS_RETURN,
     })
     repriced["delta_bp"] = (repriced["carry_after"] - repriced["carry_before"]) * 1e4
-    dropped = repriced[repriced["basis"].eq("none")]
-    kept = repriced[~repriced["basis"].eq("none")]
+    no_row = _no_row(repriced)
+    dropped = repriced[no_row]
+    kept = repriced[~no_row]
+    kept_flat = kept["carry_basis"].eq("default_flat")
     changed = kept["delta_bp"].abs() > CHANGED_ROW_THRESHOLD_BP
     per_year: list[dict[str, Any]] = []
     for year, group in kept.groupby(kept["month"].dt.year):
@@ -298,6 +413,7 @@ def reprice(
             "rows": int(len(group)),
             "contractual_rows": int(group["basis"].eq("contractual").sum()),
             "pit_rows": int(group["basis"].eq("pit").sum()),
+            "default_flat_rows": int(group["carry_basis"].eq("default_flat").sum()),
             "changed_rows": int((abs_delta > CHANGED_ROW_THRESHOLD_BP).sum()),
             "sum_carry_before": float(group["carry_before"].sum()),
             "sum_carry_after": float(group["carry_after"].sum()),
@@ -335,6 +451,21 @@ def reprice(
         },
         "suspect_before": int(kept["suspect_before"].sum()),
         "suspect_after": int(kept["suspect_after"].sum()),
+        "default_flat": {
+            "rule": DEFAULT_FLAT_RULE,
+            "basis": DEFAULT_FLAT_BASIS,
+            "date_field": "d_event_month",
+            "date_field_fallback": "first stored D row (confirmation month)",
+            "applied": default_windows is not None,
+            "rows": int(kept_flat.sum()),
+            "cusips": int(kept.loc[kept_flat, "cusip_id"].nunique()),
+            "rows_without_coupon_basis": int((kept_flat & kept["basis"].eq("none")).sum()),
+            # Realized-basis rows the market had not confirmed yet at that month
+            # (event month <= t < confirmation month): what a point-in-time basis
+            # would still have priced with the coupon.
+            "rows_before_confirmation": int((flat & ~confirmed_by_then).sum()),
+            "carry_removed_bp_sum": float((kept.loc[kept_flat, "carry_coupon"].fillna(0.0) * 1e4).sum()),
+        },
         "reconciliation": {
             "basis": STORED_BASIS,
             "tolerance": {"absolute_coupon_points": RECONCILIATION_TOLERANCE[0], "relative": RECONCILIATION_TOLERANCE[1]},
@@ -353,10 +484,26 @@ def reprice(
     return repriced, evidence
 
 
+def _flat_payload(payload: Any, event_month: Any) -> str:
+    try:
+        document = json.loads(payload) if isinstance(payload, str) and payload else {}
+    except ValueError:
+        document = {"raw_payload": payload}
+    if not isinstance(document, dict):
+        document = {"raw_payload": document}
+    document["carry_basis"] = "default_flat"
+    document["default_event_month"] = pd.Timestamp(event_month).strftime("%Y-%m-%d")
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+_WRITER_COLUMNS = ("carry_after", "total_after", "suspect_after", "carry_basis", "default_event_month")
+
+
 def _write_returns(source: Path, repriced: pd.DataFrame, destination: Path) -> dict[str, Any]:
     """Stream the v2 returns row groups, swapping only carry/total/suspect on repriced keys."""
-    kept = repriced[~repriced["basis"].eq("none")].set_index(["cusip_id", "month"])
-    dropped = set(zip(repriced.loc[repriced["basis"].eq("none"), "cusip_id"], repriced.loc[repriced["basis"].eq("none"), "month"]))
+    no_row = _no_row(repriced)
+    kept = repriced.loc[~no_row, ["cusip_id", "month", *_WRITER_COLUMNS]].set_index(["cusip_id", "month"])
+    dropped = set(zip(repriced.loc[no_row, "cusip_id"], repriced.loc[no_row, "month"]))
     reader = pq.ParquetFile(source)
     written = 0
     replaced = 0
@@ -373,6 +520,10 @@ def _write_returns(source: Path, repriced: pd.DataFrame, destination: Path) -> d
             frame.loc[hit, "carry_return"] = match.loc[hit, "carry_after"].to_numpy()
             frame.loc[hit, "total_return"] = match.loc[hit, "total_after"].to_numpy()
             frame.loc[hit, "suspect"] = match.loc[hit, "suspect_after"].to_numpy(dtype=bool)
+            # Flat rows say so in their payload, with the keys the live worker writes.
+            flat = hit & match["carry_basis"].eq("default_flat").to_numpy()
+            for position in np.flatnonzero(flat):
+                frame.at[position, "payload"] = _flat_payload(frame.at[position, "payload"], match["default_event_month"].iloc[position])
             replaced += int(hit.sum())
             written += int(len(frame))
             writer.write_table(pa.Table.from_pandas(frame, schema=reader.schema_arrow, preserve_index=False))
@@ -394,6 +545,7 @@ def build(
     out_dir: Path,
     terms_path: Path | None = None,
     *,
+    default_events_path: Path | None = None,
     expected_hashes: dict[str, str] | None = None,
     cutoff: str = FALLBACK_CUTOFF,
 ) -> dict[str, Any]:
@@ -402,10 +554,19 @@ def build(
     terms_evidence: dict[str, Any] | None = None
     if terms_path is not None:
         terms, terms_evidence = load_terms(terms_path)
+    default_windows: pd.DataFrame | None = None
+    default_events_evidence: dict[str, Any] | None = None
+    if default_events_path is not None:
+        default_windows, default_events_evidence = load_default_events(default_events_path)
     cutoff_ts = pd.Timestamp(cutoff)
     panel = _load_panel(inputs.paths["bond_panel_live.parquet"], cutoff_ts)
     returns = _load_returns(inputs.paths["bond_monthly_returns.parquet"])
-    repriced, evidence = reprice(panel, returns, terms, cutoff=cutoff_ts)
+    repriced, evidence = reprice(panel, returns, terms, cutoff=cutoff_ts, default_windows=default_windows)
+    # The writer streams the source parquet: release the full panel and returns
+    # frames before it runs (the build's peak memory is otherwise both plus the
+    # write buffers).
+    del panel, returns
+    gc.collect()
     out_dir.mkdir(parents=True, exist_ok=True)
     returns_out = _write_returns(inputs.paths["bond_monthly_returns.parquet"], repriced, out_dir / OUTPUT_RETURNS)
     basis_path = out_dir / OUTPUT_BASIS
@@ -417,8 +578,9 @@ def build(
     manifest = {
         "manifest_version": MANIFEST_VERSION,
         "contract": CONTRACT,
-        "mode": "contractual_then_pit" if terms is not None else "pit_only_preview",
+        "mode": ("contractual_then_pit" if terms is not None else "pit_only_preview") + ("_default_flat" if default_windows is not None else ""),
         "coupon_convention": COUPON_CONVENTION,
+        "default_flat": evidence["default_flat"],
         "fallback_cutoff": cutoff,
         "source_pointer": inputs.source_pointer,
         "expected_head_publication_id": UNIT_REPAIR_FROM_HEAD_PUBLICATION_ID,
@@ -428,6 +590,7 @@ def build(
             "rows": dict(sorted(inputs.rows.items())),
             "v2_manifest_sha256": inputs.manifest_sha256,
             "terms_export": terms_evidence,
+            "default_events": default_events_evidence,
             "resolver_sha256": _sha256(ROOT / "src" / "bonds" / "panel_resolvers.py"),
             "builder_sha256": _sha256(Path(__file__).resolve()),
         },
@@ -447,6 +610,8 @@ def build(
             "verbatim_rows": returns_out["rows"] - evidence["repriced_rows"],
             "contractual_rows": evidence["contractual_rows"],
             "pit_rows": evidence["pit_rows"],
+            "default_flat_rows": evidence["default_flat"]["rows"],
+            "default_flat_cusips": evidence["default_flat"]["cusips"],
             "changed_rows": evidence["changed_rows"],
             "cusips_in_scope": evidence["cusips_in_scope"],
             "cusips_with_contractual_coupon": evidence["cusips_with_contractual_coupon"],
@@ -472,13 +637,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifact-dir", type=Path, default=UNIT_REPAIR_DEFAULT_ARTIFACT_DIRECTORY)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--terms", type=Path, help="read-only bond_reference_terms export (cusip9, coupon_rate[, coupon_type, ...]); omit for a PIT-only preview")
+    parser.add_argument("--default-events", type=Path, help="bond_market_implied_rating_v1 rows (parquet or CSV) whose confirmed D episodes trade flat; omit for a preview without the default-flat rule")
     args = parser.parse_args(argv)
     try:
-        manifest = build(args.artifact_dir, args.out, args.terms)
+        manifest = build(args.artifact_dir, args.out, args.terms, default_events_path=args.default_events)
     except (BuildError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    print(json.dumps({k: manifest[k] for k in ("mode", "counts", "delta_bp", "reconciliation", "outputs")}, indent=1, sort_keys=True))
+    print(json.dumps({k: manifest[k] for k in ("mode", "counts", "default_flat", "delta_bp", "reconciliation", "outputs")}, indent=1, sort_keys=True))
     return 0
 
 

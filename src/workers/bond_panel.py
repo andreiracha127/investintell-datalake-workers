@@ -26,6 +26,7 @@ from src.bonds.panel_materializer import (
 from src.bonds.panel_resolvers import (
     build_db_monthly_panel,
     build_snapshots,
+    default_flat_windows,
     fit_all_months,
     monthly_returns,
 )
@@ -224,6 +225,57 @@ def _parent_return_anchor(conn: Any, closed_month: pd.Timestamp) -> pd.DataFrame
         if column in anchor:
             anchor[column] = pd.to_numeric(anchor[column], errors="coerce")
     return anchor
+
+
+IMPLIED_RATING_RELATIONS = (
+    "bond_market_implied_rating_v1_current",
+    "bond_market_implied_rating_app_pointer",
+    "bond_market_implied_rating_publications",
+)
+
+
+def _default_flat_windows(conn: Any, cusips: list[str]) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Confirmed market-implied default windows of ``cusips``, as the elected publication knows them.
+
+    The source is the pointed ``bond_market_implied_rating_v1`` publication. Stage 7
+    rebuilds it AFTER this stage, from this panel, so at closed month t it holds
+    months <= t-1: every episode in it was confirmed by t, which is the
+    point-in-time basis the returns use. It is optional on purpose (Stage 7 is
+    default-off): an absent or unpointed product yields no windows, the carry stays
+    contractual, and the lineage names the source either way.
+    """
+    absent = conn.execute(
+        "SELECT relation FROM unnest(%s::text[]) AS candidate(relation) WHERE to_regclass(relation) IS NULL",
+        (list(IMPLIED_RATING_RELATIONS),),
+    ).fetchall()
+    if absent:
+        return default_flat_windows(None), {"default_flat_source": "absent"}
+    publication = _frame(
+        conn,
+        "SELECT p.publication_id::text AS publication_id, p.policy_digest, p.last_month "
+        "FROM bond_market_implied_rating_app_pointer pointer "
+        "JOIN bond_market_implied_rating_publications p USING (publication_id)",
+    )
+    if publication.empty:
+        return default_flat_windows(None), {"default_flat_source": "unpublished"}
+    rows = _frame(
+        conn,
+        "SELECT r.cusip_id, r.month, r.implied_bucket, r.witnessed, r.spell_id, r.d_confirmed, r.d_event_month "
+        "FROM bond_market_implied_rating_v1_current r "
+        "WHERE r.cusip_id = ANY(%s) "
+        "AND r.cusip_id IN (SELECT d.cusip_id FROM bond_market_implied_rating_v1_current d WHERE d.implied_bucket = 'D') "
+        "AND (r.implied_bucket = 'D' OR (r.witnessed AND r.implied_bucket IN ('AAA','AA','A','BBB','BB','B','CCC')))",
+        (cusips,),
+    )
+    windows = default_flat_windows(rows)
+    head = publication.iloc[0]
+    return windows, {
+        "default_flat_source": f"bond_market_implied_rating_v1:{head['publication_id']}",
+        "default_flat_policy_digest": str(head["policy_digest"]),
+        "default_flat_last_month": str(head["last_month"]),
+        "default_flat_basis": "point_in_time",
+        "default_flat_windows": str(len(windows)),
+    }
 
 
 def _load_inputs(
@@ -631,8 +683,13 @@ def _closed_returns_and_tombstones(
     anchor: pd.DataFrame,
     current_snapshot: pd.DataFrame,
     closed_month: pd.Timestamp,
+    default_windows: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Realize observed exits and retain removed parent bonds as typed exclusions."""
+    """Realize observed exits and retain removed parent bonds as typed exclusions.
+
+    A bond inside a confirmed default window known by the closed month trades
+    flat (carry 0, point-in-time basis; see ``monthly_returns``).
+    """
     required_anchor = ["cusip_id", "month", "pr", "ytm", "bond_maturity", "rating_bucket"]
     if anchor.empty:
         anchor = pd.DataFrame(columns=required_anchor)
@@ -656,7 +713,10 @@ def _closed_returns_and_tombstones(
     returns_input = pd.concat(
         [anchor[included_parent], current_snapshot], ignore_index=True, sort=False
     )
-    returns = monthly_returns(returns_input, terminal_exits=terminal_exits)
+    returns = monthly_returns(
+        returns_input, terminal_exits=terminal_exits,
+        default_windows=default_windows, default_basis="point_in_time",
+    )
     returns = returns[returns["month"].eq(closed_month)].reset_index(drop=True)
     identity_columns = ["cusip_id", "month", *DISTRIBUTION_COLUMNS]
     current_identity = current_snapshot.reindex(columns=identity_columns)
@@ -954,9 +1014,16 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 signals = signals.merge(included_closed, on=["cusip_id", "month"], how="left", suffixes=("", "_snapshot"))
             anchor = _parent_return_anchor(conn, closed_month)
             closed_snapshot = snapshot[snapshot["month"].eq(closed_month)]
-            returns, tombstones = _closed_returns_and_tombstones(
-                anchor, closed_snapshot, closed_month
+            default_cusips = sorted(
+                set(anchor.get("cusip_id", pd.Series(dtype=object)).astype(str))
+                | set(closed_snapshot["cusip_id"].astype(str))
             )
+            default_windows, default_lineage = _default_flat_windows(conn, default_cusips)
+            lineage.update(default_lineage)
+            returns, tombstones = _closed_returns_and_tombstones(
+                anchor, closed_snapshot, closed_month, default_windows
+            )
+            lineage["default_flat_closed_rows"] = str(int(returns.get("carry_basis", pd.Series(dtype=object)).eq("default_flat").sum()))
             if not tombstones.empty:
                 snapshot = pd.concat([snapshot, tombstones], ignore_index=True, sort=False).sort_values(
                     ["month", "cusip_id"]

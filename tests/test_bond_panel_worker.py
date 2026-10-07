@@ -1230,7 +1230,8 @@ def _stub_publishable_panel(
 
     monkeypatch.setattr(bond_panel, "build_snapshots", snapshots)
     monkeypatch.setattr(bond_panel, "_parent_return_anchor", lambda _conn, _closed: pd.DataFrame())
-    monkeypatch.setattr(bond_panel, "monthly_returns", lambda _panel, terminal_exits=None: pd.DataFrame({"cusip_id": ["AAA"], "month": [closed_at], "total_return": [0.01], "exit_basis": ["observed"], "exit_reason": [None], "price_return": [0.01], "carry_return": [0.0], "suspect": [False]}))
+    monkeypatch.setattr(bond_panel, "_default_flat_windows", lambda _conn, _cusips: (bond_panel.default_flat_windows(None), {"default_flat_source": "absent"}))
+    monkeypatch.setattr(bond_panel, "monthly_returns", lambda _panel, terminal_exits=None, **_kwargs: pd.DataFrame({"cusip_id": ["AAA"], "month": [closed_at], "total_return": [0.01], "exit_basis": ["observed"], "exit_reason": [None], "price_return": [0.01], "carry_return": [0.0], "suspect": [False]}))
     monkeypatch.setattr(bond_panel, "fit_all_months", lambda frame, *, as_of: (pd.DataFrame({"cusip_id": ["AAA"], "month": [closed_at], "rv_signal": [1.0]}), pd.DataFrame()))
 
     def materialize(_conn, **kwargs):
@@ -1904,7 +1905,8 @@ def test_panel_publishes_with_missing_execution_ratings_and_closed_month_signals
         return included, excluded
     monkeypatch.setattr(bond_panel, "build_snapshots", snapshots)
     monkeypatch.setattr(bond_panel, "_parent_return_anchor", lambda _conn, _closed: pd.DataFrame())
-    monkeypatch.setattr(bond_panel, "monthly_returns", lambda _panel, terminal_exits=None: pd.DataFrame({"cusip_id": ["AAA"], "month": [closed], "total_return": [0.01], "exit_basis": ["observed"], "exit_reason": [None], "price_return": [0.01], "carry_return": [0.0], "suspect": [False]}))
+    monkeypatch.setattr(bond_panel, "_default_flat_windows", lambda _conn, _cusips: (bond_panel.default_flat_windows(None), {"default_flat_source": "absent"}))
+    monkeypatch.setattr(bond_panel, "monthly_returns", lambda _panel, terminal_exits=None, **_kwargs: pd.DataFrame({"cusip_id": ["AAA"], "month": [closed], "total_return": [0.01], "exit_basis": ["observed"], "exit_reason": [None], "price_return": [0.01], "carry_return": [0.0], "suspect": [False]}))
     monkeypatch.setattr(bond_panel, "fit_all_months", lambda frame, *, as_of: (pd.DataFrame({"cusip_id": ["AAA"], "month": [closed], "rv_signal": [1.0]}), pd.DataFrame()))
 
     def materialize(_conn, **kwargs):
@@ -1963,3 +1965,80 @@ def test_terminal_exit_rows_are_closed_month_only_and_typed() -> None:
 
     assert set(rows["exit_basis"]) == {"matured", "distressed", "unexplained"}
     assert set(rows["month"]) == {closed}
+
+
+def _implied_d_rows(cusip: str, event: str, months: list[str]) -> pd.DataFrame:
+    return pd.DataFrame({
+        "cusip_id": cusip, "month": [date.fromisoformat(month) for month in months], "implied_bucket": "D",
+        "witnessed": True, "spell_id": 1, "d_confirmed": True, "d_event_month": date.fromisoformat(event),
+    })
+
+
+def test_closed_month_returns_trade_flat_under_a_default_confirmed_by_then() -> None:
+    closed = pd.Timestamp("2026-07-01")
+    frame = lambda month, prices: pd.DataFrame({  # noqa: E731
+        "cusip_id": ["DFLT", "LATE", "PAID"], "month": [month] * 3, "pr": prices, "ytm": [0.3, 0.3, 0.3],
+        "bond_maturity": [5.0] * 3, "coupon_pct": [6.0] * 3, "rating_bucket": ["CCC"] * 3, "eligibility_state": ["included"] * 3,
+    })
+    anchor, current = frame(pd.Timestamp("2026-06-01"), [40.0, 42.0, 41.0]), frame(closed, [38.0, 41.0, 40.0])
+    windows = bond_panel.default_flat_windows(pd.concat([
+        # Event 2026-04, confirmed 2026-05: known before the closed month.
+        _implied_d_rows("DFLT", "2026-04-01", ["2026-05-01", "2026-06-01"]),
+        # Confirmed only in 2026-08 (a later publication): not known at 2026-07.
+        _implied_d_rows("LATE", "2026-07-01", ["2026-08-01"]),
+    ], ignore_index=True))
+
+    returns, _tombstones = bond_panel._closed_returns_and_tombstones(anchor, current, closed, windows)
+
+    by_cusip = returns.set_index("cusip_id")
+    assert by_cusip.loc["DFLT", "carry_return"] == 0.0
+    assert by_cusip.loc["DFLT", "total_return"] == pytest.approx((38.0 - 40.0) / 40.0)
+    assert by_cusip.loc["DFLT", "carry_basis"] == "default_flat"
+    assert by_cusip.loc["DFLT", "default_event_month"] == pd.Timestamp("2026-04-01")
+    # PIT: the 2026-07 event confirmed in 2026-08 keeps its contractual carry at 2026-07.
+    assert by_cusip.loc["LATE", "carry_return"] == pytest.approx(6.0 / 12 / 42.0)
+    assert by_cusip.loc["PAID", "carry_return"] == pytest.approx(6.0 / 12 / 41.0)
+    payload = bond_panel._records(returns[returns["cusip_id"].eq("DFLT")])[0]
+    assert payload["carry_basis"] == "default_flat" and payload["default_event_month"] == "2026-04-01"
+
+
+class _RelationConn:
+    def __init__(self, absent: list[str]) -> None:
+        self.absent = absent
+
+    def execute(self, _sql, _params=()):
+        return SimpleNamespace(fetchall=lambda: [(name,) for name in self.absent])
+
+
+def test_default_flat_source_is_optional_and_named_in_the_lineage(monkeypatch) -> None:
+    windows, lineage = bond_panel._default_flat_windows(_RelationConn(["bond_market_implied_rating_v1_current"]), ["DFLT"])
+    assert windows.empty and lineage == {"default_flat_source": "absent"}
+
+    frames = iter([
+        pd.DataFrame({"publication_id": ["bc13a5e4-7f1a-54fa-8a5b-68862df4020b"], "policy_digest": ["ab" * 32], "last_month": [date(2026, 6, 1)]}),
+        _implied_d_rows("DFLT", "2026-04-01", ["2026-05-01", "2026-06-01"]),
+    ])
+    queries: list[tuple[str, tuple[object, ...]]] = []
+
+    def frame(_conn, sql, params=()):
+        queries.append((sql, params))
+        return next(frames)
+
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+
+    windows, lineage = bond_panel._default_flat_windows(_RelationConn([]), ["DFLT", "PAID"])
+
+    assert windows[["cusip_id", "event_month", "confirmation_month"]].values.tolist() == [["DFLT", pd.Timestamp("2026-04-01"), pd.Timestamp("2026-05-01")]]
+    assert lineage == {
+        "default_flat_source": "bond_market_implied_rating_v1:bc13a5e4-7f1a-54fa-8a5b-68862df4020b",
+        "default_flat_policy_digest": "ab" * 32,
+        "default_flat_last_month": "2026-06-01",
+        "default_flat_basis": "point_in_time",
+        "default_flat_windows": "1",
+    }
+    assert queries[1][1] == (["DFLT", "PAID"],)
+    assert "implied_bucket = 'D'" in queries[1][0]
+
+    monkeypatch.setattr(bond_panel, "_frame", lambda *_args, **_kwargs: pd.DataFrame(columns=["publication_id", "policy_digest", "last_month"]))
+    windows, lineage = bond_panel._default_flat_windows(_RelationConn([]), ["DFLT"])
+    assert windows.empty and lineage == {"default_flat_source": "unpublished"}

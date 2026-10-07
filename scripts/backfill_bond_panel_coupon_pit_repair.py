@@ -29,7 +29,15 @@ Differences from the unit repair, and why:
   ``price_return``/``exit_basis``/``exit_reason`` identical per row, rows after
   the cutoff identical in full, ``total_return = price_return + carry_return``
   and ``suspect = |total| > 0.5`` on every repriced row, and the per-year
-  carry sums (before AND after) equal to the artifact manifest.
+  carry sums (before AND after) equal to the artifact manifest;
+* a pinned dropped key (no coupon basis at or before its month, not in
+  default) is not merely omitted: the served view overlays the ancestry by
+  nearest depth and would serve the head's look-ahead row. Prepare writes one
+  ``bond_panel_returns_tombstone`` row per dropped key, finalize gates the
+  tombstone set and, after the CAS, that the served view holds none of them
+  and exactly the child's declared row count;
+* the artifact identity includes the default-flat source (contract v2): the
+  default-events sha256 is pinned and enters the child fingerprint.
 
 ``COUPON_PIT_EXPECTED_ARTIFACT`` is ``None`` until the owner's artifact exists:
 the CLI refuses (``coupon_pit_artifact_unpinned``) rather than emitting SQL
@@ -85,6 +93,7 @@ from scripts.backfill_psql_transport import render_immutable_batch  # noqa: E402
 from scripts.build_bond_panel_coupon_pit_returns import (  # noqa: E402
     CONTRACT as COUPON_PIT_CONTRACT,
     COUPON_CONVENTION,
+    DEFAULT_FLAT_RULE,
     FALLBACK_CUTOFF as COUPON_PIT_CUTOFF,
     INPUT_FILES as COUPON_PIT_V2_INPUTS,
     MANIFEST_VERSION as COUPON_PIT_MANIFEST_VERSION,
@@ -94,8 +103,18 @@ from scripts.build_bond_panel_coupon_pit_returns import (  # noqa: E402
     SUSPECT_ABS_RETURN,
 )
 
-COUPON_PIT_CODE_REVISION = "t3_returns_coupon_pit_repair_v1"
-COUPON_PIT_REQUIRED_MODE = "contractual_then_pit"
+COUPON_PIT_CODE_REVISION = "t3_returns_coupon_pit_repair_v2"
+# Contractual coupon, PIT fallback, and the default-flat rule (contract v2):
+# every other builder mode is a preview the emitter refuses.
+COUPON_PIT_REQUIRED_MODE = "contractual_then_pit_default_flat"
+# Every key the authorization (``COUPON_PIT_EXPECTED_ARTIFACT``) must carry; a
+# missing one is refused by name instead of surfacing as a KeyError.
+COUPON_PIT_PIN_KEYS = ("artifact_sha256", "terms_export_sha256", "default_events_sha256", "per_year_digest", "dropped_keys_digest", "counts")
+# A dropped key (no coupon basis at or before its month, not in default) has no
+# return row under the resolver. Omitting it from the child is not enough: the
+# served view overlays the ancestry by nearest depth and would serve the head's
+# look-ahead row. The child writes a tombstone the view honors instead.
+COUPON_PIT_TOMBSTONE_REASON = "coupon_pit_no_coupon_basis"
 COUPON_PIT_AFFECTED_SURFACES: tuple[Surface, ...] = ("returns",)
 COUPON_PIT_ARTIFACT_FILES = (OUTPUT_RETURNS, OUTPUT_BASIS, OUTPUT_MANIFEST)
 COUPON_PIT_PINNED_COUNT_KEYS = ("returns_rows_out", "rows_at_or_before_cutoff", "rows_after_cutoff", "scope_rows", "repriced_rows", "exit_rows_at_or_before_cutoff")
@@ -137,6 +156,9 @@ class CouponPitArtifacts:
         pins = COUPON_PIT_EXPECTED_ARTIFACT if expected is None else expected
         if pins is None:
             raise ArtifactPinError("coupon_pit_artifact_unpinned")
+        missing_pins = [key for key in COUPON_PIT_PIN_KEYS if key not in pins]
+        if missing_pins:
+            raise ArtifactPinError(f"coupon_pit_pin_keys_missing:{','.join(missing_pins)}")
         manifest_path = directory / OUTPUT_MANIFEST
         if not manifest_path.is_file():
             raise ArtifactPinError("coupon_pit_manifest_unavailable")
@@ -161,6 +183,9 @@ class CouponPitArtifacts:
         terms = inputs.get("terms_export") or {}
         if terms.get("sha256") != pins["terms_export_sha256"]:
             raise PlanError("coupon_pit_terms_export_sha256_mismatch")
+        default_events = inputs.get("default_events") or {}
+        if default_events.get("sha256") != pins["default_events_sha256"]:
+            raise PlanError("coupon_pit_default_events_sha256_mismatch")
         counts = manifest.get("counts") or {}
         dropped = int(counts.get("dropped_rows_no_pit_basis", -1))
         dropped_keys = manifest.get("dropped_keys")
@@ -216,6 +241,7 @@ class CouponPitPlan:
     counts: dict[str, int]
     artifact_sha256: dict[str, str]
     terms_export_sha256: str
+    default_events_sha256: str
     per_year: tuple[dict[str, Any], ...]
     per_year_digest: str
     resolver_sha256: str
@@ -241,12 +267,14 @@ class CouponPitPlan:
             "counts": dict(sorted(self.counts.items())),
             "artifact_sha256": dict(sorted(self.artifact_sha256.items())),
             "terms_export_sha256": self.terms_export_sha256,
+            "default_events_sha256": self.default_events_sha256,
             "per_year_carry_digest": self.per_year_digest,
             "per_year": [dict(item) for item in self.per_year],
             "resolver_sha256": self.resolver_sha256,
             "dropped_rows": self.dropped_rows,
             "dropped_keys_digest": self.dropped_keys_digest,
             "coupon_convention": COUPON_CONVENTION,
+            "default_flat_rule": DEFAULT_FLAT_RULE,
         }
 
 
@@ -261,6 +289,7 @@ def _fingerprint_payload(plan: CouponPitPlan) -> dict[str, Any]:
         "affected_surfaces": list(COUPON_PIT_AFFECTED_SURFACES),
         "artifact_sha256": dict(sorted(plan.artifact_sha256.items())),
         "terms_export_sha256": plan.terms_export_sha256,
+        "default_events_sha256": plan.default_events_sha256,
         "per_year_carry_digest": plan.per_year_digest,
         "counts": dict(sorted(plan.counts.items())),
         "resolver_sha256": plan.resolver_sha256,
@@ -289,6 +318,7 @@ def _validate_plan(plan: CouponPitPlan, artifacts: CouponPitArtifacts) -> None:
         or plan.artifact_sha256 != dict(sorted(pins["artifact_sha256"].items()))
         or plan.artifact_sha256 != dict(sorted(artifacts.sha256.items()))
         or plan.terms_export_sha256 != pins["terms_export_sha256"]
+        or plan.default_events_sha256 != pins["default_events_sha256"]
         or plan.per_year_digest != pins["per_year_digest"]
         or plan.per_year_digest != _canonical_digest({"per_year": list(plan.per_year)})
         or plan.counts != {key: int(value) for key, value in pins["counts"].items()}
@@ -314,6 +344,7 @@ def build_coupon_pit_plan(artifacts: CouponPitArtifacts, *, from_head_publicatio
         counts=counts,
         artifact_sha256=dict(sorted(artifacts.sha256.items())),
         terms_export_sha256=str(manifest["inputs"]["terms_export"]["sha256"]),
+        default_events_sha256=str(manifest["inputs"]["default_events"]["sha256"]),
         per_year=tuple(dict(item) for item in manifest["per_year"]),
         per_year_digest=str(manifest["per_year_digest"]),
         resolver_sha256=str(manifest["inputs"]["resolver_sha256"]),
@@ -338,6 +369,7 @@ def _marker(plan: CouponPitPlan) -> dict[str, Any]:
         "authorized_code_revision": plan.code_revision,
         "artifact_sha256": dict(sorted(plan.artifact_sha256.items())),
         "terms_export_sha256": plan.terms_export_sha256,
+        "default_events_sha256": plan.default_events_sha256,
         "per_year_carry_digest": plan.per_year_digest,
         "counts": dict(sorted(plan.counts.items())),
         "resolver_sha256": plan.resolver_sha256,
@@ -412,8 +444,23 @@ def _head_window_check(plan: CouponPitPlan) -> str:
     ) THEN RAISE EXCEPTION 'coupon pit repair requires the head to descend from the unit-repair child and the frozen root'; END IF;"""
 
 
+def _dropped_keys_json(artifacts: CouponPitArtifacts) -> str:
+    return _sql_string(json.dumps(list(artifacts.manifest["dropped_keys"]), sort_keys=True, separators=(",", ":")))
+
+
+def _tombstone_ddl_check(phase: str) -> str:
+    """The served returns view must honor ``bond_panel_returns_tombstone`` before a child relies on it."""
+    return f"""    IF pg_catalog.to_regclass('bond_panel_returns_tombstone') IS NULL
+       OR pg_catalog.strpos(pg_catalog.pg_get_viewdef('bond_panel_current_returns_v1'::regclass), 'bond_panel_returns_tombstone') = 0
+    THEN RAISE EXCEPTION 'coupon pit {phase} requires the returns tombstone DDL (apply schemas/bond_panel_v1.sql first)'; END IF;"""
+
+
 def render_coupon_pit_prepare_sql(plan: CouponPitPlan, artifacts: CouponPitArtifacts) -> str:
-    """Create or attest the deterministic prepared child; never move the pointer."""
+    """Create or attest the deterministic prepared child and its tombstones; never move the pointer.
+
+    The child's tombstones are exactly the pinned dropped keys: without them the
+    served view would fall back to the head's row for each dropped key.
+    """
     _validate_plan(plan, artifacts)
     head = _sql_string(plan.from_head_publication_id)
     child = _sql_string(plan.publication_id)
@@ -421,6 +468,7 @@ def render_coupon_pit_prepare_sql(plan: CouponPitPlan, artifacts: CouponPitArtif
     cutoff = _sql_string(plan.cutoff)
     before = plan.counts["rows_at_or_before_cutoff"]
     loaded = before - plan.dropped_rows
+    dropped_keys = _dropped_keys_json(artifacts)
     return f"""\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL ROLE worker_writer;
@@ -434,6 +482,7 @@ DECLARE
 BEGIN
 {_pointer_check(plan, "prepare")}
 {_head_window_check(plan)}
+{_tombstone_ddl_check("prepare")}
     IF EXISTS (
         SELECT 1 FROM bond_panel_publications prior
         WHERE prior.publication_status = 'validated' AND {_marker_containment(plan, "prior")}
@@ -473,6 +522,17 @@ BEGIN
           AND candidate.source_lineage @> jsonb_build_object('coupon_pit_repair', {marker}::jsonb)
           AND candidate.gate_evidence @> jsonb_build_object('coupon_pit_repair', {marker}::jsonb)
     ) THEN RAISE EXCEPTION 'non-identical or non-resumable coupon-pit publication'; END IF;
+    INSERT INTO bond_panel_returns_tombstone (publication_id, month, cusip_id, reason, payload)
+    SELECT {child}::uuid, dropped.month, dropped.cusip_id, {_sql_string(COUPON_PIT_TOMBSTONE_REASON)},
+           jsonb_build_object('coupon_pit_repair', {marker}::jsonb)
+    FROM jsonb_to_recordset({dropped_keys}::jsonb) AS dropped(month date, cusip_id text)
+    ON CONFLICT (publication_id, month, cusip_id) DO NOTHING;
+    IF (SELECT count(*) FROM bond_panel_returns_tombstone WHERE publication_id = {child}::uuid) <> {plan.dropped_rows}
+       OR EXISTS (
+           SELECT month, cusip_id FROM bond_panel_returns_tombstone WHERE publication_id = {child}::uuid
+           EXCEPT SELECT month, cusip_id FROM jsonb_to_recordset({dropped_keys}::jsonb) AS dropped(month date, cusip_id text)
+       )
+    THEN RAISE EXCEPTION 'coupon pit tombstones must equal the pinned dropped keys'; END IF;
 END
 $coupon_pit_prepare$;
 COMMIT;
@@ -668,7 +728,7 @@ def render_coupon_pit_finalize_sql(plan: CouponPitPlan, artifacts: CouponPitArti
     marker = _sql_json(_marker(plan))
     cutoff = _sql_string(plan.cutoff)
     aggregates = _sql_string(_expected_per_year_json(plan))
-    dropped_keys = _sql_string(json.dumps(list(artifacts.manifest["dropped_keys"]), sort_keys=True, separators=(",", ":")))
+    dropped_keys = _dropped_keys_json(artifacts)
     invalid_identity = (
         "f.distribution_rule IS NULL"
         " OR f.reference_cusip9 IS NULL OR btrim(f.reference_cusip9) = ''"
@@ -742,6 +802,11 @@ GROUP BY f.month;"""
                 FROM bond_panel_returns source_fact
                 JOIN pg_temp.coupon_pit_source_ancestry ancestry USING (publication_id)
                 WHERE source_fact.month = v_month
+                  AND NOT EXISTS (
+                      SELECT 1 FROM bond_panel_returns_tombstone tomb
+                      JOIN pg_temp.coupon_pit_source_ancestry tomb_ancestry USING (publication_id)
+                      WHERE tomb.month = source_fact.month AND tomb.cusip_id = source_fact.cusip_id
+                        AND tomb_ancestry.depth <= ancestry.depth)
                 ORDER BY source_fact.month, source_fact.cusip_id, ancestry.depth"""
     coverage_blocks.append(
         f"""        -- Keys identical to the head projection; price_return and the typed exit
@@ -797,7 +862,7 @@ SET LOCAL statement_timeout = {_sql_string(COUPON_PIT_FINALIZE_STATEMENT_TIMEOUT
 -- Freeze the four fact tables for the whole validation window (SHARE blocks
 -- writers, allows readers); fixed order; an operator-confirmed quiet window and
 -- a 5s lock timeout fail instead of queueing an incident.
-LOCK TABLE bond_panel_snapshot, bond_panel_rv_signal, bond_panel_returns, bond_panel_rating_pit IN SHARE MODE;
+LOCK TABLE bond_panel_snapshot, bond_panel_rv_signal, bond_panel_returns, bond_panel_rating_pit, bond_panel_returns_tombstone IN SHARE MODE;
 DO $coupon_pit_finalize$
 DECLARE
     v_month date;
@@ -812,8 +877,10 @@ DECLARE
     v_status_rows integer;
     v_cas_rows integer;
     v_last_closed date;
+    v_served bigint;
     v_started timestamptz := clock_timestamp();
 BEGIN
+{_tombstone_ddl_check("finalize")}
     PERFORM 1 FROM bond_panel_publications WHERE publication_id = {child}::uuid FOR UPDATE;
     PERFORM 1 FROM bond_panel_app_pointer WHERE product = {_sql_string(PRODUCT)} FOR UPDATE;
     IF NOT EXISTS (
@@ -862,6 +929,14 @@ BEGIN
         SELECT 1 FROM bond_panel_returns f JOIN pg_temp.coupon_pit_dropped_keys dropped USING (month, cusip_id)
         WHERE f.publication_id = {child}::uuid
     ) THEN RAISE EXCEPTION 'coupon pit dropped key present in the child'; END IF;
+    -- ... and tombstoned in it, so the served view cannot fall back to the head's row.
+    IF EXISTS (
+        SELECT month, cusip_id FROM bond_panel_returns_tombstone WHERE publication_id = {child}::uuid
+        EXCEPT SELECT month, cusip_id FROM pg_temp.coupon_pit_dropped_keys
+    ) OR EXISTS (
+        SELECT month, cusip_id FROM pg_temp.coupon_pit_dropped_keys
+        EXCEPT SELECT month, cusip_id FROM bond_panel_returns_tombstone WHERE publication_id = {child}::uuid
+    ) THEN RAISE EXCEPTION 'coupon pit tombstones must equal the pinned dropped keys'; END IF;
     CREATE TEMP TABLE coupon_pit_month_stats (surface text NOT NULL, month date NOT NULL, rows bigint NOT NULL, bad_identity boolean, PRIMARY KEY (surface, month)) ON COMMIT DROP;
 {summaries}
     RAISE NOTICE 'coupon pit finalize: summaries filled months=% elapsed_ms=%', (SELECT count(*) FROM pg_temp.coupon_pit_month_stats), round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
@@ -929,6 +1004,17 @@ BEGIN
         WHERE pointer.product = {_sql_string(PRODUCT)} AND pointer.publication_id = {child}::uuid AND candidate.publication_status = 'validated'
     ) THEN RAISE EXCEPTION 'coupon pit pointer compare-and-swap lost'; END IF;
     RAISE NOTICE 'coupon pit finalize: status_rows=% cas_rows=% elapsed_ms=%', v_status_rows, v_cas_rows, round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
+    -- The served surface after the switch: no dropped key falls back to an
+    -- ancestor, and the view holds exactly the rows the child declares.
+    IF EXISTS (
+        SELECT 1 FROM bond_panel_current_returns_v1 served
+        JOIN pg_temp.coupon_pit_dropped_keys dropped USING (month, cusip_id)
+    ) THEN RAISE EXCEPTION 'coupon pit dropped key still served after the pointer switch'; END IF;
+    SELECT count(*) INTO v_served FROM bond_panel_current_returns_v1;
+    IF v_served <> (SELECT returns_rows FROM bond_panel_publications WHERE publication_id = {child}::uuid) THEN
+        RAISE EXCEPTION 'coupon pit served returns count differs from the child declaration (%)', v_served;
+    END IF;
+    RAISE NOTICE 'coupon pit finalize: served returns=% elapsed_ms=%', v_served, round(extract(epoch FROM clock_timestamp() - v_started) * 1000);
 END
 $coupon_pit_finalize$;
 COMMIT;

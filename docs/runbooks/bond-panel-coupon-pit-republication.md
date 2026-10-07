@@ -3,14 +3,16 @@
 The ordered procedure for republishing the historical returns surface of the
 bond panel under the one coupon convention the resolver now implements
 (contractual coupon first, point-in-time expanding median of the price/YTM
-inversion otherwise), as a governed child publication that extends the current
-head and keeps every other fact verbatim.
+inversion otherwise) and the owner's default-flat rule (a bond in a confirmed
+default pays no coupon: carry 0 from the default month), as a governed child
+publication that extends the current head and keeps every other fact verbatim.
 
 **Every step in §3 that touches production requires explicit owner
 authorization, step by step. Nothing in this runbook is authorized by being
 written here.** The engineering gates it relies on are the commits of the PR
 that introduced it (`fix/bond-panel-coupon-pit`): the resolver fix, the
-artifact builder, the terms export, and the emitter.
+default-flat rule, the artifact builder, the terms export, the returns
+tombstone DDL, and the emitter.
 
 Related: the unit-repair child (T2.1) in `scripts/backfill_bond_panel_history.py`
 (the transport this one mirrors), [`bond-market-implied-rating-republication.md`](bond-market-implied-rating-republication.md)
@@ -36,10 +38,60 @@ The resolver now carries the convention Light adopted for BOND-01
 `fix/bond-optimizer-pinned-audit` @ `b61f019e`): the finite contractual
 `coupon_pct` where the row carries one, else the expanding (months ≤ t) median
 of the inversion per CUSIP in month order. The Stage 6 cron is invariant under
-the change (its input is one anchor month plus the closed month, and the
-contractual coupon is present from 2026-07), so **the deploy does not move any
-live publication**; only the history needs republishing, and that is what this
-runbook does.
+the coupon change (its input is one anchor month plus the closed month, and the
+contractual coupon is present from 2026-07). It is **not** invariant under the
+default-flat rule below: from the deploy on, a closed-month return of a bond in
+a confirmed default known to the elected implied-rating publication carries 0
+instead of `coupon / 12 / P`. That is the owner's decision applied forward; the
+history needs republishing, and that is what this runbook does.
+
+### Default-flat rule (owner decision, 2026-10-07)
+
+A bond in default trades flat and pays no coupon. Inside a confirmed default
+window the carry is 0 and the monthly return is the clean-price return alone;
+before the window the contractual coupon (or the PIT fallback) applies. One
+implementation, `src.bonds.panel_resolvers.default_flat_windows` /
+`default_flat`, used by `monthly_returns` (live worker) and by the builder.
+
+- **Source.** The market-implied D state of `bond_market_implied_rating_v1`,
+  the same series Light's market EL consumes. The legal-evidence products
+  (`bond_default_events` / `bond_credit_evidence_v1`, and the owner-evidence
+  bridge) are not used: by their own policy they are diagnostic, never the
+  market-PD numerator, they are human-adjudicated and sparse, and no
+  historical extract of them exists to rebuild 2002 → 2026.
+- **Date field: `d_event_month` of the confirmed episode.** Coupons stop at
+  the missed payment or filing, which the event (candidate) month dates, not
+  at the confirmation 0–3 months later (the round-002 rows: 619 episodes
+  confirmed in the event month, 332 one month later, 42 two, 13 three). The
+  first stored D row (the confirmation month, the one Light's market EL
+  counts) stands in only where `d_event_month` is null, which the
+  publication's CHECK makes unreachable (count recorded in the manifest,
+  `event_month_source`). Every artifact names its field: `default_flat.date_field`.
+- **What counts.** Only confirmed episodes (`d_confirmed`, i.e. `D` rows): a
+  `d_candidate` month that never confirms keeps its coupon, however low the
+  price. The implied model has no distressed-exchange or legal-event type, so
+  an exchange counts exactly when its prices confirm D.
+- **Cure.** The implied model has one: `p_cure` for `n_cure` consecutive
+  witnessed months opens a rated spell. The window ends (exclusive) at the
+  first witnessed rated row after the episode's last D row, so carry resumes
+  at the cure. Losing the witness is not a cure: a `WITHDRAWN`
+  (`default_absorbing`), `NOT_RATED` or carried row keeps the window open, so
+  a thinly traded defaulted name stays flat until it is re-rated.
+- **Point in time.** The live worker (Stage 6) reads the pointed
+  implied-rating publication, which Stage 7 rebuilds *after* the panel from
+  the previous panel: at closed month t it knows months ≤ t − 1, so month t is
+  flat only under a default confirmed by then (`point_in_time` basis: from the
+  confirmation month). Stage 7 is default-off; an absent or unpointed product
+  leaves the carry contractual, and the publication lineage says which source
+  it used (`default_flat_source`, `default_flat_policy_digest`,
+  `default_flat_last_month`, `default_flat_closed_rows`).
+- **Historical rebuild.** The builder applies realized events
+  (`realized` basis: from `d_event_month`), since the history is rebuilt
+  knowing the event; the manifest counts the rows that sit between an event
+  and its confirmation (`default_flat.rows_before_confirmation`), i.e. what a
+  point-in-time basis would still have priced with the coupon.
+- **Typed exits** (matured/distressed/unexplained rows) keep their own basis
+  and are copied verbatim.
 
 ### Stored basis of the history (what the republication replaces)
 
@@ -56,8 +108,9 @@ That is the proof that the inputs are the ones the history was built from.
 
 ### What the republication changes
 
-Only `carry_return`, `total_return` and `suspect` on observed rows with
-`month <= 2026-06-01`. Keys, `price_return`, typed-exit rows, the distribution
+Only `carry_return`, `total_return` and `suspect` (and a `carry_basis` /
+`default_event_month` payload key on default-flat rows) on observed rows with
+`month <= 2026-06-01`, plus one returns tombstone per dropped key (below). Keys, `price_return`, typed-exit rows, the distribution
 identity columns, the payload (plus a `coupon_pit_repair` marker) and every
 row after the cutoff are verbatim. The DDL's generic pointer rules admit the
 child (same config, same window, parent = current head, dual-series identity);
@@ -81,8 +134,24 @@ child adds only its own closed month; the history always resolves to the
 unit-repair child `65156481-…`), which is why an export taken under `71b672c8`
 is still the correct input today.
 
+The market-implied default source: the round-002 implied-rating rows
+`C:\Users\andre\AppData\Local\investintell\bond_market_implied_rating_round_002\export_20260919T164115Z\round002_cache\baseline_implied_rows.parquet`
+(3,375,028 rows, 2002-07 → 2026-08, sha256
+`a7fde442abb529f3e6291ba41871e0d96cd3a0aa75d9654d309ec5e3857eed7a`, pinned
+in `contracts/bond_market_implied_rating_round002_artifact.json`; policy digest
+`28f70b9b…`, producer `8d8513be…`, publication identity `bc13a5e4-…`): 1,006
+confirmed episodes on 903 CUSIPs. **Owner call:** HEAD's producer has moved
+since round 002 (policy digest `4b752a3f…`; calendar-consecutive cures,
+`c12f6cd`), and the round's activation receipt records no deploy or flag
+operation, so these rows are not proven to be the publication Light reads
+today. The D episodes do not depend on the anchor (only on price, spread,
+witness and the default/cure rules), but the cure rule changed. Either accept
+the pinned round-002 rows, or export the elected publication's rows read-only
+and pass that file instead; the builder records whichever file it used
+(sha256, policy digest) and the emitter binds it.
+
 Plus the owner's read-only `bond_reference_terms` coupon export (§3.1) — the
-only production read the republication needs. On 2026-10-07 the table held
+only other input. On 2026-10-07 the table held
 10,206 rows with a coupon (9,971 `Fixed`, 42 `Variable`, 193 untyped;
 `max(loaded_at)` 2026-08-08). The builder applies `coupon_rate` without a
 `coupon_type` filter, exactly as `build_db_monthly_panel` does for the live
@@ -98,23 +167,42 @@ live tail disagree.
 
 - `bond_monthly_returns.parquet` — same 13 columns and row order as v2;
 - `coupon_basis.parquet` — per repriced row: previous price, stored coupon,
-  new coupon, basis (`contractual` | `pit`), carry before/after, delta in bp;
-- `manifest.json` — `contract = returns_coupon_pit_repair_v1`, `mode`
-  (`contractual_then_pit`; the emitter refuses `pit_only_preview`), input and
-  output digests, the terms export digest and coverage, the resolver's own
-  sha256, counts (`rows_at_or_before_cutoff`, `repriced_rows`,
-  `contractual_rows`, `pit_rows`, `dropped_rows_no_pit_basis`, …),
+  new coupon, coupon basis (`contractual` | `pit` | `none`), `carry_basis`
+  (`coupon` | `default_flat`), `default_event_month`, the coupon carry,
+  carry before/after, delta in bp;
+- `manifest.json` — `contract = returns_coupon_pit_repair_v2`, `mode`
+  (`contractual_then_pit_default_flat`; the emitter refuses every other mode:
+  `pit_only_preview[_default_flat]`, `contractual_then_pit`), input and
+  output digests, the terms export and default-events digests and coverage,
+  the resolver's own sha256, the `default_flat` block (rule, basis, date
+  field, rows, CUSIPs, rows before confirmation, carry removed), counts
+  (`rows_at_or_before_cutoff`, `repriced_rows`, `contractual_rows`,
+  `pit_rows`, `default_flat_rows`, `dropped_rows_no_pit_basis`, …),
   reconciliation maxima, the delta distribution and the per-year carry sums
   (`per_year`, `per_year_digest`) the finalize gate compares against.
+
+The default-flat rule changes the carry of every row inside a window, so it
+is part of the artifact identity: contract `…_v2`, manifest version `…_v2`,
+code revision `t3_returns_coupon_pit_repair_v2`, and the default-events sha256
+in the child fingerprint.
 
 ### Identity (`scripts/backfill_bond_panel_coupon_pit_repair.py`)
 
 `publication_id = uuid5(bond_panel_v1:coupon-pit-repair:<fingerprint>)` where
 the fingerprint binds the contract, the head bound at plan time, the root base
 and unit-repair child ids, the config hash `1863d3d5fa3a0edf`, the cutoff, the
-three artifact digests, the terms export digest, the per-year carry digest,
-the pinned counts and the resolver sha256. `code_revision =
-t3_returns_coupon_pit_repair_v1`. The frozen authorization is
+three artifact digests, the terms export and default-events digests, the
+per-year carry digest, the pinned counts, the dropped keys and the resolver
+sha256. `code_revision = t3_returns_coupon_pit_repair_v2`.
+
+**Dropped keys are tombstoned, not omitted.** A key with no coupon basis at or
+before its month (and not in default) has no return under the resolver. The
+served `bond_panel_current_returns_v1` overlays the ancestry by nearest depth,
+so a key the child merely omitted would be served from the head, with its
+look-ahead carry. The child therefore writes one `bond_panel_returns_tombstone`
+row per pinned dropped key; the view hides every row of a tombstoned key at the
+tombstone's depth or deeper (a later child that publishes the key again is
+served normally). The frozen authorization is
 `COUPON_PIT_EXPECTED_ARTIFACT` (step 3.3); while it is `None` the emitter
 refuses with `coupon_pit_artifact_unpinned`.
 
@@ -124,7 +212,7 @@ refuses with `coupon_pit_artifact_unpinned`.
 |---|---|---|
 | Light `backend/app/repositories/bond_panel.py` (`_HISTORY_RETURNS_SQL`) → `services/bond_quality_v1.py` (`_signal_joined`, `factor_returns` → `bond_factor_returns_v1`, `factor_returns_digest`, the `snapshot_rv_returns_rating_watermark…` identity), `services/bond_backtest.py` (`expanding_rv_beta`, folds), `services/bond_recommendation_refresh.py` | `bond_panel_current_returns_v1_mat` | **re-run the bond recommendation refresh** (quality, factor returns, backtest); the pinned factor-returns digest and the quality publication identity move |
 | Workers `bond_panel_current_returns_v1_mat` | refreshed by the finalize step and by the daily chain | nothing to re-run |
-| Workers implied rating (`src/bonds/implied_rating.py`), EL anchor, serving (`serving_materializer`) | `spread_final_bps`, `mod_dur`, prices — never the carry | not affected; `contracts/bond_market_implied_rating_round002_*` pin `bond_panel_live.parquet` only |
+| Workers implied rating (`src/bonds/implied_rating.py`), EL anchor, serving (`serving_materializer`) | `spread_final_bps`, `mod_dur`, prices — never the carry | not affected; `contracts/bond_market_implied_rating_round002_*` pin `bond_panel_live.parquet` only. The dependency runs the other way: the panel returns read the implied D state (default-flat), never the reverse, so there is no cycle |
 | Workers `fund_factors` / `factor_model` | NAV returns, not bond returns | not affected |
 
 ## 3. Procedure (ordered; each production step needs its own owner authorization)
@@ -143,6 +231,8 @@ refuses with `coupon_pit_artifact_unpinned`.
   refresh: outside 05:00–09:00 UTC).
 - The v2 artifact directory above is present and its digests match (the
   builder refuses otherwise).
+- The returns tombstone DDL is applied (§3.0b); prepare and finalize refuse
+  otherwise (`… requires the returns tombstone DDL`).
 - **The emitted SQL has been shape-tested only** (string assertions in
   `tests/test_backfill_bond_panel_coupon_pit_repair.py`); it has not yet run
   against PostgreSQL. Before step 3.5, the pin follow-up (3.3) runs the full
@@ -152,6 +242,20 @@ refuses with `coupon_pit_artifact_unpinned`.
   `timescale/timescaledb` container and attaches the psql transcript. The
   finalize DO block (temp tables, the per-year carry upsert, the FULL JOIN
   key gate) is the part to prove there.
+
+### 3.0b Apply the tombstone DDL — PRODUCTION DDL, OWNER AUTHORIZATION REQUIRED
+
+```powershell
+python scripts\backfill_bond_panel_history.py --emit-schema | psql …
+```
+
+Idempotent and additive: creates `bond_panel_returns_tombstone` (insert-only
+while its publication is prepared, never beside a returns row of the same key
+in the same publication) and replaces `bond_panel_current_returns_v1` with the
+same columns plus the tombstone filter. No existing publication has a
+tombstone, so the served rows do not change; verify with
+`SELECT count(*) FROM bond_panel_current_returns_v1` before and after (equal)
+and refresh nothing. Nothing in the cron path installs this file.
 
 ### 3.1 Owner export of the contractual coupons — READ-ONLY (owner runs it)
 
@@ -182,12 +286,17 @@ From the merged `main` checkout, one process at a time (the build holds the
 python scripts\build_bond_panel_coupon_pit_returns.py `
   --artifact-dir C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\unit_repair_v2 `
   --terms C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\terms_export_YYYYMMDD\bond_reference_terms_coupons.csv `
+  --default-events C:\Users\andre\AppData\Local\investintell\bond_market_implied_rating_round_002\export_20260919T164115Z\round002_cache\baseline_implied_rows.parquet `
   --out C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\unit_repair_v2\coupon_pit_v3
 ```
 
 Review `manifest.json` before anything else happens:
 
-- `mode == contractual_then_pit`; `counts.dropped_rows_no_pit_basis` and
+- `mode == contractual_then_pit_default_flat`; `default_flat.date_field ==
+  d_event_month`, `inputs.default_events` (sha256, policy digest, episodes,
+  `event_month_source` all `d_event_month`), `default_flat.rows` / `cusips`
+  and `rows_before_confirmation`;
+- `counts.dropped_rows_no_pit_basis` and
   `dropped_keys`: rows whose CUSIP has no finite inversion up to that month
   and no contractual coupon get no return row (the resolver's own outcome —
   the stored history priced them off later months). The PIT-only preview
@@ -215,14 +324,18 @@ Fill `COUPON_PIT_EXPECTED_ARTIFACT` in
 COUPON_PIT_EXPECTED_ARTIFACT = {
     "artifact_sha256": {"bond_monthly_returns.parquet": "…", "coupon_basis.parquet": "…", "manifest.json": "…"},
     "terms_export_sha256": "…",   # inputs.terms_export.sha256
+    "default_events_sha256": "…", # inputs.default_events.sha256
     "per_year_digest": "…",       # per_year_digest
+    "dropped_keys_digest": "…",   # dropped_keys_digest
     "counts": {"returns_rows_out": …, "rows_at_or_before_cutoff": …, "rows_after_cutoff": …,
                "scope_rows": …, "repriced_rows": …, "exit_rows_at_or_before_cutoff": …},
 }
 ```
 
 and flip `test_authorization_constants_are_frozen_until_the_artifact_exists`
-to assert those values. Merge in the operator's quiet window (merging workers
+to assert those values. Every key above is required: a missing one refuses
+with `coupon_pit_pin_keys_missing:<key>` (the template once lacked
+`dropped_keys_digest`, and `--plan` raised a bare `KeyError`). Merge in the operator's quiet window (merging workers
 `main` redeploys git-connected crons); nothing in the deploy reads the pins.
 
 ### 3.4 Plan — LOCAL, read-only
@@ -245,8 +358,10 @@ config `1863d3d5fa3a0edf`, window `2002-07-01 … > 2026-06-01`, open month =
 closed + 1; ancestry reaches the unit-repair child and the frozen root; the
 current view holds exactly `rows_at_or_before_cutoff` returns rows at or
 before the cutoff. Inserts the `prepared` child with the live counts of the
-three verbatim surfaces and `rows_at_or_before_cutoff + (view rows after the
-cutoff)` returns rows. Idempotent; never moves the pointer.
+three verbatim surfaces and `rows_at_or_before_cutoff − dropped + (view rows
+after the cutoff)` returns rows, and one `bond_panel_returns_tombstone` row per
+pinned dropped key (the tombstone set must equal the pinned keys). Idempotent;
+never moves the pointer.
 
 ### 3.6 Verbatim copies — PRODUCTION WRITES, OWNER AUTHORIZATION REQUIRED
 
@@ -280,18 +395,23 @@ repair); per month, the child's returns keys equal the head projection's,
 the cutoff are identical in full, repriced rows carry the marker and satisfy
 `total_return = price_return + carry_return` (1e-12) and
 `suspect = |total| > 0.5`; per year, rows and the carry sums before AND after
-equal the artifact manifest (1e-6). Then `prepared → validated`, pointer CAS
-head → child, and after COMMIT the four `*_mat` refreshes in the frozen order
-(own 20 min timeout; cannot undo the CAS).
+equal the artifact manifest (1e-6); the child's tombstones equal the pinned
+dropped keys. Then `prepared → validated`, pointer CAS head → child, and,
+still inside the transaction, the served view is checked: no dropped key is
+served and `count(*)` equals the child's declared `returns_rows` (otherwise
+the CAS rolls back). After COMMIT the four `*_mat` refreshes in the frozen
+order (own 20 min timeout; cannot undo the CAS).
 
 ### 3.9 Verification — READ-ONLY
 
 - `bond_panel_app_pointer` points at the child; the child is `validated`;
-  `bond_panel_current_returns_v1_mat` count equals the child's `returns_rows`.
-- Spot CUSIPs from the production sample: `29078EAA3` (carry ≈ unchanged,
-  +0.01–0.04 bp/mo), `87952VAM8` (carry moves from the 1.398 % implied coupon
-  to the 6.5 % contractual one: +40 … +150 bp/mo at prices 28–70),
-  `00077TAB0` (no terms: PIT basis, unchanged within 0.01 bp).
+  `bond_panel_current_returns_v1_mat` count equals the child's `returns_rows`,
+  and none of the pinned dropped keys is in it.
+- Spot CUSIPs from the production sample: `29078EAA3` (7.995 % contractual
+  coupon, ≈ the stored one, until its default; carry 0 from its
+  `d_event_month` 2024-06), `87952VAM8` (6.5 % contractual coupon until its
+  default; carry 0 from its `d_event_month` 2022-11, see §4.3), `00077TAB0`
+  (no terms, no default: PIT basis, unchanged within 0.01 bp).
 - Run the Light bond recommendation refresh (§2) and confirm the new
   `factor_returns_digest`.
 

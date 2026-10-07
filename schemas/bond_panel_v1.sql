@@ -192,6 +192,23 @@ CREATE TABLE IF NOT EXISTS bond_panel_returns (
     CHECK ((exit_basis = 'observed') = (exit_reason IS NULL))
 );
 
+-- Returns keys a publication withdraws from the served surface (2026-10-07).
+-- The current_* views overlay the ancestry by nearest depth, so a key a child
+-- merely omits is served from its parent. A tombstone is the explicit "this
+-- publication has no return at this key": bond_panel_current_returns_v1 hides
+-- every row of the key at the tombstone's depth or deeper, while a later child
+-- that publishes the key again (smaller depth) is served normally. Written only
+-- while the owning publication is prepared, never beside a returns row of the
+-- same key in the same publication, and immutable like every fact table.
+CREATE TABLE IF NOT EXISTS bond_panel_returns_tombstone (
+    publication_id uuid NOT NULL REFERENCES bond_panel_publications(publication_id) ON DELETE RESTRICT,
+    month date NOT NULL,
+    cusip_id text NOT NULL,
+    reason text NOT NULL CHECK (btrim(reason) <> ''),
+    payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+    PRIMARY KEY (publication_id, month, cusip_id)
+);
+
 -- One generic static rating mapping row per CUSIP/month.
 CREATE TABLE IF NOT EXISTS bond_panel_rating_pit (
     publication_id uuid NOT NULL REFERENCES bond_panel_publications(publication_id) ON DELETE RESTRICT,
@@ -284,6 +301,22 @@ BEGIN
         SELECT 1 FROM bond_panel_publications p
         WHERE p.publication_id = NEW.publication_id AND p.publication_status = 'prepared'
     ) THEN RAISE EXCEPTION 'facts only write during prepared lifecycle'; END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION bond_panel_assert_returns_tombstone()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'immutable bond panel returns tombstones'; END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM bond_panel_publications p
+        WHERE p.publication_id = NEW.publication_id AND p.publication_status = 'prepared'
+    ) THEN RAISE EXCEPTION 'returns tombstones only write during prepared lifecycle'; END IF;
+    IF EXISTS (
+        SELECT 1 FROM bond_panel_returns f
+        WHERE f.publication_id = NEW.publication_id AND f.month = NEW.month AND f.cusip_id = NEW.cusip_id
+    ) THEN RAISE EXCEPTION 'returns tombstone conflicts with a returns row of the same publication'; END IF;
     RETURN NEW;
 END;
 $$;
@@ -701,6 +734,9 @@ FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_immutable();
 DROP TRIGGER IF EXISTS bond_panel_returns_immutable ON bond_panel_returns;
 CREATE TRIGGER bond_panel_returns_immutable BEFORE INSERT OR UPDATE OR DELETE ON bond_panel_returns
 FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_immutable();
+DROP TRIGGER IF EXISTS bond_panel_returns_tombstone_immutable ON bond_panel_returns_tombstone;
+CREATE TRIGGER bond_panel_returns_tombstone_immutable BEFORE INSERT OR UPDATE OR DELETE ON bond_panel_returns_tombstone
+FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_returns_tombstone();
 DROP TRIGGER IF EXISTS bond_panel_repair_tail_attestation_immutable ON bond_panel_repair_tail_batch_attestation;
 CREATE TRIGGER bond_panel_repair_tail_attestation_immutable BEFORE INSERT OR UPDATE OR DELETE ON bond_panel_repair_tail_batch_attestation
 FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_repair_tail_attestation();
@@ -744,6 +780,10 @@ WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, conf
     UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, p.config_hash AS config_hash FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND (p.config_hash = a.config_hash OR (btrim(a.config_hash::text) = '1863d3d5fa3a0edf' AND btrim(p.config_hash::text) = '0c0d78a866bc1090'))
 )
 SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_returns f USING (publication_id)
+WHERE NOT EXISTS (
+    SELECT 1 FROM ancestry tomb_a JOIN bond_panel_returns_tombstone t USING (publication_id)
+    WHERE t.month = f.month AND t.cusip_id = f.cusip_id AND tomb_a.depth <= a.depth
+)
 ORDER BY f.month, f.cusip_id, a.depth;
 
 CREATE OR REPLACE VIEW bond_panel_current_rating_pit_v1 AS
@@ -761,9 +801,11 @@ ALTER TABLE bond_panel_snapshot OWNER TO worker_writer;
 ALTER TABLE bond_panel_rv_signal OWNER TO worker_writer;
 ALTER TABLE bond_panel_returns OWNER TO worker_writer;
 ALTER TABLE bond_panel_rating_pit OWNER TO worker_writer;
+ALTER TABLE bond_panel_returns_tombstone OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_publication_transition() OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_parent() OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_immutable() OWNER TO worker_writer;
+ALTER FUNCTION bond_panel_assert_returns_tombstone() OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_repair_tail_attestation() OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_pointer_validated() OWNER TO worker_writer;
 ALTER VIEW bond_panel_current_snapshot_v1 OWNER TO worker_writer;
@@ -777,6 +819,7 @@ REVOKE ALL ON TABLE bond_panel_snapshot FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_rv_signal FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_returns FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_rating_pit FROM PUBLIC;
+REVOKE ALL ON TABLE bond_panel_returns_tombstone FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_current_snapshot_v1 FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_current_rv_signal_v1 FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_current_returns_v1 FROM PUBLIC;

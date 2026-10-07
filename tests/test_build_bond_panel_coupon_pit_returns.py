@@ -220,3 +220,95 @@ def test_cli_refuses_unpinned_inputs_without_touching_the_output(tmp_path: Path,
     assert builder.main(["--artifact-dir", str(directory), "--out", str(tmp_path / "out")]) == 2
     assert "artifact_sha256_mismatch" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
+
+
+IMPLIED_POLICY = {"policy_version": "bond_market_implied_rating_policy_v1", "policy_digest": "ab" * 32}
+
+
+def _implied_rows_file(tmp_path: Path, extra: list[dict[str, object]] | None = None) -> Path:
+    """bond_market_implied_rating_v1 rows: AAA candidate 2022-12, confirmed 2023-01, never cured;
+    DDD confirmed (hard price) 2021-02, cured 2021-04; BBB a candidate that never confirms."""
+    def row(cusip: str, month: str, bucket: str, witnessed: bool = True, spell: int = 1, candidate: bool = False, event: str | None = None) -> dict[str, object]:
+        return {"month": pd.Timestamp(month), "cusip_id": cusip, "implied_bucket": bucket, "witnessed": witnessed, "spell_id": spell,
+                "d_candidate": candidate, "d_confirmed": bucket == "D", "d_event_month": pd.Timestamp(event) if event else pd.NaT, **IMPLIED_POLICY}
+    rows = [
+        row("AAA000001", "2022-11-01", "CCC"),
+        row("AAA000001", "2022-12-01", "CCC", candidate=True),
+        row("AAA000001", "2023-01-01", "D", candidate=True, event="2022-12-01"),
+        row("AAA000001", "2023-02-01", "D", event="2022-12-01"),
+        row("DDD000004", "2021-02-01", "D", event="2021-02-01"),
+        row("DDD000004", "2021-03-01", "D", event="2021-02-01"),
+        row("DDD000004", "2021-04-01", "BB", spell=2),
+        row("BBB000002", "2021-06-01", "CCC", candidate=True),
+        *(extra or []),
+    ]
+    path = tmp_path / "implied_rows.parquet"
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame(rows), preserve_index=False), path)
+    return path
+
+
+def test_confirmed_defaults_trade_flat_from_the_event_month(tmp_path: Path) -> None:
+    directory, hashes, _panel, stored = _artifact_dir(tmp_path)
+    events = _implied_rows_file(tmp_path)
+    plain = builder.build(directory, tmp_path / "plain", None, expected_hashes=hashes)
+
+    manifest = builder.build(directory, tmp_path / "flat", None, default_events_path=events, expected_hashes=hashes)
+
+    produced = pq.read_table(tmp_path / "flat" / builder.OUTPUT_RETURNS).to_pandas()
+    baseline = pq.read_table(tmp_path / "plain" / builder.OUTPUT_RETURNS).to_pandas()
+    for frame in (produced, baseline):
+        frame["month"] = pd.to_datetime(frame["month"])
+    assert manifest["mode"] == "pit_only_preview_default_flat"
+    assert manifest["contract"] == "returns_coupon_pit_repair_v2"
+    assert manifest["inputs"]["default_events"]["sha256"] == hashlib.sha256(events.read_bytes()).hexdigest()
+    assert manifest["inputs"]["default_events"]["policy_digest"] == IMPLIED_POLICY["policy_digest"]
+    assert manifest["inputs"]["default_events"]["episodes"] == 2
+    assert manifest["inputs"]["default_events"]["confirmation_lag_months"] == {"0": 1, "1": 1}
+    # AAA: flat from the event (candidate) month 2022-12 to the cutoff; the
+    # contractual/PIT carry before it is the plain build's, price returns verbatim.
+    aaa = produced[produced["cusip_id"].eq("AAA000001")].set_index("month")
+    aaa_plain = baseline[baseline["cusip_id"].eq("AAA000001")].set_index("month")
+    flat_months = (aaa.index >= pd.Timestamp("2022-12-01")) & (aaa.index <= pd.Timestamp("2026-06-01"))
+    assert (aaa.loc[flat_months, "carry_return"] == 0.0).all()
+    assert aaa.loc[flat_months, "total_return"].to_numpy() == pytest.approx(aaa.loc[flat_months, "price_return"].to_numpy())
+    assert aaa.loc[~flat_months & (aaa.index <= pd.Timestamp("2026-06-01")), "carry_return"].to_numpy() == pytest.approx(
+        aaa_plain.loc[~flat_months & (aaa_plain.index <= pd.Timestamp("2026-06-01")), "carry_return"].to_numpy(), abs=0)
+    assert aaa["price_return"].to_numpy() == pytest.approx(aaa_plain["price_return"].to_numpy(), abs=0)
+    # The live worker's post-cutoff row stays verbatim.
+    assert aaa.loc[pd.Timestamp("2026-07-01"), "carry_return"] == pytest.approx(5.0 / 12 / 70.0)
+    # DDD: the two rows with no PIT basis are flat, so they get a return row
+    # (price return alone) instead of being dropped; the cure (2021-04) restores carry.
+    assert manifest["counts"]["dropped_rows_no_pit_basis"] == 0 and manifest["dropped_keys"] == []
+    assert len(produced) == len(stored)
+    ddd = produced[produced["cusip_id"].eq("DDD000004") & produced["exit_basis"].eq("observed")].set_index("month")
+    assert ddd.loc[[pd.Timestamp("2021-02-01"), pd.Timestamp("2021-03-01")], "carry_return"].tolist() == [0.0, 0.0]
+    assert ddd.loc[pd.Timestamp("2021-04-01"), "carry_return"] > 0
+    # BBB's candidate never confirmed: untouched.
+    bbb = produced[produced["cusip_id"].eq("BBB000002")]
+    assert bbb["carry_return"].to_numpy() == pytest.approx(baseline[baseline["cusip_id"].eq("BBB000002")]["carry_return"].to_numpy(), abs=0)
+    flat_payloads = [json.loads(p) for p in produced.loc[produced["carry_return"].eq(0.0), "payload"]]
+    assert {p["carry_basis"] for p in flat_payloads} == {"default_flat"}
+    assert {p["default_event_month"] for p in flat_payloads} == {"2022-12-01", "2021-02-01"}
+    basis = pq.read_table(tmp_path / "flat" / builder.OUTPUT_BASIS).to_pandas()
+    assert basis["carry_basis"].eq("default_flat").sum() == manifest["default_flat"]["rows"] == manifest["counts"]["default_flat_rows"]
+    assert manifest["default_flat"]["rows_without_coupon_basis"] == 2
+    # Only AAA 2022-12 sits between its event and its confirmation month.
+    assert manifest["default_flat"]["rows_before_confirmation"] == 1
+    assert manifest["default_flat"]["date_field"] == "d_event_month"
+    assert plain["mode"] == "pit_only_preview" and plain["default_flat"]["applied"] is False
+
+
+def test_default_events_refuse_a_mixed_or_inconsistent_source(tmp_path: Path) -> None:
+    mixed = _implied_rows_file(tmp_path, [{
+        "month": pd.Timestamp("2024-01-01"), "cusip_id": "AAA000001", "implied_bucket": "D", "witnessed": True, "spell_id": 3,
+        "d_candidate": False, "d_confirmed": True, "d_event_month": pd.Timestamp("2024-01-01"),
+        "policy_version": IMPLIED_POLICY["policy_version"], "policy_digest": "cd" * 32,
+    }])
+    with pytest.raises(builder.BuildError, match="default_events_mixed_policy_digest"):
+        builder.load_default_events(mixed)
+    broken = tmp_path / "broken.parquet"
+    frame = pq.read_table(_implied_rows_file(tmp_path)).to_pandas()
+    frame.loc[frame["implied_bucket"].eq("D"), "d_confirmed"] = False
+    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), broken)
+    with pytest.raises(builder.BuildError, match="default_events_invalid"):
+        builder.load_default_events(broken)
