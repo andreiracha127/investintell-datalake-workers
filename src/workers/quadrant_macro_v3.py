@@ -84,12 +84,13 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
 
             g_obs, g_now = _axis_observations(conn, "growth", decision_time)
             i_obs, i_now = _axis_observations(conn, "inflation", decision_time)
-            g_score, g_contrib, g_z, g_av, g_exp = g_now
-            i_score, i_contrib, i_z, i_av, i_exp = i_now
+            g_score, g_contrib, g_z, g_av, g_exp, g_nvalid = g_now
+            i_score, i_contrib, i_z, i_av, i_exp, i_nvalid = i_now
             g_aux = _market_growth_observations(conn, decision_time)
 
             g_specs, i_specs = _axis_specs("growth"), _axis_specs("inflation")
-            g_cov, i_cov = _coverage(g_z, g_specs), _coverage(i_z, i_specs)
+            g_cov = _coverage(g_z, g_specs, g_nvalid)
+            i_cov = _coverage(i_z, i_specs, i_nvalid)
             g_fresh = i_fresh = 1.0
             g_health = 1.0 if g_score is not None else 0.0
             i_health = 1.0 if i_score is not None else 0.0

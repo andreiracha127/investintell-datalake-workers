@@ -195,7 +195,8 @@ def test_score_axis_applies_direction_minus_one_before_aggregation(monkeypatch) 
                         lambda spec, series, as_of: 2.0)
 
     t = dt.datetime(2024, 3, 5, tzinfo=dt.timezone.utc)
-    score, contributions, z_by_series, _av, _exp = qm._score_axis(None, "growth", t)
+    score, contributions, z_by_series, _av, _exp, _nvalid = qm._score_axis(
+        None, "growth", t)
 
     # raw z was +2.0; the stored per-series z is direction-flipped to -2.0.
     assert z_by_series["FAKEDIR"] == -2.0
@@ -226,12 +227,151 @@ def test_score_axis_raises_clear_error_when_no_critical_specs(monkeypatch) -> No
                         lambda spec, series, as_of: 1.0)
 
     t = dt.datetime(2024, 3, 5, tzinfo=dt.timezone.utc)
-    _score, _contrib, _z, _av, critical_expiries = qm._score_axis(None, "growth", t)
+    _score, _contrib, _z, _av, critical_expiries, _nvalid = qm._score_axis(
+        None, "growth", t)
     assert critical_expiries == []  # no critical specs -> no expiries
 
     import pytest as _pytest
     with _pytest.raises(ValueError, match="critical source expiry"):
         qm._require_critical_expiries(critical_expiries)
+
+
+# --------------------------------------------------------------------------- #
+# Coverage (freeze §6): historyCoverage factor — quant audit 2026-10-07, MR-2   #
+# --------------------------------------------------------------------------- #
+def _monthly(values: list[float], start: dt.date) -> dict[dt.date, float]:
+    out: dict[dt.date, float] = {}
+    y, m = start.year, start.month
+    for v in values:
+        out[dt.date(y, m, 1)] = v
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return out
+
+
+def _two_specs():
+    from src.macro_sources import _macro
+
+    a = _macro("YOUNG", "growth", "synthetic", 0.5, "log_3m3m_ann_v1")
+    b = _macro("GONE", "growth", "synthetic", 0.5, "log_3m3m_ann_v1")
+    assert a.minimum_valid_observations == b.minimum_valid_observations == 24
+    return a, b
+
+
+def _pre_audit_coverage(z_by_series, specs) -> float:
+    """The formula the worker shipped before MR-2: Σ|w|·I(valid) / Σ|w|."""
+    total = sum(abs(s.weight) for s in specs)
+    have = sum(abs(s.weight) for s in specs if z_by_series.get(s.series_id) is not None)
+    return have / total
+
+
+def test_coverage_applies_the_frozen_history_coverage_factor() -> None:
+    """Regression MR-2: freeze §6 coverage is Σ|w|·I(valid)·min(1, nValid/24) / Σ|w|
+    (the frozen formula restated in src/quadrant_confidence.py). Series A valid
+    with 12 valid months, series B missing, weights 0.5/0.5 -> 0.5·(12/24) = 0.25.
+    The pre-audit code returned 0.5: the historyCoverage factor was dropped."""
+    a, b = _two_specs()
+    z = {"YOUNG": 1.0, "GONE": None}
+    assert abs(qm._coverage(z, (a, b), {"YOUNG": 12, "GONE": 0}) - 0.25) < 1e-9
+    assert abs(_pre_audit_coverage(z, (a, b)) - 0.5) < 1e-9  # what MR-2 corrects
+    # a missing series contributes nothing even with a full history
+    assert abs(qm._coverage(z, (a, b), {"YOUNG": 12, "GONE": 119}) - 0.25) < 1e-9
+    # the factor is linear in nValid below the minimum and capped at 1 above it
+    assert abs(qm._coverage(z, (a, b), {"YOUNG": 6}) - 0.125) < 1e-9
+    assert abs(qm._coverage(z, (a, b), {"YOUNG": 24}) - 0.5) < 1e-9
+    assert abs(qm._coverage(z, (a, b), {"YOUNG": 119}) - 0.5) < 1e-9
+    # a valid series absent from the counts is fail-safe: uncovered, never full
+    assert qm._coverage(z, (a, b), {}) == 0.0
+
+
+def test_coverage_is_invariant_for_full_histories_and_without_counts() -> None:
+    """Production invariance: every series in the 10-year vintage store carries
+    >= 24 valid months, so the §6 factor is exactly 1 and the result equals the
+    pre-audit Σ|w|·I(valid)/Σ|w| bit-for-bit; history_counts=None (callers that
+    cannot supply counts) keeps that behaviour as well."""
+    a, b = _two_specs()
+    full = {"YOUNG": 119, "GONE": 24}
+    for z in ({"YOUNG": 1.0, "GONE": -0.5}, {"YOUNG": 1.0, "GONE": None},
+              {"YOUNG": None, "GONE": None}):
+        expected = _pre_audit_coverage(z, (a, b))
+        assert qm._coverage(z, (a, b), full) == expected
+        assert qm._coverage(z, (a, b), None) == expected
+        assert qm._coverage(z, (a, b)) == expected
+    # the real registry, each seed series valid with a full history -> 1.0 per axis,
+    # and with one series missing the renormalized pre-audit value is reproduced.
+    for axis in ("growth", "inflation"):
+        specs = qm._axis_specs(axis)
+        counts = {s.series_id: 119 for s in specs}
+        z = {s.series_id: 0.3 for s in specs}
+        assert qm._coverage(z, specs, counts) == _pre_audit_coverage(z, specs) == 1.0
+        z[specs[0].series_id] = None
+        assert qm._coverage(z, specs, counts) == _pre_audit_coverage(z, specs) < 1.0
+
+
+def test_valid_history_count_mirrors_the_standardizer_window() -> None:
+    """nValid is the length of the eligible list standardized_latest builds:
+    transform-dropped warmup periods are not valid, periods after as_of or before
+    the 10-year cutoff are outside the window, and nValid == 0 exactly when the
+    standardizer has nothing to standardize (returns None)."""
+    from src.macro_sources import SEED_SOURCES
+    from src.quadrant_score import standardized_latest
+
+    indpro = next(s for s in SEED_SOURCES if s.series_id == "INDPRO")  # log_3m3m_ann_v1
+    series = _monthly([100.0 + 0.1 * i + (0.5 if i % 7 == 0 else 0.0) for i in range(150)],
+                      dt.date(2010, 1, 1))  # 2010-01 .. 2022-06
+    # log_3m3m needs 5 prior months: transformed periods are 2010-06 .. 2022-06 (145)
+    assert qm._valid_history_count(indpro, series, dt.date(2022, 6, 1)) == 121  # 2012-06 .. 2022-06
+    assert qm._valid_history_count(indpro, series, dt.date(2010, 12, 1)) == 7    # 2010-06 .. 2010-12
+    assert qm._valid_history_count(indpro, series, dt.date(2010, 5, 1)) == 0     # before the first
+    assert standardized_latest(indpro, series, dt.date(2010, 5, 1)) is None
+    assert standardized_latest(indpro, series, dt.date(2010, 12, 1)) is not None
+    assert qm._valid_history_count(indpro, {}, dt.date(2022, 6, 1)) == 0
+
+
+def test_score_axis_threads_the_valid_history_count(monkeypatch) -> None:
+    """_score_axis reports nValid per series from the SAME PIT series it
+    standardizes, and the worker's coverage of a young axis is 12/24, not 1."""
+    from src.macro_sources import _macro
+
+    spec = _macro("YOUNG", "growth", "synthetic", 0.25, "log_3m3m_ann_v1")
+    series = _monthly([100.0 + 0.1 * i + (0.5 if i % 7 == 0 else 0.0) for i in range(17)],
+                      dt.date(2023, 1, 1))  # transformed periods 2023-06 .. 2024-05 (12)
+    monkeypatch.setattr(qm, "SEED_SOURCES", (spec,))
+    monkeypatch.setattr(qm, "axis_weights", lambda axis: {"YOUNG": 1.0})
+    monkeypatch.setattr(qm, "latest_vintage_as_of",
+                        lambda conn, series_ids, t: {"YOUNG": series})
+
+    t = dt.datetime(2024, 5, 15, tzinfo=dt.timezone.utc)
+    score, _contrib, z, _av, _exp, history_counts = qm._score_axis(None, "growth", t)
+    assert history_counts == {"YOUNG": 12}
+    assert z["YOUNG"] is not None and score is not None
+    assert abs(qm._coverage(z, (spec,), history_counts) - 0.5) < 1e-9
+
+
+def test_v2_axis_observations_consume_the_six_tuple_with_history_counts(monkeypatch) -> None:
+    """quadrant_macro_v2 (and v3 through it) import _score_axis/_coverage from this
+    worker: the walk-back q_data must carry the §6 factor and the tuple unpack must
+    match the six-tuple (no test imported the v2/v3 workers before)."""
+    from src.workers import quadrant_macro_v2 as qm2
+
+    a, b = _two_specs()
+    monkeypatch.setattr(qm2, "_axis_specs", lambda axis: (a, b))
+    scored = (1.0, {"YOUNG": 1.0}, {"YOUNG": 1.0, "GONE": None}, [], [],
+              {"YOUNG": 12, "GONE": 0})
+    calls: list[dt.datetime] = []
+
+    def _fake_score_axis(conn, axis, t):
+        calls.append(t)
+        return scored
+
+    monkeypatch.setattr(qm2, "_score_axis", _fake_score_axis)
+    t = dt.datetime(2024, 5, 15, tzinfo=dt.timezone.utc)
+    observations, current = qm2._axis_observations(None, "growth", t)
+    assert len(observations) == qm2.V2_FILTER_HISTORY_MONTHS == len(calls)
+    assert calls[-1] == t  # current month last
+    assert all(abs(q - 0.25) < 1e-9 for _score, q in observations)  # 0.5·(12/24), not 0.5
+    assert current == scored
 
 
 def test_build_snapshot_stale_degrades_to_low_confidence() -> None:

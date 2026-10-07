@@ -19,6 +19,7 @@ from src import quadrant_assemble as qa
 from src.db import LOCK_REGIME_QUADRANT, advisory_lock, connect
 from src.macro_pit import latest_vintage_as_of
 from src.macro_sources import SEED_SOURCES, axis_weights
+from src.macro_transforms import economic_transform
 from src.quadrant_confidence import U_FLOOR_SEED
 from src.quadrant_score import axis_score, standardized_latest
 from src.quadrant_staleness import source_expiry
@@ -27,22 +28,45 @@ MODEL_VERSION = "macro_quadrant_us_v1"
 CONFIDENCE_METHOD = "rolling_score_mad_distinct_vintages_v1"
 SCORE_HISTORY_VINTAGES = 36   # distinct vintages window for uncertainty (>= MIN 24)
 FRESHNESS_DECAY_WINDOW = _dt.timedelta(days=14)  # soft->hard linear decay (decision D)
+STANDARDIZATION_WINDOW_YEARS = 10  # standardized_latest's trailing window (robust_z_10y_distinct_vintages_v1)
 
 
 def _axis_specs(axis: str):
     return [s for s in SEED_SOURCES if s.axis == axis]
 
 
+def _valid_history_count(
+    spec, series: dict[_dt.date, float], as_of: _dt.date,
+    *, window_years: int = STANDARDIZATION_WINDOW_YEARS,
+) -> int:
+    """nValid_i (freeze §6): valid transformed periods inside the trailing
+    standardization window at ``as_of``.
+
+    Mirrors the eligibility rule ``standardized_latest`` (src/quadrant_score.py —
+    Stage B pinned, deliberately left untouched) applies before robust-z: the
+    economic transform drops periods without the required history, then only
+    ``cutoff <= period <= as_of`` with cutoff = the first of ``as_of``'s month
+    ``window_years`` years back. That eligible list IS the history the standardizer
+    sees, so its length is the series' valid-observation count.
+    """
+    transformed = economic_transform(
+        spec.economic_transform_id, series, neutral_level=spec.neutral_level)
+    cutoff = _dt.date(as_of.year - window_years, as_of.month, 1)
+    return sum(1 for period in transformed if cutoff <= period <= as_of)
+
+
 def _score_axis(
     conn, axis: str, decision_time: _dt.datetime,
-) -> tuple[float | None, dict[str, float], dict[str, float], list[_dt.datetime], list[_dt.datetime]]:
+) -> tuple[float | None, dict[str, float], dict[str, float], list[_dt.datetime],
+           list[_dt.datetime], dict[str, int]]:
     """Compute (score, contributions, raw_z_by_series, input_available_ats,
-    critical_expiries) for one axis from the PIT vintage store.
+    critical_expiries, history_counts) for one axis from the PIT vintage store.
 
     raw z per series = latest transformed value <= decision_date; available_at_j =
     the vintage available_at proxied by decision_time (the PIT read already filters
     available_at <= decision_time, so the value IS knowable now). critical_expiries
-    uses each MacroSourceSpec's cadence/grace/hard_max_age.
+    uses each MacroSourceSpec's cadence/grace/hard_max_age. history_counts =
+    nValid per series (the standardizer's eligible window) for the §6 coverage.
     """
     specs = _axis_specs(axis)
     weights = axis_weights(axis)
@@ -51,12 +75,14 @@ def _score_axis(
     pit = latest_vintage_as_of(conn, series_ids, decision_time)
 
     z_by_series: dict[str, float | None] = {}
+    history_counts: dict[str, int] = {}
     for spec in specs:
         series = pit.get(spec.series_id, {})
         # two-stage standardize (economic_transform_id -> robust_z); None = missing.
         z = standardized_latest(spec, series, decision_date)
         # direction: a source whose rise means the OPPOSITE of the axis flips sign.
         z_by_series[spec.series_id] = (z * spec.direction) if z is not None else None
+        history_counts[spec.series_id] = _valid_history_count(spec, series, decision_date)
 
     score, contributions = axis_score(weights, z_by_series)
 
@@ -71,16 +97,37 @@ def _score_axis(
         critical_expiries.append(source_expiry(
             decision_time, next_release, spec.grace_period, spec.hard_max_age,
             FRESHNESS_DECAY_WINDOW))
-    return score, contributions, z_by_series, input_available_ats, critical_expiries
+    return (score, contributions, z_by_series, input_available_ats, critical_expiries,
+            history_counts)
 
 
-def _coverage(z_by_series: dict[str, float], specs) -> float:
-    """Σ|w|·I(valid) / Σ|w| over the axis (freeze §6 importance-weighted coverage)."""
+def _coverage(
+    z_by_series: dict[str, float], specs, history_counts: dict[str, int] | None = None,
+) -> float:
+    """Freeze §6 importance-weighted coverage (the frozen formula restated in
+    src/quadrant_confidence.py):
+
+        historyCoverage_i = min(1, nValid_i / minimum_valid_observations_i)
+        usable_i          = I(currentValueValid_i) · historyCoverage_i
+        coverage_a        = Σ|w_i|·usable_i / Σ|w_i|
+
+    ``history_counts`` = nValid_i per series_id (from ``_score_axis``). A valid series
+    absent from a supplied dict counts as nValid = 0 (fail-safe: it reads as
+    uncovered, never as fully covered). ``None`` keeps historyCoverage ≡ 1 — the
+    pre-audit behaviour, for callers that cannot supply the counts.
+    """
     total = sum(abs(s.weight) for s in specs)
     if total <= 0:
         return 0.0
-    have = sum(abs(s.weight) for s in specs
-               if z_by_series.get(s.series_id) is not None)
+    have = 0.0
+    for s in specs:
+        if z_by_series.get(s.series_id) is None:
+            continue
+        history_coverage = 1.0
+        if history_counts is not None and s.minimum_valid_observations > 0:
+            history_coverage = min(
+                1.0, history_counts.get(s.series_id, 0) / s.minimum_valid_observations)
+        have += abs(s.weight) * history_coverage
     return have / total
 
 
@@ -138,13 +185,16 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             g_prev_sign = prev["growth_internal_sign"] if prev else None
             i_prev_sign = prev["inflation_internal_sign"] if prev else None
 
-            g_score, g_contrib, g_z, g_av, g_exp = _score_axis(conn, "growth", decision_time)
-            i_score, i_contrib, i_z, i_av, i_exp = _score_axis(conn, "inflation", decision_time)
+            g_score, g_contrib, g_z, g_av, g_exp, g_nvalid = _score_axis(
+                conn, "growth", decision_time)
+            i_score, i_contrib, i_z, i_av, i_exp, i_nvalid = _score_axis(
+                conn, "inflation", decision_time)
             g_hist = _score_history(conn, "growth", decision_time)
             i_hist = _score_history(conn, "inflation", decision_time)
 
             g_specs, i_specs = _axis_specs("growth"), _axis_specs("inflation")
-            g_cov, i_cov = _coverage(g_z, g_specs), _coverage(i_z, i_specs)
+            g_cov = _coverage(g_z, g_specs, g_nvalid)
+            i_cov = _coverage(i_z, i_specs, i_nvalid)
             # freshness/health: v1 seeds — PIT values are by construction fresh and
             # finite (the read already filtered availability); A3 wires real decay.
             g_fresh = i_fresh = 1.0
