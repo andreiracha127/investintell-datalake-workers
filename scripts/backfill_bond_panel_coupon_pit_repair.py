@@ -44,7 +44,6 @@ import json
 import sys
 import uuid
 from dataclasses import dataclass, replace
-from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +75,6 @@ from scripts.backfill_bond_panel_history import (  # noqa: E402
     _COPY_COLUMNS,
     _COPY_NULLABLE,
     _COPY_TYPES,
-    _month_starts,
     _scalar_month,
     _sha256,
     _sql_json,
@@ -738,7 +736,7 @@ GROUP BY f.month;"""
             LIMIT 1
         ) THEN RAISE EXCEPTION 'coupon pit cross-surface identity mismatch:{surface}'; END IF;"""
         )
-    source_projection = f"""SELECT DISTINCT ON (source_fact.month, source_fact.cusip_id)
+    source_projection = """SELECT DISTINCT ON (source_fact.month, source_fact.cusip_id)
                        source_fact.month, source_fact.cusip_id, source_fact.total_return, source_fact.price_return,
                        source_fact.carry_return, source_fact.exit_basis, source_fact.exit_reason, source_fact.suspect, source_fact.payload
                 FROM bond_panel_returns source_fact

@@ -143,6 +143,15 @@ refuses with `coupon_pit_artifact_unpinned`.
   refresh: outside 05:00–09:00 UTC).
 - The v2 artifact directory above is present and its digests match (the
   builder refuses otherwise).
+- **The emitted SQL has been shape-tested only** (string assertions in
+  `tests/test_backfill_bond_panel_coupon_pit_repair.py`); it has not yet run
+  against PostgreSQL. Before step 3.5, the pin follow-up (3.3) runs the full
+  sequence (`--emit-schema` from `backfill_bond_panel_history.py`, a
+  synthetic head and a synthetic artifact built by the builder's test
+  fixture, prepare → copies → batches → finalize) against a throwaway
+  `timescale/timescaledb` container and attaches the psql transcript. The
+  finalize DO block (temp tables, the per-year carry upsert, the FULL JOIN
+  key gate) is the part to prove there.
 
 ### 3.1 Owner export of the contractual coupons — READ-ONLY (owner runs it)
 
