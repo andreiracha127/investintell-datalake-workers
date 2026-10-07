@@ -14,6 +14,15 @@ import re
 import sys
 from pathlib import Path
 
+# Also works when this driver is invoked from an older checkout/archive.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from chain_receipt_common import (
+    hash_definition,
+    project_rows,
+    projection_metadata,
+    row_digests,
+)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -51,20 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(series) != 148 or [row.as_of for row in series] != expected_dates:
         raise RuntimeError("replay must contain all 148 certified months in order")
 
-    excluded_columns = ("code_commit", "loaded_at")
-    columns = [column for column in worker.ROW_COLUMNS if column not in excluded_columns]
-    rows = []
-    for decision in series:
-        row = worker.build_row(
-            decision, manifest["input_pack_sha256"], args.revision,
-            dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc),
-        )
-        if set(row) != set(worker.ROW_COLUMNS):
-            raise RuntimeError("build_row and ROW_COLUMNS disagree")
-        rows.append({
-            column: value.isoformat() if isinstance(value, dt.date) else value
-            for column, value in row.items() if column in columns
-        })
+    rows = project_rows(worker, series, manifest["input_pack_sha256"], args.revision)
 
     receipt = {
         "revision": args.revision,
@@ -80,29 +76,9 @@ def main(argv: list[str] | None = None) -> int:
             "eod_boundary": eod_boundary.isoformat(),
             "production_inputs": False,
         },
-        "projection": {
-            "source": "worker.build_row",
-            "columns": columns,
-            "excluded_columns": list(excluded_columns),
-            "exclusion_reason": "commit and ingestion-time provenance vary by run",
-            "dates": "ISO 8601 date strings",
-            "floats": "Python JSON float representation without rounding or tolerance",
-        },
-        "hash_definition": {
-            "function": "src.input_packs.hashing.canonical_json_sha256",
-            "algorithm": "SHA-256",
-            "encoding": "UTF-8 sorted-key compact JSON; no newline; NaN/Inf rejected",
-            "all_months_payload": "ordered list of all projected rows",
-            "latest_month_payload": "one-element list containing the final projected row",
-        },
-        "certified_replay": {
-            "row_count": len(rows),
-            "first_month": rows[0]["as_of"],
-            "last_month": rows[-1]["as_of"],
-            "all_months_sha256": canonical_json_sha256(rows),
-            "latest_month_sha256": canonical_json_sha256(rows[-1:]),
-            "latest_row": rows[-1],
-        },
+        "projection": projection_metadata(worker),
+        "hash_definition": hash_definition(),
+        "certified_replay": row_digests(rows, canonical_json_sha256),
     }
     if args.stage_a:
         from harness.direct_activation import live_validation
