@@ -1,0 +1,1797 @@
+[
+  {
+    "name": "active-share-metrics",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "20 9 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "OPENBLAS_NUM_THREADS",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "analytics-refresh-chain",
+    "source": null,
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 9 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "MKL_NUM_THREADS",
+      "NUMEXPR_NUM_THREADS",
+      "OMP_NUM_THREADS",
+      "OPENBLAS_NUM_THREADS",
+      "PGOPTIONS",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "benchmark-ingest",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "30 5 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "TIINGO_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "bond-chain",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 11 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DAILY_CHAIN_STAGES",
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "bond-default-events",
+    "source": {
+      "branch": "main",
+      "checkSuites": false,
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "DOCKERFILE",
+      "dockerfilePath": "Dockerfile",
+      "buildCommand": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.workers.bond_default_events",
+      "useLegacyStacker": false,
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "BOND_DEFAULT_EVENTS_CODE_DIGEST",
+      "BOND_DEFAULT_EVENTS_MANIFEST",
+      "BOND_DEFAULT_EVENTS_MODE",
+      "BOND_DEFAULT_EVENTS_SCHEMA",
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "bond-live-daily",
+    "source": {
+      "branch": "main",
+      "checkSuites": false,
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "DOCKERFILE",
+      "dockerfilePath": "docker/bond-live-daily/Dockerfile",
+      "buildCommand": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 5 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "BOND_IMPLIED_RATING_ENABLED",
+      "BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID",
+      "DATABASE_URL",
+      "FINNHUB_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "certified-rebuild-runner",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m scripts.rebuild_ipca_factor_pack",
+      "useLegacyStacker": false,
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "NPORT_HISTORY_SHARD",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "characteristics",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 5 2 * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "PGOPTIONS",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "credit-regime",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "30 6 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "TIINGO_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "eod-prices-warmer",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "10 1,13,21 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "TIINGO_API_KEY",
+      "WORKER",
+      "WORKER_LIMIT"
+    ]
+  },
+  {
+    "name": "factor-model",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 6 2 * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "fund-factors",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "30 6 2 * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "fund-institutional-reveal",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 0 29 2 *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "fund-peer-groups",
+    "source": {
+      "branch": "main",
+      "checkSuites": false,
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 7 15 2,5,8,11 *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "instrument-ingestion",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "TIINGO_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "livefeed",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "healthcheckPath": "/health",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "ALWAYS",
+      "runtime": "V2",
+      "startCommand": "python -m src.workers.livefeed",
+      "useLegacyStacker": false,
+      "healthcheckTimeout": 120,
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "PORT",
+      "TIINGO_API_KEY"
+    ]
+  },
+  {
+    "name": "macro-ingestion",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 5 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "FRED_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "macro-vintage",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "15 6 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "FRED_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "maintenance-runner",
+    "source": {
+      "branch": "main",
+      "checkSuites": false,
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 0 29 2 *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "preDeployCommand": [],
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "MAINTENANCE_RUNNER_NOTE",
+      "NAV_REBASE_ALLOW_DATABASE_URL",
+      "NAV_REBASE_CONFIRM",
+      "NAV_REBASE_MAX_BATCHES",
+      "NAV_REBASE_RATE_PER_SECOND",
+      "OPENFIGI_API_KEY",
+      "PGOPTIONS",
+      "TIINGO_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "matview-refresh",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "30 10 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "PGOPTIONS",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "mixed-quant-publication",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 3 2 * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "CODE_REVISION",
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "momentum-metrics",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 0 29 2 *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "OPENBLAS_NUM_THREADS",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "nav-current-daily-chain",
+    "source": {
+      "branch": "main",
+      "checkSuites": false,
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "RAILPACK",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "30 7 * * 2-6",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "OPENBLAS_NUM_THREADS",
+      "TIINGO_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "nport-cusip-enrichment",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 3 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "INVESTINTELL_DB_URL",
+      "OPENFIGI_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "nport-fixed-income",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "NPORT_FI_SECAPI_APPROVED_SOURCE_HASH",
+      "NPORT_FI_SECAPI_SOURCE_RUN_ID",
+      "NPORT_SECAPI_MAX_ACCESSIONS",
+      "NPORT_SECAPI_MAX_API_CALLS",
+      "NPORT_SECAPI_REQUEST_INTERVAL_SECONDS",
+      "NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID",
+      "NPORT_SECAPI_SOURCE_RUN_ID",
+      "SEC_API_IO_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "nport-fixed-income-secapi-fallback",
+    "source": null,
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "restartPolicyType": "NEVER",
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "NPORT_FI_SECAPI_APPROVED_SOURCE_HASH",
+      "NPORT_FI_SECAPI_SOURCE_RUN_ID",
+      "NPORT_SECAPI_FALLBACK_CONCURRENCY",
+      "NPORT_SECAPI_FALLBACK_MAX_ACCESSIONS",
+      "NPORT_SECAPI_FALLBACK_MAX_API_CALLS",
+      "NPORT_SECAPI_FALLBACK_REQUEST_INTERVAL_SECONDS",
+      "NPORT_SECAPI_MAX_ACCESSIONS",
+      "NPORT_SECAPI_MAX_API_CALLS",
+      "NPORT_SECAPI_REQUEST_INTERVAL_SECONDS",
+      "NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID",
+      "NPORT_SECAPI_SOURCE_RUN_ID",
+      "SEC_API_IO_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "nport-history-1",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "NPORT_HISTORY_SHARD",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "nport-history-2",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "NPORT_HISTORY_SHARD",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "nport-lookthrough",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 6 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "nport-v2-publication-chain",
+    "source": null,
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 0 29 2 *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "PGOPTIONS",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "open-macro-v03-chain",
+    "source": {
+      "branch": "main",
+      "checkSuites": false,
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "45 7 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "open-macro-v04-pit-evidence",
+    "source": null,
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "15 10 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "OPEN_MACRO_V04_EVIDENCE_ACCESS_PROFILE",
+      "OPEN_MACRO_V04_EVIDENCE_START_MONTH",
+      "OPEN_MACRO_V04_PIT_EVIDENCE_ENABLED",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "open-macro-v04-worker",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "45 8 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "regime-composite",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 7 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "FRED_API_KEY",
+      "TIINGO_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "regime-gate",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "50 6 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "TIINGO_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "risk-metrics",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 0 29 2 *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "OPENBLAS_NUM_THREADS",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "screener-metrics",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 10 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "sec-13f-publication-chain",
+    "source": null,
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 8 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "EDGAR_IDENTITY",
+      "PGOPTIONS",
+      "SEC_13F_REFRESH_ONLY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "sec-company-tickers-mf",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "30 3 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "EDGAR_IDENTITY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "semantic-indexer",
+    "source": null,
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "restartPolicyType": "NEVER",
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "OPENAI_API_KEY",
+      "SEMANTIC_CHUNKING_VERSION",
+      "SEMANTIC_CHUNK_OVERLAP_TOKENS",
+      "SEMANTIC_EMBEDDING_DIMENSIONS",
+      "SEMANTIC_EMBEDDING_MODEL",
+      "SEMANTIC_EMBED_CONCURRENCY",
+      "SEMANTIC_INDEX_PLAN_ONLY",
+      "SEMANTIC_INDEX_PREFLIGHT_ONLY",
+      "SEMANTIC_MAX_CHUNK_TOKENS",
+      "SEMANTIC_MAX_EMBEDDING_TOKENS",
+      "SEMANTIC_SOURCE_SELECTION_VERSION",
+      "SEMANTIC_WINDOW_END",
+      "SEMANTIC_WINDOW_START",
+      "SOURCE_DATABASE_URL",
+      "WORKER",
+      "WORKER_LIMIT"
+    ]
+  },
+  {
+    "name": "stock-daily-returns",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "20 6 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "stock-fundamentals-statements",
+    "source": null,
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "0 7 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "startCommand": "python -m src.run_worker",
+      "useLegacyStacker": false,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "tiingo-fund-meta",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "restartPolicyType": "NEVER",
+      "cronSchedule": null,
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "TIINGO_API_KEY",
+      "WORKER"
+    ]
+  },
+  {
+    "name": "treasury-ingestion",
+    "source": {
+      "repo": "andreiracha127/investintell-datalake-workers",
+      "type": "github"
+    },
+    "build": {
+      "buildEnvironment": "V3",
+      "builder": "NIXPACKS",
+      "buildCommand": null,
+      "dockerfilePath": null,
+      "watchPatterns": []
+    },
+    "deploy": {
+      "cronSchedule": "5 5 * * *",
+      "ipv6EgressEnabled": false,
+      "multiRegionConfig": {
+        "us-west2": {
+          "numReplicas": 1
+        }
+      },
+      "restartPolicyType": "NEVER",
+      "runtime": "V2",
+      "useLegacyStacker": false,
+      "startCommand": "python -m src.run_worker",
+      "preDeployCommand": null,
+      "preDeployTimeoutSeconds": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyMaxRetries": 10,
+      "sleepApplication": false,
+      "overlapSeconds": null,
+      "drainingSeconds": null
+    },
+    "variables": [
+      "DATABASE_URL",
+      "WORKER"
+    ]
+  }
+]
