@@ -282,6 +282,38 @@ where `coupon_rate IS NOT NULL`), refuses if the count differs from
 sidecar. Keep the printed `rows=… max_loaded_at=… sha256=…` line with the
 evidence.
 
+### 3.1b Export the confirmed default events — READ-ONLY
+
+**Owner decision (2026-10-07): option (a).** The default-flat windows come from the implied-rating publication the app pointer serves, exported once.
+- **Round-002 is out.** Its rows (`bc13a5e4`, parquet `a7fde442…`, policy `28f70b9b…`) were superseded by DG-4 (2026-10-01), and the cure rule changed after them (`c12f6cd`). They are historical record only, never an input.
+- **Pinned publication:** `c0172bf1-43e6-5175-be17-d54d708bf72a` (policy `4b752a3f…`, rows digest `b3cf2b11…`). Its rows are byte-identical to `ce46ae88…`, which the pointer left on 2026-10-02 08:24 UTC.
+
+From `E:\tmp-deploy\api\backend`, outside 06:00–08:30 UTC:
+
+```powershell
+railway run --service risk-metrics -- uv run --no-project --with "psycopg[binary]" --with pandas --with pyarrow --with numpy `
+  python E:\investintell-datalake-workers-sep\scripts\export_bond_market_implied_default_events.py `
+  --out C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\default_events_YYYYMMDD `
+  --publication-id c0172bf1-43e6-5175-be17-d54d708bf72a `
+  --policy-digest 4b752a3fc5d5222b398f1e2a073b7c428b068e77968f8fb79edd20957202a08a `
+  --rows-digest b3cf2b11e3fb9e840194f9c50dc7472a38d40f71ed6155dc68df55ef4448b86c `
+  --cure-witnesses
+```
+
+**Read checks:**
+- Everything is read in one `REPEATABLE READ READ ONLY` transaction whose first statement reads the pointer.
+- The header pins must equal the arguments.
+- A second pointer read, in a fresh transaction after commit, must equal the first. The daily Stage 7 can move the pointer.
+
+**What is exported:**
+- Every `d_confirmed` row. The count must equal the header's `d_confirmed_count`.
+- Per cured episode, the one row that closes its window: the first witnessed rated row after the episode's last D month.
+- Not exported: `d_candidate` rows that never confirm.
+
+**Seed, not a producer input.** The export seeds this republication once. The live worker reads the pointed publication point in time, and the implied-rating producer reads only the panel snapshot.
+
+**Evidence to keep:** `bond_market_implied_default_events.manifest.json`, which holds the pins, the exact SQL, both pointer reads, the counts and the sha256. The builder embeds the same pins under `inputs.default_events.export_manifest`.
+
 ### 3.2 Build the v3 artifact — OFFLINE (no database)
 
 From the merged `main` checkout, one process at a time (the build holds the
@@ -291,7 +323,7 @@ From the merged `main` checkout, one process at a time (the build holds the
 python scripts\build_bond_panel_coupon_pit_returns.py `
   --artifact-dir C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\unit_repair_v2 `
   --terms C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\terms_export_YYYYMMDD\bond_reference_terms_coupons.csv `
-  --default-events C:\Users\andre\AppData\Local\investintell\bond_market_implied_rating_round_002\export_20260919T164115Z\round002_cache\baseline_implied_rows.parquet `
+  --default-events C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\default_events_YYYYMMDD\bond_market_implied_default_events.parquet `
   --out C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\unit_repair_v2\coupon_pit_v3
 ```
 
@@ -550,6 +582,8 @@ manifest reports `contractual_rows` / `pit_rows` and the per-year carry
 sums the finalize gate compares.
 
 ### 4.3 Default-flat preview (offline, the pinned v2 export + the round-002 implied rows, 2026-10-07)
+
+> Historical preview only: the round-002 rows are superseded (DG-4), so the build uses the §3.1b export instead.
 
 `scripts/build_bond_panel_coupon_pit_returns.py --default-events …baseline_implied_rows.parquet --out <scratch>`
 without `--terms` (mode `pit_only_preview_default_flat`, a preview the emitter refuses; same

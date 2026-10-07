@@ -99,7 +99,13 @@ DEFAULT_FLAT_RULE = (
 )
 DEFAULT_FLAT_BASIS = "realized"
 DEFAULT_EVENT_COLUMNS = ("cusip_id", "month", "implied_bucket", "witnessed", "spell_id", "d_confirmed", "d_event_month")
-DEFAULT_EVENT_IDENTITY_COLUMNS = ("policy_version", "policy_digest")
+DEFAULT_EVENT_IDENTITY_COLUMNS = ("policy_version", "policy_digest", "publication_id")
+#: Parquet key-value metadata written by scripts/export_bond_market_implied_default_events.py.
+EXPORT_MANIFEST_KEY = b"investintell.export_manifest"
+EXPORT_MANIFEST_PINS = (
+    "schema", "purpose", "publication_id", "rows_digest", "policy_version", "policy_digest", "code_revision",
+    "panel_publication_id", "as_of", "cure_witnesses", "pointer_start", "pointer_end", "counts",
+)
 STORED_BASIS = (
     "months <= 2025-03-01: per-CUSIP median of coupon_from_price_ytm over ALL snapshot "
     "months <= 2025-03-01 (Light pre-BOND-01 full-history median, T3 base); "
@@ -243,6 +249,17 @@ def _read_default_event_rows(path: Path) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
+def _export_manifest(path: Path) -> dict[str, Any] | None:
+    """The pins the default-events export embedded in its parquet metadata, if any."""
+    if path.suffix.lower() != ".parquet":
+        return None
+    raw = (pq.ParquetFile(path).schema_arrow.metadata or {}).get(EXPORT_MANIFEST_KEY)
+    if raw is None:
+        return None
+    manifest = json.loads(raw.decode("utf-8"))
+    return {key: manifest.get(key) for key in EXPORT_MANIFEST_PINS}
+
+
 def load_default_events(path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
     """The market-implied default windows from ``bond_market_implied_rating_v1`` rows.
 
@@ -265,10 +282,16 @@ def load_default_events(path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
         (windows["confirmation_month"].dt.year - windows["event_month"].dt.year) * 12
         + windows["confirmation_month"].dt.month - windows["event_month"].dt.month
     )
+    export_manifest = _export_manifest(path)
+    if export_manifest is not None:
+        for column in ("policy_digest", "publication_id"):
+            if identity.get(column) is not None and export_manifest.get(column) != identity[column]:
+                raise BuildError(f"default_events_export_manifest_{column}_mismatch")
     evidence: dict[str, Any] = {
         "path": path.name,
         "sha256": _sha256(path),
         **identity,
+        "export_manifest": export_manifest,
         "rows_of_defaulted_cusips": int(len(rows)),
         "d_rows": int(rows["implied_bucket"].eq("D").sum()),
         "episodes": int(len(windows)),

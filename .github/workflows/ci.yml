@@ -134,6 +134,7 @@ jobs:
             tests/test_bond_metrics_worker.py
             tests/test_bond_panel_worker.py
             tests/test_build_bond_panel_coupon_pit_returns.py
+            tests/test_export_bond_market_implied_default_events.py
             tests/test_backfill_bond_panel_coupon_pit_repair.py
             tests/test_bond_price_eligibility_view.py
             tests/test_bond_live_daily_worker.py
