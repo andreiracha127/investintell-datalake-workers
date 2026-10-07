@@ -20,11 +20,15 @@ also passes `--secapi`, requiring that manifest even after interrupted conversio
 monthly manifests require reconversion to obtain source accounting. Plain DERA
 CSVs retain their loadability and ISIN checks. Comparisons use exact counts and
 Decimal sums; rounding is only for display. Monthly loads cannot use `--no-verify`.
+Every sec-api manifest load requires `--new-series-only` or scoped `--delete-first`;
+the loader refuses plain conflict-skipping mode before any database work.
 
 On a revisit, value/source checks judge **new series actually inserted**. ISIN
-judges the **whole resulting date**, including existing rows. Offline validation
-assumes the seed is the resulting date; the worker defers ISIN to the loader's
-table-aware verdict.
+must pass two independent checks: **new rows actually inserted** and the
+**whole resulting date**, including existing rows. Both checks run before the
+same transaction commits, so high coverage in existing series cannot dilute a
+defective new cohort. The worker also checks the selected new-series CSV cohort
+before loading; offline validation judges the supplied seed.
 
 | Check | Blocks when | Cohort / threshold |
 |---|---|---|
@@ -32,8 +36,8 @@ table-aware verdict.
 | Missing market value | Emitted holdings with NULL market values exceed the allowance | **>1% of selected emitted holdings** |
 | Percentage retention | Too few series retain their independently measured source percentage sum | At least **60% within ±5 percentage points** and **70% within ±10 points**; every selected series participates, with no row-count exemption |
 | Missing percentages | Any selected series has no percentage values | **Zero permitted**, even if its source sum is zero |
-| ISIN fill | Raw `ISIN rows / holdings` falls below the floor | **90% of the whole resulting date**, all sizes; `isin IS NOT NULL AND isin <> ''` |
-| Seed integrity / loadability | Empty/partial date, missing/inconsistent source accounting, CSV/manifest row or series-identity mismatch, invalid header/types/NULL constraints/non-finite values, cross-CSV conflict keys, or split series in new-series mode | Structural refusals before maintenance; actual target values checked before commit |
+| ISIN fill | Raw `ISIN rows / holdings` falls below either floor | **90% of newly inserted rows**, checked by the shared contract in the transaction, **and 90% of the whole resulting date**, including existing rows; both checks apply at all sizes and use `isin IS NOT NULL AND isin <> ''` |
+| Seed integrity / loadability | Empty/partial date, missing/inconsistent source accounting, CSV/manifest row or series-identity mismatch, invalid header/types/NULL constraints/non-finite values, cross-CSV conflict keys, or split series in new-series mode | Structural refusals before maintenance; actual inserted series, row counts, exact conflict keys and target values must match the selected preflight cohort before commit; whole-series skips use the snapshot after the insert lock |
 | Optional matview | Requested `mv_nport_sector_attribution` is absent | Use `--skip-matview` on current production schema |
 | Other readings | Never introduce additional quality gates | **Reported only:** 100-centered bands, percentage median/over-1000 count, USD totals/share, key mix, deliberate DERA duplicates, amendments/supersessions and excluded dates |
 

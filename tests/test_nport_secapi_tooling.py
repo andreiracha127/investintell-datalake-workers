@@ -161,13 +161,14 @@ def test_a_reused_seed_directory_keeps_no_stale_csv(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["2026-06-30.csv", "manifest.json"]
 
 
-def test_loader_dry_run_accepts_converter_output(converted, capsys):
+def test_loader_dry_run_cannot_disable_secapi_cohort_isin_floor(converted, capsys):
     out, _ = converted
-    # The fixture is ISIN-poor by design (every key branch); this is about loadability.
+    # A lowered whole-date floor cannot bypass the shared 90% cohort contract.
     rc = loader.main(["--seed-dir", str(out), "--only", "2026-05-31.csv",
-                      "--only-report-dates", "2026-05-31", "--dry-run", "--verify-floor", "0"])
-    assert rc == 0
-    assert "dry run clean (offline: models no rows" in capsys.readouterr().out
+                      "--only-report-dates", "2026-05-31", "--dry-run", "--verify-floor", "0",
+                      "--delete-first"])
+    assert rc == 2
+    assert "isin_fill" in capsys.readouterr().out
 
 
 def test_loader_dry_run_catches_what_copy_would_reject(tmp_path):
@@ -582,17 +583,17 @@ def wired(monkeypatch, tmp_path):
     return calls
 
 
-def test_worker_loads_the_window_one_date_at_a_time(wired):
+def test_worker_loads_accepted_dates_in_window_one_at_a_time(wired):
     # As of 2026-09: containers 06..09, report_dates 2026-04-01..2026-06-30.
     stats = worker.run("dsn", calc_date="2026-09-10")
-    assert stats["state"] == "ok" and stats["bytes_transferred"] == 123
+    assert stats["state"] == "failed" and stats["bytes_transferred"] == 123
     assert wired["loads"] == [
-        ("2026-05-31", ["S000000001", "S000000002", "S000000003"]),
         ("2026-06-30", ["CIK:0000000104", "S000000004"]),
     ]
     assert stats["report_dates"]["2026-05-31"]["new_series"] == 2  # S000000002 already loaded
+    assert stats["report_dates"]["2026-05-31"]["validation"] == ["isin_fill 0.4286 < 0.90"]
     assert stats["outside_window"] == ["2026-03-31"]  # older than M-5: left to an operator
-    assert wired["refresh"] == [("2026-05-31", "2026-07-01")]
+    assert wired["refresh"] == [("2026-06-30", "2026-07-01")]
 
 
 def test_worker_skips_dates_with_nothing_new_and_reports_failures(wired):
@@ -656,6 +657,31 @@ def test_worker_validates_only_the_series_it_will_insert(wired, monkeypatch):
     assert stats["report_dates"]["2026-05-31"]["result"] == "failed"
 
 
+@pytest.mark.parametrize("missing_percentages", [False, True])
+def test_worker_revisit_checks_new_cohort_isin_without_existing_date_dilution(
+    wired, monkeypatch, tmp_path, missing_percentages,
+):
+    """An existing 99% date cannot hide a new series with no ISINs."""
+    rd = "2026-05-31"
+    row = [rd, "0000000101", "123456789", "US1", "A", "EC", "CORP",
+           "1", "1", "USD", "1", "false", "1"]
+    loaded = [[*row[:2], f"OLD-{series}-{holding}", "" if holding == 0 else "US1",
+               *row[4:], f"S{series}"] for series in range(100) for holding in range(100)]
+    late = [[*row[:2], f"NEW-{holding}", "", *row[4:10],
+             "" if missing_percentages else "10", *row[11:], "NEW"] for holding in range(10)]
+    monkeypatch.setattr(worker.converter, "convert", _converter_writing({rd: loaded + late}))
+    wired["existing"][rd] = {f"S{series}" for series in range(100)}
+
+    stats = worker.run("dsn", calc_date="2026-09-10")
+    whole_date = validate.profile_csv(str(tmp_path / "seed" / f"{rd}.csv"))
+    assert whole_date["rows"] == 10010 and whole_date["isin"] == 9900
+    assert whole_date["isin_fill"] > 0.9
+    assert wired["loads"] == []
+    assert stats["state"] == "failed"
+    assert stats["report_dates"][rd]["new_series"] == 1
+    assert any("isin_fill" in problem for problem in stats["report_dates"][rd]["validation"])
+
+
 def test_worker_fails_a_complete_date_whose_csv_lost_its_series(wired, monkeypatch):
     """The converter counted two series' filings and emitted no holding for either."""
     monkeypatch.setattr(worker.converter, "convert",
@@ -711,7 +737,8 @@ def test_worker_refuses_a_date_whose_main_month_it_does_not_have(wired):
     # fixture does not carry: the date must be refused, not loaded half-filed.
     stats = worker.run("dsn", calc_date="2026-08-15")
     assert stats["report_dates"]["2026-03-31"]["result"] == "partial"
-    assert [rd for rd, _ in wired["loads"]] == ["2026-05-31"]
+    assert wired["loads"] == []  # The remaining date's new cohort also fails ISIN fill.
+    assert any("isin_fill" in problem for problem in stats["report_dates"]["2026-05-31"]["validation"])
     assert stats['state'] == 'failed'
 
 

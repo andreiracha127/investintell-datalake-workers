@@ -122,7 +122,7 @@ def _seed(
     prefix: str = "A",
     filled: bool = True,
     count: int = 4,
-    pct_total: int = 100,
+    pct_total: int | None = 100,
 ) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{date}-{prefix}.csv"
@@ -142,7 +142,7 @@ def _seed(
                     "market_value": 100,
                     "quantity": 1,
                     "currency": "USD",
-                    "pct_of_nav": pct_total / count,
+                    "pct_of_nav": pct_total / count if pct_total is not None else "",
                     "is_restricted": "false",
                     "fair_value_level": "1",
                     "series_id": series,
@@ -206,6 +206,7 @@ def _secapi_manifest(
     series: str = "S1",
     count: int = 4,
     pct_sum: str = "100",
+    pct_present: int | None = None,
 ) -> None:
     (directory / "manifest.json").write_text(
         json.dumps(
@@ -227,7 +228,7 @@ def _secapi_manifest(
                                 "rows": count,
                                 "conflict_key_dupes": 0,
                                 "source_pct_sum": pct_sum,
-                                "source_pct_present": count,
+                                "source_pct_present": count if pct_present is None else pct_present,
                             }
                         ],
                     },
@@ -236,6 +237,229 @@ def _secapi_manifest(
         ),
         encoding="utf-8",
     )
+
+
+def _existing_high_isin_date(dsn: str, directory: Path) -> list[tuple]:
+    _seed(directory, "2026-05-31", series="S0", prefix="OLD", count=1_000)
+    assert _run(dsn, directory, "2026-05-31", "--new-series-only") == 0
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE sec_nport_holdings SET isin=NULL "
+            "WHERE series_id='S0' AND cusip < 'OLD00000010'"
+        )
+        assert conn.execute(
+            "SELECT count(*),count(*) FILTER (WHERE isin IS NOT NULL AND isin <> '') "
+            "FROM sec_nport_holdings"
+        ).fetchone() == (1_000, 990)
+    return _rows(dsn)
+
+
+def _run_monthly_seed(
+    dsn: str,
+    workdir: Path,
+    monkeypatch,
+    *,
+    filled: bool = True,
+    pct_total: int | None = 100,
+) -> dict:
+    from src.workers import nport_secapi_monthly as lane
+
+    def convert_fixture(_paths, output, **_kwargs):
+        seed_dir = Path(output)
+        path = _seed(
+            seed_dir, "2026-05-31", series="S1", filled=filled, pct_total=pct_total
+        )
+        path.rename(seed_dir / "2026-05-31.csv")
+        _secapi_manifest(
+            seed_dir,
+            "2026-05-31",
+            pct_sum=str(pct_total or 0),
+            pct_present=4 if pct_total is not None else 0,
+        )
+        manifest_path = seed_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["report_dates"]["2026-05-31"]["file"] = "2026-05-31.csv"
+        manifest["excluded_report_dates"] = {}
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return manifest
+
+    monkeypatch.setattr(
+        lane.downloader,
+        "download_months",
+        lambda *_args, **_kwargs: {"containers": [], "bytes_transferred": 0},
+    )
+    monkeypatch.setattr(lane.converter, "convert", convert_fixture)
+    return lane._run_locked(dsn, dt.date(2026, 10, 7), None, workdir, "fixture-key")
+
+
+@pytest.mark.parametrize("pct_total", [100, None], ids=["valid-percentages", "missing-percentages"])
+def test_monthly_revisit_rejects_zero_isin_cohort_without_existing_date_dilution(
+    database, tmp_path, monkeypatch, pct_total
+):
+    before = _existing_high_isin_date(database, tmp_path / "old")
+    # 990 / (1,000 + 4) remains above the whole-date 90% ISIN floor.
+    assert Decimal(990) / Decimal(1_004) > Decimal("0.90")
+    stats = _run_monthly_seed(
+        database, tmp_path / "monthly", monkeypatch, filled=False, pct_total=pct_total
+    )
+    assert stats["state"] == "failed"
+    entry = stats["report_dates"]["2026-05-31"]
+    assert entry["result"] == "failed"
+    assert any("isin_fill" in problem for problem in entry["validation"])
+    # Missing percentages are an independent contract defect. The regression
+    # requires the ISIN verdict too, so that defect cannot hide ISIN dilution.
+    if pct_total is None:
+        assert any("no percentage values" in problem for problem in entry["validation"])
+    assert _rows(database) == before
+    assert "cagg_refreshed" not in stats
+
+
+def test_monthly_revisit_rejects_actual_zero_isin_cohort_and_rolls_back(
+    database, tmp_path, monkeypatch, capsys
+):
+    before = _existing_high_isin_date(database, tmp_path / "old")
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute("CREATE SEQUENCE new_cohort_insert_attempts")
+        conn.execute(
+            "CREATE FUNCTION remove_new_cohort_isin() RETURNS trigger LANGUAGE plpgsql AS "
+            "$$ BEGIN IF NEW.series_id='S1' THEN "
+            "PERFORM nextval('new_cohort_insert_attempts'); NEW.isin := NULL; "
+            "END IF; RETURN NEW; END $$"
+        )
+        conn.execute(
+            "CREATE TRIGGER remove_new_cohort_isin BEFORE INSERT ON sec_nport_holdings "
+            "FOR EACH ROW EXECUTE FUNCTION remove_new_cohort_isin()"
+        )
+    stats = _run_monthly_seed(database, tmp_path / "monthly", monkeypatch)
+    assert stats["state"] == "failed"
+    entry = stats["report_dates"]["2026-05-31"]
+    assert entry["result"] == "failed"
+    assert entry["loader_exit"] == 2
+    assert "isin_fill" in capsys.readouterr().out
+    assert _rows(database) == before
+    with psycopg.connect(database) as conn:
+        # The sequence survives rollback, proving that all four clean seed
+        # records reached INSERT before the actual-row cohort check rejected it.
+        assert conn.execute(
+            "SELECT last_value,is_called FROM new_cohort_insert_attempts"
+        ).fetchone() == (4, True)
+    assert "cagg_refreshed" not in stats
+
+
+@pytest.mark.parametrize(
+    "suppressed", [("S2",), ("S1", "S2")], ids=["one-series", "entire-cohort"]
+)
+def test_secapi_suppressed_returning_series_rolls_back_planned_cohort(
+    database, tmp_path, capsys, suppressed
+):
+    old = tmp_path / "old"
+    _seed(old, "2026-05-31", series="S0", prefix="OLD")
+    assert _run(database, old, "2026-05-31", "--new-series-only") == 0
+    before = _rows(database)
+    cohort = tmp_path / "cohort"
+    _seed(cohort, "2026-05-31", series="S1", prefix="A")
+    _seed(cohort, "2026-05-31", series="S2", prefix="B")
+    _secapi_manifest(cohort, "2026-05-31")
+    manifest_path = cohort / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entry = manifest["report_dates"]["2026-05-31"]
+    entry["rows"] = 8
+    entry["series"] = 2
+    entry["filing_quality"].append(
+        entry["filing_quality"][0]
+        | {"series_id": "S2", "accession": "0000000123-26-000002"}
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute("CREATE SEQUENCE suppressed_insert_attempts")
+        conn.execute(
+            sql.SQL(
+                "CREATE FUNCTION suppress_selected_series() RETURNS trigger LANGUAGE plpgsql AS "
+                "$$ BEGIN IF NEW.series_id IN ({}) THEN "
+                "PERFORM nextval('suppressed_insert_attempts'); RETURN NULL; "
+                "END IF; RETURN NEW; END $$"
+            ).format(sql.SQL(",").join(sql.Literal(series) for series in suppressed))
+        )
+        conn.execute(
+            "CREATE TRIGGER suppress_selected_series BEFORE INSERT ON sec_nport_holdings "
+            "FOR EACH ROW EXECUTE FUNCTION suppress_selected_series()"
+        )
+    # A healthy existing series keeps the whole-date check green even when
+    # every selected series disappears. The missing RETURNING set must reject.
+    assert _run(database, cohort, "2026-05-31", "--new-series-only", "--dry-run") == 0
+    assert _run(database, cohort, "2026-05-31", "--new-series-only") == 2
+    output = capsys.readouterr().out
+    assert "mismatch" in output.lower()
+    assert "S2" in output
+    assert _rows(database) == before
+    with psycopg.connect(database) as conn:
+        assert conn.execute(
+            "SELECT last_value,is_called FROM suppressed_insert_attempts"
+        ).fetchone() == (4 * len(suppressed), True)
+
+
+def test_secapi_same_count_trigger_key_rewrite_rolls_back(database, tmp_path, capsys):
+    old = tmp_path / "old"
+    _seed(old, "2026-05-31", series="S0", prefix="OLD")
+    assert _run(database, old, "2026-05-31", "--new-series-only") == 0
+    before = _rows(database)
+    cohort = tmp_path / "cohort"
+    _seed(cohort, "2026-05-31")
+    _secapi_manifest(cohort, "2026-05-31")
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute("CREATE SEQUENCE rewritten_key_insert_attempts")
+        conn.execute(
+            "CREATE FUNCTION rewrite_inserted_key() RETURNS trigger LANGUAGE plpgsql AS "
+            "$$ BEGIN IF NEW.series_id='S1' THEN "
+            "PERFORM nextval('rewritten_key_insert_attempts'); NEW.cusip := 'R' || NEW.cusip; "
+            "END IF; RETURN NEW; END $$"
+        )
+        conn.execute(
+            "CREATE TRIGGER rewrite_inserted_key BEFORE INSERT ON sec_nport_holdings "
+            "FOR EACH ROW EXECUTE FUNCTION rewrite_inserted_key()"
+        )
+    # Counts, percentage sums and ISIN coverage all survive the trigger. Only
+    # comparing the actual conflict keys against the preflight set catches it.
+    assert _run(database, cohort, "2026-05-31", "--new-series-only", "--dry-run") == 0
+    assert _run(database, cohort, "2026-05-31", "--new-series-only") == 2
+    assert "inserted keys mismatch preflight plan" in capsys.readouterr().out
+    assert _rows(database) == before
+    with psycopg.connect(database) as conn:
+        assert conn.execute(
+            "SELECT last_value,is_called FROM rewritten_key_insert_attempts"
+        ).fetchone() == (4, True)
+
+
+def test_secapi_same_count_csv_key_change_after_preflight_rolls_back(
+    database, tmp_path, monkeypatch, capsys
+):
+    old = tmp_path / "old"
+    _seed(old, "2026-05-31", series="S0", prefix="OLD")
+    assert _run(database, old, "2026-05-31", "--new-series-only") == 0
+    before = _rows(database)
+    cohort = tmp_path / "cohort"
+    path = _seed(cohort, "2026-05-31")
+    _secapi_manifest(cohort, "2026-05-31")
+    real_prep = load.prep
+    prep_calls = []
+
+    def replace_key_after_preflight(*args, **kwargs):
+        real_prep(*args, **kwargs)
+        prep_calls.append(True)
+        with path.open(encoding="utf-8", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        assert len(rows) == 4
+        rows[0]["cusip"] = "Z99999999"
+        with path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=load.CSV_COLS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    monkeypatch.setattr(load, "prep", replace_key_after_preflight)
+    assert _run(database, cohort, "2026-05-31", "--new-series-only") == 2
+    assert prep_calls == [True]
+    assert "inserted keys mismatch preflight plan" in capsys.readouterr().out
+    assert _rows(database) == before
 
 
 def test_clean_date_commits_and_cagg_can_publish(database, tmp_path):

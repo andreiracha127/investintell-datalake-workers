@@ -131,8 +131,8 @@ def load_report_date(dsn: str, seed_dir: Path, report_date: str) -> int:
     """The loader's dry run over exactly the load's arguments, then the load. Returns the exit code.
 
     Same argv, so the plan is the load's own: the series the table already holds
-    are left out of it, and its ISIN verdict is the post-load verify's, over the
-    whole date.
+    are left out of the new-cohort contract. ISIN must pass both that cohort's
+    contract and the whole-date post-load check before commit.
     """
     args = ["--seed-dir", str(seed_dir), "--only", f"{report_date}.csv", "--only-report-dates", report_date,
             "--dsn", dsn, "--workers", "1", "--skip-matview", "--new-series-only", "--secapi"]
@@ -250,12 +250,13 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
             continue
         # The value checks the manual workflow runs before a load (pct_of_nav
         # sums, units, foreign dates), over the series the load will insert;
-        # the loader's dry run checks loadability and ISIN fill, not values.
+        # the loader repeats the contract and whole-date ISIN check against its
+        # table-aware dry run, then verifies actual inserted rows before commit.
         try:
-            # Percentage/MV/malformed checks apply to the actual new cohort;
-            # the loader judges ISIN over the full post-load date, including old rows.
+            # Existing high-ISIN series cannot dilute a defective new cohort.
+            # The loader also judges the full post-load date, including old rows.
             problems = validator.verdict(
-                validator.profile_csv(str(seed_dir / f"{rd}.csv"), only_series=new), include_isin=False,
+                validator.profile_csv(str(seed_dir / f"{rd}.csv"), only_series=new),
             )
         except Exception as exc:
             entry['result'] = 'failed'

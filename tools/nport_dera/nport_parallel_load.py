@@ -13,8 +13,9 @@ COPY, scoped replacement/cleanup, insertion, and actual-row verification occur
 in one transaction. CSVs sharing any report_date form one transaction group, so
 a rejected date leaves no committed inserts or deletes, even when split across
 files. Disjoint date groups COPY in parallel. ISIN verification includes the
-whole target date; sec-api value and malformed-source checks judge only rows
-actually inserted. Verification precedes the commit and includes trigger changes.
+whole target date and the newly inserted sec-api cohort; sec-api value and
+malformed-source checks judge only rows actually inserted. Verification precedes
+the commit and includes trigger changes and missing planned series/rows.
 
 The lifecycle holds LOAD_LOCK across preparation, workers and restoration.
 Preparation pauses existing compression jobs and opens only overlapping chunks.
@@ -38,6 +39,7 @@ from __future__ import annotations
 import argparse
 import collections
 import concurrent.futures
+import csv
 import datetime as dt
 import glob
 import json
@@ -46,9 +48,10 @@ import os
 import re
 import sys
 import threading
+import tempfile
 from dataclasses import dataclass, field
 from contextlib import ExitStack
-from collections.abc import MutableSet
+from collections.abc import Callable, MutableSet
 from typing import Iterator
 
 import psycopg
@@ -244,9 +247,13 @@ def load_batch(
     delete_first: bool = False,
     cleanup: bool = False,
     quality_manifest: dict | None = None,
+    expected_rows: dict[str, dict[str, int]] | None = None,
+    expected_keys: dict[str, str] | None = None,
 ) -> tuple[str, int]:
     """COPY, insert/delete and verify atomically across every CSV sharing a date."""
     name = ','.join(os.path.basename(p) for p in paths)
+    if quality_manifest is not None and not (new_series_only or delete_first):
+        raise ValueError('sec-api seed loads require --new-series-only or --delete-first')
     if new_series_only and not report_dates:
         raise ValueError("new_series_only requires an explicit report_date list")
     if new_series_only and (delete_first or cleanup):
@@ -284,6 +291,54 @@ def load_batch(
         if delete_first:
             cur.execute(f"DELETE FROM {TABLE} WHERE report_date = ANY(%s::date[])", (report_dates,))
         if quality_manifest is not None:
+            # Keep the preflight cohort even when INSERT returns no rows for it.
+            # Direct API callers use the converter's emitted per-series counts.
+            expected = {
+                rd: dict(expected_rows[rd]) if expected_rows is not None else {
+                    f['series_id']: f['rows']
+                    for f in quality_manifest['report_dates'][rd]['filing_quality'] if f['rows']
+                }
+                for rd in report_dates or []
+            }
+            if new_series_only:
+                # A concurrent loader can finish during our advisory-lock wait.
+                # Its entire series is legitimately skipped by the fresh INSERT.
+                cur.execute(f"SELECT DISTINCT report_date, series_id FROM {TABLE} "
+                            "WHERE report_date = ANY(%s::date[])", (report_dates,))
+                for rd, series in cur.fetchall():
+                    expected[str(rd)].pop(series, None)
+            if cleanup and expected_rows is None:
+                cur.execute("SELECT report_date, series_id, count(DISTINCT cusip) FROM _nport_stage "
+                            "WHERE cusip = %s AND report_date = ANY(%s::date[]) GROUP BY 1,2",
+                            (PLACEHOLDER_CUSIP, report_dates))
+                for rd, series, count in cur.fetchall():
+                    rows = expected[str(rd)].get(series, 0) - count
+                    if rows > 0:
+                        expected[str(rd)][series] = rows
+                    else:
+                        expected[str(rd)].pop(series, None)
+            if expected_keys is not None:
+                cur.execute("CREATE TEMP TABLE _nport_expected "
+                            "(report_date date, series_id text, cusip text) ON COMMIT DROP")
+                with cur.copy("COPY _nport_expected FROM STDIN") as cp:
+                    for rd in report_dates or []:
+                        with open(expected_keys[rd], encoding='utf-8', newline='') as fh:
+                            for key in csv.reader(fh):
+                                if key[1] in expected[rd]:
+                                    cp.write_row(key)
+            else:
+                # Direct load_batch callers have no CLI preflight key files.
+                # Freeze the selected stage keys before triggers can change them.
+                where = "report_date <= current_date AND series_id IS NOT NULL "
+                where += "AND report_date = ANY(%(dates)s::date[])"
+                if new_series_only:
+                    where += (f" AND NOT EXISTS (SELECT 1 FROM {TABLE} h WHERE "
+                              "h.report_date=s.report_date AND h.series_id=s.series_id)")
+                if cleanup:
+                    where += " AND cusip <> %(placeholder)s"
+                cur.execute("CREATE TEMP TABLE _nport_expected ON COMMIT DROP AS "
+                            "SELECT DISTINCT report_date,series_id,cusip FROM _nport_stage s WHERE " + where,
+                            {'dates': report_dates, 'placeholder': PLACEHOLDER_CUSIP})
             cur.execute("CREATE TEMP TABLE _nport_inserted (report_date date, series_id text, cusip text) ON COMMIT DROP")
             # Store only inserted keys in PostgreSQL, never millions of rows in Python.
             sql = ("WITH inserted AS (" + sql.rstrip().rstrip(';')
@@ -297,7 +352,7 @@ def load_batch(
                         {"placeholder": PLACEHOLDER_CUSIP, "dates": report_dates})
         if quality_manifest is not None:
             # The actual target values include changes made by database triggers.
-            _verify_quality(cur, quality_manifest, report_dates or [])
+            _verify_quality(cur, quality_manifest, report_dates or [], expected)
         if report_dates and verify:
             cur.execute(COVERAGE_SQL, {"dates": report_dates})
             readings, bad = judge_isin_fill(
@@ -313,7 +368,9 @@ def load_batch(
     return name, inserted
 
 
-def _verify_quality(cur, manifest: dict, report_dates: list[str]) -> None:
+def _verify_quality(
+    cur, manifest: dict, report_dates: list[str], expected_rows: dict[str, dict[str, int]],
+) -> None:
     cur.execute(
         "SELECT h.report_date,h.series_id,count(*), "
         "count(*) FILTER(WHERE h.isin IS NOT NULL AND h.isin<>''), "
@@ -327,13 +384,32 @@ def _verify_quality(cur, manifest: dict, report_dates: list[str]) -> None:
             'market_value_usd_total', 'usd_rows']
     for rd, *values in cur.fetchall():
         by_date[str(rd)].append(dict(zip(cols, values)))
-    for rd, aggregates in by_date.items():
+    for rd in sorted(set(report_dates) | set(by_date)):
+        aggregates = by_date[rd]
+        actual = {r['series_id']: r['rows'] for r in aggregates}
+        expected = expected_rows.get(rd, {})
+        if actual != expected:
+            changed = sorted(s for s in set(actual) | set(expected) if actual.get(s) != expected.get(s))
+            raise VerificationError(f"{rd}: inserted rows mismatch preflight plan: "
+                                    f"{[(s, expected.get(s, 0), actual.get(s, 0)) for s in changed]} "
+                                    "(series, expected, actual)")
+        if not aggregates:
+            continue  # a whole-series idempotent revisit has no new quality cohort
         profile = profile_series(rd, aggregates, reference_sums=filing_reference_sums(manifest['report_dates'][rd]))
-        problems = quality_verdict(profile, include_isin=False)
+        problems = quality_verdict(profile)
         series = {r['series_id'] for r in aggregates}
         problems += malformed_verdict(manifest['report_dates'][rd], only_series=series)
         if problems:
             raise VerificationError(f"{rd}: " + '; '.join(problems))
+    # Counts detect missing/partial series; exact keys also detect a same-size
+    # CSV mutation or trigger rewrite. Compare surviving target rows after cleanup.
+    actual_keys = (f"SELECT h.report_date,h.series_id,h.cusip FROM {TABLE} h "
+                   "JOIN _nport_inserted i USING(report_date,series_id,cusip)")
+    planned_keys = "SELECT report_date,series_id,cusip FROM _nport_expected"
+    cur.execute(f"SELECT EXISTS (({planned_keys} EXCEPT {actual_keys}) "
+                f"UNION ALL ({actual_keys} EXCEPT {planned_keys}))")
+    if cur.fetchone()[0]:
+        raise VerificationError('inserted keys mismatch preflight plan')
 
 
 def finalize(dsn: str, skip_matview: bool, recompress: Maintenance | None = None) -> None:
@@ -574,6 +650,7 @@ class _Plan:
     earlier_keys: MutableSet[tuple[str, str, str]] = field(default_factory=KeyIndex)
     earlier_series: set[tuple[str, str]] = field(default_factory=set)
     quality: dict[str, ValidationAccumulator] = field(default_factory=dict)
+    key_writers: dict[str, Callable[[tuple[str, str, str]], object]] = field(default_factory=dict)
 
 
 def check_csv(
@@ -698,6 +775,8 @@ def _check_csv(
                 out["dropped"]["deleted_by_cleanup_placeholders"] += 1
                 continue
             bucket = per[rd]
+            if rd in plan.key_writers:
+                plan.key_writers[rd](key)
             bucket["rows"] += 1
             bucket["series"].add(series)
             if _isin_present(rec["isin"]):
@@ -739,6 +818,8 @@ def dry_run(
     today: dt.date | None = None,
     quality_manifest: dict | None = None,
     file_dates: dict[str, set[str]] | None = None,
+    expected_rows: dict[str, dict[str, int]] | None = None,
+    expected_keys: dict[str, str] | None = None,
 ) -> int:
     """Read-only preflight with deterministic cleanup of disk-backed keys."""
     with ExitStack() as resources:
@@ -746,7 +827,8 @@ def dry_run(
             files, report_dates, floor, dsn=dsn, new_series_only=new_series_only,
             delete_first=delete_first, cleanup=cleanup, skip_matview=skip_matview,
             verify=verify, today=today, quality_manifest=quality_manifest,
-            file_dates=file_dates, resources=resources,
+            file_dates=file_dates, expected_rows=expected_rows, expected_keys=expected_keys,
+            resources=resources,
         )
 
 
@@ -764,6 +846,8 @@ def _dry_run(
     today: dt.date | None,
     quality_manifest: dict | None,
     file_dates: dict[str, set[str]] | None,
+    expected_rows: dict[str, dict[str, int]] | None,
+    expected_keys: dict[str, str] | None,
     resources: ExitStack,
 ) -> int:
     """The load's plan over ``files``: 0 when the load and its verify would pass, 2 otherwise.
@@ -779,6 +863,8 @@ def _dry_run(
     loaded; ``--new-series-only`` has no meaning without the table and needs it.
     """
     report_dates = [iso_date(d) or d for d in report_dates]
+    if quality_manifest is not None and not (new_series_only or delete_first):
+        raise ValueError('sec-api seed loads require --new-series-only or --delete-first')
     if not math.isfinite(floor) or not 0 <= floor <= 1:
         raise ValueError('verification floor must be finite and between 0 and 1')
     verify = bool(report_dates) if verify is None else verify
@@ -801,6 +887,11 @@ def _dry_run(
         resources.callback(plan.earlier_keys.close)
     if quality_manifest is not None:
         plan.quality = {rd: ValidationAccumulator() for rd in report_dates}
+    if expected_keys is not None:
+        plan.key_writers = {
+            rd: csv.writer(resources.enter_context(open(path, 'w', encoding='utf-8', newline=''))).writerow
+            for rd, path in expected_keys.items()
+        }
     failing = cross_file = split = 0
     planned: dict[str, dict] = {}
     sources: dict[str, dict] = {}
@@ -853,10 +944,12 @@ def _dry_run(
             if source['rows'] != entry['rows'] or source['series'] != expected_series:
                 quality_problems.append(f'{rd}: CSV rows/series do not match the manifest')
             accumulator = plan.quality[rd]
+            if expected_rows is not None:
+                expected_rows[rd] = {s: a['rows'] for s, a in accumulator.series.items()}
             # An idempotent revisit with no inserts has no new quality cohort.
             if accumulator.series:
                 quality_problems += [f'{rd}: {p}' for p in quality_verdict(
-                    accumulator.profile(rd, reference_sums=filing_reference_sums(entry)), include_isin=False,
+                    accumulator.profile(rd, reference_sums=filing_reference_sums(entry)),
                 )]
                 quality_problems += [f'{rd}: {p}' for p in malformed_verdict(
                     entry, only_series=set(accumulator.series),
@@ -987,6 +1080,8 @@ def main(argv: list[str] | None = None) -> int:
                 ap.error('sec-api seed loads require --only-report-dates')
             if args.no_verify:
                 ap.error('--no-verify cannot bypass the sec-api validation contract')
+            if not (args.new_series_only or args.delete_first):
+                ap.error('sec-api seed loads require --new-series-only or --delete-first')
     if args.secapi and quality_manifest is None:
         ap.error('--secapi requires a sec-api converter manifest; reconvert the containers')
     if args.dry_run:
@@ -997,7 +1092,7 @@ def main(argv: list[str] | None = None) -> int:
             quality_manifest=quality_manifest,
         )
     total = failures = rejected = 0
-    with psycopg.connect(args.dsn, autocommit=True) as lifecycle_conn:
+    with ExitStack() as resources, psycopg.connect(args.dsn, autocommit=True) as lifecycle_conn:
         lifecycle_conn.execute('SELECT pg_advisory_lock(%s)', (LOAD_LOCK,))
         state = Maintenance()
         restoration_attempted = False
@@ -1005,12 +1100,18 @@ def main(argv: list[str] | None = None) -> int:
             # Also enforce the plan on direct CLI invocations, before maintenance
             # or deletes. The transaction repeats verification on actual rows.
             file_dates: dict[str, set[str]] = {}
+            expected_rows: dict[str, dict[str, int]] = {}
+            expected_keys = None
+            if quality_manifest is not None:
+                directory = resources.enter_context(tempfile.TemporaryDirectory(prefix='nport-plan-'))
+                expected_keys = {rd: os.path.join(directory, f'{rd}.csv') for rd in report_dates}
             rc = dry_run(
                 files, report_dates, args.verify_floor, dsn=args.dsn,
                 new_series_only=args.new_series_only, delete_first=args.delete_first,
                 cleanup=args.cleanup_placeholders, skip_matview=args.skip_matview,
                 verify=bool(report_dates) and not args.no_verify,
-                quality_manifest=quality_manifest, file_dates=file_dates,
+                quality_manifest=quality_manifest, file_dates=file_dates, expected_rows=expected_rows,
+                expected_keys=expected_keys,
             )
             if rc:
                 return rc
@@ -1024,6 +1125,8 @@ def main(argv: list[str] | None = None) -> int:
                             verify=bool(report_dates) and not args.no_verify, floor=args.verify_floor,
                             delete_first=args.delete_first, cleanup=args.cleanup_placeholders,
                             quality_manifest=quality_manifest,
+                            expected_rows=expected_rows,
+                            expected_keys=expected_keys,
                         ): dates for paths, dates in groups
                     }
                     for future in concurrent.futures.as_completed(futures):
