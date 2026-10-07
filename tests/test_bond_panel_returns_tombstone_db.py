@@ -180,7 +180,13 @@ def governed_conn():
     """Install the complete production protocol, including the pointer guard."""
     schema = f"rollback_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as connection:
-        if not connection.execute("SELECT 1 FROM pg_roles WHERE rolname = 'worker_writer'").fetchone():
+        # Roles are cluster-global and other suites in the same lane assert the
+        # attributes of worker_writer, so a role this fixture creates is
+        # dropped again on teardown: the cluster is left as it was found.
+        created_role = not connection.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = 'worker_writer'"
+        ).fetchone()
+        if created_role:
             connection.execute("CREATE ROLE worker_writer")
         connection.execute(sql.SQL("CREATE SCHEMA {} AUTHORIZATION worker_writer").format(sql.Identifier(schema)))
         try:
@@ -190,6 +196,9 @@ def governed_conn():
         finally:
             connection.execute("ROLLBACK; RESET ROLE; SET search_path TO public")
             connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+            if created_role:
+                connection.execute("DROP OWNED BY worker_writer")
+                connection.execute("DROP ROLE worker_writer")
 
 
 def _complete_facts(conn, publication, rows, *, legacy_identity=False):
