@@ -1,10 +1,10 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "87e5ed8dfa009eb1ec01a77c4c8f349679ea2ae0145ed18ef14a9326c8cce59c",
+ "module_pins_sha256": "7d8244429a888c9cda98dd5d92a09200dd4fd836d418cdb99654b9b01448aa07",
  "modules": {
   "harness/direct_activation/live_validation.py": "4cb4a0eb127709e080e87c786b9bc4ec0392d73234dd5366dd0789ef3aa1a9d1",
-  "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
-  "harness/phase0q/decision_v3.py": "4c31049252369bda9fe7581820c3d4fc89599c4fd8db9d6d1f936a29aac84948",
+  "harness/phase0q/decision.py": "59ad333249517af48aaa25c6d8cad9a8ba2d3dda075a9edb09a8e8a44ac28058",
+  "harness/phase0q/decision_v3.py": "dfe548e08ff5d07b98e07ca2c5c0a8a931d78ddae55a442f7a0b5d786fd52297",
   "harness/phase0q/pit.py": "1782c22bc2c941f9f68669f25dcd704244842698a06c7936bd81af6dedfdc16f",
   "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",
   "scripts/p1_export/export_p1_sources.py": "a787738913cadb66f801ad26ef1ed28d608335403a0cbbe5166a0a9256aaecfb",

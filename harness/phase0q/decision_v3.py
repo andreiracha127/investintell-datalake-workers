@@ -87,8 +87,8 @@ def run_decision_series_v3(
         market_obs: list[tuple[float | None, float | None]] = []
         for k in range(V2_FILTER_HISTORY_MONTHS - 1, -1, -1):
             t = when - _dt.timedelta(days=30 * k)
-            score, _, z_by = score_axis(axis, t)
-            coverage = _d1._coverage(z_by, specs)
+            score, _, z_by, n_valid = score_axis(axis, t)
+            coverage = _d1._coverage(z_by, specs, n_valid)
             macro_obs.append((score, coverage if score is not None else None))
             market_obs.append(market_by_date.get(t.date(), (None, None)))
         return macro_obs, market_obs
@@ -99,13 +99,13 @@ def run_decision_series_v3(
     for as_of in decision_dates:
         decision_time = _d1._decision_time(as_of)
 
-        g_score, g_contrib, g_z = score_axis("growth", decision_time)
-        i_score, i_contrib, i_z = score_axis("inflation", decision_time)
+        g_score, g_contrib, g_z, g_nvalid = score_axis("growth", decision_time)
+        i_score, i_contrib, i_z, i_nvalid = score_axis("inflation", decision_time)
         g_obs, g_aux = axis_observations("growth", decision_time, g_specs)
         i_obs, _ = axis_observations("inflation", decision_time, i_specs)
 
-        g_cov = _d1._coverage(g_z, g_specs)
-        i_cov = _d1._coverage(i_z, i_specs)
+        g_cov = _d1._coverage(g_z, g_specs, g_nvalid)
+        i_cov = _d1._coverage(i_z, i_specs, i_nvalid)
         g_health = 1.0 if g_score is not None else 0.0
         i_health = 1.0 if i_score is not None else 0.0
 

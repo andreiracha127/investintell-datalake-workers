@@ -5,12 +5,14 @@
 Stream identity (quant audit 2026-10-07): ``macro_quadrant_us_v3`` is the label of
 the certified chain — the pinned harness ``harness/phase0q/decision_v3.py`` that
 ``open_macro_v03`` runs — and of this worker's frozen pre-audit rows (coverage
-without the §6 historyCoverage factor, z-only provenance hash); both stay
-untouched. ``macro_quadrant_us_v3.1`` is this worker's stream from the audit on:
-the historyCoverage factor enters the coverage and every walk-back filter
-observation's q_data, and ``source_vintage_hash`` binds the nValid counts plus the
-three observation sequences the fused filter consumes — both macro axes and the
-auxiliary market sensor, whose adjusted closes are revised retroactively (see
+without the §6 historyCoverage factor, z-only provenance hash); both keep that
+label. The harness's coverage carries the factor too since its recertification
+(byte-neutral: every certified series that scores has >= 24 valid months), with the
+z-only hash layout unchanged. ``macro_quadrant_us_v3.1`` is this worker's stream
+from the audit on: the historyCoverage factor enters the coverage and every
+walk-back filter observation's q_data, and ``source_vintage_hash`` binds the nValid
+counts plus the three observation sequences the fused filter consumes — both macro
+axes and the auxiliary market sensor, whose adjusted closes are revised retroactively (see
 ``quadrant_macro._vintage_hash``). The confidence identifiers (``confidence_v2.0`` /
 ``kalman_fused_joint_posterior_v3``) are unchanged: the policy did not move, its
 coverage input did.
