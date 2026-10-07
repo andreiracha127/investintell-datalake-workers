@@ -397,6 +397,19 @@ def _write_instrument_nav_tx(conn, rows: list[dict[str, Any]], *,
     INGESTION advisory lock, and the revision trigger locks the instrument's
     ``fund_nav_data_heads`` row, which serializes NAV writes.
 
+    DML on a compressed chunk first decompresses the batches its WHERE quals
+    select, and TimescaleDB only derives those batch filters from constant
+    quals (``process_predicates`` plans with ``boundParams=NULL``). psycopg
+    prepares ``return_update`` server-side after five executions and Postgres
+    then moves the prepared statement to a generic plan whose quals are
+    ``instrument_id=$7 AND nav_date=$8``: no filter, the whole chunk is
+    decompressed and the default 100k tuple limit
+    (``timescaledb.max_tuples_decompressed_per_dml_transaction``) fails the
+    transaction (incident 2026-10-07, one year-chunk = 1,142,536 tuples).
+    ``plan_cache_mode=force_custom_plan`` keeps the quals constant and the
+    decompression one segment per instrument; it is set LOCAL so it covers
+    every statement of this write and nothing else.
+
     ``mode='rebase'`` (R2-B, attributed only) additionally recomputes the
     return of EVERY presented date from its persisted predecessor, so a full
     window reconciled from one snapshot ends with coherent returns; the
@@ -445,6 +458,8 @@ def _write_instrument_nav_tx(conn, rows: list[dict[str, Any]], *,
     changed_levels = changed_returns = 0
     events: list[int] = []
     with conn.cursor(row_factory=dict_row) as cur:
+        # Segment-scoped compressed-chunk DML (see docstring): no generic plans.
+        cur.execute("SET LOCAL plan_cache_mode = force_custom_plan")
         cur.execute("SELECT set_config('nav.ingestion_run_id', %s, true)",
                     (str(run_id) if run_id else "",))
         cur.execute("SELECT set_config('nav.ingestion_provider', %s, true)",
