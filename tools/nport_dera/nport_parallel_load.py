@@ -1,87 +1,35 @@
-"""Parallel bulk-load of parsed N-PORT CSVs into ``sec_nport_holdings``.
+"""Bulk-load parsed N-PORT CSVs into ``sec_nport_holdings``.
 
-PROVENANCE
-----------
-Rescued verbatim from ``E:\\investintell-allocation\\scripts\\nport_parallel_load.py``
-(mtime 2026-06-11 20:11), an untracked operator script. Every one of the
-96,398,851 rows in ``sec_nport_holdings`` was written by it: the table's
-``created_at`` holds exactly three timestamps, all on 2026-06-11, one per run.
+The conflict key is ``(report_date, series_id, cusip)``. ``ON CONFLICT DO
+NOTHING`` preserves existing rows; it cannot repair a bad filing. Monthly
+``--new-series-only`` loads preserve each existing series wholesale.
 
-THE TRAP, WHICH IS THE WHOLE REASON THIS FILE IS NOW UNDER GIT
---------------------------------------------------------------
-The insert is ``ON CONFLICT (report_date, series_id, cusip) DO NOTHING``. That
-makes a re-run idempotent, which is what it was designed for — and it also makes
-a re-run **incapable of repairing anything**. When a package loads with a short
-``HOLDING_ID -> ISIN`` map, its rows arrive keyed on ``LE:<lei>`` instead of
-``IS:<isin>``. Those wrong rows now OWN the primary key. Re-parsing the package
-correctly and re-running this loader inserts zero rows, logs zero errors, exits
-zero, and changes nothing. The job is green and the data is still broken. (Same
-shape as ``bond-serving-republication`` and ``railway-redeploy-nao-executa-worker``.)
+A real load runs the same read-only preflight as ``--dry-run``. CSV/header/type
+checks and exact conflict-key indexes predict COPY and insertion; the indexes
+use bounded temporary disk storage. A sec-api converter manifest automatically
+enables the shared quality contract in ``tools.nport_secapi.contract``.
 
-A repair is therefore always: DELETE the affected report_dates → reload every
-package that contributes rows to them → verify the ISIN fill. ``--delete-first``
-below encodes that, and refuses to run unscoped.
+COPY, scoped replacement/cleanup, insertion, and actual-row verification occur
+in one transaction. CSVs sharing any report_date form one transaction group, so
+a rejected date leaves no committed inserts or deletes, even when split across
+files. Disjoint date groups COPY in parallel. ISIN verification includes the
+whole target date; sec-api value and malformed-source checks judge only rows
+actually inserted. Verification precedes the commit and includes trigger changes.
 
-``LE:<lei>`` is also not unique per security, so the collapse is lossy on top of
-being wrong: 270,020 rows of 2023q4/2025q1 never made it into the table at all
-because same-issuer holdings inside one series folded onto one key.
+The lifecycle holds LOAD_LOCK across preparation, workers and restoration.
+Preparation pauses existing compression jobs and opens only overlapping chunks.
+Finalization restores those chunks and the original job IDs/configuration and
+scheduled state, including on failure; it never invents a missing policy. Each
+new-series transaction also holds NEW_SERIES_LOCK from its post-wait snapshot
+through verification and commit. Lock order: monthly worker, lifecycle, insert.
 
-WHAT WAS ADDED to the rescued original, and nothing else:
-
-* ``--only-report-dates`` — a scope guard at the DB boundary, independent of the
-  one in the parser. The INSERT will not touch a report_date outside the list.
-* ``--delete-first`` — the mandatory DELETE, allowed only together with an
-  explicit report_date list.
-* ``prep()`` decompresses **only the chunks that overlap the target dates**
-  instead of the whole hypertable. The original decompressed all 27 chunks of a
-  96M-row table; on a volume with 240 GB free that is a real hazard, and it is
-  unnecessary when the write is scoped to four chunks.
-* ``finalize()`` re-compresses exactly the chunks ``prep()`` opened, rather than
-  leaving the table uncompressed until a background policy job gets to it.
-* ``verify_isin_fill()`` — a post-load check, with a configurable floor. Its
-  absence is why two bad quarters went unnoticed for one and two years.
-* ``--dry-run`` (2026-10) — the load's plan, before anything is written, from the
-  same arguments: the CSVs split the way COPY splits them (an unquoted empty
-  field is NULL, a quoted ``""`` is an empty string), every value coerced
-  through ``STAGE_DDL``'s types, the target's NOT NULLs, the rows the INSERT's
-  WHERE / ``NOT EXISTS`` / ``ON CONFLICT`` keep, ``--cleanup-placeholders``, and
-  the post-load ISIN verdict through the very function ``verify_isin_fill``
-  uses. With ``--dsn`` it reads the table (read-only): the series and keys the
-  scope dates already hold, ``current_date`` and the matview ``finalize()``
-  refreshes. Without it, it models a table with no rows on the scope dates, and
-  says so. It refuses two things the load would do silently: a header out of
-  order (``COPY ... HEADER true`` skips the header, it does not read it) and a
-  non-finite number. It also refuses a conflict key carried by two selected
-  CSVs, and with ``--new-series-only`` a series split across two: the parallel
-  load would resolve either by worker timing (``tools.nport_dera.nport_merge``
-  exists to remove exactly that).
-* ``--new-series-only`` (2026-10) — insert a ``(report_date, series_id)`` only
-  when the table has no row for it yet. For monthly top-ups that revisit a
-  report_date as late filers arrive: ``ON CONFLICT DO NOTHING`` alone would graft
-  an amendment's new keys onto the original filing's rows. Requires every series
-  of a report_date to sit in ONE CSV (``tools.nport_secapi.convert`` guarantees
-  it); a series split across two parallel CSVs would load only the first half.
-  Each such INSERT holds ``NEW_SERIES_LOCK`` until it commits, so two loader
-  processes cannot both find the same series absent. Not combinable with
-  ``--cleanup-placeholders``: a series held only by placeholder rows counts as
-  present, is skipped, and is then deleted.
-
-Lifecycle:
-  1. prep()      — drop compression policy + decompress the affected chunks so
-                   inserts land in the row store.
-  2. delete      — only with --delete-first; without it a repair is a no-op.
-  3. workers     — N threads, each: own connection + own session-local TEMP stage,
-                   COPY one CSV, INSERT ... SELECT ON CONFLICT DO NOTHING.
-  4. finalize()  — re-compress the opened chunks, restore the compression policy.
-  5. verify      — ISIN fill per report_date against the floor.
-
-COPY releases the GIL on socket I/O, so threads give real network parallelism.
-No advisory lock around a load (it would serialize the workers); rely on
-idempotency for safety. The exception is the --new-series-only INSERT itself,
-which takes ``NEW_SERIES_LOCK`` until its commit (COPY still runs in parallel).
+The original operator script was rescued from
+``E:\\investintell-allocation\\scripts\\nport_parallel_load.py``. Its key and field
+mapping remain unchanged. Repairs use ``--delete-first`` with explicit dates;
+the replacement and verification now roll back together if rejected.
 
 Usage:
-  python -m tools.nport_dera.nport_parallel_load --seed-dir DIR --dsn DSN --workers 8 \
+  python -m tools.nport_dera.nport_parallel_load --seed-dir DIR --dsn DSN \
       --only-report-dates 2023-09-30,2023-10-31 --delete-first --skip-matview
 """
 
@@ -92,14 +40,24 @@ import collections
 import concurrent.futures
 import datetime as dt
 import glob
+import json
+import math
 import os
 import re
 import sys
 import threading
 from dataclasses import dataclass, field
+from contextlib import ExitStack
+from collections.abc import MutableSet
 from typing import Iterator
 
 import psycopg
+
+from tools.nport_secapi.contract import (
+    ValidationAccumulator, filing_reference_sums, isin_present, judge_isin_fill, malformed_verdict,
+    profile_series, quality_verdict,
+)
+from tools.nport_dera.key_index import KeyIndex
 
 TABLE = "sec_nport_holdings"
 
@@ -118,6 +76,10 @@ DEFAULT_FILL_FLOOR = 0.90
 #: ``src.db.LOCK_NPORT_NEW_SERIES_INSERT`` (this tool does not import ``src``).
 #: Transaction-level: held from just before a --new-series-only INSERT to its commit.
 NEW_SERIES_LOCK = 900_364
+
+# Session-level lifecycle mutex; COPY workers still run concurrently inside it.
+# See src.db.LOCK_NPORT_LOAD for the registry and lock order.
+LOAD_LOCK = 900_365
 
 STAGE_DDL = """
 CREATE TEMP TABLE _nport_stage (
@@ -164,6 +126,7 @@ AFFECTED_CHUNKS_SQL = """
 SELECT format('%%I.%%I', chunk_schema, chunk_name)
 FROM timescaledb_information.chunks
 WHERE hypertable_name = %(table)s
+  AND hypertable_schema = current_schema()
   AND is_compressed
   AND range_end > %(lo)s::timestamptz
   AND range_start <= %(hi)s::timestamptz
@@ -215,44 +178,42 @@ def affected_chunks(cur, report_dates: list[str]) -> list[str]:
     return [r[0] for r in cur.fetchall()]
 
 
-def prep(dsn: str, report_dates: list[str] | None = None) -> list[str]:
-    """Open the write path. Returns the chunks that were decompressed.
+@dataclass
+class Maintenance:
+    """Restoration state, including progress if preparation fails partway."""
 
-    With ``report_dates`` only the overlapping chunks are decompressed; without
-    it, the whole hypertable is, which is the rescued original's behaviour and
-    should be reserved for a full reload.
-    """
+    chunks: list[str] = field(default_factory=list)
+    policies: list[tuple[int, bool]] = field(default_factory=list)
+
+
+def prep(dsn: str, report_dates: list[str] | None = None, state: Maintenance | None = None) -> Maintenance:
+    """Pause existing policies and decompress the scope, preserving their configuration."""
+    state = state if state is not None else Maintenance()
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT remove_compression_policy('{TABLE}', if_exists => true)")
+        cur.execute(
+            "SELECT job_id, scheduled FROM timescaledb_information.jobs "
+            "WHERE hypertable_schema = current_schema() AND hypertable_name = %s "
+            "AND proc_name = 'policy_compression'", (TABLE,),
+        )
+        state.policies = cur.fetchall()
+        _log(f'maintenance policy snapshot (job_id, scheduled): {state.policies}')
+        for job_id, scheduled in state.policies:
+            if scheduled:
+                cur.execute("SELECT alter_job(%s, scheduled => false)", (job_id,))
         if report_dates:
             chunks = affected_chunks(cur, report_dates)
-            for chunk in chunks:
-                cur.execute("SELECT decompress_chunk(%s::regclass, if_compressed => true)", (chunk,))
         else:
             cur.execute(
                 "SELECT format('%I.%I', chunk_schema, chunk_name) "
                 "FROM timescaledb_information.chunks "
-                f"WHERE hypertable_name = '{TABLE}' AND is_compressed = true"
+                f"WHERE hypertable_schema = current_schema() AND hypertable_name = '{TABLE}' AND is_compressed = true"
             )
             chunks = [r[0] for r in cur.fetchall()]
-            for chunk in chunks:
-                cur.execute("SELECT decompress_chunk(%s::regclass, if_compressed => true)", (chunk,))
-    _log(f"prep done: compression policy removed, {len(chunks)} chunk(s) decompressed: {chunks}")
-    return chunks
-
-
-def delete_report_dates(dsn: str, report_dates: list[str]) -> int:
-    """Remove every row on ``report_dates``. Mandatory before a repair reload.
-
-    Without this the reload is a guaranteed no-op — see the module docstring.
-    """
-    if not report_dates:
-        raise ValueError("refusing to DELETE without an explicit report_date list")
-    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute(f"DELETE FROM {TABLE} WHERE report_date = ANY(%s::date[])", (report_dates,))
-        deleted = cur.rowcount
-    _log(f"deleted {deleted:,} rows on {report_dates}")
-    return deleted
+        for chunk in chunks:
+            cur.execute("SELECT decompress_chunk(%s::regclass, if_compressed => true)", (chunk,))
+            state.chunks.append(chunk)
+    _log(f"prep done: policies paused, {len(state.chunks)} chunk(s) decompressed")
+    return state
 
 
 def load_one(
@@ -261,53 +222,143 @@ def load_one(
     ts: dt.datetime,
     report_dates: list[str] | None = None,
     new_series_only: bool = False,
+    **options,
 ) -> tuple[str, int]:
-    name = os.path.basename(path)
+    """Load a CSV and verify on its own transaction before committing."""
+    return load_batch(dsn, [path], ts, report_dates, new_series_only, **options)
+
+
+class VerificationError(ValueError):
+    """A rejected transaction; none of its inserts or deletes were committed."""
+
+
+def load_batch(
+    dsn: str,
+    paths: list[str],
+    ts: dt.datetime,
+    report_dates: list[str] | None = None,
+    new_series_only: bool = False,
+    *,
+    verify: bool = True,
+    floor: float = DEFAULT_FILL_FLOOR,
+    delete_first: bool = False,
+    cleanup: bool = False,
+    quality_manifest: dict | None = None,
+) -> tuple[str, int]:
+    """COPY, insert/delete and verify atomically across every CSV sharing a date."""
+    name = ','.join(os.path.basename(p) for p in paths)
     if new_series_only and not report_dates:
         raise ValueError("new_series_only requires an explicit report_date list")
+    if new_series_only and (delete_first or cleanup):
+        raise ValueError("new_series_only cannot be combined with deletion or placeholder cleanup")
+    if delete_first and not report_dates:
+        raise ValueError("delete_first requires an explicit report_date list")
+    if not math.isfinite(floor) or not 0 <= floor <= 1:
+        raise ValueError("verification floor must be finite and between 0 and 1")
     sql = INSERT_NEW_SERIES_SQL if new_series_only else (INSERT_SCOPED_SQL if report_dates else INSERT_SQL)
     params: dict = {"ts": ts}
     if report_dates:
         params["dates"] = report_dates
-    # Each worker uses ON COMMIT DROP temp table; one transaction per CSV.
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         if new_series_only:
             # The INSERT's snapshot must postdate the lock wait (see below).
             conn.isolation_level = psycopg.IsolationLevel.READ_COMMITTED
         cur.execute(STAGE_DDL)
-        with open(path, encoding="utf-8", newline="") as fh:
-            with cur.copy(
-                "COPY _nport_stage (" + ", ".join(CSV_COLS)
-                + ") FROM STDIN WITH (FORMAT csv, HEADER true)"
-            ) as cp:
-                while chunk := fh.read(1 << 20):
-                    cp.write(chunk)
+        for path in paths:
+            with open(path, encoding="utf-8", newline="") as fh:
+                header = next(copy_csv_records(fh), (1, None))[1]
+                if header != CSV_COLS:
+                    raise VerificationError(f"{os.path.basename(path)}: unexpected CSV header")
+                fh.seek(0)
+                with cur.copy(
+                    "COPY _nport_stage (" + ", ".join(CSV_COLS)
+                    + ") FROM STDIN WITH (FORMAT csv, HEADER true)"
+                ) as cp:
+                    while chunk := fh.read(1 << 20):
+                        cp.write(chunk)
         if new_series_only:
             # Serialize the NOT EXISTS check with its own commit, across every
             # loader process: two concurrent loads of one absent series would
             # otherwise both find it absent and graft two filings together.
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (NEW_SERIES_LOCK,))
+        if delete_first:
+            cur.execute(f"DELETE FROM {TABLE} WHERE report_date = ANY(%s::date[])", (report_dates,))
+        if quality_manifest is not None:
+            cur.execute("CREATE TEMP TABLE _nport_inserted (report_date date, series_id text, cusip text) ON COMMIT DROP")
+            # Store only inserted keys in PostgreSQL, never millions of rows in Python.
+            sql = ("WITH inserted AS (" + sql.rstrip().rstrip(';')
+                   + " RETURNING report_date, series_id, cusip) "
+                   "INSERT INTO _nport_inserted SELECT * FROM inserted")
         cur.execute(sql, params)
         inserted = cur.rowcount
+        if cleanup:
+            where = " AND report_date = ANY(%(dates)s::date[])" if report_dates else ""
+            cur.execute(f"DELETE FROM {TABLE} WHERE cusip = %(placeholder)s" + where,
+                        {"placeholder": PLACEHOLDER_CUSIP, "dates": report_dates})
+        if quality_manifest is not None:
+            # The actual target values include changes made by database triggers.
+            _verify_quality(cur, quality_manifest, report_dates or [])
+        if report_dates and verify:
+            cur.execute(COVERAGE_SQL, {"dates": report_dates})
+            readings, bad = judge_isin_fill(
+                {str(rd): (n, n_isin) for rd, n, n_isin in cur.fetchall()}, report_dates, floor,
+            )
+            for r in readings:
+                _log(f"  verify {r['report_date']} rows={r['rows']:,} isin_fill={r['isin_fill']:.4f}")
+            if bad:
+                raise VerificationError(f"ISIN fill below {floor:.2f}: "
+                                        f"{[(r['report_date'], r['isin_fill']) for r in bad]}")
         conn.commit()
     _log(f"  {name:24s} inserted={inserted:>9}")
     return name, inserted
 
 
-def finalize(dsn: str, cleanup: bool, skip_matview: bool, recompress: list[str] | None = None) -> None:
+def _verify_quality(cur, manifest: dict, report_dates: list[str]) -> None:
+    cur.execute(
+        "SELECT h.report_date,h.series_id,count(*), "
+        "count(*) FILTER(WHERE h.isin IS NOT NULL AND h.isin<>''), "
+        "COALESCE(sum(h.pct_of_nav),0),count(*) FILTER(WHERE h.pct_of_nav IS NULL), "
+        "count(*) FILTER(WHERE h.market_value IS NULL),COALESCE(sum(h.market_value),0), "
+        "count(*) FILTER(WHERE h.currency='USD') "
+        f"FROM {TABLE} h JOIN _nport_inserted i USING(report_date,series_id,cusip) GROUP BY 1,2",
+    )
+    by_date: dict[str, list[dict]] = collections.defaultdict(list)
+    cols = ['series_id', 'rows', 'isin', 'pct_sum', 'pct_missing', 'mv_missing',
+            'market_value_usd_total', 'usd_rows']
+    for rd, *values in cur.fetchall():
+        by_date[str(rd)].append(dict(zip(cols, values)))
+    for rd, aggregates in by_date.items():
+        profile = profile_series(rd, aggregates, reference_sums=filing_reference_sums(manifest['report_dates'][rd]))
+        problems = quality_verdict(profile, include_isin=False)
+        series = {r['series_id'] for r in aggregates}
+        problems += malformed_verdict(manifest['report_dates'][rd], only_series=series)
+        if problems:
+            raise VerificationError(f"{rd}: " + '; '.join(problems))
+
+
+def finalize(dsn: str, skip_matview: bool, recompress: Maintenance | None = None) -> None:
+    """Restore maintenance even when recompression or a matview refresh fails."""
+    state = recompress if recompress is not None else Maintenance()
+    failures = []
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        if cleanup:
-            cur.execute(f"DELETE FROM {TABLE} WHERE cusip = %s", (PLACEHOLDER_CUSIP,))
-            _log(f"cleanup: deleted {cur.rowcount} rows cusip='{PLACEHOLDER_CUSIP}'")
-        for chunk in recompress or []:
-            cur.execute("SELECT compress_chunk(%s::regclass, if_not_compressed => true)", (chunk,))
-        if recompress:
-            _log(f"re-compressed {len(recompress)} chunk(s)")
+        for chunk in state.chunks:
+            try:
+                cur.execute("SELECT compress_chunk(%s::regclass, if_not_compressed => true)", (chunk,))
+            except Exception as exc:
+                failures.append(f"recompression {chunk}: {type(exc).__name__}")
+        for job_id, scheduled in state.policies:
+            try:
+                cur.execute("SELECT alter_job(%s, scheduled => %s)", (job_id, scheduled))
+            except Exception as exc:
+                failures.append(f"policy {job_id}: {type(exc).__name__}")
         if not skip_matview:
-            cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {MATVIEW}")
-            _log("matview refreshed")
-        cur.execute(f"SELECT add_compression_policy('{TABLE}', INTERVAL '3 months', if_not_exists => true)")
-    _log("finalize done: compression policy restored")
+            try:
+                cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {MATVIEW}")
+            except Exception as exc:
+                failures.append(f"matview: {type(exc).__name__}")
+    if failures:
+        raise RuntimeError('; '.join(failures))
+    _log("finalize done: original compression policy state restored")
 
 
 def verify_isin_fill(
@@ -325,25 +376,6 @@ def verify_isin_fill(
         cur.execute(COVERAGE_SQL, {"dates": report_dates})
         rows = cur.fetchall()
     return judge_isin_fill({str(rd): (n, n_isin) for rd, n, n_isin in rows}, report_dates, floor)
-
-
-def judge_isin_fill(
-    counts: dict[str, tuple[int, int]],
-    report_dates: list[str],
-    floor: float,
-) -> tuple[list[dict], list[dict]]:
-    """The post-load verdict, shared by ``verify_isin_fill`` and ``dry_run``.
-
-    ``counts`` is ``{report_date: (rows, rows with an ISIN)}``. One reading per
-    scope date, whatever its size; a date with no rows reads 0.0 and fails,
-    because a DELETE that ran and a load that did not is the worst outcome.
-    """
-    readings = []
-    for rd in sorted(set(report_dates)):
-        n, n_isin = counts.get(rd, (0, 0))
-        readings.append({"report_date": rd, "rows": n, "isin": n_isin,
-                         "isin_fill": round(n_isin / n, 4) if n else 0.0})
-    return readings, [r for r in readings if r["isin_fill"] < floor]
 
 
 _BOOL_TOKENS = {"t", "true", "y", "yes", "on", "1", "f", "false", "n", "no", "off", "0"}
@@ -384,7 +416,7 @@ def iso_date(value: str) -> str | None:
 
 def _isin_present(isin: str | None) -> bool:
     """``_ISIN_PRESENT`` in Python."""
-    return isin is not None and isin != ""
+    return isin_present(isin)
 
 
 def _copy_fields(record: str) -> list[str | None] | None:
@@ -425,6 +457,7 @@ def copy_csv_records(fh) -> Iterator[tuple[int, list[str | None] | None]]:
     quotes do not close yields None. ``fh`` must be opened with ``newline=""``.
     """
     pending: str | None = None
+    delimiter: str | None = None
     start = line_no = 0
     for line in fh:
         line_no += 1
@@ -435,7 +468,14 @@ def copy_csv_records(fh) -> Iterator[tuple[int, list[str | None] | None]]:
         if pending.count('"') % 2:
             continue  # inside a quoted field: the newline is data
         record, pending = pending, None
-        yield start, _copy_fields(record.rstrip("\r\n"))
+        ending = '\r\n' if record.endswith('\r\n') else (record[-1:] if record.endswith(('\r', '\n')) else '')
+        if ending and delimiter is not None and ending != delimiter:
+            yield start, None  # COPY refuses a change in unquoted record delimiters.
+            continue
+        if ending:
+            delimiter = ending
+            record = record[:-len(ending)]
+        yield start, _copy_fields(record)
     if pending is not None:
         yield start, None
 
@@ -482,7 +522,7 @@ class TableState:
     #: report_date -> [rows, rows with an ISIN] that survive the load (the verify counts them).
     counts: dict[str, list[int]] = field(default_factory=dict)
     #: Conflict keys a plain load's ON CONFLICT will skip.
-    keys: set[tuple[str, str, str]] = field(default_factory=set)
+    keys: MutableSet[tuple[str, str, str]] = field(default_factory=KeyIndex)
     source: str = "offline: models no rows on the scope dates; pass --dsn to read the table"
 
 
@@ -495,28 +535,32 @@ def read_table_state(
     cleanup: bool,
 ) -> TableState:
     """Read, never write, what ``dry_run`` needs. ``rows=False`` when nothing will be there (``--delete-first``)."""
-    with psycopg.connect(dsn) as conn:
-        conn.read_only = True
-        with conn.cursor() as cur:
-            cur.execute("SELECT current_date, to_regclass(%s) IS NOT NULL", (MATVIEW,))
-            today, matview = cur.fetchone()
-            state = TableState(today=today, matview_exists=matview, source=(
-                "read through --dsn" if rows else "not read: no scope dates (current_date and matview read)"))
-            if rows:
-                cur.execute(TABLE_STATE_SQL, {"dates": report_dates, "placeholder": PLACEHOLDER_CUSIP})
-                for rd, series, placeholder, has_isin, n in cur.fetchall():
-                    rd = str(rd)
-                    state.series.setdefault(rd, set()).add(series)
-                    if cleanup and placeholder:
-                        continue  # finalize() deletes it before the verify counts
-                    count = state.counts.setdefault(rd, [0, 0])
-                    count[0] += n
-                    count[1] += n if has_isin else 0
-        if rows and keys:
-            with conn.cursor(name="nport_dry_run_keys") as cur:
-                cur.itersize = 100_000
-                cur.execute(TABLE_KEYS_SQL, {"dates": report_dates})
-                state.keys = {(str(rd), series, cusip) for rd, series, cusip in cur}
+    with ExitStack() as resources:
+        with psycopg.connect(dsn) as conn:
+            conn.read_only = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_date, to_regclass(%s) IS NOT NULL", (MATVIEW,))
+                today, matview = cur.fetchone()
+                state = TableState(today=today, matview_exists=matview, source=(
+                    "read through --dsn" if rows else "not read: no scope dates (current_date and matview read)"))
+                if isinstance(state.keys, KeyIndex):
+                    resources.callback(state.keys.close)
+                if rows:
+                    cur.execute(TABLE_STATE_SQL, {"dates": report_dates, "placeholder": PLACEHOLDER_CUSIP})
+                    for rd, series, placeholder, has_isin, n in cur.fetchall():
+                        rd = str(rd)
+                        state.series.setdefault(rd, set()).add(series)
+                        if cleanup and placeholder:
+                            continue  # transactional cleanup deletes it before verification
+                        count = state.counts.setdefault(rd, [0, 0])
+                        count[0] += n
+                        count[1] += n if has_isin else 0
+            if rows and keys:
+                with conn.cursor(name="nport_dry_run_keys") as cur:
+                    cur.itersize = 100_000
+                    cur.execute(TABLE_KEYS_SQL, {"dates": report_dates})
+                    state.keys.update((str(rd), series, cusip) for rd, series, cusip in cur)
+        resources.pop_all()  # hand ownership off only after the connection exits
     return state
 
 
@@ -527,8 +571,9 @@ class _Plan:
     table: TableState
     new_series_only: bool = False
     cleanup: bool = False
-    earlier_keys: set[tuple[str, str, str]] = field(default_factory=set)
+    earlier_keys: MutableSet[tuple[str, str, str]] = field(default_factory=KeyIndex)
     earlier_series: set[tuple[str, str]] = field(default_factory=set)
+    quality: dict[str, ValidationAccumulator] = field(default_factory=dict)
 
 
 def check_csv(
@@ -537,6 +582,28 @@ def check_csv(
     today: dt.date | None = None,
     max_examples: int = 5,
     plan: _Plan | None = None,
+) -> dict:
+    """Plan one CSV using a bounded exact conflict-key index."""
+    owns_plan = plan is None
+    plan = plan or _Plan(TableState(today=today or dt.datetime.now(dt.UTC).date()))
+    with ExitStack() as resources:
+        seen = resources.enter_context(KeyIndex())
+        if owns_plan:
+            if isinstance(plan.table.keys, KeyIndex):
+                resources.callback(plan.table.keys.close)
+            if isinstance(plan.earlier_keys, KeyIndex):
+                resources.callback(plan.earlier_keys.close)
+        return _check_csv(path, report_dates, today, max_examples, plan, seen=seen)
+
+
+def _check_csv(
+    path: str,
+    report_dates: list[str] | None,
+    today: dt.date | None,
+    max_examples: int,
+    plan: _Plan,
+    *,
+    seen: KeyIndex,
 ) -> dict:
     """Offline plan for one CSV: what COPY + INSERT would do to the table ``plan`` describes.
 
@@ -558,9 +625,9 @@ def check_csv(
         "header_ok": False, "errors": collections.Counter(), "examples": [],
         "dropped": collections.Counter(), "conflict_key_dupes": 0, "cross_file_dupes": 0,
         "split_series": 0, "per_report_date": {},
+        "source_dates": {},
     }
     per: dict = collections.defaultdict(lambda: {"rows": 0, "isin": 0, "series": set()})
-    seen: set[tuple[str, str, str]] = set()
     series_here: set[tuple[str, str]] = set()
 
     def bad(kind: str, line: int, detail: str) -> None:
@@ -600,6 +667,9 @@ def check_csv(
             if scope and rd not in scope:
                 out["dropped"]["outside_only_report_dates"] += 1
                 continue
+            source = out['source_dates'].setdefault(rd, {'rows': 0, 'series': set()})
+            source['rows'] += 1
+            source['series'].add(series)
             if plan.new_series_only:
                 if series in plan.table.series.get(rd, ()):
                     out["dropped"]["series_already_loaded"] += 1
@@ -632,12 +702,19 @@ def check_csv(
             bucket["series"].add(series)
             if _isin_present(rec["isin"]):
                 bucket["isin"] += 1
+            if rd in plan.quality:
+                rec['report_date'] = rd
+                plan.quality[rd].add(rec)
     plan.earlier_keys |= seen
     plan.earlier_series |= series_here
     return _finish_check(out, per)
 
 
 def _finish_check(out: dict, per: dict) -> dict:
+    out['source_dates'] = {
+        rd: {'rows': v['rows'], 'series': sorted(v['series'])}
+        for rd, v in out['source_dates'].items()
+    }
     out["per_report_date"] = {
         rd: {"rows": b["rows"], "isin": b["isin"], "series": len(b["series"]),
              "isin_fill": round(b["isin"] / b["rows"], 4) if b["rows"] else 0.0}
@@ -660,6 +737,34 @@ def dry_run(
     skip_matview: bool = False,
     verify: bool | None = None,
     today: dt.date | None = None,
+    quality_manifest: dict | None = None,
+    file_dates: dict[str, set[str]] | None = None,
+) -> int:
+    """Read-only preflight with deterministic cleanup of disk-backed keys."""
+    with ExitStack() as resources:
+        return _dry_run(
+            files, report_dates, floor, dsn=dsn, new_series_only=new_series_only,
+            delete_first=delete_first, cleanup=cleanup, skip_matview=skip_matview,
+            verify=verify, today=today, quality_manifest=quality_manifest,
+            file_dates=file_dates, resources=resources,
+        )
+
+
+def _dry_run(
+    files: list[str],
+    report_dates: list[str],
+    floor: float,
+    *,
+    dsn: str | None,
+    new_series_only: bool,
+    delete_first: bool,
+    cleanup: bool,
+    skip_matview: bool,
+    verify: bool | None,
+    today: dt.date | None,
+    quality_manifest: dict | None,
+    file_dates: dict[str, set[str]] | None,
+    resources: ExitStack,
 ) -> int:
     """The load's plan over ``files``: 0 when the load and its verify would pass, 2 otherwise.
 
@@ -674,6 +779,8 @@ def dry_run(
     loaded; ``--new-series-only`` has no meaning without the table and needs it.
     """
     report_dates = [iso_date(d) or d for d in report_dates]
+    if not math.isfinite(floor) or not 0 <= floor <= 1:
+        raise ValueError('verification floor must be finite and between 0 and 1')
     verify = bool(report_dates) if verify is None else verify
     if new_series_only and not dsn:
         raise ValueError("a --new-series-only plan needs --dsn: it depends on the series the table holds")
@@ -688,10 +795,23 @@ def dry_run(
         state.source = "emptied on the scope dates by --delete-first"
     _log(f"plan: table {state.source}")
     plan = _Plan(state, new_series_only=new_series_only, cleanup=cleanup)
+    if isinstance(state.keys, KeyIndex):
+        resources.callback(state.keys.close)
+    if isinstance(plan.earlier_keys, KeyIndex):
+        resources.callback(plan.earlier_keys.close)
+    if quality_manifest is not None:
+        plan.quality = {rd: ValidationAccumulator() for rd in report_dates}
     failing = cross_file = split = 0
     planned: dict[str, dict] = {}
+    sources: dict[str, dict] = {}
     for path in files:
         result = check_csv(path, report_dates or None, today=today, plan=plan)
+        if file_dates is not None:
+            file_dates[path] = set(result['source_dates'])
+        for rd, source in result['source_dates'].items():
+            total = sources.setdefault(rd, {'rows': 0, 'series': set()})
+            total['rows'] += source['rows']
+            total['series'].update(source['series'])
         cross_file += result["cross_file_dupes"]
         split += result["split_series"]
         _log(f"  {result['file']:<24} rows={result['rows']:>10,} would_insert={result['would_insert']:>10,} "
@@ -719,6 +839,28 @@ def dry_run(
              f"{'' if verify else '  (not verified by this load)'}")
     if not verify:
         below = []  # the load runs no verify: unscoped (its ON CONFLICT against the table is not read) or --no-verify
+    quality_problems = []
+    if quality_manifest is not None:
+        for rd in report_dates:
+            entry = quality_manifest['report_dates'].get(rd)
+            source = sources.get(rd, {'rows': 0, 'series': set()})
+            if not entry:
+                quality_problems.append(f'{rd}: missing manifest date')
+                continue
+            if entry.get('partial'):
+                quality_problems.append(f'{rd}: manifest date is partial')
+            expected_series = {f['series_id'] for f in entry.get('filing_quality', [])}
+            if source['rows'] != entry['rows'] or source['series'] != expected_series:
+                quality_problems.append(f'{rd}: CSV rows/series do not match the manifest')
+            accumulator = plan.quality[rd]
+            # An idempotent revisit with no inserts has no new quality cohort.
+            if accumulator.series:
+                quality_problems += [f'{rd}: {p}' for p in quality_verdict(
+                    accumulator.profile(rd, reference_sums=filing_reference_sums(entry)), include_isin=False,
+                )]
+                quality_problems += [f'{rd}: {p}' for p in malformed_verdict(
+                    entry, only_series=set(accumulator.series),
+                )]
     matview_missing = not skip_matview and state.matview_exists is False
     if failing:
         _log(f"DRY RUN REFUSES: {failing} CSV(s) would fail COPY/INSERT")
@@ -732,12 +874,38 @@ def dry_run(
         _log(f"DRY RUN REFUSES: {split:,} row(s) of series already planned from another CSV; --new-series-only "
              "would load whichever CSV commits first. Put each series in one CSV.")
     if matview_missing:
-        _log(f"DRY RUN REFUSES: {MATVIEW} does not exist; finalize() would fail after the commit (--skip-matview)")
-    if failing or below or cross_file or split or matview_missing:
+        _log(f"DRY RUN REFUSES: {MATVIEW} does not exist (use --skip-matview)")
+    for problem in quality_problems:
+        _log(f'DRY RUN REFUSES: {problem}')
+    if failing or below or cross_file or split or matview_missing or quality_problems:
         return 2
     checked = "" if state.matview_exists is not None or skip_matview else f"; {MATVIEW} not checked"
     _log(f"dry run clean ({state.source}{checked}): nothing was written")
     return 0
+
+
+def transaction_groups(
+    files: list[str], file_dates: dict[str, set[str]], report_dates: list[str],
+) -> list[tuple[list[str], list[str]]]:
+    """Connected CSV/date groups: a date never commits in two transactions."""
+    groups: list[tuple[list[str], set[str]]] = []
+    for path in files:
+        dates = set(file_dates.get(path, ()))
+        if report_dates and not dates:
+            continue
+        paths = [path]
+        separate = []
+        for existing_paths, existing_dates in groups:
+            if dates & existing_dates:
+                paths += existing_paths
+                dates |= existing_dates
+            else:
+                separate.append((existing_paths, existing_dates))
+        groups = [*separate, (paths, dates)]
+    missing = set(report_dates) - set().union(*(dates for _, dates in groups))
+    if missing:
+        groups.append(([], missing))
+    return [(sorted(paths), sorted(dates)) for paths, dates in groups]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -746,6 +914,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dsn", default=None,
                     help="target DSN; with --dry-run it is only read (optional, except with --new-series-only)")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument('--secapi', action='store_true',
+                    help='require the sec-api converter manifest and its shared quality contract')
     ap.add_argument("--skip-matview", action="store_true")
     ap.add_argument("--cleanup-placeholders", action="store_true")
     ap.add_argument("--only", default="", help="comma-separated substrings; load only matching CSVs")
@@ -770,6 +940,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verify-floor", type=float, default=DEFAULT_FILL_FLOOR)
     ap.add_argument("--no-verify", action="store_true", help="skip the post-load ISIN fill check")
     args = ap.parse_args(argv)
+    if args.workers < 1:
+        ap.error('--workers must be positive')
+    if not math.isfinite(args.verify_floor) or not 0 <= args.verify_floor <= 1:
+        ap.error('--verify-floor must be finite and between 0 and 1')
 
     report_dates = []
     for raw in (d.strip() for d in args.only_report_dates.split(",")):
@@ -788,6 +962,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--dsn is required unless --dry-run")
     if args.dry_run and args.new_series_only and not args.dsn:
         ap.error("--dry-run --new-series-only needs --dsn: the plan depends on the series the table holds")
+    if args.secapi and not os.path.isfile(os.path.join(args.seed_dir, 'manifest.json')):
+        ap.error('--secapi requires a sec-api converter manifest; reconvert the containers')
 
     ts = dt.datetime.now(dt.UTC).replace(microsecond=0)
     files = sorted(glob.glob(os.path.join(args.seed_dir, "*.csv")))
@@ -800,52 +976,82 @@ def main(argv: list[str] | None = None) -> int:
     if not files:
         _log(f"REFUSING: no CSV matched in {args.seed_dir} (--only={args.only!r})")
         return 1
+    manifest_path = os.path.join(args.seed_dir, 'manifest.json')
+    quality_manifest = None
+    if os.path.isfile(manifest_path):
+        with open(manifest_path, encoding='utf-8') as fh:
+            manifest = json.load(fh)
+        if isinstance(manifest, dict) and manifest.get('generated_by') == 'tools.nport_secapi.convert':
+            quality_manifest = manifest
+            if not report_dates:
+                ap.error('sec-api seed loads require --only-report-dates')
+            if args.no_verify:
+                ap.error('--no-verify cannot bypass the sec-api validation contract')
+    if args.secapi and quality_manifest is None:
+        ap.error('--secapi requires a sec-api converter manifest; reconvert the containers')
     if args.dry_run:
         return dry_run(
             files, report_dates, args.verify_floor, dsn=args.dsn, new_series_only=args.new_series_only,
             delete_first=args.delete_first, cleanup=args.cleanup_placeholders, skip_matview=args.skip_matview,
             verify=bool(report_dates) and not args.no_verify,
+            quality_manifest=quality_manifest,
         )
-    _log(f"ROLLBACK handle: DELETE FROM {TABLE} WHERE created_at = '{ts.isoformat()}';")
-
-    chunks = prep(args.dsn, report_dates or None)
-    if args.delete_first:
-        delete_report_dates(args.dsn, report_dates)
-
-    total = 0
-    failures = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {
-            ex.submit(load_one, args.dsn, p, ts, report_dates or None, args.new_series_only): p
-            for p in files
-        }
-        for fut in concurrent.futures.as_completed(futs):
-            try:
-                _, n = fut.result()
-                total += n
-            except Exception as exc:
-                failures += 1
-                _log(f"  FAIL {os.path.basename(futs[fut])}: {exc}")
-
-    finalize(args.dsn, args.cleanup_placeholders, args.skip_matview, chunks)
-    _log(f"TOTAL inserted={total}")
-    if failures:
-        _log(f"REFUSING to pass: {failures} CSV(s) failed to load")
-        return 1
-
-    if report_dates and not args.no_verify:
-        readings, bad = verify_isin_fill(args.dsn, report_dates, args.verify_floor)
-        for r in readings:
-            _log(f"  verify {r['report_date']}  rows={r['rows']:>10,}  isin_fill={r['isin_fill']:.4f}")
-        if bad:
-            _log(
-                f"REFUSING to pass: {len(bad)} report_date(s) below the {args.verify_floor:.2f} "
-                f"ISIN fill floor: {[(r['report_date'], r['isin_fill']) for r in bad]}. "
-                "The load left the table in the 2023q4/2025q1 state. Do not re-run this loader "
-                "expecting a fix: ON CONFLICT DO NOTHING makes a plain re-run a no-op."
+    total = failures = rejected = 0
+    with psycopg.connect(args.dsn, autocommit=True) as lifecycle_conn:
+        lifecycle_conn.execute('SELECT pg_advisory_lock(%s)', (LOAD_LOCK,))
+        state = Maintenance()
+        restoration_attempted = False
+        try:
+            # Also enforce the plan on direct CLI invocations, before maintenance
+            # or deletes. The transaction repeats verification on actual rows.
+            file_dates: dict[str, set[str]] = {}
+            rc = dry_run(
+                files, report_dates, args.verify_floor, dsn=args.dsn,
+                new_series_only=args.new_series_only, delete_first=args.delete_first,
+                cleanup=args.cleanup_placeholders, skip_matview=args.skip_matview,
+                verify=bool(report_dates) and not args.no_verify,
+                quality_manifest=quality_manifest, file_dates=file_dates,
             )
-            return 2
-    return 0
+            if rc:
+                return rc
+            groups = transaction_groups(files, file_dates, report_dates)
+            prep(args.dsn, report_dates or None, state)
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
+                    futures = {
+                        ex.submit(
+                            load_batch, args.dsn, paths, ts, dates or None, args.new_series_only,
+                            verify=bool(report_dates) and not args.no_verify, floor=args.verify_floor,
+                            delete_first=args.delete_first, cleanup=args.cleanup_placeholders,
+                            quality_manifest=quality_manifest,
+                        ): dates for paths, dates in groups
+                    }
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            _, n = future.result()
+                            total += n
+                        except VerificationError as exc:
+                            rejected += 1
+                            _log(f'  REJECTED {futures[future]} (rolled back): {exc}')
+                        except Exception as exc:
+                            failures += 1
+                            _log(f'  FAIL {futures[future]} (rolled back): {type(exc).__name__}')
+            finally:
+                restoration_attempted = True
+                finalize(args.dsn, args.skip_matview, state)
+        except Exception as exc:
+            failures += 1
+            _log(f'load/maintenance failed: {type(exc).__name__}: {exc}')
+            # prep() may have failed partway, before the inner finally existed.
+            if not restoration_attempted and (state.policies or state.chunks):
+                try:
+                    finalize(args.dsn, True, state)
+                except Exception as restore_exc:
+                    _log(f'maintenance restoration failed: {type(restore_exc).__name__}: {restore_exc}')
+        finally:
+            lifecycle_conn.execute('SELECT pg_advisory_unlock(%s)', (LOAD_LOCK,))
+    _log(f'TOTAL committed inserts={total}')
+    return 1 if failures else (2 if rejected else 0)
 
 
 if __name__ == "__main__":

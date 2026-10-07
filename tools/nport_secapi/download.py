@@ -27,10 +27,12 @@ The key is read from ``SEC_API_IO_KEY`` (or ``SEC_API_KEY``), else from
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -86,10 +88,18 @@ def _datasets(api_key: str) -> Any:
 def months_between(month_from: str, month_to: str) -> list[str]:
     """Every ``YYYY-MM`` from ``month_from`` to ``month_to``, inclusive."""
     def index(month: str) -> int:
-        year, mon = month.split("-")
-        return int(year) * 12 + int(mon) - 1
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}", month):
+            raise ValueError(f"invalid month {month!r}; expected YYYY-MM")
+        try:
+            date = dt.date.fromisoformat(month + "-01")
+        except ValueError:
+            raise ValueError(f"invalid calendar month {month!r}") from None
+        return date.year * 12 + date.month - 1
 
-    return [f"{i // 12:04d}-{i % 12 + 1:02d}" for i in range(index(month_from), index(month_to) + 1)]
+    first, last = index(month_from), index(month_to)
+    if first > last:
+        raise ValueError(f"reversed month window {month_from}..{month_to}")
+    return [f"{i // 12:04d}-{i % 12 + 1:02d}" for i in range(first, last + 1)]
 
 
 def _meta_path(dest: Path) -> Path:
@@ -104,7 +114,7 @@ def _cached(dest: Path, size: Any, updated_at: Any) -> bool:
         meta = json.loads(_meta_path(dest).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return meta.get("size") == size and meta.get("updatedAt") == updated_at
+    return isinstance(meta, dict) and meta.get("size") == size and meta.get("updatedAt") == updated_at
 
 
 def select_containers(containers: list[dict], month_from: str, month_to: str) -> list[dict]:
@@ -114,6 +124,34 @@ def select_containers(containers: list[dict], month_from: str, month_to: str) ->
         if month is not None and month_from <= month <= month_to:
             picked.append({**container, "month": month})
     return sorted(picked, key=lambda c: c["month"])
+
+
+class _IncompleteDownload(RuntimeError):
+    """A successful HTTP response that did not contain the advertised bytes."""
+
+
+def _retry(
+    operation: Callable[[], Any],
+    description: str,
+    *,
+    attempts: int,
+    sleep: Callable[[float], None],
+    log: Callable[[str], None],
+    retry_all: bool = False,
+) -> Any:
+    delay = 5.0
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as exc:  # the SDK raises bare Exception; URLs can carry the key
+            message = scrub(exc)
+            transient = retry_all or isinstance(exc, _IncompleteDownload) or _TRANSIENT.search(message)
+            if attempt == attempts or not transient:
+                raise RuntimeError(f"{description} failed: {message}") from None
+            log(f"  {description}: retryable failure ({message[:120]}); retry {attempt}/{attempts - 1} "
+                f"in {delay:.0f}s")
+            sleep(delay)
+            delay = min(delay * 2, 60.0)
 
 
 def download_months(
@@ -134,13 +172,16 @@ def download_months(
     where each container entry carries its local ``path``, the remote ``size``
     and ``updatedAt``, and whether bytes were actually ``transferred``.
     """
+    requested = months_between(month_from, month_to)
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
     ds = datasets if datasets is not None else _datasets(api_key or "")
-    try:
-        detail = ds.get_dataset_details(DATASET)
-    except Exception as exc:  # the SDK raises bare Exception; its text may carry a URL
-        raise RuntimeError(f"{DATASET}: dataset listing failed: {scrub(exc)}") from None
+    # The SDK masks some transient detail failures as "Dataset not found".
+    # This dataset name is fixed, so retry listing errors before rejecting it.
+    detail = _retry(lambda: ds.get_dataset_details(DATASET), f"{DATASET}: dataset listing",
+                    attempts=attempts, sleep=sleep, log=log, retry_all=True)
     selected = select_containers(detail.get("containers") or [], month_from, month_to)
-    missing = sorted(set(months_between(month_from, month_to)) - {c["month"] for c in selected})
+    missing = sorted(set(requested) - {c["month"] for c in selected})
     if missing or not selected:
         # A partial listing would convert an incomplete window and report it clean.
         raise RuntimeError(f"{DATASET}: no container listed for month(s) {missing or [month_from, month_to]}")
@@ -161,30 +202,29 @@ def download_months(
             log(f"  {container['key']:<24} {(size or 0) / 1e6:9.1f} MB  {'present' if present else 'would fetch'}")
             results.append(entry)
             continue
-        if dest.exists():
-            # A grown partial month. The SDK renames .tmp over the destination,
-            # which Windows refuses while the old file is still there.
-            dest.unlink()
-        delay = 5.0
-        for attempt in range(1, attempts + 1):
-            try:
-                ds._download_file(container["downloadUrl"], str(dest), expected_size=size)
-                break
-            except Exception as exc:  # the SDK raises bare Exception
-                message = scrub(exc)
-                if attempt == attempts or not _TRANSIENT.search(message):
-                    raise RuntimeError(f"{container['key']}: download failed: {message}") from None
-                log(f"  {container['key']}: transient failure ({message[:120]}); retry {attempt}/{attempts - 1} "
-                    f"in {delay:.0f}s")
-                sleep(delay)
-                delay = min(delay * 2, 120.0)
-        got = dest.stat().st_size
-        if size is not None and got != size:
-            raise RuntimeError(f"{container['key']}: size {got} != remote {size}")
-        # Recorded only after the bytes are verified: a crash in between leaves
-        # the old revision on record, so the next run fetches again.
-        _meta_path(dest).write_text(json.dumps({"size": size, "updatedAt": container.get("updatedAt")}),
-                                    encoding="utf-8")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # The SDK skips an existing file by size alone. Fetch to a unique sibling
+        # instead, then replace only verified bytes; a failed resync retains the
+        # previous cache and its revision metadata on Windows as well as Linux.
+        with tempfile.TemporaryDirectory(dir=dest.parent, prefix=f".{dest.name}.") as stage_dir:
+            staged = Path(stage_dir) / dest.name
+
+            def fetch() -> int:
+                staged.unlink(missing_ok=True)  # never reuse a short response from an earlier attempt
+                ds._download_file(container["downloadUrl"], str(staged), expected_size=size)
+                got = staged.stat().st_size
+                if size is not None and got != size:
+                    raise _IncompleteDownload(f"size {got} != remote {size}")
+                return got
+
+            got = _retry(fetch, f"{container['key']}: download", attempts=attempts, sleep=sleep, log=log)
+            metadata = Path(stage_dir) / "meta.json"
+            metadata.write_text(json.dumps({"size": size, "updatedAt": container.get("updatedAt")}),
+                                encoding="utf-8")
+            staged.replace(dest)
+            # Record the revision after publishing verified bytes. A crash
+            # between the two replacements forces a refetch on the next run.
+            metadata.replace(_meta_path(dest))
         transferred += got
         entry["transferred"] = True
         log(f"  {container['key']:<24} {got / 1e6:9.1f} MB  fetched")
@@ -205,9 +245,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dotenv", default=None, help="dotenv file holding SEC_API_IO_KEY")
     ap.add_argument("--dry-run", action="store_true", help="list what would be fetched, transfer nothing")
     args = ap.parse_args(argv)
-    for value in (args.month_from, args.month_to):
-        if not re.fullmatch(r"\d{4}-\d{2}", value):
-            ap.error(f"{value!r} is not YYYY-MM")
+    try:
+        months_between(args.month_from, args.month_to)
+    except ValueError as exc:
+        ap.error(str(exc))
     summary = download_months(
         args.month_from, args.month_to, args.out,
         api_key=load_api_key(args.dotenv), dry_run=args.dry_run,

@@ -357,6 +357,9 @@ class _LoadCursor:
     def execute(self, sql, params=None):
         self.log.append(" ".join(sql.split()))
 
+    def fetchall(self):
+        return [(dt.date(2026, 5, 31), 1, 1)]
+
     @contextmanager
     def copy(self, sql):
         self.log.append("COPY")
@@ -391,8 +394,8 @@ def test_new_series_inserts_are_serialized_across_processes(tmp_path, monkeypatc
         monkeypatch.setattr(loader.psycopg, "connect", lambda *a, **k: conn)
         loader.load_one("x", path, dt.datetime(2026, 10, 7), ["2026-05-31"], new_series_only)
         steps = [s.split(" ")[0] if not s.startswith("SELECT pg_advisory") else "LOCK" for s in conn.log]
-        assert steps == (["CREATE", "COPY", "LOCK", "INSERT", "COMMIT"] if new_series_only
-                         else ["CREATE", "COPY", "INSERT", "COMMIT"])
+        assert steps == (["CREATE", "COPY", "LOCK", "INSERT", "SELECT", "COMMIT"] if new_series_only
+                         else ["CREATE", "COPY", "INSERT", "SELECT", "COMMIT"])
         assert (conn.isolation_level == loader.psycopg.IsolationLevel.READ_COMMITTED) is new_series_only
 
 
@@ -502,7 +505,8 @@ def test_download_never_leaks_the_key(tmp_path):
     fake = _FakeDatasets({"2026/2026-07.jsonl.gz": b"x"},
                          failures=[Exception(f"404 for https://api.sec-api.io/x?token={key}")])
     with pytest.raises(RuntimeError) as err:
-        download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None)
+        download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None,
+                                 sleep=lambda _: None)
     assert key not in str(err.value) and "token=***" in str(err.value)
     assert download.month_of("2026/2026-07.jsonl.gz") == "2026-07"  # not the '2026/20' prefix
 
@@ -511,7 +515,8 @@ def test_dataset_listing_failure_never_leaks_the_key(tmp_path):
     key = "b" * 64
     fake = _FakeDatasets({}, listing_error=Exception(f"API error: 500 - https://api.sec-api.io/d?token={key}"))
     with pytest.raises(RuntimeError) as err:
-        download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None)
+        download.download_months("2026-07", "2026-07", str(tmp_path), datasets=fake, log=lambda m: None,
+                                 sleep=lambda _: None)
     printed = "".join(traceback.format_exception(err.value))
     assert key not in printed and "token=***" in printed
 
@@ -527,6 +532,7 @@ def test_worker_lock_id_registered_and_unique():
     from src import db
 
     assert db.LOCK_NPORT_SECAPI_MONTHLY == 900_363
+    assert db.LOCK_NPORT_LOAD == loader.LOAD_LOCK == 900_365
     ids = [v for k, v in vars(db).items() if k.startswith("LOCK_") and isinstance(v, int)]
     assert ids.count(900_363) == 1
 
@@ -569,6 +575,8 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "existing_series", lambda dsn, rd: calls["existing"].get(rd, set()))
     monkeypatch.setattr(worker, "load_report_date", fake_load)
     monkeypatch.setattr(worker, "refresh_cagg", lambda dsn, lo, hi: calls["refresh"].append((lo, hi)))
+    monkeypatch.setattr(worker, 'cagg_needs_refresh', lambda *args: False)
+    monkeypatch.setattr(worker.loader, 'verify_isin_fill', lambda *args: ([], []))
     monkeypatch.setattr(worker, "report_date_counts",
                         lambda dsn, rds: {rd: {"rows": 1, "series": 1} for rd in rds})
     return calls
@@ -611,11 +619,13 @@ def _converter_writing(csvs: dict[str, list[list[str]]], manifest_series: dict[s
 
 
 def test_worker_never_refreshes_across_a_failed_date(wired, monkeypatch):
-    """A date the loader's verify rejected has committed rows; no refresh range may cover it."""
+    """A rejected date rolls back and stays outside explicit refresh ranges."""
     dates = ["2026-04-30", "2026-05-31", "2026-06-30"]
     monkeypatch.setattr(worker.converter, "convert",
-                        _converter_writing({rd: [[rd, *[""] * 12, f"S-{rd}"]] for rd in dates}))
-    wired["rc"]["2026-05-31"] = 2  # post-load verify: rows committed, run failed
+                        _converter_writing({rd: [[rd, '123', '123456789', 'US1', 'A', 'EC', 'CORP',
+                                                 '100', '1', 'USD', '100', 'false', '1', f'S-{rd}']]
+                                            for rd in dates}))
+    wired["rc"]["2026-05-31"] = 2  # transactional verify rejects and rolls back
     stats = worker.run("dsn", calc_date="2026-09-10")
     assert stats["state"] == "failed"
     assert wired["refresh"] == [("2026-04-30", "2026-05-01"), ("2026-06-30", "2026-07-01")]
@@ -630,7 +640,7 @@ def test_worker_validates_values_before_it_loads(wired, monkeypatch):
     stats = worker.run("dsn", calc_date="2026-09-10")
     assert [rd for rd, _ in wired["loads"]] == ["2026-06-30"]
     assert stats["report_dates"]["2026-05-31"]["result"] == "failed"
-    assert "above 1000%" in stats["report_dates"]["2026-05-31"]["validation"][0]
+    assert 'sum' in ' '.join(stats['report_dates']['2026-05-31']['validation'])
     assert stats["state"] == "failed"
 
 
@@ -660,12 +670,49 @@ def test_worker_fails_when_conversion_yields_no_target_date(wired, monkeypatch):
     assert stats["state"] == "failed" and "no complete report_date" in stats["reason"]
 
 
+def test_worker_preserves_results_after_a_date_load_raises(wired, monkeypatch):
+    monkeypatch.setattr(worker.validator, 'verdict', lambda *args, **kwargs: [])
+    def load(dsn, seed_dir, report_date):
+        if report_date == '2026-05-31':
+            raise RuntimeError('date rejected')
+        wired['loads'].append((report_date, []))
+        return 0
+    monkeypatch.setattr(worker, 'load_report_date', load)
+    stats = worker.run('dsn', calc_date='2026-09-10')
+    assert stats['state'] == 'failed'
+    assert stats['report_dates']['2026-05-31']['result'] == 'failed'
+    assert stats['report_dates']['2026-06-30']['result'] == 'loaded'
+
+
+def test_worker_reports_a_failed_refresh_with_verified_load_results(wired, monkeypatch):
+    def refresh(*args):
+        raise RuntimeError('refresh failed')
+    monkeypatch.setattr(worker, 'refresh_cagg', refresh)
+    stats = worker.run('dsn', calc_date='2026-09-10')
+    assert stats['state'] == 'failed'
+    assert stats['cagg_refreshed'] == []
+    assert stats['cagg_refresh_failed']
+    assert stats['report_dates']['2026-06-30']['result'] == 'loaded'
+
+
+def test_worker_retries_a_stale_cagg_when_no_series_are_new(wired, monkeypatch):
+    wired['existing'] = {
+        '2026-05-31': {'S000000001', 'S000000002', 'S000000003'},
+        '2026-06-30': {'CIK:0000000104', 'S000000004'},
+    }
+    monkeypatch.setattr(worker, 'cagg_needs_refresh', lambda *args: True)
+    stats = worker.run('dsn', calc_date='2026-09-10')
+    assert stats['state'] == 'ok' and wired['loads'] == []
+    assert wired['refresh'] == [('2026-05-31', '2026-07-01')]
+
+
 def test_worker_refuses_a_date_whose_main_month_it_does_not_have(wired):
     # As of 2026-08 the window reaches 2026-03-31, whose main month (2026-05) the
     # fixture does not carry: the date must be refused, not loaded half-filed.
     stats = worker.run("dsn", calc_date="2026-08-15")
     assert stats["report_dates"]["2026-03-31"]["result"] == "partial"
     assert [rd for rd, _ in wired["loads"]] == ["2026-05-31"]
+    assert stats['state'] == 'failed'
 
 
 def test_worker_lock_and_credential_contract(wired, monkeypatch):

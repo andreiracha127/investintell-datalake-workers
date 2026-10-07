@@ -1,160 +1,201 @@
-# N-PORT from sec-api.io monthly bulk: manual load and the monthly lane
+# N-PORT sec-api monthly seeds and atomic loads
 
-`sec_nport_holdings` had full coverage only through report_date 2026-04-30 on
-2026-10-06 (2026-05-31 held 3 series). Light's `fund-classification` job (180-day
-report-age rule) has refused to publish since 2026-08-27. The DERA quarterly
-packages arrive too late to fix that, so the table is now fed from sec-api.io's
-monthly `form-nport` bulk dataset through the existing loader.
+This lane feeds `sec_nport_holdings` from monthly `form-nport` containers.
+Amounts are USD. Characteristics, N-PORT lookthrough and Light fund classification
+consume these rows. No service or cron is enabled by this PR; it remains
+**DO NOT MERGE** until the owner schedules the lane.
 
-| piece | what it does |
+| Component | Responsibility |
 |---|---|
-| `tools/nport_secapi/download.py` | fetches monthly containers with the `sec_api` SDK; every requested month must be listed; re-fetches when the remote size or `updatedAt` changes |
-| `tools/nport_secapi/convert.py` | containers to one loader CSV per report_date plus `manifest.json` |
-| `tools/nport_secapi/validate.py` | offline value sanity: pct_of_nav sums, ISIN fill, USD totals |
-| `tools/nport_dera/nport_parallel_load.py` | the only write path; now with `--dry-run` and `--new-series-only` |
-| `src/workers/nport_secapi_monthly.py` | the monthly lane (no cron configured) |
+| `download.py` | Require every month, cache by size plus `updatedAt`, retry listing/transfers, atomically publish verified replacement bytes |
+| `convert.py` | One winning filing per date/series, one CSV per date, source accounting in `manifest.json` |
+| `contract.py` / `validate.py` | Shared exact quality predicates / offline profile and verdict |
+| `nport_parallel_load.py` | Read-only preflight, atomic COPY/insert/verify, compression maintenance |
+| `nport_secapi_monthly.py` | Monthly window, new-series planning, result reporting, cagg refresh/recovery |
 
-## What the sec-api data is, and what it is not
+## Validation contract
 
-* Containers are partitioned by **filing month**. N-PORT turns public about 60
-  days after the period, so report_date R lands mostly in container R+2, with
-  late filers in R+3. 2026-07-31 sits almost entirely in `2026-09`.
-* The converter reproduces what production already holds. Over the
-  2026-04/05/06 containers, per series `n_holdings`, `total_market_value`,
-  `coverage_pct` and `n_synthetic` in `cagg_nport_series_profile` match for every
-  series shared with the 2026-08-06 load (2,483 of 2026-02-28, 6,819 of
-  2026-03-31, 4,051 of 2026-04-30).
-* One filing per `(report_date, series_id)`: the newest NPORT-P or NPORT-P/A
-  with holdings wins, and the whole series comes from that filing. The CSVs have
-  no conflict-key duplicates.
-* Key policy `dera` (the default) keys holdings the way every existing row was
-  keyed. `strict` stops `999999999` and `N/A` from folding distinct holdings
-  together. It keeps ~12% more rows on a quarter-end, but it lowers the ISIN fill
-  below the 0.90 floor that the loader's verify and `nport_identifier_coverage`
-  gate on. Leave it off until that floor is re-based. See `convert.py`.
+A converter manifest automatically enables the contract in the loader. The lane
+also passes `--secapi`, requiring that manifest even after interrupted conversion. Old
+monthly manifests require reconversion to obtain source accounting. Plain DERA
+CSVs retain their loadability and ISIN checks. Comparisons use exact counts and
+Decimal sums; rounding is only for display. Monthly loads cannot use `--no-verify`.
 
-## The overdue load (2026-10)
+On a revisit, value/source checks judge **new series actually inserted**. ISIN
+judges the **whole resulting date**, including existing rows. Offline validation
+assumes the seed is the resulting date; the worker defers ISIN to the loader's
+table-aware verdict.
 
-Seed: `E:\tmp-deploy\nport-q3-seed\` (one CSV per report_date, `manifest.json`),
-built from `E:\tmp-deploy\sec-cache\nport-secapi\form-nport\2026\2026-06..10`.
+| Check | Blocks when | Cohort / threshold |
+|---|---|---|
+| Malformed holding loss | Dropped structural holdings or invalid non-null numeric fields exceed the allowance | **>1% per winning filing**, and **>1% across selected filings for the date**, before deliberate key deduplication |
+| Missing market value | Emitted holdings with NULL market values exceed the allowance | **>1% of selected emitted holdings** |
+| Percentage retention | Too few series retain their independently measured source percentage sum | At least **60% within ±5 percentage points** and **70% within ±10 points**; every selected series participates, with no row-count exemption |
+| Missing percentages | Any selected series has no percentage values | **Zero permitted**, even if its source sum is zero |
+| ISIN fill | Raw `ISIN rows / holdings` falls below the floor | **90% of the whole resulting date**, all sizes; `isin IS NOT NULL AND isin <> ''` |
+| Seed integrity / loadability | Empty/partial date, missing/inconsistent source accounting, CSV/manifest row or series-identity mismatch, invalid header/types/NULL constraints/non-finite values, cross-CSV conflict keys, or split series in new-series mode | Structural refusals before maintenance; actual target values checked before commit |
+| Optional matview | Requested `mv_nport_sector_attribution` is absent | Use `--skip-matview` on current production schema |
+| Other readings | Never introduce additional quality gates | **Reported only:** 100-centered bands, percentage median/over-1000 count, USD totals/share, key mix, deliberate DERA duplicates, amendments/supersessions and excluded dates |
 
-```
-python -m tools.nport_secapi.download --from 2026-06 --to 2026-10 \
-    --out E:\tmp-deploy\sec-cache\nport-secapi --dotenv E:\investintell-light\backend\.env
-python -m tools.nport_secapi.convert --out E:\tmp-deploy\nport-q3-seed \
-    --min-report-date 2026-05-01 --partial-months 2026-10 <the five containers>
-python -m tools.nport_secapi.validate E:\tmp-deploy\nport-q3-seed
-```
+The percentage reference is the winning filing's raw `pctVal` sum, aggregated
+independently **before mapping and deduplication**, recorded as
+`filing_quality[].source_pct_sum`. A leveraged portfolio can sum to 160% and a
+cash-heavy one to 22%; forcing either to sum to 100% is wrong. Missing values
+still block, while conversion unit errors or severe derivative-weight losses
+fail against their source reference. The old absolute `>1000%` gate and
+1,000-row exemption are removed.
 
-`convert` refuses a `--out` that already holds CSVs or a `manifest.json`. To
-replace them, pass `--overwrite`.
+### Calibration, 2026-10-07
 
-Load **one report_date per run**. `--only` matters: without it, every run COPYs
-every CSV in the directory, even though the INSERT is scoped. Run the
-`--dry-run` first, with the load's own arguments. It writes nothing. Through
-`--dsn` it reads the series and keys the date already holds, which the load will
-skip. It refuses whatever the load or its ISIN verify would reject. Without
-`--dsn` it models a table with no rows on the date, and says so.
-`$DSN` is the read-write datalake DSN
-(`market`, through `centerbeam.proxy.rlwy.net:36616` from outside Railway). Run
-from this branch's worktree with an interpreter that has `psycopg` (`py -3.13` on
-the operator box). Start with `2026-05-29`: at 58k rows it pays the full chunk
-decompress/recompress, so it calibrates the timing before the 2M-row date.
+The Q3 seed was regenerated from the five 2026-06..10 containers into a separate
+directory. All five CSV SHA256s match the original seed. Across **13,923 selected
+filings / 4,712,431 source holdings / 4,218,901 emitted rows**, malformed source
+holdings, invalid non-null numeric fields, missing market values and series
+without percentage values were all **zero**.
 
-```
-for d in 2026-05-29 2026-05-31 2026-06-30 2026-07-31; do
-  python -m tools.nport_dera.nport_parallel_load --seed-dir E:\tmp-deploy\nport-q3-seed \
-      --dsn "$DSN" --workers 4 --skip-matview --only $d.csv --only-report-dates $d --dry-run
-  python -m tools.nport_dera.nport_parallel_load --seed-dir E:\tmp-deploy\nport-q3-seed \
-      --dsn "$DSN" --workers 4 --skip-matview --only $d.csv --only-report-dates $d
-done
-```
+| Date | Rows | Series | Source ±5 | Source ±10 | ISIN |
+|---|---:|---:|---:|---:|---:|
+| 2026-05-29 | 58,691 | 197 | 90.86% | 93.40% | 93.92% |
+| 2026-05-31 | 940,023 | 2,505 | 85.47% | 88.66% | 99.36% |
+| 2026-06-30 | 1,959,593 | 7,026 | 89.17% | 91.84% | 98.28% |
+| 2026-07-31 | 1,260,510 | 4,194 | 82.52% | 87.72% | 99.02% |
+| 2026-08-31 (partial; do not load) | 84 | 1 | 100% | 100% | 98.81% |
 
-```sql
-CALL refresh_continuous_aggregate('cagg_nport_series_profile', '2026-05-01', '2026-11-01');
-```
+The 1% allowances tolerate isolated defects while refusing broken filings.
+Source bands have room below complete-date baselines. Some late cohorts still
+fail because DERA deduplication loses actual emitted weights: May September
+filings retain only 10% inside either source band; June September retains
+50% / 54.55%, and June October 25% / 25%. `CIK:0001681717` loses 320
+placeholder-key holdings, moving 85.20% source weight to 27.16% emitted.
+Rejected cohorts need operator assessment; the lane does not relax its contract.
+Legitimate leverage such as `S000009706` (160.85% source, 160.90% emitted) passes.
+For the 36 inspected late filings, raw percentages agree with
+`100 × raw USD holdings / netAssets` to within 0.1513 points; this cross-value
+comparison is calibration evidence, not an additional uncalibrated gate.
 
-The cagg is `materialized_only`. Until it is refreshed, the new dates are
-invisible to it and to `nport_lookthrough`'s coverage copy. Its policy (job 1078,
-every 6 h, `start_offset` NULL) would catch up on its own. The `CALL` makes it
-immediate. Run it outside a transaction block.
+## Source and key semantics
 
-Do not load `2026-08-31` yet. Its main month (`2026-10`) is still filling, and it
-holds 1 series. The lane picks it up later.
+Containers use **filing month**; public reports generally arrive about two
+months after report date, with stragglers in the next month. The newest NPORT-P
+or NPORT-P/A **with holdings** wins wholesale per `(report_date, series_id)`.
+Empty amendments cannot erase earlier filings. Series fall back through
+`filerInfo.seriesClassInfo.seriesId` to `CIK:<cik>`.
 
-* `2026-05-31` already holds 3 series (109 rows). The seed carries the same
-  filings: identical `n_holdings`, market value and `coverage_pct` for all three.
-  The plain load is therefore equivalent to `--new-series-only`.
-* `2026-05-29` and `2026-05-31` both fall in compressed chunk
-  `_hyper_13_6982_chunk` (2026-03-08..2026-06-06, ~3.2M rows). `prep()`
-  decompresses it and `finalize()` recompresses it, once per run. To pay that
-  once, load the two together: `--only 2026-05-29,2026-05-31 --only-report-dates
-  2026-05-29,2026-05-31`. Each CSV is still its own transaction, which is what the
-  one-date rule protects. `2026-06-30` and `2026-07-31` land in a chunk that does
-  not exist yet.
-* `--skip-matview` is required: `mv_nport_sector_attribution` does not exist in
-  production. Without the flag, `finalize()` raises after the rows are committed
-  and before `add_compression_policy`, which leaves the table with no
-  compression policy. The matviews that read the table (`fund_top_holdings_mv`,
-  `fund_style_drift_mv`, `fund_reveal_holdings_mv`) are refreshed by
-  `matview_refresh`. `nport_holdings_snapshot_identity_v1` is refreshed out of
-  band by its owner.
-* The loader prints a rollback handle: `DELETE FROM sec_nport_holdings WHERE
-  created_at = '<ts>'`.
+Default `dera` keys preserve production mapping. Placeholder `999999999` CUSIPs
+and `N/A` LEI/ISIN values can collapse holdings; those counts are separate from
+malformed losses. `strict` retains them but lowers quarter-end ISIN below 90%,
+so activation remains an owner decision. Both key policies are unchanged.
+Conversion retains one filing at a time and per-series metadata, not a whole
+monthly container. Loader conflict-key indexes use bounded temporary disk
+storage rather than millions of Python tuples.
 
-Checks after the load:
+## Manual sequence
 
-```sql
-SELECT report_date, count(*) rows, count(DISTINCT series_id) series,
-       round(avg((isin IS NOT NULL AND isin <> '')::int), 4) isin_fill
-FROM sec_nport_holdings WHERE report_date >= '2026-05-01' GROUP BY 1 ORDER BY 1;
--- expect rows/series exactly as in manifest.json (2026-05-31: the 3 existing series are in the seed)
+Historical seed: `E:\tmp-deploy\nport-q3-seed`. Reconvert to obtain the current
+manifest. `convert` refuses a non-empty output unless `--overwrite` is supplied;
+a separate output preserves prior evidence.
 
-SELECT report_day, count(*) FROM cagg_nport_series_profile
-WHERE report_day >= '2026-05-01' GROUP BY 1 ORDER BY 1;   -- same series counts
-
-SELECT max(report_date) FROM sec_nport_holdings;           -- 2026-07-31
+```powershell
+py -3.13 -m tools.nport_secapi.download --from 2026-06 --to 2026-10 `
+  --out E:\tmp-deploy\sec-cache\nport-secapi --dotenv E:\investintell-light\backend\.env
+py -3.13 -m tools.nport_secapi.convert --out E:\tmp-deploy\nport-q3-current `
+  --min-report-date 2026-05-01 --partial-months 2026-10 <the five containers>
+py -3.13 -m tools.nport_secapi.validate E:\tmp-deploy\nport-q3-current
 ```
 
-Then run `nport_identifier_coverage` (inside `nport_lookthrough`) and check that
-the new dates read `clean`. After that, `fund-classification` in Light can be
-re-run.
+For an authorized operator load, select exactly the intended CSV/date scope and
+use identical dry-run/load arguments. The DSN stays in the operator environment.
 
-## Re-running and idempotency
+```powershell
+$loadArgs = @('--seed-dir', 'E:\tmp-deploy\nport-q3-current', '--dsn', $DSN,
+  '--workers', '4', '--skip-matview', '--new-series-only', '--secapi',
+  '--only', '2026-05-29.csv', '--only-report-dates', '2026-05-29')
+py -3.13 -m tools.nport_dera.nport_parallel_load @loadArgs --dry-run
+py -3.13 -m tools.nport_dera.nport_parallel_load @loadArgs
+```
 
-* The insert is `ON CONFLICT (report_date, series_id, cusip) DO NOTHING` against
-  the primary key. Loading a date twice inserts 0 rows and creates no
-  duplicates. It also **repairs nothing**: a changed row keeps its old values.
-* A re-load after an amendment would add the amendment's new keys next to the
-  original filing's rows. `--new-series-only` prevents that. It inserts a
-  `(report_date, series_id)` only if the table has none of it, and it requires
-  each series to sit in exactly one CSV, which the converter guarantees.
-* `--delete-first --only-report-dates D` is the delete-then-reload repair.
-* Each CSV is one transaction. If the process dies between `prep()` and
-  `finalize()`, the compression policy stays removed. Re-add it with
-  `add_compression_policy('sec_nport_holdings', INTERVAL '3 months')`.
+`--dry-run --dsn` uses read-only connections to model existing series/keys,
+cleanup, final ISIN and the optional matview. Without a DSN it models an empty
+table; new-series mode needs a DSN. Real loads also enforce preflight, then
+repeat shared predicates on actual rows before commit, including trigger changes.
 
-## The monthly lane
+The 2026-10-07 read-only production check found **940,023 rows / 2,505 series**
+on `2026-05-31`; the earlier three-series snapshot is stale. Check live state
+before operator work. This review made no production writes.
 
-`WORKER=nport_secapi_monthly`, `railway.nport-secapi-monthly.toml`. As of month
-M, a run:
+## Atomicity, concurrency and maintenance
 
-1. downloads containers M-3..M;
-2. converts them, report_dates from M-5 to M-3;
-3. for each date with series the table lacks, runs `tools.nport_secapi.validate`'s
-   value checks on its CSV, then the loader `--dry-run` with the load's own
-   arguments, then `--new-series-only`, one date per invocation, with the loader's
-   ISIN verify. A run whose containers convert to no complete date in the window
-   fails rather than reporting `noop`;
-4. refreshes `cagg_nport_series_profile` over the loaded dates, never across a date whose load failed.
+CSV/date connected groups are transactions: every CSV contributing to a date
+commits or rolls back together. Disjoint groups COPY in parallel. A rejected
+`--delete-first` replacement restores its old rows, because DELETE shares the
+verified transaction. Placeholder cleanup is also scoped and transactional.
+New-series mode cannot be combined with replacement or cleanup. There is no
+delete-by-load-timestamp rollback handle.
 
-Each report_date is revisited by three consecutive runs while its late filers
-arrive. Series already loaded are never touched. Cost: with `compress_after 3
-months`, the third revisit can find the date's chunk compressed again. A single
-late series then means a full chunk decompress and recompress. When nothing new
-arrived, the pre-check skips the date and the chunk is not touched. Dates older than M-5 are left
-to an operator. The proposed schedule is `0 9 3 * *`. It is **not enabled**:
-creating the service and its cron is an operator step, after the manual load
-above has been verified. The lane builds with nixpacks from the whole repository,
-because the fleet Dockerfile does not COPY `tools/`. It needs `SEC_API_IO_KEY`.
-Without `NPORT_SECAPI_CACHE_DIR` it fetches ~0.4-0.5 GB per run.
+Session lock **900_365** covers preflight, preparation, workers and restoration.
+Transaction lock **900_364** covers new-series insertion through verification
+and commit; its INSERT uses a fresh READ COMMITTED snapshot after waiting.
+The worker holds **900_363** over the whole run. Order: monthly → lifecycle → insert.
+
+Preparation pauses existing compression jobs, retaining ID/horizon/schedule/config.
+Only overlapping compressed chunks in the current schema are decompressed.
+Finalization recompresses them and restores each original scheduled state even
+when a load or matview fails. A missing policy remains missing. Restoration
+failure returns exit 1. Abrupt process termination can leave maintenance paused;
+inspect the original job and resume with `SELECT alter_job(<id>, scheduled => true)`
+only if it was previously enabled. See
+[Timescale policy maintenance](https://docs.tigerdata.com/use-timescale/latest/compression/compression-policy/).
+
+Preserve `PGOPTIONS=-c timescaledb.max_tuples_decompressed_per_dml_transaction=0`
+for large compressed-chunk DML; zero allows unlimited decompression per the
+[Timescale GUC reference](https://docs.tigerdata.com/api/latest/configuration/gucs/).
+
+Exit **0**: accepted transactions and successful maintenance. Exit **2**:
+preflight/transactional quality rejection. Exit **1**: input selection, COPY/SQL
+or maintenance failure. Other disjoint dates may have verified commits when
+one fails; rejected dates commit no rows. Optional matview failure can follow
+verified commits.
+
+## Monthly lane and cagg recovery
+
+Month M downloads filing months M-3..M and targets report dates M-5..M-3.
+Every month must be listed. Each date is revisited three times for late filings;
+existing series stay intact. No new series means no chunk preparation.
+Partial target dates, empty conversions, value failures and loader errors
+produce failed stats. One date's exception retains its result and permits
+assessment of the remaining dates.
+
+The lane refreshes `cagg_nport_series_profile` per maximal accepted range,
+never across a failed date. `stats.cagg_refreshed` lists successes;
+`cagg_refresh_failed` preserves failures. A later no-new-series run compares
+table/cagg series counts and retries a stale cagg after read-only ISIN checking.
+
+The cagg is owned by `postgres` and is `materialized_only`. Live job **1078**
+was scheduled every **6 h**, with NULL `start_offset` and `1 day` `end_offset`;
+its last run succeeded. Explicit refreshes run outside a transaction block.
+Atomic rejection prevents direct readers and this independent job from seeing
+rejected rows. Proposed cron `0 9 3 * *` remains disabled. The nixpacks image
+must include `tools/`; it needs `SEC_API_IO_KEY`. Cache/log paths scrub tokens
+and failed transfers preserve the last verified cache.
+
+## Reproduction
+
+CI runs unit/regression checks, Ruff, compileall and the real Timescale harness
+on `timescale/timescaledb:2.27.2-pg18` with a disposable loopback database,
+512 MB / one CPU cap, explicit disposable marker and isolated schemas.
+
+```powershell
+$env:NPORT_TEST_DATABASE_URL = '<local disposable nport_proof DSN>'
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+py -3.13 -m pytest tests/test_nport_parallel_load_timescale.py -q
+# Optional real provider-record gate (2026-05-29 only):
+$env:NPORT_REAL_SEED_DIR = 'E:\tmp-deploy\nport-pr153-verified-seed'
+py -3.13 -m pytest tests/test_nport_parallel_load_timescale.py -q
+```
+
+Cases prove actual post-insert rejection, revisits, concurrent lifecycle/insert
+locks, compressed chunks, exact policy preservation, restoration errors,
+same-date CSV rollback, rejected replacement, independent dates, post-preflight
+market-value/percentage corruption and stale-cagg recovery. The real date gate
+loads 58,691 rows / 197 series, checks per-series rows/values/exact percentages
+against CSV and cagg, then proves an idempotent zero-insert rerun.

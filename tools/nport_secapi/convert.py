@@ -100,6 +100,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from tools.nport_dera.nport_bulk_parse import CSV_COLS
+from tools.nport_secapi.contract import CONTRACT_VERSION, exact_sum
 
 @dataclass(frozen=True)
 class KeyPolicy:
@@ -150,12 +151,25 @@ def _open_text(path: str):
     return gzip.open(path, "rt", encoding="utf-8") if path.endswith(".gz") else open(path, encoding="utf-8")
 
 
+def _calendar_month(month: str) -> str:
+    if not re.fullmatch(r'[0-9]{4}-[0-9]{2}', month):
+        raise ValueError(f'invalid month {month!r}; expected YYYY-MM')
+    dt.date.fromisoformat(month + '-01')
+    return month
+
+
+def _filter_date(value: str) -> str:
+    if 'W' in value.upper():
+        raise ValueError(f'invalid report date filter {value!r}')
+    return dt.date.fromisoformat(value).isoformat()
+
+
 def container_month(path: str) -> str:
     """``.../2026/2026-07.jsonl.gz`` -> ``2026-07``. Anchored on the file name."""
     match = _MONTH_RE.match(os.path.basename(path))
     if not match:
         raise ValueError(f"cannot read a YYYY-MM month from container name {path!r}")
-    return f"{match.group(1)}-{match.group(2)}"
+    return _calendar_month(f"{match.group(1)}-{match.group(2)}")
 
 
 def _month_add(month: str, n: int) -> str:
@@ -266,8 +280,11 @@ class FilingMeta:
     container: str
 
     @property
-    def rank(self) -> tuple[str, str]:
-        return (self.filed_at, self.accession)
+    def rank(self) -> tuple[dt.datetime, str]:
+        timestamp = dt.datetime.fromisoformat(self.filed_at) if self.filed_at else dt.datetime.min
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt.UTC)
+        return (timestamp.astimezone(dt.UTC), self.accession)
 
 
 def _series_and_cik(filing: dict) -> tuple[str, str]:
@@ -401,12 +418,14 @@ def convert(
     month): a report_date whose main publication month is partial is flagged.
     ``out_dir`` must not hold a previous seed unless ``overwrite`` removes it.
     """
+    partial_months = {_calendar_month(m) for m in partial_months or ()}
+    min_report_date = _filter_date(min_report_date) if min_report_date is not None else None
+    report_dates = {_filter_date(d) for d in report_dates} if report_dates is not None else None
     paths = sorted(paths, key=container_month)
     months = [container_month(p) for p in paths]
     if len(set(months)) != len(months):
         raise ValueError(f"the same container month was given twice: {months}")
     _clear_previous_seed(out_dir, overwrite)
-    partial_months = set(partial_months or ())
     scan_result = scan(paths)
 
     def in_scope(rd: str) -> bool:
@@ -419,6 +438,7 @@ def convert(
     series_by_date: dict[str, set[str]] = collections.defaultdict(set)
     containers_by_date: dict[str, collections.Counter] = collections.defaultdict(_new_counter)
     forms_by_date: dict[str, collections.Counter] = collections.defaultdict(_new_counter)
+    filing_quality: dict[str, list[dict]] = collections.defaultdict(list)
     excluded: dict[str, collections.Counter] = collections.defaultdict(_new_counter)
     excluded_series: dict[str, set[str]] = collections.defaultdict(set)
 
@@ -443,31 +463,60 @@ def convert(
                     writers[rd].writerow(CSV_COLS)
                 counter = per_date[rd]
                 counter["filings"] += 1
+                counter["source_holdings"] += len(holdings)
+                quality = {"accession": meta.accession, "series_id": meta.series_id,
+                           "source_holdings": len(holdings), "malformed_holdings": 0,
+                           "rows": 0, "conflict_key_dupes": 0,
+                           "source_pct_sum": Decimal(0), "source_pct_present": 0}
+                filing_quality[rd].append(quality)
                 series_by_date[rd].add(meta.series_id)
                 containers_by_date[rd][meta.container] += 1
                 forms_by_date[rd][meta.form] += 1
                 seen: set[str] = set()
                 for position, holding in enumerate(holdings, start=1):
                     if not isinstance(holding, dict):
-                        counter["malformed_holding"] += 1
+                        counter["malformed_holdings"] += 1
+                        quality["malformed_holdings"] += 1
+                        continue
+                    # Independent source reference before key-policy dedup and
+                    # field mapping: leverage, cash and derivatives need not
+                    # sum to 100, but conversion must preserve their weights.
+                    raw_pct = holding.get("pctVal")
+                    try:
+                        source_pct = Decimal(str(raw_pct).strip()) if not isinstance(raw_pct, bool) else Decimal("NaN")
+                    except InvalidOperation:
+                        source_pct = Decimal("NaN")
+                    if source_pct.is_finite():
+                        quality["source_pct_sum"] = exact_sum(quality["source_pct_sum"], source_pct)
+                        quality["source_pct_present"] += 1
+                    # Missing/nullish numeric fields are measured separately;
+                    # a supplied value that cannot parse is a malformed holding.
+                    if any(_clean(holding.get(field)) and not _num(holding.get(field))
+                           for field in ('valUSD', 'balance', 'pctVal')):
+                        counter['malformed_holdings'] += 1
+                        quality['malformed_holdings'] += 1
                         continue
                     isin = _isin(holding, key_policy)
                     cusip, kind = conflict_key(holding, isin, meta.accession, position, key_policy)
                     if cusip in seen:
                         counter["conflict_key_dupes"] += 1
+                        quality["conflict_key_dupes"] += 1
                         continue
                     seen.add(cusip)
                     writers[rd].writerow(holding_row(rd, meta.cik, meta.series_id, cusip, isin, holding))
                     counter["rows"] += 1
+                    quality["rows"] += 1
                     counter[f"key_{kind}"] += 1
                     if isin:
                         counter["isin"] += 1
+                quality["source_pct_sum"] = format(quality["source_pct_sum"], "f")
     finally:
         for fh in handles.values():
             fh.close()
 
     manifest = {
         "generated_by": "tools.nport_secapi.convert",
+        "validation_contract": CONTRACT_VERSION,
         "inputs": [_describe_input(p) for p in paths],
         "partial_months": sorted(partial_months),
         "key_policy": key_policy.name,
@@ -495,6 +544,10 @@ def convert(
             "isin_fill": round(c["isin"] / c["rows"], 4) if c["rows"] else 0.0,
             "keys": {k: c[f"key_{k}"] for k in ("real", "IS", "LE", "H")},
             "conflict_key_dupes": c["conflict_key_dupes"],
+            "source_holdings": c["source_holdings"],
+            "malformed_holdings": c["malformed_holdings"],
+            "malformed_share": c["malformed_holdings"] / c["source_holdings"] if c["source_holdings"] else 0.0,
+            "filing_quality": filing_quality[rd],
             "filings_by_container": dict(sorted(containers_by_date[rd].items())),
             # N-PORT becomes public ~60 days after the period: a month-end's
             # filings land mostly two containers later, stragglers one after.

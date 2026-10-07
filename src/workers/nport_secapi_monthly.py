@@ -27,12 +27,12 @@ WHAT ONE RUN DOES (as of ``calc_date``, month M)
    ``nport_parallel_load --new-series-only`` scoped to that one date. ``--new-series-only`` is what makes revisiting safe:
    a series already loaded is never touched, so an amendment cannot graft new
    keys onto the original filing's rows the way ``ON CONFLICT DO NOTHING`` alone
-   would. The loader's own post-load ISIN verify still runs.
+   would. The loader verifies actual rows before committing the transaction.
 5. ``CALL refresh_continuous_aggregate('cagg_nport_series_profile', ...)`` over
-   each run of loaded dates that no failed date interrupts. A date the loader's
-   verify rejected has already committed its rows; a range bracketing it would
-   materialize them. The cagg's own policy (``start_offset`` NULL, every 6 h)
-   would get there; the call makes it immediate.
+   each run of accepted dates that no failed date interrupts. Rejected loads
+   roll back, so neither explicit refreshes nor the independent 6-hour policy
+   can materialize rejected rows. A no-new-series revisit also repairs a stale
+   cagg left by a previous refresh failure.
 
 One report_date per loader invocation, as the identifier-coverage runbook
 requires (``docs/runbooks/nport-identifier-coverage.md``): a transaction over
@@ -48,7 +48,7 @@ is removed afterwards.
 ``WORKER_CALC_DATE`` pins M; ``WORKER_LIMIT`` caps how many report_dates load.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict``. ``state`` is
-``ok``, ``noop`` (every complete target date already loaded) or ``failed``
+``ok``, ``noop`` (no new series or refresh needed) or ``failed``
 (also when the containers convert to no complete target date at all);
 ``status == "lock_busy"`` when
 another run holds the lock. ``run_worker`` exits non-zero on the last two.
@@ -135,7 +135,7 @@ def load_report_date(dsn: str, seed_dir: Path, report_date: str) -> int:
     whole date.
     """
     args = ["--seed-dir", str(seed_dir), "--only", f"{report_date}.csv", "--only-report-dates", report_date,
-            "--dsn", dsn, "--workers", "1", "--skip-matview", "--new-series-only"]
+            "--dsn", dsn, "--workers", "1", "--skip-matview", "--new-series-only", "--secapi"]
     rc = loader.main([*args, "--dry-run"])
     if rc != 0:
         return rc
@@ -145,8 +145,7 @@ def load_report_date(dsn: str, seed_dir: Path, report_date: str) -> int:
 def refresh_ranges(loaded: list[str], failed: set[str]) -> list[tuple[str, str]]:
     """``[start, end)`` per maximal run of ``loaded`` dates with no ``failed`` date inside.
 
-    A failed load may have committed rows (the loader's post-load verify exits 2
-    after the commit); no range may cover it.
+    Failed dates stay out of explicit refreshes; rejected loads roll back.
     """
     ranges: list[tuple[str, str]] = []
     run: list[str] = []
@@ -180,6 +179,15 @@ def report_date_counts(dsn: str, report_dates: list[str]) -> dict[str, dict[str,
     return {r[0]: {"rows": r[1], "series": r[2]} for r in rows}
 
 
+def cagg_needs_refresh(dsn: str, report_date: str, series_count: int) -> bool:
+    """Recover a refresh that failed after an earlier verified commit."""
+    with connect(dsn) as conn:
+        count = conn.execute(
+            f'SELECT count(*) FROM {CAGG} WHERE report_day = %s::date', (report_date,),
+        ).fetchone()[0]
+    return count != series_count
+
+
 def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_key: str) -> dict[str, Any]:
     plan = plan_for(today)
     fetched = downloader.download_months(plan.container_from, plan.container_to, str(workdir), api_key=api_key)
@@ -197,12 +205,13 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
         "containers": [c["key"] for c in fetched["containers"]],
         "report_dates": {},
         "outside_window": sorted(
-            [rd for rd in manifest["report_dates"] if rd > plan.report_date_to]
+            [rd for rd in manifest["report_dates"] if not plan.report_date_from <= rd <= plan.report_date_to]
             + list(manifest["excluded_report_dates"])
         ),
     }
-    targets = [rd for rd in manifest["report_dates"] if rd <= plan.report_date_to]
+    targets = sorted(rd for rd in manifest["report_dates"] if plan.report_date_from <= rd <= plan.report_date_to)
     loaded: list[str] = []
+    refresh_ready: list[str] = []
     failed: set[str] = set()
     for rd in targets:
         entry: dict[str, Any] = {"csv_rows": manifest["report_dates"][rd]["rows"],
@@ -210,6 +219,7 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
         stats["report_dates"][rd] = entry
         if manifest["report_dates"][rd]["partial"]:
             entry["result"] = "partial"  # cannot happen inside the window; refuse rather than assume
+            failed.add(rd)
             continue
         csv_series = _csv_series(seed_dir / f"{rd}.csv")
         if not csv_series or len(csv_series) != manifest["report_dates"][rd]["series"]:
@@ -220,10 +230,20 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
             failed.add(rd)
             LOGGER.error("nport_secapi_monthly: report_date %s: %s", rd, entry["reason"])
             continue
-        new = csv_series - existing_series(dsn, rd)
+        existing = existing_series(dsn, rd)
+        new = csv_series - existing
         entry["new_series"] = len(new)
         if not new:
             entry["result"] = "no_new_series"
+            if cagg_needs_refresh(dsn, rd, len(existing)):
+                _, bad = loader.verify_isin_fill(dsn, [rd])
+                if bad:
+                    entry['result'] = 'failed'
+                    entry['reason'] = 'existing date fails ISIN verification'
+                    failed.add(rd)
+                else:
+                    entry['cagg_stale'] = True
+                    refresh_ready.append(rd)
             continue
         if limit is not None and len(loaded) + len(failed) >= limit:
             entry["result"] = "deferred_by_limit"
@@ -231,36 +251,60 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
         # The value checks the manual workflow runs before a load (pct_of_nav
         # sums, units, foreign dates), over the series the load will insert;
         # the loader's dry run checks loadability and ISIN fill, not values.
-        problems = validator.verdict(validator.profile_csv(str(seed_dir / f"{rd}.csv"), only_series=new))
+        try:
+            # Percentage/MV/malformed checks apply to the actual new cohort;
+            # the loader judges ISIN over the full post-load date, including old rows.
+            problems = validator.verdict(
+                validator.profile_csv(str(seed_dir / f"{rd}.csv"), only_series=new), include_isin=False,
+            )
+        except Exception as exc:
+            entry['result'] = 'failed'
+            entry['reason'] = downloader.scrub(f'{type(exc).__name__}: {exc}')
+            failed.add(rd)
+            continue
         if problems:
             entry["result"] = "failed"
             entry["validation"] = problems
             failed.add(rd)
             LOGGER.error("nport_secapi_monthly: report_date %s failed validation: %s", rd, problems)
             continue
-        rc = load_report_date(dsn, seed_dir, rd)
+        try:
+            rc = load_report_date(dsn, seed_dir, rd)
+        except Exception as exc:
+            entry['result'] = 'failed'
+            entry['reason'] = downloader.scrub(f'{type(exc).__name__}: {exc}')
+            failed.add(rd)
+            LOGGER.error('nport_secapi_monthly: report_date %s failed: %s', rd, entry['reason'])
+            continue
         entry["loader_exit"] = rc
         if rc == 0:
             entry["result"] = "loaded"
             loaded.append(rd)
+            refresh_ready.append(rd)
         else:
-            # 2 from the dry run means nothing was written; 1/2 from the load
-            # itself means it was, and the loader's verify did not pass it.
+            # Rejected transactions commit no rows. Maintenance can fail after
+            # a verified commit; a later run recovers its stale cagg.
             entry["result"] = "failed"
             failed.add(rd)
             LOGGER.error("nport_secapi_monthly: report_date %s loader exit %s", rd, rc)
-    if loaded:
+    if refresh_ready:
         stats["cagg_refreshed"] = []
-        for lo, hi in refresh_ranges(loaded, failed):
-            refresh_cagg(dsn, lo, hi)
-            stats["cagg_refreshed"].append([lo, hi])
-        for rd, counts in report_date_counts(dsn, loaded).items():
+        for lo, hi in refresh_ranges(refresh_ready, failed):
+            try:
+                refresh_cagg(dsn, lo, hi)
+                stats["cagg_refreshed"].append([lo, hi])
+            except Exception as exc:
+                stats.setdefault('cagg_refresh_failed', []).append({
+                    'range': [lo, hi], 'reason': downloader.scrub(f'{type(exc).__name__}: {exc}'),
+                })
+        for rd, counts in report_date_counts(dsn, refresh_ready).items():
             stats["report_dates"][rd]["table_after"] = counts
     if not any(not manifest["report_dates"][rd]["partial"] for rd in targets):
         # N-PORT always has filings for M-5..M-3 in M-3..M: nothing to judge
         # means the containers or the converter broke, not that nothing is new.
         stats["reason"] = "conversion produced no complete report_date in the window"
-    stats["state"] = "failed" if failed or "reason" in stats else ("ok" if loaded else "noop")
+    stats["state"] = ('failed' if failed or 'reason' in stats or stats.get('cagg_refresh_failed')
+                      else ('ok' if refresh_ready else 'noop'))
     return stats
 
 

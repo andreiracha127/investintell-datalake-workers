@@ -363,3 +363,7 @@ LOCK_NPORT_SECAPI_MONTHLY = 900_363
 # any process: two concurrent NOT EXISTS checks for the same absent series would
 # both pass and graft two filings into one series. Next free id after 900_363.
 LOCK_NPORT_NEW_SERIES_INSERT = 900_364
+# Loader lifecycle session mutex protects compression maintenance across
+# standalone invocations while disjoint date COPY transactions run in parallel.
+# Lock order: monthly worker 900_363 -> lifecycle 900_365 -> insert 900_364.
+LOCK_NPORT_LOAD = 900_365
