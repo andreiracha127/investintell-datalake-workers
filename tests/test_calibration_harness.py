@@ -1177,6 +1177,27 @@ def test_a31_grid_run_fingerprint_includes_the_selection_policy() -> None:
         ch.a31_grid_run_fingerprint(**common)
 
 
+def test_a31_priority_key_honours_the_canonical_grid_at_the_cutoff() -> None:
+    """Six front-1 rows whose first metric differs only below the 12-decimal
+    resolution: the priority key must tie them and let the hash decide the
+    five-row cutoff, not the raw float noise (raw order would drop h0)."""
+    rows = [
+        _a31_row(f"h{5 - i}", candidate_revision_change_rate=0.1 + i * 1e-14,
+                 result_classification="smoke_ok")
+        for i in range(6)
+    ]
+    keys = {row["a31_config_hash"]: ch.a31_pareto_sort_key(row) for row in rows}
+    assert len({key[:-1] for key in keys.values()}) == 1
+    assert keys["h0"] < keys["h5"]
+    assert ch.a31_pareto_sort_key(_a31_row("h", candidate_revision_change_rate=None))[0] == math.inf
+
+    updated, pareto_rows = ch.mark_a31_pareto(rows)
+    assert [row["pareto_rank"] for row in updated] == [1] * 6
+    assert [row["a31_config_hash"] for row in pareto_rows] == ["h0", "h1", "h2", "h3", "h4"]
+    by_hash = {row["a31_config_hash"]: row for row in updated}
+    assert by_hash["h5"]["a31_selection_reason"] == "priority_cutoff"
+
+
 def test_a31_non_dominated_fronts_partition_three_fronts() -> None:
     vectors = [
         (1.0, 3.0), (3.0, 1.0),  # front 1: trade off against each other

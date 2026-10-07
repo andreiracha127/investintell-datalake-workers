@@ -9619,11 +9619,15 @@ def pareto_projection(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def a31_pareto_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
-    """Owner priority among the selection metrics (lower is better), then the
-    hash. A total order: ``none_last`` ranks non-finite metrics worst."""
-    return tuple(none_last(row.get(key)) for key in A31_SELECTION_METRICS) + (
-        str(row.get("a31_config_hash")),
-    )
+    """Owner priority among the selection metrics (lower is better) on the
+    canonical grid, then the hash. A total order: ``none_last`` ranks non-finite
+    metrics worst, and quantizing keeps the key consistent with dominance, so
+    sub-resolution float noise falls through to the hash tie-breaker instead of
+    deciding the shortlist cutoff."""
+    return tuple(
+        a31_quantize_selection_metric(none_last(row.get(key)))
+        for key in A31_SELECTION_METRICS
+    ) + (str(row.get("a31_config_hash")),)
 
 
 def a31_pareto_sort_key_v1(row: dict[str, Any]) -> tuple[Any, ...]:
