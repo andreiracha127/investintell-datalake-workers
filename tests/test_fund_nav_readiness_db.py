@@ -1142,6 +1142,96 @@ def test_revision_trigger_applies_to_precompressed_hypertable_without_rewriting_
         )
 
 
+def test_compressed_chunk_dml_stays_segment_scoped_across_prepared_statements(
+    test_dsn, schema
+):
+    """Incident 2026-10-07 (nav-current-daily-chain run 9d25b3db): the first
+    instrument of the day to touch a compressed year-chunk failed with
+    ``ConfigurationLimitExceeded: tuple decompression limit exceeded``
+    (1,142,536 tuples, the whole chunk, against the default 100k).
+
+    psycopg prepares ``return_update`` server-side after five executions and
+    Postgres switches the prepared statement to a generic plan after five more,
+    so the quals become ``instrument_id=$7 AND nav_date=$8``. TimescaleDB's
+    compressed-DML filter (``process_predicates``, planned with
+    ``boundParams=NULL``) only uses Const quals, so a Param qual selects no
+    segment and every batch in the chunk is decompressed. One connection, many
+    committed per-instrument transactions through the real seam, default limit:
+    decompression must stay one segment per instrument.
+    """
+    n_instruments, n_days = 500, 250
+    first = dt.date(2025, 3, 13)
+    ids = [uuid.uuid4() for _ in range(n_instruments)]
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT current_setting("
+            "'timescaledb.max_tuples_decompressed_per_dml_transaction')"
+        ).fetchone()[0] == "100000"
+        conn.execute(NAV_SQL)
+        # Production: 1-year chunks, segmentby instrument_id, orderby nav_date DESC.
+        conn.execute("SELECT set_chunk_time_interval('nav_timeseries', INTERVAL '1 year')")
+        conn.execute(
+            "ALTER TABLE nav_timeseries SET (timescaledb.compress,"
+            "timescaledb.compress_segmentby='instrument_id',"
+            "timescaledb.compress_orderby='nav_date DESC')"
+        )
+        # Fully attributed history (predates the revision trigger, as in
+        # production); a later Tiingo write only switches the provider.
+        conn.execute(
+            """INSERT INTO nav_timeseries
+                   (instrument_id, nav_date, nav, return_1d, return_type, currency,
+                    source, source_nav, source_nav_kind, nav_repair_kind,
+                    return_start_date, return_source_boundary,
+                    return_uses_repaired_nav, return_semantics,
+                    return_verification_status)
+               SELECT i, d::date, 100, 0, 'log', 'USD', 'yahoo', 100, 'adjusted',
+                      'none', d::date - 1, false, false,
+                      'observed_interval_log_ratio', 'unverified'
+               FROM unnest(%s::uuid[]) AS i,
+                    generate_series(%s::date, %s::date + %s, interval '1 day') AS d""",
+            (ids, first, first, n_days - 1),
+        )
+        chunk = conn.execute(
+            "SELECT show_chunks('nav_timeseries'::regclass) LIMIT 1"
+        ).fetchone()[0]
+        conn.execute("SELECT compress_chunk(%s::regclass)", (chunk,))
+        _install(conn, schema)
+        _install(conn, schema)
+        assert conn.execute(
+            "SELECT count(*) FROM nav_timeseries"
+        ).fetchone()[0] == n_instruments * n_days > 100_000
+        assert conn.execute(f"SELECT count(*) FROM ONLY {chunk}").fetchone()[0] == 0
+    written = 0
+    with _connect(test_dsn, schema) as conn:
+        run_id = _running_run(conn, first + dt.timedelta(days=60))
+        conn.commit()
+        # Each instrument: same level, new provider -> both rows change (level
+        # upsert) and the returns of both dates and of the persisted successor
+        # are recomputed (the two provider boundaries are rewritten).
+        for k in range(14):
+            iid = ids[k]
+            days = [first + dt.timedelta(days=10 + k), first + dt.timedelta(days=11 + k)]
+            rows = ingest.build_rows(
+                tuple(NavObservation(d, 100.0, "adjusted") for d in days), [(iid, "USD")]
+            )
+            _attempt(conn, run_id, iid, days[0], days[-1], rows=2)
+            result = ingest._write_instrument_nav_tx(
+                conn, rows, run_id=run_id, provider="tiingo"
+            )
+            conn.commit()
+            assert (result.changed_level_rows, result.changed_return_rows) == (2, 2)
+            written += 1
+        decompressed = conn.execute(f"SELECT count(*) FROM ONLY {chunk}").fetchone()[0]
+        compressed = conn.execute(
+            "SELECT is_compressed FROM timescaledb_information.chunks "
+            "WHERE hypertable_schema=%s AND hypertable_name='nav_timeseries'",
+            (schema,),
+        ).fetchone()[0]
+    # Only the written instruments' segments left the compressed chunk.
+    assert 0 < decompressed <= written * n_days < 100_000
+    assert compressed is True
+
+
 def test_risk_metrics_and_feature_evidence_roll_back_together(test_dsn, schema):
     _bootstrap(test_dsn, schema)
     iid = uuid.uuid4()
