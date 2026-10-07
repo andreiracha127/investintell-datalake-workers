@@ -28,7 +28,9 @@ QC_A3_BRIDGE_SCHEMA_VERSION = 1
 FLOAT_TOLERANCE = 1e-12
 FLOAT_REL_TOLERANCE = 1e-12
 METRIC_HASH_FLOAT_DECIMALS = 12
-METRICS_HASH_POLICY_VERSION = "qc_a3_metrics_float_canonical_v1"
+# Lockstep with investintell_quant_core.a3.metrics.METRICS_HASH_POLICY_VERSION:
+# this copy hashes through the shipped src/calibration_harness canonicalizer.
+METRICS_HASH_POLICY_VERSION = "qc_a3_metrics_float_canonical_v2"
 BUNDLE_EVALUATION_HASH_POLICY_VERSION = "qc_a3_parity_bundle_v1"
 OBJECT_STORE_UPLOAD_FILE_KEYS = {
     "feature_manifest": "manifests/feature_manifest.json",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import random
 from pathlib import Path
 
 import pytest
@@ -1135,6 +1136,47 @@ def test_mark_a31_pareto_v1_reproduces_the_historical_lexicographic_shortlist() 
         ch.mark_a31_pareto(_a31_grid_rows(), policy_version="a31_selection_policy_v9")
 
 
+def test_mark_a31_pareto_v1_keeps_the_legacy_raw_float_sort_key() -> None:
+    """A -inf metric sorts FIRST under the v1 key (raw float) and LAST under the
+    hardened key; the v1 replay must reproduce the former, v2 screens it out."""
+    assert ch.a31_legacy_none_last(float("-inf")) == -math.inf
+    assert math.isnan(ch.a31_legacy_none_last(float("nan")))
+    assert ch.a31_legacy_none_last(None) == math.inf
+    assert ch.a31_legacy_none_last("x") == math.inf
+
+    rows = _a31_grid_rows()
+    rows.append(_a31_row(
+        "hI", candidate_revision_change_rate=float("-inf"), result_classification="smoke_ok"
+    ))
+    rows.sort(key=lambda row: str(row["a31_config_hash"]))  # run_a31_grid's input order
+
+    _, v1_rows = ch.mark_a31_pareto(rows, policy_version="a31_selection_policy_v1")
+    assert [row["a31_config_hash"] for row in v1_rows] == ["hI", "hD", "hX", "h0", "h1"]
+    assert sorted(rows, key=ch.a31_pareto_sort_key)[-1]["a31_config_hash"] == "hI"
+
+    updated, v2_rows = ch.mark_a31_pareto(rows)
+    assert "hI" not in {row["a31_config_hash"] for row in v2_rows}
+    screened = next(row for row in updated if row["a31_config_hash"] == "hI")
+    assert screened["a31_selection_reason"] == "non_finite_selection_metric"
+
+
+def test_a31_grid_run_fingerprint_includes_the_selection_policy() -> None:
+    common = {
+        "l2_macro_logical_hash": "l2",
+        "config_catalog_hash": "catalog",
+        "worker_commit": "worker",
+    }
+    v1 = ch.a31_grid_run_fingerprint(selection_policy_version=ch.A31_SELECTION_POLICY_V1, **common)
+    v2 = ch.a31_grid_run_fingerprint(selection_policy_version=ch.A31_SELECTION_POLICY_V2, **common)
+
+    assert v1 != v2
+    assert v2 == ch.a31_grid_run_fingerprint(
+        selection_policy_version=ch.A31_SELECTION_POLICY_V2, **common
+    )
+    with pytest.raises(TypeError):
+        ch.a31_grid_run_fingerprint(**common)
+
+
 def test_a31_non_dominated_fronts_partition_three_fronts() -> None:
     vectors = [
         (1.0, 3.0), (3.0, 1.0),  # front 1: trade off against each other
@@ -1159,19 +1201,35 @@ def test_a31_non_dominated_fronts_partition_three_fronts() -> None:
     }
 
 
-def test_a31_dominance_treats_float_noise_as_a_tie() -> None:
-    base = (0.1, 10.0, 10.0, 10.0, 10.0, 10.0)
-    noisy = (0.1 + 5e-13, 10.0, 10.0, 10.0, 10.0, 10.0)
-    better = (0.1 - 1e-9, 10.0, 10.0, 10.0, 10.0, 10.0)
+def _a31_vector(**metrics: float) -> tuple[float, ...]:
+    vector = ch.a31_selection_metric_vector(_a31_row("h", **metrics))
+    assert vector is not None
+    return vector
 
-    assert not ch.a31_dominates(base, noisy)
-    assert not ch.a31_dominates(noisy, base)
+
+def test_a31_dominance_is_exact_on_the_canonical_grid() -> None:
+    base = _a31_vector(candidate_revision_change_rate=0.1)
+    in_cell = _a31_vector(candidate_revision_change_rate=0.1 + 2e-13)
+    straddle = _a31_vector(candidate_revision_change_rate=0.1 + 5e-13)
+    better = _a31_vector(candidate_revision_change_rate=0.1 - 1e-9)
+
+    # Noise inside a grid cell canonicalizes to the same value: a tie.
+    assert in_cell == base
+    assert not ch.a31_dominates(base, in_cell)
+    assert not ch.a31_dominates(in_cell, base)
+    # Noise that crosses a cell boundary is a strict difference. That is the
+    # known property of grid quantization, and the price of a transitive relation.
+    assert straddle != base
+    assert ch.a31_dominates(base, straddle)
     assert ch.a31_dominates(better, base)
     assert not ch.a31_dominates(base, better)
+    assert not ch.a31_dominates(base, base)
+    assert str(ch.a31_quantize_selection_metric(-0.0)) == "0.0"
+    assert ch.a31_quantize_selection_metric(-4e-13) == 0.0
 
     rows = [
         _a31_row("hA", candidate_revision_change_rate=0.1, result_classification="smoke_ok"),
-        _a31_row("hB", candidate_revision_change_rate=0.1 + 5e-13, result_classification="smoke_ok"),
+        _a31_row("hB", candidate_revision_change_rate=0.1 + 2e-13, result_classification="smoke_ok"),
     ]
     updated, pareto_rows = ch.mark_a31_pareto(rows)
     assert [row["pareto_rank"] for row in updated] == [1, 1]
@@ -1179,6 +1237,64 @@ def test_a31_dominance_treats_float_noise_as_a_tie() -> None:
         "a31_pareto_candidate",
         "a31_pareto_candidate",
     ]
+
+
+def test_a31_fronts_are_well_defined_on_the_reviewer_cycle() -> None:
+    """Under ``isclose`` dominance these three formed the cycle a > b > c > a (no
+    zero-dominator row, so the fallback promoted all of them as one front). On
+    the canonical grid they are mutually non-dominated: one genuine front."""
+    keys = ch.A31_SELECTION_METRICS[:3]
+    triples = [(0.0, 0.6e-12, 1.2e-12), (1.2e-12, 0.0, 0.6e-12), (0.6e-12, 1.2e-12, 0.0)]
+    rows = [
+        _a31_row(f"h{i}", result_classification="smoke_ok", **dict(zip(keys, triple)))
+        for i, triple in enumerate(triples)
+    ]
+    vectors = [ch.a31_selection_metric_vector(row) for row in rows]
+    assert vectors == [
+        (0.0, 1e-12, 1e-12, 10.0, 10.0, 10.0),
+        (1e-12, 0.0, 1e-12, 10.0, 10.0, 10.0),
+        (1e-12, 1e-12, 0.0, 10.0, 10.0, 10.0),
+    ]
+    assert not any(ch.a31_dominates(a, b) for a in vectors for b in vectors)
+    assert ch.a31_non_dominated_fronts(vectors) == [[0, 1, 2]]
+    updated, pareto_rows = ch.mark_a31_pareto(rows)
+    assert [row["pareto_rank"] for row in updated] == [1, 1, 1]
+    assert [row["a31_selection_reason"] for row in pareto_rows] == ["non_dominated"] * 3
+
+
+def test_a31_dominance_is_a_strict_partial_order_and_fronts_partition() -> None:
+    """Property: on quantized vectors dominance is irreflexive, asymmetric and
+    transitive, and the fronts are a partition in which every row of front k > 1
+    is dominated by a row of front k - 1 and by nothing in its own or a later
+    front. Samples straddle grid-cell boundaries on purpose."""
+    rng = random.Random(20261007)
+    eps = 1e-12
+    anchors = [0.0, 0.6e-12, 1.2e-12, 1.0, 1.0 + 0.4e-12, 1.0 + 0.6e-12, 2.5, 990.0]
+
+    def sample() -> tuple[float, ...]:
+        return tuple(
+            ch.a31_quantize_selection_metric(rng.choice(anchors) + rng.uniform(-0.7, 0.7) * eps)
+            for _ in ch.A31_SELECTION_METRICS
+        )
+
+    for _ in range(40):
+        vectors = [sample() for _ in range(12)]
+        n = len(vectors)
+        dom = [[ch.a31_dominates(vectors[i], vectors[j]) for j in range(n)] for i in range(n)]
+        for i in range(n):
+            assert not dom[i][i]
+            for j in range(n):
+                assert not (dom[i][j] and dom[j][i])
+                for k in range(n):
+                    if dom[i][j] and dom[j][k]:
+                        assert dom[i][k]
+        fronts = ch.a31_non_dominated_fronts(vectors)
+        assert sorted(i for front in fronts for i in front) == list(range(n))
+        for level, front in enumerate(fronts):
+            for i in front:
+                assert not any(dom[j][i] for later in fronts[level:] for j in later)
+                if level:
+                    assert any(dom[j][i] for j in fronts[level - 1])
 
 
 def test_mark_a31_pareto_is_invariant_to_input_order() -> None:

@@ -93,11 +93,12 @@ A31_SELECTION_METRICS = (
     "candidate_flips_per_year",
     "distance_from_ref",
 )
-# Float-equivalence policy for dominance ties. Mirrors FLOAT_TOLERANCE /
-# FLOAT_REL_TOLERANCE in investintell_quant_core.a3.metrics; the harness runs
-# on the plain ``PYTHONPATH=.`` path and cannot import the wheel.
-A31_SELECTION_FLOAT_ABS_TOLERANCE = 1e-12
-A31_SELECTION_FLOAT_REL_TOLERANCE = 1e-12
+# Selection metrics are compared on the 12-decimal canonical grid (mirrors
+# METRIC_HASH_FLOAT_DECIMALS in investintell_quant_core.a3.metrics; the harness
+# runs on the plain ``PYTHONPATH=.`` path and cannot import the wheel), so two
+# rows tie on a metric iff it canonicalizes to the same value under the metrics
+# hash policy, and dominance on the quantized values is exact.
+A31_SELECTION_METRIC_DECIMALS = 12
 MARKET_DIAGNOSTIC_MODEL_VERSION = "market_implied_v1_diagnostic_frozen"
 A31_REVISION_PASS_RATE = 0.20
 A31_REVISION_CONDITIONAL_RATE = 0.23
@@ -4691,7 +4692,21 @@ def logical_payload_hash(payload: Any) -> str:
     return stable_hash(normalize_logical_value(payload))
 
 
+# Mirrors ``investintell_quant_core.hashing.canonical.NON_FINITE_TAG_KEY``.
+NON_FINITE_TAG_KEY = "$float"
+
+
 def normalize_logical_value(value: Any) -> Any:
+    """Line-for-line mirror of
+    ``investintell_quant_core.hashing.canonical.normalize_logical_value`` (the
+    harness runs on the plain ``PYTHONPATH=.`` path and cannot import the wheel;
+    ``tests/quant_core/test_hashing_metrics.py`` guards the parity).
+
+    Finite floats round to 12 decimals with ``-0.0`` folded into ``0.0``; NaN and
+    the infinities become ``{"$float": "NaN" | "Infinity" | "-Infinity"}``, which
+    no ordinary input value can produce; an input dict carrying the reserved key
+    is refused.
+    """
     if hasattr(value, "item") and not isinstance(value, (str, bytes, bytearray)):
         try:
             value = value.item()
@@ -4702,6 +4717,10 @@ def normalize_logical_value(value: Any) -> Any:
     elif hasattr(value, "to_pydatetime64"):
         value = str(value)
     if isinstance(value, dict):
+        if NON_FINITE_TAG_KEY in value:
+            raise ValueError(
+                f"{NON_FINITE_TAG_KEY!r} is reserved for the non-finite float tag"
+            )
         return {str(k): normalize_logical_value(v) for k, v in sorted(value.items())}
     if isinstance(value, list):
         return [normalize_logical_value(item) for item in value]
@@ -4713,13 +4732,12 @@ def normalize_logical_value(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, float):
         if math.isnan(value):
-            # Distinct from ``None`` so a NaN field never hashes like a missing one.
-            return "NaN"
+            return {NON_FINITE_TAG_KEY: "NaN"}
         if math.isinf(value):
-            return str(value)
+            return {NON_FINITE_TAG_KEY: "Infinity" if value > 0 else "-Infinity"}
         rounded = round(value, 12)
-        # ``-0.0 == 0.0`` but serializes differently; kept in lockstep with
-        # ``investintell_quant_core.hashing.canonical.normalize_logical_value``.
+        # ``-0.0 == 0.0`` but serializes differently; same convention as
+        # ``a3.metrics.canonical_metric_value``.
         return 0.0 if rounded == 0 else rounded
     return value
 
@@ -5832,6 +5850,7 @@ def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
         l2_macro_logical_hash=l2_hash,
         config_catalog_hash=catalog_hash,
         worker_commit=worker_commit,
+        selection_policy_version=config.selection_policy_version,
     )
     write_json(output_dir / "config_catalog.normalized.json", normalized_catalog)
     write_parquet(
@@ -7987,12 +8006,19 @@ def a31_distance_from_ref(config: A31Config) -> float:
 
 
 def a31_grid_run_fingerprint(
-    *, l2_macro_logical_hash: str, config_catalog_hash: str, worker_commit: str
+    *,
+    l2_macro_logical_hash: str,
+    config_catalog_hash: str,
+    worker_commit: str,
+    selection_policy_version: str,
 ) -> str:
+    """Reproducible run identity: inputs, worker commit, schema and code versions
+    and the selection policy (a v1 and a v2 run on identical inputs are two runs)."""
     return stable_hash({
         "parent_l2_hash": l2_macro_logical_hash,
         "config_catalog_hash": config_catalog_hash,
         "worker_commit": worker_commit,
+        "selection_policy_version": selection_policy_version,
         "schema_versions": {
             "l2": L2_SCHEMA_VERSION,
             "l3": L3_SCORER_SCHEMA_VERSION,
@@ -9372,12 +9398,18 @@ def mark_a31_pareto(
 def mark_a31_pareto_v1(
     summary_rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Historical lexicographic top-5; computes no dominance (kept for replay)."""
+    """Historical lexicographic top-5; computes no dominance (kept for replay).
+
+    Sorts with the v1 key (``a31_pareto_sort_key_v1``: raw floats, so a NaN or
+    -inf metric orders exactly as it did when the v1 artifacts were written);
+    ``run_a31_grid`` hands the rows over sorted by ``a31_config_hash``, which is
+    the input order that replay depends on.
+    """
     eligible = [
         row for row in summary_rows
         if row.get("result_classification") not in A31_SELECTION_FAILED_CLASSIFICATIONS
     ]
-    ranked = sorted(eligible, key=a31_pareto_sort_key)
+    ranked = sorted(eligible, key=a31_pareto_sort_key_v1)
     pareto_rows: list[dict[str, Any]] = []
     pareto_hashes = {row["a31_config_hash"] for row in ranked[:5]}
     for rank, row in enumerate(ranked[:5], start=1):
@@ -9492,11 +9524,13 @@ def mark_a31_pareto_v2(
 
 
 def a31_selection_metric_vector(row: dict[str, Any]) -> tuple[float, ...] | None:
-    """The six selection metrics as floats, or ``None`` if any is non-finite.
+    """The six selection metrics on the canonical grid, or ``None`` if any is
+    non-finite.
 
     A missing metric (``None``, e.g. no transitions in the window) ranks worst
     (``+inf``) exactly as the priority key treats it; a NaN or infinite number
-    is a broken computation and screens the row out.
+    is a broken computation and screens the row out. Finite metrics are
+    quantized with ``a31_quantize_selection_metric`` so that dominance is exact.
     """
     values: list[float] = []
     for key in A31_SELECTION_METRICS:
@@ -9511,37 +9545,40 @@ def a31_selection_metric_vector(row: dict[str, Any]) -> tuple[float, ...] | None
             continue
         if not math.isfinite(number):
             return None
-        values.append(number)
+        values.append(a31_quantize_selection_metric(number))
     return tuple(values)
 
 
-def a31_values_equivalent(lhs: float, rhs: float) -> bool:
-    return math.isclose(
-        lhs,
-        rhs,
-        rel_tol=A31_SELECTION_FLOAT_REL_TOLERANCE,
-        abs_tol=A31_SELECTION_FLOAT_ABS_TOLERANCE,
-    )
+def a31_quantize_selection_metric(value: float) -> float:
+    """Round to the 12-decimal canonical grid with ``-0.0`` folded into ``0.0``
+    (the ``a3.metrics.canonical_metric_value`` recipe)."""
+    rounded = round(value, A31_SELECTION_METRIC_DECIMALS)
+    return 0.0 if rounded == 0 else rounded
 
 
 def a31_dominates(lhs: tuple[float, ...], rhs: tuple[float, ...]) -> bool:
-    """``lhs`` dominates ``rhs``: no worse on every metric (within the float
-    equivalence policy) and strictly better on at least one; all minimized."""
+    """Exact Pareto dominance on quantized vectors, all metrics minimized:
+    ``lhs`` is no worse on every metric and strictly better on at least one."""
     strictly_better = False
     for left, right in zip(lhs, rhs, strict=True):
-        if a31_values_equivalent(left, right):
-            continue
         if left > right:
             return False
-        strictly_better = True
+        if left < right:
+            strictly_better = True
     return strictly_better
 
 
 def a31_non_dominated_fronts(vectors: list[tuple[float, ...]]) -> list[list[int]]:
-    """Fast non-dominated sort (Deb et al., NSGA-II).
+    """Fast non-dominated sort (Deb et al. 2002, NSGA-II) over quantized vectors.
 
-    Returns row indices per front, front 1 (non-dominated) first. Fronts keep
-    input order; callers impose their own order within a front.
+    Dominance is exact on metrics rounded to the 12-decimal canonical grid: the
+    additive epsilon-box dominance of Laumanns, Thiele, Deb & Zitzler (2002,
+    Evolutionary Computation 10(3)) with epsilon = 1e-12 and round-to-nearest
+    boxes. That relation is a strict partial order (irreflexive, transitive),
+    so every row lands in exactly one front; a tolerance-based ``isclose``
+    relation is not transitive and can cycle. Returns row indices per front,
+    front 1 (non-dominated) first. Fronts keep input order; callers impose
+    their own order within a front.
     """
     count = len(vectors)
     dominated: list[list[int]] = [[] for _ in range(count)]
@@ -9568,10 +9605,9 @@ def a31_non_dominated_fronts(vectors: list[tuple[float, ...]]) -> list[list[int]
                     following.append(j)
         current = following
     if assigned != count:
-        # Tolerance-based dominance is not guaranteed transitive; a cycle would
-        # leave rows unassigned. Keep them in one trailing front rather than
-        # dropping them silently.
-        fronts.append([i for i in range(count) if dominators[i] > 0])
+        raise RuntimeError(
+            "A31 dominance left rows unassigned; the quantized relation must be acyclic"
+        )
     return fronts
 
 
@@ -9583,13 +9619,24 @@ def pareto_projection(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def a31_pareto_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
-    """Owner priority among the selection metrics (lower is better), then the hash."""
+    """Owner priority among the selection metrics (lower is better), then the
+    hash. A total order: ``none_last`` ranks non-finite metrics worst."""
     return tuple(none_last(row.get(key)) for key in A31_SELECTION_METRICS) + (
         str(row.get("a31_config_hash")),
     )
 
 
+def a31_pareto_sort_key_v1(row: dict[str, Any]) -> tuple[Any, ...]:
+    """The historical v1 priority key, used only by ``mark_a31_pareto_v1``: raw
+    floats via ``a31_legacy_none_last``, so a NaN or -inf metric sorts exactly
+    as it did when the v1 artifacts were written."""
+    return tuple(a31_legacy_none_last(row.get(key)) for key in A31_SELECTION_METRICS) + (
+        str(row.get("a31_config_hash")),
+    )
+
+
 def none_last(value: Any) -> float:
+    """``None``, unparseable and non-finite values rank last (``+inf``)."""
     if value is None:
         return float("inf")
     try:
@@ -9597,6 +9644,17 @@ def none_last(value: Any) -> float:
     except (TypeError, ValueError):
         return float("inf")
     return out if math.isfinite(out) else float("inf")
+
+
+def a31_legacy_none_last(value: Any) -> float:
+    """The v1 ``none_last``: ``None`` and unparseable values rank last, every
+    other value is the raw float (NaN and -inf included). Replay only."""
+    if value is None:
+        return float("inf")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("inf")
 
 
 def aggregate_stage_timings(summary_rows: list[dict[str, Any]]) -> dict[str, dict[str, float | None]]:
