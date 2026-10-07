@@ -23,12 +23,14 @@ Decisões herdadas do estudo (não opcionais):
   * NFCI vem do FRED com histórico pleno (o lake macro_data só guarda ~10 anos).
     Caveat conhecido: NFCI é revisado ex-post (viés de revisão; teto otimista) — no
     composite ele é 1 voto entre 3, nunca decide sozinho.
-  * O voto NFCI é carimbado pela DATA DE DIVULGAÇÃO, não pela data de observação do
-    FRED (a sexta-feira de referência): o Chicago Fed publica na semana seguinte, então
-    cada observação só vota a partir de obs + ``NFCI_RELEASE_LAG_BDAYS`` dias úteis
-    (point-in-time). O backtest ``7ecef2e31f1fa4c98b7c5cc732b1f259`` aplicou o NFCI
-    na data de observação; a revalidação com o carimbo de divulgação está pendente
-    (auditoria quant 2026-10-07, MR-1).
+  * O voto NFCI é carimbado pela DATA DE DIVULGAÇÃO do Chicago Fed, não pela data de
+    observação do FRED (a sexta-feira de referência): quarta-feira seguinte às 8h30
+    ET, quinta-feira quando um feriado federal cai na segunda, terça ou quarta dessa
+    semana (``nfci_release_date``; calendário em ``src/us_federal_holidays.py``).
+    Point-in-time: cada observação só vota a partir da divulgação. O backtest
+    ``7ecef2e31f1fa4c98b7c5cc732b1f259`` aplicou o NFCI na data de observação; a
+    revalidação com o carimbo de divulgação está pendente (auditoria quant
+    2026-10-07, MR-1).
 
 Contract:  run(dsn, *, calc_date=None, limit=None)
            -> {"days", "upserted", "state", "vote_count", "flips", "last_flip",
@@ -39,17 +41,18 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
-from typing import Any
+from typing import Any, Callable
 
 from src.db import LOCK_REGIME_COMPOSITE, advisory_lock, connect
-from src.quadrant_staleness import add_business_days
+from src.us_federal_holidays import is_federal_holiday
 
 SPY_TICKER = "SPY"
 HISTORY_START = _dt.date(2007, 1, 1)   # casa o set_start_date do backtest
 SMA_MONTHS = 10                        # Faber: SMA de 10 fechamentos mensais
 NFCI_ENTER = 0.0                       # NFCI > 0 entra em risk-off
 NFCI_EXIT = -0.05                      # NFCI < −0,05 sai (histerese)
-NFCI_RELEASE_LAG_BDAYS = 5             # FRED carimba a sexta de referência; o Chicago Fed divulga na semana seguinte (+5 dias úteis Seg–Sex, carimbo conservador)
+NFCI_REFERENCE_WEEKDAY = 4             # sexta: o FRED carimba a semana de referência na sexta
+NFCI_RELEASE_WEEKDAY = 2               # quarta 8h30 ET da semana seguinte (Chicago Fed)
 FRED_OBS_URL = "https://api.stlouisfed.org/fred/series/observations"
 INSERT_CHUNK = 1_000
 
@@ -94,27 +97,56 @@ def trend_active_by_month(
     return active
 
 
-def nfci_release_date(obs_date: _dt.date, *, lag_business_days: int = NFCI_RELEASE_LAG_BDAYS) -> _dt.date:
-    """Carimbo de divulgação de uma observação NFCI: data de observação (sexta de
-    referência no FRED) + ``lag_business_days`` dias úteis Seg–Sex."""
-    return add_business_days(
-        _dt.datetime.combine(obs_date, _dt.time.min), lag_business_days).date()
+def nfci_release_date(obs_date: _dt.date) -> _dt.date:
+    """Carimbo de divulgação da observação NFCI da semana que termina em ``obs_date``.
+
+    Regra oficial (https://www.chicagofed.org/research/data/nfci/current-data,
+    lida em 2026-10-07): "The NFCI and ANFCI are updated on a weekly basis at 8:30
+    a.m. ET on Wednesday, and cover the time period through the previous Friday.
+    When a federal holiday falls on a Wednesday or earlier in the week, the NFCI
+    and ANFCI will be updated on Thursday."
+
+    O FRED carimba cada observação na sexta-feira de referência; uma data que não
+    seja sexta é levada à sexta da sua semana (a regra ancora na semana de
+    referência, não no dia da semana do input). A divulgação é a quarta da semana
+    seguinte; se um feriado federal (``src/us_federal_holidays.py``) cai na segunda,
+    terça ou quarta dessa semana, passa ao próximo dia útil que não seja feriado —
+    a quinta em todos os casos que a regra descreve (o laço só importaria se essa
+    quinta também fosse feriado).
+
+    Utilizável no próprio dia da divulgação: a linha do composite para a data d é
+    uma decisão de FECHAMENTO de d (o voto de crédito é o close HYG/IEF de d; o
+    railway.toml roda o worker ~06:40 UTC da manhã seguinte), logo uma divulgação
+    às 8h30 ET de d já é pública quando a decisão de d é tomada e ``compose``
+    deixa release_date <= d votar em d.
+    """
+    friday = obs_date + _dt.timedelta(
+        days=(NFCI_REFERENCE_WEEKDAY - obs_date.weekday()) % 7)
+    monday = friday + _dt.timedelta(days=3)
+    wednesday = monday + _dt.timedelta(days=NFCI_RELEASE_WEEKDAY)
+    if not any(is_federal_holiday(monday + _dt.timedelta(days=k)) for k in range(3)):
+        return wednesday
+    release = wednesday + _dt.timedelta(days=1)
+    while release.weekday() >= 5 or is_federal_holiday(release):
+        release += _dt.timedelta(days=1)
+    return release
 
 
 def nfci_states(
     nfci_obs: list[tuple[_dt.date, float]],
     *,
-    lag_business_days: int = NFCI_RELEASE_LAG_BDAYS,
+    release_date: Callable[[_dt.date], _dt.date] = nfci_release_date,
 ) -> list[tuple[_dt.date, float, bool]]:
     """Estado do voto NFCI por observação, com histerese (> 0 entra, < −0,05 sai).
     Retorna (data_de_divulgação, valor, ativo) em ordem de observação — o consumidor
-    faz forward-fill a partir da DIVULGAÇÃO (obs + ``lag_business_days`` dias úteis),
-    nunca da data de observação do FRED (point-in-time)."""
+    faz forward-fill a partir da DIVULGAÇÃO (``release_date``; por omissão a regra
+    oficial ``nfci_release_date``), nunca da data de observação do FRED
+    (point-in-time)."""
     out: list[tuple[_dt.date, float, bool]] = []
     active = False
     for d, v in sorted(nfci_obs, key=lambda t: t[0]):
         active = (v >= NFCI_EXIT) if active else (v > NFCI_ENTER)
-        out.append((nfci_release_date(d, lag_business_days=lag_business_days), v, active))
+        out.append((release_date(d), v, active))
     return out
 
 
@@ -126,7 +158,8 @@ def compose(
     """Série diária de regime por votos. ``credit_rows`` = linhas de
     credit_regime_daily ({regime_date, ratio, p20_5y}); trend/nfci são carregados
     adiante (forward-fill) sobre cada data de crédito — o ``nfci`` é consumido pelo
-    carimbo de divulgação que ``nfci_states`` devolve (observação + lag), então uma
+    carimbo de divulgação que ``nfci_states`` devolve (quarta 8h30 ET da semana
+    seguinte à sexta de referência; quinta em semana com feriado federal), então uma
     observação só vota em datas >= sua divulgação. risk_off ⇔ ≥ 2 votos.
     ``flip`` marca a 1ª observação de cada novo estado (estado inicial: risk_on).
     """
