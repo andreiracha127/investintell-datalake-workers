@@ -1609,7 +1609,9 @@ FOR EACH ROW EXECUTE FUNCTION fund_nav_readiness_pointer_stamp_v1();
 -- computation, lifecycle knowledge) must be <= t; a superseded readiness
 -- pointer, changed NAV prefix, current hold or replaced risk can still make
 -- an older t false. The snapshot owns its immutable policy version until a
--- replacement snapshot publishes. An active successor policy must still
+-- replacement snapshot publishes, provided its publication is no later than
+-- the active policy version. A rollback refuses snapshots from a newer
+-- policy; a freshly stamped pointer is not version ordering. An active successor must still
 -- permit the instrument's lifecycle; missing or revoked evidence fails shut.
 -- A newer NAV head is safe only with an intact revision ledger proving every
 -- intervening mutation is an attributed INSERT strictly after as_of_session,
@@ -1634,6 +1636,7 @@ SELECT COALESCE((
        AND $3 <= policy.valid_through
        AND policy.policy_hash = run.policy_hash
        AND policy.published_at <= $3
+       AND policy.published_at <= active_version.published_at
        AND active_policy.published_at <= $3
        AND published_risk.completed_at <= $3
        AND published_risk.policy_id = run.policy_id
@@ -1733,6 +1736,9 @@ SELECT COALESCE((
       ON policy.policy_id = run.policy_id AND policy.policy_version = run.policy_version
     JOIN nav_policy_current active_policy
       ON active_policy.readiness_profile = run.readiness_profile
+    JOIN nav_policy_versions active_version
+      ON active_version.policy_id = active_policy.policy_id
+     AND active_version.policy_version = active_policy.policy_version
     LEFT JOIN fund_nav_data_heads nav_head ON nav_head.instrument_id = r.instrument_id
     JOIN fund_nav_risk_publication risk_pub
       ON risk_pub.readiness_profile = run.readiness_profile

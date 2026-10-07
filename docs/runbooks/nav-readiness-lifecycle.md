@@ -3,13 +3,16 @@
 This change preserves the existing one-session allowance. It does not extend
 policy expiry, accept unverified NAVs, or reuse a replaced risk generation.
 The companion Light change reads the published snapshot's policy rather than
-requiring that policy to remain the policy pointer's current target.
+requiring that policy to remain the policy pointer's current target. Its
+immutable publication instant must be no later than the active policy version's
+publication instant. Rolling the pointer back rejects a newer snapshot; the
+fresh pointer movement timestamp never changes version ordering.
 
 ## Design and remaining intervals
 
 | Window | Cause | Change | Remaining interval |
 |---|---|---|---|
-| Policy publication | Moving the policy pointer invalidated the previous readiness policy join. | Readiness remains bound to its own immutable published policy and hash. The current policy pointer must exist, and current lifecycle restrictions still veto admission. | No policy-pointer-only outage for an otherwise valid snapshot. Expiry, session lag and restrictive lifecycle changes still reject immediately. |
+| Policy publication | Moving the policy pointer invalidated the previous readiness policy join. | Readiness remains bound to its own immutable published policy and hash. The current policy pointer must exist and target a version published no earlier than the snapshot policy; current lifecycle restrictions still veto admission. | No policy-pointer-only outage for an otherwise valid snapshot. Expiry, session lag and restrictive lifecycle changes still reject immediately. |
 | Risk still on the previous policy | Readiness could replace the last good snapshot with rows that cannot match the new policy's risk evidence. | Defer without publishing until risk is complete and published for the exact policy and target session. | The last snapshot remains usable until another correctness pin expires or changes. A risk-generation fence remains as described below. |
 | Provider has not published the due session | Wall-clock due time preceded the provider's mutual-fund publication. | The chain and rebase planner recognize fresh successful provider observations ending at the previous session for a majority of the active cohort, and return a retryable outcome. The chain stops before risk and readiness. | No new snapshot or coverage alarm from a proven provider-pending deferral. Availability still ends at the existing session-lag or policy-expiry boundary. Retry after the provider publishes. |
 | Ingestion advances the NAV head | Any new head invalidated a snapshot even when its 401 input levels were unchanged. | Permit a higher head only when the immutable revision ledger proves a provider-attributed append strictly after the snapshot's as-of session, including that new row's derived-return initialization in the same transaction. | No append-only ingestion outage. Historical inserts, later updates, deletes, unsupported lineage, holds and risk changes remain fail-closed until recomputation. |
@@ -43,19 +46,25 @@ production mutation is part of preparing these PRs.
 
 | Artifact | SHA-256 |
 |---|---|
-| `schemas/fund_nav_readiness_v1.sql` | `ffc0fa5d8ef16369ba25adbe5c07e2a36bf462ee464a99977c90419467dd72a4` |
-| Catalog manifest file | `58785e5d1b450254dac328d36d49f7fc51467dbd0246468af86d682b672fd7e2` |
-| Catalog signature | `33b5a8e8c89ce21ad2e847097d10479d36f1030c1e2cafe166f871cbd173491b` |
+| `schemas/fund_nav_readiness_v1.sql` | `bbad6e2ba30054da517c3a673a9cf0d8a454d647b69fbc3ec1d104a48bed55a3` |
+| Catalog manifest file | `9fcf1de008c64f6aca498e36895570d21b72235dfc04ea45b994bcb263dd9da6` |
+| Catalog signature | `169db7aad9f1d5395bfd88a540204bc0f8f8f4fff4a3c1db0a4df00547a34ac2` |
 | Access profile signature (unchanged) | `c8fbce2a57f795e1fc713e6fbbdcbd1b8f6f4c83f5066755016fd0cba6c223a6` |
 
-The immediately preceding SQL is
+The catalog manifest was regenerated with
+`python -m scripts.generate_fund_nav_readiness_catalog --write` and verified
+without `--write` on the pinned local PostgreSQL 18.4 / TimescaleDB 2.27.2
+reference server. The pins above include the snapshot policy rollback guard.
+
+The immediately preceding released SQL is
 `daf13576421d744a081f3d5478fb6c273bc5b21be7778d3d6833173a1cba2533`.
 Its snapshot function body is explicitly recognized by
 `PREDECESSOR_FUNCTION_BODIES` as repairable only when all other catalog
 attributes match. The fixture
 `tests/fixtures/nav_snapshot_current_at_session_lag.sql` preserves that exact
 body. Unknown function changes remain incompatible. No access grant changes
-are part of this release.
+are part of this release. The unreleased `ffc0fa5d...` body is replaced, not
+added as another recognized in-place predecessor.
 
 1. Wait for ingestion, risk, rebase and governed policy jobs to finish. Merging
    workers `main` redeploys the git-connected services and can stop running jobs.
@@ -83,8 +92,8 @@ failure, or busy writer requires a fresh check; do not bypass a refusal.
 
 ```bash
 SQL=$(python -c 'import hashlib; from pathlib import Path; print(hashlib.sha256(Path("schemas/fund_nav_readiness_v1.sql").read_bytes()).hexdigest())')
-test "$SQL" = ffc0fa5d8ef16369ba25adbe5c07e2a36bf462ee464a99977c90419467dd72a4
-python -c 'import hashlib; from pathlib import Path; assert hashlib.sha256(Path("schemas/fund_nav_readiness_v1.catalog.json").read_bytes()).hexdigest() == "58785e5d1b450254dac328d36d49f7fc51467dbd0246468af86d682b672fd7e2"'
+test "$SQL" = bbad6e2ba30054da517c3a673a9cf0d8a454d647b69fbc3ec1d104a48bed55a3
+python -c 'import hashlib; from pathlib import Path; assert hashlib.sha256(Path("schemas/fund_nav_readiness_v1.catalog.json").read_bytes()).hexdigest() == "9fcf1de008c64f6aca498e36895570d21b72235dfc04ea45b994bcb263dd9da6"'
 python -c 'import json,sys; from pathlib import Path; m=json.loads(Path("schemas/fund_nav_readiness_v1.catalog.json").read_text()); print("SQL SHA:",sys.argv[1]); print("catalog signature:",m["signature_sha256"])' "$SQL"
 PINS=(--schema public --expected-sql-sha256 "$SQL")
 

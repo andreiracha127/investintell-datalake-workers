@@ -980,12 +980,13 @@ def _manifest_signature() -> dict:
     return json.loads(operator.CATALOG_MANIFEST.read_text(encoding="utf-8"))["signature"]
 
 
-def test_predecessor_snapshot_body_is_repairable_and_nothing_else_is():
+@pytest.mark.parametrize("predecessor_index", [0, 1])
+def test_predecessor_snapshot_body_is_repairable_and_nothing_else_is(predecessor_index):
     from scripts import fund_nav_readiness_schema as operator
 
     expected = _manifest_signature()
     key = operator.SNAPSHOT_FUNCTION_KEY
-    (predecessor,) = operator.PREDECESSOR_FUNCTION_BODIES[key]
+    predecessor = sorted(operator.PREDECESSOR_FUNCTION_BODIES[key])[predecessor_index]
     assert expected["functions"][key]["body_sha256"] != predecessor
 
     def with_function(**changes):

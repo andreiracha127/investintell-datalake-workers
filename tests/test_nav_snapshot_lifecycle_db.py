@@ -12,6 +12,7 @@ from psycopg import sql
 
 from scripts import fund_nav_readiness_schema as operator
 from src.workers import instrument_ingestion as ingest
+from src.workers import fund_nav_readiness as readiness
 from src.workers._tiingo import NavObservation
 from tests import test_fund_nav_readiness_db as base
 
@@ -71,6 +72,50 @@ def test_snapshot_policy_rollover_keeps_the_published_generation(
         base._publish_rollover(conn, iid, grid)
         assert _current(conn, iid, run_id) is True
         assert conn.execute("SELECT run_id FROM fund_nav_readiness_current").fetchone() == before
+
+
+def test_policy_rollback_refuses_snapshot_from_newer_published_policy(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, _old_run, _later = _published(test_dsn, schema, monkeypatch)
+    with base._connect(test_dsn, schema) as conn:
+        base._publish_rollover(conn, iid, grid)
+        nav_rows = conn.execute(
+            "SELECT nav_date, nav FROM nav_timeseries "
+            "WHERE instrument_id=%s ORDER BY nav_date", (iid,),
+        ).fetchall()
+        base._publish_risk_run(conn, grid[-1], {iid: nav_rows})
+    report = readiness.run(test_dsn)
+    assert report["ready_count"] == 1
+    run_id = uuid.UUID(report["run_id"])
+    with base._connect(test_dsn, schema) as conn:
+        assert _current(conn, iid, run_id) is True
+        publication = conn.execute(
+            "SELECT run_id, published_at FROM fund_nav_readiness_current"
+        ).fetchone()
+        conn.execute("UPDATE nav_policy_current SET policy_version='v1'")
+        conn.commit()
+        # Pointer moves receive fresh stamps: compare immutable version
+        # publication order, not the pointer's last movement timestamp.
+        assert conn.execute(
+            "SELECT old.published_at < newer.published_at "
+            "AND newer.published_at < pointer.published_at "
+            "FROM nav_policy_versions old "
+            "JOIN nav_policy_versions newer USING (policy_id) "
+            "JOIN nav_policy_current pointer ON pointer.policy_id=old.policy_id "
+            "WHERE old.policy_version='v1' AND newer.policy_version='v2'"
+        ).fetchone()[0] is True
+        assert _current(conn, iid, run_id) is False
+        assert conn.execute(
+            "SELECT snapshot_current FROM fund_nav_readiness_current_v1 "
+            "WHERE instrument_id=%s", (iid,),
+        ).fetchone()[0] is False
+        assert conn.execute(
+            "SELECT run_id, published_at FROM fund_nav_readiness_current"
+        ).fetchone() == publication
+        conn.execute("UPDATE nav_policy_current SET policy_version='v2'")
+        conn.commit()
+        assert _current(conn, iid, run_id) is True
 
 
 @pytest.mark.parametrize(
