@@ -1634,6 +1634,7 @@ SELECT COALESCE((
     SELECT run.state='complete' AND $3 >= run.completed_at
        AND p.published_at <= $3
        AND $3 <= policy.valid_through
+       AND $3 <= active_version.valid_through
        AND policy.policy_hash = run.policy_hash
        AND policy.published_at <= $3
        AND policy.published_at <= active_version.published_at

@@ -74,6 +74,34 @@ def test_snapshot_policy_rollover_keeps_the_published_generation(
         assert conn.execute("SELECT run_id FROM fund_nav_readiness_current").fetchone() == before
 
 
+def test_snapshot_expires_with_shorter_lived_successor_policy(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, run_id, later = _published(test_dsn, schema, monkeypatch)
+    with base._connect(test_dsn, schema) as conn:
+        # Expiry falls before the first pending close, isolating policy validity
+        # from the snapshot's existing one-session allowance.
+        expiry = later[0][1] - dt.timedelta(minutes=30)
+        base._publish_rollover(conn, iid, grid, valid_through=expiry)
+        assert conn.execute(
+            "SELECT snapshot.published_at < active.published_at "
+            "AND active.valid_through < snapshot.valid_through "
+            "FROM nav_policy_versions snapshot "
+            "JOIN nav_policy_versions active USING (policy_id) "
+            "WHERE snapshot.policy_version='v1' AND active.policy_version='v2'"
+        ).fetchone()[0] is True
+        publication = conn.execute(
+            "SELECT run_id, published_at FROM fund_nav_readiness_current"
+        ).fetchone()
+        assert base._current_at(conn, iid, run_id, expiry) is True
+        assert base._current_at(
+            conn, iid, run_id, expiry + dt.timedelta(microseconds=1)
+        ) is False
+        assert conn.execute(
+            "SELECT run_id, published_at FROM fund_nav_readiness_current"
+        ).fetchone() == publication
+
+
 def test_policy_rollback_refuses_snapshot_from_newer_published_policy(
     test_dsn, schema, monkeypatch
 ):

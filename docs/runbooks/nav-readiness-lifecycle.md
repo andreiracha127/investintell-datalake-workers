@@ -7,6 +7,9 @@ requiring that policy to remain the policy pointer's current target. Its
 immutable publication instant must be no later than the active policy version's
 publication instant. Rolling the pointer back rejects a newer snapshot; the
 fresh pointer movement timestamp never changes version ordering.
+Both the snapshot policy and the active policy version must remain valid at
+the evaluation instant. A successor with a shorter validity period expires
+the snapshot as soon as that successor's `valid_through` is exceeded.
 
 ## Design and remaining intervals
 
@@ -46,15 +49,16 @@ production mutation is part of preparing these PRs.
 
 | Artifact | SHA-256 |
 |---|---|
-| `schemas/fund_nav_readiness_v1.sql` | `bbad6e2ba30054da517c3a673a9cf0d8a454d647b69fbc3ec1d104a48bed55a3` |
-| Catalog manifest file | `9fcf1de008c64f6aca498e36895570d21b72235dfc04ea45b994bcb263dd9da6` |
-| Catalog signature | `169db7aad9f1d5395bfd88a540204bc0f8f8f4fff4a3c1db0a4df00547a34ac2` |
+| `schemas/fund_nav_readiness_v1.sql` | `26cb3d70aed6d8c97a777ae8d415c60ac5b963e29a5e865ad82618c340478de2` |
+| Catalog manifest file | `a00f1ab66009c485a8fde4ddc4a9d46eba36beb02c15846aff1b0065d52df4d9` |
+| Catalog signature | `ec61fcda67430adbbe4ca08fc941511686e8ff0255a424513057005f95f7002d` |
 | Access profile signature (unchanged) | `c8fbce2a57f795e1fc713e6fbbdcbd1b8f6f4c83f5066755016fd0cba6c223a6` |
 
 The catalog manifest was regenerated with
 `python -m scripts.generate_fund_nav_readiness_catalog --write` and verified
 without `--write` on the pinned local PostgreSQL 18.4 / TimescaleDB 2.27.2
-reference server. The pins above include the snapshot policy rollback guard.
+reference server. The pins above include the snapshot policy rollback and
+active policy expiry guards.
 
 The immediately preceding released SQL is
 `daf13576421d744a081f3d5478fb6c273bc5b21be7778d3d6833173a1cba2533`.
@@ -92,8 +96,8 @@ failure, or busy writer requires a fresh check; do not bypass a refusal.
 
 ```bash
 SQL=$(python -c 'import hashlib; from pathlib import Path; print(hashlib.sha256(Path("schemas/fund_nav_readiness_v1.sql").read_bytes()).hexdigest())')
-test "$SQL" = bbad6e2ba30054da517c3a673a9cf0d8a454d647b69fbc3ec1d104a48bed55a3
-python -c 'import hashlib; from pathlib import Path; assert hashlib.sha256(Path("schemas/fund_nav_readiness_v1.catalog.json").read_bytes()).hexdigest() == "9fcf1de008c64f6aca498e36895570d21b72235dfc04ea45b994bcb263dd9da6"'
+test "$SQL" = 26cb3d70aed6d8c97a777ae8d415c60ac5b963e29a5e865ad82618c340478de2
+python -c 'import hashlib; from pathlib import Path; assert hashlib.sha256(Path("schemas/fund_nav_readiness_v1.catalog.json").read_bytes()).hexdigest() == "a00f1ab66009c485a8fde4ddc4a9d46eba36beb02c15846aff1b0065d52df4d9"'
 python -c 'import json,sys; from pathlib import Path; m=json.loads(Path("schemas/fund_nav_readiness_v1.catalog.json").read_text()); print("SQL SHA:",sys.argv[1]); print("catalog signature:",m["signature_sha256"])' "$SQL"
 PINS=(--schema public --expected-sql-sha256 "$SQL")
 
@@ -175,6 +179,17 @@ replay. Run the cross-repository and affected workers DB suites against the
 exact pair of worktrees.
 
 Validation for this release:
+
+The active-policy expiry regression publishes a successor whose `valid_through`
+is earlier than the snapshot policy's expiry and the next pending session close.
+It checks that the snapshot is current at the exact expiry and rejected one
+microsecond later, without moving the readiness pointer. The latter assertion
+failed before the active-version guard and passed after it on the pinned local
+PostgreSQL 18.4 / TimescaleDB 2.27.2 reference server.
+For this follow-up, all 441 selected Workers readiness, snapshot lifecycle,
+access, operator and audit cases passed. The companion Light checkout passed
+369 NAV unit cases and all 53 cross-repository DB cases with `NAV_WORKERS_ROOT`
+pointing at the updated Workers checkout.
 
 - Light: 73 repository/builder-capability unit cases and 52 cross-repository
   DB cases passed; Ruff and mypy passed (449 application source files).

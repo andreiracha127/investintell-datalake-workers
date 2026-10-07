@@ -316,16 +316,16 @@ def test_auditor_gate_checks_must_be_the_round7_checks(monkeypatch):
 def test_round7_leaves_ddl_and_catalog_unchanged():
     """Pin the current governed schema; the audit contract stays unchanged.
 
-    Catalog pins include the snapshot rollback guard, regenerated and verified
-    on the pinned disposable reference server.
+    Catalog pins include the snapshot rollback and active policy expiry guards,
+    regenerated and verified on the pinned disposable reference server.
     """
     ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
     catalog = (ROOT / "schemas" / "fund_nav_readiness_v1.catalog.json").read_bytes()
     assert hashlib.sha256(ddl).hexdigest() == (
-        "bbad6e2ba30054da517c3a673a9cf0d8a454d647b69fbc3ec1d104a48bed55a3"
+        "26cb3d70aed6d8c97a777ae8d415c60ac5b963e29a5e865ad82618c340478de2"
     )
     assert hashlib.sha256(catalog).hexdigest() == (
-        "9fcf1de008c64f6aca498e36895570d21b72235dfc04ea45b994bcb263dd9da6"
+        "a00f1ab66009c485a8fde4ddc4a9d46eba36beb02c15846aff1b0065d52df4d9"
     )
 
 

@@ -2436,7 +2436,9 @@ def test_db_rejects_partial_reset_unattributed_and_ungoverned_stamps(test_dsn, s
         ).fetchone()[0] == 0
 
 
-def _publish_rollover(conn, iid, grid, *, version="v2", tweak_index=None):
+def _publish_rollover(
+    conn, iid, grid, *, version="v2", tweak_index=None, valid_through=None
+):
     sessions = []
     for index, day in enumerate(grid):
         close = dt.datetime.combine(day, dt.time(20), dt.timezone.utc)
@@ -2453,10 +2455,11 @@ def _publish_rollover(conn, iid, grid, *, version="v2", tweak_index=None):
             annualization_sessions,required_nav_kind,required_return_semantics,
             modeling_currency,currency_treatment,source_reference,published_at)
            VALUES ('synthetic',%s,%s,'current_daily_nav_v1','daily','NYSE-TEST',%s,
-                   %s,'America/New_York',%s,%s,clock_timestamp()+interval '1 day',
+                   %s,'America/New_York',%s,%s,
+                   COALESCE(%s,clock_timestamp()+interval '1 day'),
                    %s,%s,400,252,'adjusted','observed_interval_log_ratio','USD',
                    'native_only',%s,NULL)""",
-        (version, "b" * 64, version, SOURCE, grid[0], grid[-1], len(sessions),
+        (version, "b" * 64, version, SOURCE, grid[0], grid[-1], valid_through, len(sessions),
          calendar_digest(sessions), SOURCE),
     )
     for day, close, due, _ in sessions:
