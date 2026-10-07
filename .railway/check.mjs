@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import baseline from "./baseline.json" with { type: "json" };
 import { evaluate } from "./evaluate.mjs";
+import program from "./railway.ts";
+import { createRailwayContext, project as projectFactory } from "railway/iac";
 
 const { partial, project } = await evaluate();
 const expectedServices = baseline.services.filter((service) => service.owner === partial);
@@ -43,20 +45,14 @@ for (const service of project.resources) {
   }
 }
 
-for (const overrides of [
-  { projectName: "another-project" },
-  { projectName: undefined },
-  { environment: "staging" },
-  { environment: undefined },
-  { command: "pull" },
-  { command: undefined },
-]) {
-  await assert.rejects(() => evaluate(overrides), /snapshot/);
+// A populated context must produce the same graph as literal empty-context
+// evaluation. Target validation belongs to the separate operational preflight.
+for (const command of ["plan", "apply", "migrate"]) {
+  const context = createRailwayContext({ command, projectName: baseline.project.name, environment: baseline.environment.name });
+  assert.deepEqual(await program(context, projectFactory), project);
 }
-assert.deepEqual(await evaluate({ command: "apply" }), { partial, project });
-assert.deepEqual(await evaluate({ command: "migrate" }), { partial, project });
 
 const serialized = JSON.stringify(project);
 assert.doesNotMatch(serialized, /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
 assert.doesNotMatch(serialized, /\.railway\.app\b/);
-console.log(`Equivalent local SDK graph: ${project.resources.length} services, ${variableCount} preserved variable names; context guards pass.`);
+console.log(`Equivalent local SDK graph: ${project.resources.length} services, ${variableCount} preserved variable names; empty-context evaluation passes.`);

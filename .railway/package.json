@@ -8,7 +8,9 @@
   },
   "scripts": {
     "check": "tsc --noEmit && node check.mjs",
-    "evaluate": "node evaluate.mjs"
+    "evaluate": "node evaluate.mjs",
+    "test": "node --test check-target.test.mjs",
+    "check:target": "node check-target.mjs"
   },
   "dependencies": {
     "railway": "3.13.0"

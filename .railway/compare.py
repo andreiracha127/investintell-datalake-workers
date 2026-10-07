@@ -11,7 +11,9 @@ import json
 from pathlib import Path
 import sys
 
-from capture import BUILD_KEYS, DEPLOY_KEYS
+from capture import BUILD_KEYS, DEPLOY_KEYS, service_inventory
+
+PARTIAL = "investintell-workers"
 
 
 def sections(service: dict) -> tuple[dict, dict]:
@@ -65,10 +67,20 @@ def main() -> None:
     for key in ("prDeploys", "botPrEnvironments"):
         if fresh["data"]["project"][key] != baseline["project"][key]:
             errors.append(f"project.{key}")
-    expected_inventory = {row["name"] for row in baseline["services"]} | set(baseline["unmanagedServices"])
-    services = {edge["node"]["serviceName"]: edge["node"] for edge in fresh["data"]["environment"]["serviceInstances"]["edges"]}
-    if set(services) != expected_inventory:
-        errors.append("service inventory changed; inspect ownership before cutover")
+    services, inventory_errors = service_inventory(baseline, fresh["data"]["environment"]["serviceInstances"]["edges"])
+    errors.extend(inventory_errors)
+    expected_owned_addresses = {
+        address: owner for address, owner in baseline["environment"]["iacPartials"].items()
+        if owner == PARTIAL
+    }
+    actual_owned_addresses = {
+        address: owner for address, owner in (fresh["data"]["environment"].get("iacPartials") or {}).items()
+        if owner == PARTIAL
+    }
+    intended_addresses = {f"service.{row['name']}" for row in baseline["services"]}
+    for address in sorted(actual_owned_addresses.keys() - intended_addresses):
+        errors.append(f"partial ownership.{address}; unexpected address belongs to this partial")
+    errors.extend(diff(expected_owned_addresses, actual_owned_addresses, "partial ownership"))
     for row in baseline["services"]:
         if row["name"] not in services:
             continue

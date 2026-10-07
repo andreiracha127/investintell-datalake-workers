@@ -22,14 +22,9 @@ type CapturedService = {
 
 const services = capturedServices as CapturedService[];
 
-export default defineRailway((ctx) => {
-  if (ctx.projectName !== "investintell-db" || ctx.environment !== "production") {
-    throw new Error("This snapshot requires project investintell-db and environment production.");
-  }
-  if (!["plan", "apply", "migrate"].includes(ctx.command ?? "")) {
-    throw new Error("This production snapshot supports only plan, apply or migrate evaluation.");
-  }
-
+// Verify the linked target with check-target.mjs before operational commands.
+// Authoring must also evaluate when a CLI supplies an empty context.
+export default defineRailway(() => {
   const resources = services.map((captured) => {
     const node = service(captured.name, {
       env: Object.fromEntries(captured.variables.map((name) => [name, preserve()])),
