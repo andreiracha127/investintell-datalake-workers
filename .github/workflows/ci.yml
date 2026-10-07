@@ -133,6 +133,9 @@ jobs:
             tests/test_bond_curve_materializer.py
             tests/test_bond_metrics_worker.py
             tests/test_bond_panel_worker.py
+            tests/test_build_bond_panel_coupon_pit_returns.py
+            tests/test_export_bond_market_implied_default_events.py
+            tests/test_backfill_bond_panel_coupon_pit_repair.py
             tests/test_bond_price_eligibility_view.py
             tests/test_bond_live_daily_worker.py
             tests/test_bond_price_ingest.py
@@ -487,6 +490,7 @@ jobs:
             tests/test_bond_default_diagnostic_publication.py
             tests/test_bond_default_source_bundle.py
             tests/test_bond_default_events_worker.py
+            tests/test_bond_panel_returns_tombstone_db.py
             tests/test_bond_default_publication_db.py
             tests/test_bond_default_diagnostic_publication_db.py
             tests/test_repair_fund_catalog_identity_v1.py
@@ -527,6 +531,7 @@ jobs:
             tests/test_repair_fund_catalog_identity_v1_db.py
             tests/test_bond_default_source_bundle.py
             tests/test_bond_default_events_worker.py
+            tests/test_bond_panel_returns_tombstone_db.py
             tests/test_db_advisory_lock.py
             tests/test_nport_fixed_income_features_contract.py
             tests/test_nport_fixed_income_secapi_schema.py

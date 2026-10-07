@@ -229,37 +229,204 @@ def rating_coverage(targets: pd.DataFrame, buckets: pd.Series) -> pd.Series:
 
 
 def coupon_from_price_ytm(price: pd.Series, ytm: pd.Series, maturity_years: pd.Series) -> pd.Series:
+    """Annual coupon (% of par) implied by the semiannual price/YTM identity.
+
+    NaN where price, YTM or maturity is missing or non-finite (the historical
+    panel carries rows without a maturity); ``periods`` stays a float so a
+    missing maturity cannot raise on an integer cast, and integral float
+    exponents give the same powers as integer ones.
+    """
+    price = pd.to_numeric(price, errors="coerce").astype(float)
+    ytm = pd.to_numeric(ytm, errors="coerce").astype(float)
+    maturity_years = pd.to_numeric(maturity_years, errors="coerce").astype(float)
+    usable = np.isfinite(price) & np.isfinite(ytm) & np.isfinite(maturity_years)
     y = ytm / 2
-    periods = (2 * maturity_years).round().clip(lower=1).astype(int)
-    disc = (1 + y) ** (-periods)
-    with np.errstate(divide="ignore", invalid="ignore"):
+    periods = (2 * maturity_years).round().clip(lower=1)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        disc = (1 + y) ** (-periods)
         annuity = (1 - disc) / y
         coupon = (price / 100 - disc) / annuity * 200
-    return coupon.where(annuity > 1e-9, ytm * 100).clip(0, 20)
+    return coupon.where(annuity > 1e-9, ytm * 100).clip(0, 20).where(usable)
 
 
 def bond_coupons(panel: pd.DataFrame) -> pd.Series:
-    return coupon_from_price_ytm(panel["pr"], panel["ytm"], panel["bond_maturity"]).groupby(panel["cusip_id"], observed=True).transform("median")
+    """Point-in-time per-bond coupon (annual % of par), aligned to ``panel.index``.
+
+    One convention, shared with Light's ``app.bond_optimizer.returns.bond_coupons``
+    (BOND-01 fix on ``fix/bond-optimizer-pinned-audit`` @ ``b61f019e``):
+
+    - a row's contractual ``coupon_pct`` is used where the panel carries a
+      finite one (``build_db_monthly_panel`` merges
+      ``bond_reference_terms.coupon_rate`` into that column);
+    - otherwise the coupon at month t is the median of the price/YTM
+      inversions observed at months <= t for that cusip (expanding, in month
+      order), never of the bond's full history: no month's carry is priced off
+      later observations, so a later distressed tail cannot move an earlier
+      month's coupon (audit A2-01).
+
+    Alignment is positional, so the caller may pass an unsorted panel or one
+    whose index is not unique; every output row keeps its input row's label.
+    """
+    est = pd.Series(
+        coupon_from_price_ytm(panel["pr"], panel["ytm"], panel["bond_maturity"]).to_numpy(dtype=float)
+    )
+    keys = panel[["cusip_id", "month"]].reset_index(drop=True)
+    order = keys.sort_values(["cusip_id", "month"], kind="mergesort").index
+    pit = (
+        est.loc[order]
+        .groupby(keys["cusip_id"].loc[order], observed=True)
+        .expanding()
+        .median()
+        .droplevel(0)
+        .reindex(est.index)
+    )
+    pit = pd.Series(pit.to_numpy(dtype=float), index=panel.index)
+    if "coupon_pct" not in panel.columns:
+        return pit
+    contractual = pd.to_numeric(panel["coupon_pct"], errors="coerce").astype(float)
+    return contractual.where(np.isfinite(contractual), pit)
+
+
+#: Buckets of ``bond_market_implied_rating_v1`` that rate a bond (a cure re-enters one).
+IMPLIED_RATED_BUCKETS = frozenset({"AAA", "AA", "A", "BBB", "BB", "B", "CCC"})
+#: ``realized`` dates the stop at the event (historical rebuild); ``point_in_time``
+#: applies a default only from the month it is confirmed (live panel).
+DEFAULT_FLAT_BASES = ("realized", "point_in_time")
+DEFAULT_WINDOW_COLUMNS = (
+    "cusip_id", "event_month", "confirmation_month", "last_d_month", "cure_month", "event_month_source",
+)
+_IMPLIED_ROW_COLUMNS = ("cusip_id", "month", "implied_bucket", "witnessed", "spell_id", "d_confirmed", "d_event_month")
+
+
+def _empty_default_windows() -> pd.DataFrame:
+    frame = pd.DataFrame({column: pd.Series(dtype="datetime64[ns]") for column in DEFAULT_WINDOW_COLUMNS})
+    frame["cusip_id"] = pd.Series(dtype="object")
+    frame["event_month_source"] = pd.Series(dtype="object")
+    return frame.loc[:, list(DEFAULT_WINDOW_COLUMNS)]
+
+
+def default_flat_windows(implied_rows: pd.DataFrame | None) -> pd.DataFrame:
+    """Confirmed-default windows in which a bond trades flat (owner decision, 2026-10-07).
+
+    ``implied_rows`` has the ``bond_market_implied_rating_v1`` row shape (``cusip_id,
+    month, implied_bucket, witnessed, spell_id, d_confirmed, d_event_month``) -- the
+    market-implied D state Light's market EL consumes. One window per confirmed
+    episode, keyed by its D rows ``(cusip_id, spell_id, d_event_month)``:
+
+    - ``event_month``: carry stops at ``d_event_month`` (the event/candidate month), because coupons stop at the missed payment or filing, not at the confirmation 1-3 months later; the first stored D row stands in only where ``d_event_month`` is null (``event_month_source``), which the publication's CHECK makes unreachable.
+    - ``confirmation_month``: the first stored D row, the month the market can first see the default and the month Light's market EL counts it. Only the point-in-time basis starts there.
+    - ``cure_month`` (exclusive end): the first witnessed row in a rated bucket after the episode's last D row -- the model's cure (``p_cure`` for ``n_cure`` months opens a rated spell) or a re-rating on re-entry; NaT while none.
+
+    Only confirmed defaults open a window: a ``d_candidate`` month that never confirms
+    does not. The implied model has no distressed-exchange or legal-event type, so an
+    exchange counts exactly when its prices confirm D. Losing the witness is not a cure:
+    WITHDRAWN (``default_absorbing``), NOT_RATED and carried rows keep the window open.
+    """
+    if implied_rows is None or implied_rows.empty:
+        return _empty_default_windows()
+    missing = [column for column in _IMPLIED_ROW_COLUMNS if column not in implied_rows.columns]
+    if missing:
+        raise ValueError(f"implied rating rows missing columns: {missing}")
+    rows = implied_rows.loc[:, list(_IMPLIED_ROW_COLUMNS)].copy()
+    rows["cusip_id"] = rows["cusip_id"].astype(str)
+    rows["month"] = pd.to_datetime(rows["month"]).dt.normalize().astype("datetime64[ns]")
+    rows["d_event_month"] = pd.to_datetime(rows["d_event_month"]).dt.normalize().astype("datetime64[ns]")
+    bucket = rows["implied_bucket"].astype(str)
+    in_default = bucket.eq("D")
+    if not in_default.equals(rows["d_confirmed"].fillna(False).astype(bool)):
+        raise ValueError("implied rating rows: implied_bucket = 'D' must equal d_confirmed")
+    episodes = (
+        rows[in_default]
+        .groupby(["cusip_id", "spell_id", "d_event_month"], dropna=False, sort=True)["month"]
+        .agg(confirmation_month="min", last_d_month="max")
+        .reset_index()
+    )
+    if episodes.empty:
+        return _empty_default_windows()
+    has_event = episodes["d_event_month"].notna()
+    episodes["event_month"] = episodes["d_event_month"].where(has_event, episodes["confirmation_month"])
+    episodes["event_month_source"] = np.where(has_event, "d_event_month", "first_d_row")
+    if (episodes["event_month"] > episodes["confirmation_month"]).any():
+        raise ValueError("implied rating rows: d_event_month after the episode's first D row")
+    rated = rows[rows["witnessed"].fillna(False).astype(bool) & bucket.isin(IMPLIED_RATED_BUCKETS)]
+    cures = rated[["cusip_id", "month"]].rename(columns={"month": "cure_month"}).sort_values("cure_month", kind="mergesort")
+    windows = pd.merge_asof(
+        episodes.sort_values("last_d_month", kind="mergesort"), cures,
+        left_on="last_d_month", right_on="cure_month", by="cusip_id",
+        direction="forward", allow_exact_matches=False,
+    )
+    return windows.sort_values(["cusip_id", "event_month"], kind="mergesort").reset_index(drop=True).loc[:, list(DEFAULT_WINDOW_COLUMNS)]
+
+
+def default_flat(keys: pd.DataFrame, windows: pd.DataFrame | None, *, basis: str) -> pd.DataFrame:
+    """Whether each ``(cusip_id, month)`` of ``keys`` trades flat, aligned to ``keys.index``.
+
+    ``realized``: ``event_month <= month < cure_month``, for the historical rebuild, where
+    the realized event dates the stop even though the market confirmed it later.
+    ``point_in_time``: ``confirmation_month <= month < cure_month``, for the live panel:
+    month t is flat only under a default confirmed by t, and a window the source does
+    not yet show cured stays open. Returns ``default_flat`` and the window's
+    ``default_event_month`` (the earliest when windows overlap).
+    """
+    if basis not in DEFAULT_FLAT_BASES:
+        raise ValueError(f"default_flat basis must be one of {DEFAULT_FLAT_BASES}: {basis!r}")
+    flat = np.zeros(len(keys), dtype=bool)
+    event = np.full(len(keys), np.datetime64("NaT"), dtype="datetime64[ns]")
+    if windows is not None and not windows.empty and len(keys):
+        start = "event_month" if basis == "realized" else "confirmation_month"
+        probe = pd.DataFrame({
+            "cusip_id": keys["cusip_id"].astype(str).to_numpy(),
+            "month": pd.to_datetime(keys["month"]).dt.normalize().astype("datetime64[ns]").to_numpy(),
+            "position": np.arange(len(keys)),
+        })
+        spans = pd.DataFrame({
+            "cusip_id": windows["cusip_id"].astype(str).to_numpy(),
+            "start": windows[start].to_numpy(dtype="datetime64[ns]"),
+            "cure_month": windows["cure_month"].to_numpy(dtype="datetime64[ns]"),
+            "event_month": windows["event_month"].to_numpy(dtype="datetime64[ns]"),
+        })
+        joined = probe.merge(spans, on="cusip_id", how="inner")
+        inside = (joined["start"] <= joined["month"]) & (joined["cure_month"].isna() | (joined["month"] < joined["cure_month"]))
+        hits = joined[inside].groupby("position")["event_month"].min()
+        positions = hits.index.to_numpy(dtype=int)
+        flat[positions] = True
+        event[positions] = hits.to_numpy(dtype="datetime64[ns]")
+    return pd.DataFrame({"default_flat": flat, "default_event_month": event}, index=keys.index)
 
 
 def monthly_returns(
-    panel: pd.DataFrame, terminal_exits: pd.DataFrame | None = None
+    panel: pd.DataFrame,
+    terminal_exits: pd.DataFrame | None = None,
+    *,
+    default_windows: pd.DataFrame | None = None,
+    default_basis: str = "point_in_time",
 ) -> pd.DataFrame:
+    """Monthly return = clean-price return + carry (coupon / 12 on the previous price).
+
+    A bond in default trades flat and pays no coupon: inside a confirmed-default
+    window of ``default_windows`` (see :func:`default_flat_windows`) the carry is 0
+    and the return is the price return alone, whether or not a coupon basis
+    exists (``carry_basis`` = ``default_flat``). ``default_basis`` selects the
+    window start (:func:`default_flat`).
+    """
     columns = ["cusip_id", "month", "pr", "ytm", "bond_maturity"]
     if "coupon_pct" in panel:
         columns.append("coupon_pct")
     df = panel[columns].copy().sort_values(["cusip_id", "month"])
-    implied_coupon = bond_coupons(panel.loc[df.index])
-    contractual_coupon = pd.to_numeric(
-        df.get("coupon_pct", pd.Series(np.nan, index=df.index)), errors="coerce"
-    )
-    df["coupon"] = contractual_coupon.combine_first(implied_coupon)
+    df["coupon"] = bond_coupons(df)
     group = df.groupby("cusip_id", observed=True)
     previous_price, previous_month = group["pr"].shift(), group["month"].shift()
     consecutive = (df["month"] - previous_month).dt.days.between(28, 31)
     price_return = (df["pr"] - previous_price) / previous_price
-    carry_return = (df["coupon"] / 12) / previous_price
-    out = pd.DataFrame({"cusip_id": df["cusip_id"], "month": df["month"], "total_return": (price_return + carry_return).where(consecutive), "price_return": price_return.where(consecutive), "carry_return": carry_return.where(consecutive)}).dropna(subset=["total_return"]).reset_index(drop=True)
+    flat = default_flat(df[["cusip_id", "month"]], default_windows, basis=default_basis)
+    carry_return = ((df["coupon"] / 12) / previous_price).mask(flat["default_flat"], 0.0)
+    out = pd.DataFrame({
+        "cusip_id": df["cusip_id"], "month": df["month"],
+        "total_return": (price_return + carry_return).where(consecutive),
+        "price_return": price_return.where(consecutive), "carry_return": carry_return.where(consecutive),
+        "carry_basis": np.where(flat["default_flat"], "default_flat", "coupon"),
+        "default_event_month": flat["default_event_month"],
+    }).dropna(subset=["total_return"]).reset_index(drop=True)
     out["exit_basis"] = "observed"
     out["exit_reason"] = None
     if terminal_exits is not None and not terminal_exits.empty:
@@ -273,8 +440,8 @@ def monthly_returns(
         )
         terminal = pd.DataFrame({
             "cusip_id": attrs["cusip_id"], "month": attrs["month"], "total_return": realized,
-            "price_return": np.nan, "carry_return": np.nan, "exit_basis": reasons,
-            "exit_reason": reasons,
+            "price_return": np.nan, "carry_return": np.nan, "carry_basis": None,
+            "default_event_month": pd.NaT, "exit_basis": reasons, "exit_reason": reasons,
         })
         existing = pd.MultiIndex.from_frame(out[["cusip_id", "month"]])
         terminal = terminal[~pd.MultiIndex.from_frame(terminal[["cusip_id", "month"]]).isin(existing)]
