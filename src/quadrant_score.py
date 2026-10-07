@@ -14,9 +14,25 @@ is already comparable) and feeds axis_score directly.
 from __future__ import annotations
 
 import datetime as _dt
+from collections.abc import Mapping
 
 from src.macro_sources import MacroSourceSpec
 from src.macro_transforms import economic_transform, standardize
+
+
+def standardization_window(
+    transformed: Mapping[_dt.date, float],
+    as_of: _dt.date,
+    *,
+    window_years: int,
+) -> list[_dt.date]:
+    """Eligible transformed periods, preserving their iteration order.
+
+    Both endpoints are inclusive; the cutoff is the first of ``as_of``'s month
+    ``window_years`` years back. Values and transform eligibility are unchanged.
+    """
+    cutoff = _dt.date(as_of.year - window_years, as_of.month, 1)
+    return [period for period in transformed if cutoff <= period <= as_of]
 
 
 def standardized_latest(
@@ -37,8 +53,7 @@ def standardized_latest(
     """
     transformed = economic_transform(
         spec.economic_transform_id, series, neutral_level=spec.neutral_level)
-    cutoff = _dt.date(as_of.year - window_years, as_of.month, 1)
-    eligible = [p for p in transformed if cutoff <= p <= as_of]
+    eligible = standardization_window(transformed, as_of, window_years=window_years)
     if not eligible:
         return None
     latest_period = max(eligible)

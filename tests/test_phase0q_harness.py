@@ -352,19 +352,24 @@ def test_coverage_is_bit_identical_to_the_old_value_from_24_months_on():
         assert decision._coverage(z, specs, counts) == _pre_audit_coverage(z, specs) < 1.0
 
 
-def _assert_z_and_count_parity(spec, series, as_of):
+def _assert_z_and_count_parity(spec, series, as_of, *, window_years=10):
     from src.quadrant_score import standardized_latest
     from src.workers import quadrant_macro as qm
 
-    z, n_valid = decision._standardized_latest_and_count(spec, series, as_of)
-    assert z == standardized_latest(spec, series, as_of), (spec.series_id, as_of)
-    assert n_valid == qm._valid_history_count(spec, series, as_of), (spec.series_id, as_of)
+    z, n_valid = decision._standardized_latest_and_count(
+        spec, series, as_of, window_years=window_years)
+    expected_z = standardized_latest(spec, series, as_of, window_years=window_years)
+    assert z == expected_z, (spec.series_id, as_of)
+    if z is not None:
+        assert z.hex() == expected_z.hex(), (spec.series_id, as_of)
+    assert n_valid == qm._valid_history_count(
+        spec, series, as_of, window_years=window_years), (spec.series_id, as_of)
+    return z, n_valid
 
 
 def test_history_count_and_coverage_are_the_live_worker_s():
-    """The harness restates quadrant_macro's §6 coverage and nValid, and
-    standardized_latest's window selection (one transform yields both z and nValid),
-    instead of importing them; this holds all three to the same answers."""
+    """The harness's §6 coverage and shared standardization window yield the
+    worker's answers, with one transform supplying both z and nValid."""
     from src.macro_sources import SEED_SOURCES
     from src.workers import quadrant_macro as qm
 
@@ -405,6 +410,42 @@ def test_z_and_history_count_match_the_standardizer_over_the_certified_pack():
         snapshot = index.latest_vintage_as_of(series_ids, when)
         for spec in SEED_SOURCES:
             _assert_z_and_count_parity(spec, snapshot.get(spec.series_id, {}), as_of)
+
+
+@pytest.mark.parametrize("n_months,nan_indices,as_of,window_years,expected_count", [
+    pytest.param(18, (), dt.date(2021, 5, 1), 10, 13, id="below-24-valid-observations"),
+    pytest.param(36, (12, 18), dt.date(2022, 11, 1), 10, 19, id="nan-gaps-in-window"),
+    pytest.param(20, (), dt.date(2021, 6, 1), 1, 13, id="exact-cutoff-and-as-of"),
+    pytest.param(1, (), dt.date(2019, 12, 1), 10, 0, id="single-observation"),
+    pytest.param(6, (), dt.date(2020, 5, 1), 10, 1, id="single-transformed-observation"),
+])
+def test_z_and_history_count_match_at_synthetic_window_edges(
+    n_months, nan_indices, as_of, window_years, expected_count, monkeypatch,
+):
+    from dataclasses import replace
+
+    from src.macro_sources import SEED_SOURCES
+
+    spec = replace(SEED_SOURCES[0], source_id="synthetic:EDGE", series_id="EDGE")
+    series = {}
+    period = dt.date(2019, 12, 1)
+    for k in range(n_months):
+        series[period] = float("nan") if k in nan_indices else 100.0 + k + 0.1 * k * k
+        period = _first_of_next_month(period)
+
+    transform = decision.economic_transform
+    transform_calls = []
+
+    def counted_transform(*args, **kwargs):
+        transform_calls.append(1)
+        return transform(*args, **kwargs)
+
+    monkeypatch.setattr(decision, "economic_transform", counted_transform)
+    z, n_valid = _assert_z_and_count_parity(spec, series, as_of, window_years=window_years)
+    assert len(transform_calls) == 1  # z and count still require just ONE transform.
+    assert n_valid == expected_count
+    assert (z is None) == (expected_count < 2)
+    assert spec.minimum_valid_observations == 24
 
 
 def test_the_certified_engines_feed_the_factor_into_coverage():
@@ -517,7 +558,7 @@ def test_sleeve_charges_one_way_cost_on_rebalance():
                                end=dt.date(2020, 2, 9), cost_bps=25)
     assert res_free.nav[-1] == pytest.approx(1.0, abs=1e-12)
     # one_way turnover 0.5 -> cost 25bps*0.5 = 12.5bps => NAV ~ 1 - 0.00125.
-    assert res_cost.one_way_turnover_by_date[list(res_cost.one_way_turnover_by_date)[0]] \
+    assert res_cost.one_way_turnover_by_date[next(iter(res_cost.one_way_turnover_by_date))] \
         == pytest.approx(0.5, abs=1e-12)
     assert res_cost.nav[-1] == pytest.approx(1.0 * (1 - 0.0025 * 0.5), abs=1e-9)
 

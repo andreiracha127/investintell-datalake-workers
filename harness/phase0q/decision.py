@@ -10,9 +10,9 @@ reimplemented in-memory over pack-v2 vintage rows:
   exactly what ``quadrant_macro._score_axis`` does, including the per-series
   ``z * spec.direction`` sign-flow and the None==missing treatment.
 * the per-series z: ``economic_transform`` and ``standardize``
-  (``src.macro_transforms``) UNMODIFIED; ``standardized_latest``'s four-line window
-  selection between them is restated once in ``_standardized_latest_and_count`` so
-  that z and the series' nValid come from ONE transform (calling
+  (``src.macro_transforms``) UNMODIFIED; ``standardization_window``
+  (``src.quadrant_score``) is shared with ``standardized_latest`` and the worker's
+  history count, so z and the series' nValid come from ONE transform (calling
   ``standardized_latest`` and counting separately ran every transform twice and
   doubled the replay). A test holds it bit-for-bit to ``standardized_latest`` and to
   ``quadrant_macro._valid_history_count`` over the certified pack.
@@ -48,14 +48,15 @@ grid, which also makes the grid's ``identical decision series`` requirement exac
 from __future__ import annotations
 
 import datetime as _dt
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
+from src import quadrant_assemble as _qa
 from src.macro_sources import SEED_SOURCES, axis_weights
 from src.macro_transforms import economic_transform, standardize
-from src.quadrant_score import axis_score
-from src import quadrant_assemble as _qa
 from src.quadrant_confidence import U_FLOOR_SEED
+from src.quadrant_score import axis_score, standardization_window
 
 from .pit import PitIndex
 
@@ -159,20 +160,16 @@ def _standardized_latest_and_count(
     """(``standardized_latest(spec, series, as_of)``, nValid_i) from ONE economic
     transform.
 
-    The body is ``src.quadrant_score.standardized_latest``'s, step for step: the
-    economic transform drops periods without the required history, the eligible
-    periods are ``cutoff <= period <= as_of`` with cutoff = the first of ``as_of``'s
-    month ``window_years`` years back, and the latest eligible value is standardized
-    against them. nValid (freeze §6) is the length of that eligible list — the
-    history the standardizer actually sees — which is exactly what
-    ``quadrant_macro._valid_history_count`` counts (it is restated, not imported:
-    the worker module drags ``src.db`` and sits outside this harness's pinned
-    closure). z is None when nothing is eligible or the robust scale is undefined.
+    ``standardization_window`` supplies the same eligible periods as
+    ``standardized_latest`` and ``quadrant_macro._valid_history_count`` without
+    importing the DB-coupled worker into the harness's pinned closure. nValid
+    (freeze §6) is the length of that eligible list — the history the standardizer
+    actually sees. z is None when nothing is eligible or the robust scale is
+    undefined.
     """
     transformed = economic_transform(
         spec.economic_transform_id, series, neutral_level=spec.neutral_level)
-    cutoff = _dt.date(as_of.year - window_years, as_of.month, 1)
-    eligible = [p for p in transformed if cutoff <= p <= as_of]
+    eligible = standardization_window(transformed, as_of, window_years=window_years)
     if not eligible:
         return None, 0
     latest_period = max(eligible)

@@ -40,7 +40,7 @@ from src.macro_pit import latest_vintage_as_of
 from src.macro_sources import SEED_SOURCES, axis_weights
 from src.macro_transforms import economic_transform
 from src.quadrant_confidence import U_FLOOR_SEED
-from src.quadrant_score import axis_score, standardized_latest
+from src.quadrant_score import axis_score, standardization_window, standardized_latest
 from src.quadrant_staleness import source_expiry
 
 MODEL_VERSION = "macro_quadrant_us_v1.1"  # v1 = frozen rows + pinned harness; see the module docstring
@@ -61,17 +61,14 @@ def _valid_history_count(
     """nValid_i (freeze §6): valid transformed periods inside the trailing
     standardization window at ``as_of``.
 
-    Mirrors the eligibility rule ``standardized_latest`` (src/quadrant_score.py —
-    Stage B pinned, deliberately left untouched) applies before robust-z: the
-    economic transform drops periods without the required history, then only
-    ``cutoff <= period <= as_of`` with cutoff = the first of ``as_of``'s month
-    ``window_years`` years back. That eligible list IS the history the standardizer
-    sees, so its length is the series' valid-observation count.
+    Uses the same ``standardization_window`` as ``standardized_latest`` after the
+    economic transform drops periods without the required history. That eligible
+    list is the history the standardizer sees, so its length is the series'
+    valid-observation count.
     """
     transformed = economic_transform(
         spec.economic_transform_id, series, neutral_level=spec.neutral_level)
-    cutoff = _dt.date(as_of.year - window_years, as_of.month, 1)
-    return sum(1 for period in transformed if cutoff <= period <= as_of)
+    return len(standardization_window(transformed, as_of, window_years=window_years))
 
 
 def _score_axis(
@@ -191,64 +188,63 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
         if calc_date else _dt.datetime.now(_dt.timezone.utc)
     )
     as_of = decision_time.date()
-    with connect(dsn) as conn:
-        with advisory_lock(conn, LOCK_REGIME_QUADRANT) as got:
-            if not got:
-                return {"days": 0, "upserted": 0, "skipped": "lock_busy"}
-            ensure_schema(conn)
+    with connect(dsn) as conn, advisory_lock(conn, LOCK_REGIME_QUADRANT) as got:
+        if not got:
+            return {"days": 0, "upserted": 0, "skipped": "lock_busy"}
+        ensure_schema(conn)
 
-            # owner decision C — resume the latched chain from the last snapshot
-            # STRICTLY BEFORE today's as_of (idempotent rerun + no backfill look-ahead).
-            prev = qa.load_previous_snapshot(conn, MODEL_VERSION, as_of)
-            prev_id = prev["previous_snapshot_id"] if prev else None
-            g_prev_sign = prev["growth_internal_sign"] if prev else None
-            i_prev_sign = prev["inflation_internal_sign"] if prev else None
+        # owner decision C — resume the latched chain from the last snapshot
+        # STRICTLY BEFORE today's as_of (idempotent rerun + no backfill look-ahead).
+        prev = qa.load_previous_snapshot(conn, MODEL_VERSION, as_of)
+        prev_id = prev["previous_snapshot_id"] if prev else None
+        g_prev_sign = prev["growth_internal_sign"] if prev else None
+        i_prev_sign = prev["inflation_internal_sign"] if prev else None
 
-            g_score, g_contrib, g_z, g_av, g_exp, g_nvalid = _score_axis(
-                conn, "growth", decision_time)
-            i_score, i_contrib, i_z, i_av, i_exp, i_nvalid = _score_axis(
-                conn, "inflation", decision_time)
-            g_hist = _score_history(conn, "growth", decision_time)
-            i_hist = _score_history(conn, "inflation", decision_time)
+        g_score, g_contrib, g_z, g_av, g_exp, g_nvalid = _score_axis(
+            conn, "growth", decision_time)
+        i_score, i_contrib, i_z, i_av, i_exp, i_nvalid = _score_axis(
+            conn, "inflation", decision_time)
+        g_hist = _score_history(conn, "growth", decision_time)
+        i_hist = _score_history(conn, "inflation", decision_time)
 
-            g_specs, i_specs = _axis_specs("growth"), _axis_specs("inflation")
-            g_cov = _coverage(g_z, g_specs, g_nvalid)
-            i_cov = _coverage(i_z, i_specs, i_nvalid)
-            # freshness/health: v1 seeds — PIT values are by construction fresh and
-            # finite (the read already filtered availability); A3 wires real decay.
-            g_fresh = i_fresh = 1.0
-            g_health = 1.0 if g_score is not None else 0.0
-            i_health = 1.0 if i_score is not None else 0.0
+        g_specs, i_specs = _axis_specs("growth"), _axis_specs("inflation")
+        g_cov = _coverage(g_z, g_specs, g_nvalid)
+        i_cov = _coverage(i_z, i_specs, i_nvalid)
+        # freshness/health: v1 seeds — PIT values are by construction fresh and
+        # finite (the read already filtered availability); A3 wires real decay.
+        g_fresh = i_fresh = 1.0
+        g_health = 1.0 if g_score is not None else 0.0
+        i_health = 1.0 if i_score is not None else 0.0
 
-            # fail loud if a future registry edit drops every critical flag, so the
-            # staleness guarantee (>=1 critical expiry) is a clear worker error, not a
-            # deep compute_stale_after ValueError inside build_snapshot.
-            critical_expiries = [*g_exp, *i_exp]
-            _require_critical_expiries(critical_expiries)
+        # fail loud if a future registry edit drops every critical flag, so the
+        # staleness guarantee (>=1 critical expiry) is a clear worker error, not a
+        # deep compute_stale_after ValueError inside build_snapshot.
+        critical_expiries = [*g_exp, *i_exp]
+        _require_critical_expiries(critical_expiries)
 
-            source_vintage_hash = _vintage_hash(
-                g_z, i_z, as_of, g_nvalid, i_nvalid,
-                confidence_inputs=(("growth_history", g_hist),
-                                   ("inflation_history", i_hist)))
-            snap = qa.build_snapshot(
-                as_of=as_of, computed_at=decision_time, previous_snapshot_id=prev_id,
-                growth_score=g_score, growth_history=g_hist, growth_prev_sign=g_prev_sign,
-                growth_coverage=g_cov, growth_freshness=g_fresh, growth_health=g_health,
-                growth_contributions=g_contrib, growth_u_floor=U_FLOOR_SEED["growth"],
-                inflation_score=i_score, inflation_history=i_hist,
-                inflation_prev_sign=i_prev_sign,
-                inflation_coverage=i_cov, inflation_freshness=i_fresh, inflation_health=i_health,
-                inflation_contributions=i_contrib, inflation_u_floor=U_FLOOR_SEED["inflation"],
-                input_available_ats=[*g_av, *i_av],
-                critical_expiries=critical_expiries,
-                model_version=MODEL_VERSION, confidence_method=CONFIDENCE_METHOD,
-                source_vintage_hash=source_vintage_hash,
-            )
-            qa.upsert_snapshot(
-                conn, qa.snapshot_to_record(snap),
-                qa.audit_records(snap.snapshot_id,
-                                 {"growth": g_contrib, "inflation": i_contrib}),
-            )
+        source_vintage_hash = _vintage_hash(
+            g_z, i_z, as_of, g_nvalid, i_nvalid,
+            confidence_inputs=(("growth_history", g_hist),
+                               ("inflation_history", i_hist)))
+        snap = qa.build_snapshot(
+            as_of=as_of, computed_at=decision_time, previous_snapshot_id=prev_id,
+            growth_score=g_score, growth_history=g_hist, growth_prev_sign=g_prev_sign,
+            growth_coverage=g_cov, growth_freshness=g_fresh, growth_health=g_health,
+            growth_contributions=g_contrib, growth_u_floor=U_FLOOR_SEED["growth"],
+            inflation_score=i_score, inflation_history=i_hist,
+            inflation_prev_sign=i_prev_sign,
+            inflation_coverage=i_cov, inflation_freshness=i_fresh, inflation_health=i_health,
+            inflation_contributions=i_contrib, inflation_u_floor=U_FLOOR_SEED["inflation"],
+            input_available_ats=[*g_av, *i_av],
+            critical_expiries=critical_expiries,
+            model_version=MODEL_VERSION, confidence_method=CONFIDENCE_METHOD,
+            source_vintage_hash=source_vintage_hash,
+        )
+        qa.upsert_snapshot(
+            conn, qa.snapshot_to_record(snap),
+            qa.audit_records(snap.snapshot_id,
+                             {"growth": g_contrib, "inflation": i_contrib}),
+        )
     return {
         "days": 1, "upserted": 1, "status": snap.status_at_compute,
         "quadrant": snap.quadrant, "candidate_quadrant": snap.candidate_quadrant,

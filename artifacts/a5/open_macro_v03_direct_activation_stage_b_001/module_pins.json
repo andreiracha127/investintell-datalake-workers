@@ -1,9 +1,9 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "7d8244429a888c9cda98dd5d92a09200dd4fd836d418cdb99654b9b01448aa07",
+ "module_pins_sha256": "6077cfe07b8ce2f65e385af00ee4286b00c5b9c05f0c77415769ae466182c8ed",
  "modules": {
   "harness/direct_activation/live_validation.py": "4cb4a0eb127709e080e87c786b9bc4ec0392d73234dd5366dd0789ef3aa1a9d1",
-  "harness/phase0q/decision.py": "59ad333249517af48aaa25c6d8cad9a8ba2d3dda075a9edb09a8e8a44ac28058",
+  "harness/phase0q/decision.py": "46202c1746aead93faf5ad296d42c1f9ecb200ed3738689241dde326093c810e",
   "harness/phase0q/decision_v3.py": "dfe548e08ff5d07b98e07ca2c5c0a8a931d78ddae55a442f7a0b5d786fd52297",
   "harness/phase0q/pit.py": "1782c22bc2c941f9f68669f25dcd704244842698a06c7936bd81af6dedfdc16f",
   "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",
@@ -20,7 +20,7 @@
   "src/quadrant_confidence_v2.py": "a5219691581a23dd10e42225ff5158afab98ea98e2cbf4684cfb5b1ff9dac662",
   "src/quadrant_hysteresis.py": "c5d4bf12324261a3244138b2ad8d1e20d3c99a1575d1f8e11019916ec8bbe37d",
   "src/quadrant_market_observation.py": "89b941e36b90a9a349e1d6e66a03c87df5181107bd789cb5a581942e38659066",
-  "src/quadrant_score.py": "e0563a33ab98f2b64f5105b7fa29ade3811704a6772bdce8e0d41d25aa6dae15",
+  "src/quadrant_score.py": "af7dcca59eec47b118a0ac952f4d8a42581db880e027edb7e6ffe77564a5cb21",
   "src/quadrant_snapshot.py": "fe81a4c4263f2d5af80d0f496cfbe7faaa056f869675fd887c812ec39e155055",
   "src/quadrant_staleness.py": "7283a06932c551c4a06d2bde776a70cd658b2beb2231c6dadee3100e87077caa"
  },
