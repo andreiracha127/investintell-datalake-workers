@@ -57,33 +57,56 @@ def _score_between(value: float | None, lo: float, hi: float) -> float | None:
 
 
 def rsi_14(nav: np.ndarray) -> float | None:
-    """Classic 14-period RSI over the latest NAV observations."""
+    """Wilder's 14-period RSI over the whole NAV series, as TA-Lib ``RSI`` computes it.
 
-    if len(nav) < 15:
+    The averages are seeded with the simple mean of the first 14 gains and
+    losses, then smoothed over every later delta with
+    ``avg = (avg * 13 + current) / 14``. The result therefore depends on the
+    full history, not only the last 14 deltas. A series that never moves
+    returns 0.0, which is what TA-Lib returns.
+    """
+
+    period = 14
+    if len(nav) <= period:
         return None
-    deltas = np.diff(nav[-15:])
-    gains = np.where(deltas > 0, deltas, 0.0)
-    losses = np.where(deltas < 0, -deltas, 0.0)
-    avg_gain = float(np.mean(gains))
-    avg_loss = float(np.mean(losses))
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
-    rs = avg_gain / avg_loss
-    return round(100.0 - (100.0 / (1.0 + rs)), 6)
+    deltas = np.diff(np.asarray(nav, dtype=float)).tolist()
+    avg_gain = 0.0
+    avg_loss = 0.0
+    for delta in deltas[:period]:
+        if delta < 0:
+            avg_loss -= delta
+        else:
+            avg_gain += delta
+    avg_gain /= period
+    avg_loss /= period
+    for delta in deltas[period:]:
+        avg_gain *= period - 1
+        avg_loss *= period - 1
+        if delta < 0:
+            avg_loss -= delta
+        else:
+            avg_gain += delta
+        avg_gain /= period
+        avg_loss /= period
+    total = avg_gain + avg_loss
+    if total == 0:
+        return 0.0
+    return round(100.0 * avg_gain / total, 6)
 
 
 def bollinger_position(nav: np.ndarray, window: int = 20) -> float | None:
     """Latest NAV position inside the 20-day Bollinger band.
 
     0 is at the lower band, 0.5 at the moving average, and 1 at the upper band.
-    Values outside 0..1 are preserved to flag breakouts.
+    The bands use the population standard deviation, as TA-Lib ``BBANDS`` does.
+    The caller clips the position to 0..1, so breakouts are not preserved.
     """
 
     if len(nav) < window:
         return None
     frame = nav[-window:]
     mean = float(np.mean(frame))
-    std = float(np.std(frame, ddof=1))
+    std = float(np.std(frame))
     if std == 0 or not np.isfinite(std):
         return 0.5
     lower = mean - 2.0 * std
@@ -130,7 +153,7 @@ def _talib_nav_signal(nav: np.ndarray) -> tuple[float | None, float | None, floa
 
 
 def _numpy_nav_signal(nav: np.ndarray) -> tuple[float | None, float | None, float | None]:
-    """Deterministic fallback for local/test envs without TA-Lib installed."""
+    """Fallback for envs without TA-Lib; computes the same RSI and bands as the TA-Lib path."""
 
     rsi = rsi_14(nav)
     bb = bollinger_position(nav)
