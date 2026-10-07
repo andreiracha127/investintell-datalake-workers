@@ -1,0 +1,11 @@
+# Proposed dedicated service; attaching this file is an operator action.
+# Set WORKER=nport_classification_inputs_chain and DATABASE_URL.
+# Retry committed N-PORT inputs before Light's 08:00 UTC classifier.
+# Keep the standalone monthly characteristics service for company/XBRL users.
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"
+cronSchedule = "0 4-7 * * *"

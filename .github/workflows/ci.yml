@@ -598,6 +598,13 @@ jobs:
         if: steps.changes.outputs.nport_changed == 'true'
         run: >-
           python -m pytest
+          tests/test_characteristics_pipeline.py
+          tests/test_ci_path_scope.py
+          tests/test_fund_pipeline_health.py
+          tests/test_nport_pipeline_dispatcher.py
+          tests/test_nport_pipeline_freshness.py
+          tests/test_nport_classification_inputs_chain.py
+          tests/test_nport_lookthrough_pipeline.py
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
           tests/test_nport_dera_tooling.py
@@ -612,6 +619,13 @@ jobs:
         if: steps.changes.outputs.nport_changed == 'true'
         run: >-
           ruff check
+          scripts/ci/classify_changes.py
+          src/db.py
+          src/run_worker.py
+          src/workers/characteristics.py
+          src/workers/_fund_pipeline_freshness.py
+          src/workers/fund_pipeline_health.py
+          src/workers/nport_classification_inputs_chain.py
           src/workers/nport_lookthrough.py
           src/workers/nport_identifier_coverage.py
           src/workers/nport_cusip_enrichment.py
@@ -623,6 +637,13 @@ jobs:
           tools/nport_dera/nport_bulk_parse.py
           tools/nport_dera/nport_merge.py
           tools/nport_dera/nport_parallel_load.py
+          tests/test_characteristics_pipeline.py
+          tests/test_ci_path_scope.py
+          tests/test_fund_pipeline_health.py
+          tests/test_nport_pipeline_dispatcher.py
+          tests/test_nport_pipeline_freshness.py
+          tests/test_nport_classification_inputs_chain.py
+          tests/test_nport_lookthrough_pipeline.py
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
           tests/test_nport_dera_tooling.py
@@ -636,6 +657,13 @@ jobs:
         if: steps.changes.outputs.nport_changed == 'true'
         run: >-
           python -m compileall -q
+          scripts/ci/classify_changes.py
+          src/db.py
+          src/run_worker.py
+          src/workers/characteristics.py
+          src/workers/_fund_pipeline_freshness.py
+          src/workers/fund_pipeline_health.py
+          src/workers/nport_classification_inputs_chain.py
           src/workers/nport_lookthrough.py
           src/workers/nport_identifier_coverage.py
           src/workers/nport_cusip_enrichment.py

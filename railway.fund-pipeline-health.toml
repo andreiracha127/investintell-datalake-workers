@@ -1,0 +1,10 @@
+# Proposed independent service; attaching this file is an operator action.
+# Set WORKER=fund_pipeline_health and DATABASE_URL (shared market database).
+# Uses a read-only transaction and detects a missed 08:00 UTC classifier run.
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"
+cronSchedule = "0 9 * * *"

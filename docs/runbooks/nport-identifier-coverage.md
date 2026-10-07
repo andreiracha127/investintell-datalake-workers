@@ -1,9 +1,14 @@
 # N-PORT identifier coverage — what the warning means and how to repair it
 
-`src/workers/nport_identifier_coverage.probe` runs at the end of
-`nport_lookthrough` (Railway `nport-lookthrough`, cron `0 4 * * 0`). It reads the
-last 150 days of `sec_nport_holdings` and reports, per `report_date`, how much of
-it still carries an ISIN.
+`src/workers/nport_identifier_coverage.probe` runs before any look-through
+candidate is written. It reads the last 150 days through the certified broad
+N-PORT report anchor and reports the ISIN fill per report date. The explicit
+floor remains 90% for dates with at least 1,000 holdings; a degraded or
+undecidable verdict blocks publication and produces a structured
+`fund_pipeline_alarm` with exit code 1. The prior complete materialization
+remains available. The proposed dependency-driven retry schedule is documented
+in [the classification-input runbook](fund-classification-inputs.md); no Railway
+configuration is changed by this documentation.
 
 ## The failure it watches for
 

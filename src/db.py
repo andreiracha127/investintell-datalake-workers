@@ -352,3 +352,7 @@ LOCK_FUND_NAV_CURRENT_CHAIN = 900_361
 # INGESTION -> READINESS transaction locks. No other worker takes it. 900_362
 # is the next free id after LOCK_FUND_NAV_CURRENT_CHAIN (no other use in repo).
 LOCK_NAV_ECONOMIC_REBASE = 900_362
+# Legacy fund-classification input chain; distinct from its children 900202
+# (characteristics) and 900204 (lookthrough/Light reader). 900363/900364 belong
+# to the pending monthly N-PORT loader; 900365 is the governed cagg request.
+LOCK_NPORT_CLASSIFICATION_INPUTS_CHAIN = 900_366

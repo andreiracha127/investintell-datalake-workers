@@ -37,6 +37,37 @@ def test_nport_enrichment_helpers_select_only_nport(path: str) -> None:
     assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=False)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/workers/_fund_pipeline_freshness.py",
+        "src/workers/fund_pipeline_health.py",
+        "src/workers/nport_classification_inputs_chain.py",
+        "tests/test_fund_pipeline_health.py",
+        "tests/test_nport_pipeline_dispatcher.py",
+        "tests/test_nport_lookthrough_pipeline.py",
+        "tests/test_nport_pipeline_freshness.py",
+        "tests/test_nport_classification_inputs_chain.py",
+    ],
+)
+def test_fund_classification_pipeline_selects_nport(path: str) -> None:
+    assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=False)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/workers/characteristics.py",
+        "src/run_worker.py",
+        "src/db.py",
+        "tests/test_characteristics_pipeline.py",
+        "tests/test_ci_path_scope.py",
+    ],
+)
+def test_shared_fund_pipeline_paths_select_both_lanes(path: str) -> None:
+    assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=True)
+
+
 def test_stage_a_compute_path_selects_quant_only() -> None:
     assert classify_paths(["src/quadrant_score.py"]) == Scope(
         nport_changed=False,

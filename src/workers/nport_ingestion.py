@@ -23,6 +23,8 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
         packages = [path for path in packages if source_quarter_from_package(path) <= cutoff]
     if limit is not None:
         packages = packages[:limit]
+    if not packages:
+        return {"state": "failed", "packages": 0, "reason": "no N-PORT packages in scope"}
     with connect(dsn) as conn, advisory_lock(conn, LOCK_NPORT_INGESTION) as acquired:
         if not acquired:
             return {"state": "locked", "packages": 0}

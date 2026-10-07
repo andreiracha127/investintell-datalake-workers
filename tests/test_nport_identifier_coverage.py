@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import pytest
 
 from src.workers import nport_identifier_coverage as coverage
 
@@ -177,6 +178,13 @@ def _stub_lookthrough(monkeypatch, verdict: dict):
     monkeypatch.setattr(lt, "_list_parents", lambda conn, cdate, limit: ["S1"])
     monkeypatch.setattr(lt, "_process_shard", lambda *a, **k: (1, 1, 3))
     monkeypatch.setattr(lt.nport_identifier_coverage, "probe", lambda conn, **k: verdict)
+    monkeypatch.setattr(lt.freshness, "read_source_cohort", lambda *_a, **_k: lt.freshness.SourceCohort(
+        dt.date(2026, 1, 31), dt.date(2026, 1, 31), dt.date(2025, 11, 1),
+        verdict={"alarm": False},
+    ))
+    monkeypatch.setattr(lt.freshness, "probe_stage", lambda *_a: {
+        "alarm": False, "matched_series_count": 1, "expected_series_count": 1,
+    })
     return lt
 
 
@@ -187,14 +195,10 @@ def test_lookthrough_reports_the_verdict_in_its_stats(monkeypatch) -> None:
     assert stats["identifier_coverage"] == verdict
 
 
-def test_a_degraded_verdict_does_not_stop_the_lookthrough(monkeypatch) -> None:
-    """The damage is to history already written.
-
-    Failing the weekly run would cost a week of exposures without repairing one
-    row, so the probe observes and the worker finishes.
-    """
+def test_a_degraded_verdict_stops_lookthrough_before_publication(monkeypatch) -> None:
+    """The failed upstream load cannot replace the last good exposures."""
     verdict = {"state": "degraded", "degraded_report_dates": ["2025-01-31"]}
     lt = _stub_lookthrough(monkeypatch, verdict)
-    stats = lt.run("postgres://lake", calc_date="2026-01-31", serial=True)
-    assert stats["identifier_coverage"]["state"] == "degraded"
-    assert stats["upserted_series"] == 1
+    with pytest.raises(lt.freshness.FundPipelineBlocked) as error:
+        lt.run("postgres://lake", calc_date="2026-01-31", serial=True)
+    assert error.value.verdict["identifier_coverage"]["state"] == "degraded"
