@@ -153,3 +153,27 @@ def test_tombstones_are_write_once_facts_of_a_prepared_publication(conn) -> None
     _validate(conn, head)
     with pytest.raises(psycopg.errors.RaiseException, match="only write during prepared lifecycle"):
         conn.execute(insert, (head, date(2021, 4, 1), "DDD000004"))
+
+
+@pytest.mark.parametrize("tombstone_first", [False, True])
+def test_return_and_tombstone_are_exclusive_in_both_insert_orders(conn, tombstone_first) -> None:
+    publication = _publication(conn, None, 1, date(2021, 4, 1))
+    key = (date(2021, 2, 1), "DDD000004")
+
+    def insert_return():
+        _returns(conn, publication, [(*key, 0.01)])
+
+    def insert_tombstone():
+        conn.execute(
+            "INSERT INTO bond_panel_returns_tombstone (publication_id, month, cusip_id, reason, payload) "
+            "VALUES (%s, %s, %s, 'r', '{}')",
+            (publication, *key),
+        )
+
+    first, second = (insert_tombstone, insert_return) if tombstone_first else (insert_return, insert_tombstone)
+    first()
+    with pytest.raises(psycopg.errors.RaiseException, match="conflicts with"):
+        second()
+    for table, expected in (("bond_panel_returns", int(not tombstone_first)), ("bond_panel_returns_tombstone", int(tombstone_first))):
+        count = conn.execute(sql.SQL("SELECT count(*) FROM {} WHERE publication_id = %s").format(sql.Identifier(table)), (publication,)).fetchone()[0]
+        assert count == expected

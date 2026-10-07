@@ -301,6 +301,15 @@ BEGIN
         SELECT 1 FROM bond_panel_publications p
         WHERE p.publication_id = NEW.publication_id AND p.publication_status = 'prepared'
     ) THEN RAISE EXCEPTION 'facts only write during prepared lifecycle'; END IF;
+    -- Prepare writes dropped-key tombstones before the return batches arrive.
+    -- Keep this symmetric with bond_panel_assert_returns_tombstone: neither
+    -- insertion order may leave contradictory immutable facts behind.
+    IF TG_TABLE_NAME = 'bond_panel_returns' THEN
+        IF EXISTS (
+            SELECT 1 FROM bond_panel_returns_tombstone t
+            WHERE t.publication_id = NEW.publication_id AND t.month = NEW.month AND t.cusip_id = NEW.cusip_id
+        ) THEN RAISE EXCEPTION 'returns row conflicts with a returns tombstone of the same publication'; END IF;
+    END IF;
     RETURN NEW;
 END;
 $$;
