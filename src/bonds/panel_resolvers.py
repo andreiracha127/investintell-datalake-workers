@@ -229,13 +229,24 @@ def rating_coverage(targets: pd.DataFrame, buckets: pd.Series) -> pd.Series:
 
 
 def coupon_from_price_ytm(price: pd.Series, ytm: pd.Series, maturity_years: pd.Series) -> pd.Series:
+    """Annual coupon (% of par) implied by the semiannual price/YTM identity.
+
+    NaN where price, YTM or maturity is missing or non-finite (the historical
+    panel carries rows without a maturity); ``periods`` stays a float so a
+    missing maturity cannot raise on an integer cast, and integral float
+    exponents give the same powers as integer ones.
+    """
+    price = pd.to_numeric(price, errors="coerce").astype(float)
+    ytm = pd.to_numeric(ytm, errors="coerce").astype(float)
+    maturity_years = pd.to_numeric(maturity_years, errors="coerce").astype(float)
+    usable = np.isfinite(price) & np.isfinite(ytm) & np.isfinite(maturity_years)
     y = ytm / 2
-    periods = (2 * maturity_years).round().clip(lower=1).astype(int)
-    disc = (1 + y) ** (-periods)
-    with np.errstate(divide="ignore", invalid="ignore"):
+    periods = (2 * maturity_years).round().clip(lower=1)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        disc = (1 + y) ** (-periods)
         annuity = (1 - disc) / y
         coupon = (price / 100 - disc) / annuity * 200
-    return coupon.where(annuity > 1e-9, ytm * 100).clip(0, 20)
+    return coupon.where(annuity > 1e-9, ytm * 100).clip(0, 20).where(usable)
 
 
 def bond_coupons(panel: pd.DataFrame) -> pd.Series:
