@@ -5,8 +5,11 @@
 Stream identity (quant audit 2026-10-07): ``macro_quadrant_us_v2`` rows (pre-audit
 coverage, z-only provenance hash) stay frozen; ``macro_quadrant_us_v2.1`` carries the
 frozen §6 historyCoverage factor in the coverage — which also enters every
-walk-back filter observation's q_data — and the nValid counts in
-``source_vintage_hash`` (see ``quadrant_macro``). The confidence identifiers
+walk-back filter observation's q_data — and, in ``source_vintage_hash``, the nValid
+counts plus BOTH axes' full (score, q_data) observation sequences (see
+``quadrant_macro._vintage_hash``): a PIT backfill that moves one of the earlier
+walk-back months changes the filter result, so it must change the identity even
+when today's z-maps and counts do not move. The confidence identifiers
 (``confidence_v2.0`` / ``kalman_joint_posterior_v2``) are unchanged: the policy did
 not move, its coverage input did.
 
@@ -112,7 +115,10 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 input_available_ats=[*g_av, *i_av],
                 critical_expiries=critical_expiries,
                 model_version=MODEL_VERSION,
-                source_vintage_hash=_vintage_hash(g_z, i_z, as_of, g_nvalid, i_nvalid),
+                source_vintage_hash=_vintage_hash(
+                    g_z, i_z, as_of, g_nvalid, i_nvalid,
+                    confidence_inputs=(("growth_observations", g_obs),
+                                       ("inflation_observations", i_obs))),
             )
             qa.upsert_snapshot(
                 conn, qa.snapshot_to_record(snap),

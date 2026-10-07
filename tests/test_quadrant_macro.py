@@ -409,30 +409,79 @@ _G_NOW = (0.3, {"INDPRO": 0.3}, {"INDPRO": 0.3, "PAYEMS": None}, _AV, _EXP,
 _I_NOW = (-0.2, {"CPILFESL": -0.2}, {"CPILFESL": -0.2}, _AV, _EXP, {"CPILFESL": 30})
 
 
+_HIST = (("growth_history", [0.1, 0.2, 0.3]), ("inflation_history", [-0.1, 0.0]))
+
+
 def test_vintage_hash_moves_with_the_history_count() -> None:
     """Coverage now depends on nValid, so provenance must too: a PIT correction that
     changes a history count with the standardized z unchanged changes the hash
     (hence the deterministic snapshot_id) instead of silently replacing the prior
-    row under the same identity. Counts are mandatory (no z-only layout here)."""
+    row under the same identity. Counts and confidence inputs are mandatory."""
     as_of = dt.date(2024, 3, 1)
     g_z, i_z = {"INDPRO": 0.3, "PAYEMS": None}, {"CPILFESL": -0.2}
     g_n, i_n = {"INDPRO": 119, "PAYEMS": 0}, {"CPILFESL": 119}
-    base = qm._vintage_hash(g_z, i_z, as_of, g_n, i_n)
+    base = qm._vintage_hash(g_z, i_z, as_of, g_n, i_n, confidence_inputs=_HIST)
     assert len(base) == 64
     # deterministic and independent of dict insertion order
     assert base == qm._vintage_hash(dict(reversed(list(g_z.items()))), i_z, as_of,
-                                    {"PAYEMS": 0, "INDPRO": 119}, i_n)
+                                    {"PAYEMS": 0, "INDPRO": 119}, i_n,
+                                    confidence_inputs=_HIST)
     # a count change ALONE moves the hash, on either axis
-    assert base != qm._vintage_hash(g_z, i_z, as_of, {"INDPRO": 118, "PAYEMS": 0}, i_n)
-    assert base != qm._vintage_hash(g_z, i_z, as_of, g_n, {"CPILFESL": 23})
+    assert base != qm._vintage_hash(g_z, i_z, as_of, {"INDPRO": 118, "PAYEMS": 0}, i_n,
+                                    confidence_inputs=_HIST)
+    assert base != qm._vintage_hash(g_z, i_z, as_of, g_n, {"CPILFESL": 23},
+                                    confidence_inputs=_HIST)
     # z and as_of still bind
-    assert base != qm._vintage_hash({"INDPRO": 0.31, "PAYEMS": None}, i_z, as_of, g_n, i_n)
-    assert base != qm._vintage_hash(g_z, i_z, dt.date(2024, 4, 1), g_n, i_n)
+    assert base != qm._vintage_hash({"INDPRO": 0.31, "PAYEMS": None}, i_z, as_of, g_n, i_n,
+                                    confidence_inputs=_HIST)
+    assert base != qm._vintage_hash(g_z, i_z, dt.date(2024, 4, 1), g_n, i_n,
+                                    confidence_inputs=_HIST)
     # the frozen (z, z, as_of) layout the pinned harness keeps is a different identity
     from harness.phase0q import decision as hd
     assert base != hd._vintage_hash(g_z, i_z, as_of)
     with pytest.raises(TypeError):
+        qm._vintage_hash(g_z, i_z, as_of, g_n, i_n)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
         qm._vintage_hash(g_z, i_z, as_of)  # type: ignore[call-arg]
+
+
+def test_vintage_hash_binds_every_historical_confidence_input() -> None:
+    """PR #161 review: the v2/v3 filter observations (and v1's score histories)
+    carry history-dependent coverage at EVERY walk-back month, so a PIT backfill
+    that moves an earlier month — current z-maps and counts unchanged — must
+    change the identity; the label matters too, so a v3 auxiliary sequence can
+    never alias a macro one, and numpy scalars hash like Python floats."""
+    import numpy as np
+
+    as_of = dt.date(2024, 3, 1)
+    g_z, i_z = {"INDPRO": 0.3}, {"CPILFESL": -0.2}
+    g_n, i_n = {"INDPRO": 119}, {"CPILFESL": 119}
+    obs = [(0.10 + 0.01 * k, 1.0) for k in range(36)]
+    inputs = (("growth_observations", obs), ("inflation_observations", obs))
+    base = qm._vintage_hash(g_z, i_z, as_of, g_n, i_n, confidence_inputs=inputs)
+    # one earlier month's q_data moves (12/24 instead of 1.0): new identity
+    moved = list(obs)
+    moved[3] = (obs[3][0], 0.5)
+    assert base != qm._vintage_hash(g_z, i_z, as_of, g_n, i_n, confidence_inputs=(
+        ("growth_observations", moved), ("inflation_observations", obs)))
+    # a missing month, or a moved score, is a new identity as well
+    gap = list(obs)
+    gap[7] = (None, None)
+    assert base != qm._vintage_hash(g_z, i_z, as_of, g_n, i_n, confidence_inputs=(
+        ("growth_observations", obs), ("inflation_observations", gap)))
+    # the v3 auxiliary sequence is bound under its own label
+    assert base != qm._vintage_hash(g_z, i_z, as_of, g_n, i_n, confidence_inputs=(
+        *inputs, ("growth_auxiliary_observations", obs)))
+    assert qm._vintage_hash(g_z, i_z, as_of, g_n, i_n, confidence_inputs=(
+        ("inflation_observations", obs), ("growth_observations", obs))) != base
+    # tuples vs lists and numpy vs Python scalars are the same identity
+    np_obs = [(np.float64(s), np.float64(q)) for s, q in obs]
+    assert base == qm._vintage_hash(
+        {"INDPRO": np.float64(0.3)}, i_z, as_of, {"INDPRO": np.int64(119)}, i_n,
+        confidence_inputs=(("growth_observations", tuple(np_obs)),
+                           ("inflation_observations", np_obs)))
+    with pytest.raises(TypeError, match="provenance payload"):
+        qm._vintage_hash(g_z, i_z, as_of, g_n, i_n, confidence_inputs=(("x", object()),))
 
 
 def _stub_db(monkeypatch, module) -> None:
@@ -470,16 +519,20 @@ def test_v1_run_stamps_the_new_version_and_hashes_the_history_counts(monkeypatch
     monkeypatch.setattr(qa, "load_previous_snapshot", lambda conn, mv, as_of: None)
     monkeypatch.setattr(qm, "_score_axis",
                         lambda conn, axis, t: _G_NOW if axis == "growth" else _I_NOW)
+    g_hist = [0.05 + 0.01 * i for i in range(30)]
+    i_hist = [0.04 + 0.01 * i for i in range(30)]
     monkeypatch.setattr(qm, "_score_history",
-                        lambda conn, axis, t: [0.05 + 0.01 * i for i in range(30)])
+                        lambda conn, axis, t: g_hist if axis == "growth" else i_hist)
     captured = _capture_builder(monkeypatch, qa, "build_snapshot")
 
     out = qm.run("postgresql://unused", calc_date="2024-03-05T00:00:00")
 
     as_of = dt.date(2024, 3, 5)
     assert out["model_version"] == captured["model_version"] == "macro_quadrant_us_v1.1"
+    assert captured["growth_history"] == g_hist
     assert captured["source_vintage_hash"] == qm._vintage_hash(
-        _G_NOW[2], _I_NOW[2], as_of, _G_NOW[5], _I_NOW[5])
+        _G_NOW[2], _I_NOW[2], as_of, _G_NOW[5], _I_NOW[5],
+        confidence_inputs=(("growth_history", g_hist), ("inflation_history", i_hist)))
     assert captured["growth_coverage"] == qm._coverage(
         _G_NOW[2], qm._axis_specs("growth"), _G_NOW[5])
     assert captured["inflation_coverage"] == qm._coverage(
@@ -497,17 +550,21 @@ def test_v2_run_stamps_the_new_version_and_hashes_the_history_counts(monkeypatch
     _stub_db(monkeypatch, qm2)
     monkeypatch.setattr(qa2, "load_previous_state_v2", lambda conn, mv, as_of: {
         "previous_snapshot_id": None, "prev_published_quadrant": None})
-    obs = _v2_observations(qm2.V2_FILTER_HISTORY_MONTHS)
-    monkeypatch.setattr(qm2, "_axis_observations",
-                        lambda conn, axis, t: (obs, _G_NOW if axis == "growth" else _I_NOW))
+    n = qm2.V2_FILTER_HISTORY_MONTHS
+    g_obs, i_obs = _v2_observations(n), [(-0.05 + 0.01 * k, 1.0) for k in range(n)]
+    monkeypatch.setattr(qm2, "_axis_observations", lambda conn, axis, t: (
+        (g_obs, _G_NOW) if axis == "growth" else (i_obs, _I_NOW)))
     captured = _capture_builder(monkeypatch, qa2, "build_snapshot_v2")
 
     out = qm2.run("postgresql://unused", calc_date="2024-03-05T00:00:00")
 
     assert out["model_version"] == captured["model_version"] == "macro_quadrant_us_v2.1"
+    assert captured["growth_observations"] == g_obs
+    assert captured["inflation_observations"] == i_obs
     assert captured["source_vintage_hash"] == qm._vintage_hash(
-        _G_NOW[2], _I_NOW[2], dt.date(2024, 3, 5), _G_NOW[5], _I_NOW[5])
-    assert captured["growth_observations"] == obs
+        _G_NOW[2], _I_NOW[2], dt.date(2024, 3, 5), _G_NOW[5], _I_NOW[5],
+        confidence_inputs=(("growth_observations", g_obs),
+                           ("inflation_observations", i_obs)))
 
 
 def test_v3_run_stamps_the_new_version_and_hashes_the_history_counts(monkeypatch) -> None:
@@ -518,10 +575,10 @@ def test_v3_run_stamps_the_new_version_and_hashes_the_history_counts(monkeypatch
     monkeypatch.setattr(qa2, "load_previous_state_v2", lambda conn, mv, as_of: {
         "previous_snapshot_id": None, "prev_published_quadrant": None})
     n = qm3.V2_FILTER_HISTORY_MONTHS
-    obs = _v2_observations(n)
+    g_obs, i_obs = _v2_observations(n), [(-0.05 + 0.01 * k, 1.0) for k in range(n)]
     aux = [(0.20 + 0.01 * k, 1.0) for k in range(n)]
-    monkeypatch.setattr(qm3, "_axis_observations",
-                        lambda conn, axis, t: (obs, _G_NOW if axis == "growth" else _I_NOW))
+    monkeypatch.setattr(qm3, "_axis_observations", lambda conn, axis, t: (
+        (g_obs, _G_NOW) if axis == "growth" else (i_obs, _I_NOW)))
     monkeypatch.setattr(qm3, "_market_growth_observations", lambda conn, t: aux)
     captured = _capture_builder(monkeypatch, qa2, "build_snapshot_v2")
 
@@ -529,9 +586,12 @@ def test_v3_run_stamps_the_new_version_and_hashes_the_history_counts(monkeypatch
 
     assert out["model_version"] == captured["model_version"] == "macro_quadrant_us_v3.1"
     assert captured["confidence_method"] == qm3.CONFIDENCE_METHOD_V3_FUSED
-    assert captured["source_vintage_hash"] == qm._vintage_hash(
-        _G_NOW[2], _I_NOW[2], dt.date(2024, 3, 5), _G_NOW[5], _I_NOW[5])
     assert captured["growth_auxiliary_observations"] == aux
+    assert captured["source_vintage_hash"] == qm._vintage_hash(
+        _G_NOW[2], _I_NOW[2], dt.date(2024, 3, 5), _G_NOW[5], _I_NOW[5],
+        confidence_inputs=(("growth_observations", g_obs),
+                           ("inflation_observations", i_obs),
+                           ("growth_auxiliary_observations", aux)))
 
 
 def test_build_snapshot_stale_degrades_to_low_confidence() -> None:

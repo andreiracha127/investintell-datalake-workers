@@ -19,7 +19,10 @@ coverage + history-count provenance): coverage carries the frozen
 historyCoverage_i = min(1, nValid_i / minimum_valid_observations_i) factor and
 ``source_vintage_hash`` includes the nValid counts, so a rerun over the same PIT
 inputs is distinguishable from — and never overwrites — a historical v1 row (own
-latched chain: no predecessor under the new label). The confidence identifiers are
+latched chain: no predecessor under the new label). The hash also binds the
+historical sequences the confidence consumes (here the two distinct-vintage score
+histories; v2/v3 their filter observation sequences), so a backfill that moves an
+earlier walk-back month is a new identity too. The confidence identifiers are
 unchanged on purpose: the uncertainty estimator
 (``rolling_score_mad_distinct_vintages_v1``) and the ``confidence_v1.0`` policy
 thresholds did not move; their coverage INPUT did, which is model-level.
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import numbers
 from typing import Any
 
 from src import quadrant_assemble as qa
@@ -222,7 +226,10 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             critical_expiries = [*g_exp, *i_exp]
             _require_critical_expiries(critical_expiries)
 
-            source_vintage_hash = _vintage_hash(g_z, i_z, as_of, g_nvalid, i_nvalid)
+            source_vintage_hash = _vintage_hash(
+                g_z, i_z, as_of, g_nvalid, i_nvalid,
+                confidence_inputs=(("growth_history", g_hist),
+                                   ("inflation_history", i_hist)))
             snap = qa.build_snapshot(
                 as_of=as_of, computed_at=decision_time, previous_snapshot_id=prev_id,
                 growth_score=g_score, growth_history=g_hist, growth_prev_sign=g_prev_sign,
@@ -250,24 +257,54 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
     }
 
 
+def _canonical(obj: Any) -> Any:
+    """Canonical form for the provenance payload: mappings as sorted item tuples,
+    sequences as tuples, integral scalars as int and real scalars as float (numpy
+    scalars included, so the hash does not depend on the numpy repr of the host);
+    dates, strings, bools and None unchanged."""
+    if isinstance(obj, dict):
+        return tuple((k, _canonical(v)) for k, v in sorted(obj.items()))
+    if isinstance(obj, (list, tuple)):
+        return tuple(_canonical(v) for v in obj)
+    if isinstance(obj, bool) or obj is None or isinstance(obj, (str, _dt.date)):
+        return obj
+    if isinstance(obj, numbers.Integral):
+        return int(obj)
+    if isinstance(obj, numbers.Real):
+        return float(obj)
+    raise TypeError(f"provenance payload cannot carry {type(obj).__name__}")
+
+
 def _vintage_hash(
     g_z: dict[str, Any], i_z: dict[str, Any], as_of: _dt.date,
     g_history_counts: dict[str, int], i_history_counts: dict[str, int],
+    *,
+    confidence_inputs: tuple[tuple[str, Any], ...],
 ) -> str:
-    """Stable hash of the inputs that fed this snapshot (provenance / §8 cut).
+    """Stable hash of EVERY PIT-derived input that fed this snapshot (provenance /
+    §8 cut).
 
-    v*.1 layout: (growth z, inflation z, as_of, growth nValid, inflation nValid).
-    The §6 coverage — hence status/confidence and the v2/v3 filter observations —
-    depends on nValid_i, so a PIT backfill or correction that moves a history count
-    while leaving the standardized z untouched changes the hash, the deterministic
-    snapshot_id and the upsert target, instead of silently replacing the prior row
-    under the same identity. The counts are mandatory and cover every series the
-    axis scores (a missing series carries 0). The pinned harness
+    v*.1 layout: (growth z, inflation z, as_of, growth nValid, inflation nValid,
+    labelled confidence inputs). The §6 coverage — hence status/confidence and the
+    v2/v3 filter observations — depends on nValid_i, so a PIT backfill or correction
+    that moves a history count while leaving the standardized z untouched changes
+    the hash, the deterministic snapshot_id and the upsert target, instead of
+    silently replacing the prior row under the same identity. The counts are
+    mandatory and cover every series the axis scores (a missing series carries 0).
+
+    ``confidence_inputs`` binds the historical sequences the stream's confidence
+    consumes, each under its label — v1 its two distinct-vintage score histories,
+    v2/v3 their per-axis (score, q_data) walk-back observation sequences, v3 also the
+    auxiliary market observation sequence — because a backfill that moves one of the
+    35 earlier walk-back months (a period inside that month's 10-year window but
+    outside today's) changes those sequences, and so the filter result, while the
+    current z-maps and counts stay put. Mandatory, so no stream can publish a
+    confidence whose inputs the identity does not cover. The pinned harness
     (``harness/phase0q/decision.py``) keeps the frozen (z, z, as_of) layout for the
     frozen v1/v3 labels.
     """
-    payload = repr((
-        sorted(g_z.items()), sorted(i_z.items()), as_of.isoformat(),
-        sorted(g_history_counts.items()), sorted(i_history_counts.items()),
-    ))
+    payload = repr(_canonical((
+        g_z, i_z, as_of.isoformat(), g_history_counts, i_history_counts,
+        confidence_inputs,
+    )))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

@@ -8,8 +8,10 @@ the certified chain — the pinned harness ``harness/phase0q/decision_v3.py`` th
 without the §6 historyCoverage factor, z-only provenance hash); both stay
 untouched. ``macro_quadrant_us_v3.1`` is this worker's stream from the audit on:
 the historyCoverage factor enters the coverage and every walk-back filter
-observation's q_data, and the nValid counts enter ``source_vintage_hash`` (see
-``quadrant_macro``). The confidence identifiers (``confidence_v2.0`` /
+observation's q_data, and ``source_vintage_hash`` binds the nValid counts plus the
+three observation sequences the fused filter consumes — both macro axes and the
+auxiliary market sensor, whose adjusted closes are revised retroactively (see
+``quadrant_macro._vintage_hash``). The confidence identifiers (``confidence_v2.0`` /
 ``kalman_fused_joint_posterior_v3``) are unchanged: the policy did not move, its
 coverage input did.
 
@@ -122,7 +124,11 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 input_available_ats=[*g_av, *i_av],
                 critical_expiries=critical_expiries,
                 model_version=MODEL_VERSION,
-                source_vintage_hash=_vintage_hash(g_z, i_z, as_of, g_nvalid, i_nvalid),
+                source_vintage_hash=_vintage_hash(
+                    g_z, i_z, as_of, g_nvalid, i_nvalid,
+                    confidence_inputs=(("growth_observations", g_obs),
+                                       ("inflation_observations", i_obs),
+                                       ("growth_auxiliary_observations", g_aux))),
                 growth_auxiliary_observations=g_aux,
                 confidence_method=CONFIDENCE_METHOD_V3_FUSED,
             )
