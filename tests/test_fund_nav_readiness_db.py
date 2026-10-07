@@ -178,7 +178,10 @@ def _seed(
     extra_closed=False,
     stamp=True,
     valid_for=dt.timedelta(days=1),
+    future=(),
 ):
+    """``future``: (close, due) offsets from now of extra sessions after the
+    grid, one calendar day apart; still pending at publication (session lag)."""
     _bootstrap(dsn, schema)
     iid = uuid.uuid4()
     grid = _grid()
@@ -208,6 +211,12 @@ def _seed(
             "synthetic extra closed session needs a later NY day"
         )
         sessions.append((closed_date, now, now + dt.timedelta(hours=1), source))
+    if future:
+        assert not extra_closed
+        now = dt.datetime.now(dt.timezone.utc)
+        for k, (close_in, due_in) in enumerate(future, start=1):
+            day = grid[-1] + dt.timedelta(days=k)
+            sessions.append((day, now + close_in, now + due_in, source))
     digest = calendar_digest(sessions)
     valid_through = dt.datetime.now(dt.timezone.utc) + valid_for
     with _connect(dsn, schema) as conn:
@@ -4706,6 +4715,208 @@ def test_risk_policy_pin_mismatch_is_not_current(test_dsn, schema, monkeypatch):
         with pytest.raises(psycopg.errors.CheckViolation):
             conn.execute("UPDATE fund_nav_risk_runs SET policy_hash=NULL")
         conn.rollback()
+
+
+# ── Session lag (MAX_SNAPSHOT_SESSION_LAG) ──────────────────────────────────
+ROUND4_SNAPSHOT_SQL = (
+    ROOT / "tests" / "fixtures" / "nav_snapshot_current_at_round4.sql"
+).read_text(encoding="utf-8")
+_EPS = dt.timedelta(microseconds=1)
+
+
+def _lag_publication(dsn, schema, monkeypatch):
+    """Snapshot for grid[-1] (D) with two later sessions D+1/D+2 whose close
+    and due instants are still pending at publication; ``$3`` is the clock, so
+    no test sleeps. Returns the D+1/D+2 (session, close, due) rows."""
+    iid, grid, ing_run = _seed(
+        dsn, schema,
+        future=((dt.timedelta(hours=1), dt.timedelta(hours=2)),
+                (dt.timedelta(hours=3), dt.timedelta(hours=4))),
+    )
+    monkeypatch.setattr(readiness, "connect", lambda d: _connect(d, schema))
+    run = readiness.run(dsn)
+    assert run["state"] == "complete" and run["ready_count"] == 1
+    with _connect(dsn, schema) as conn:
+        assert conn.execute(
+            "SELECT as_of_session, latest_closed_session FROM fund_nav_readiness_runs "
+            "WHERE run_id=%s", (run["run_id"],),
+        ).fetchone() == (grid[-1], grid[-1])
+        later = conn.execute(
+            "SELECT session_date, valuation_close_at, nav_due_at FROM nav_valuation_schedules "
+            "WHERE session_date > %s ORDER BY session_date", (grid[-1],),
+        ).fetchall()
+    assert [row[0] for row in later] == [grid[-1] + dt.timedelta(days=k) for k in (1, 2)]
+    return iid, grid, ing_run, uuid.UUID(run["run_id"]), later
+
+
+def _current_at(conn, iid, run_id, at):
+    return conn.execute(
+        "SELECT fund_nav_snapshot_current_at_v1(%s,%s,%s)", (iid, run_id, at)
+    ).fetchone()[0]
+
+
+def test_snapshot_stays_current_for_one_session_of_lag_and_no_more(
+    test_dsn, schema, monkeypatch
+):
+    iid, grid, _, run_id, later = _lag_publication(test_dsn, schema, monkeypatch)
+    (_, close1, due1), (_, close2, due2) = later
+    with _connect(test_dsn, schema) as conn:
+        cases = {
+            "lag 0 (due D, closed D)": (close1 - _EPS, True),
+            "closed lag 1, due lag 0": (close1, True),
+            "due lag 1 (due D+1, closed D+1)": (due1, True),
+            "lag 1 until the next close": (close2 - _EPS, True),
+            "closed lag 2": (close2, False),
+            "due lag 2": (due2, False),
+        }
+        observed = {name: _current_at(conn, iid, run_id, at) for name, (at, _) in cases.items()}
+        assert observed == {name: want for name, (_, want) in cases.items()}
+        # The read model evaluates the same function at the DB clock (lag 0).
+        assert conn.execute(
+            "SELECT snapshot_current, latest_due_session FROM fund_nav_readiness_current_v1"
+        ).fetchone() == (True, grid[-1])
+
+
+def test_wall_clock_behind_the_snapshot_is_never_current(test_dsn, schema, monkeypatch):
+    """Negative lag: the count over (as_of, due] is 0 too, so ``>=`` must bite."""
+    iid, _grid, _, run_id, later = _lag_publication(test_dsn, schema, monkeypatch)
+    (day1, _close1, due1), (_, close2, _due2) = later
+    with _connect(test_dsn, schema) as conn:
+        _replica(conn)  # controlled catalog: pin the run to D+1 (still pending)
+        conn.execute(
+            "UPDATE fund_nav_readiness_runs SET as_of_session=%s, window_end=%s, "
+            "latest_closed_session=%s WHERE run_id=%s",
+            (day1, day1, day1, run_id),
+        )
+        conn.commit()
+        now = conn.execute("SELECT clock_timestamp()").fetchone()[0]
+        assert now < due1
+        assert [_current_at(conn, iid, run_id, at) for at in (now, due1, close2 - _EPS)] == [
+            False, True, True,
+        ]
+
+
+def _pin_breaks(iid, ing_run):
+    """One existing pin per case, broken inside the lag allowance."""
+    return {
+        "policy_valid_through": (
+            "UPDATE nav_policy_versions SET valid_through=%(due1)s - interval '1 microsecond'",
+        ),
+        "policy_hash": ("UPDATE nav_policy_versions SET policy_hash=repeat('b', 64)",),
+        "risk_policy_pin": ("UPDATE fund_nav_risk_runs SET policy_hash=repeat('f', 64)",),
+        "risk_publication_revision": (
+            "UPDATE fund_nav_risk_publication SET revision_id=revision_id+1",
+        ),
+        "nav_head_revision": (
+            "UPDATE fund_nav_data_heads SET revision_id=revision_id+1 "
+            f"WHERE instrument_id='{iid}'",
+        ),
+        "reexpression_hold": (
+            "INSERT INTO fund_nav_reexpression_events (instrument_id,event_kind,"
+            "first_changed_date,last_changed_date,source_run_id,source_provider,"
+            "revision_head,recorded_at,reason_code) "
+            f"SELECT '{iid}','DETECTED',%(d)s,%(d)s,run_id,provider,0,clock_timestamp(),"
+            "'ADJUSTED_HISTORY_REEXPRESSION' FROM nav_ingestion_attempts "
+            f"WHERE run_id='{ing_run}'",
+        ),
+        "lifecycle_evidence": (
+            "INSERT INTO nav_instrument_policy_evidence (instrument_id,policy_id,"
+            "policy_version,known_at,effective_at,fund_status,valuation_frequency,"
+            "identity_verified,return_basis_verified,currency_verified,evidence_reference) "
+            f"VALUES ('{iid}','synthetic','v1',clock_timestamp(),clock_timestamp(),"
+            "'ACTIVE','daily',true,true,true,'newer-lifecycle-fact')",
+        ),
+        "feature_evidence_binding": (
+            "UPDATE fund_nav_feature_evidence SET input_fingerprint=repeat('e', 64)",
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        "policy_valid_through", "policy_hash", "risk_policy_pin",
+        "risk_publication_revision", "nav_head_revision", "reexpression_hold",
+        "lifecycle_evidence", "feature_evidence_binding",
+    ],
+)
+def test_every_existing_pin_still_bites_inside_the_lag_allowance(
+    test_dsn, schema, monkeypatch, pin
+):
+    iid, grid, ing_run, run_id, later = _lag_publication(test_dsn, schema, monkeypatch)
+    (_, _close1, due1), _ = later
+    with _connect(test_dsn, schema) as conn:
+        assert _current_at(conn, iid, run_id, due1) is True  # lag 1, pins intact
+        _replica(conn)
+        for statement in _pin_breaks(iid, ing_run)[pin]:
+            conn.execute(statement, {"due1": due1, "d": grid[-2]})
+        conn.commit()
+        assert _current_at(conn, iid, run_id, due1) is False
+
+
+def test_round4_snapshot_predicate_upgrades_in_place_to_the_session_lag(
+    test_dsn, schema, monkeypatch, capsys
+):
+    """Production shape: current DDL with the Round4 exact-session body."""
+    iid, _grid, _, run_id, later = _lag_publication(test_dsn, schema, monkeypatch)
+    (_, _close1, due1), _ = later
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute(sql.SQL("SET search_path TO {}, pg_temp").format(sql.Identifier(schema)))
+        conn.execute(ROUND4_SNAPSHOT_SQL)
+        conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        report = operator._check(conn, schema)
+        assert (report["status"], report["compatibility"], report["mismatches"]) == (
+            "upgrade_required", "repairable", ["functions"],
+        ), report
+        assert (report["access"], report["code"], report["receipt_upgrade"]) == (
+            "exact", None, False,
+        )
+        assert _current_at(conn, iid, run_id, due1) is False  # exact-session rule
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    plan = _plan(base, capsys)
+    assert operator.main([*base, "--mode", "apply", "--plan-sha256", plan]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert (result["status"], result["ddl"], result["compatibility"]) == (
+        "applied", "applied", "exact",
+    )
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        report = operator._check(conn, schema)
+        assert (report["ready"], report["compatibility"], report["access"]) == (
+            True, "exact", "exact",
+        )
+        assert _current_at(conn, iid, run_id, due1) is True
+        # CREATE OR REPLACE kept the owner-only ACL plus the runtime EXECUTE grant.
+        assert conn.execute(
+            "SELECT has_function_privilege('app_runtime', "
+            "'fund_nav_snapshot_current_at_v1(uuid,uuid,timestamptz)', 'EXECUTE'), "
+            "has_function_privilege('public', "
+            "'fund_nav_snapshot_current_at_v1(uuid,uuid,timestamptz)', 'EXECUTE')"
+        ).fetchone() == (True, False)
+
+
+def test_round4_body_with_any_other_divergence_is_never_repaired(
+    test_dsn, schema, monkeypatch, capsys
+):
+    _bootstrap(test_dsn, schema)
+    with _connect(test_dsn, schema, autocommit=True) as conn:
+        conn.execute(sql.SQL("SET search_path TO {}, pg_temp").format(sql.Identifier(schema)))
+        conn.execute(ROUND4_SNAPSHOT_SQL)
+        conn.execute(
+            "ALTER FUNCTION fund_nav_snapshot_current_at_v1(uuid,uuid,timestamptz) "
+            f'SET search_path = "{schema}", public'
+        )
+        conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+        report = operator._check(conn, schema)
+        assert (report["status"], report["compatibility"]) == (
+            "upgrade_required", "incompatible",
+        )
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+    ddl = (ROOT / "schemas" / "fund_nav_readiness_v1.sql").read_bytes()
+    base = ["--schema", schema, "--expected-sql-sha256", hashlib.sha256(ddl).hexdigest()]
+    assert operator.main(base) == operator.EXIT_INCOMPATIBLE
+    assert json.loads(capsys.readouterr().out)["code"] == "incompatible_schema"
 
 
 # ── N4: operator atomicity ───────────────────────────────────────────────────
