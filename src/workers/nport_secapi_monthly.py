@@ -20,7 +20,8 @@ WHAT ONE RUN DOES (as of ``calc_date``, month M)
    publication month (M-1) complete, and each report_date is revisited by three
    consecutive runs while its late filers trickle in. Earlier dates are left to
    an operator: a late filing for them would decompress a cold chunk.
-4. For each target date with series the table does not have yet: the loader's
+4. For each target date with series the table does not have yet: the value
+   checks of ``tools.nport_secapi.validate`` on its CSV, then the loader's
    ``--dry-run`` with the load's own arguments (it reads the table, writes
    nothing, and refuses whatever the load or its verify would reject), then
    ``nport_parallel_load --new-series-only`` scoped to that one date. ``--new-series-only`` is what makes revisiting safe:
@@ -47,7 +48,9 @@ is removed afterwards.
 ``WORKER_CALC_DATE`` pins M; ``WORKER_LIMIT`` caps how many report_dates load.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict``. ``state`` is
-``ok``, ``noop`` (nothing new) or ``failed``; ``status == "lock_busy"`` when
+``ok``, ``noop`` (every complete target date already loaded) or ``failed``
+(also when the containers convert to no complete target date at all);
+``status == "lock_busy"`` when
 another run holds the lock. ``run_worker`` exits non-zero on the last two.
 """
 
@@ -70,6 +73,7 @@ from src.db import LOCK_NPORT_SECAPI_MONTHLY, advisory_lock, connect
 from tools.nport_dera import nport_parallel_load as loader
 from tools.nport_secapi import convert as converter
 from tools.nport_secapi import download as downloader
+from tools.nport_secapi import validate as validator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -215,6 +219,16 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
         if limit is not None and len(loaded) + len(failed) >= limit:
             entry["result"] = "deferred_by_limit"
             continue
+        # The value checks the manual workflow runs before a load (pct_of_nav
+        # sums, units, foreign dates); the loader's dry run checks loadability
+        # and ISIN fill, not values.
+        problems = validator.verdict(validator.profile_csv(str(seed_dir / f"{rd}.csv")))
+        if problems:
+            entry["result"] = "failed"
+            entry["validation"] = problems
+            failed.add(rd)
+            LOGGER.error("nport_secapi_monthly: report_date %s failed validation: %s", rd, problems)
+            continue
         rc = load_report_date(dsn, seed_dir, rd)
         entry["loader_exit"] = rc
         if rc == 0:
@@ -233,7 +247,11 @@ def _run_locked(dsn: str, today: dt.date, limit: int | None, workdir: Path, api_
             stats["cagg_refreshed"].append([lo, hi])
         for rd, counts in report_date_counts(dsn, loaded).items():
             stats["report_dates"][rd]["table_after"] = counts
-    stats["state"] = "failed" if failed else ("ok" if loaded else "noop")
+    if not any(not manifest["report_dates"][rd]["partial"] for rd in targets):
+        # N-PORT always has filings for M-5..M-3 in M-3..M: nothing to judge
+        # means the containers or the converter broke, not that nothing is new.
+        stats["reason"] = "conversion produced no complete report_date in the window"
+    stats["state"] = "failed" if failed or "reason" in stats else ("ok" if loaded else "noop")
     return stats
 
 

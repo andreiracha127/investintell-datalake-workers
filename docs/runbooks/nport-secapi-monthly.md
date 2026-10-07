@@ -141,9 +141,11 @@ M, a run:
 
 1. downloads containers M-3..M;
 2. converts them, report_dates from M-5 to M-3;
-3. for each date with series the table lacks, runs the loader `--dry-run` with the
-   load's own arguments, then `--new-series-only`, one date per invocation, with
-   the loader's ISIN verify;
+3. for each date with series the table lacks, runs `tools.nport_secapi.validate`'s
+   value checks on its CSV, then the loader `--dry-run` with the load's own
+   arguments, then `--new-series-only`, one date per invocation, with the loader's
+   ISIN verify. A run whose containers convert to no complete date in the window
+   fails rather than reporting `noop`;
 4. refreshes `cagg_nport_series_profile` over the loaded dates, never across a date whose load failed.
 
 Each report_date is revisited by three consecutive runs while its late filers

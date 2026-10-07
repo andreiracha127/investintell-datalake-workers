@@ -540,23 +540,46 @@ def test_worker_skips_dates_with_nothing_new_and_reports_failures(wired):
     assert stats["state"] == "failed" and wired["refresh"] == []
 
 
+def _converter_writing(csvs: dict[str, list[list[str]]]):
+    """A stand-in for ``convert.convert`` that writes these rows, one complete CSV per report_date."""
+    def fake_convert(paths, out_dir, *, min_report_date, partial_months):
+        Path(out_dir).mkdir(parents=True)
+        for rd, rows in csvs.items():
+            with open(Path(out_dir) / f"{rd}.csv", "w", encoding="utf-8", newline="") as fh:
+                csv.writer(fh).writerows([CSV_COLS, *rows])
+        return {"report_dates": {rd: {"rows": len(rows), "series": 1, "partial": False} for rd, rows in csvs.items()},
+                "excluded_report_dates": {}}
+    return fake_convert
+
+
 def test_worker_never_refreshes_across_a_failed_date(wired, monkeypatch):
     """A date the loader's verify rejected has committed rows; no refresh range may cover it."""
     dates = ["2026-04-30", "2026-05-31", "2026-06-30"]
-
-    def fake_convert(paths, out_dir, *, min_report_date, partial_months):
-        Path(out_dir).mkdir(parents=True)
-        for rd in dates:
-            with open(Path(out_dir) / f"{rd}.csv", "w", encoding="utf-8", newline="") as fh:
-                csv.writer(fh).writerows([CSV_COLS, [rd, *[""] * 12, f"S-{rd}"]])
-        return {"report_dates": {rd: {"rows": 1, "series": 1, "partial": False} for rd in dates},
-                "excluded_report_dates": {}}
-
-    monkeypatch.setattr(worker.converter, "convert", fake_convert)
+    monkeypatch.setattr(worker.converter, "convert",
+                        _converter_writing({rd: [[rd, *[""] * 12, f"S-{rd}"]] for rd in dates}))
     wired["rc"]["2026-05-31"] = 2  # post-load verify: rows committed, run failed
     stats = worker.run("dsn", calc_date="2026-09-10")
     assert stats["state"] == "failed"
     assert wired["refresh"] == [("2026-04-30", "2026-05-01"), ("2026-06-30", "2026-07-01")]
+
+
+def test_worker_validates_values_before_it_loads(wired, monkeypatch):
+    row = ["2026-05-31", "0000000101", "123456789", "US1", "A", "EC", "CORP", "1", "1", "USD", "100", "false", "1"]
+    monkeypatch.setattr(worker.converter, "convert", _converter_writing({
+        "2026-05-31": [[*row[:10], "5000", *row[11:], "S9"]],  # a x50 unit bug: ISIN fill is perfect
+        "2026-06-30": [["2026-06-30", *row[1:], "S8"]],
+    }))
+    stats = worker.run("dsn", calc_date="2026-09-10")
+    assert [rd for rd, _ in wired["loads"]] == ["2026-06-30"]
+    assert stats["report_dates"]["2026-05-31"]["result"] == "failed"
+    assert "above 1000%" in stats["report_dates"]["2026-05-31"]["validation"][0]
+    assert stats["state"] == "failed"
+
+
+def test_worker_fails_when_conversion_yields_no_target_date(wired, monkeypatch):
+    monkeypatch.setattr(worker.converter, "convert", _converter_writing({}))
+    stats = worker.run("dsn", calc_date="2026-09-10")
+    assert stats["state"] == "failed" and "no complete report_date" in stats["reason"]
 
 
 def test_worker_refuses_a_date_whose_main_month_it_does_not_have(wired):
