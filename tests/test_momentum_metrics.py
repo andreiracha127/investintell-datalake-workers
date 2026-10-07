@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 
 import numpy as np
@@ -32,8 +33,18 @@ def test_rsi_14_falling_path_is_0():
     assert mm.rsi_14(nav) == 0.0
 
 
-def test_rsi_14_flat_path_is_0_like_talib():
-    assert mm.rsi_14(np.full(30, 100.0)) == 0.0
+@pytest.mark.parametrize("level", [1.0, 10.37, 103.47])
+def test_rsi_14_flat_path_is_undefined(level):
+    # TA-Lib returns 0.0 here; the RSI is 0/0, so there is no signal.
+    assert mm.rsi_14(np.full(260, level)) is None
+
+
+def test_rsi_14_movement_below_tolerance_is_undefined():
+    # TA-Lib 0.6.4 returns 0.0 below 1e-14 and 100.0 above it.
+    tiny = 1.0 + np.cumsum(np.r_[0.0, np.full(59, 0.9e-14)])
+    small = 1.0 + np.cumsum(np.r_[0.0, np.full(59, 1.1e-14)])
+    assert mm.rsi_14(tiny) is None
+    assert mm.rsi_14(small) == pytest.approx(100.0)
 
 
 def test_rsi_14_matches_hard_coded_wilder_reference():
@@ -51,9 +62,10 @@ def test_rsi_14_matches_talib_rsi():
         assert abs(mm.rsi_14(nav) - expected) < 1e-6
 
 
-def test_bollinger_position_flat_path_is_mid_band():
-    nav = np.array([100.0] * 20)
-    assert mm.bollinger_position(nav) == pytest.approx(0.5)
+@pytest.mark.parametrize("level", [1.0, 10.37, 103.47])
+def test_bollinger_position_flat_window_has_no_band(level):
+    nav = np.r_[np.linspace(level * 0.9, level * 1.1, 40), np.full(20, level)]
+    assert mm.bollinger_position(nav) is None
 
 
 def test_bollinger_position_uses_population_stdev_like_talib():
@@ -73,6 +85,97 @@ def test_numpy_fallback_matches_talib_nav_signal(monkeypatch):
         # x100 scaling, so the band term can differ by up to 5e-5 points.
         assert abs(bb_np - bb_ta) < 1e-4
         assert abs(score_np - score_ta) < 1e-4
+
+
+def _flat_tail_nav(level: float, seed: int) -> np.ndarray:
+    """230 moving NAVs rounded to 4 decimals, then 30 days at the last one."""
+
+    rng = np.random.default_rng(seed)
+    moving = np.round(level * np.cumprod(1.0 + rng.normal(0.0, 0.01, 230)), 4)
+    return np.r_[moving, np.full(30, moving[-1])]
+
+
+@pytest.mark.parametrize("level", [1.0, 10.37, 103.47])
+def test_flat_nav_has_no_nav_signal_in_either_path(monkeypatch, level):
+    nav = np.full(260, level)
+    assert mm._numpy_nav_signal(nav) == (None, None, None)
+    talib = pytest.importorskip("talib")
+    assert talib.RSI(nav, timeperiod=14)[-1] == 0.0
+    monkeypatch.setattr(mm, "_TALIB", talib)
+    assert mm._talib_nav_signal(nav) == (None, None, None)
+
+
+def test_flat_band_window_scores_on_rsi_alone_in_both_paths(monkeypatch):
+    # On TA-Lib 0.6.5 this series gets a ~1e-6 wide band (position about 0.495)
+    # without the flat-window check.
+    nav = _flat_tail_nav(10.37, seed=0)
+    rsi_np, bb_np, score_np = mm._numpy_nav_signal(nav)
+    assert rsi_np is not None
+    assert bb_np is None
+    assert score_np == rsi_np
+    talib = pytest.importorskip("talib")
+    monkeypatch.setattr(mm, "_TALIB", talib)
+    rsi_ta, bb_ta, score_ta = mm._talib_nav_signal(nav)
+    assert bb_ta is None
+    assert abs(rsi_ta - rsi_np) < 1e-6
+    assert abs(score_ta - score_np) < 1e-6
+
+
+def test_compute_nav_momentum_flat_nav_is_unscored(monkeypatch):
+    monkeypatch.setattr(mm, "_TALIB", None)
+    out = mm.compute_nav_momentum([1.0] * 260)
+    for column in ("rsi_14", "bb_position", "nav_momentum_score", "blended_momentum_score"):
+        assert out[column] is None
+
+
+def test_compute_momentum_flat_nav_blends_flow_alone():
+    start = dt.date(2024, 1, 1)
+    points = [
+        mm.NavAumPoint(start + dt.timedelta(days=i), 1.0, 1_000_000.0 + i * 5_000.0)
+        for i in range(90)
+    ]
+    out = mm.compute_momentum(points, [])
+    assert out["rsi_14"] is None
+    assert out["nav_momentum_score"] is None
+    assert out["flow_momentum_score"] is not None
+    assert out["blended_momentum_score"] == out["flow_momentum_score"]
+
+
+def test_run_writes_nulls_for_an_unscored_fund(monkeypatch):
+    calc_date = dt.date(2024, 6, 28)
+    written: list[tuple] = []
+
+    class _Conn:
+        def commit(self):
+            pass
+
+    @contextlib.contextmanager
+    def _connect(_dsn, **_kwargs):
+        yield _Conn()
+
+    @contextlib.contextmanager
+    def _lock(_conn, _key):
+        yield True
+
+    def _upsert(_conn, _date, rows):
+        written.extend(rows)
+        return len(rows)
+
+    flat = [mm.NavAumPoint(calc_date - dt.timedelta(days=259 - i), 1.0, None) for i in range(260)]
+    monkeypatch.setattr(mm, "connect", _connect)
+    monkeypatch.setattr(mm, "advisory_lock", _lock)
+    monkeypatch.setattr(mm, "_resolve_calc_date", lambda _conn, _date: calc_date)
+    monkeypatch.setattr(mm, "_target_instruments", lambda *_a: [("flat-fund", None)])
+    monkeypatch.setattr(mm, "_fetch_nport_flow_pct_assets", lambda *_a: ([], None))
+    monkeypatch.setattr(mm, "_fetch_nav_aum", lambda *_a: flat)
+    monkeypatch.setattr(mm, "_upsert", _upsert)
+    monkeypatch.setattr(mm, "_refresh_read_models", lambda _dsn: None)
+
+    stats = mm.run("dsn")
+
+    assert stats["scored"] == 0
+    assert stats["upserted"] == 1
+    assert written == [("flat-fund", calc_date, None, *([None] * len(mm.MOMENTUM_COLUMNS)))]
 
 
 def test_compute_nav_momentum_sets_blended_to_nav_when_flow_missing():
@@ -108,7 +211,7 @@ def test_compute_nav_momentum_uses_talib_backend_when_available(monkeypatch):
             return upper, middle, lower
 
     monkeypatch.setattr(mm, "_TALIB", FakeTalib)
-    out = mm.compute_nav_momentum([100.0] * 30)
+    out = mm.compute_nav_momentum([99.9, 100.1] * 14 + [99.9, 100.0])
     assert calls == ["RSI:14", "BBANDS:20:2:2"]
     assert out["rsi_14"] == pytest.approx(40.0)
     assert out["bb_position"] == pytest.approx(50.0)

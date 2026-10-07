@@ -27,6 +27,14 @@ MOMENTUM_COLUMNS = (
 )
 
 MIN_NAV_OBSERVATIONS = 30
+RSI_PERIOD = 14
+BOLLINGER_WINDOW = 20
+# A NAV has "no movement" when Wilder's average gain plus average loss is below
+# this. It is TA-Lib 0.6.4's near-zero test (TA_IS_ZERO), where its RSI emits
+# 0.0; TA-Lib 0.8.1 has no tolerance. RSI is 0/0 there, so the fund gets no NAV
+# momentum signal in either path.
+NO_MOVEMENT_TOLERANCE = 1e-14
+_NO_NAV_SIGNAL: tuple[None, None, None] = (None, None, None)
 
 try:
     import talib as _talib_mod
@@ -56,17 +64,16 @@ def _score_between(value: float | None, lo: float, hi: float) -> float | None:
     return round((value - lo) / (hi - lo) * 100.0, 6)
 
 
-def rsi_14(nav: np.ndarray) -> float | None:
-    """Wilder's 14-period RSI over the whole NAV series, as TA-Lib ``RSI`` computes it.
+def _wilder_averages(nav: np.ndarray) -> tuple[float, float] | None:
+    """Wilder's 14-period average gain and average loss over the whole series.
 
     The averages are seeded with the simple mean of the first 14 gains and
     losses, then smoothed over every later delta with
-    ``avg = (avg * 13 + current) / 14``. The result therefore depends on the
-    full history, not only the last 14 deltas. A series that never moves
-    returns 0.0, which is what TA-Lib returns.
+    ``avg = (avg * 13 + current) / 14``, in TA-Lib ``RSI``'s operation order.
+    They therefore depend on the full history, not only the last 14 deltas.
     """
 
-    period = 14
+    period = RSI_PERIOD
     if len(nav) <= period:
         return None
     deltas = np.diff(np.asarray(nav, dtype=float)).tolist()
@@ -88,27 +95,62 @@ def rsi_14(nav: np.ndarray) -> float | None:
             avg_gain += delta
         avg_gain /= period
         avg_loss /= period
+    return avg_gain, avg_loss
+
+
+def nav_has_no_movement(nav: np.ndarray) -> bool:
+    """True when the NAV does not move over the RSI's window.
+
+    The window is the RSI's own: Wilder's average gain plus average loss over
+    the whole series is below ``NO_MOVEMENT_TOLERANCE``. Stable-value NAVs at
+    1.00 and stale series that repeat their last NAV fall here.
+    """
+
+    averages = _wilder_averages(nav)
+    return averages is not None and averages[0] + averages[1] < NO_MOVEMENT_TOLERANCE
+
+
+def rsi_14(nav: np.ndarray) -> float | None:
+    """Wilder's 14-period RSI over the whole NAV series, as TA-Lib ``RSI`` computes it.
+
+    Returns None when the NAV does not move (see ``nav_has_no_movement``).
+    TA-Lib returns 0.0 there, but the RSI is 0/0: no signal, not oversold.
+    """
+
+    averages = _wilder_averages(nav)
+    if averages is None:
+        return None
+    avg_gain, avg_loss = averages
     total = avg_gain + avg_loss
-    if total == 0:
-        return 0.0
+    if total < NO_MOVEMENT_TOLERANCE:
+        return None
     return round(100.0 * avg_gain / total, 6)
 
 
-def bollinger_position(nav: np.ndarray, window: int = 20) -> float | None:
+def _band_window_is_flat(frame: np.ndarray) -> bool:
+    """True when every NAV in the Bollinger window is the same value."""
+
+    return float(np.max(frame)) == float(np.min(frame))
+
+
+def bollinger_position(nav: np.ndarray, window: int = BOLLINGER_WINDOW) -> float | None:
     """Latest NAV position inside the 20-day Bollinger band.
 
     0 is at the lower band, 0.5 at the moving average, and 1 at the upper band.
     The bands use the population standard deviation, as TA-Lib ``BBANDS`` does.
     The caller clips the position to 0..1, so breakouts are not preserved.
+    A flat window has a zero-width band and returns None.
     """
 
     if len(nav) < window:
         return None
-    frame = nav[-window:]
+    frame = np.asarray(nav[-window:], dtype=float)
+    if _band_window_is_flat(frame):
+        return None
     mean = float(np.mean(frame))
     std = float(np.std(frame))
     if std == 0 or not np.isfinite(std):
-        return 0.5
+        return None
     lower = mean - 2.0 * std
     upper = mean + 2.0 * std
     return round((float(nav[-1]) - lower) / (upper - lower), 6)
@@ -137,15 +179,25 @@ def _talib_nav_signal(nav: np.ndarray) -> tuple[float | None, float | None, floa
     if _TALIB is None:
         return None
     close = nav.astype(float)
-    rsi = _TALIB.RSI(close, timeperiod=14)
+    # TA-Lib emits RSI 0.0 for a NAV that does not move, and 0.0 for a falling
+    # one, so its output cannot tell them apart. Decide from the averages.
+    if nav_has_no_movement(close):
+        return _NO_NAV_SIGNAL
+    rsi = _TALIB.RSI(close, timeperiod=RSI_PERIOD)
     last_rsi = next((v for v in reversed(rsi) if not np.isnan(v)), None)
     rsi_norm = float(last_rsi) / 100.0 if last_rsi is not None else None
 
-    upper, _, lower = _TALIB.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+    upper, _, lower = _TALIB.BBANDS(close, timeperiod=BOLLINGER_WINDOW, nbdevup=2, nbdevdn=2)
     last_upper = next((v for v in reversed(upper) if not np.isnan(v)), None)
     last_lower = next((v for v in reversed(lower) if not np.isnan(v)), None)
     bb_pos = None
-    if last_upper is not None and last_lower is not None:
+    # TA-Lib 0.6.4 can return a ~1e-6 wide band for a flat window (running-sum
+    # rounding in its variance), so a flat window is checked on the closes.
+    if (
+        last_upper is not None
+        and last_lower is not None
+        and not _band_window_is_flat(close[-BOLLINGER_WINDOW:])
+    ):
         bb_range = float(last_upper) - float(last_lower)
         if bb_range > 0:
             bb_pos = max(0.0, min(1.0, (float(close[-1]) - float(last_lower)) / (bb_range + 1e-8)))
@@ -155,6 +207,8 @@ def _talib_nav_signal(nav: np.ndarray) -> tuple[float | None, float | None, floa
 def _numpy_nav_signal(nav: np.ndarray) -> tuple[float | None, float | None, float | None]:
     """Fallback for envs without TA-Lib; computes the same RSI and bands as the TA-Lib path."""
 
+    if nav_has_no_movement(nav):
+        return _NO_NAV_SIGNAL
     rsi = rsi_14(nav)
     bb = bollinger_position(nav)
     rsi_norm = rsi / 100.0 if rsi is not None else None
@@ -449,6 +503,7 @@ def run(
             cdate = _resolve_calc_date(conn, calc_date)
             targets = _target_instruments(conn, cdate, limit)
             rows = []
+            scored = 0
             for instrument_id, series_id in targets:
                 nport_flows, nport_as_of = _fetch_nport_flow_pct_assets(conn, series_id, cdate)
                 metrics = compute_momentum(
@@ -458,7 +513,12 @@ def run(
                     calc_date=cdate,
                 )
                 if metrics["blended_momentum_score"] is None:
-                    continue
+                    # Unscored (short history, or a NAV that does not move and
+                    # no flow proxy): write NULLs, so a rerun for the same
+                    # calc_date cannot leave an earlier score in place.
+                    metrics = dict.fromkeys(MOMENTUM_COLUMNS)
+                else:
+                    scored += 1
                 rows.append(
                     (
                         instrument_id,
@@ -470,4 +530,4 @@ def run(
             upserted = _upsert(conn, cdate, rows)
             conn.commit()
     _refresh_read_models(dsn)
-    return {"processed": len(targets), "upserted": upserted, "calc_date": cdate}
+    return {"processed": len(targets), "upserted": upserted, "scored": scored, "calc_date": cdate}
