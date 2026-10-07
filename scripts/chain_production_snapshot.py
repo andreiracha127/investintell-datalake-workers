@@ -24,9 +24,12 @@ RELATIONS = (
     "public.eod_prices",
     "public.open_macro_v03_decision_chain",
 )
+# has_table_privilege misses column-level grants; has_any_column_privilege
+# covers them, so a role with INSERT or UPDATE on one column is refused too.
 ROLE_SQL = (
     "SELECT current_user, "
-    "has_table_privilege(current_user, %s, 'INSERT, UPDATE, DELETE')"
+    "has_table_privilege(current_user, %s, 'INSERT, UPDATE, DELETE, TRUNCATE') "
+    "OR has_any_column_privilege(current_user, %s, 'INSERT, UPDATE')"
 )
 CONTRACT_FUNCTIONS = (
     "verify_pack", "_verify_digests", "load_pack_inputs", "verify_backfill",
@@ -168,7 +171,7 @@ def capture_snapshot(reference_date: date, *, connect=None,
                 raise SnapshotRefused("session is not REPEATABLE READ READ ONLY")
             cur.execute("SET LOCAL search_path TO public")
             for relation in RELATIONS:
-                cur.execute(ROLE_SQL, (relation,))
+                cur.execute(ROLE_SQL, (relation, relation))
                 role, can_write = cur.fetchone()
                 if can_write:
                     raise SnapshotRefused(f"role {role} can write {relation}")

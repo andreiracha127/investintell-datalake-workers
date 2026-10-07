@@ -122,7 +122,8 @@ service, or publish rows.
 
 The exporter connects with `default_transaction_read_only=on` and a bounded
 statement timeout (`--statement-timeout-ms`), asserts read-only mode, checks
-`has_table_privilege` for the current role, and loads all database inputs once in
+table- and column-level write privileges for the current role
+(`has_table_privilege`, `has_any_column_privilege`), and loads all database inputs once in
 one `REPEATABLE READ READ ONLY` transaction. It reuses the worker's pure read
 queries and mirrors its input assembly, including the certified pack and backfill
 boundaries. Fixture tests compare that assembly with the worker's read helpers;
