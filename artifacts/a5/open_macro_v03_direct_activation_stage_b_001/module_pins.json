@@ -1,6 +1,6 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "351927ff338fd80f0fe45d06f3348cce251dc8e5aab0f2bea4dbaf721132fd39",
+ "module_pins_sha256": "87e5ed8dfa009eb1ec01a77c4c8f349679ea2ae0145ed18ef14a9326c8cce59c",
  "modules": {
   "harness/direct_activation/live_validation.py": "4cb4a0eb127709e080e87c786b9bc4ec0392d73234dd5366dd0789ef3aa1a9d1",
   "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
@@ -17,7 +17,7 @@
   "src/quadrant_assemble.py": "77da41b08cec1fffdd26e0747dbac63b646ae39ecb7767348144236568fe20a2",
   "src/quadrant_assemble_v2.py": "1e153b20e783cc1851a8fc196236433de43a061b4c4c05708c8ed6c34058cb79",
   "src/quadrant_confidence.py": "5343316ef744ffce0d051e297d7ea4e3b7fdc4212b44459b3b26a440dcf31443",
-  "src/quadrant_confidence_v2.py": "031f6ade8c3356fabcf87e966f85ddec808b17c71a95967a399fc9ef9137796d",
+  "src/quadrant_confidence_v2.py": "a5219691581a23dd10e42225ff5158afab98ea98e2cbf4684cfb5b1ff9dac662",
   "src/quadrant_hysteresis.py": "c5d4bf12324261a3244138b2ad8d1e20d3c99a1575d1f8e11019916ec8bbe37d",
   "src/quadrant_market_observation.py": "89b941e36b90a9a349e1d6e66a03c87df5181107bd789cb5a581942e38659066",
   "src/quadrant_score.py": "e0563a33ab98f2b64f5105b7fa29ade3811704a6772bdce8e0d41d25aa6dae15",
