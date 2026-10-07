@@ -15,6 +15,7 @@ import pytest
 from scripts import backfill_bond_panel_coupon_pit_repair as repair
 from scripts import backfill_bond_panel_history as backfill
 from scripts import build_bond_panel_coupon_pit_returns as builder
+from scripts import export_bond_market_implied_default_events as export
 from src.bonds.panel_resolvers import coupon_from_price_ytm
 
 HEAD = "aab1db6a-306f-5011-b505-48cae95263a5"
@@ -62,6 +63,9 @@ def _v2_dir(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return directory, hashes
 
 
+PUBLICATION_ID = "c0172bf1-43e6-5175-be17-d54d708bf72a"
+
+
 def _implied_rows(tmp_path: Path) -> Path:
     """bond_market_implied_rating_v1 rows: AAA candidate 2022-12, confirmed 2023-01, never cured."""
     rows = [
@@ -71,9 +75,17 @@ def _implied_rows(tmp_path: Path) -> Path:
          "policy_version": "bond_market_implied_rating_policy_v1", "policy_digest": "ab" * 32}
         for month, bucket in (("2022-11-01", "CCC"), ("2022-12-01", "CCC"), ("2023-01-01", "D"), ("2023-02-01", "D"))
     ]
-    path = tmp_path / "implied_rows.parquet"
-    pq.write_table(pa.Table.from_pandas(pd.DataFrame(rows), preserve_index=False), path)
-    return path
+    frame = pd.DataFrame(rows)
+    frame["month"] = frame["month"].dt.date
+    header = {"publication_id": PUBLICATION_ID, "publication_status": "validated", "rows_digest": "b3" * 32,
+              "d_confirmed_count": 2, "d_candidate_count": 1, "policy_digest": "ab" * 32}
+    exported, counts = export.select_export_rows(frame, header, cure_witnesses=True)
+    export.write_artifact(tmp_path / "default_events", exported, {
+        "schema": export.EXPORT_SCHEMA, "publication_id": PUBLICATION_ID, "rows_digest": header["rows_digest"],
+        "policy_version": "bond_market_implied_rating_policy_v1", "policy_digest": "ab" * 32,
+        "cure_witnesses": True, "counts": counts,
+    })
+    return tmp_path / "default_events" / export.OUTPUT_NAME
 
 
 def _artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, terms: bool = True, default_events: bool = True) -> tuple[Path, dict[str, object]]:
@@ -117,6 +129,14 @@ def test_artifacts_refuse_unpinned_preview_and_drifted_inputs(tmp_path: Path, mo
         repair.CouponPitArtifacts.open(out, expected={**pins, "dropped_keys_digest": "0" * 64})
     with pytest.raises(backfill.PlanError, match="coupon_pit_default_events_sha256_mismatch"):
         repair.CouponPitArtifacts.open(out, expected={**pins, "default_events_sha256": "0" * 64})
+    manifest_path = out / "manifest.json"
+    original = manifest_path.read_text(encoding="utf-8")
+    edited = json.loads(original)
+    edited["inputs"]["default_events"]["export_manifest"]["cure_witnesses"] = False
+    manifest_path.write_text(json.dumps(edited), encoding="utf-8")
+    with pytest.raises(backfill.PlanError, match="coupon_pit_default_events_without_cure_witnesses"):
+        repair.CouponPitArtifacts.open(out, expected=pins)
+    manifest_path.write_text(original, encoding="utf-8")
     # The runbook's template once lacked dropped_keys_digest: a missing pin is refused by name.
     for key in repair.COUPON_PIT_PIN_KEYS:
         with pytest.raises(backfill.ArtifactPinError, match=f"coupon_pit_pin_keys_missing:{key}"):

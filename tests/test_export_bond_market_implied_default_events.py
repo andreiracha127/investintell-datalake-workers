@@ -134,3 +134,20 @@ def test_the_builder_records_the_export_pins_and_refuses_a_disagreeing_file(tmp_
     pq.write_table(tampered, tmp_path / "tampered.parquet")
     with pytest.raises(builder.BuildError, match="export_manifest_publication_id_mismatch"):
         builder.load_default_events(tmp_path / "tampered.parquet")
+
+
+def test_a_publishable_build_requires_the_pinned_export_with_cure_witnesses(tmp_path: Path) -> None:
+    raw_evidence = builder.load_default_events(_write(tmp_path / "raw.parquet", _publication_rows()))[1]
+    with pytest.raises(builder.BuildError, match="default_events_not_a_pinned_export"):
+        builder.require_publishable_default_events(raw_evidence)
+
+    frame, counts = export.select_export_rows(_publication_rows(), HEADER, cure_witnesses=False)
+    manifest = {"schema": export.EXPORT_SCHEMA, "publication_id": PUBLICATION, "cure_witnesses": False, "counts": counts, **POLICY}
+    export.write_artifact(tmp_path / "d_only", frame, manifest)
+    d_only_evidence = builder.load_default_events(tmp_path / "d_only" / export.OUTPUT_NAME)[1]
+    with pytest.raises(builder.BuildError, match="default_events_without_cure_witnesses"):
+        builder.require_publishable_default_events(d_only_evidence)
+
+    frame, counts = export.select_export_rows(_publication_rows(), HEADER, cure_witnesses=True)
+    export.write_artifact(tmp_path / "pinned", frame, {**manifest, "cure_witnesses": True, "counts": counts})
+    builder.require_publishable_default_events(builder.load_default_events(tmp_path / "pinned" / export.OUTPUT_NAME)[1])

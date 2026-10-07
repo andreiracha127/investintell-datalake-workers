@@ -291,14 +291,15 @@ evidence.
 From `E:\tmp-deploy\api\backend`, outside 06:00–08:30 UTC:
 
 ```powershell
-railway run --service risk-metrics -- uv run --no-project --with "psycopg[binary]" --with pandas --with pyarrow --with numpy `
+railway run -- uv run --no-project --with "psycopg[binary]" --with pandas --with pyarrow --with numpy --with statsmodels --with scipy `
   python E:\investintell-datalake-workers-sep\scripts\export_bond_market_implied_default_events.py `
   --out C:\Users\andre\AppData\Local\investintell\bond_panel_unit_repair\export_20260918T202403Z\default_events_YYYYMMDD `
   --publication-id c0172bf1-43e6-5175-be17-d54d708bf72a `
   --policy-digest 4b752a3fc5d5222b398f1e2a073b7c428b068e77968f8fb79edd20957202a08a `
-  --rows-digest b3cf2b11e3fb9e840194f9c50dc7472a38d40f71ed6155dc68df55ef4448b86c `
-  --cure-witnesses
+  --rows-digest b3cf2b11e3fb9e840194f9c50dc7472a38d40f71ed6155dc68df55ef4448b86c
 ```
+
+Run it from the API service, not `risk-metrics`. The session role must not be able to write the relations it reads, so the script refuses `worker_writer`, which owns them. It accepts `app_runtime`, which has SELECT only there. The cure witnesses are always exported, and the builder refuses a publishable build from a file that does not declare them.
 
 **Read checks:**
 - Everything is read in one `REPEATABLE READ READ ONLY` transaction whose first statement reads the pointer.

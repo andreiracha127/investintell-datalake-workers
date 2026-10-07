@@ -18,10 +18,11 @@ applies carry 0 inside each CONFIRMED market-implied default window of one pinne
   after commit proves the pointer did not move while exporting.
 - **Confirmed defaults only.** Every ``d_confirmed`` row of the publication is exported;
   their count must equal the header's ``d_confirmed_count``. ``d_candidate`` rows that
-  never confirm open no window and are not exported. With ``--cure-witnesses`` the file
-  also carries, for each cured episode, the single row that ends its window (the first
-  witnessed rated row after the episode's last D month), computed by the builder's own
-  ``panel_resolvers.default_flat_windows``; without it no window can close.
+  never confirm open no window and are not exported. The file always carries, for each
+  cured episode, the single row that ends its window (the first witnessed rated row after
+  the episode's last D month), computed by the builder's own
+  ``panel_resolvers.default_flat_windows``: without it no window could close, and the
+  builder refuses a publishable build from a file that lacks them.
 
 Writes ``<out>/bond_market_implied_default_events.parquet`` (the builder's
 ``DEFAULT_EVENT_COLUMNS`` + identity + ``export_role``; the manifest is also embedded as
@@ -33,7 +34,7 @@ Run outside 06:00-08:30 UTC with the owner's read-only railway recipe:
     railway run --service risk-metrics -- uv run --no-project \\
         --with "psycopg[binary]" --with pandas --with pyarrow --with numpy \\
         python scripts/export_bond_market_implied_default_events.py --out <dir> \\
-        --publication-id <uuid> --policy-digest <sha256> --rows-digest <sha256> [--cure-witnesses]
+        --publication-id <uuid> --policy-digest <sha256> --rows-digest <sha256>
 """
 from __future__ import annotations
 
@@ -188,8 +189,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publication-id", required=True)
     parser.add_argument("--policy-digest", required=True)
     parser.add_argument("--rows-digest", required=True)
-    parser.add_argument("--cure-witnesses", action="store_true",
-                        help="also export the row that closes each cured episode (without it no window closes)")
     args = parser.parse_args(argv)
     import psycopg  # local import: the module stays importable without the driver
     from psycopg.rows import dict_row
@@ -224,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     if end_pointer != start_pointer:
         raise ExportError(f"pointer_moved_during_export:{start_pointer}->{end_pointer}")
 
-    frame, counts = select_export_rows(rows, header, cure_witnesses=args.cure_witnesses)
+    frame, counts = select_export_rows(rows, header, cure_witnesses=True)
     manifest = {
         "schema": EXPORT_SCHEMA,
         "purpose": "one-time seed of the 2002-2026 coupon-PIT republication; not a producer input",
@@ -239,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         "first_month": _iso(header["first_month"]),
         "last_month": _iso(header["last_month"]),
         "header_row_count": int(header["row_count"]),
-        "cure_witnesses": bool(args.cure_witnesses),
+        "cure_witnesses": True,
         "isolation": "repeatable read, read only (one transaction; pointer read first)",
         "role": role["role"],
         "role_can_write_source_relations": bool(role["can_write"]),

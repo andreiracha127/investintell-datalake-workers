@@ -186,6 +186,9 @@ class CouponPitArtifacts:
         default_events = inputs.get("default_events") or {}
         if default_events.get("sha256") != pins["default_events_sha256"]:
             raise PlanError("coupon_pit_default_events_sha256_mismatch")
+        export_manifest = default_events.get("export_manifest") or {}
+        if export_manifest.get("cure_witnesses") is not True:
+            raise PlanError("coupon_pit_default_events_without_cure_witnesses")
         counts = manifest.get("counts") or {}
         dropped = int(counts.get("dropped_rows_no_pit_basis", -1))
         dropped_keys = manifest.get("dropped_keys")

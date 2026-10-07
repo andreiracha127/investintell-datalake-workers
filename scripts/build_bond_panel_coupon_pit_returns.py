@@ -102,6 +102,7 @@ DEFAULT_EVENT_COLUMNS = ("cusip_id", "month", "implied_bucket", "witnessed", "sp
 DEFAULT_EVENT_IDENTITY_COLUMNS = ("policy_version", "policy_digest", "publication_id")
 #: Parquet key-value metadata written by scripts/export_bond_market_implied_default_events.py.
 EXPORT_MANIFEST_KEY = b"investintell.export_manifest"
+EXPORT_SCHEMA = "bond_market_implied_default_events_export_v1"
 EXPORT_MANIFEST_PINS = (
     "schema", "purpose", "publication_id", "rows_digest", "policy_version", "policy_digest", "code_revision",
     "panel_publication_id", "as_of", "cure_witnesses", "pointer_start", "pointer_end", "counts",
@@ -258,6 +259,23 @@ def _export_manifest(path: Path) -> dict[str, Any] | None:
         return None
     manifest = json.loads(raw.decode("utf-8"))
     return {key: manifest.get(key) for key in EXPORT_MANIFEST_PINS}
+
+
+def require_publishable_default_events(evidence: dict[str, Any]) -> None:
+    """A publishable build needs the pinned export WITH its cure witnesses.
+
+    Without the rows that close each cured episode every default window stays open,
+    so every return after a real cure would trade flat. Only a file written by
+    ``scripts/export_bond_market_implied_default_events.py`` (its manifest embedded)
+    declaring ``cure_witnesses`` may feed the ``contractual_then_pit_default_flat``
+    mode the republication emitter accepts; a preview (no ``--terms``) may use any
+    publication rows.
+    """
+    manifest = evidence.get("export_manifest") or {}
+    if manifest.get("schema") != EXPORT_SCHEMA:
+        raise BuildError("default_events_not_a_pinned_export")
+    if manifest.get("cure_witnesses") is not True:
+        raise BuildError("default_events_without_cure_witnesses")
 
 
 def load_default_events(path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -581,6 +599,8 @@ def build(
     default_events_evidence: dict[str, Any] | None = None
     if default_events_path is not None:
         default_windows, default_events_evidence = load_default_events(default_events_path)
+        if terms is not None:
+            require_publishable_default_events(default_events_evidence)
     cutoff_ts = pd.Timestamp(cutoff)
     panel = _load_panel(inputs.paths["bond_panel_live.parquet"], cutoff_ts)
     returns = _load_returns(inputs.paths["bond_monthly_returns.parquet"])
