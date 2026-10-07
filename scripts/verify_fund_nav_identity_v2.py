@@ -3,7 +3,8 @@
 The CLI keeps its v2 filename to avoid duplicating the implementation; it
 implements the current audit ``nav-identity-audit-v3`` (contract
 ``nav-identity-audit-contract-v3-round7``). Generator v1/v2 artifacts are
-rejected; a v2 artifact is never accepted as the previous policy either.
+rejected; a v2 artifact is never accepted as the previous policy either (the
+previous policy is the published v1 or a complete published v3).
 
 Deliberately NOT a reuse of the generator: this module re-implements, from the
 written contract, the source typing, normalization, claim checksums, global
@@ -18,9 +19,10 @@ Inputs: the policy artifact, its private source-snapshot export (four
 sources: IU, funds_v, registry and SEC), and either a new READ ONLY
 REPEATABLE READ capture (``--dsn-env``: the four sources and the builder cohort
 in ONE snapshot) or a previously persisted capture bundle (``--capture-file``,
-fully offline), an optional hash-pinned v1 artifact (read as data, never
-re-verified) and an audit config pinning the audit contract version, the
-structural daily ceiling (5103), the SEC exclusion fraction (exactly 1/10) and
+fully offline), an optional hash-pinned previous artifact (the published
+v1 or a published v3; read as data, never re-verified) and an audit config
+pinning the audit contract version, the structural daily ceiling (5103), the
+SEC exclusion fraction (exactly 1/10) and
 conflict ceiling (exactly 0), the SEC freshness criterion, the Light
 revision/cohort query/strategy→sleeve map/Stage-1 quotas and the canary salt.
 
@@ -62,11 +64,11 @@ path; a live capture and an offline replay of the persisted bundle)::
 
     python -m scripts.verify_fund_nav_identity_v2 --policy-file P
       --source-snapshot-file S --dsn-env READONLY_DSN_ENV --capture-output C
-      --audit-config A --previous-policy-file V1 --previous-policy-sha256 H
+      --audit-config A --previous-policy-file PREV --previous-policy-sha256 H
       --custody-root R --output D --strict
     python -m scripts.verify_fund_nav_identity_v2 --policy-file P
       --source-snapshot-file S --capture-file C --audit-config A
-      --previous-policy-file V1 --previous-policy-sha256 H --custody-root R
+      --previous-policy-file PREV --previous-policy-sha256 H --custody-root R
       --output D2 --canary-output M
 """
 
@@ -1823,11 +1825,18 @@ POST_V1_REFERENCE_PREFIXES = tuple(
 def _load_previous(raw: bytes) -> tuple[dict, list]:
     """Hostile previous artifact; identity is computed, never trusted.
 
-    Continuity is measured against the PUBLISHED v1 (generator v1, or the
-    hand-authored pre-generator pointer that preceded it) only: an artifact of
-    a later generator (a retired, never-published v2, or another v3) is not a
-    previous policy and blocks (``previous_policy_retired``), whether its
-    generator label or its catalog evidence reference gives it away.
+    Continuity is measured against the PUBLISHED previous policy: the v1
+    (generator v1, or the hand-authored pre-generator pointer that preceded
+    it) or a published v3. A v3 is admitted only when it is complete: the
+    top-level and ``generation`` generator labels are both v3, every evidence
+    reference is exactly the v3 catalog reference, and ``generation.policy_hash``
+    is present and equal to the recomputed hash (the operator then requires
+    that identity to be the current pointer). Anything else of a later
+    generator (a retired, never-published v2; a v3 label without its
+    ``generation``; v3 references under v1 or stripped labels; mixed
+    references) is not a previous policy and blocks
+    (``previous_policy_retired``), whether its generator label or its catalog
+    evidence reference gives it away.
     """
     previous = _strict_json(raw, "previous_policy_invalid")
     evidence = previous.get("instrument_evidence")
@@ -1838,13 +1847,27 @@ def _load_previous(raw: bytes) -> tuple[dict, list]:
     present = [version for version in versions if version is not None]
     if any(not isinstance(version, str) for version in present):
         raise AuditBlocked("previous_policy_invalid")
-    if any(version != V1_PREVIOUS_GENERATOR for version in present) or (
-        isinstance(evidence, list)
-        and any(
-            isinstance(row, dict)
-            and isinstance(row.get("evidence_reference"), str)
-            and row["evidence_reference"].startswith(POST_V1_REFERENCE_PREFIXES)
+    published_v3 = (
+        previous.get("generator_version") == EXPECTED_GENERATOR
+        and isinstance(generation, dict)
+        and generation.get("generator_version") == EXPECTED_GENERATOR
+        and isinstance(evidence, list)
+        and all(
+            row.get("evidence_reference") == EXPECTED_REFERENCE
             for row in evidence
+            if isinstance(row, dict)
+        )
+    )
+    if not published_v3 and (
+        any(version != V1_PREVIOUS_GENERATOR for version in present)
+        or (
+            isinstance(evidence, list)
+            and any(
+                isinstance(row, dict)
+                and isinstance(row.get("evidence_reference"), str)
+                and row["evidence_reference"].startswith(POST_V1_REFERENCE_PREFIXES)
+                for row in evidence
+            )
         )
     ):
         raise AuditBlocked("previous_policy_retired")
@@ -1866,7 +1889,7 @@ def _load_previous(raw: bytes) -> tuple[dict, list]:
     ):
         raise AuditBlocked("previous_policy_invalid")
     computed = _policy_hash(previous)
-    if (
+    if (published_v3 and "policy_hash" not in generation) or (
         isinstance(generation, dict)
         and "policy_hash" in generation
         and (generation["policy_hash"] != computed)

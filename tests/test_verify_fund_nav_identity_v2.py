@@ -492,8 +492,9 @@ def test_retired_v1_v2_policy_is_blocked_not_reinterpreted(calendar, field, valu
     "version",
     ["fund-nav-policy-generator-v2", "fund-nav-policy-generator-v3", "other"],
 )
-def test_only_the_published_v1_is_a_previous_policy(calendar, version):
-    """A never-published v2 (or any later) artifact is never the previous policy."""
+def test_v2_and_incomplete_v3_artifacts_are_never_a_previous_policy(calendar, version):
+    """A never-published v2, or a v3 that is not a complete published v3, is
+    never the previous policy (labels and evidence references both checked)."""
     policy_raw, snapshot_raw, _ = _build(calendar)
     previous = json.loads(_previous(active_ids=(1,), calendar=calendar))
     previous["generator_version"] = version
@@ -532,6 +533,116 @@ def test_only_the_published_v1_is_a_previous_policy(calendar, version):
         previous_raw=json.dumps(previous).encode(),
     )
     assert report["inputs"]["previous_policy_identity"][1] == "2026-09-23.1"
+
+
+def _published_v3(calendar, version="2026-09-24.9") -> dict:
+    """A real generator-v3 artifact, as published under an earlier version."""
+    rows = catalog(*_rich_entities())
+    policy = generator.build_policy(
+        calendar, *rows, OBSERVED, "current-daily-nav-xnys-usd-adjusted", version
+    )
+    return json.loads(generator.canonical_json(policy))
+
+
+def _audit_with_previous(calendar, previous: dict, **kwargs):
+    policy_raw, snapshot_raw, _ = _build(calendar)
+    return verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        previous_raw=json.dumps(previous).encode(),
+        **kwargs,
+    )
+
+
+def test_published_v3_is_a_previous_policy(calendar):
+    """A complete published v3 is admitted: identity computed, A3 evaluated."""
+    previous = _published_v3(calendar)
+    published_hash = previous["generation"]["policy_hash"]
+    report = _audit_with_previous(calendar, previous)
+    assert report["inputs"]["previous_policy_identity"] == [
+        "current-daily-nav-xnys-usd-adjusted",
+        "2026-09-24.9",
+        published_hash,
+    ]
+    assert report["gates"]["A3"]["status"] == "PASS"
+    assert report["details"]["A3"]["preserved"] == report["details"]["A3"][
+        "previous_active"
+    ] > 0
+    a1 = report["gates"]["A1"]["checks"]
+    assert a1["hash_distinct_from_previous"] and a1["calendar_identical_to_previous"]
+    # A reconstruction carrying only the verifiable generation facts (its
+    # generator label and the policy hash it must reproduce) is the same previous.
+    previous["generation"] = {
+        "generator_version": "fund-nav-policy-generator-v3",
+        "policy_hash": published_hash,
+    }
+    minimal = _audit_with_previous(calendar, previous)
+    assert minimal["inputs"]["previous_policy_identity"][2] == published_hash
+    assert minimal["gates"]["A3"]["status"] == "PASS"
+
+
+def test_published_v3_previous_passes_the_strict_audit(calendar):
+    previous = _published_v3(calendar)
+    policy_raw, snapshot_raw, rows = _build(calendar)
+    report = verifier.audit(
+        policy_raw,
+        snapshot_raw=snapshot_raw,
+        live=_live(rows),
+        previous_raw=json.dumps(previous).encode(),
+        config_raw=_config(),
+    )
+    assert set(_gates(report).values()) == {"PASS"}
+    assert verifier.verdict_of(report, strict=True) is True
+
+
+@pytest.mark.parametrize(
+    "mutate,code",
+    [
+        # The policy hash is the identity the operator compares with the pointer.
+        (lambda p: p["generation"].__setitem__("policy_hash", "0" * 64), "invalid"),
+        (lambda p: p["generation"].pop("policy_hash"), "invalid"),
+        (lambda p: p.__setitem__("coverage_end", "2027-12-30"), "invalid"),
+        # Incomplete or mixed v3 artifacts are not a published v3.
+        (lambda p: p.pop("generation"), "retired"),
+        (lambda p: p["generation"].pop("generator_version"), "retired"),
+        (
+            lambda p: p.__setitem__("generator_version", "fund-nav-policy-generator-v1"),
+            "retired",
+        ),
+        (
+            lambda p: p["instrument_evidence"][0].__setitem__(
+                "evidence_reference", V2_CATALOG_REFERENCE
+            ),
+            "retired",
+        ),
+        (
+            lambda p: p["instrument_evidence"][0].__setitem__(
+                "evidence_reference", "fixture-previous-identity"
+            ),
+            "retired",
+        ),
+        (lambda p: p["instrument_evidence"][0].pop("evidence_reference"), "retired"),
+    ],
+)
+def test_tampered_or_incomplete_v3_previous_is_blocked(calendar, mutate, code):
+    previous = _published_v3(calendar)
+    mutate(previous)
+    with pytest.raises(verifier.AuditBlocked, match=f"previous_policy_{code}"):
+        _audit_with_previous(calendar, previous)
+
+
+def test_v2_artifact_is_still_retired_and_v1_still_accepted(calendar):
+    previous = _published_v3(calendar)
+    previous["generator_version"] = "fund-nav-policy-generator-v2"
+    previous["generation"]["generator_version"] = "fund-nav-policy-generator-v2"
+    for row in previous["instrument_evidence"]:
+        row["evidence_reference"] = V2_CATALOG_REFERENCE
+    with pytest.raises(verifier.AuditBlocked, match="previous_policy_retired"):
+        _audit_with_previous(calendar, previous)
+    v1 = json.loads(_previous(active_ids=(1,), calendar=calendar))
+    report = _audit_with_previous(calendar, v1)
+    assert report["inputs"]["previous_policy_identity"][1] == "2026-09-23.1"
+    assert report["gates"]["A3"]["status"] == "PASS"
 
 
 def test_snapshot_tamper_and_source_type_errors(calendar):

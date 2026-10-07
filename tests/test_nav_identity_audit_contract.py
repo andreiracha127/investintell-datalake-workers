@@ -117,13 +117,17 @@ def test_sec_source_is_only_company_tickers_mf():
 ROUND6_CONTRACT_SHA256 = (
     "24a2c2fb989ef832f778a69d887d870c6e990573e21cd7564403862eb461b1ff"
 )
+# Round7 before the 2026-10-06 in-place revision (previous policy: v1 only).
+ROUND7_V1_PREVIOUS_ONLY_SHA256 = (
+    "9941902de05c4006882bfb51b2816a357c91f2405e2a9f24c2369d3149ced244"
+)
 
 
 def test_round7_contract_is_frozen_and_round3_to_round6_are_retired():
-    """Round7 A8 rule: new audit literal; Round3-6 pins never match."""
+    """Round7 A8 rule (revised: v3 previous admitted); older pins never match."""
     assert contract.AUDIT_CONTRACT_VERSION == "nav-identity-audit-contract-v3-round7"
     assert contract.AUDIT_CONTRACT_SHA256 == (
-        "9941902de05c4006882bfb51b2816a357c91f2405e2a9f24c2369d3149ced244"
+        "380b8bd2a9b8b838588c62d4ff544928238f802044c61bbf59768c7d407622aa"
     )
     assert contract.CATALOG_SOURCE_QUERY_SHA256 == (
         "47cd5565cad722bd2ca7377f5206ea39d9460861394b7d09f87c113d5b39b2b5"
@@ -133,6 +137,7 @@ def test_round7_contract_is_frozen_and_round3_to_round6_are_retired():
         "64c75b3db696132e435523e0f3d072309fc78c72069c2d8942bf7ef89bfd68db",  # round4
         "0d237212e1e95a6e1e0494e071170d174481c29662a27b7bf9e7ac0bca3ec2c7",  # round5
         ROUND6_CONTRACT_SHA256,
+        ROUND7_V1_PREVIOUS_ONLY_SHA256,
     ):
         assert contract.AUDIT_CONTRACT_SHA256 != retired
     # The v2 three-source digest is retired with the v2 generator.
@@ -344,7 +349,12 @@ def test_repository_config_is_pinned_to_the_leaf():
     )
     assert config["sec"]["relation"] == contract.SEC_RELATION
     assert config["sec"]["query_contract_sha256"] == contract.SEC_QUERY_CONTRACT_SHA256
-    assert (
-        config["structural_daily_ceiling"] == contract.DEFAULT_STRUCTURAL_DAILY_CEILING
+    # The ceiling on P is re-pinned from a generation snapshot (the contract
+    # default is the pre-repair value); P is a subset of B, so it never exceeds
+    # the acknowledged baseline B = structural_baseline + accepted delta.
+    ceiling = config["structural_daily_ceiling"]
+    acknowledged = config["structural_baseline"] + (
+        config["accepted_structural_delta"] or 0
     )
+    assert type(ceiling) is int and ceiling <= acknowledged
     assert "active_ceiling" not in config
