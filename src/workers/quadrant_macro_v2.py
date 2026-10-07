@@ -1,6 +1,14 @@
 # src/workers/quadrant_macro_v2.py
 """MacroReleaseAxisModel v2 — the confidence_v2.0 quadrant stream
-(model_version macro_quadrant_us_v2).
+(model_version macro_quadrant_us_v2.1).
+
+Stream identity (quant audit 2026-10-07): ``macro_quadrant_us_v2`` rows (pre-audit
+coverage, z-only provenance hash) stay frozen; ``macro_quadrant_us_v2.1`` carries the
+frozen §6 historyCoverage factor in the coverage — which also enters every
+walk-back filter observation's q_data — and the nValid counts in
+``source_vintage_hash`` (see ``quadrant_macro``). The confidence identifiers
+(``confidence_v2.0`` / ``kalman_joint_posterior_v2``) are unchanged: the policy did
+not move, its coverage input did.
 
 SOURCING IS THE FROZEN v1 PATH UNCHANGED: the same PIT vintage read, the same
 two-stage transform (economic_transform_id -> robust_z via standardized_latest),
@@ -30,7 +38,7 @@ from src.workers.quadrant_macro import (
     _vintage_hash,
 )
 
-MODEL_VERSION = "macro_quadrant_us_v2"
+MODEL_VERSION = "macro_quadrant_us_v2.1"  # v2 = frozen rows; see the module docstring
 
 
 def _axis_observations(
@@ -104,7 +112,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 input_available_ats=[*g_av, *i_av],
                 critical_expiries=critical_expiries,
                 model_version=MODEL_VERSION,
-                source_vintage_hash=_vintage_hash(g_z, i_z, as_of),
+                source_vintage_hash=_vintage_hash(g_z, i_z, as_of, g_nvalid, i_nvalid),
             )
             qa.upsert_snapshot(
                 conn, qa.snapshot_to_record(snap),

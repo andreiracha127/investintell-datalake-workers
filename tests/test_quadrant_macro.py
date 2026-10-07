@@ -97,8 +97,32 @@ def test_snapshot_to_record_and_audit_shapes() -> None:
 
 
 def test_macro_worker_exposes_versions() -> None:
-    assert qm.MODEL_VERSION == "macro_quadrant_us_v1"
+    """Stream identity after the 2026-10-07 quant audit: the coverage semantics (§6
+    historyCoverage factor) and the provenance-hash layout changed, so each worker
+    publishes under a NEW minor model_version — the frozen v1/v2/v3 rows, and the
+    pinned harness that still computes v1/v3 under the old layout, are never
+    overwritten. The confidence identifiers are unchanged on purpose: estimator
+    and policy did not move, their coverage INPUT did."""
+    from harness.phase0q import decision as hd
+    from harness.phase0q import decision_v3 as hd3
+    from src.quadrant_confidence_v2 import (
+        CONFIDENCE_METHOD_V2,
+        CONFIDENCE_METHOD_V3_FUSED,
+        CONFIDENCE_MODEL_VERSION_V2,
+    )
+    from src.workers import quadrant_macro_v2 as qm2
+    from src.workers import quadrant_macro_v3 as qm3
+
+    assert qm.MODEL_VERSION == "macro_quadrant_us_v1.1"
     assert qm.CONFIDENCE_METHOD == "rolling_score_mad_distinct_vintages_v1"
+    assert qm2.MODEL_VERSION == "macro_quadrant_us_v2.1"
+    assert qm3.MODEL_VERSION == "macro_quadrant_us_v3.1"
+    assert CONFIDENCE_MODEL_VERSION_V2 == "confidence_v2.0"
+    assert CONFIDENCE_METHOD_V2 == "kalman_joint_posterior_v2"
+    assert CONFIDENCE_METHOD_V3_FUSED == "kalman_fused_joint_posterior_v3"
+    # the frozen labels stay the pinned harness's (certified chain) identity
+    assert hd.MODEL_VERSION == "macro_quadrant_us_v1"
+    assert hd3.MODEL_VERSION == "macro_quadrant_us_v3"
 
 
 def test_macro_run_returns_lock_busy_sentinel(monkeypatch) -> None:
@@ -374,6 +398,142 @@ def test_v2_axis_observations_consume_the_six_tuple_with_history_counts(monkeypa
     assert current == scored
 
 
+# --------------------------------------------------------------------------- #
+# Provenance: the valid-history counts enter source_vintage_hash (PR #161 review) #
+# --------------------------------------------------------------------------- #
+_UTC = dt.timezone.utc
+_AV = [dt.datetime(2024, 3, 5, tzinfo=_UTC)]
+_EXP = [dt.datetime(2024, 4, 15, tzinfo=_UTC)]
+_G_NOW = (0.3, {"INDPRO": 0.3}, {"INDPRO": 0.3, "PAYEMS": None}, _AV, _EXP,
+          {"INDPRO": 119, "PAYEMS": 7})
+_I_NOW = (-0.2, {"CPILFESL": -0.2}, {"CPILFESL": -0.2}, _AV, _EXP, {"CPILFESL": 30})
+
+
+def test_vintage_hash_moves_with_the_history_count() -> None:
+    """Coverage now depends on nValid, so provenance must too: a PIT correction that
+    changes a history count with the standardized z unchanged changes the hash
+    (hence the deterministic snapshot_id) instead of silently replacing the prior
+    row under the same identity. Counts are mandatory (no z-only layout here)."""
+    as_of = dt.date(2024, 3, 1)
+    g_z, i_z = {"INDPRO": 0.3, "PAYEMS": None}, {"CPILFESL": -0.2}
+    g_n, i_n = {"INDPRO": 119, "PAYEMS": 0}, {"CPILFESL": 119}
+    base = qm._vintage_hash(g_z, i_z, as_of, g_n, i_n)
+    assert len(base) == 64
+    # deterministic and independent of dict insertion order
+    assert base == qm._vintage_hash(dict(reversed(list(g_z.items()))), i_z, as_of,
+                                    {"PAYEMS": 0, "INDPRO": 119}, i_n)
+    # a count change ALONE moves the hash, on either axis
+    assert base != qm._vintage_hash(g_z, i_z, as_of, {"INDPRO": 118, "PAYEMS": 0}, i_n)
+    assert base != qm._vintage_hash(g_z, i_z, as_of, g_n, {"CPILFESL": 23})
+    # z and as_of still bind
+    assert base != qm._vintage_hash({"INDPRO": 0.31, "PAYEMS": None}, i_z, as_of, g_n, i_n)
+    assert base != qm._vintage_hash(g_z, i_z, dt.date(2024, 4, 1), g_n, i_n)
+    # the frozen (z, z, as_of) layout the pinned harness keeps is a different identity
+    from harness.phase0q import decision as hd
+    assert base != hd._vintage_hash(g_z, i_z, as_of)
+    with pytest.raises(TypeError):
+        qm._vintage_hash(g_z, i_z, as_of)  # type: ignore[call-arg]
+
+
+def _stub_db(monkeypatch, module) -> None:
+    import contextlib
+
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def commit(self): pass
+
+    @contextlib.contextmanager
+    def _got(conn, lock_id):
+        yield True
+
+    monkeypatch.setattr(module, "connect", lambda dsn: _Conn())
+    monkeypatch.setattr(module, "advisory_lock", _got)
+    monkeypatch.setattr(qa, "ensure_schema", lambda conn: None)
+    monkeypatch.setattr(qa, "upsert_snapshot", lambda conn, record, audit: None)
+
+
+def _capture_builder(monkeypatch, module, name) -> dict:
+    captured: dict = {}
+    real = getattr(module, name)
+
+    def _build(**kw):
+        captured.update(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(module, name, _build)
+    return captured
+
+
+def test_v1_run_stamps_the_new_version_and_hashes_the_history_counts(monkeypatch) -> None:
+    _stub_db(monkeypatch, qm)
+    monkeypatch.setattr(qa, "load_previous_snapshot", lambda conn, mv, as_of: None)
+    monkeypatch.setattr(qm, "_score_axis",
+                        lambda conn, axis, t: _G_NOW if axis == "growth" else _I_NOW)
+    monkeypatch.setattr(qm, "_score_history",
+                        lambda conn, axis, t: [0.05 + 0.01 * i for i in range(30)])
+    captured = _capture_builder(monkeypatch, qa, "build_snapshot")
+
+    out = qm.run("postgresql://unused", calc_date="2024-03-05T00:00:00")
+
+    as_of = dt.date(2024, 3, 5)
+    assert out["model_version"] == captured["model_version"] == "macro_quadrant_us_v1.1"
+    assert captured["source_vintage_hash"] == qm._vintage_hash(
+        _G_NOW[2], _I_NOW[2], as_of, _G_NOW[5], _I_NOW[5])
+    assert captured["growth_coverage"] == qm._coverage(
+        _G_NOW[2], qm._axis_specs("growth"), _G_NOW[5])
+    assert captured["inflation_coverage"] == qm._coverage(
+        _I_NOW[2], qm._axis_specs("inflation"), _I_NOW[5])
+
+
+def _v2_observations(n: int) -> list[tuple[float, float]]:
+    return [(0.10 + 0.01 * k, 1.0) for k in range(n)]
+
+
+def test_v2_run_stamps_the_new_version_and_hashes_the_history_counts(monkeypatch) -> None:
+    from src import quadrant_assemble_v2 as qa2
+    from src.workers import quadrant_macro_v2 as qm2
+
+    _stub_db(monkeypatch, qm2)
+    monkeypatch.setattr(qa2, "load_previous_state_v2", lambda conn, mv, as_of: {
+        "previous_snapshot_id": None, "prev_published_quadrant": None})
+    obs = _v2_observations(qm2.V2_FILTER_HISTORY_MONTHS)
+    monkeypatch.setattr(qm2, "_axis_observations",
+                        lambda conn, axis, t: (obs, _G_NOW if axis == "growth" else _I_NOW))
+    captured = _capture_builder(monkeypatch, qa2, "build_snapshot_v2")
+
+    out = qm2.run("postgresql://unused", calc_date="2024-03-05T00:00:00")
+
+    assert out["model_version"] == captured["model_version"] == "macro_quadrant_us_v2.1"
+    assert captured["source_vintage_hash"] == qm._vintage_hash(
+        _G_NOW[2], _I_NOW[2], dt.date(2024, 3, 5), _G_NOW[5], _I_NOW[5])
+    assert captured["growth_observations"] == obs
+
+
+def test_v3_run_stamps_the_new_version_and_hashes_the_history_counts(monkeypatch) -> None:
+    from src import quadrant_assemble_v2 as qa2
+    from src.workers import quadrant_macro_v3 as qm3
+
+    _stub_db(monkeypatch, qm3)
+    monkeypatch.setattr(qa2, "load_previous_state_v2", lambda conn, mv, as_of: {
+        "previous_snapshot_id": None, "prev_published_quadrant": None})
+    n = qm3.V2_FILTER_HISTORY_MONTHS
+    obs = _v2_observations(n)
+    aux = [(0.20 + 0.01 * k, 1.0) for k in range(n)]
+    monkeypatch.setattr(qm3, "_axis_observations",
+                        lambda conn, axis, t: (obs, _G_NOW if axis == "growth" else _I_NOW))
+    monkeypatch.setattr(qm3, "_market_growth_observations", lambda conn, t: aux)
+    captured = _capture_builder(monkeypatch, qa2, "build_snapshot_v2")
+
+    out = qm3.run("postgresql://unused", calc_date="2024-03-05T00:00:00")
+
+    assert out["model_version"] == captured["model_version"] == "macro_quadrant_us_v3.1"
+    assert captured["confidence_method"] == qm3.CONFIDENCE_METHOD_V3_FUSED
+    assert captured["source_vintage_hash"] == qm._vintage_hash(
+        _G_NOW[2], _I_NOW[2], dt.date(2024, 3, 5), _G_NOW[5], _I_NOW[5])
+    assert captured["growth_auxiliary_observations"] == aux
+
+
 def test_build_snapshot_stale_degrades_to_low_confidence() -> None:
     """Obligation 2: a compute-time 'stale' (critical source expired) is degraded to
     low_confidence with quadrant=NULL before INSERT, so the raw 'stale' literal never
@@ -394,7 +554,7 @@ import pytest
                     reason="needs DATABASE_URL with macro_observation_vintage populated")
 def test_smoke_macro_run_emits_a_snapshot() -> None:
     out = qm.run(_os.environ["DATABASE_URL"])
-    assert out["model_version"] == "macro_quadrant_us_v1"
+    assert out["model_version"] == qm.MODEL_VERSION
     assert out["status"] in {"valid", "low_confidence", "unavailable", "invalid"}
     if out["status"] == "valid":
         assert out["quadrant"] in {"recovery", "expansion", "slowdown", "contraction"}

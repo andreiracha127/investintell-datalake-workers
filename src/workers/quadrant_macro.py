@@ -8,6 +8,21 @@ the SAME QuadrantSnapshot the market worker emits via
 the shared assembler. NEVER reads the latest-revision macro_data (look-ahead).
 Market-implied is a separate worker and NEVER a fallback here: a bad macro snapshot
 is persisted as non-valid and the backend turns that into QUADRANT_UNAVAILABLE.
+
+Stream identity (quant audit 2026-10-07): a NEW model is a new major
+(``macro_quadrant_us_v2``/``_v3`` are additive streams with their own workers); the
+SAME model with a corrected §6 input is a minor. ``macro_quadrant_us_v1`` rows
+(coverage without the historyCoverage factor; provenance hash over the z-maps only)
+stay frozen and untouched — the pinned harness ``harness/phase0q/decision.py`` still
+computes under that label and layout. ``macro_quadrant_us_v1.1`` (this worker; MR-2
+coverage + history-count provenance): coverage carries the frozen
+historyCoverage_i = min(1, nValid_i / minimum_valid_observations_i) factor and
+``source_vintage_hash`` includes the nValid counts, so a rerun over the same PIT
+inputs is distinguishable from — and never overwrites — a historical v1 row (own
+latched chain: no predecessor under the new label). The confidence identifiers are
+unchanged on purpose: the uncertainty estimator
+(``rolling_score_mad_distinct_vintages_v1``) and the ``confidence_v1.0`` policy
+thresholds did not move; their coverage INPUT did, which is model-level.
 """
 from __future__ import annotations
 
@@ -24,7 +39,7 @@ from src.quadrant_confidence import U_FLOOR_SEED
 from src.quadrant_score import axis_score, standardized_latest
 from src.quadrant_staleness import source_expiry
 
-MODEL_VERSION = "macro_quadrant_us_v1"
+MODEL_VERSION = "macro_quadrant_us_v1.1"  # v1 = frozen rows + pinned harness; see the module docstring
 CONFIDENCE_METHOD = "rolling_score_mad_distinct_vintages_v1"
 SCORE_HISTORY_VINTAGES = 36   # distinct vintages window for uncertainty (>= MIN 24)
 FRESHNESS_DECAY_WINDOW = _dt.timedelta(days=14)  # soft->hard linear decay (decision D)
@@ -207,7 +222,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             critical_expiries = [*g_exp, *i_exp]
             _require_critical_expiries(critical_expiries)
 
-            source_vintage_hash = _vintage_hash(g_z, i_z, as_of)
+            source_vintage_hash = _vintage_hash(g_z, i_z, as_of, g_nvalid, i_nvalid)
             snap = qa.build_snapshot(
                 as_of=as_of, computed_at=decision_time, previous_snapshot_id=prev_id,
                 growth_score=g_score, growth_history=g_hist, growth_prev_sign=g_prev_sign,
@@ -235,7 +250,24 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
     }
 
 
-def _vintage_hash(g_z: dict[str, Any], i_z: dict[str, Any], as_of: _dt.date) -> str:
-    """Stable hash of the inputs that fed this snapshot (provenance / §8 cut)."""
-    payload = repr((sorted(g_z.items()), sorted(i_z.items()), as_of.isoformat()))
+def _vintage_hash(
+    g_z: dict[str, Any], i_z: dict[str, Any], as_of: _dt.date,
+    g_history_counts: dict[str, int], i_history_counts: dict[str, int],
+) -> str:
+    """Stable hash of the inputs that fed this snapshot (provenance / §8 cut).
+
+    v*.1 layout: (growth z, inflation z, as_of, growth nValid, inflation nValid).
+    The §6 coverage — hence status/confidence and the v2/v3 filter observations —
+    depends on nValid_i, so a PIT backfill or correction that moves a history count
+    while leaving the standardized z untouched changes the hash, the deterministic
+    snapshot_id and the upsert target, instead of silently replacing the prior row
+    under the same identity. The counts are mandatory and cover every series the
+    axis scores (a missing series carries 0). The pinned harness
+    (``harness/phase0q/decision.py``) keeps the frozen (z, z, as_of) layout for the
+    frozen v1/v3 labels.
+    """
+    payload = repr((
+        sorted(g_z.items()), sorted(i_z.items()), as_of.isoformat(),
+        sorted(g_history_counts.items()), sorted(i_history_counts.items()),
+    ))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
