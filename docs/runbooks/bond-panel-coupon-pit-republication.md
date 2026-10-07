@@ -422,11 +422,72 @@ order (own 20 min timeout; cannot undo the CAS).
 
 ### 3.10 Rollback
 
-The child is immutable and the head is untouched: `UPDATE bond_panel_app_pointer
-SET publication_id = <head> WHERE product = 'bond_panel_v1' AND publication_id =
-<child>` (the pointer trigger requires `<head>` to be the child's parent, which
-it is), then refresh the four `*_mat` views. Light's refresh must be re-run
-again afterwards.
+**PRODUCTION WRITE, QUIET WINDOW, OWNER AUTHORIZATION REQUIRED.** Restore the
+parent's data by publishing a new rollback child of the repair child. The
+pointer guard requires forward ancestry: a direct `child → head` update is
+rejected. The existing trigger remains enabled and unchanged for rollback.
+
+Record the owner's approval reference, the repair child and its original head,
+and the reviewed Git SHA containing the rollback script in the incident/change
+record. Use the same authenticated `psql` connection as steps 3.5–3.8. From the
+reviewed checkout, run the following command after replacing every `<…>` value
+(the connection string belongs in the operator's environment, not in Git):
+
+```powershell
+$env:PGDATABASE = '<approved PostgreSQL connection string>'
+psql -X -v ON_ERROR_STOP=1 `
+  -v failed_child='<repair child publication_id>' `
+  -v restore_parent='<original head publication_id>' `
+  -v authorization='<owner approval or change-record reference>' `
+  -v code_revision='<reviewed 40-character Git SHA>' `
+  -f scripts/rollback_bond_panel_coupon_pit.sql
+if ($LASTEXITCODE -ne 0) { throw 'Rollback or materialized-view refresh failed; inspect the psql output before retrying.' }
+```
+
+The checked-in script takes the pointer lock, requires the pointer still to
+name the validated coupon-PIT repair child, and verifies its direct parent,
+matching config/window, and recorded repair evidence. If Stage 6 has advanced
+the pointer, it refuses: do not substitute the newer pointer into this procedure;
+prepare a separately reviewed restoration plan for that newer window.
+
+Within one transaction it projects the original head's complete ancestry,
+including ancestor tombstones, and copies all four surfaces into a new child
+of the repair child. Legacy distribution identity receives the same fill used
+in step 3.6. Restored return rows take precedence over the repair's tombstones;
+any returns present only on the repair are tombstoned on the rollback child.
+The rollback publication records the owner approval reference, reviewed SHA,
+source parent fingerprint, failed child and restoration target in immutable
+lineage and gate evidence. That evidence determines its SHA-256 fingerprint
+and publication UUID. It validates the child, advances the pointer
+`repair child → rollback child`, and checks every served column and key against
+the restored parent projection before committing. Any mismatch aborts the
+entire transaction. No immutable history is changed.
+
+After COMMIT the script refreshes the four `*_mat` views in the frozen order.
+Retain the reported rollback publication ID and fingerprint with the psql log.
+The operation is atomic and may be retried after a pre-commit failure. If the
+pointer already names the rollback child, do **not** rerun publication: a
+post-commit refresh failure cannot undo the pointer move. Run only these
+refreshes using the same connection:
+
+```powershell
+@'
+\set ON_ERROR_STOP on
+SET ROLE worker_writer;
+SET statement_timeout = '20min';
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_rv_signal_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_returns_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_rating_pit_v1_mat;
+REFRESH MATERIALIZED VIEW CONCURRENTLY bond_panel_current_snapshot_v1_mat;
+RESET statement_timeout;
+RESET ROLE;
+'@ | psql -X
+if ($LASTEXITCODE -ne 0) { throw 'Rollback materialized-view refresh failed.' }
+```
+
+Verify the pointer and all four materialized-view counts against the rollback
+publication's declarations, confirm the original dropped keys are restored,
+and re-run Light's recommendation refresh (§2) to replace its cached factors.
 
 ## 4. Evidence
 

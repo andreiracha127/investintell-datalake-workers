@@ -136,10 +136,6 @@ def test_a_tombstoned_key_is_absent_after_the_pointer_switch_and_can_be_republis
     assert served[dropped] == (later, 0.099)
     assert served[kept] == (child, 0.021)
 
-    # Rolling the pointer back to the head serves the head's rows again.
-    _point(conn, head)
-    assert set(_served(conn)) == {dropped, kept, other}
-
 
 def test_tombstones_are_write_once_facts_of_a_prepared_publication(conn) -> None:
     head = _publication(conn, None, 1, date(2021, 4, 1))
@@ -177,3 +173,151 @@ def test_return_and_tombstone_are_exclusive_in_both_insert_orders(conn, tombston
     for table, expected in (("bond_panel_returns", int(not tombstone_first)), ("bond_panel_returns_tombstone", int(tombstone_first))):
         count = conn.execute(sql.SQL("SELECT count(*) FROM {} WHERE publication_id = %s").format(sql.Identifier(table)), (publication,)).fetchone()[0]
         assert count == expected
+
+
+@pytest.fixture()
+def governed_conn():
+    """Install the complete production protocol, including the pointer guard."""
+    schema = f"rollback_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"], autocommit=True) as connection:
+        if not connection.execute("SELECT 1 FROM pg_roles WHERE rolname = 'worker_writer'").fetchone():
+            connection.execute("CREATE ROLE worker_writer")
+        connection.execute(sql.SQL("CREATE SCHEMA {} AUTHORIZATION worker_writer").format(sql.Identifier(schema)))
+        try:
+            connection.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
+            connection.execute(PANEL_SQL.read_text(encoding="utf-8"))
+            yield connection
+        finally:
+            connection.execute("ROLLBACK; RESET ROLE; SET search_path TO public")
+            connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def _complete_facts(conn, publication, rows, *, legacy_identity=False):
+    """Tiny valid dual-series surfaces, with distinctive payload and carry."""
+    for month, cusip, total in rows:
+        identity = (publication, month, cusip, None if legacy_identity else cusip, None if legacy_identity else "rule_144a")
+        conn.execute(
+            "INSERT INTO bond_panel_snapshot (publication_id, month, cusip_id, reference_cusip9, distribution_rule, "
+            "eligibility_state, eligibility_reason, price, payload) "
+            "VALUES (%s, %s, %s, %s, %s, 'included', 'eligible', 99, '{\"original\":true}')", identity,
+        )
+        conn.execute(
+            "INSERT INTO bond_panel_rv_signal (publication_id, month, cusip_id, reference_cusip9, distribution_rule, "
+            "eligibility_state, eligibility_reason, residual_bps, payload) "
+            "VALUES (%s, %s, %s, %s, %s, 'included', 'eligible', 17, '{}')", identity,
+        )
+        conn.execute(
+            "INSERT INTO bond_panel_rating_pit (publication_id, month, cusip_id, reference_cusip9, distribution_rule, "
+            "rating_bucket, rating_state, rating_reason, payload) "
+            "VALUES (%s, %s, %s, %s, %s, 'BBB', 'historical_pit', 'test', '{}')", identity,
+        )
+        conn.execute(
+            "INSERT INTO bond_panel_returns (publication_id, month, cusip_id, reference_cusip9, distribution_rule, "
+            "total_return, price_return, carry_return, exit_basis, suspect, payload) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s - 0.001, 0.001, 'observed', false, '{\"original\":true}')",
+            (*identity, total, total),
+        )
+
+
+def _rollback_history(conn, *, legacy_identity=False):
+    month = date(2021, 4, 1)
+    dropped, kept, hidden = "DDD000004", "AAA000001", "HHH000001"
+    root = _publication(conn, None, 3, month)
+    _complete_facts(conn, root, [(month, dropped, 0.01), (month, kept, 0.02), (month, hidden, 0.04)], legacy_identity=legacy_identity)
+    _validate(conn, root)
+    head = _publication(conn, root, 1, month)
+    _complete_facts(conn, head, [(month, kept, 0.03)])
+    conn.execute(
+        "INSERT INTO bond_panel_returns_tombstone VALUES (%s, %s, %s, 'parent_absence', '{}')", (head, month, hidden),
+    )
+    _validate(conn, head)
+    _point(conn, head)
+    before = {
+        surface: conn.execute(f"SELECT to_jsonb(s) - 'publication_id' FROM bond_panel_current_{surface}_v1 s ORDER BY month, cusip_id").fetchall()
+        for surface in ("snapshot", "rv_signal", "returns", "rating_pit")
+    }
+    if legacy_identity:
+        for rows in before.values():
+            for (row,) in rows:
+                if row["distribution_rule"] is None:
+                    row.update(distribution_rule="rule_144a", reference_cusip9=row["cusip_id"], distribution_decision_id=None)
+    child = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO bond_panel_publications (publication_id, parent_publication_id, publication_status, config_hash, "
+        "input_fingerprint, code_revision, first_month, last_closed_month, open_month, snapshot_rows, rv_signal_rows, "
+        "returns_rows, ratings_pit_rows, source_lineage, gate_evidence) "
+        "SELECT %s, publication_id, 'prepared', config_hash, %s, 't3_returns_coupon_pit_repair_v2', first_month, "
+        "last_closed_month, open_month, 2, 2, 2, 2, "
+        "jsonb_build_object('coupon_pit_repair', jsonb_build_object('from_head_publication_id', publication_id::text)), "
+        "jsonb_build_object('coupon_pit_repair', jsonb_build_object('from_head_publication_id', publication_id::text)) "
+        "FROM bond_panel_publications WHERE publication_id = %s",
+        (child, uuid.uuid4().hex + uuid.uuid4().hex, head),
+    )
+    _complete_facts(conn, child, [(month, kept, 0.09), (month, hidden, 0.08)])
+    conn.execute(
+        "INSERT INTO bond_panel_returns_tombstone VALUES (%s, %s, %s, 'coupon_pit_no_coupon_basis', '{}')",
+        (child, month, dropped),
+    )
+    _validate(conn, child)
+    _point(conn, child)
+    return root, head, child, before
+
+
+def _run_rollback(conn, child, parent):
+    """Execute the checked-in psql script with equivalent quoted variable values."""
+    script = (ROOT / "scripts" / "rollback_bond_panel_coupon_pit.sql").read_text(encoding="utf-8")
+    values = {
+        "failed_child": str(child), "restore_parent": str(parent),
+        "authorization": "owner's reviewed change 164", "code_revision": "a" * 40,
+    }
+    for name, value in values.items():
+        script = script.replace(f":'{name}'", sql.Literal(value).as_string(conn))
+    script = re.sub(r"^\\set ON_ERROR_STOP on\n", "", script, flags=re.MULTILINE)
+    conn.execute(script)
+
+
+@pytest.mark.parametrize("legacy_identity", [False, True])
+def test_governed_rollback_restores_parent_projection_and_refreshes_mirrors(governed_conn, legacy_identity):
+    conn = governed_conn
+    _root, head, child, before = _rollback_history(conn, legacy_identity=legacy_identity)
+    assert (date(2021, 4, 1), "DDD000004") not in _served(conn)
+    assert _served(conn)[date(2021, 4, 1), "AAA000001"] == (child, 0.09)
+    # The old runbook's child -> parent UPDATE is rejected by the real guard.
+    with pytest.raises(psycopg.errors.RaiseException, match="must directly extend"):
+        _point(conn, head)
+    _run_rollback(conn, child, head)
+    rollback = conn.execute("SELECT publication_id FROM bond_panel_app_pointer").fetchone()[0]
+    assert rollback not in (head, child)
+    publication = conn.execute(
+        "SELECT parent_publication_id, publication_status, source_lineage->'coupon_pit_rollback', "
+        "gate_evidence->'coupon_pit_rollback', input_fingerprint FROM bond_panel_publications WHERE publication_id = %s", (rollback,),
+    ).fetchone()
+    assert publication[:2] == (child, "validated")
+    assert publication[2] == publication[3]
+    assert publication[2]["owner_authorization"] == "owner's reviewed change 164"
+    assert publication[2]["restore_parent_publication_id"] == str(head)
+    assert publication[2]["authorized_code_revision"] == "a" * 40
+    assert str(rollback).replace("-", "") == publication[4][:32]
+    for surface, expected in before.items():
+        actual = conn.execute(
+            f"SELECT to_jsonb(s) - 'publication_id' FROM bond_panel_current_{surface}_v1 s ORDER BY month, cusip_id"
+        ).fetchall()
+        assert actual == expected
+        # The exact script also refreshes every application-facing mirror.
+        mirror_count = conn.execute(f"SELECT count(*) FROM bond_panel_current_{surface}_v1_mat").fetchone()[0]
+        assert mirror_count == len(expected)
+        assert conn.execute(f"SELECT DISTINCT publication_id FROM bond_panel_current_{surface}_v1_mat").fetchall() == [(rollback,)]
+    assert conn.execute("SELECT cusip_id FROM bond_panel_returns_tombstone WHERE publication_id = %s", (rollback,)).fetchall() == [("HHH000001",)]
+
+
+@pytest.mark.parametrize("wrong_input", ["pointer", "parent"])
+def test_governed_rollback_refuses_changed_pointer_or_wrong_parent(governed_conn, wrong_input):
+    conn = governed_conn
+    root, head, child, _before = _rollback_history(conn)
+    expected_error = "expected repair child pointer" if wrong_input == "pointer" else "unchanged-window parent"
+    count = conn.execute("SELECT count(*) FROM bond_panel_publications").fetchone()[0]
+    with pytest.raises(psycopg.errors.RaiseException, match=expected_error):
+        _run_rollback(conn, head if wrong_input == "pointer" else child, root if wrong_input == "parent" else head)
+    conn.execute("ROLLBACK; RESET ROLE")
+    assert conn.execute("SELECT publication_id FROM bond_panel_app_pointer").fetchone()[0] == child
+    assert conn.execute("SELECT count(*) FROM bond_panel_publications").fetchone()[0] == count
