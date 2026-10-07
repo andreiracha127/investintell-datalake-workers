@@ -76,8 +76,9 @@ def test_nfci_hysteresis_enter_hold_exit_reenter():
     ]
     states = rc.nfci_states(obs)
     assert [s[2] for s in states] == [True, True, False, True]
-    # carrega valor + data para proveniência/forward-fill
-    assert states[0][0] == _dt.date(2020, 1, 1)
+    # carrega valor + carimbo de DIVULGAÇÃO (obs qua 2020-01-01 + 5 dias úteis = qua
+    # 2020-01-08) para proveniência/forward-fill — nunca a data de observação
+    assert states[0][0] == _dt.date(2020, 1, 8)
     assert states[2][1] == -0.10
 
 
@@ -85,6 +86,37 @@ def test_nfci_below_entry_stays_inactive():
     obs = [(_dt.date(2020, 1, 1), -0.5), (_dt.date(2020, 1, 8), -0.01)]
     # nunca > 0 → nunca entra
     assert [s[2] for s in rc.nfci_states(obs)] == [False, False]
+
+
+def test_nfci_release_date_is_five_business_days_after_the_reference_friday():
+    # FRED carimba a sexta de referência; +5 dias úteis Seg–Sex = a sexta seguinte
+    assert rc.NFCI_RELEASE_LAG_BDAYS == 5
+    assert rc.nfci_release_date(_dt.date(2020, 3, 13)) == _dt.date(2020, 3, 20)
+    # o fim de semana não conta: qui 2020-03-12 + 5 úteis = qui 2020-03-19
+    assert rc.nfci_release_date(_dt.date(2020, 3, 12)) == _dt.date(2020, 3, 19)
+    assert rc.nfci_release_date(_dt.date(2020, 3, 13), lag_business_days=0) == _dt.date(2020, 3, 13)
+
+
+def test_nfci_vote_waits_for_the_release_date():
+    """Regressão MR-1 (auditoria quant 2026-10-07): a observação NFCI de sex
+    2020-03-13 (1.2 > 0 → entra) só é divulgada em 2020-03-20. Com crédito e
+    tendência inativos, o voto NFCI é o único que varia: False em 13..19/03,
+    True a partir de 20/03 — nunca na data de observação."""
+    days = [_dt.date(2020, 3, d) for d in (13, 16, 17, 18, 19, 20, 23)]
+    credit = [_credit(d, 0.9, 0.8) for d in days]      # ratio > p20 → credit False
+    trend = {(2020, 3): False}
+    nfci = rc.nfci_states([(_dt.date(2020, 3, 13), 1.2)])
+    assert nfci == [(_dt.date(2020, 3, 20), 1.2, True)]
+    rows = rc.compose(credit, trend, nfci)
+    by_date = {r["regime_date"]: r for r in rows}
+    for d in days[:5]:  # 13/03 (obs) .. 19/03: ainda não divulgado
+        assert by_date[d]["nfci_vote"] is False, d
+        assert by_date[d]["vote_count"] == 0 and by_date[d]["nfci"] is None
+    for d in days[5:]:  # 20/03 (divulgação) e 23/03: forward-fill
+        assert by_date[d]["nfci_vote"] is True, d
+        assert by_date[d]["vote_count"] == 1 and by_date[d]["nfci"] == 1.2
+    assert all(r["credit_vote"] is False and r["trend_vote"] is False for r in rows)
+    assert all(r["state"] == "risk_on" for r in rows)  # 1 voto nunca decide sozinho
 
 
 # ──────────────────────────────────────────────────────────────────────────────

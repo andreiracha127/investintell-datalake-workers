@@ -23,6 +23,12 @@ Decisões herdadas do estudo (não opcionais):
   * NFCI vem do FRED com histórico pleno (o lake macro_data só guarda ~10 anos).
     Caveat conhecido: NFCI é revisado ex-post (viés de revisão; teto otimista) — no
     composite ele é 1 voto entre 3, nunca decide sozinho.
+  * O voto NFCI é carimbado pela DATA DE DIVULGAÇÃO, não pela data de observação do
+    FRED (a sexta-feira de referência): o Chicago Fed publica na semana seguinte, então
+    cada observação só vota a partir de obs + ``NFCI_RELEASE_LAG_BDAYS`` dias úteis
+    (point-in-time). O backtest ``7ecef2e31f1fa4c98b7c5cc732b1f259`` aplicou o NFCI
+    na data de observação; a revalidação com o carimbo de divulgação está pendente
+    (auditoria quant 2026-10-07, MR-1).
 
 Contract:  run(dsn, *, calc_date=None, limit=None)
            -> {"days", "upserted", "state", "vote_count", "flips", "last_flip",
@@ -36,12 +42,14 @@ import os
 from typing import Any
 
 from src.db import LOCK_REGIME_COMPOSITE, advisory_lock, connect
+from src.quadrant_staleness import add_business_days
 
 SPY_TICKER = "SPY"
 HISTORY_START = _dt.date(2007, 1, 1)   # casa o set_start_date do backtest
 SMA_MONTHS = 10                        # Faber: SMA de 10 fechamentos mensais
 NFCI_ENTER = 0.0                       # NFCI > 0 entra em risk-off
 NFCI_EXIT = -0.05                      # NFCI < −0,05 sai (histerese)
+NFCI_RELEASE_LAG_BDAYS = 5             # FRED carimba a sexta de referência; o Chicago Fed divulga na semana seguinte (+5 dias úteis Seg–Sex, carimbo conservador)
 FRED_OBS_URL = "https://api.stlouisfed.org/fred/series/observations"
 INSERT_CHUNK = 1_000
 
@@ -86,16 +94,27 @@ def trend_active_by_month(
     return active
 
 
+def nfci_release_date(obs_date: _dt.date, *, lag_business_days: int = NFCI_RELEASE_LAG_BDAYS) -> _dt.date:
+    """Carimbo de divulgação de uma observação NFCI: data de observação (sexta de
+    referência no FRED) + ``lag_business_days`` dias úteis Seg–Sex."""
+    return add_business_days(
+        _dt.datetime.combine(obs_date, _dt.time.min), lag_business_days).date()
+
+
 def nfci_states(
     nfci_obs: list[tuple[_dt.date, float]],
+    *,
+    lag_business_days: int = NFCI_RELEASE_LAG_BDAYS,
 ) -> list[tuple[_dt.date, float, bool]]:
     """Estado do voto NFCI por observação, com histerese (> 0 entra, < −0,05 sai).
-    Retorna (data, valor, ativo) em ordem — o consumidor faz forward-fill."""
+    Retorna (data_de_divulgação, valor, ativo) em ordem de observação — o consumidor
+    faz forward-fill a partir da DIVULGAÇÃO (obs + ``lag_business_days`` dias úteis),
+    nunca da data de observação do FRED (point-in-time)."""
     out: list[tuple[_dt.date, float, bool]] = []
     active = False
     for d, v in sorted(nfci_obs, key=lambda t: t[0]):
         active = (v >= NFCI_EXIT) if active else (v > NFCI_ENTER)
-        out.append((d, v, active))
+        out.append((nfci_release_date(d, lag_business_days=lag_business_days), v, active))
     return out
 
 
@@ -106,7 +125,9 @@ def compose(
 ) -> list[dict[str, Any]]:
     """Série diária de regime por votos. ``credit_rows`` = linhas de
     credit_regime_daily ({regime_date, ratio, p20_5y}); trend/nfci são carregados
-    adiante (forward-fill) sobre cada data de crédito. risk_off ⇔ ≥ 2 votos.
+    adiante (forward-fill) sobre cada data de crédito — o ``nfci`` é consumido pelo
+    carimbo de divulgação que ``nfci_states`` devolve (observação + lag), então uma
+    observação só vota em datas >= sua divulgação. risk_off ⇔ ≥ 2 votos.
     ``flip`` marca a 1ª observação de cada novo estado (estado inicial: risk_on).
     """
     nfci_sorted = sorted(nfci, key=lambda t: t[0])
