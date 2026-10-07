@@ -2042,3 +2042,12 @@ def test_default_flat_source_is_optional_and_named_in_the_lineage(monkeypatch) -
     monkeypatch.setattr(bond_panel, "_frame", lambda *_args, **_kwargs: pd.DataFrame(columns=["publication_id", "policy_digest", "last_month"]))
     windows, lineage = bond_panel._default_flat_windows(_RelationConn([]), ["DFLT"])
     assert windows.empty and lineage == {"default_flat_source": "unpublished"}
+
+
+def test_a_failing_default_flat_source_fails_the_run_by_name() -> None:
+    class _Broken:
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("permission denied for view bond_market_implied_rating_v1_current")
+
+    with pytest.raises(ValueError, match="^default_flat_source:RuntimeError$"):
+        bond_panel._default_flat_windows(_Broken(), ["DFLT"])

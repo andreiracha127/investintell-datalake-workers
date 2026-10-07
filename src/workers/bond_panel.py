@@ -242,8 +242,17 @@ def _default_flat_windows(conn: Any, cusips: list[str]) -> tuple[pd.DataFrame, d
     months <= t-1: every episode in it was confirmed by t, which is the
     point-in-time basis the returns use. It is optional on purpose (Stage 7 is
     default-off): an absent or unpointed product yields no windows, the carry stays
-    contractual, and the lineage names the source either way.
+    contractual, and the lineage names the source either way. A read failure of a
+    present source fails the run as ``default_flat_source:<error>`` (fail closed,
+    named), never as a materializer error.
     """
+    try:
+        return _read_default_flat_windows(conn, cusips)
+    except Exception as exc:
+        raise ValueError(f"default_flat_source:{type(exc).__name__}") from exc
+
+
+def _read_default_flat_windows(conn: Any, cusips: list[str]) -> tuple[pd.DataFrame, dict[str, str]]:
     absent = conn.execute(
         "SELECT relation FROM unnest(%s::text[]) AS candidate(relation) WHERE to_regclass(relation) IS NULL",
         (list(IMPLIED_RATING_RELATIONS),),
