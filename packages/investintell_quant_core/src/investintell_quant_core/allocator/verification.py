@@ -147,6 +147,29 @@ def verify_solution(
                 )
             )
 
+    # The published sleeve weights must be the same numbers the band checks
+    # above looked at. A corrupted S that still passes the sign/column-sum
+    # preflight would otherwise report weights that contradict the blocks.
+    block_by_label = {block.label: block for block in problem.blocks}
+    for i, sleeve_id in enumerate(problem.sleeve_ids):
+        block = block_by_label.get(f"sleeve:{sleeve_id}")
+        expected = float(x_array[list(block.indices)].sum()) if block is not None else 0.0
+        reported = float(sleeve_vector[i])
+        if abs(reported - expected) > tolerance.constraint:
+            issues.append(
+                AllocatorIssue(
+                    code=AllocatorErrorCode.CONSTRAINT_VIOLATION,
+                    message=(
+                        f"sleeve_weights[{sleeve_id}]={reported} does not equal "
+                        f"its block sum {expected}"
+                    ),
+                    constraint_label="sleeve_weights",
+                    observed=reported,
+                    lower_bound=expected,
+                    upper_bound=expected,
+                )
+            )
+
     cvar = realized_cvar(y_array, problem.daily_returns, problem.cvar_alpha)
     if cvar > problem.cvar_limit + tolerance.cvar:
         issues.append(

@@ -868,9 +868,13 @@ def run(dsn: str) -> dict[str, Any]:
             run_id = uuid.uuid4()
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
-                    """SELECT revision_id,state,published_risk_run_id
-                       FROM fund_nav_risk_publication
-                       WHERE readiness_profile=%s""",
+                    """SELECT p.revision_id,p.state,p.published_risk_run_id,
+                              r.status AS risk_status,r.run_scope,r.policy_id,
+                              r.policy_version,r.policy_hash,r.calc_date,r.due_session,
+                              r.completed_at
+                       FROM fund_nav_risk_publication p
+                       LEFT JOIN fund_nav_risk_runs r ON r.risk_run_id=p.published_risk_run_id
+                       WHERE p.readiness_profile=%s""",
                     (PROFILE,),
                 )
                 risk_publication = cur.fetchone()
@@ -882,6 +886,25 @@ def run(dsn: str) -> dict[str, Any]:
                     raise RuntimeError(
                         "RETURN_SAMPLE_NOT_CURRENT: risk run not published"
                     )
+                if (
+                    risk_publication["risk_status"] != "complete"
+                    or risk_publication["run_scope"] != "current_full"
+                    or any(
+                        risk_publication[key] != policy[key]
+                        for key in ("policy_id", "policy_version", "policy_hash")
+                    )
+                    or risk_publication["calc_date"] != grid[-1]
+                    or risk_publication["due_session"] != grid[-1]
+                    or risk_publication["completed_at"] is None
+                    or risk_publication["completed_at"] > decision_at
+                ):
+                    # A policy rollout must not replace the previous snapshot
+                    # with rows whose risk evidence belongs to another policy.
+                    return {
+                        "status": "blocked", "state": "blocked", "published": False,
+                        "retryable": True, "reason": "RETURN_SAMPLE_NOT_CURRENT",
+                        "as_of_session": grid[-1].isoformat(),
+                    }
                 cur.execute(
                     "SELECT instrument_id FROM funds_profile_mv ORDER BY instrument_id"
                 )

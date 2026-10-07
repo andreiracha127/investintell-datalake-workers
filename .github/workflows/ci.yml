@@ -133,6 +133,9 @@ jobs:
             tests/test_bond_curve_materializer.py
             tests/test_bond_metrics_worker.py
             tests/test_bond_panel_worker.py
+            tests/test_build_bond_panel_coupon_pit_returns.py
+            tests/test_export_bond_market_implied_default_events.py
+            tests/test_backfill_bond_panel_coupon_pit_repair.py
             tests/test_bond_price_eligibility_view.py
             tests/test_bond_live_daily_worker.py
             tests/test_bond_price_ingest.py
@@ -191,12 +194,86 @@ jobs:
             tests/test_verify_bond_market_implied_rating_publication.py
             tests/test_repair_fund_catalog_identity_v1.py
             tests/test_repair_fund_catalog_identity_v1_db.py
+            tests/bonds/test_distribution_series.py
+            tests/bonds/test_distribution_series_ddl.py
+            tests/bonds/test_panel_config.py
+            tests/bonds/test_panel_sources.py
+            tests/bonds/test_panel_sources_ddl.py
+            tests/bonds/test_panel_v1_ddl.py
+            tests/bonds/test_static_ratings.py
+            tests/test_activation_source_pinning.py
+            tests/test_active_share_metrics.py
+            tests/test_analytics_refresh_chain.py
+            tests/test_backfill_bond_distribution_series.py
+            tests/test_backfill_bond_issuer_sector.py
+            tests/test_backfill_bond_liquidity_monthly.py
+            tests/test_backfill_bond_panel_history.py
+            tests/test_backfill_bond_reference_terms.py
+            tests/test_backfill_psql_transport.py
+            tests/test_benchmark_ingest.py
+            tests/test_bond_artifact_evidence_bootstrap.py
+            tests/test_bond_default_owner_evidence.py
+            tests/test_bond_distribution_registry_backfill.py
+            tests/test_bond_market_implied_rating_owner_anchor.py
+            tests/test_bond_panel_materializer.py
+            tests/test_bond_panel_parity_worker.py
+            tests/test_bond_reference_terms_worker.py
+            tests/test_bond_security_master_worker.py
+            tests/test_db_tls.py
+            tests/test_eod_prices_warmer.py
+            tests/test_fallback_nav.py
+            tests/test_fi_style_metrics.py
+            tests/test_form345_ingestion.py
+            tests/test_fund_factors.py
+            tests/test_fund_factors_schema.py
+            tests/test_fund_institutional_reveal.py
+            tests/test_fund_nav_readiness.py
+            tests/test_fund_reveal_13f_holdings_mv.py
+            tests/test_fund_reveal_holdings_mv.py
+            tests/test_generate_fund_nav_policy_v1.py
+            tests/test_livefeed.py
+            tests/test_macro_vintage.py
+            tests/test_manager_score.py
+            tests/test_market_overview_snapshot.py
+            tests/test_matview_refresh.py
+            tests/test_mixed_quant_activation_helpers.py
+            tests/test_momentum_metrics.py
+            tests/test_nav_economic_rebase.py
+            tests/test_nav_identity_audit_contract.py
+            tests/test_nav_policy_v3_reconcile.py
+            tests/test_nav_policy_v3_replay.py
+            tests/test_nav_sanitize.py
+            tests/test_nav_timeseries_provenance_schema.py
+            tests/test_nport_fixed_income_secapi_fallback.py
+            tests/test_nport_fixed_income_secapi_integration.py
+            tests/test_nport_fixed_income_secapi_recovery.py
+            tests/test_nport_v2_local_generator.py
+            tests/test_nport_v2_publication_chain.py
+            tests/test_reprocess_nav_glitches.py
+            tests/test_risk_metric_ownership.py
+            tests/test_risk_metrics.py
+            tests/test_risk_metrics_nav_quality.py
+            tests/test_screener_metrics.py
+            tests/test_sec_13f_ingestion.py
+            tests/test_sec_13f_publication_chain.py
+            tests/test_sec_company_tickers_mf.py
+            tests/test_stock_daily_returns.py
+            tests/test_stock_fundamentals_statements.py
+            tests/test_tiingo_budget.py
+            tests/test_tiingo_fund_meta.py
+            tests/test_tiingo_nav.py
+            tests/test_treasury_ingestion.py
+            tests/test_verify_fund_nav_identity_v2.py
           )
           printf 'environment_mode=no-dsn\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
             'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages,test_synthetic_submission_package_materializes_all_53_reconciliations,test_real_db_reconciles_candidate_parse_error_and_exponent_decimal'
+          # Still asserts the 6-character CUSIP join that PR #56 removed; tracked
+          # as a follow-up instead of being rewritten inside a CI change.
+          printf 'excluded_stale_nodes=%s\n' \
+            'test_cusip_identities_require_the_same_qualified_map_row_as_tickers_and_returns'
           env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
-            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal and not test_cusip_identities_require_the_same_qualified_map_row_as_tickers_and_returns' \
             --collect-only -q | tee collect.log
           collected=$(sed -nE 's/^([0-9]+)(\/[0-9]+)? (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
@@ -204,7 +281,7 @@ jobs:
           test "$collected" -gt 0
           set +e
           env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
-            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal and not test_cusip_identities_require_the_same_qualified_map_row_as_tickers_and_returns' \
             -q -rA | tee results.log
           status=${PIPESTATUS[0]}
           set -e
@@ -413,10 +490,15 @@ jobs:
             tests/test_bond_default_diagnostic_publication.py
             tests/test_bond_default_source_bundle.py
             tests/test_bond_default_events_worker.py
+            tests/test_bond_panel_returns_tombstone_db.py
             tests/test_bond_default_publication_db.py
             tests/test_bond_default_diagnostic_publication_db.py
             tests/test_repair_fund_catalog_identity_v1.py
             tests/test_repair_fund_catalog_identity_v1_db.py
+            tests/test_db_advisory_lock.py
+            tests/test_nport_fixed_income_features_contract.py
+            tests/test_nport_fixed_income_secapi_schema.py
+            tests/test_nport_fixed_income_secapi_fallback_schema.py
           )
           db_tests=(
             tests/test_fomc_sep_ingestion.py
@@ -449,6 +531,11 @@ jobs:
             tests/test_repair_fund_catalog_identity_v1_db.py
             tests/test_bond_default_source_bundle.py
             tests/test_bond_default_events_worker.py
+            tests/test_bond_panel_returns_tombstone_db.py
+            tests/test_db_advisory_lock.py
+            tests/test_nport_fixed_income_features_contract.py
+            tests/test_nport_fixed_income_secapi_schema.py
+            tests/test_nport_fixed_income_secapi_fallback_schema.py
           )
           printf 'environment_mode=postgres\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
@@ -536,6 +623,159 @@ jobs:
             test "$scope_status" -eq 0
             test "$scope_executed" -gt 0
           done
+
+  # The NAV W1 gate needs the production engine: PostgreSQL 18 with TimescaleDB
+  # 2.27.2. These suites never skip; they refuse any other server, so plain
+  # postgres:16 cannot run them. They cover hypertable compression, the
+  # compressed-chunk DML regression (PR #162), policy publication and the
+  # readiness lifecycle. Two shards, one server each, keep the job about as
+  # long as the other lanes.
+  workers-nav-timescale:
+    name: workers-nav-timescale (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: readiness
+            tests: tests/test_fund_nav_readiness_db.py
+            required_node: tests/test_fund_nav_readiness_db.py::test_compressed_chunk_dml_stays_segment_scoped_across_prepared_statements
+          - shard: policy-lifecycle
+            tests: >-
+              tests/test_fund_nav_access_profile_db.py
+              tests/test_nav_economic_rebase_db.py
+              tests/test_nav_rebase_cohort_db.py
+              tests/test_instrument_ingestion.py
+              tests/test_nav_snapshot_lifecycle_db.py
+              tests/test_nav_provider_session_db.py
+              tests/test_nav_policy_publication_batch_db.py
+              tests/test_generate_fund_nav_policy_v1_db.py
+              tests/test_risk_metrics_peer_cohort_guard.py
+            required_node: ""
+    env:
+      PYTHONPATH: .
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      NAV_W1_TEST_DSN: host=127.0.0.1 port=65432 dbname=nav_readiness_w1_ci user=postgres
+      NAV_POLICY_TEST_DSN: host=127.0.0.1 port=65432 dbname=nav_policy_test_ci user=postgres
+    services:
+      timescale:
+        image: timescale/timescaledb:2.27.2-pg18
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          TIMESCALEDB_TELEMETRY: "off"
+          TS_TUNE_MEMORY: 2GB
+        ports:
+          - 65432:5432
+        # TCP, not the socket: the init-time server listens on the socket only.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install worker test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements.quant-engine.lock pytest
+
+      - name: Provision the disposable TimescaleDB fixtures
+        shell: bash
+        run: |
+          python - <<'PY'
+          import time
+
+          import psycopg
+
+          base = "host=127.0.0.1 port=65432 user=postgres"
+          for _ in range(30):
+              try:
+                  admin = psycopg.connect(f"{base} dbname=postgres", autocommit=True)
+                  break
+              except psycopg.OperationalError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("the TimescaleDB service never accepted connections")
+          databases = (
+              "nav_readiness_w1_ci",
+              "nav_policy_test_ci",
+              "nav_schema_compat_ci",
+              "sec_roles_disposable_ci",
+          )
+          with admin:
+              # Cluster fixture roles the suites expect but never create.
+              for role in ("app_runtime", "worker_writer"):
+                  admin.execute(f"CREATE ROLE {role} NOLOGIN")
+              for name in databases:
+                  admin.execute(f"CREATE DATABASE {name}")
+              admin.execute(
+                  "ALTER DATABASE nav_schema_compat_ci SET nav_schema_compat.disposable = 'on'"
+              )
+          for name in databases:
+              with psycopg.connect(f"{base} dbname={name}", autocommit=True) as conn:
+                  conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
+                  conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+                  version, extension = conn.execute(
+                      "SELECT current_setting('server_version_num'), "
+                      "(SELECT extversion FROM pg_extension WHERE extname = 'timescaledb')"
+                  ).fetchone()
+                  print(f"{name}: server_version_num={version} timescaledb={extension}")
+                  assert version.startswith("18") and extension == "2.27.2", (version, extension)
+          PY
+
+      - name: Run the NAV W1 suites on TimescaleDB
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARD_TESTS: ${{ matrix.tests }}
+          REQUIRED_NODE: ${{ matrix.required_node }}
+        run: |
+          set -euo pipefail
+          # A skip here means a DB gate was not evaluated, so skips fail the lane.
+          run_suite() {
+            local label=$1 collected status summary passed failed skipped
+            shift
+            printf '%s_scope=%s\n' "$label" "$*"
+            python -m pytest "$@" --collect-only -q | tee "$label-collect.log"
+            collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' "$label-collect.log" | tail -1)
+            collected=${collected:-0}
+            printf '%s_collected_count=%s\n' "$label" "$collected"
+            test "$collected" -gt 0
+            set +e
+            python -m pytest "$@" -q -rA | tee "$label-results.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            summary=$(tail -n 1 "$label-results.log")
+            passed=$( (grep -Eo '[0-9]+ passed' <<< "$summary" || true) | awk '{sum += $1} END {print sum + 0}')
+            failed=$( (grep -Eo '[0-9]+ failed' <<< "$summary" || true) | awk '{sum += $1} END {print sum + 0}')
+            skipped=$( (grep -Eo '[0-9]+ skipped' <<< "$summary" || true) | awk '{sum += $1} END {print sum + 0}')
+            printf '%s_executed_count=%s %s_failures=%s %s_skips=%s\n' \
+              "$label" "$((passed + failed))" "$label" "$failed" "$label" "$skipped"
+            test "$status" -eq 0
+            test "$((passed + failed))" -gt 0
+            test "$skipped" -eq 0
+          }
+          read -r -a tests <<< "$SHARD_TESTS"
+          run_suite nav_w1 "${tests[@]}"
+          if [ -n "$REQUIRED_NODE" ]; then
+            grep -Fx "PASSED $REQUIRED_NODE" nav_w1-results.log
+          fi
+          if [ "$SHARD" = policy-lifecycle ]; then
+            export SEC_TEST_DATABASE_URL='host=127.0.0.1 port=65432 dbname=nav_schema_compat_ci user=postgres'
+            run_suite nav_schema_compat tests/test_nav_timeseries_provenance_schema_db.py
+            # Needs the worker_writer fixture role, which only this lane creates.
+            export SEC_TEST_DATABASE_URL='host=127.0.0.1 port=65432 dbname=sec_roles_disposable_ci user=postgres'
+            run_suite sec_roles tests/test_bond_market_implied_rating_materializer_db.py
+          fi
 
   quant-engine:
     name: quant-engine
@@ -771,6 +1011,40 @@ jobs:
           tests/test_open_macro_v4_formula.py
           tests/test_open_macro_v4_golden.py
           tests/test_open_macro_v04_worker.py
+          tests/test_open_macro_v04_pit_evidence_schema.py
+          tests/test_open_macro_v04_pit_evidence_worker.py
+          tests/test_calibration_harness.py
+          tests/test_quadrant_macro.py
+          tests/test_quadrant_market.py
+          tests/test_quadrant_confidence.py
+          tests/test_quadrant_hysteresis.py
+          tests/test_quadrant_score.py
+          tests/test_quadrant_snapshot.py
+          tests/test_quadrant_staleness.py
+          tests/test_regime_composite.py
+          tests/test_regime_gate.py
+          tests/test_regime_quadrant_schema.py
+          tests/test_regime_timeline_golden.py
+          tests/test_regime_timeline_metrics.py
+          tests/test_timeline_gate_policy.py
+          tests/test_us_federal_holidays.py
+          tests/test_credit_regime.py
+          tests/test_macro_pit.py
+          tests/test_macro_sources.py
+          tests/test_macro_transforms.py
+          tests/test_baseline_window_regression.py
+          tests/test_confidence_v2_model.py
+          tests/test_confidence_v2_experiment.py
+          tests/test_confidence_v3_fusion.py
+          tests/test_recalibration_experiment.py
+          tests/test_carry_decay.py
+          tests/test_gamma_drift.py
+          tests/test_factor_model.py
+          tests/test_factor_model_k_selection.py
+          tests/test_ipca_production_gate.py
+          tests/test_rebuild_certified_metric_pack.py
+          tests/test_rebuild_ipca_factor_pack.py
+          tests/test_shadow_pilot_binding.py
           -m "not preactivation"
           -p xdist.plugin
           -n auto

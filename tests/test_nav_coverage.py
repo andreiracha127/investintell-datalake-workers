@@ -89,6 +89,7 @@ def _patch_chain(monkeypatch, snapshot):
     monkeypatch.setattr(chain, "connect", lambda *_args: Guard())
     monkeypatch.setattr(chain, "advisory_lock", lock)
     monkeypatch.setattr(chain, "_due_session", lambda *_args: "2026-10-05")
+    monkeypatch.setattr(chain, "_provider_session", lambda *_a, **_k: {"pending": False})
     monkeypatch.setattr(
         chain.matview_refresh, "_refresh_all", lambda _dsn, views: list(views)
     )
@@ -129,6 +130,55 @@ def test_chain_rejects_malformed_floor_before_any_work(monkeypatch):
     monkeypatch.setattr(chain, "connect", lambda *_a: pytest.fail("work started"))
     with pytest.raises(ValueError, match="NAV_COVERAGE_MIN_READY_SHARE"):
         chain.run("unused", **runners)
+
+
+def test_provider_session_pending_preserves_publications_without_coverage_alarm(monkeypatch):
+    runners = _patch_chain(monkeypatch, _snapshot())
+    monkeypatch.setattr(
+        chain, "_provider_session",
+        lambda *_a, **_k: {"pending": True, "active_count": 10, "pending_count": 9},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        chain.matview_refresh, "_refresh_all",
+        lambda *_a: pytest.fail("provider deferral must precede risk/MV changes"),
+    )
+    runners["risk_runner"] = lambda *_a, **_k: pytest.fail("risk pointer changed")
+    runners["readiness_runner"] = lambda *_a, **_k: pytest.fail("readiness published")
+
+    stats = chain.run("unused", **runners)
+
+    assert stats["status"] == "deferred"
+    assert stats["reason"] == "PROVIDER_SESSION_PENDING"
+    assert stats["retryable"] is True and stats["published"] is False
+    assert stats["as_of_session"] == "2026-10-05"
+    assert stats["ingestion_run_id"] == "ingest"
+    assert "coverage" not in stats
+
+
+def test_majority_pending_with_failed_attempts_blocks_before_risk(monkeypatch):
+    runners = _patch_chain(monkeypatch, _snapshot())
+    monkeypatch.setattr(
+        chain, "_provider_session",
+        lambda *_a, **_k: {
+            "pending": False, "majority_pending": True,
+            "active_count": 10, "pending_count": 9, "failed_attempt_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        chain.matview_refresh, "_refresh_all",
+        lambda *_a: pytest.fail("mixed provider lag/failure must preserve publications"),
+    )
+    runners["risk_runner"] = lambda *_a, **_k: pytest.fail("risk pointer changed")
+    runners["readiness_runner"] = lambda *_a, **_k: pytest.fail("readiness published")
+
+    stats = chain.run("unused", **runners)
+
+    assert stats["status"] == stats["state"] == "blocked"
+    assert stats["reason"] == "PROVIDER_SESSION_PENDING_WITH_ERRORS"
+    assert stats["retryable"] is True and stats["published"] is False
+    assert stats["provider_session"]["failed_attempt_count"] == 1
+    assert "coverage" not in stats
 
 
 @pytest.mark.parametrize("alarm", [True, False])

@@ -27,6 +27,13 @@ plus SEC first failures, at ``generated_at``). Neither round is a receipt
 migration: the plan-v4 receipt shape and the Round5 publication semantics are
 unchanged; a Round6 config, capture, dossier or manifest is never Round7.
 
+Round7 was revised in place on 2026-10-06 (reviewed change, new
+``AUDIT_CONTRACT_SHA256``; the version label is unchanged and the digest is
+the binding): a published v3 is admitted as the previous policy, so a v3
+policy can follow the first v3 publication. Before, only the published v1
+was; v2 stays rejected. A dossier or manifest carrying the superseded Round7
+digest is refused by the operator.
+
 ``SEC_QUERY_CONTRACT_SHA256`` is SHA-256 of ``SEC_SQL + "\\n" + SEC_LINEAGE_SQL``.
 """
 
@@ -467,8 +474,11 @@ AUDIT_CONTRACT = {
         "rule": "four sources (IU, funds_v, registry, SEC) in one REPEATABLE READ "
         "READ ONLY snapshot at the database decision instant tau; the source "
         "snapshot hash covers all four; previous policy for continuity is the "
-        "published v1, never a v2 artifact; v1/v2 are never published or "
-        "re-audited",
+        "published previous policy: the published v1, or a published v3 whose "
+        "top-level and generation generator labels are v3, whose every evidence "
+        "reference is the v3 catalog reference and whose generation.policy_hash "
+        "equals the recomputed policy hash; never a v2 artifact; v1/v2 are never "
+        "published or re-audited",
         "source_snapshot_kind": SOURCE_SNAPSHOT_KIND,
     },
     "sec_classification": {
@@ -560,5 +570,5 @@ AUDIT_CONTRACT = {
     "stage1_margin": f"max(1, ceil({STAGE1_MARGIN_TEXT} * quota)) for quota > 0",
 }
 AUDIT_CONTRACT_SHA256 = (
-    "9941902de05c4006882bfb51b2816a357c91f2405e2a9f24c2369d3149ced244"
+    "380b8bd2a9b8b838588c62d4ff544928238f802044c61bbf59768c7d407622aa"
 )

@@ -80,6 +80,34 @@ def test_fusion_requires_aligned_series():
         c2.kalman_fused_filter_series(_obs(_steady(0.5)), [(None, None)])
 
 
+def test_auxiliary_noise_tracker_never_diffs_across_a_missing_month():
+    """Regression MR-3 (quant audit 2026-10-07): a missing auxiliary month must
+    reset the auxiliary tracker's diff anchor, exactly as the primary tracker
+    resets on a missing primary month. Before the fix the next print appended
+    ``a_score - prev`` ACROSS the gap, feeding a pre-gap level the state never
+    saw into the aux R estimate (and so into the fusion weight).
+
+    Construction: the primary is absent before the gap, so the pre-gap auxiliary
+    level cannot enter the state at all (no update happens) — the only channel
+    left is the cross-gap first difference. Two auxiliary series identical after
+    the gap but 0.4 apart before it must therefore fuse identically. A short R
+    window keeps the robust MAD sensitive to that single diff (under the frozen
+    36/12 window one diff among zeros is masked by the median, which is why the
+    certified chain is byte-neutral to this fix)."""
+    gap = [(None, None)]
+    post = _obs([0.9] * 6)
+    primary = [(None, None)] * 2 + gap + _obs([0.3] * 6)
+    aux_jump = _obs([0.5, 0.5]) + gap + post      # 0.9 - 0.5 = 0.4 across the gap
+    aux_flat = _obs([0.9, 0.9]) + gap + post      # no jump across the gap
+    kw = dict(r_window=2, min_diffs=1)
+    fused_jump = c2.kalman_fused_filter_series(primary, aux_jump, **kw)
+    fused_flat = c2.kalman_fused_filter_series(primary, aux_flat, **kw)
+    assert fused_jump == fused_flat
+    # the fusion really happened (tighter than the primary-only filter)
+    single = c2.kalman_filter_series(primary, **kw)
+    assert fused_flat[-1][1] < single[-1][1]
+
+
 # --------------------------------------------------------------------------- #
 # Market observation builder (PIT, frozen conventions)                        #
 # --------------------------------------------------------------------------- #

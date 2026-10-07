@@ -50,24 +50,45 @@ TOL_MONEY = 1e-9  # accrued-interest amounts, per 100 face
 
 
 # --------------------------------------------------------------------------- #
-# 30/360 US (Bond Basis) day counts
-# Rule (convention_derived): ISDA 2006 Definitions §4.16(f) "30/360" (bond
-# basis), basic variant:
+# 30/360 US (SIFMA Bond Basis, "30U/360") day counts — February rules included
+# Rule (convention_derived): SIFMA "Standard Securities Calculation Methods"
+# 30/360 US = QuantLib ``Thirty360::USA`` = Light ``_days_30_360_us``:
 #   D1 = day(start); D2 = day(end)
-#   if D1 == 31: D1 = 30
+#   if D1 is the last day of February, or D1 == 31: D1 = 30
+#   if D1 and D2 are BOTH the last day of February: D2 = 30
 #   if D2 == 31 and D1 == 30: D2 = 30
 #   days = 360*(Y2-Y1) + 30*(M2-M1) + (D2-D1)
-# (The optional end-of-February refinement of SIFMA "30U/360" is intentionally
-#  NOT applied; the motor documents and cites this exact ISDA variant only.)
+# Expected values are the output of QuantLib 1.43 ``Thirty360(Thirty360.USA)``
+# (``dayCount``) for each pair, i.e. an independent reference implementation of
+# the same convention; the two labelled vectors separate this convention from
+# the ISDA 2006 §4.16(f) basic variant (no February rule: 02-28 -> 08-31 = 183)
+# and from 30E/360 ISDA (§4.16(h): 08-31 -> 02-28 = 180).
 # --------------------------------------------------------------------------- #
 THIRTY_360_VECTORS = [
-    # (start, end, expected_days) — expected derived by the rule above.
+    # (start, end, expected_days) — QuantLib 1.43 Thirty360(USA).dayCount.
     (date(2007, 1, 15), date(2007, 7, 15), 180),
     (date(2007, 1, 31), date(2007, 7, 31), 180),  # both days 31 -> 30/30
-    (date(2007, 8, 31), date(2008, 2, 28), 178),  # D1 31->30, D2 28 unchanged
+    (date(2007, 8, 31), date(2008, 2, 28), 178),  # D2 last-Feb stays 28 (D1 not Feb): NOT 30E/360 ISDA (180)
     (date(2007, 1, 30), date(2007, 3, 31), 60),  # D2 31->30 because D1==30
-    (date(2007, 2, 28), date(2007, 8, 31), 183),  # D1 28 (not 30/31): D2 stays 31
-    (date(2008, 2, 29), date(2008, 8, 31), 182),  # D1 29 (not 30/31): D2 stays 31
+    (date(2007, 2, 28), date(2007, 8, 31), 180),  # D1 last-Feb->30, then D2 31->30: NOT the basic variant (183)
+    (date(2008, 2, 29), date(2008, 8, 31), 180),  # leap-year last-Feb D1->30 (basic: 182)
+    (date(2021, 2, 28), date(2021, 8, 31), 180),  # audit A2-02 pair (basic: 183)
+    (date(2021, 2, 28), date(2021, 8, 30), 180),  # audit A2-02 pair (basic: 182)
+    (date(2020, 2, 29), date(2020, 8, 31), 180),  # audit A2-02 pair (basic: 182)
+    (date(2019, 8, 31), date(2020, 2, 29), 179),  # audit A2-02 pair: D2 leap last-Feb stays 29
+    (date(2020, 2, 29), date(2021, 2, 28), 360),  # both last-Feb (leap -> non-leap): D2->30 (basic: 359)
+    (date(2021, 2, 28), date(2022, 2, 28), 360),  # both last-Feb (non-leap): 30/30
+    (date(2023, 2, 28), date(2024, 2, 29), 360),  # both last-Feb (non-leap -> leap): D2->30 (basic: 361)
+    (date(2024, 2, 29), date(2024, 3, 31), 30),  # D1 leap last-Feb->30, D2 31->30 (basic: 32)
+    (date(2024, 2, 28), date(2024, 2, 29), 1),  # Feb 28 in a leap year is NOT the last day
+    (date(2024, 2, 29), date(2024, 8, 29), 179),  # D1->30, D2 29 unchanged (basic: 180)
+    (date(2024, 1, 31), date(2024, 2, 29), 29),  # D2 last-Feb stays 29 because D1 is not Feb
+    (date(2023, 1, 31), date(2023, 2, 28), 28),
+    (date(2024, 2, 15), date(2024, 2, 29), 14),
+    (date(2024, 3, 31), date(2024, 4, 30), 30),
+    (date(2024, 4, 30), date(2024, 5, 31), 30),
+    (date(2024, 3, 30), date(2024, 5, 31), 60),
+    (date(2024, 3, 15), date(2024, 5, 31), 76),  # D2 31 stays because D1 is 15
 ]
 
 
@@ -79,6 +100,18 @@ def test_thirty_360_us_day_counts_convention_derived(start, end, expected) -> No
 @pytest.mark.parametrize("start,end,expected", THIRTY_360_VECTORS)
 def test_thirty_360_us_year_fraction_convention_derived(start, end, expected) -> None:
     assert year_fraction(start, end, DayCount.THIRTY_360_US) == pytest.approx(expected / 360.0, abs=TOL_FRACTION)
+
+
+@pytest.mark.parametrize("year", [2019, 2020, 2021, 2023, 2024])
+def test_thirty_360_us_february_month_end_pairs_are_whole_months_property(year) -> None:
+    # property: from the last day of February, every later month-end (31st or
+    # a last-day-of-February) is a whole number of 30-day months — the
+    # February rules make the bond basis month-end-to-month-end exact.
+    last_february = date(year, 2, 29 if year % 4 == 0 else 28)
+    for months, end in ((1, date(year, 3, 31)), (3, date(year, 5, 31)), (6, date(year, 8, 31)), (12, date(year + 1, 2, 29 if (year + 1) % 4 == 0 else 28))):
+        assert day_count_days(last_february, end, DayCount.THIRTY_360_US) == 30 * months
+    # ... while a 30th-of-month end after a 31st start is also whole months.
+    assert day_count_days(date(year, 1, 31), date(year, 4, 30), DayCount.THIRTY_360_US) == 90
 
 
 # --------------------------------------------------------------------------- #

@@ -16,6 +16,7 @@ from investintell_quant_core.allocator import (  # noqa: E402
     Instrument,
     LinearConstraint,
     SleeveBand,
+    Tolerances,
     compile_problem,
     project_book,
     structural_preflight,
@@ -23,8 +24,8 @@ from investintell_quant_core.allocator import (  # noqa: E402
 )
 
 
-def _compiled():
-    universe = AllocatorUniverse(
+def _universe() -> AllocatorUniverse:
+    return AllocatorUniverse(
         instruments=(
             Instrument(
                 instrument_id="fund:E1",
@@ -52,7 +53,10 @@ def _compiled():
         sleeve_ids=("equity", "fixed_income"),
         mapping_version="test-map-v1",
     )
-    policy = AllocatorPolicy(
+
+
+def _policy() -> AllocatorPolicy:
+    return AllocatorPolicy(
         sleeve_bands=(
             SleeveBand("equity", 0.2, 0.8),
             SleeveBand("fixed_income", 0.2, 0.8),
@@ -74,7 +78,16 @@ def _compiled():
             ),
         ),
     )
-    result = compile_problem(universe, policy)
+
+
+def _compiled(
+    policy: AllocatorPolicy | None = None,
+    *,
+    tolerances: Tolerances = Tolerances(),
+):
+    result = compile_problem(
+        _universe(), policy if policy is not None else _policy(), tolerances=tolerances
+    )
     assert result.ok
     assert result.problem is not None
     return result.problem
@@ -110,7 +123,7 @@ def test_compile_problem_snapshots_s_m_constraints_and_signature() -> None:
     ]
     np.testing.assert_array_equal(problem.linear_constraints[-1].coef, [1.0, 0.2])
     assert problem.signature == (
-        "32c9e8acbcd5752f494f3d282f20ab6190127ef01de5d4997a94b6c919b4617a"
+        "1c8f308e46a8ed898aabe2697871c1de6b06234411a7d9399e97f5f131684057"
     )
 
 
@@ -201,6 +214,49 @@ def test_structural_preflight_rejects_invalid_m_matrix() -> None:
 
     assert not result.ok
     assert "M_t" in {issue.constraint_label for issue in result.issues}
+
+
+def test_structural_preflight_rejects_fractional_s_matrix() -> None:
+    problem = _compiled()
+    # Non-negative with unit column sums, so the sign and column-sum checks pass,
+    # but no category is assigned to exactly one sleeve.
+    corrupted = dataclasses.replace(problem, S=np.full_like(problem.S, 0.5))
+
+    result = structural_preflight(corrupted)
+
+    assert not result.ok
+    assert "S" in {issue.constraint_label for issue in result.issues}
+
+
+def test_verifier_rejects_sleeve_weights_that_contradict_the_blocks() -> None:
+    problem = _compiled()
+    corrupted = dataclasses.replace(problem, S=np.full_like(problem.S, 0.5))
+    x = np.array([0.6, 0.4])
+
+    result = verify_solution(corrupted, x, project_book(problem, x))
+
+    assert not result.ok
+    assert "sleeve_weights" in {issue.constraint_label for issue in result.issues}
+
+
+def test_signature_covers_sleeve_bands_cvar_limit_and_tolerances() -> None:
+    base = _compiled()
+    narrower_band = _compiled(
+        dataclasses.replace(
+            _policy(),
+            sleeve_bands=(
+                SleeveBand("equity", 0.2, 0.7),
+                SleeveBand("fixed_income", 0.2, 0.8),
+            ),
+        )
+    )
+    tighter_cvar = _compiled(dataclasses.replace(_policy(), cvar_limit=0.05))
+    looser_tolerances = _compiled(tolerances=Tolerances(constraint=1e-4))
+
+    assert base.signature == _compiled().signature
+    assert narrower_band.signature != base.signature
+    assert tighter_cvar.signature != base.signature
+    assert looser_tolerances.signature != base.signature
 
 
 def test_strict_missing_sleeve_has_stable_error_code() -> None:

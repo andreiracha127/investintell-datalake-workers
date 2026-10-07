@@ -1,0 +1,6 @@
+node_modules/
+*.tsbuildinfo
+current.json
+railway-plan.json
+.cac-migration.json
+__pycache__/
