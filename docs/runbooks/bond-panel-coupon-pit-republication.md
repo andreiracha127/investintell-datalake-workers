@@ -246,6 +246,7 @@ refuses with `coupon_pit_artifact_unpinned`.
 ### 3.0b Apply the tombstone DDL — PRODUCTION DDL, OWNER AUTHORIZATION REQUIRED
 
 ```powershell
+$env:PYTHONIOENCODING = 'utf-8'   # the DDL has non-ASCII comments; a cp1252 console fails without it
 python scripts\backfill_bond_panel_history.py --emit-schema | psql …
 ```
 
@@ -255,7 +256,11 @@ in the same publication) and replaces `bond_panel_current_returns_v1` with the
 same columns plus the tombstone filter. No existing publication has a
 tombstone, so the served rows do not change; verify with
 `SELECT count(*) FROM bond_panel_current_returns_v1` before and after (equal)
-and refresh nothing. Nothing in the cron path installs this file.
+and refresh nothing. Nothing in the cron path installs this file. Proven
+locally on PostgreSQL 16 (2026-10-07): the pre-change file applied, then this
+one (the view is replaced under its existing `*_mat` dependent), then this one
+again, all exit 0; `tests/test_bond_panel_returns_tombstone_db.py` covers the
+semantics.
 
 ### 3.1 Owner export of the contractual coupons — READ-ONLY (owner runs it)
 
@@ -482,3 +487,62 @@ With the owner's terms export, rows of CUSIPs that carry a contractual
 coupon take it instead of the PIT median (6 of the 7 sampled CUSIPs do); the
 manifest reports `contractual_rows` / `pit_rows` and the per-year carry
 sums the finalize gate compares.
+
+### 4.3 Default-flat preview (offline, the pinned v2 export + the round-002 implied rows, 2026-10-07)
+
+`scripts/build_bond_panel_coupon_pit_returns.py --default-events …baseline_implied_rows.parquet --out <scratch>`
+without `--terms` (mode `pit_only_preview_default_flat`, a preview the emitter refuses; same
+runtime as §4.2). Read-only; nothing written to production or to the v2
+directory.
+
+- Source: 1,006 confirmed episodes on 903 CUSIPs
+  (`event_month_source`: d_event_month 1,006; the
+  first-D-row fallback was never used); 347 cured,
+  659 open (withdrawn or still D); confirmation lag after
+  the event month: 0 mo: 619, 1 mo: 332, 2 mo: 42, 3 mo: 13.
+- **Rows with carry 0: 14,727 on 903 CUSIPs** of
+  2,801,208 in scope (none lacked a coupon basis: the 16 `49306SAA4` drops of
+  §4.2 are not a defaulted name and stay dropped, tombstoned in the child);
+  438 sit between their event month and the
+  confirmation (what a point-in-time basis would still have priced with the
+  coupon). Previous prices of the flat rows: p10 14.3,
+  p50 44.93, p90 86.66.
+  869 of them were already `suspect`. Carry removed
+  per flat row versus PIT-only: p50 128.8, p90 426.3, p99 3183.4 bp/mo
+  (the mean is meaningless: `00208JAE8` 2025-10 has a previous price of 1e-6 and a
+  stored carry of 9.84e+09 bp, now 0 — a price-data defect the rule
+  happens to neutralize).
+- **The §4.2 tail** (1,333 rows whose PIT carry moved > 100 bp/mo from the
+  stored one): 520 now carry 0 (50 of
+  162 CUSIPs); 813 keep a coupon because the
+  implied model never confirmed a default at that month (previous price p50
+  14.491, p90 55.598; thinly traded
+  names it does not witness, or months outside a D spell). Their carry p50 falls
+  from 373.4 to 163.6 bp/mo.
+- **Carry level** (stored → PIT-only → PIT + flat): > 1,000 bp/mo
+  977 → 1,094 → **587**; > 500 bp/mo
+  2,435 → 2,717 → **1,568**; > 200 bp/mo
+  9,485 → 10,255 → **6,046**; previous price < 50
+  with carry > 100 bp/mo 20,510 → 21,307 →
+  **13,810**. `suspect`: 3,245 → 3,209.
+- |Δ carry| versus the stored history is no longer a tail measure: a flat row's
+  delta is its whole stored carry, so rows > 100 bp go 1,333 (PIT-only) →
+  9,762 (with the rule) by construction.
+- Rows after the cutoff (published live before this change, copied verbatim
+  by the republication): 9,704 (2026-07-01, 2026-08-01), of
+  which 18 on 16 CUSIPs sit inside a
+  default window and keep their coupon carry (mean 131.7 bp/mo).
+  From the deploy on, Stage 6 applies the rule to each new closed month.
+
+The PIT-only side reproduces §4.2 exactly (5,248 / 1,333 / 123 rows above
+10 / 100 / 1,000 bp): same inputs, same resolver.
+
+Spot CUSIPs (cumulative total return over every v2 row of the CUSIP; the
+contractual columns apply the coupon from §4.1 to the rows ≤ 2026-06). The
+§4.1 sample was read on 2026-10-07 from a later head with more months after
+2026-06, so its levels (`87952VAM8` 15.8 % → 84.0 %) differ from these:
+
+| CUSIP | rows | event month | flat rows | prev. price when flat | stored | PIT-only | PIT + flat | contractual | contractual + flat |
+|---|---|---|---|---|---|---|---|---|---|
+| `87952VAM8` | 2019-10 → 2026-07 (82 rows, 1 after the cutoff verbatim) | 2022-11 | 41 | 28.28–52.38 | -12.52 % | 38.69 % | -3.69 % | 72.41 % | **-2.80 %** |
+| `29078EAA3` | 2006-06 → 2026-07 (242 rows, 1 after the cutoff verbatim) | 2024-06 | 25 | 21.62–56.30 | 103.50 % | 103.51 % | 33.41 % | 103.56 % | **33.43 %** |
