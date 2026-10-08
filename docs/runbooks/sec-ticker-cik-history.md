@@ -31,21 +31,37 @@ end effective dates, class-scoped ends, the rules below marked v2).
 
 ## Semantics
 
-**Bitemporal storage.** No fact is deleted or overwritten. A package or index is
-reconciled in one transaction against the fact versions it carried before: a
-version it no longer carries, and no other loaded package carries, gets
-`retired_on` = the reconciliation date; a new version is inserted. A version
-first loaded with its accession is knowable from the filing's public date; a
-version added to an accession already loaded (a correction, a CIK fixed in a
-rebuilt index, a re-derived event class) is knowable from the later of that date
-and the reconciliation date. Point-in-time functions see a row at D iff
-`available_on <= D` and (`retired_on` is NULL or after D), so an answer at D never
-changes once D has passed. History starts at the first load: corrections DERA or
-EDGAR folded in before then are invisible. The same holds for a parser fix: a
-fact the fixed loader reads differently from an accession already loaded (a
-symbol now accepted, a re-derived class) is a correction knowable from its
-reconciliation date, so point-in-time answers before that date keep the old
-reading; lineage (today's truth) uses the corrected rows at their filing dates.
+**Bitemporal storage.** Point-in-time means *public at D*. No fact is deleted or
+overwritten. A package or index is reconciled in one transaction against the fact
+versions it carried before: a version it no longer carries, and no other loaded
+package carries, gets `retired_on` = the reconciliation date and a
+`retired_reason`; a new version is inserted. The reason decides what the change
+means:
+
+- `source` (also NULL on rows retired before v2): **the public record changed**.
+  DERA republished a package with other content, an index dropped or reassigned
+  a row (a CIK fixed in a rebuilt index), or a quarterly package superseded its
+  months. The old version stays visible before its retirement; a new version of
+  an accession already loaded is knowable from the later of its filing's public
+  date and the reconciliation date. History starts at the first load:
+  corrections DERA or EDGAR folded in before then are invisible.
+- `parser_correction`: **our reading changed, not the public record**. The same
+  package bytes (the same SHA-256 as the version loaded) read by a fixed parser,
+  an index row (same accession, CIK, form and filing date) read differently, or
+  an event re-derived by a new parser version. The old reading was never true:
+  it is visible at no date. The new reading is knowable from the filing's own
+  public date, so answers at past dates take the corrected reading.
+  `parser_version` records the parser that read each fact version and each
+  package version (NULL: read before v2); `loaded_on` and the old row's
+  `retired_on` date the re-derivation.
+
+A version first loaded with its accession is knowable from the filing's public
+date. Point-in-time functions see a row at D iff `available_on <= D` and
+(`retired_on` is NULL, or after D with a reason other than
+`parser_correction`). An answer at D never changes because of later public
+information; it changes when a parser correction restates the reading, which
+consumers version (Light binds the W1 schema and parser versions into its
+results' fingerprint).
 
 **Cover evidence.** Only periodic and current reports state the filer's own
 listed securities: 10-K, 10-Q, 8-K (and 8-K12B/8-K12G3/8-K15D5), 20-F, 40-F, 6-K,
@@ -125,6 +141,12 @@ and holds, lines and lineage runs of the other classes continue (v2). Naming onl
 classes the issuer does not list, it ends nothing. Such an end of some classes is
 definitive only when its 25-NSE says they were extinguished.
 
+An end of an equity class ends the listed lines (equity, depositary, unknown),
+and a preferred, warrant, unit, right or notes line of the same CIK only when its
+description names that instrument (`named_kinds`): Triton's 25-NSE of its common
+shares (2023) does not end its preferred shares, which stayed listed, while a
+SPAC's "Units; Class A common stock; Warrants" ends all three (v2).
+
 Any other end applies to every line of the CIK unless it concerns another class
 (notes, preferred, warrants, units, rights plans, employee-plan interests), or the
 issuer showed several symbols and the filing names fewer classes than the issuer
@@ -137,9 +159,15 @@ known at D; a version of the end re-derived years later is judged the same way. 
 25, 25-NSE or 15-12B also does not apply when the exchange is a secondary one
 (Chicago, Boston, Philadelphia, National, NYSE Arca/Pacific: IDEX and Weyerhaeuser
 dropping a Chicago listing), or when a registration of an equity class, or of a
-class not read (8-A12B, 8-A12G, 10-12B, 10-12G), filed from 30 days before to 10
-days after it makes it a transfer (PepsiCo's 2017 NYSE to Nasdaq move), unless
-the 25-NSE says the class was extinguished. A Form 8-A of notes, preferred or
+class not read (8-A12B, 8-A12G, 10-12B, 10-12G, 8-K12B, 8-K12G3), filed from 30
+days before to 10 days after it makes it a transfer (PepsiCo's 2017 NYSE to
+Nasdaq move), unless the 25-NSE says the class was extinguished. No end applies
+when a successor registered the CIK's class under the same CIK (8-K12B or
+8-K12G3, Rules 12g-3 and 12b) in that window, extinguished or not: a
+holding-company reorganization that keeps the CIK continues its line (KKR's
+8-K12B of 2022-05-31, the day before NYSE's 25-NSE of the old common stock; its
+count rose from 593 to 860 million shares, so the base check alone would read a
+definitive end; ODP 2020 and ADTRAN 2022 did the same) (v2). A Form 8-A of notes, preferred or
 warrants is no transfer (v2: Statera's 8-A12G of its Series B Preferred Stock,
 filed the day Nasdaq delisted its common stock). A filing that states no class
 (`class_kind = 'unknown'`, counted as `class_unknown`) or was not read applies only
@@ -154,15 +182,17 @@ continued: the first cover count filed after the end and stated on or after it
 (v2; a 10-Q filed after a merger that states the pre-merger count proves
 nothing) is within 0.8-1.25 times the last one before it. After a definitive end
 a later statement does not reopen the hold, even with a 12(b) title (v2); only a
-registration filed after the end, public by then, does, or T first appearing
-after the end (Swift's SWFT ended in the merger and the same CIK traded as KNX).
+registration filed after the end (an 8-A, a Form 10 or a successor's 8-K12B),
+public by then, does, or T first appearing after the end (Swift's SWFT ended in
+the merger and the same CIK traded as KNX).
 
 Every end has an **effective date** (`effective_on`: its filing date + 1, or,
 point-in-time, the restating amendment's when it applies only as restated) apart
 from its knowledge date (`available_on`, the visibility gate). Holds, lines and
-runs order ends against statements by the effective date (v2): an end re-derived
-by a later parser version is visible from its re-derivation and takes effect at
-its filing, so a cover filed between the two still counts after it.
+runs order ends against statements by the effective date (v2): an end that the
+public record adds later (an index rebuilt years after, moving the end to this
+CIK) is visible from that correction and takes effect at its filing, so a cover
+filed between the two still counts after it.
 American Greetings tagged AM on 10-Qs for three years after its 2013 merger
 delisting and Form 15; those no longer hold AM, and Antero Midstream resolves from
 November 2014. Other applying ends close the hold until a later statement shows T

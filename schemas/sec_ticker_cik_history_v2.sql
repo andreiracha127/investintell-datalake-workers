@@ -1,19 +1,21 @@
 -- SEC ticker -> issuer (CIK, class) history, v2: the follow-up of
--- schemas/sec_ticker_cik_history_v1.sql (applied first; this file changes only
--- functions). docs/runbooks/sec-ticker-cik-history.md documents both.
+-- schemas/sec_ticker_cik_history_v1.sql (applied first; this file changes the
+-- functions and adds audit columns, writing no row).
+-- docs/runbooks/sec-ticker-cik-history.md documents both.
 --
 -- * End events carry an EFFECTIVE date apart from their knowledge date.
 --   sec_issuer_end_events returns effective_on = the end filing's date + 1 (or,
 --   point-in-time, the restating amendment's date + 1 when the end applies only
 --   as restated) and keeps available_on, the date the end as it applies became
 --   known, as the visibility gate. Holds, lines and runs order ends against
---   statements by effective_on: an end re-derived years later (a new parser
---   version, a corrected index) is visible from its re-derivation but takes
---   effect at its filing, so a cover filed after the filing still reopens a
---   hold that is not definitively ended.
+--   statements by effective_on: an end the public record adds years later (a
+--   rebuilt index that moves it to this CIK) is visible from that correction but
+--   takes effect at its filing, so a cover filed after the filing still reopens
+--   a hold that is not definitively ended.
 -- * sec_registration_end_events adds restated_filed (the restating amendment's
---   filing date).
--- * A registration (8-A12B, 8-A12G, 10-12B, 10-12G) corroborates a transfer, or
+--   filing date), class_description and original_class_description.
+-- * A registration (8-A12B, 8-A12G, 10-12B, 10-12G, and a successor's 8-K12B or
+--   8-K12G3, now registration events too) corroborates a transfer, or
 --   relists after a definitive end, only when it registers an equity class or a
 --   class not read (sec_registration_starts): the 8-A of notes or preferred filed
 --   near a delisting of the common stock is not a transfer (Statera, 2023).
@@ -58,7 +60,9 @@
 -- ON_ERROR_STOP), one transaction, idempotent. It adds nullable columns without
 -- a default (a catalog change: no rewrite, no scan; ACCESS EXCLUSIVE on the four
 -- tables for the transaction's milliseconds) and their CHECKs NOT VALID (every
--- existing row is NULL there; new rows are checked). Two functions change their
+-- existing row is NULL there; new rows are checked), and replaces the CHECK on
+-- sec_registration_events.form with one that also admits 8-K12B and 8-K12G3 (NOT
+-- VALID: every existing row is in the narrower list). Two functions change their
 -- result columns (sec_registration_end_events, sec_issuer_end_events) and are
 -- dropped and created again; the others are replaced in place. No row is
 -- written.

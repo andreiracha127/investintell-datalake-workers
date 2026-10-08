@@ -32,7 +32,13 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
    register (at most 10 requests per second), kept under ``<cache>/event-docs``;
    an event already read by the current parser version is carried, not fetched.
 4. Re-derive the class of end and 8-A events read by another parser version, or
-   not read yet, as corrections.
+   not read yet, as parser corrections (dated by the filing, the old reading
+   retired as never true).
+
+A change of the package parser (``FSN_PARSER_VERSION``) is not applied by this
+worker, which reloads a package only when the SEC republishes it: the operator
+re-derives the loaded packages with the loader from the workstation cache
+(docs/runbooks/sec-ticker-cik-history.md, Re-derivation).
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict``. ``state`` is ``ok``
 (something new was loaded) or ``noop``; an error propagates and ``run_worker``
