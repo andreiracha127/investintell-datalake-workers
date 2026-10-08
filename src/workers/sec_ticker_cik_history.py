@@ -131,8 +131,8 @@ def _packages_to_load(
     fetched: dict[str, Validators] = {}
     for url in listed:
         name = names[url]
-        if name not in current:
-            continue
+        if name not in current or history.covering_quarter(name) in quarters:
+            continue  # not loaded, or about to be superseded by its quarterly
         republished, validators = _republished(conn, client, url, workdir / name,
                                                current[name])
         if republished:

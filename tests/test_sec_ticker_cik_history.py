@@ -2516,6 +2516,27 @@ def test_an_end_naming_one_class_ends_that_class_only(schema_dsn) -> None:
         "ended", "resolved"]
 
 
+def test_an_end_naming_a_compound_class_ends_that_class_only(schema_dsn) -> None:
+    """Codex thread 4224877377: classes named Class B-2 and Class B-3 are two
+    classes; an end naming B-2 ends B-2's line only, from titles or members."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 102, "BTWO", "2024-02-01", class_key="ClassOfStock=ClassB2CommonStock;",
+                 title="Class B-2 Common Stock")
+    _observe(conn, 102, "BTHREE", "2024-02-01", class_key="ClassOfStock=ClassB3CommonStock;",
+             title="Class B-3 Common Stock", adsh=q)
+    _event(conn, 102, "25-NSE", "2024-03-01", kind="equity", venue_kind="primary",
+           description="Class B-2 Common Stock, par value $0.01 per share")
+    assert [_issuer(conn, t, "2024-03-03")[0] for t in ("BTWO", "BTHREE")] == [
+        "ended", "resolved"]
+    q = _observe(conn, 103, "CTWO", "2024-02-01", class_key="ClassOfStock=ClassB2CommonStock;")
+    _observe(conn, 103, "CTHREE", "2024-02-01", class_key="ClassOfStock=ClassB3CommonStock;",
+             adsh=q)
+    _event(conn, 103, "25-NSE", "2024-03-01", kind="equity", venue_kind="primary",
+           description="Class B-3 Common Stock")
+    assert [_issuer(conn, t, "2024-03-03")[0] for t in ("CTWO", "CTHREE")] == [
+        "resolved", "ended"]
+
+
 def test_a_definitive_end_is_not_reopened_by_a_titled_cover(schema_dsn) -> None:
     """Light #223 contract (probe case definitive_end_not_reopened): the 25-NSE
     extinguished the class and the next count is 100 shares; the later 10-Q that
@@ -3097,8 +3118,27 @@ def test_v2_migrates_a_loaded_v1_schema_in_place_and_rolls_back() -> None:
             assert conn.execute(relfilenodes).fetchall() == tables  # no rewrite
             loader.require_schema(conn)
             assert _issuer(conn, "T", "2024-03-01")[:2] == ("ended", None)
+            # A parser correction: the reading of 2024-01-10 restated on 2024-06-01.
+            conn.execute("UPDATE sec_ticker_cik_observations SET retired_on = '2024-06-01', "
+                         "retired_reason = 'parser_correction'")
+            _observe(conn, 732717, "TT", "2024-01-10")
             conn.execute(V2_ROLLBACK_SQL)
-            assert conn.execute(definitions).fetchall() == v1_functions
+            # Codex thread 4224877391: the four functions that gate point-in-time
+            # rows keep hiding parser-corrected versions, so the two readings never
+            # overlap; every other function is v1's.
+            restored = {row[:2]: row[2] for row in conn.execute(definitions).fetchall()}
+            original = {row[:2]: row[2] for row in v1_functions}
+            assert restored.keys() == original.keys()
+            assert sorted(k[0] for k in original if restored[k] != original[k]) == [
+                "sec_observations_at", "sec_registration_end_events",
+                "sec_registration_starts", "sec_share_counts_at"]
+            for key in original:
+                if restored[key] != original[key]:  # v1's text plus the one predicate
+                    assert restored[key].count("parser_correction") == 1, key
+                    assert "parser_correction" not in original[key], key
+            assert conn.execute(
+                "SELECT ticker FROM sec_observations_at('2024-03-01', false)").fetchall() == [
+                ("TT",)]
             assert conn.execute(
                 "SELECT count(*) FROM sec_ticker_cik_observations WHERE retired_reason IS NULL"
             ).fetchone() == (1,)
@@ -3965,6 +4005,36 @@ def test_worker_reloads_an_older_package_the_sec_republished(
     assert conn.execute(
         "SELECT remote_last_modified FROM sec_ticker_cik_packages "
         "WHERE source_package = '2024q1_notes.zip'").fetchone() == (stamps["2024q1_notes.zip"],)
+
+
+def test_a_monthly_package_about_to_be_superseded_is_not_rechecked(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4224877371: a loaded month whose quarterly is now listed is
+    neither checked nor reloaded, even with a new validator: with WORKER_LIMIT 1
+    the quarterly loads (and supersedes it) first."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    _, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    packages = {"2025_10_notes.zip": _stored_month(build, "2025_10_notes.zip", "AA",
+                                                   "0000000061-25-000001", "20251015")}
+    stamps = {"2025_10_notes.zip": "Mon, 03 Nov 2025 10:00:00 GMT",
+              "2025q4_notes.zip": "Mon, 05 Oct 2026 10:00:00 GMT"}
+    client, calls = _fake_sec(tmp_path, packages, {}, last_modified=stamps)
+    worker.run(dsn, calc_date="2025-11-15", client=client)
+    stamps["2025_10_notes.zip"] = "Fri, 02 Oct 2026 10:00:00 GMT"  # republished
+    packages["2025q4_notes.zip"] = _stored_month(build, "2025q4_notes.zip", "AA",
+                                                 "0000000061-25-000001", "20251015")
+    calls.clear()
+    stats = worker.run(dsn, calc_date="2026-10-08", limit=1, client=client)
+    assert (stats["backlog"], stats["republished"]) == (1, [])
+    assert [p["package"] for p in stats["packages"]] == ["2025q4_notes.zip"]
+    assert ("HEAD", FSN_BASE + "2025_10_notes.zip") not in calls
 
 
 def test_a_package_recorded_without_validators_is_downloaded_once(

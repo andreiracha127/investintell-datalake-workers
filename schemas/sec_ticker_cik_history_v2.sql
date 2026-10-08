@@ -369,13 +369,15 @@ WITH horizon AS (
     GROUP BY o.adsh
     HAVING bool_or(o.security_kind IN ('equity', 'depositary', 'unknown'))
 ), listed_classes AS (
-    -- each cover's listed classes and the class each names: the letter of its
-    -- 12(b) title ("Class B common stock"), else of its member (CommonClassB,
-    -- ClassBCommonStock, CapitalClassC)
+    -- each cover's listed classes and the class each names: the identifier of
+    -- its 12(b) title ("Class B common stock", "Class B-2 Common Stock"), else of
+    -- its member (CommonClassB, ClassBCommonStock, CapitalClassC, ClassB2...)
     SELECT o.adsh, o.class_key,
-           max(lower(COALESCE(
-               substring(o.security_title from '(?i)\m(?:class|series)\s+([a-z0-9]{1,2})\M'),
-               substring(o.class_key from '(?:Class|Series)([A-Z0-9])(?![a-z])')))) AS label
+           max(lower(replace(COALESCE(
+               substring(o.security_title
+                         from '(?i)\m(?:class|series)\s+([a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)\M'),
+               substring(o.class_key from '(?:Class|Series)([A-Z][0-9]?|[0-9]{1,2})(?![a-z])')),
+               '-', ''))) AS label
     FROM horizon h
     CROSS JOIN LATERAL sec_observations_at(h.on_date, p_current) o
     WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary', 'unknown')
@@ -449,11 +451,11 @@ WITH horizon AS (
     ) pf ON true
     CROSS JOIN LATERAL (
         SELECT ARRAY(
-            SELECT DISTINCT lower(l.label)
+            SELECT DISTINCT lower(replace(l.label, '-', ''))
             FROM regexp_matches(
                 COALESCE(v.class_description, ''),
-                '(?i)\mclass(?:es)?\s+([a-z0-9]{1,2}(?:\s*(?:,|/|&|\mand\M|\mor\M)\s*'
-                '(?:class\s+)?[a-z0-9]{1,2})*)\M'
+                '(?i)\mclass(?:es)?\s+([a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?'
+                '(?:\s*(?:,|/|&|\mand\M|\mor\M)\s*(?:class\s+)?[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)*)\M'
                 '|\mseries\s+([a-z0-9]{1,2})\s+(?:(?:non-?)?voting\s+)?(?:common|ordinary|capital)\M',
                 'g') AS m(groups)
             CROSS JOIN LATERAL regexp_split_to_table(

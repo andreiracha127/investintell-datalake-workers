@@ -1,10 +1,14 @@
 -- Rollback of schemas/sec_ticker_cik_history_v2.sql: the v1 definitions of the
--- ten functions v2 changes, copied verbatim from
--- schemas/sec_ticker_cik_history_v1.sql, in one transaction. Every table and row
--- is kept, and so are the columns v2 added (parser_version, retired_reason), which
--- v1 ignores: under v1 a version a parser correction retired counts as retired on
--- its retirement date again. Rows a v2 loader wrote, such as the class of a Form
--- 8-A, are valid v1 rows. Apply as the role that applied v2, with psql -v ON_ERROR_STOP=1. To
+-- ten functions v2 changes, copied from schemas/sec_ticker_cik_history_v1.sql, in
+-- one transaction. Every table and row is kept, and so are the columns v2 added
+-- (parser_version, retired_reason). One v2 rule stays: the four functions that
+-- gate point-in-time rows (sec_observations_at, sec_share_counts_at,
+-- sec_registration_end_events, sec_registration_starts) keep hiding a version
+-- retired as a parser correction. A v2 re-derivation dated the corrected reading
+-- from the filing; with v1's predicate the old reading would be visible beside it
+-- until the re-derivation date. Where no parser correction happened (no row has
+-- retired_reason 'parser_correction') these functions answer exactly as v1's.
+-- Rows a v2 loader wrote, such as the class of a Form 8-A, are valid v1 rows. Apply as the role that applied v2, with psql -v ON_ERROR_STOP=1. To
 -- remove the whole schema afterwards, apply schemas/sec_ticker_cik_history_v1.rollback.sql.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
@@ -23,6 +27,7 @@ SELECT o.* FROM sec_ticker_cik_observations o
 WHERE CASE WHEN p_current
            THEN o.retired_on IS NULL AND o.source_available_on <= p_as_of
            ELSE o.available_on <= p_as_of AND (o.retired_on IS NULL OR o.retired_on > p_as_of)
+                AND o.retired_reason IS DISTINCT FROM 'parser_correction'
       END
 $fn$;
 
@@ -34,6 +39,7 @@ SELECT c.* FROM sec_cover_share_counts c
 WHERE CASE WHEN p_current
            THEN c.retired_on IS NULL AND c.source_available_on <= p_as_of
            ELSE c.available_on <= p_as_of AND (c.retired_on IS NULL OR c.retired_on > p_as_of)
+                AND c.retired_reason IS DISTINCT FROM 'parser_correction'
       END
 $fn$;
 
@@ -80,6 +86,7 @@ WITH visible AS (
                     AND (e.source_available_on <= p_as_of OR e.form LIKE '%/A')
                ELSE e.available_on <= p_as_of
                     AND (e.retired_on IS NULL OR e.retired_on > p_as_of)
+                    AND e.retired_reason IS DISTINCT FROM 'parser_correction'
           END
 ), amended AS (
     SELECT a.*, (
@@ -125,6 +132,7 @@ WHERE e.cik = p_cik
   AND CASE WHEN p_current
            THEN e.retired_on IS NULL AND e.source_available_on <= p_as_of
            ELSE e.available_on <= p_as_of AND (e.retired_on IS NULL OR e.retired_on > p_as_of)
+                AND e.retired_reason IS DISTINCT FROM 'parser_correction'
       END
 $fn$;
 
