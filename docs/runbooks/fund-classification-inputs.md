@@ -174,6 +174,78 @@ anchor) again before publication; a concurrent source change or newly loaded
 month blocks that candidate and leaves the previous complete output.
 
 
+## Publication against compressed serving history
+
+Incident 2026-10-08 (first scheduled chain run): look-through promotion failed
+with `ConfigurationLimitExceeded` (91,770,997 tuples decompressed against the
+100,000 default). `nport_lookthrough_exposures` is compressed after six months
+(Light's columnstore policy: segmentby `series_id, dimension, key`, orderby
+`report_date DESC`). TimescaleDB builds compressed-batch filters only from
+constant quals. The old `DELETE ... USING candidate` join had none, so it
+decompressed every compressed chunk, although the candidate keys were all in
+uncompressed chunks. It would have failed on every run.
+
+Promotion now works this way, still in one transaction under the same lock and
+re-read order, with the receipt certified only after the publish succeeds:
+
+- Only changed keys are replaced. A key has changed when its summary columns
+  or its exposure row set differ from serving (`computed_at` is ignored).
+  Unchanged keys get no exposure DML. The only write for them is that their
+  summary `computed_at` advances. The summary is uncompressed, and freshness
+  reads that column as the time the key was last verified.
+- Every statement is grouped by report date with constant
+  `report_date = d AND series_id = ANY(...)` quals under
+  `plan_cache_mode = force_custom_plan`. Other chunks are excluded, and a
+  compressed chunk is limited to the touched series' segments.
+- `SHARE ROW EXCLUSIVE` on both serving tables, which recurses to chunks, keeps
+  the compression policy from compressing a chunk between the count and the
+  DML. Readers are not blocked.
+- The transaction counts an upper bound on the compressed serving tuples the
+  DML can decompress: every compressed row of the touched series in each
+  touched compressed chunk. It then sets
+  `timescaledb.max_tuples_decompressed_per_dml_transaction` LOCAL to that
+  bound, or to 1 when the bound is 0. 0 means unlimited and is never used.
+- If the bound exceeds `NPORT_LOOKTHROUGH_MAX_DECOMPRESSED_TUPLES` (default
+  1,000,000, about one 30-day exposure chunk), promotion raises
+  `LOOKTHROUGH_DECOMPRESSION_CEILING_EXCEEDED` before any write and keeps the
+  last good output. The verdict carries the bound, the ceiling, and the key
+  counts. Raise the ceiling only for an authorized historical republication.
+  `0`, negative, or non-integer values fail the run before the build.
+
+A normal publication touches only the anchored cohort. Its chunks are younger
+than six months while the source gate passes (anchor at most 120 days old), so
+the bound is 0. Holdings are read in `cusip` order, and sector maps are built in
+a fixed order, so a rebuild over unchanged inputs reproduces identical rows.
+Each look-through result reports `publication` (candidate, changed, and
+unchanged keys, the bound, the ceiling, and inserted exposure rows). Both
+derived stages report `rebuild_reason`: the serving probe verdict that
+prevented reuse.
+
+## Retries, overlap, and reuse
+
+Railway skips a cron fire while the previous execution is still `Active`.
+Scheduled chain runs therefore never overlap. A manual run started during an
+active chain gets `lock_busy` on 900366 and exits 1 with a
+`fund_pipeline_alarm`; it does not compete. A run that ends early frees the
+next hourly slot.
+
+Reuse rules:
+
+- Characteristics is reused when its receipt matches the current source
+  signature, the live load watermark, and the auxiliary fingerprints, **and**
+  every expected mapped equity series matches (100%, stricter than the 90%
+  publication floor).
+- Look-through is reused under the same rules plus the seven-day recency check.
+- Look-through candidates are not reused across runs. A promotion-time
+  failure discards the roughly 40-minute build, and the next retry rebuilds.
+- Any new raw load (any month in the tail), mapping change, or sidecar or NAV
+  change invalidates the receipts.
+
+The reported `rebuild_reason` shows which condition failed. A full first run
+(characteristics about 30 min plus look-through about 40 min) is longer than
+the hourly cadence. The skipped fires are harmless, and later retries reuse
+committed characteristics.
+
 ## Snapshot and auxiliary lineage contract
 
 The meaningful anchor and each series' own latest date in its three-month

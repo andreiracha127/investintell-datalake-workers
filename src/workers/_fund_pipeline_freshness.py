@@ -187,6 +187,23 @@ def read_source_cohort(
     )
 
 
+def rebuild_evidence(verdict: dict[str, Any], *, forced: bool = False) -> dict[str, Any]:
+    """Why a derived stage rebuilt instead of reusing its published output.
+
+    A rebuild happens when the serving probe alarms (e.g. INPUT_LINEAGE_CHANGED)
+    or matches fewer series than expected. Reported with the stage result so a
+    repeated heavy rebuild is diagnosable from the run's JSON line.
+    """
+    return {
+        "forced": forced,
+        "alarm": bool(verdict.get("alarm")),
+        "breaches": list(verdict.get("breaches", [])),
+        "matched_series_count": verdict.get("matched_series_count"),
+        "expected_series_count": verdict.get("expected_series_count"),
+        "mismatch_sample": list(verdict.get("mismatch_sample", []))[:10],
+    }
+
+
 def require(verdict: dict[str, Any]) -> dict[str, Any]:
     if verdict.get("alarm"):
         raise FundPipelineBlocked(verdict)

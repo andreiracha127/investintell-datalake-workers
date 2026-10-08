@@ -140,6 +140,27 @@ def test_valid_candidate_publishes_once_after_source_recheck(monkeypatch):
     assert cutoffs[0][1] == ["S1"]
     assert cutoffs[0][2]
     assert stats["published"] is True
+    # Why the published output was not reused is part of the run's evidence.
+    assert stats["rebuild_reason"] == {
+        "forced": False, "alarm": True, "breaches": [], "matched_series_count": 0,
+        "expected_series_count": 1, "mismatch_sample": [],
+    }
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "unlimited"])
+def test_unbounded_or_invalid_decompression_ceiling_fails_before_any_work(monkeypatch, raw):
+    """Timescale reads 0 as unlimited; the publication bound must stay explicit."""
+    monkeypatch.setenv(worker.DECOMPRESSION_CEILING_ENV, raw)
+    monkeypatch.setattr(worker, "connect", lambda *_a: pytest.fail("connected before validation"))
+    with pytest.raises(ValueError, match=worker.DECOMPRESSION_CEILING_ENV):
+        worker.run("unused", serial=True)
+
+
+def test_decompression_ceiling_defaults_and_accepts_an_explicit_bound(monkeypatch):
+    monkeypatch.delenv(worker.DECOMPRESSION_CEILING_ENV, raising=False)
+    assert worker.decompression_ceiling() == worker.DEFAULT_DECOMPRESSION_CEILING == 1_000_000
+    monkeypatch.setenv(worker.DECOMPRESSION_CEILING_ENV, " 2500000 ")
+    assert worker.decompression_ceiling() == 2_500_000
 
 
 @pytest.mark.parametrize("newer_month_loads", [False, True])
