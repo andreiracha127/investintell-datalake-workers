@@ -23,6 +23,15 @@
 --   unlisted class B does not close the listed class A.
 -- * A post-end share count proves the shareholder base continued only when it is
 --   stated on or after the end, not merely filed after it.
+-- * An end that names some of an issuer's listed classes by letter ("Class B
+--   common stock") ends those classes' holds and lines only (class_keys); one
+--   naming only classes the issuer does not list ends none.
+-- * After a definitive end only a registration of the class (or a symbol first
+--   shown after it) starts a new run: a later cover, even with a 12(b) title, no
+--   longer reopens it.
+-- * An undimensioned class shown only on one-class covers is not linked to a
+--   dimensioned class shown only beside other classes merely because it later
+--   carries the same symbol (Google's GOOG before and after its 2014 class C).
 -- * A non-listed row (debt, preferred...) showing a ticker is evidence only while
 --   no listed row showing it was known at or before it, per holder and over time,
 --   not across the ticker's whole history: an earlier holder that tagged its
@@ -47,7 +56,8 @@ DROP FUNCTION IF EXISTS sec_registration_end_events(bigint, date, boolean);
 -- (then by accession), from the amendment's own knowledge date. A cancelling
 -- amendment removes the original; a restating one replaces its class attributes
 -- (the original's are returned as original_*, restated_on is the amendment's
--- knowledge date and restated_filed its filing date); an amendment that was not
+-- knowledge date and restated_filed its filing date; class_description is the
+-- class the end names as it reads now); an amendment that was not
 -- read leaves the original in force. p_current (lineage: today's truth) applies
 -- every current amendment, whenever it was filed.
 CREATE FUNCTION sec_registration_end_events(
@@ -67,13 +77,15 @@ RETURNS TABLE (
     original_class_count integer,
     original_extinguished boolean,
     original_venue_kind text,
-    restated_filed date
+    restated_filed date,
+    class_description text,
+    original_class_description text
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
 WITH visible AS (
     SELECT e.adsh, e.form, e.filed, e.class_kind, e.class_count, e.extinguished,
-           e.venue_kind, e.amendment_effect,
+           e.venue_kind, e.amendment_effect, e.class_description,
            CASE WHEN p_current THEN e.source_available_on ELSE e.available_on END AS known_on
     FROM sec_registration_events e
     WHERE e.cik = p_cik
@@ -108,7 +120,10 @@ SELECT v.known_on, v.filed, v.form, v.adsh,
        CASE WHEN l.amendment_effect = 'restates' THEN l.venue_kind ELSE v.venue_kind END,
        CASE WHEN l.amendment_effect = 'restates' THEN l.known_on END,
        v.class_kind, v.class_count, v.extinguished, v.venue_kind,
-       CASE WHEN l.amendment_effect = 'restates' THEN l.filed END
+       CASE WHEN l.amendment_effect = 'restates' THEN l.filed END,
+       CASE WHEN l.amendment_effect = 'restates' THEN l.class_description
+            ELSE v.class_description END,
+       v.class_description
 FROM visible v
 LEFT JOIN latest_amendment l ON l.original = v.adsh
 WHERE v.form NOT LIKE '%/A'
@@ -149,7 +164,15 @@ $fn$;
 -- before its filing).
 -- A Form 15F (a foreign private issuer's termination under Rule 12h-6) counts as
 -- the Form 15 it stands for: 15F-12B as 15-12B, 15F-12G as 15-12G, 15F-15D as
--- 15-15D. An end APPLIES unless
+-- 15-15D.
+-- An end of an equity class that names its classes by letter ("Class B common
+-- stock", "Class A and B", "Series A ... Common Stock"), when every listed class
+-- of the prior cover has a letter (its 12(b) title, else its member:
+-- CommonClassB, ClassBCommonStock, CapitalClassC), applies to the listed classes
+-- it names only (class_keys; NULL when it names all of them) and to none when it
+-- names none of them (a 15-12G of the unlisted class B). Such an end of some of
+-- the classes is definitive only when its 25-NSE says they were extinguished.
+-- Any other end APPLIES to every line of the CIK unless
 -- * the filing concerns another class (class_kind 'other'), or
 -- * it may concern a class other than the listed symbol: the issuer then showed
 --   several symbols and the filing names fewer classes than it showed symbols
@@ -196,7 +219,8 @@ RETURNS TABLE (
     form text,
     adsh text,
     definitive boolean,
-    effective_on date
+    effective_on date,
+    class_keys text[]
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
@@ -217,6 +241,18 @@ WITH horizon AS (
     WHERE o.cik = p_cik
     GROUP BY o.adsh
     HAVING bool_or(o.security_kind IN ('equity', 'depositary', 'unknown'))
+), listed_classes AS (
+    -- each cover's listed classes and the class each names: the letter of its
+    -- 12(b) title ("Class B common stock"), else of its member (CommonClassB,
+    -- ClassBCommonStock, CapitalClassC)
+    SELECT o.adsh, o.class_key,
+           max(lower(COALESCE(
+               substring(o.security_title from '(?i)\m(?:class|series)\s+([a-z0-9]{1,2})\M'),
+               substring(o.class_key from '(?:Class|Series)([A-Z0-9])(?![a-z])')))) AS label
+    FROM horizon h
+    CROSS JOIN LATERAL sec_observations_at(h.on_date, p_current) o
+    WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary', 'unknown')
+    GROUP BY o.adsh, o.class_key
 ), totals AS (
     -- each filing's cover share count (its issuer total, else its class counts)
     -- and the date the cover states it as of
@@ -243,37 +279,71 @@ WITH horizon AS (
     -- each end as it reads now ('effective') and, when restated, as filed
     SELECT e.adsh, e.form, e.filed, e.available_on, e.restated_on, e.restated_filed,
            e.registered_nearby, true AS effective, e.class_kind, e.class_count,
-           e.extinguished, e.venue_kind
+           e.extinguished, e.venue_kind, e.class_description
     FROM events e
     UNION ALL
     SELECT e.adsh, e.form, e.filed, e.available_on, e.restated_on, e.restated_filed,
            e.registered_nearby, false, e.original_class_kind, e.original_class_count,
-           e.original_extinguished, e.original_venue_kind
+           e.original_extinguished, e.original_venue_kind, e.original_class_description
     FROM events e
     WHERE e.restated_on IS NOT NULL
 ), judged AS (
     SELECT v.*,
-           (SELECT CASE WHEN v.class_kind = 'equity' THEN f.equity_symbols ELSE f.symbols END
-            FROM filings f WHERE f.source_on < v.filed + 1
-            ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
-            LIMIT 1) AS prior_symbols,
+           CASE WHEN v.class_kind = 'equity' THEN pf.equity_symbols ELSE pf.symbols END
+               AS prior_symbols,
            GREATEST(COALESCE((
                SELECT f.classes FROM filings f WHERE f.complete AND f.source_on < v.filed + 1
                ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
                LIMIT 1), 1), 1) AS prior_classes,
-           v.registered_nearby AND NOT COALESCE(v.extinguished, false) AS transfer
+           v.registered_nearby AND NOT COALESCE(v.extinguished, false) AS transfer,
+           -- the classes the end names by letter ("Class B common stock", "Class
+           -- A and B", "Series A ... Common Stock"), and the prior cover's listed
+           -- classes that are those classes
+           v.class_kind = 'equity' AND cardinality(named.labels) > 0
+               AND pc.listed > 0 AND pc.labelled AS scoped,
+           pc.listed,
+           COALESCE(ARRAY(SELECT c.class_key FROM listed_classes c
+                          WHERE c.adsh = pf.adsh AND c.label = ANY(named.labels)
+                          ORDER BY c.class_key), '{}'::text[]) AS matched
     FROM versions v
+    LEFT JOIN LATERAL (
+        SELECT f.* FROM filings f WHERE f.source_on < v.filed + 1
+        ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
+        LIMIT 1
+    ) pf ON true
+    CROSS JOIN LATERAL (
+        SELECT ARRAY(
+            SELECT DISTINCT lower(l.label)
+            FROM regexp_matches(
+                COALESCE(v.class_description, ''),
+                '(?i)\mclass(?:es)?\s+([a-z0-9]{1,2}(?:\s*(?:,|/|&|\mand\M|\mor\M)\s*'
+                '(?:class\s+)?[a-z0-9]{1,2})*)\M'
+                '|\mseries\s+([a-z0-9]{1,2})\s+(?:(?:non-?)?voting\s+)?(?:common|ordinary|capital)\M',
+                'g') AS m(groups)
+            CROSS JOIN LATERAL regexp_split_to_table(
+                COALESCE(m.groups[1], m.groups[2]),
+                '(?i)\s*(?:,|/|&|\mand\M|\mor\M|\mclass\M)\s*') AS l(label)
+            WHERE l.label <> '') AS labels
+    ) named
+    CROSS JOIN LATERAL (
+        SELECT count(*) AS listed, bool_and(c.label IS NOT NULL) AS labelled
+        FROM listed_classes c WHERE c.adsh = pf.adsh
+    ) pc
 ), applies AS (
     SELECT j.*,
            COALESCE(j.class_kind, 'unknown') <> 'other'
-           AND (j.prior_symbols = 1
-                OR (j.class_kind = 'equity' AND j.class_count >= j.prior_symbols))
-           AND NOT COALESCE(j.class_kind = 'equity'
-                            AND replace(j.form, '15F-', '15-') IN ('15-12G', '15-15D')
-                            AND j.class_count < j.prior_classes, false)
+           AND CASE WHEN j.scoped THEN cardinality(j.matched) > 0
+                    ELSE (j.prior_symbols = 1
+                          OR (j.class_kind = 'equity' AND j.class_count >= j.prior_symbols))
+                         AND NOT COALESCE(j.class_kind = 'equity'
+                                          AND replace(j.form, '15F-', '15-') IN ('15-12G', '15-15D')
+                                          AND j.class_count < j.prior_classes, false)
+               END
            AND (replace(j.form, '15F-', '15-') IN ('15-12G', '15-15D')
                 OR (NOT j.transfer AND j.venue_kind IS DISTINCT FROM 'secondary'))
                AS applying,
+           CASE WHEN j.scoped AND cardinality(j.matched) < j.listed THEN j.matched END
+               AS class_keys,
            j.class_kind = 'equity' AND j.class_count >= j.prior_classes AS whole_equity,
            j.form IN ('25', '25-NSE')
                AND j.class_kind = 'equity'
@@ -291,30 +361,37 @@ WITH horizon AS (
 )
 SELECT CASE WHEN a.restated_only THEN a.restated_on ELSE a.available_on END,
        a.filed, a.form, a.adsh,
-       a.whole_equity AND NOT COALESCE((
-           SELECT after_end.total BETWEEN 0.8 * before_end.total AND 1.25 * before_end.total
-           FROM (SELECT t.total FROM totals t WHERE t.source_on < a.filed + 1
-                 ORDER BY t.source_on DESC, t.accepted DESC NULLS LAST, t.adsh DESC
-                 LIMIT 1) before_end,
-                (SELECT t.total FROM totals t
-                 WHERE t.source_on >= a.filed + 1 AND t.stated_on >= a.filed
-                 ORDER BY t.source_on, t.accepted NULLS FIRST, t.adsh
-                 LIMIT 1) after_end), false)
-       AND (
-           (a.form = '25-NSE' AND COALESCE(a.extinguished, false))
-           OR (replace(a.form, '15F-', '15-') IN ('15-12B', '15-12G', '15-15D') AND EXISTS (
-               SELECT 1 FROM applies d
-               WHERE d.effective AND d.applying AND d.equity_delisting
-                 AND d.class_count >= d.prior_symbols
-                 AND d.filed BETWEEN a.filed - 120 AND a.filed + 120))
-           OR (a.equity_delisting AND a.class_count >= a.prior_symbols AND EXISTS (
-               SELECT 1 FROM applies t
-               WHERE t.effective AND t.applying
-                 AND replace(t.form, '15F-', '15-') IN ('15-12B', '15-12G', '15-15D')
-                 AND t.class_kind = 'equity' AND t.class_count >= t.prior_classes
-                 AND t.filed BETWEEN a.filed - 120 AND a.filed + 120))
-       ) AS definitive,
-       CASE WHEN a.restated_only THEN a.restated_filed + 1 ELSE a.filed + 1 END
+       CASE
+           -- an end of some of the listed classes: definitive for them only when
+           -- the 25-NSE says they were extinguished
+           WHEN a.class_keys IS NOT NULL
+               THEN a.form = '25-NSE' AND COALESCE(a.extinguished, false)
+           ELSE a.whole_equity AND NOT COALESCE((
+               SELECT after_end.total BETWEEN 0.8 * before_end.total AND 1.25 * before_end.total
+               FROM (SELECT t.total FROM totals t WHERE t.source_on < a.filed + 1
+                     ORDER BY t.source_on DESC, t.accepted DESC NULLS LAST, t.adsh DESC
+                     LIMIT 1) before_end,
+                    (SELECT t.total FROM totals t
+                     WHERE t.source_on >= a.filed + 1 AND t.stated_on >= a.filed
+                     ORDER BY t.source_on, t.accepted NULLS FIRST, t.adsh
+                     LIMIT 1) after_end), false)
+           AND (
+               (a.form = '25-NSE' AND COALESCE(a.extinguished, false))
+               OR (replace(a.form, '15F-', '15-') IN ('15-12B', '15-12G', '15-15D') AND EXISTS (
+                   SELECT 1 FROM applies d
+                   WHERE d.effective AND d.applying AND d.equity_delisting
+                     AND d.class_keys IS NULL AND d.class_count >= d.prior_symbols
+                     AND d.filed BETWEEN a.filed - 120 AND a.filed + 120))
+               OR (a.equity_delisting AND a.class_count >= a.prior_symbols AND EXISTS (
+                   SELECT 1 FROM applies t
+                   WHERE t.effective AND t.applying AND t.class_keys IS NULL
+                     AND replace(t.form, '15F-', '15-') IN ('15-12B', '15-12G', '15-15D')
+                     AND t.class_kind = 'equity' AND t.class_count >= t.prior_classes
+                     AND t.filed BETWEEN a.filed - 120 AND a.filed + 120))
+           )
+       END AS definitive,
+       CASE WHEN a.restated_only THEN a.restated_filed + 1 ELSE a.filed + 1 END,
+       a.class_keys
 FROM current_ends a
 WHERE a.available_on <= p_as_of
 $fn$;
@@ -333,8 +410,9 @@ $fn$;
 --   (c) every complete filing that shows one equity class in total (classes
 --       that merged into one: the old symbols are gone unless it shows them).
 -- Ends come from sec_issuer_end_events, placed at their effective date (an end
--- known only later still takes effect at its filing). A candidate filed after an
--- end does not count when
+-- known only later still takes effect at its filing); an end that names some of
+-- the CIK's classes (class_keys) applies only to a hold of those classes. A
+-- candidate filed after an end does not count when
 --   * the end is DEFINITIVE and the ticker was shown before it (American
 --     Greetings tagged AM on 10-Qs for three years after its 2013 merger
 --     delisting and Form 15), or
@@ -342,10 +420,10 @@ $fn$;
 --     CIK's first statement after it (the symbol moved: Google Inc's 10-Q of
 --     2015-10-29 still tagged GOOG after its Form 15s, the day Alphabet's first
 --     10-Q did),
--- unless its row for the ticker carries a 12(b) title or a registration
--- (8-A12B/8-A12G/10-12B/10-12G) filed after the end was public by then. A
--- symbol the CIK first showed after a definitive end is a new line (Swift's SWFT
--- ended in the merger; the same CIK traded as KNX).
+-- unless a registration of the class (8-A12B/8-A12G/10-12B/10-12G) filed after
+-- the end was public by then: a later cover, 12(b) title or not, never reopens
+-- it by itself. A symbol the CIK first showed after a definitive end is a new
+-- line (Swift's SWFT ended in the merger; the same CIK traded as KNX).
 -- The statement is the latest counting candidate. The hold has ended when the
 -- latest applying end takes effect after the statement (end_reason: its form) or
 -- the statement does not show the ticker ('other_symbol'); an open hold whose
@@ -403,9 +481,7 @@ WITH shown AS (
                AS known_on,
            max(f.accepted) AS accepted,
            bool_or(f.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'))
-               AS shows,
-           bool_or(f.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
-                   AND f.security_title IS NOT NULL) AS titled
+               AS shows
     FROM per_cik p
     JOIN sec_observations_at(p_as_of, p_current) f
       ON f.cik = p.cik
@@ -414,11 +490,14 @@ WITH shown AS (
               AND (p.sole OR f.filing_equity_classes = 1)))
     GROUP BY p.cik, f.adsh
 ), ends AS (
+    -- the ends of the classes that showed the ticker (an end naming other
+    -- classes of the CIK does not apply to this hold)
     SELECT p.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive,
            (SELECT min(c.known_on) FROM candidates c
             WHERE c.cik = p.cik AND c.shows AND c.known_on >= e.effective_on) AS first_post_on
     FROM per_cik p
     CROSS JOIN LATERAL sec_issuer_end_events(p.cik, p_as_of, p_current) e
+    WHERE e.class_keys IS NULL OR e.class_keys && p.classes
 ), last_end AS (
     SELECT DISTINCT ON (e.cik) e.*
     FROM ends e
@@ -427,7 +506,7 @@ WITH shown AS (
     SELECT DISTINCT ON (c.cik) c.*
     FROM candidates c
     JOIN per_cik p ON p.cik = c.cik
-    WHERE c.titled OR NOT EXISTS (
+    WHERE NOT EXISTS (
         SELECT 1 FROM ends e
         WHERE e.cik = c.cik AND e.effective_on <= c.known_on
           AND ((e.definitive AND p.first_on < e.effective_on)
@@ -464,9 +543,9 @@ $fn$;
 -- the symbol it had then. The class is followed through the filings that tag it
 -- and, when its latest complete filing listed one equity class (or the class is
 -- not yet known at D), through later complete filings that list one equity
--- class. Ends as in sec_ticker_holds, at their effective date: a filing after a
--- definitive end counts only with a 12(b) title, a registration after the end,
--- or symbols the CIK first showed after the end. class_key and security_kind
+-- class. Ends as in sec_ticker_holds, at their effective date and only those of
+-- the class (or of every class): a filing after a definitive end counts only
+-- with a registration after the end, or symbols the CIK first showed after it. class_key and security_kind
 -- come from one row of the statement (the caller's class first). status:
 -- 'resolved' | 'stale' | 'ended' | 'missing' | 'ambiguous_class' (the class is
 -- not known at D and the issuer then listed several equity classes).
@@ -515,17 +594,18 @@ WITH own AS (
                AND f.security_kind IN ('equity', 'depositary', 'unknown')))
 ), ends AS (
     SELECT e.* FROM sec_issuer_end_events(p_cik, p_as_of, false) e
+    WHERE e.class_keys IS NULL OR p_class_key = ANY(e.class_keys)
+       OR e.class_keys && ARRAY(SELECT DISTINCT r.class_key FROM rows r)
 ), last_end AS (
     SELECT e.* FROM ends e ORDER BY e.effective_on DESC, e.adsh DESC LIMIT 1
 ), candidates AS (
     SELECT r.adsh, max(r.available_on) AS known_on, max(r.accepted) AS accepted,
-           bool_or(r.security_title IS NOT NULL) AS titled,
            array_agg(DISTINCT r.ticker_key) AS keys
     FROM rows r
     GROUP BY r.adsh
 ), chosen AS (
     SELECT c.* FROM candidates c
-    WHERE c.titled OR NOT EXISTS (
+    WHERE NOT EXISTS (
         SELECT 1 FROM ends d
         WHERE d.definitive AND d.effective_on <= c.known_on
           AND EXISTS (
@@ -567,12 +647,164 @@ SELECT
     COALESCE((SELECT l.filing_equity_classes FROM latest_complete l), 0) AS equity_lines
 $fn$;
 
+-- The LINES of a CIK as known today: one row per class it ever stated, with the
+-- line (one security) the class belongs to. Listed classes (equity, depositary
+-- or unknown) are linked by evidence edges:
+-- * they showed the same symbol and no filing shows both (Berkshire's 10-Qs tag
+--   BRK.B on CommonClassB, its 8-Ks on ClassBCommonStock; Google's class A and
+--   class C both showed GOOG, but side by side from April 2014, so no edge), or
+-- * they are the one equity class of consecutive complete filings (a
+--   single-class filer renaming its member or dropping the dimension).
+-- An undimensioned class shown only on one-class covers and a dimensioned class
+-- shown only beside other equity classes are not linked by a symbol they share:
+-- the symbol moved in a recapitalization (Google's GOOG, its sole class until
+-- 2014, then its class C beside class A's GOOGL), so it does not say which new
+-- class continues the old one; only a relabel edge would.
+-- Edges are applied in order of the date the link is first evidenced, then by
+-- their evidence count (filings, descending), then by class keys; an edge whose
+-- two lines have classes that appear side by side in any filing is dropped, so
+-- no line ever holds two classes that coexist (A-B then B-C, with A and C in one
+-- filing, gives the lines {A, B} and {C}). line_key is the line's first-stated
+-- class (then the lowest class_key). Other classes are their own line.
+CREATE OR REPLACE FUNCTION sec_issuer_lines(p_cik bigint)
+RETURNS TABLE (class_key text, line_key text)
+LANGUAGE plpgsql STABLE PARALLEL SAFE
+-- Planned once per call; JIT compilation would cost more than the query.
+SET jit = off
+AS $fn$
+#variable_conflict use_column
+DECLARE
+    keys text[];
+    firsts date[];
+    equity boolean[];
+    comp integer[];
+    pairs text[];
+    edge record;
+    ia integer;
+    ib integer;
+    ca integer;
+    cb integer;
+    i integer;
+    j integer;
+    clash boolean;
+BEGIN
+    SELECT array_agg(c.class_key ORDER BY c.class_key),
+           array_agg(c.first_on ORDER BY c.class_key),
+           array_agg(c.equity ORDER BY c.class_key)
+      INTO keys, firsts, equity
+    FROM (
+        SELECT o.class_key, min(o.source_available_on) AS first_on,
+               bool_or(o.security_kind IN ('equity', 'depositary', 'unknown')) AS equity
+        FROM sec_observations_at('infinity'::date, true) o
+        WHERE o.cik = p_cik
+        GROUP BY o.class_key
+    ) c;
+    IF keys IS NULL THEN
+        RETURN;
+    END IF;
+    comp := ARRAY(SELECT generate_series(1, cardinality(keys)));
+    -- classes that appear side by side in one filing, as 'a' || chr(31) || 'b'
+    SELECT COALESCE(array_agg(DISTINCT x.class_key || chr(31) || y.class_key), '{}')
+      INTO pairs
+    FROM sec_observations_at('infinity'::date, true) x
+    JOIN sec_observations_at('infinity'::date, true) y
+      ON y.adsh = x.adsh AND y.cik = x.cik AND y.class_key <> x.class_key
+    WHERE x.cik = p_cik
+      AND x.security_kind IN ('equity', 'depositary', 'unknown')
+      AND y.security_kind IN ('equity', 'depositary', 'unknown');
+    FOR edge IN
+        WITH equity_rows AS (
+            SELECT o.adsh, o.class_key, o.ticker_key, o.source_available_on AS on_date,
+                   o.accepted, o.filing_equity_classes, o.filing_complete
+            FROM sec_observations_at('infinity'::date, true) o
+            WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary', 'unknown')
+        ), shown AS (
+            SELECT e.class_key, e.ticker_key, min(e.on_date) AS first_on,
+                   count(DISTINCT e.adsh) AS filings
+            FROM equity_rows e
+            GROUP BY e.class_key, e.ticker_key
+        ), structure AS (
+            SELECT e.class_key, bool_and(e.filing_equity_classes = 1) AS sole_only,
+                   bool_and(e.filing_equity_classes > 1) AS multi_only
+            FROM equity_rows e
+            GROUP BY e.class_key
+        ), shared AS (
+            SELECT x.class_key AS a, y.class_key AS b,
+                   min(GREATEST(x.first_on, y.first_on)) AS on_date,
+                   sum(x.filings + y.filings) AS evidence
+            FROM shown x
+            JOIN shown y ON y.ticker_key = x.ticker_key AND y.class_key > x.class_key
+            JOIN structure sx ON sx.class_key = x.class_key
+            JOIN structure sy ON sy.class_key = y.class_key
+            WHERE NOT (x.class_key = '' AND sx.sole_only AND sy.multi_only)
+            GROUP BY x.class_key, y.class_key
+        ), sole AS (
+            SELECT f.key, f.on_date,
+                   lag(f.key) OVER (ORDER BY f.on_date, f.accepted NULLS FIRST, f.adsh)
+                       AS prev_key
+            FROM (
+                SELECT e.adsh, min(e.on_date) AS on_date, max(e.accepted) AS accepted,
+                       CASE WHEN count(DISTINCT e.class_key) = 1
+                                 AND bool_and(e.filing_equity_classes = 1)
+                            THEN min(e.class_key) END AS key
+                FROM equity_rows e
+                WHERE e.filing_complete
+                GROUP BY e.adsh
+            ) f
+        ), relabels AS (
+            SELECT LEAST(s.prev_key, s.key) AS a, GREATEST(s.prev_key, s.key) AS b,
+                   min(s.on_date) AS on_date, count(*) AS evidence
+            FROM sole s
+            WHERE s.key IS NOT NULL AND s.prev_key IS NOT NULL AND s.prev_key <> s.key
+            GROUP BY LEAST(s.prev_key, s.key), GREATEST(s.prev_key, s.key)
+        )
+        SELECT u.a, u.b, min(u.on_date) AS on_date, sum(u.evidence) AS evidence
+        FROM (SELECT * FROM shared UNION ALL SELECT * FROM relabels) u
+        GROUP BY u.a, u.b
+        ORDER BY min(u.on_date), sum(u.evidence) DESC, u.a, u.b
+    LOOP
+        ia := array_position(keys, edge.a);
+        ib := array_position(keys, edge.b);
+        ca := comp[ia];
+        cb := comp[ib];
+        CONTINUE WHEN ca = cb OR (edge.a || chr(31) || edge.b) = ANY(pairs);
+        clash := false;
+        FOR i IN 1 .. cardinality(keys) LOOP
+            CONTINUE WHEN comp[i] <> ca;
+            FOR j IN 1 .. cardinality(keys) LOOP
+                IF comp[j] = cb AND (keys[i] || chr(31) || keys[j]) = ANY(pairs) THEN
+                    clash := true;
+                    EXIT;
+                END IF;
+            END LOOP;
+            EXIT WHEN clash;
+        END LOOP;
+        CONTINUE WHEN clash;
+        FOR i IN 1 .. cardinality(keys) LOOP
+            IF comp[i] = cb THEN
+                comp[i] := ca;
+            END IF;
+        END LOOP;
+    END LOOP;
+    RETURN QUERY
+    SELECT k.key,
+           CASE WHEN equity[k.n::integer] THEN (
+               SELECT keys[m.n] FROM generate_subscripts(keys, 1) AS m(n)
+               WHERE comp[m.n] = comp[k.n::integer] AND equity[m.n]
+               ORDER BY firsts[m.n], keys[m.n]
+               LIMIT 1)
+           ELSE k.key END
+    FROM unnest(keys) WITH ORDINALITY AS k(key, n);
+END
+$fn$;
+
 -- Lineage engine (today's truth: current rows at their filing's public date,
 -- every current amendment, ends judged with everything known today). Each
 -- (CIK, line) that showed the ticker is followed through its candidate filings
 -- (filings tagging a class of the line, and every complete filing with one
--- equity class in total) with the end, definitive-end, successor and listed-row
--- rules of sec_ticker_holds, evaluated once per change date (a filing, an end,
+-- equity class in total) with the end (per line: an end naming some classes
+-- ends only their lines), definitive-end, successor and listed-row rules of
+-- sec_ticker_holds, evaluated once per change date (a filing, an end,
 -- or a statement reaching p_max_age_days). One row per RUN in which the line held
 -- the ticker: [valid_from, valid_to), valid_to NULL while open; end_reason
 -- 'other_symbol', the end form, or 'stale' (no confirmation within
@@ -621,8 +853,6 @@ WITH key AS (
            max(o.source_available_on) AS known_on,
            max(o.accepted) AS accepted,
            bool_or(l.line_key = h.line_key AND o.ticker_key = key.k) AS shows,
-           bool_or(l.line_key = h.line_key AND o.ticker_key = key.k
-                   AND o.security_title IS NOT NULL) AS titled,
            (array_agg(o.class_key ORDER BY o.class_key)
                FILTER (WHERE l.line_key = h.line_key AND o.ticker_key = key.k))[1] AS class_key
     FROM held h
@@ -634,19 +864,28 @@ WITH key AS (
            AND o.security_kind IN ('equity', 'depositary', 'unknown'))
     GROUP BY h.cik, h.line_key, o.adsh
 ), ends AS MATERIALIZED (
-    SELECT h.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive
+    SELECT h.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive, e.class_keys
     FROM holder_ciks h
     CROSS JOIN LATERAL sec_issuer_end_events(h.cik, 'infinity'::date, true) e
 ), starts AS MATERIALIZED (
     SELECT h.cik, r.filed, r.available_on
     FROM holder_ciks h
     CROSS JOIN LATERAL sec_registration_starts(h.cik, 'infinity'::date, true) r
+), line_ends AS MATERIALIZED (
+    -- the ends of each line: those of every class of the CIK, and those naming
+    -- one of the line's classes
+    SELECT h.cik, h.line_key, e.effective_on, e.filed, e.form, e.adsh, e.definitive
+    FROM held h
+    JOIN ends e ON e.cik = h.cik
+    WHERE e.class_keys IS NULL OR EXISTS (
+        SELECT 1 FROM lines l
+        WHERE l.cik = h.cik AND l.line_key = h.line_key AND l.class_key = ANY(e.class_keys))
 ), blocking AS (
     -- ends after which the line's later candidates do not count (definitive end
     -- of a ticker shown before it, or the ticker moved to another CIK)
     SELECT h.cik, h.line_key, e.effective_on, e.filed
     FROM held h
-    JOIN ends e ON e.cik = h.cik
+    JOIN line_ends e ON e.cik = h.cik AND e.line_key = h.line_key
     WHERE (e.definitive AND h.first_on < e.effective_on)
        OR EXISTS (
            SELECT 1 FROM cik_first o
@@ -657,7 +896,7 @@ WITH key AS (
                    AND c.known_on >= e.effective_on))
 ), counted AS MATERIALIZED (
     SELECT c.* FROM candidates c
-    WHERE c.titled OR NOT EXISTS (
+    WHERE NOT EXISTS (
         SELECT 1 FROM blocking b
         WHERE b.cik = c.cik AND b.line_key = c.line_key AND b.effective_on <= c.known_on
           AND NOT EXISTS (
@@ -674,7 +913,8 @@ WITH key AS (
         WHERE c.cik = h.cik AND c.line_key = h.line_key AND c.shows
           AND p_max_age_days IS NOT NULL
         UNION
-        SELECT e.effective_on FROM ends e WHERE e.cik = h.cik
+        SELECT e.effective_on FROM line_ends e
+        WHERE e.cik = h.cik AND e.line_key = h.line_key
     ) x
 ), states AS (
     SELECT b.cik, b.line_key, b.on_date, s.known_on AS statement_on, s.shows, s.class_key,
@@ -690,8 +930,8 @@ WITH key AS (
         LIMIT 1
     ) s ON true
     LEFT JOIN LATERAL (
-        SELECT e.effective_on, e.form FROM ends e
-        WHERE e.cik = b.cik AND e.effective_on <= b.on_date
+        SELECT e.effective_on, e.form FROM line_ends e
+        WHERE e.cik = b.cik AND e.line_key = b.line_key AND e.effective_on <= b.on_date
         ORDER BY e.effective_on DESC, e.adsh DESC
         LIMIT 1
     ) le ON true
@@ -744,9 +984,9 @@ $fn$;
 -- alive, under any symbol (Meta's line is alive through its FB years). The line
 -- is followed through its candidate filings (filings tagging one of its
 -- classes, and every complete filing with one equity class in total) with the
--- end rules of sec_ticker_holds (ends at their effective date): after a
--- definitive end a filing counts only with a 12(b) title, a registration after
--- the end, or symbols the CIK first showed after the end. Alive at a date: its
+-- end rules of sec_ticker_holds (ends at their effective date, those of the
+-- line's classes or of every class): after a definitive end a filing counts only
+-- with a registration after the end, or symbols the CIK first showed after it. Alive at a date: its
 -- latest counting filing has a row of the line, no applying end takes effect
 -- after it, and (p_max_age_days not NULL) it is at most p_max_age_days old. One
 -- row per run, [valid_from, valid_to); end_reason the end form, 'merged' (a
@@ -773,7 +1013,6 @@ WITH lines AS MATERIALIZED (
            max(o.source_available_on) AS known_on,
            max(o.accepted) AS accepted,
            bool_or(l.line_key = p_line_key) AS has_line,
-           bool_or(l.line_key = p_line_key AND o.security_title IS NOT NULL) AS titled,
            array_agg(DISTINCT o.ticker_key) FILTER (WHERE l.line_key = p_line_key) AS keys,
            array_agg(DISTINCT o.ticker ORDER BY o.ticker)
                FILTER (WHERE l.line_key = p_line_key) AS tickers
@@ -786,9 +1025,11 @@ WITH lines AS MATERIALIZED (
     GROUP BY o.adsh
 ), ends AS MATERIALIZED (
     SELECT e.* FROM sec_issuer_end_events(p_cik, 'infinity'::date, true) e
+    WHERE e.class_keys IS NULL OR EXISTS (
+        SELECT 1 FROM lines l WHERE l.line_key = p_line_key AND l.class_key = ANY(e.class_keys))
 ), counted AS MATERIALIZED (
     SELECT c.* FROM candidates c
-    WHERE c.titled OR NOT EXISTS (
+    WHERE NOT EXISTS (
         SELECT 1 FROM ends d
         WHERE d.definitive AND d.effective_on <= c.known_on
           AND EXISTS (

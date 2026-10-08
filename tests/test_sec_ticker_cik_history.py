@@ -1154,17 +1154,19 @@ def _count(conn, cik: int, class_key: str, stated: str, shares: int, filed: str,
 def _event(conn, cik: int, form: str, filed: str, *, kind: str | None = None, count: int = 1,
            extinguished: bool | None = None, venue_kind: str | None = None,
            effect: str | None = None, adsh: str | None = None,
-           available_on: str | None = None) -> str:
+           available_on: str | None = None, description: str | None = None) -> str:
     """An index row; ``kind`` set means its filing was read (class_kind)."""
     adsh = adsh or _adsh()
     read = kind is not None
     conn.execute(
         "INSERT INTO sec_registration_events (fact_hash, adsh, cik, form, filed, class_kind, "
         "class_count, extinguished, venue_kind, amendment_effect, parser_version, "
-        "available_on, loaded_on, source_package) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, "
-        "%s, %s, %s, COALESCE(%s::date, %s::date + 1), CURRENT_DATE, 'test')",
+        "class_description, available_on, loaded_on, source_package) VALUES (%s, %s, %s, %s, "
+        "%s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s::date, %s::date + 1), CURRENT_DATE, "
+        "'test')",
         (uuid4().hex, adsh, cik, form, filed, kind, count if read else None,
-         extinguished, venue_kind, effect, "test" if read else None, available_on, filed),
+         extinguished, venue_kind, effect, "test" if read else None, description,
+         available_on, filed),
     )
     return adsh
 
@@ -2079,13 +2081,15 @@ def test_statements_after_a_definitive_delisting_do_not_reopen_the_hold(schema_d
     ]
 
 
-def test_a_cover_listing_the_symbol_as_12b_or_a_relisting_reopens_a_definitive_end(
-    schema_dsn,
-) -> None:
+def test_only_a_relisting_reopens_a_definitive_end(schema_dsn) -> None:
+    """Light #223 contract (probe case definitive_end_not_reopened): after a
+    definitive end a later cover, even one listing the symbol under a 12(b)
+    title, does not reopen the hold; a registration filed after the end does."""
     conn, _ = schema_dsn
     _american_greetings(conn)
     _observe(conn, 5133, "AM", "2014-03-10", title="Class A Common Shares")  # a 12(b) row
-    assert _issuer(conn, "AM", "2014-04-01")[:2] == ("resolved", 5133)
+    assert _issuer(conn, "AM", "2014-04-01")[:2] == ("ended", None)
+    assert _line(conn, 5133, "", "2014-04-01")[0] == "ended"
     # Another issuer whose common was delisted and deregistered, then relisted.
     _observe(conn, 95, "REL", "2016-01-10")
     _event(conn, 95, "25-NSE", "2016-02-01", kind="equity", extinguished=False,
@@ -2408,6 +2412,95 @@ def _evidence(conn, ticker: str, cik: int, class_key: str) -> list[tuple]:
         "SELECT evidence, holder_cik, line_key, valid_from, valid_to, end_reason, symbols "
         "FROM sec_line_price_evidence(%s, %s, %s)", (ticker, cik, class_key),
     ).fetchall()
+
+def _alive(conn, ticker: str, cik: int, class_key: str, on: dt.date) -> bool:
+    """Whether the line of ``class_key`` is evidenced alive at ``on``."""
+    return any(row[0] == "alive" and row[3] <= on and (row[4] is None or on < row[4])
+               for row in _evidence(conn, ticker, cik, class_key))
+
+
+def test_an_end_naming_one_class_ends_that_class_only(schema_dsn) -> None:
+    """Light #223 contract (probe cases named_class_end and unaffected_class): a
+    Form 15 of an A/B issuer naming "Class B common stock" ends class B's hold and
+    line, and leaves class A's. The class is read from the cover before the end:
+    its 12(b) title, else its member's letter."""
+    conn, _ = schema_dsn
+    a = _observe(conn, 100, "DUAL-A", "2024-02-01", class_key="CommonClassA",
+                 title="Class A common stock")
+    _observe(conn, 100, "DUAL-B", "2024-02-01", class_key="CommonClassB",
+             title="Class B common stock", adsh=a)
+    for class_key in ("CommonClassA", "CommonClassB"):
+        _count(conn, 100, class_key, "2024-01-31", 1_000_000, "2024-02-01", adsh=a)
+    _event(conn, 100, "15-12B", "2024-03-01", kind="equity", count=1,
+           description="Class B common stock")
+    on = d(2024, 3, 3)
+    assert _issuer(conn, "DUAL-B", on.isoformat())[:2] == ("ended", None)
+    assert _issuer(conn, "DUAL-A", on.isoformat())[:2] == ("resolved", 100)
+    assert (_alive(conn, "DUAL-A", 100, "CommonClassA", on),
+            _alive(conn, "DUAL-B", 100, "CommonClassB", on)) == (True, False)
+    assert _line(conn, 100, "CommonClassB", on.isoformat())[0] == "ended"
+    assert _line(conn, 100, "CommonClassA", on.isoformat())[0] == "resolved"
+    assert conn.execute(
+        "SELECT form, effective_on, definitive, class_keys "
+        "FROM sec_issuer_end_events(100, '2024-03-03')"
+    ).fetchall() == [("15-12B", d(2024, 3, 2), False, ["CommonClassB"])]
+    # Untitled lines: the member names the class. A Form 15 naming class C, which
+    # the issuer does not list, ends neither line.
+    q = _observe(conn, 101, "UNA", "2024-02-01", class_key=CLASS_A)
+    _observe(conn, 101, "UNB", "2024-02-01", class_key=CLASS_B, adsh=q)
+    _event(conn, 101, "15-12G", "2024-03-01", kind="equity", count=1,
+           description="Class C Common Stock, $0.01 par value")
+    assert [_issuer(conn, t, "2024-03-03")[0] for t in ("UNA", "UNB")] == [
+        "resolved", "resolved"]
+    _event(conn, 101, "25-NSE", "2024-04-01", kind="equity", count=1, venue_kind="primary",
+           description="Class A Common Stock, $0.01 par value")
+    assert [_issuer(conn, t, "2024-04-03")[0] for t in ("UNA", "UNB")] == [
+        "ended", "resolved"]
+
+
+def test_a_definitive_end_is_not_reopened_by_a_titled_cover(schema_dsn) -> None:
+    """Light #223 contract (probe case definitive_end_not_reopened): the 25-NSE
+    extinguished the class and the next count is 100 shares; the later 10-Q that
+    still lists the symbol with a title does not reopen the hold or the line."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 200, "DEAD", "2024-02-01", title="Common stock")
+    _count(conn, 200, "", "2024-01-31", 1_000_000, "2024-02-01", adsh=q)
+    _event(conn, 200, "25-NSE", "2024-03-01", kind="equity", extinguished=True,
+           venue_kind="primary", description="Common stock")
+    k = _observe(conn, 200, "DEAD", "2024-04-01", title="Common stock")
+    _count(conn, 200, "", "2024-03-31", 100, "2024-04-01", adsh=k)
+    on = d(2024, 4, 3)
+    assert _ends(conn, 200, on.isoformat()) == [("25-NSE", d(2024, 3, 2), True)]
+    assert _issuer(conn, "DEAD", on.isoformat())[:2] == ("ended", None)
+    assert not _alive(conn, "DEAD", 200, "", on)
+    assert _span(conn, "DEAD", 200) == [
+        ("", d(2024, 2, 2), d(2024, 3, 2), "25-NSE", d(2024, 2, 2), None, None),
+    ]
+
+
+def test_an_undimensioned_sole_class_is_not_merged_into_a_later_class(schema_dsn) -> None:
+    """Light #223 contract (probe case undimensioned_class_switch): Google Inc's
+    undimensioned "Common stock" GOOG (its sole class) in March 2014, then GOOGL on
+    class A and GOOG on class C. GOOG moved to the new class C in the split; the
+    class C line is not alive before it existed. Berkshire's relabelled members
+    stay one line (test_relabelled_members_of_one_class_are_one_line)."""
+    conn, _ = schema_dsn
+    old = _observe(conn, 1288776, "GOOG", "2014-03-01", title="Common stock")
+    conn.execute("UPDATE sec_ticker_cik_observations SET filing_complete = true "
+                 "WHERE adsh = %s", (old,))
+    q = _observe(conn, 1288776, "GOOGL", "2014-04-03", class_key="ClassA",
+                 title="Class A common stock")
+    _observe(conn, 1288776, "GOOG", "2014-04-03", class_key="ClassC",
+             title="Class C common stock", adsh=q)
+    conn.execute("UPDATE sec_ticker_cik_observations SET filing_complete = true "
+                 "WHERE adsh = %s", (q,))
+    assert sorted(conn.execute("SELECT class_key, line_key FROM sec_issuer_lines(1288776)"
+                               ).fetchall()) == [("", ""), ("ClassA", "ClassA"),
+                                                 ("ClassC", "ClassC")]
+    on = d(2014, 3, 15)
+    assert _issuer(conn, "GOOG", on.isoformat())[:2] == ("resolved", 1288776)
+    assert not _alive(conn, "GOOG", 1288776, "ClassC", on)
+    assert _alive(conn, "GOOG", 1288776, "ClassC", d(2014, 5, 1))
 
 
 def test_issuer_at_takes_class_and_kind_from_the_same_row(schema_dsn) -> None:
