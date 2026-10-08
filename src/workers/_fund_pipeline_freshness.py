@@ -36,6 +36,9 @@ class Observation:
     equity: bool = False
     oldest_report_date: dt.date | None = None
     exposures_present: bool = False
+    # Set for instrument-grain outputs (characteristics): every instrument mapped
+    # to a series needs its own matching row; a sibling share class cannot cover it.
+    instrument_id: str | None = None
 
 
 @dataclass
@@ -202,32 +205,35 @@ def assess_stage(
     observed: dict[str, list[Observation]] = {}
     for row in rows:
         observed.setdefault(row.series_id, []).append(row)
+    def matches(row: Observation, wanted: Observation) -> bool:
+        if row.report_date != wanted.report_date:
+            return False
+        if require_counts and row.n_holdings != wanted.n_holdings:
+            return False
+        if require_computed and (row.computed_at is None or wanted.computed_at is None
+                                 or row.computed_at < wanted.computed_at):
+            return False
+        if require_chain_freshness and (
+            row.oldest_report_date is None
+            or row.oldest_report_date < utc_today() - dt.timedelta(days=source.policy.max_chain_report_age_days)
+            or row.oldest_report_date > row.report_date
+        ):
+            return False
+        if require_exposures and not row.exposures_present:
+            return False
+        return not require_recent_computation or (
+            row.computed_at is not None and row.computed_at >= dt.datetime.now(dt.UTC)
+            - dt.timedelta(days=source.policy.max_lookthrough_computation_age_days)
+        )
+
     matched = set()
     for sid in expected:
-        wanted = source.series[sid]
+        units: dict[str | None, list[Observation]] = {}
         for row in observed.get(sid, []):
-            if row.report_date != wanted.report_date:
-                continue
-            if require_counts and row.n_holdings != wanted.n_holdings:
-                continue
-            if require_computed and (row.computed_at is None or wanted.computed_at is None
-                                     or row.computed_at < wanted.computed_at):
-                continue
-            if require_chain_freshness and (
-                row.oldest_report_date is None
-                or row.oldest_report_date < utc_today() - dt.timedelta(days=source.policy.max_chain_report_age_days)
-                or row.oldest_report_date > row.report_date
-            ):
-                continue
-            if require_exposures and not row.exposures_present:
-                continue
-            if require_recent_computation and (
-                row.computed_at is None or row.computed_at < dt.datetime.now(dt.UTC)
-                - dt.timedelta(days=source.policy.max_lookthrough_computation_age_days)
-            ):
-                continue
+            units.setdefault(row.instrument_id, []).append(row)
+        if units and all(any(matches(row, source.series[sid]) for row in unit)
+                         for unit in units.values()):
             matched.add(sid)
-            break
     share = len(matched) / len(expected) if expected else 0.0
     breaches = []
     if not expected:
@@ -265,14 +271,14 @@ def probe_stage(conn: Any, source: SourceCohort, stage: str) -> dict[str, Any]:
                          NULLIF(i.attributes->>'series_id', '')) AS series_id
                      FROM public.instruments_universe i
                      LEFT JOIN public.instrument_identity ii USING (instrument_id)
-                   ) SELECT f.series_id, e.as_of, e.computed_at
+                   ) SELECT f.series_id, f.instrument_id::text, e.as_of, e.computed_at
                    FROM funds f LEFT JOIN public.equity_characteristics_monthly e
                      ON e.instrument_id = f.instrument_id AND e.as_of >= %s AND e.as_of <= %s
                    WHERE f.series_id = ANY(%s::text[])""",
                 (source.start, source.as_of, [sid for sid, row in source.series.items() if row.equity]),
             )
-            rows = [Observation(str(sid), day, computed_at=computed)
-                    for sid, day, computed in cur.fetchall()]
+            rows = [Observation(str(sid), day, computed_at=computed, instrument_id=iid)
+                    for sid, iid, day, computed in cur.fetchall()]
         return assess_stage(stage, source, rows, expected_series={row.series_id for row in rows},
                             require_computed=True)
     if stage == "lookthrough":

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from src import db
 from src.workers import _fund_pipeline_freshness as freshness
 from src.workers import nport_lookthrough as worker
 
@@ -14,6 +15,8 @@ READ_SOURCE_COHORT = freshness.read_source_cohort
 
 
 class Conn:
+    load_running = False
+
     def __enter__(self):
         return self
 
@@ -26,6 +29,16 @@ class Conn:
     def commit(self):
         pass
 
+    def execute(self, query, params=()):
+        """Promotion's statements; a running load holds LOCK_NPORT_LOAD."""
+        if "pg_try_advisory_xact_lock" in query:
+            assert params == (db.LOCK_NPORT_LOAD,)
+            self.result = [(not self.load_running,)]
+        return self
+
+    def fetchone(self):
+        return self.result[0]
+
 
 class Lake(Conn):
     """Grouped sec_nport_holdings rows and cagg profiles, filtered as the SQL bounds them."""
@@ -37,15 +50,15 @@ class Lake(Conn):
         return self
 
     def execute(self, query, params=()):
+        if "advisory" in query or "ISOLATION" in query:
+            return super().execute(query, params)
         if "max(report_date)" in query:
             self.result = [(max((row[1] for row in self.raw), default=None),)]
         else:
             low, high = params
             rows = self.profiles if "cagg_nport_series_profile" in query else self.raw
             self.result = [row for row in rows if low <= row[1] <= high]
-
-    def fetchone(self):
-        return self.result[0]
+        return self
 
     def fetchall(self):
         return self.result
@@ -154,6 +167,20 @@ def test_chain_capped_rebuild_blocks_when_a_newer_month_loads_before_promotion(
     with pytest.raises(freshness.FundPipelineBlocked) as blocked:
         run()
     assert blocked.value.verdict["breaches"] == ["SOURCE_CHANGED_DURING_BUILD"]
+    assert published == []
+    assert cleaned == [True]
+
+
+def test_a_running_load_blocks_promotion_and_keeps_last_good(monkeypatch):
+    _source, published, cleaned = _patch(monkeypatch)
+    conn = Conn()
+    conn.load_running = True
+    monkeypatch.setattr(worker, "connect", lambda *_a: conn)
+    monkeypatch.setattr(worker, "_process_shard", lambda *_a: (1, 1, 3))
+    monkeypatch.setattr(worker, "_probe_staged", lambda *_a: {"alarm": False})
+    with pytest.raises(freshness.FundPipelineBlocked) as blocked:
+        worker.run("unused", serial=True)
+    assert blocked.value.verdict["breaches"] == ["SOURCE_LOAD_IN_PROGRESS"]
     assert published == []
     assert cleaned == [True]
 

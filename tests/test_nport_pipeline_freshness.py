@@ -93,6 +93,37 @@ def test_existing_characteristics_must_have_been_computed_after_source_arrived()
     assert freshness.assess_stage("characteristics", source, rows, require_computed=True)["alarm"]
 
 
+@pytest.mark.parametrize(("sibling_has_row", "current"), [(False, False), (True, True)])
+def test_every_instrument_mapped_to_a_series_needs_its_own_characteristics_row(
+    sibling_has_row, current,
+):
+    source = _cohort(1)
+    computed = LOADED + dt.timedelta(hours=1)
+    sibling = (source.as_of, computed) if sibling_has_row else (None, None)
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, query, params):
+            assert "f.instrument_id" in query and params[2] == ["S0"]
+
+        def fetchall(self):  # (series_id, instrument_id, as_of, computed_at), one per class
+            return [("S0", "I-A", source.as_of, computed), ("S0", "I-B", *sibling)]
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+    verdict = freshness.probe_stage(Conn(), source, "characteristics")
+    assert verdict["expected_series_count"] == 1
+    assert (verdict["matched_series_count"] == 1) is current
+    assert verdict["alarm"] is not current
+
+
 def test_empty_source_never_passes():
     source = freshness.source_from_rows([], [], raw_max=None, today=NOW)
     assert source.verdict["alarm"] is True

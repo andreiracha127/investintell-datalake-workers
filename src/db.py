@@ -366,6 +366,7 @@ LOCK_NPORT_NEW_SERIES_INSERT = 900_364
 # Loader lifecycle session mutex protects compression maintenance across
 # standalone invocations while disjoint date COPY transactions run in parallel.
 # Lock order: monthly worker 900_363 -> lifecycle 900_365 -> insert 900_364.
+# nport_lookthrough promotion takes it as a transaction try-lock (never waits).
 LOCK_NPORT_LOAD = 900_365
 # Legacy fund-classification input chain; distinct from its children 900202
 # (characteristics) and 900204 (lookthrough/Light reader) and from the monthly

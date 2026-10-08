@@ -17,6 +17,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
+from src import db
 from src.workers import _fund_pipeline_freshness as freshness
 from src.workers import nport_lookthrough as worker
 
@@ -134,3 +135,54 @@ def test_insert_failure_rolls_back_deletion_and_preserves_last_good(database):
         conn.rollback()
         assert _currency(conn) == 100
         assert conn.execute("SELECT count(*) FROM nport_lookthrough_candidate_summary").fetchone()[0] == 1
+
+
+@pytest.fixture
+def raw_source(dsn):
+    """Minimal public source relations read_source_cohort scans, removed afterwards."""
+    day = dt.datetime.now(dt.UTC).date() - dt.timedelta(days=40)
+    with psycopg.connect(dsn, autocommit=True) as owner:
+        owner.execute("""CREATE TABLE public.sec_nport_holdings (
+            series_id text, report_date date, created_at timestamptz,
+            asset_class text, market_value bigint)""")
+        owner.execute("CREATE TABLE public.cagg_nport_series_profile "
+                      "(series_id text, report_day date, n_holdings integer)")
+        owner.execute("INSERT INTO public.sec_nport_holdings VALUES ('S1', %s, now(), 'EC', 1)", (day,))
+    try:
+        yield day
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as owner:
+            owner.execute("DROP TABLE public.sec_nport_holdings, public.cagg_nport_series_profile")
+
+
+def test_promotion_is_serialized_with_the_loader_lock(dsn, database, raw_source):
+    run_id, _summary = _seed(database)
+    with database() as producer, database() as observer,             psycopg.connect(dsn, autocommit=True) as loader:
+        source = freshness.read_source_cohort(producer)
+        producer.commit()
+        # A running load holds the lifecycle lock (nport_parallel_load's blocking
+        # session lock): promotion refuses instead of waiting.
+        loader.execute("SELECT pg_advisory_lock(%s)", (db.LOCK_NPORT_LOAD,))
+        with pytest.raises(freshness.FundPipelineBlocked, match="SOURCE_LOAD_IN_PROGRESS"):
+            worker._promote(producer, source, run_id, None)
+        producer.rollback()
+        assert _currency(observer) == 100
+        # A load that committed after the source read blocks promotion too.
+        loader.execute("INSERT INTO public.sec_nport_holdings VALUES ('S1', %s, now(), 'EC', 1)",
+                       (raw_source + dt.timedelta(days=31),))
+        loader.execute("SELECT pg_advisory_unlock(%s)", (db.LOCK_NPORT_LOAD,))
+        with pytest.raises(freshness.FundPipelineBlocked, match="SOURCE_CHANGED_DURING_BUILD"):
+            worker._promote(producer, source, run_id, None)
+        producer.rollback()
+        assert _currency(observer) == 100
+        # Once promotion holds the lock, a starting load waits until COMMIT.
+        source = freshness.read_source_cohort(producer)
+        producer.commit()
+        worker._promote(producer, source, run_id, None)
+        loader.execute("SET lock_timeout = '300ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            loader.execute("SELECT pg_advisory_lock(%s)", (db.LOCK_NPORT_LOAD,))
+        producer.commit()
+        assert _currency(observer) == 80
+        loader.execute("SELECT pg_advisory_lock(%s)", (db.LOCK_NPORT_LOAD,))
+        loader.execute("SELECT pg_advisory_unlock(%s)", (db.LOCK_NPORT_LOAD,))

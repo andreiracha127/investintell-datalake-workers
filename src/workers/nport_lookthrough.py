@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from uuid import uuid4
 
-from src.db import LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
+from src.db import LOCK_NPORT_LOAD, LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
 from src.workers import nport_identifier_coverage
 from src.workers import _fund_pipeline_freshness as freshness
 
@@ -869,6 +869,31 @@ def _publish_staged(conn, run_id: str) -> None:
     _cleanup_staged(conn, run_id)
 
 
+def _promote(conn, source: freshness.SourceCohort, run_id: str, cutoff: _dt.date | None) -> None:
+    """Publish ``run_id`` unless an N-PORT load is running or landed after ``source``.
+
+    Opens a fresh transaction; the caller commits. The only sec_nport_holdings
+    writer here, tools/nport_dera/nport_parallel_load (also run by
+    nport_secapi_monthly), holds LOCK_NPORT_LOAD with a blocking session lock
+    from before its first insert until after its last commit. This try-lock is
+    transaction-scoped, so it is held through the caller's COMMIT: a load that
+    starts meanwhile waits for it, and none can commit between the READ
+    COMMITTED re-read below and promotion. It never waits itself, so the order
+    900_366 chain -> 900_204 look-through -> 900_365 cannot deadlock with the
+    loader's 900_363 -> 900_365 -> 900_364, which never takes 900_204.
+    """
+    conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+    if not conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (LOCK_NPORT_LOAD,)).fetchone()[0]:
+        raise freshness.FundPipelineBlocked({
+            "stage": "lookthrough", "alarm": True, "breaches": ["SOURCE_LOAD_IN_PROGRESS"],
+            "last_good_preserved": True,
+        })
+    # The chain passes calc_date=source.as_of, which caps the cohort read; the
+    # live watermark still sees a month loaded mid-build.
+    freshness.require_unchanged("lookthrough", source, freshness.read_source_cohort(conn, cutoff=cutoff))
+    _publish_staged(conn, run_id)
+
+
 def ensure_schema(conn) -> None:
     """Apply idempotent look-through and exact-equity input DDL."""
     schema_dir = os.path.join(
@@ -1008,12 +1033,8 @@ def run(
                             upserted += u
                             exposure_rows += e
                 postcheck = freshness.require(_probe_staged(conn, source, run_id))
-                # The chain passes calc_date=source.as_of, which caps this cohort
-                # read; the live watermark still sees a month loaded mid-build.
-                freshness.require_unchanged(
-                    "lookthrough", source, freshness.read_source_cohort(conn, cutoff=cutoff),
-                )
-                _publish_staged(conn, run_id)
+                conn.commit()
+                _promote(conn, source, run_id, cutoff)
                 conn.commit()
             except Exception:
                 conn.rollback()

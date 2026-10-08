@@ -29,7 +29,7 @@ still **DO NOT MERGE**. This branch does not modify it.
 | --- | --- | --- |
 | N-PORT | Newest reporting month with at least 1,000 distinct series; anchor age at most 120 UTC calendar days. Distinct series across its three report months retain at least 90% of the preceding three-month cohort. | Blocks the fund chain; reports actual raw max separately. New series cannot compensate for missing previous series. |
 | Cagg | At least 90% of the anchored source series have the exact same latest report day and holding count. | Requests the existing owner-run policy, then polls six times with two seconds between polls. An unfinished refresh is `blocked`, never proof of freshness. |
-| Equity characteristics | At least 90% of the mapped, positive-value EC/EP source series have their exact source report date and `computed_at >=` that series' latest source `created_at`. | Fund output is validated before commit. An unchanged fully matched cohort skips the heavy chain rebuild. |
+| Equity characteristics | At least 90% of the mapped, positive-value EC/EP source series have, for every instrument mapped to the series, a row at the exact source report date with `computed_at >=` that series' latest source `created_at`. One share class cannot cover a sibling. | Fund output is validated before commit. An unchanged fully matched cohort skips the heavy chain rebuild. |
 | Identifier coverage | Existing 90% ISIN fill floor, judged per report date with at least 1,000 holdings over 150 days through the anchor. | `degraded` or `undecidable` blocks candidates before writes. |
 | Look-through | At least 90% of the same source series match report date/count/source load time and have exposures for that same report. Computation age is at most seven days. Expanded child reports are at most 180 UTC calendar days old. | Older child holdings are left as an explicit unexpanded-fund residual. Shards write candidates; only a checked complete batch replaces serving output atomically. |
 | Classification health | Nonempty `status='completed'` run that started at or after the most recent 08:00 UTC classifier slot (five-minute start grace; the slot counts once its one-hour completion window has elapsed, so the 09:00 check requires today's run) and completed after the latest raw-tail load; run as-of within 120 days and at least the broad anchor and actual raw max. Source and all derived cohort checks pass, and each derived global watermark reaches the actual loaded raw max. | Independent read-only monitor exits 1 even if the classifier did not execute or did not publish. A recent replay of an older as-of cannot renew health. |
@@ -116,7 +116,12 @@ No queue, new privileged job, or synchronous refresh is introduced.
 The shared look-through/Light-reader lock remains **900204** intentionally;
 Light's transaction reader guard prevents classification during publication.
 The outer chain has **900366**, distinct from its children; the cagg request
-uses **900367** (900363-900365 belong to the monthly N-PORT loader). A partial
+uses **900367** (900363-900365 belong to the monthly N-PORT loader). Look-through
+promotion also takes the loader's **900365** as a non-blocking transaction lock
+held through its commit: a running load blocks publication
+(`SOURCE_LOAD_IN_PROGRESS`), and a load starting meanwhile waits for the commit.
+The look-through never waits for 900365, so its order 900366 -> 900204 -> 900365
+cannot deadlock with the loader's 900363 -> 900365 -> 900364. A partial
 `WORKER_LIMIT` cannot publish a full fund cohort.
 A replay cutoff does not replace the UTC clock used to judge live freshness.
 
