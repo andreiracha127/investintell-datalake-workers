@@ -66,17 +66,32 @@ CREATE TABLE IF NOT EXISTS equity_characteristics_monthly (
 -- so re-runs and non-Timescale targets do not error.
 -- ---------------------------------------------------------------------------
 DO $$
+DECLARE
+    target text;
+    date_column text;
+    populated boolean;
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
-        PERFORM create_hypertable(
-            'company_characteristics_monthly', 'period_end',
-            chunk_time_interval => INTERVAL '365 days',
-            if_not_exists => TRUE, migrate_data => TRUE
-        );
-        PERFORM create_hypertable(
-            'equity_characteristics_monthly', 'as_of',
-            chunk_time_interval => INTERVAL '365 days',
-            if_not_exists => TRUE, migrate_data => TRUE
-        );
+        FOREACH target IN ARRAY ARRAY['company_characteristics_monthly', 'equity_characteristics_monthly']
+        LOOP
+            IF EXISTS (
+                SELECT 1 FROM timescaledb_information.hypertables
+                WHERE hypertable_schema = current_schema() AND hypertable_name = target
+            ) THEN
+                CONTINUE;
+            END IF;
+            EXECUTE format('SELECT EXISTS (SELECT 1 FROM %I LIMIT 1)', target) INTO populated;
+            -- A runtime bootstrap must not rewrite populated historical tables.
+            -- Existing plain tables remain usable; conversion is an owner task.
+            IF populated THEN
+                CONTINUE;
+            END IF;
+            date_column := CASE WHEN target = 'company_characteristics_monthly'
+                                THEN 'period_end' ELSE 'as_of' END;
+            PERFORM create_hypertable(
+                target::regclass, date_column::name,
+                chunk_time_interval => INTERVAL '365 days', if_not_exists => TRUE
+            );
+        END LOOP;
     END IF;
 END $$;

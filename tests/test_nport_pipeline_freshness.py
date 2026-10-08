@@ -95,7 +95,7 @@ def test_existing_characteristics_must_have_been_computed_after_source_arrived()
 
 @pytest.mark.parametrize(("sibling_has_row", "current"), [(False, False), (True, True)])
 def test_every_instrument_mapped_to_a_series_needs_its_own_characteristics_row(
-    sibling_has_row, current,
+    monkeypatch, sibling_has_row, current,
 ):
     source = _cohort(1)
     computed = LOADED + dt.timedelta(hours=1)
@@ -115,9 +115,17 @@ def test_every_instrument_mapped_to_a_series_needs_its_own_characteristics_row(
             return [("S0", "I-A", source.as_of, computed), ("S0", "I-B", *sibling)]
 
     class Conn:
+        def execute(self, *_a):
+            return self
+
+        def fetchone(self):
+            return (True,)
+
         def cursor(self):
             return Cursor()
 
+    from src.workers import _fund_pipeline_inputs as inputs
+    monkeypatch.setattr(inputs, "current", lambda *_a: True)
     verdict = freshness.probe_stage(Conn(), source, "characteristics")
     assert verdict["expected_series_count"] == 1
     assert (verdict["matched_series_count"] == 1) is current
@@ -165,3 +173,13 @@ def test_old_expanded_child_reports_cannot_certify_a_fresh_root():
                                  oldest_report_date=dt.date(2026, 1, 31), exposures_present=True)
     verdict = freshness.assess_stage("lookthrough", source, [row], require_chain_freshness=True)
     assert verdict["alarm"] is True
+
+
+def test_cagg_same_count_repair_must_cover_the_changed_nav_weights():
+    from dataclasses import replace
+
+    source = _cohort(1)
+    source.series["S0"] = replace(source.series["S0"], coverage_pct=80)
+    stale = freshness.Observation("S0", source.as_of, 4, coverage_pct=100)
+    assert freshness.assess_stage("cagg", source, [stale], require_counts=True,
+                                   require_coverage_pct=True)["alarm"]

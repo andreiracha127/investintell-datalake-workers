@@ -47,9 +47,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from uuid import uuid4
 
-from src.db import LOCK_NPORT_LOAD, LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
+from src.db import LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
 from src.workers import nport_identifier_coverage
 from src.workers import _fund_pipeline_freshness as freshness
+from src.workers import _fund_pipeline_inputs as inputs
 
 LOGGER = logging.getLogger(__name__)
 
@@ -869,7 +870,8 @@ def _publish_staged(conn, run_id: str) -> None:
     _cleanup_staged(conn, run_id)
 
 
-def _promote(conn, source: freshness.SourceCohort, run_id: str, cutoff: _dt.date | None) -> None:
+def _promote(conn, source: freshness.SourceCohort, run_id: str, cutoff: _dt.date | None,
+             input_snapshot: dict) -> None:
     """Publish ``run_id`` unless an N-PORT load is running or landed after ``source``.
 
     Opens a fresh transaction; the caller commits. The only sec_nport_holdings
@@ -883,15 +885,15 @@ def _promote(conn, source: freshness.SourceCohort, run_id: str, cutoff: _dt.date
     loader's 900_363 -> 900_365 -> 900_364, which never takes 900_204.
     """
     conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
-    if not conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (LOCK_NPORT_LOAD,)).fetchone()[0]:
-        raise freshness.FundPipelineBlocked({
-            "stage": "lookthrough", "alarm": True, "breaches": ["SOURCE_LOAD_IN_PROGRESS"],
-            "last_good_preserved": True,
-        })
+    freshness.lock_source(conn, "lookthrough")
+    inputs.guard(conn, source, "lookthrough", input_snapshot)
     # The chain passes calc_date=source.as_of, which caps the cohort read; the
     # live watermark still sees a month loaded mid-build.
-    freshness.require_unchanged("lookthrough", source, freshness.read_source_cohort(conn, cutoff=cutoff))
+    latest = freshness.read_source_cohort(conn, cutoff=cutoff)
+    freshness.require_unchanged("lookthrough", source, latest)
+    freshness.require(latest.verdict)
     _publish_staged(conn, run_id)
+    inputs.certify(conn, source, "lookthrough", input_snapshot)
 
 
 def ensure_schema(conn) -> None:
@@ -906,6 +908,7 @@ def ensure_schema(conn) -> None:
         ):
             with open(os.path.join(schema_dir, filename), encoding="utf-8") as fh:
                 cur.execute(fh.read())
+    inputs.ensure_schema(conn)
     conn.commit()
 
 
@@ -992,6 +995,7 @@ def run(
                     "breaches": ["IDENTIFIER_COVERAGE_NOT_CLEAN"], "identifier_coverage": identifier,
                     "last_good_preserved": True,
                 })
+            ensure_schema(conn)
             current = freshness.probe_stage(conn, source, "lookthrough")
             if (not force_rebuild and not current["alarm"] and current.get("matched_series_count")
                     == current.get("expected_series_count")):
@@ -1003,8 +1007,8 @@ def run(
                     "stage": "lookthrough", "alarm": True,
                     "breaches": ["PARTIAL_COHORT_CANNOT_PUBLISH"], "last_good_preserved": True,
                 })
-            ensure_schema(conn)
             _cleanup_orphan_candidates(conn)
+            input_snapshot = inputs.snapshot(conn, source, "lookthrough")
             cdate = source.as_of
             fund_map = build_fund_map(conn)
             sector_map = build_sector_map(conn)
@@ -1034,7 +1038,7 @@ def run(
                             exposure_rows += e
                 postcheck = freshness.require(_probe_staged(conn, source, run_id))
                 conn.commit()
-                _promote(conn, source, run_id, cutoff)
+                _promote(conn, source, run_id, cutoff, input_snapshot)
                 conn.commit()
             except Exception:
                 conn.rollback()

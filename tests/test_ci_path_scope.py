@@ -45,6 +45,9 @@ def test_nport_enrichment_helpers_select_only_nport(path: str) -> None:
     "path",
     [
         "src/workers/_fund_pipeline_freshness.py",
+        "src/workers/_fund_pipeline_inputs.py",
+        "schemas/nport_pipeline_publications_v1.sql",
+        "schemas/nport_pipeline_publications_v1.rollback.sql",
         "src/workers/fund_pipeline_health.py",
         "src/workers/nport_classification_inputs_chain.py",
         "tests/test_fund_pipeline_health.py",
@@ -68,6 +71,7 @@ def test_fund_classification_pipeline_selects_nport(path: str) -> None:
     "path",
     [
         "src/workers/characteristics.py",
+        "schemas/characteristics.sql",
         "src/run_worker.py",
         "src/db.py",
         "tests/test_characteristics_pipeline.py",

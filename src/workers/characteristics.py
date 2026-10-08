@@ -85,12 +85,15 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from psycopg import IsolationLevel
 
-from src.db import LOCK_CHARACTERISTICS, advisory_lock, connect
+from src.db import LOCK_CHARACTERISTICS, LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
 from src.workers import _fund_pipeline_freshness as freshness
+from src.workers import _fund_pipeline_inputs as inputs
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1023,6 +1026,13 @@ def _distinct_ciks_with_facts(conn, limit: int | None) -> list[int]:
         return [r[0] for r in cur.fetchall()]
 
 
+def ensure_schema(conn) -> None:
+    """Install missing outputs without migrating populated historical tables."""
+    conn.execute((Path(__file__).resolve().parents[2] / "schemas" / "characteristics.sql").read_text(encoding="utf-8"))
+    inputs.ensure_schema(conn)
+    conn.commit()
+
+
 def run(
     dsn: str, *, calc_date: str | None = None, limit: int | None = None,
     source: freshness.SourceCohort | None = None,
@@ -1048,6 +1058,7 @@ def run(
     )
 
     conn = connect(dsn)
+    conn.isolation_level = IsolationLevel.READ_COMMITTED
     company_processed = company_upserted = 0
     standalone = source is None
     try:
@@ -1055,6 +1066,7 @@ def run(
             if not got:
                 return {"status": "lock_busy", "reason": "lock_held",
                         "processed": 0, "upserted": 0}
+            ensure_schema(conn)
             if standalone:
                 # The scheduled monthly worker also feeds stock screeners.
                 # Company/XBRL freshness must not wait for an N-PORT load.
@@ -1092,15 +1104,23 @@ def run(
                         "stage": "company_characteristics", "alarm": True,
                         "breaches": ["COMPANY_CHARACTERISTICS_EMPTY"], "last_good_preserved": True,
                     })
+            input_snapshot = inputs.snapshot(conn, source, "characteristics")
             equity_processed, equity_upserted = _run_layer2_setbased(conn, limit, commit=False)
-            postcheck = freshness.require(freshness.probe_stage(conn, source, "characteristics"))
-            latest_source = freshness.read_source_cohort(conn, cutoff=today)
-            freshness.require(latest_source.verdict)
-            if latest_source.signature != source.signature:
+            postcheck = freshness.require(freshness.probe_stage(conn, source, "characteristics", candidate=True))
+            # Light uses 900204 as its input-reader guard. Protect fund rows
+            # and their receipt through COMMIT just as look-through does.
+            if not conn.execute("SELECT pg_try_advisory_xact_lock(%s)",
+                                (LOCK_NPORT_LOOKTHROUGH,)).fetchone()[0]:
                 raise freshness.FundPipelineBlocked({
                     "stage": "characteristics", "alarm": True,
-                    "breaches": ["SOURCE_CHANGED_DURING_BUILD"], "last_good_preserved": True,
+                    "breaches": ["INPUT_READER_IN_PROGRESS"], "last_good_preserved": True,
                 })
+            freshness.lock_source(conn, "characteristics")
+            inputs.guard(conn, source, "characteristics", input_snapshot)
+            latest_source = freshness.read_source_cohort(conn, cutoff=today)
+            freshness.require(latest_source.verdict)
+            freshness.require_unchanged("characteristics", source, latest_source)
+            inputs.certify(conn, source, "characteristics", input_snapshot)
             conn.commit()
             return {
                 "status": "succeeded",

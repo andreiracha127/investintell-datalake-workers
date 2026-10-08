@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,6 +53,9 @@ class Lake(Conn):
     def execute(self, query, params=()):
         if "advisory" in query or "ISOLATION" in query:
             return super().execute(query, params)
+        if "to_regclass" in query:
+            self.result = [(True, True)]
+            return self
         if "max(report_date)" in query:
             self.result = [(max((row[1] for row in self.raw), default=None),)]
         else:
@@ -77,7 +81,10 @@ def _patch(monkeypatch):
 
     monkeypatch.setattr(worker, "connect", lambda *_a: Conn())
     monkeypatch.setattr(worker, "advisory_lock", lock)
-    monkeypatch.setattr(worker, "ensure_schema", lambda *_a: None)
+    monkeypatch.setattr(worker, "ensure_schema", lambda *_a: None, raising=False)
+    monkeypatch.setattr(worker, "inputs", SimpleNamespace(
+        snapshot=lambda *_a: {}, guard=lambda *_a: None, certify=lambda *_a: None,
+    ), raising=False)
     monkeypatch.setattr(worker, "_cleanup_orphan_candidates", lambda *_a: None)
     monkeypatch.setattr(worker.freshness, "read_source_cohort", lambda *_a, **_k: source)
     monkeypatch.setattr(worker.freshness, "probe_stage", lambda _c, _s, stage: {
@@ -241,3 +248,15 @@ def test_expired_child_is_kept_as_an_explicit_unexpanded_fund_residual():
     assert summary["nondecomposable_fund_pct"] == 100
     assert summary["n_children_expanded"] == 0
     assert summary["oldest_report_date"] == root_day
+
+
+def test_first_lookthrough_probe_follows_schema_installation(monkeypatch):
+    _source, _published, _cleaned = _patch(monkeypatch)
+    installed = []
+    monkeypatch.setattr(worker, "ensure_schema", lambda *_a: installed.append(True))
+    def probe(_conn, _source, stage):
+        if stage == "lookthrough":
+            assert installed, "fresh database has no lookthrough tables yet"
+        return {"alarm": False, "matched_series_count": 1, "expected_series_count": 1}
+    monkeypatch.setattr(worker.freshness, "probe_stage", probe)
+    assert worker.run("unused", serial=True)["status"] == "current"

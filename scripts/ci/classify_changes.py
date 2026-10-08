@@ -31,7 +31,7 @@ ALL_LANES = {
 NPORT_PATTERNS = (
     "requirements.txt",
     "src/workers/nport_*.py",
-    "src/workers/_fund_pipeline_freshness.py",
+    "src/workers/_fund_pipeline_*.py",
     "src/workers/fund_pipeline_health.py",
     "src/workers/_openfigi.py",
     "src/workers/_yahoo_sector.py",
@@ -60,6 +60,7 @@ SHARED_PATHS = {
     # chain as well as the rest of the worker fleet.
     "src/run_worker.py",
     "src/workers/characteristics.py",
+    "schemas/characteristics.sql",
     "tests/test_characteristics_pipeline.py",
     "tests/test_ci_path_scope.py",
 }

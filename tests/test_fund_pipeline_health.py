@@ -81,13 +81,12 @@ def test_a_newer_sparse_raw_load_cannot_renew_health_through_the_broad_anchor():
     assert "CLASSIFICATION_BEFORE_SOURCE_LOAD" in verdict["breaches"]
 
 
-def test_sparse_loaded_raw_ahead_of_derived_outputs_still_blocks_health():
-    verdict = health.assess_watermarks(dt.date(2026, 8, 31), {
+def test_sparse_raw_tail_is_not_a_derived_publication_target():
+    verdict = health.assess_watermarks(dt.date(2026, 7, 31), {
         "cagg": dt.date(2026, 8, 31), "characteristics": dt.date(2026, 8, 31),
         "lookthrough": dt.date(2026, 7, 31),
     }, today=NOW.date())
-    assert verdict["alarm"] is True
-    assert verdict["breaches"] == ["LOOKTHROUGH_BEHIND_LOADED_RAW"]
+    assert verdict["alarm"] is False
 
 
 def test_aligned_loaded_raw_watermarks_are_healthy():
@@ -119,6 +118,7 @@ def test_health_is_read_only_and_aggregates_dependency_failures(monkeypatch):
         "stage": stage, "alarm": stage == "lookthrough", "breaches": ["OUTPUT_STALE"],
     })
     monkeypatch.setattr(health, "_latest_classification", lambda *_a: None)
+    monkeypatch.setattr(health, "_input_publication_time", lambda *_a: None)
     monkeypatch.setattr(health, "_input_watermarks", lambda *_a: {
         stage: dt.date(2026, 7, 31) for stage in ("cagg", "characteristics", "lookthrough")
     })
@@ -128,3 +128,46 @@ def test_health_is_read_only_and_aggregates_dependency_failures(monkeypatch):
     assert stats["freshness"]["alarm"] is True
     assert "lookthrough" in stats["freshness"]["failed_stages"]
     assert "classification" in stats["freshness"]["failed_stages"]
+
+
+def test_classifier_started_before_source_commit_is_not_current():
+    source = _source()
+    source.latest_loaded_at = NOW - dt.timedelta(minutes=10)
+    verdict = health.assess_classification(_run(NOW), source, now=NOW)
+    assert "CLASSIFICATION_BEFORE_SOURCE_LOAD" in verdict["breaches"]
+
+
+def test_equity_subset_need_not_contain_the_latest_non_equity_report():
+    verdict = health.assess_watermarks(dt.date(2026, 7, 31), {
+        "cagg": dt.date(2026, 7, 31), "lookthrough": dt.date(2026, 7, 31),
+        "characteristics": dt.date(2026, 6, 30),
+    }, today=NOW.date())
+    assert verdict["alarm"] is False
+
+
+def test_classifier_before_a_same_source_input_repair_is_stale():
+    verdict = health.assess_classification(_run(NOW), _source(), now=NOW,
+                                           inputs_published_at=NOW - dt.timedelta(minutes=10))
+    assert "CLASSIFICATION_BEFORE_INPUT_PUBLICATION" in verdict["breaches"]
+
+
+def test_health_run_accepts_complete_anchor_with_a_sparse_raw_tail(monkeypatch):
+    class Conn:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_exc):
+            return False
+        def cursor(self):
+            return self
+        def execute(self, *_a):
+            return self
+    monkeypatch.setattr(health, "connect", lambda *_a: Conn())
+    monkeypatch.setattr(health.freshness, "read_source_cohort", lambda *_a, **_k: _source())
+    monkeypatch.setattr(health.freshness, "probe_stage", lambda _c, _s, stage: {"stage": stage, "alarm": False})
+    monkeypatch.setattr(health, "_latest_classification", lambda *_a: _run(NOW))
+    monkeypatch.setattr(health, "_input_publication_time", lambda *_a: None, raising=False)
+    monkeypatch.setattr(health, "_input_watermarks", lambda *_a: {
+        "cagg": dt.date(2026, 8, 31), "characteristics": dt.date(2026, 8, 31),
+        "lookthrough": dt.date(2026, 7, 31),
+    })
+    assert health.run("unused", now=NOW)["state"] == "healthy"

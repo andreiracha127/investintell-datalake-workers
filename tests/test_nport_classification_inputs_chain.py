@@ -44,7 +44,7 @@ def _patch(monkeypatch, cagg_alarms):
 
     def probe(_conn, _source, stage):
         calls.append(stage)
-        return {"stage": stage, "alarm": next(alarms) if stage == "cagg" else False}
+        return {"stage": stage, "alarm": next(alarms, False) if stage == "cagg" else False}
 
     monkeypatch.setattr(chain.freshness, "probe_stage", probe)
     return source, calls
@@ -106,3 +106,48 @@ def test_cagg_request_lock_is_registered_and_not_shared():
     ids = [v for k, v in vars(db).items() if k.startswith("LOCK_") and isinstance(v, int)]
     assert ids.count(db.LOCK_NPORT_SERIES_PROFILE_REFRESH_REQUEST) == 1
     assert ids.count(db.LOCK_NPORT_CLASSIFICATION_INPUTS_CHAIN) == 1
+
+
+def test_missing_cagg_baseline_requests_refresh_and_rereads_retention(monkeypatch):
+    from dataclasses import replace
+
+    source, calls = _patch(monkeypatch, [False, False])
+    missing = replace(source, verdict={"alarm": True, "breaches": ["SOURCE_BASELINE_MISSING"]})
+    snapshots = iter([missing, source, source])
+    monkeypatch.setattr(chain.freshness, "read_source_cohort", lambda *_a, **_k: next(snapshots))
+    stats = chain.run("unused", characteristics_runner=lambda *_a, **_k: {"status": "succeeded"},
+                      lookthrough_runner=lambda *_a, **_k: {"status": "complete"})
+    assert stats["state"] == "complete"
+    assert "request" in calls
+
+
+def test_refresh_does_not_waive_retention_when_baseline_appears(monkeypatch):
+    from dataclasses import replace
+
+    source, calls = _patch(monkeypatch, [False] * 10)
+    missing = replace(source, verdict={"alarm": True, "breaches": ["SOURCE_BASELINE_MISSING"]})
+    reduced = replace(source, verdict={"alarm": True, "breaches": ["SOURCE_COHORT_RETENTION_BELOW_FLOOR"]})
+    snapshots = iter([missing] + [reduced] * chain.POLL_ATTEMPTS)
+    monkeypatch.setattr(chain.freshness, "read_source_cohort", lambda *_a, **_k: next(snapshots))
+    stats = chain.run("unused", sleeper=lambda _s: None,
+                      characteristics_runner=lambda *_a, **_k: calls.append("bad"))
+    assert "request" in calls
+    assert "bad" not in calls
+    assert stats["freshness"]["breaches"] == ["SOURCE_COHORT_RETENTION_BELOW_FLOOR"]
+
+
+def test_chain_rechecks_characteristics_after_lookthrough_build(monkeypatch):
+    source, _calls = _patch(monkeypatch, [False])
+    repaired = False
+    def lookthrough(*_a, **_k):
+        nonlocal repaired
+        repaired = True
+        return {"status": "complete"}
+    def probe(_conn, _source, stage):
+        return {"stage": stage, "alarm": stage == "characteristics" and repaired,
+                "breaches": ["INPUT_LINEAGE_CHANGED"] if repaired else []}
+    monkeypatch.setattr(chain.freshness, "probe_stage", probe)
+    stats = chain.run("unused", characteristics_runner=lambda *_a, **_k: {"status": "current"},
+                      lookthrough_runner=lookthrough)
+    assert stats["state"] == "blocked"
+    assert stats["reason"] == "characteristics_not_fresh"

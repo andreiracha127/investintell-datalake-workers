@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.db import LOCK_NPORT_LOAD
+
 
 @dataclass(frozen=True)
 class Policy:
@@ -39,6 +41,7 @@ class Observation:
     # Set for instrument-grain outputs (characteristics): every instrument mapped
     # to a series needs its own matching row; a sibling share class cannot cover it.
     instrument_id: str | None = None
+    coverage_pct: Any = None
 
 
 @dataclass
@@ -58,7 +61,8 @@ class SourceCohort:
     @property
     def signature(self) -> str:
         rows = [
-            (key, str(row.report_date), row.n_holdings, str(row.computed_at))
+            (key, str(row.report_date), row.n_holdings, str(row.computed_at), row.equity,
+             str(row.coverage_pct))
             for key, row in sorted(self.series.items())
         ]
         return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
@@ -100,10 +104,11 @@ def source_from_rows(
     start = month_start(anchor, -2) if anchor else None
     current: dict[str, Observation] = {}
     if start and anchor:
-        for sid, day, count, loaded_at, equity in raw_rows:
+        for sid, day, count, loaded_at, equity, *coverage in raw_rows:
             sid = str(sid)
             if start <= day <= anchor and (sid not in current or current[sid].report_date < day):
-                current[sid] = Observation(sid, day, int(count), loaded_at, bool(equity))
+                current[sid] = Observation(sid, day, int(count), loaded_at, bool(equity),
+                                           coverage_pct=coverage[0] if coverage else None)
     previous_start = month_start(start, -3) if start else None
     previous = {str(sid) for sid, day, *_ in profile_rows
                 if previous_start and previous_start <= day < start}
@@ -151,18 +156,25 @@ def read_source_cohort(
     cutoff = min(cutoff or today, today)
     start = month_start(today - dt.timedelta(days=Policy().max_report_age_days), -2)
     with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.sec_nport_holdings'), "
+                    "to_regclass('public.cagg_nport_series_profile')")
+        raw_table, profile_table = cur.fetchone()
+        if raw_table is None:
+            return source_from_rows([], [], raw_max=None, today=today)
         cur.execute("SELECT max(report_date) FROM public.sec_nport_holdings")
         raw_max = cur.fetchone()[0]
-        cur.execute(
-            """SELECT series_id, report_day, n_holdings
-               FROM public.cagg_nport_series_profile
-               WHERE report_day >= %s AND report_day <= %s""",
-            (month_start(start, -3), cutoff),
-        )
-        profiles = cur.fetchall()
+        profiles = []
+        if profile_table is not None:
+            cur.execute(
+                """SELECT series_id, report_day, n_holdings
+                   FROM public.cagg_nport_series_profile
+                   WHERE report_day >= %s AND report_day <= %s""",
+                (month_start(start, -3), cutoff),
+            )
+            profiles = cur.fetchall()
         cur.execute(
             """SELECT series_id, report_date, count(*), max(created_at),
-                      bool_or(asset_class IN ('EC', 'EP') AND market_value > 0)
+                      bool_or(asset_class IN ('EC', 'EP') AND market_value > 0), sum(pct_of_nav)
                FROM public.sec_nport_holdings
                WHERE report_date >= %s AND report_date <= %s
                GROUP BY series_id, report_date""",
@@ -194,9 +206,24 @@ def require_unchanged(stage: str, before: SourceCohort, after: SourceCohort) -> 
     })
 
 
+def lock_source(conn: Any, stage: str) -> None:
+    """All N-PORT-derived publishers take this try-lock through commit.
+
+    Call in READ COMMITTED before the final live read. Characteristics already
+    has uncommitted candidates, so this helper must never commit or start a new
+    snapshot. The loader holds the matching session lock for its whole run.
+    """
+    if not conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (LOCK_NPORT_LOAD,)).fetchone()[0]:
+        raise FundPipelineBlocked({
+            "stage": stage, "alarm": True, "breaches": ["SOURCE_LOAD_IN_PROGRESS"],
+            "last_good_preserved": True,
+        })
+
+
 def assess_stage(
     stage: str, source: SourceCohort, rows: list[Observation], *,
     expected_series: set[str] | None = None, require_counts: bool = False,
+    require_coverage_pct: bool = False,
     require_computed: bool = False,
     require_chain_freshness: bool = False,
     require_exposures: bool = False, require_recent_computation: bool = False,
@@ -209,6 +236,8 @@ def assess_stage(
         if row.report_date != wanted.report_date:
             return False
         if require_counts and row.n_holdings != wanted.n_holdings:
+            return False
+        if require_coverage_pct and row.coverage_pct != wanted.coverage_pct:
             return False
         if require_computed and (row.computed_at is None or wanted.computed_at is None
                                  or row.computed_at < wanted.computed_at):
@@ -251,17 +280,36 @@ def assess_stage(
     }
 
 
-def probe_stage(conn: Any, source: SourceCohort, stage: str) -> dict[str, Any]:
+def probe_stage(conn: Any, source: SourceCohort, stage: str, *, candidate: bool = False) -> dict[str, Any]:
+    from src.workers import _fund_pipeline_inputs as inputs
+
+    # A monitor never installs schemas. Missing outputs are a repairable alarm,
+    # not UndefinedTable (and never a successful empty cohort).
+    relations = {"cagg": ("cagg_nport_series_profile",),
+                 "characteristics": ("equity_characteristics_monthly",),
+                 "lookthrough": ("nport_lookthrough_summary", "nport_lookthrough_exposures")}.get(stage, ())
+    for relation in relations:
+        if not conn.execute("SELECT to_regclass(%s)", (f"public.{relation}",)).fetchone()[0]:
+            return {"stage": stage, "alarm": True, "breaches": ["STAGE_SCHEMA_MISSING"],
+                    "last_good_preserved": True}
+
+    def with_lineage(verdict):
+        if not candidate and not inputs.current(conn, source, stage):
+            verdict["alarm"] = True
+            verdict["breaches"].append("INPUT_LINEAGE_CHANGED")
+        return verdict
+
     if stage == "cagg":
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT series_id, report_day, n_holdings
+                """SELECT series_id, report_day, n_holdings, coverage_pct
                    FROM public.cagg_nport_series_profile
                    WHERE report_day >= %s AND report_day <= %s""",
                 (source.start, source.as_of),
             )
-            rows = [Observation(str(sid), day, int(count)) for sid, day, count in cur.fetchall()]
-        return assess_stage(stage, source, rows, require_counts=True)
+            rows = [Observation(str(sid), day, int(count), coverage_pct=coverage)
+                    for sid, day, count, coverage in cur.fetchall()]
+        return assess_stage(stage, source, rows, require_counts=True, require_coverage_pct=True)
     if stage == "characteristics":
         with conn.cursor() as cur:
             cur.execute(
@@ -279,8 +327,9 @@ def probe_stage(conn: Any, source: SourceCohort, stage: str) -> dict[str, Any]:
             )
             rows = [Observation(str(sid), day, computed_at=computed, instrument_id=iid)
                     for sid, iid, day, computed in cur.fetchall()]
-        return assess_stage(stage, source, rows, expected_series={row.series_id for row in rows},
-                            require_computed=True)
+        return with_lineage(assess_stage(stage, source, rows,
+                                        expected_series={row.series_id for row in rows},
+                                        require_computed=True))
     if stage == "lookthrough":
         with conn.cursor() as cur:
             cur.execute(
@@ -294,7 +343,7 @@ def probe_stage(conn: Any, source: SourceCohort, stage: str) -> dict[str, Any]:
             rows = [Observation(str(sid), day, count, computed, oldest_report_date=oldest,
                                 exposures_present=present)
                     for sid, day, count, computed, oldest, present in cur.fetchall()]
-        return assess_stage(stage, source, rows, require_counts=True, require_computed=True,
+        return with_lineage(assess_stage(stage, source, rows, require_counts=True, require_computed=True,
                             require_chain_freshness=True, require_exposures=True,
-                            require_recent_computation=True)
+                            require_recent_computation=True))
     raise ValueError(f"unknown fund pipeline stage: {stage}")

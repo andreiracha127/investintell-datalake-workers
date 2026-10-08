@@ -37,6 +37,8 @@ def expected_classifier_start(now: dt.datetime) -> dt.datetime:
 
 def _latest_classification(conn: Any) -> tuple | None:
     with conn.cursor() as cur:
+        if not cur.execute("SELECT to_regclass('public.fund_classification_runs')").fetchone()[0]:
+            return None
         cur.execute(
             """SELECT id::text, as_of_date, started_at, completed_at, fund_count
                FROM public.fund_classification_runs
@@ -48,29 +50,35 @@ def _latest_classification(conn: Any) -> tuple | None:
 
 def _input_watermarks(conn: Any) -> dict[str, dt.date | None]:
     with conn.cursor() as cur:
-        cur.execute(
-            """SELECT (SELECT max(report_day) FROM public.cagg_nport_series_profile),
-                      (SELECT max(as_of) FROM public.equity_characteristics_monthly),
-                      (SELECT max(report_date) FROM public.nport_lookthrough_summary)"""
-        )
-        return dict(zip(("cagg", "characteristics", "lookthrough"), cur.fetchone()))
+        result = {}
+        for stage, table, column in (
+            ("cagg", "cagg_nport_series_profile", "report_day"),
+            ("characteristics", "equity_characteristics_monthly", "as_of"),
+            ("lookthrough", "nport_lookthrough_summary", "report_date"),
+        ):
+            cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+            present = cur.fetchone()[0]
+            result[stage] = (cur.execute(f"SELECT max({column}) FROM public.{table}").fetchone()[0]
+                             if present else None)
+        return result
 
 
 def assess_watermarks(
-    raw_max: dt.date | None, watermarks: dict[str, dt.date | None], *, today: dt.date,
+    source_as_of: dt.date | None, watermarks: dict[str, dt.date | None], *, today: dt.date,
 ) -> dict[str, Any]:
     breaches = []
-    if raw_max is None:
+    if source_as_of is None:
         breaches.append("SOURCE_REPORT_WATERMARK_MISSING")
     for stage, day in watermarks.items():
         if day is None:
             breaches.append(f"{stage.upper()}_REPORT_WATERMARK_MISSING")
         elif day > today:
             breaches.append(f"{stage.upper()}_REPORT_FUTURE")
-        elif raw_max is not None and day < raw_max:
-            breaches.append(f"{stage.upper()}_BEHIND_LOADED_RAW")
+        # Exact per-series (and per-instrument) probes establish coverage.
+        # Characteristics' eligible equity subset need not reach the global
+        # anchor; a sparse raw tail is not a derived-stage publication target.
     return {
-        "stage": "classification_inputs", "raw_max_report_date": str(raw_max) if raw_max else None,
+        "stage": "classification_inputs", "source_as_of": str(source_as_of) if source_as_of else None,
         "input_watermarks": {stage: str(day) if day else None for stage, day in watermarks.items()},
         "alarm": bool(breaches), "breaches": breaches,
     }
@@ -78,6 +86,7 @@ def assess_watermarks(
 
 def assess_classification(
     row: tuple | None, source: freshness.SourceCohort, *, now: dt.datetime,
+    inputs_published_at: dt.datetime | None = None,
 ) -> dict[str, Any]:
     breaches = []
     run_id = as_of = started = completed = fund_count = None
@@ -90,6 +99,11 @@ def assess_classification(
             breaches.append("CLASSIFICATION_STARTED_AT_MISSING")
         elif started < expected_start - CLASSIFIER_START_GRACE:
             breaches.append("CLASSIFICATION_RUN_STALE")
+        elif started > now:
+            breaches.append("CLASSIFICATION_STARTED_AT_FUTURE")
+        if (inputs_published_at is not None and started is not None and started.tzinfo is not None
+                and started < inputs_published_at):
+            breaches.append("CLASSIFICATION_BEFORE_INPUT_PUBLICATION")
         if completed is None or completed.tzinfo is None:
             breaches.append("CLASSIFICATION_COMPLETED_AT_MISSING")
         else:
@@ -99,7 +113,8 @@ def assess_classification(
                 (row.computed_at for row in source.series.values() if row.computed_at is not None),
                 default=None,
             )
-            if source_loaded is None or completed < source_loaded:
+            if (source_loaded is None or started is None or started.tzinfo is None
+                    or started < source_loaded):
                 breaches.append("CLASSIFICATION_BEFORE_SOURCE_LOAD")
         if as_of is None or not 0 <= (now.date() - as_of).days <= source.policy.max_report_age_days:
             breaches.append("CLASSIFICATION_AS_OF_STALE")
@@ -114,6 +129,12 @@ def assess_classification(
         "expected_start_not_before": str(expected_start - CLASSIFIER_START_GRACE),
         "alarm": bool(breaches), "breaches": breaches,
     }
+
+
+def _input_publication_time(conn):
+    if not conn.execute("SELECT to_regclass('public.nport_pipeline_publications')").fetchone()[0]:
+        return None
+    return conn.execute("SELECT max(published_at) FROM public.nport_pipeline_publications").fetchone()[0]
 
 
 def run(
@@ -131,9 +152,10 @@ def run(
         if not source.verdict["alarm"]:
             for stage in ("cagg", "characteristics", "lookthrough"):
                 stages.append(freshness.probe_stage(conn, source, stage))
-        stages.append(assess_watermarks(source.raw_max, _input_watermarks(conn), today=reference_time.date()))
+        stages.append(assess_watermarks(source.as_of, _input_watermarks(conn), today=reference_time.date()))
         row = _latest_classification(conn)
-        stages.append(assess_classification(row, source, now=now or dt.datetime.now(dt.UTC)))
+        stages.append(assess_classification(row, source, now=reference_time,
+                                            inputs_published_at=_input_publication_time(conn)))
     failed = [stage["stage"] for stage in stages if stage["alarm"]]
     return {
         "state": "failed" if failed else "healthy", "source_as_of": str(source.as_of),

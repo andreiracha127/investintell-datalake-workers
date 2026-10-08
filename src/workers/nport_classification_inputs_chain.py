@@ -19,6 +19,13 @@ from src.workers import characteristics, nport_lookthrough
 
 POLL_ATTEMPTS = 6
 POLL_INTERVAL_SECONDS = 2
+BASELINE_BREACHES = {"SOURCE_BASELINE_MISSING", "SOURCE_COHORT_RETENTION_BELOW_FLOOR"}
+
+
+def _require_raw(source):
+    breaches = set(source.verdict.get("breaches", [])) - BASELINE_BREACHES
+    if breaches:
+        freshness.require({**source.verdict, "alarm": True, "breaches": sorted(breaches)})
 
 
 def _blocked(reason: str, stages: list[dict], **details: Any) -> dict[str, Any]:
@@ -44,10 +51,10 @@ def run(
             try:
                 source = freshness.read_source_cohort(guard, cutoff=cutoff)
                 stages.append(source.verdict)
-                freshness.require(source.verdict)
+                _require_raw(source)
                 stage = "cagg"
                 cagg = freshness.probe_stage(guard, source, stage)
-                if cagg["alarm"]:
+                if cagg["alarm"] or source.verdict["alarm"]:
                     # Autocommit makes the advanced policy next_start visible
                     # to the scheduler BEFORE any poll. Runtime never CALLs
                     # the owner-only Timescale refresh procedure itself.
@@ -58,12 +65,18 @@ def run(
                     for attempt in range(POLL_ATTEMPTS):
                         if attempt:
                             sleeper(POLL_INTERVAL_SECONDS)
+                        latest = freshness.read_source_cohort(guard, cutoff=cutoff)
+                        _require_raw(latest)
+                        freshness.require_unchanged("cagg", source, latest)
+                        source = latest
                         cagg = freshness.probe_stage(guard, source, stage)
-                        if not cagg["alarm"]:
+                        if not cagg["alarm"] and not source.verdict["alarm"]:
                             break
+                stages[0] = source.verdict
                 stages.append(cagg)
                 if cagg["alarm"]:
                     return _blocked("cagg_refresh_pending", stages, freshness=cagg)
+                freshness.require(source.verdict)
                 stage = "characteristics"
                 result = characteristics_runner(dsn, calc_date=calc_date, source=source)
                 stages.append({"stage": stage, "result": result})
@@ -75,12 +88,15 @@ def run(
                 stages.append({"stage": stage, "result": result})
                 if result.get("status") not in {"complete", "current"}:
                     return _blocked("lookthrough_not_complete", stages)
-                final = freshness.require(freshness.probe_stage(guard, source, stage))
                 latest = freshness.read_source_cohort(guard, cutoff=cutoff)
                 freshness.require(latest.verdict)
                 if (latest.signature != source.signature
                         or latest.load_watermark != source.load_watermark):
                     return _blocked("source_changed_during_chain", stages)
+                # Auxiliary repairs can invalidate an earlier stage while a
+                # later stage builds, even when the raw watermark is unchanged.
+                for stage in ("cagg", "characteristics", "lookthrough"):
+                    final = freshness.require(freshness.probe_stage(guard, latest, stage))
                 return {"state": "complete", "source_as_of": str(source.as_of),
                         "source_signature": source.signature, "stages": stages, "freshness": final}
             except freshness.FundPipelineBlocked as exc:

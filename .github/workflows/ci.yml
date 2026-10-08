@@ -869,6 +869,7 @@ jobs:
           src/run_worker.py
           src/workers/characteristics.py
           src/workers/_fund_pipeline_freshness.py
+          src/workers/_fund_pipeline_inputs.py
           src/workers/fund_pipeline_health.py
           src/workers/nport_classification_inputs_chain.py
           src/workers/nport_lookthrough.py
@@ -920,6 +921,7 @@ jobs:
           src/run_worker.py
           src/workers/characteristics.py
           src/workers/_fund_pipeline_freshness.py
+          src/workers/_fund_pipeline_inputs.py
           src/workers/fund_pipeline_health.py
           src/workers/nport_classification_inputs_chain.py
           src/workers/nport_lookthrough.py
