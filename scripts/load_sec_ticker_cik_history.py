@@ -111,12 +111,19 @@ REGISTRATION_FORMS = ("8-A12B", "8-A12G", "10-12B", "10-12G")
 EVENT_ORIGINAL_FORMS = END_FORMS + REGISTRATION_FORMS
 EVENT_FORMS = EVENT_ORIGINAL_FORMS + tuple(f"{form}/A" for form in EVENT_ORIGINAL_FORMS)
 END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS))
-# Names the parser of the end filings; a new version re-derives every end event
-# as a correction (derive_event_classes).
-EVENT_PARSER_VERSION = "sec_event_class_v3"
+# Registrations read for the class they register: a delisting is a transfer only
+# when a registration of the same class is filed near it (PepsiCo's 8-A12B of its
+# common stock), not of notes or preferred. A Form 10 (a spin-off's registration
+# statement) is not read: its class stays unknown.
+READ_REGISTRATION_FORMS = frozenset({"8-A12B", "8-A12G"})
+READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
+# Names the parser of the end and registration filings; a new version re-derives
+# every such event as a correction (derive_event_classes). v4: equity classes named
+# without a Class/Series label count (equity_class_names); Forms 8-A are read.
+EVENT_PARSER_VERSION = "sec_event_class_v4"
 CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_carried",
-                   "class_unread", "filings_missing")
-FETCH_STAT_KEYS = ("filings_fetched", "filings_failed")
+                   "class_reused", "class_unread", "filings_missing")
+FETCH_STAT_KEYS = ("filings_fetched", "filings_failed", "filings_rejected")
 
 PACKAGE_RE = re.compile(
     r"^(?P<year>\d{4})(?:q(?P<quarter>[1-4])|_(?P<month>\d{2}))_notes(?:_\d+)?\.zip$"
@@ -176,17 +183,22 @@ def is_foreign_form(form: str) -> bool:
     return form.removesuffix("/A") in FOREIGN_FORMS
 
 
-# Values filers put in dei:TradingSymbol when a security has no symbol.
+# Values filers put in dei:TradingSymbol when a security has no symbol, by their
+# separator-free key (None, N/A, "Not Applicable"...). Every FSN value with one
+# of these keys is a placeholder (NONE: 122 facts of 30-odd filers; NA: 62).
 PLACEHOLDER_KEYS = frozenset({
-    "NONE", "NA", "NOTAPPLICABLE", "NOTAVAILABLE", "TRUE", "FALSE", "NULL", "NIL",
+    "NONE", "NA", "NOTAPPLICABLE", "NOTAVAILABLE", "NULL", "NIL",
     "NOSYMBOL", "NOTRADINGSYMBOL", "NOTLISTED", "NOTTRADED", "UNLISTED", "TBD",
-    "OTCBB", "OB",
 })
+# XBRL booleans typed as a symbol ("true", "True", "False": 107 facts of a dozen
+# filers) are placeholders in that lexical form only: an all-uppercase TRUE is
+# TrueCar's symbol (all 94 FSN facts written TRUE are TrueCar's).
+BOOLEAN_KEYS = frozenset({"TRUE", "FALSE"})
 _FILLER_RE = re.compile(r"^X{3,}$")
 MAX_KEY_LENGTH = 12
 _EXCHANGE_PREFIX_RE = re.compile(
     r"^(?:NYSE\s*AMERICAN|NYSE\s*ARCA|NYSE\s*MKT|NYSE|NASDAQ(?:GS|GM|CM)?|AMEX|OTCQX|"
-    r"OTCQB|OTCBB|OTC|CBOE|TSX)\s*[:\-/]\s*",
+    r"OTCQB|OTCBB|OTC\s*PINK|OTC|CBOE|TSX)\s*[:\-/]\s*",
     re.IGNORECASE,
 )
 EXCHANGE_TOKENS = frozenset({
@@ -194,6 +206,13 @@ EXCHANGE_TOKENS = frozenset({
     "NYSEAMERICAN", "NYSEMKT", "AMERICAN", "MKT", "CBOE", "BATS", "OTC", "OTCBB", "OTCQB",
     "OTCQX", "TSX",
 })
+# Venue names that are also the symbol their operator lists under: a field that is
+# only CBOE is Cboe Global Markets' own symbol (all 113 FSN facts), not a venue.
+# Any other venue alone (OTC, OTCQB, OTCQX, NYSE: 5 facts) is a placeholder.
+LISTED_VENUE_SYMBOLS = frozenset({"CBOE", "BATS"})
+# The OTC Bulletin Board suffix: beside a symbol it qualifies it ("EDLG, OB",
+# WELPP.OB); alone it is Outbrain's symbol (all 63 FSN facts written OB).
+QUALIFIER_KEYS = EXCHANGE_TOKENS | {"OB"}
 _OTC_SUFFIX_RE = re.compile(r"[.\s]+(?:OB|OTCBB|OTCQB|OTCQX|OTC)$", re.IGNORECASE)
 # A token that qualifies the symbol before it rather than naming another one:
 # a class letter, a preferred/series marker, warrants, units, rights, a note year.
@@ -383,12 +402,24 @@ def _unwrap(raw: str) -> str:
     return _QUOTES_RE.sub(" ", _GROUP_RE.sub(group, raw))
 
 
+def is_placeholder(value: str) -> bool:
+    """Whether a value as the filer wrote it says "no symbol": a placeholder key
+    (None, N/A, "Not Applicable"), a filler (XXXXX), or an XBRL boolean in its
+    lexical form ("true", "False"; TRUE is a symbol)."""
+    key = ticker_key(_SEPARATORS_RE.sub("", value))
+    if key in BOOLEAN_KEYS:
+        return not value.strip().isupper()
+    return key in PLACEHOLDER_KEYS or bool(_FILLER_RE.match(key))
+
+
 def normalize_symbol(raw: str) -> tuple[str | None, str | None]:
     """One filer-typed symbol -> (ticker, None) or (None, rejection reason)."""
     value = _EXCHANGE_PREFIX_RE.sub("", raw.strip()).strip()
     value = _OTC_SUFFIX_RE.sub("", value).strip()
     if not value:
         return None, "empty"
+    if is_placeholder(value):
+        return None, "placeholder"
     preferred = _PREFERRED_RE.match(value)
     if preferred and (
         preferred.group("marker") in ("Pr", "pr", "p") or preferred.group("sep")
@@ -414,10 +445,12 @@ def _is_suffix_token(token: str) -> bool:
 
 def _split_field(field: str) -> list[str]:
     """Symbols written in one field: separated by space or slash unless the next
-    token only qualifies the previous symbol."""
+    token only qualifies the previous symbol. An exchange name is dropped only
+    when it qualifies another token ("BAX NYSE"); alone it is the field (CBOE)."""
     field = _EXCHANGE_PREFIX_RE.sub("", field.strip()).strip()
     tokens = [t for t in re.split(r"[\s/]+", field) if t and not re.fullmatch(r"[-.:]+", t)]
-    tokens = [t for t in tokens if t.upper() not in EXCHANGE_TOKENS]
+    if len(tokens) > 1:
+        tokens = [t for t in tokens if t.upper() not in EXCHANGE_TOKENS]
     symbols: list[list[str]] = []
     for token in tokens:
         if symbols and _is_suffix_token(token):
@@ -434,26 +467,36 @@ def normalize_symbols(raw: str) -> tuple[list[str], list[str]]:
     prefixes and OTC suffixes are dropped (``NYSE: KO``, ``NYSE/TRN``,
     ``WELPP.OB``); a field lists several symbols when they are separated by
     ``,`` ``;`` ``&`` ``AND``, or by a space or slash before a full symbol
-    (``JWA/JWB``, ``CRDA CRDB``) - not before a class or series suffix
-    (``BRK B``, ``USB PrA``, ``USB/28``). A field that reads as prose or a
-    placeholder (``No Trading Symbol``, ``Common Stock par value``) is rejected
-    whole.
+    (``JWA/JWB``, ``jwa/jwb``, ``CRDA CRDB``) - not before a class or series
+    suffix (``BRK B``, ``USB PrA``, ``USB/28``). A field that reads as prose or a
+    placeholder (``No Trading Symbol``, ``Common Stock par value``, ``true``) is
+    rejected whole; so is a venue name alone (``OTCQB``), unless the venue's
+    operator lists under it (``CBOE``).
     """
     unwrapped = _unwrap(raw)
     whole = ticker_key(_SEPARATORS_RE.sub("", unwrapped))
-    if whole in PLACEHOLDER_KEYS or _FILLER_RE.match(whole):
+    if is_placeholder(unwrapped) or (
+            whole in EXCHANGE_TOKENS and whole not in LISTED_VENUE_SYMBOLS):
         return [], ["placeholder"]
     if not whole:
         return [], ["empty"]
     tickers: list[str] = []
     rejections: list[str] = []
-    for part in re.split(r"[;,&]|\s+AND\s+", unwrapped, flags=re.IGNORECASE):
-        if not part.strip():
+    parts = [p.strip() for p in re.split(r"[;,&]|\s+AND\s+", unwrapped, flags=re.IGNORECASE)
+             if p.strip()]
+    for part in parts:
+        part = _EXCHANGE_PREFIX_RE.sub("", part).strip()  # OTC Pink: IRRX
+        if not part:
             continue
-        tokens = [t for t in re.split(r"[\s/]+", part.strip()) if t]
-        if len(tokens) > 1 and any(
-            len(t) >= 3 and re.search(r"[a-z]", t) and not _is_suffix_token(t)
-            for t in tokens
+        if len(parts) > 1 and ticker_key(part) in QUALIFIER_KEYS:
+            rejections.append("placeholder")  # "EDLG, OB": the market, not a symbol
+            continue
+        # Prose is several words, one of them a written word ("Common Stock par
+        # value"); slash-joined lowercase symbols (jwa/jwb) are one word.
+        words = part.split()
+        if len(words) > 1 and any(
+            len(w) >= 3 and re.search(r"[a-z]", w) and not _is_suffix_token(w)
+            for w in words
         ):
             rejections.append("malformed")  # prose, not symbols
             continue
@@ -800,7 +843,7 @@ def resolve_owner(
 
 
 def _filing_profiles(
-    symbol_classes: dict[tuple[str, int], set[str]],
+    symbol_classes: dict[tuple[str, int], dict[str, set[str]]],
     other_classes: dict[tuple[str, int], set[str]],
     counted: set[tuple[str, int]],
 ) -> dict[tuple[str, int], tuple[int, bool]]:
@@ -810,18 +853,21 @@ def _filing_profiles(
     The classes are those of the filing's equity/depositary symbols, plus the
     dimensioned classes of its share counts and of its titled equity classes
     without an accepted symbol (an unlisted class B with ticker "N/A" still
-    counts). An undimensioned symbol next to a dimensioned class that no symbol
-    names is one of those classes (a filer tags the symbol without a member and
-    the counts with members: American Greetings' AM beside its Class A and
-    Class B counts is two classes, not three).
+    counts). ``symbol_classes`` maps each class key to the distinct symbols shown
+    on it: distinct symbols sharing one context are distinct classes (an
+    undimensioned "GOOG, GOOGL" or "JWA/JWB" is two). Undimensioned symbols next
+    to dimensioned classes that no symbol names are those classes (a filer tags
+    the symbol without a member and the counts with members: American Greetings'
+    AM beside its Class A and Class B counts is two classes, not three).
     """
     profiles: dict[tuple[str, int], tuple[int, bool]] = {}
     for filing in set(symbol_classes) | set(other_classes):
-        symbols = symbol_classes.get(filing, set())
+        symbols = symbol_classes.get(filing, {})
         others = other_classes.get(filing, set())
-        count = len(symbols | others)
-        if "" in symbols and others - symbols:
-            count -= 1
+        named = sum(len(tickers) for key, tickers in symbols.items() if key)
+        unnamed = len(others - set(symbols))
+        undimensioned = len(symbols.get("", ()))
+        count = named + (max(undimensioned, unnamed) if undimensioned else unnamed)
         profiles[filing] = (count, filing in counted)
     return profiles
 
@@ -835,7 +881,10 @@ def build_share_counts(
     rejected: Counter,
 ) -> list[ShareCount]:
     entities = _entities(cover, segments)
-    rows: dict[tuple[str, str, dt.date, Decimal], ShareCount] = {}
+    # One count per (accession, owner, context, stated day, value): two
+    # co-registrants of a combined filing may state the same count (100 shares
+    # each) in one context.
+    rows: dict[tuple[str, int, str, str, dt.date, Decimal], ShareCount] = {}
     for fact in facts:
         submission = submissions.get(fact.adsh)
         context = segments.get(fact.dimh)
@@ -852,7 +901,7 @@ def build_share_counts(
             continue
         cik, key = owner
         stated_on, rounded = dates
-        rows.setdefault((fact.adsh, fact.dimh, stated_on, fact.shares), ShareCount(
+        rows.setdefault((fact.adsh, cik, fact.coreg, fact.dimh, stated_on, fact.shares), ShareCount(
             adsh=fact.adsh,
             cik=cik,
             dimh=fact.dimh,
@@ -885,7 +934,7 @@ def build_observations(
     """
     entities = _entities(facts, segments)
     pending: list[dict] = []
-    symbol_classes: dict[tuple[str, int], set[str]] = {}
+    symbol_classes: dict[tuple[str, int], dict[str, set[str]]] = {}
     other_classes: dict[tuple[str, int], set[str]] = {}
     for share in share_counts:
         if share.class_key:
@@ -927,7 +976,8 @@ def build_observations(
             kind = security_kind(title, ticker, context,
                                  foreign=is_foreign_form(submission.form))
             if kind in LISTED_KINDS:
-                symbol_classes.setdefault((adsh, cik), set()).add(key)
+                symbol_classes.setdefault((adsh, cik), {}).setdefault(key, set()).add(
+                    ticker_key(ticker))
             pending.append({
                 "adsh": adsh, "cik": cik, "dimh": dimh, "segments": context, "class_key": key,
                 "ticker": ticker, "ticker_raw": raw, "security_title": title,
@@ -1179,6 +1229,58 @@ _SERIES_MENTION_RE = re.compile(
     re.I,
 )
 _CLASS_ID_RE = re.compile(rf"(?<![A-Za-z0-9])({_CLASS_ID})(?![A-Za-z0-9])", re.I)
+# A depositary share and the shares it represents are one listed line ("American
+# Depositary Shares, each representing ten Ordinary Shares").
+_DEPOSITARY_PHRASE_RE = re.compile(
+    r"\b(?:(?:american\s+)?deposit[ao]ry\s+(?:shares?|receipts?)|ADS[sR]?s?)\b[^;]*?"
+    r"\brepresent\w*\b[^;]*?\b(?:shares?|stock)\b",
+    re.I,
+)
+_EQUITY_NOUN_RE = re.compile(r"\b(common|ordinary|capital)\s+(?:stock|shares?|units?)\b", re.I)
+# Words that end a class name read backwards from its noun ("par value $0.01 per
+# share Common Stock", "the Common Stock", "ten Ordinary Shares").
+_NAME_STOP_WORDS = frozenset({
+    "a", "an", "the", "of", "to", "for", "and", "or", "per", "each", "with", "in", "on", "its",
+    "our", "any", "all", "by", "into", "as", "such", "share", "shares", "stock", "par", "value",
+    "no", "nominal", "underlying", "representing", "represented", "represents", "including",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+    "twelve", "twenty", "hundred", "thousand",
+    # an exchange or an issuer named before the class ("Nasdaq Stock Market Common
+    # Stock", "Shell plc Class A Ordinary Shares")
+    "market", "exchange", "nasdaq", "nyse", "llc", "inc", "corporation", "corp", "plc", "ltd",
+    "limited", "company", "co",
+})
+
+
+def equity_class_names(description: str | None) -> set[str]:
+    """The distinct equity classes a Form 15/25/8-A description names by name, with
+    or without a Class/Series label: "Common Stock" and "Non-Voting Common Stock"
+    are two, as are the four of "Series A Liberty Capital Common Stock, Series B
+    Liberty Capital Common Stock, Liberty Starz Ser A Common Stock, Liberty Starz
+    Ser B Common Stock". Instruments that only refer to a class (warrants, rights,
+    units), depositary shares of a class and a parenthesized alias ("Ordinary
+    Shares (Common Stock)", '(the "Common Stock")') are not classes of their own."""
+    if not description:
+        return set()
+    text = re.sub(r"\([^()]*\)", " ", description)
+    for pattern in (*_DEPENDENT_RES, _DEPOSITARY_PHRASE_RE):
+        text = pattern.sub(" ; ", text)
+    names: set[str] = set()
+    for match in _EQUITY_NOUN_RE.finditer(text):
+        if _PREFERRED_BEFORE_RE.search(text[: match.start()]):
+            continue
+        words: list[str] = []
+        tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]*|[^\sA-Za-z0-9]", text[: match.start()])
+        for i in range(len(tokens) - 1, -1, -1):
+            token = tokens[i]
+            labelled = i > 0 and tokens[i - 1].lower() in ("class", "series", "ser")
+            if (not token[0].isalnum() or len(words) == 4
+                    or (not labelled and (token[0].isdigit()
+                                          or token.lower() in _NAME_STOP_WORDS))):
+                break
+            words.append(token.lower().replace("-", ""))
+        names.add(" ".join([*reversed(words), match.group(1).lower()]))
+    return names
 _EXTINGUISHED_RE = re.compile(r"12d2-2\s*\(\s*a\s*\)", re.I)
 # An amendment that withdraws the removal (Minim's 25-NSE/A of 2025-04-09: "will
 # not be delisting the common stock ... per the Form 25 filed on October 24, 2024").
@@ -1229,9 +1331,11 @@ def event_class_kind(description: str | None) -> str:
 
 
 def class_count(description: str | None) -> int:
-    """Distinct share classes a description names ("Class A ... Class B",
-    "Class A and B", "Classes A, B and C", "Class A/B", "Class 1 and Class 2",
-    "Series A Common Stock and Series B Common Stock"); at least 1."""
+    """Distinct share classes a description names: by Class/Series enumeration
+    ("Class A ... Class B", "Class A and B", "Classes A, B and C", "Class A/B",
+    "Class 1 and Class 2", "Series A Common Stock and Series B Common Stock"), or
+    by name ("Common Stock; Non-Voting Common Stock", equity_class_names),
+    whichever names more; at least 1."""
     if not description:
         return 1
     names = {
@@ -1241,7 +1345,7 @@ def class_count(description: str | None) -> int:
         for name in _CLASS_ID_RE.findall(
             re.sub(r"(?i)\b(?:and|or|class|series)\b", " ", group))
     }
-    return max(1, len(names))
+    return max(1, len(names), len(equity_class_names(description)))
 
 
 def venue_kind(venue: str | None) -> str:
@@ -1254,6 +1358,61 @@ def venue_kind(venue: str | None) -> str:
     return "unknown"
 
 
+_REGISTERED_12B_RE = re.compile(
+    r"title\s+of\s+each\s+class\s+to\s+be\s+so\s+registered"
+    r"(?:\s+name\s+of\s+each\s+exchange\s+on\s+which\s+each\s+class\s+is\s+to\s+be\s+registered)?",
+    re.I,
+)
+_REGISTERED_12B_END_RE = re.compile(
+    r"if\s+this\s+form\s+relates|securities\s+to\s+be\s+registered\s+pursuant\s+to\s+section"
+    r"\s+12\s*\(\s*g\s*\)", re.I)
+_REGISTERED_12G_RE = re.compile(
+    r"securities\s+to\s+be\s+registered\s+pursuant\s+to\s+section\s+12\s*\(\s*g\s*\)\s+of\s+"
+    r"the\s+act\s*:?", re.I)
+_TITLE_OF_CLASS_RE = re.compile(r"\(\s*title\s+of\s+(?:each\s+)?class(?:es)?\s*\)", re.I)
+_NO_CLASS_WORDS = frozenset({"NOT", "APPLICABLE", "NONE", "N", "A", "NA"})
+
+
+def _names_a_class(block: str) -> bool:
+    """Whether a registration block names something ("Not Applicable Not
+    Applicable", "None" and "N/A" do not)."""
+    words = {word.upper() for word in re.findall(r"[A-Za-z]+", block)}
+    return bool(words) and not words <= _NO_CLASS_WORDS
+
+
+def parse_registration_document(raw: str) -> EventClass:
+    """The class a Form 8-A registers: the 12(b) table ("Title of each class to be
+    so registered" / "Name of each exchange ...": PepsiCo's common stock on Nasdaq
+    in 2017, its notes in 2018), else the 12(g) line above "(Title of class)"
+    (Statera's Series B Preferred Stock of 2023). No class -> 'unknown'."""
+    documents = _DOCUMENT_RE.findall(raw)
+    body = _plain(documents[0] if documents else raw)
+    description = None
+    table = _REGISTERED_12B_RE.search(body)
+    if table:
+        end = _REGISTERED_12B_END_RE.search(body, table.end())
+        block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
+        if _names_a_class(block):
+            description = block[:500]
+    if description is None:
+        section = _REGISTERED_12G_RE.search(body)
+        label = _TITLE_OF_CLASS_RE.search(body, section.end()) if section else None
+        if label:
+            block = body[section.end(): label.start()].strip(" :;,.-")
+            if _names_a_class(block):
+                description = block[-500:]
+    return EventClass(
+        class_description=description,
+        class_kind=event_class_kind(description),
+        class_count=class_count(description),
+        provision=None,
+        extinguished=None,
+        venue=None,
+        venue_kind="unknown",
+        amendment_effect=None,
+    )
+
+
 def parse_event_document(raw: str, form: str) -> EventClass:
     """The class, rule provision and exchange a Form 15/25 filing states.
 
@@ -1262,8 +1421,11 @@ def parse_event_document(raw: str, form: str) -> EventClass:
     text: the class is the block between the address label and "(Description of
     class of securities)" or "(Title of each class of securities covered by this
     Form)"; Form 25's exchange is named next to the issuer above "(Exact name of
-    Issuer ...)". No such block -> class_kind 'unknown'.
+    Issuer ...)". No such block -> class_kind 'unknown'. A registration (8-A) is
+    read by parse_registration_document.
     """
+    if form.removesuffix("/A") in REGISTRATION_FORMS:
+        return parse_registration_document(raw)
     amendment_effect = None
     if form.endswith("/A"):
         amendment_effect = "cancels" if _CANCELS_RE.search(_plain(raw)) else "restates"
@@ -1305,14 +1467,24 @@ def parse_event_document(raw: str, form: str) -> EventClass:
     )
 
 
+def is_submission(raw: str, adsh: str) -> bool:
+    """Whether a body is the SEC submission ``adsh``: its SEC header names the
+    accession (every one of the 15,888 cached filings does, PEM-wrapped or not); a
+    maintenance or throttling page answered with 200 does not."""
+    return re.search(rf"ACCESSION\s+NUMBER:\s*{re.escape(adsh)}\b", raw[:20000]) is not None
+
+
 class EventDocuments:
-    """The EDGAR filings of end events, kept in ``cache_dir`` (one file per
-    accession) so a re-parse never fetches again. A missing file is fetched with
-    ``client`` (the SEC User-Agent) at most once per ``spacing`` seconds; 429 and
-    5xx answers and transport errors back off (Retry-After when given) and retry.
-    Without a client only cached filings are read. A filing that cannot be
-    fetched (404 or any other HTTP error, or no answer after the retries) is not
-    a document: ``text`` returns None and ``failed`` counts it."""
+    """The EDGAR filings of end and registration events, kept in ``cache_dir``
+    (one file per accession) so a re-parse never fetches again. A missing file is
+    fetched with ``client`` (the SEC User-Agent) at most once per ``spacing``
+    seconds; 429 and 5xx answers and transport errors back off (Retry-After when
+    given) and retry. Without a client only cached filings are read. A filing that
+    cannot be fetched (404 or any other HTTP error, or no answer after the
+    retries) is not a document: ``text`` returns None and ``failed`` counts it. A
+    body that is not the requested submission (a 200 HTML maintenance page) is
+    retried, never cached, and if it persists counted in ``rejected``; a cached
+    file that is not the submission is ignored and fetched again."""
 
     def __init__(self, cache_dir: Path, client=None, *, spacing: float | None = None,
                  retries: int = 6) -> None:
@@ -1322,6 +1494,7 @@ class EventDocuments:
         self.retries = retries
         self.fetched = 0
         self.failed = 0
+        self.rejected = 0
         self._last = 0.0
 
     def text(self, cik: int, adsh: str) -> str | None:
@@ -1329,7 +1502,12 @@ class EventDocuments:
         fetched now."""
         target = self.cache_dir / f"{adsh}.txt"
         if target.exists():
-            return target.read_bytes().decode("latin-1")
+            cached = target.read_bytes().decode("latin-1")
+            if is_submission(cached, adsh):
+                return cached
+            if self.client is None:
+                self.rejected += 1
+                return None
         if self.client is None:
             return None
         try:
@@ -1339,6 +1517,7 @@ class EventDocuments:
         except ImportError:  # a client that is not httpx
             transport_errors = (OSError,)
         url = EDGAR_FILING_URL.format(cik=cik, folder=adsh.replace("-", ""), adsh=adsh)
+        not_submission = False
         for attempt in range(self.retries):
             wait = self.spacing - (time.monotonic() - self._last)
             if wait > 0:
@@ -1351,18 +1530,29 @@ class EventDocuments:
                 time.sleep(backoff)
                 continue
             if response.status_code == 200:
+                text = response.content.decode("latin-1")
+                if not is_submission(text, adsh):
+                    not_submission = True  # a maintenance or throttling page
+                    if attempt >= 2:
+                        break
+                    time.sleep(backoff)
+                    continue
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
                 partial = target.with_name(target.name + ".part")
                 partial.write_bytes(response.content)
                 partial.replace(target)
                 self.fetched += 1
-                return response.content.decode("latin-1")
+                return text
+            not_submission = False
             if response.status_code in (429, 500, 502, 503, 504):
                 retry_after = response.headers.get("retry-after", "")
                 time.sleep(float(retry_after) if retry_after.isdigit() else backoff)
                 continue
             break  # 404 or another HTTP error: not fetched
-        self.failed += 1
+        if not_submission:
+            self.rejected += 1
+        else:
+            self.failed += 1
         return None
 
 
@@ -1374,18 +1564,27 @@ def describe_events(
     events: list[RegistrationEvent], documents: EventDocuments | None, ciks: set[int],
     known: dict[tuple[str, int, str, dt.date], RegistrationEvent] | None = None,
 ) -> tuple[list[RegistrationEvent], Counter]:
-    """Read the end filings (and their amendments) of CIKs with cover data.
+    """Read the end filings (and their amendments) and the Forms 8-A of CIKs with
+    cover data.
 
-    A filing that cannot be read now (not cached, no client) is no evidence: the
-    class already derived for that event (``known``) is carried forward
+    An event already read by this parser version (``known``) is carried as read
+    (``class_reused``), without fetching its filing again: a worker without a
+    persistent cache would otherwise fetch both quarters' filings every week. A
+    filing that cannot be read now (not cached, no client, not the submission) is
+    no evidence: the class already derived for that event is carried forward
     unchanged, and only a parse replaces it. Each such miss counts as
     ``filings_missing``.
     """
     described: list[RegistrationEvent] = []
     stats: Counter = Counter()
     for event in events:
-        if documents is None or event.form not in END_EVENT_FORMS or event.cik not in ciks:
+        if documents is None or event.form not in READ_EVENT_FORMS or event.cik not in ciks:
             described.append(event)
+            continue
+        prior = (known or {}).get(_event_key(event))
+        if prior is not None and prior.parser_version == EVENT_PARSER_VERSION:
+            stats["class_reused"] += 1
+            described.append(replace(prior, source_package=event.source_package))
             continue
         raw = documents.text(event.cik, event.adsh)
         if raw is None:
@@ -1794,7 +1993,7 @@ def derive_event_classes(conn, documents: EventDocuments, *,
     rows = conn.execute(
         f"SELECT {', '.join(EVENT_COLUMNS)}, fact_hash FROM sec_registration_events "
         "WHERE retired_on IS NULL AND form = ANY(%s) AND parser_version IS DISTINCT FROM %s",
-        (sorted(END_EVENT_FORMS), EVENT_PARSER_VERSION),
+        (sorted(READ_EVENT_FORMS), EVENT_PARSER_VERSION),
     ).fetchall()
     stats: Counter = Counter()
     changed: list[tuple[str, RegistrationEvent]] = []
@@ -2031,7 +2230,8 @@ def run(
             item = {"package": "derive_event_classes",
                     **derive_event_classes(conn, documents, reconciled_on=reconciled_on,
                                            ciks=ciks),
-                    "filings_fetched": documents.fetched, "filings_failed": documents.failed}
+                    "filings_fetched": documents.fetched, "filings_failed": documents.failed,
+                    "filings_rejected": documents.rejected}
             print(json.dumps(item), flush=True)
             stats.append(item)
     finally:

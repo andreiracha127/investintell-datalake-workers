@@ -16,6 +16,7 @@ import itertools
 import os
 import random
 import zipfile
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -117,10 +118,34 @@ d = dt.date
         ("ISCA, ISCB", ["ISCA", "ISCB"]),
         ("WSO; WSOB", ["WSO", "WSOB"]),
         ("CBS, CBS.A", ["CBS", "CBS-A"]),
+        # Codex thread 4222376271: lowercase symbols joined by a slash are not prose.
+        ("jwa/jwb", ["JWA", "JWB"]),
+        ("belfa,belfb", ["BELFA", "BELFB"]),  # Bel Fuse, CIK 729580
+        # Integrated Rail and Resources (CIK 1854795) writes its OTC Pink market.
+        ("OTC Pink: IRRXU", ["IRRXU"]),
+        ("BAX NYSE", ["BAX"]),  # an exchange qualifying a symbol is dropped
     ],
 )
 def test_symbols_normalize_to_the_price_table_style(raw: str, tickers: list[str]) -> None:
     assert loader.normalize_symbols(raw) == (tickers, [])
+
+
+@pytest.mark.parametrize(
+    ("raw", "ticker"),
+    [
+        # Codex thread 4222086476: TrueCar (CIK 1327318) tags TRUE, every one of
+        # the 94 FSN facts written in capitals; "true" and "True" are booleans.
+        ("TRUE", "TRUE"),
+        # Codex thread 4223252982: Cboe Global Markets (CIK 1374310) tags CBOE.
+        ("CBOE", "CBOE"),
+        # Outbrain (CIK 1454938) tags OB; beside a symbol OB is the OTC suffix.
+        ("OB", "OB"),
+    ],
+)
+def test_real_symbols_that_look_like_placeholders_or_venues_are_kept(
+    raw: str, ticker: str,
+) -> None:
+    assert loader.normalize_symbols(raw) == ([ticker], [])
 
 
 @pytest.mark.parametrize(
@@ -131,6 +156,15 @@ def test_symbols_normalize_to_the_price_table_style(raw: str, tickers: list[str]
         ("N/A", ([], ["placeholder"])),
         ("Not Applicable", ([], ["placeholder"])),
         ("true", ([], ["placeholder"])),
+        ("True", ([], ["placeholder"])),  # New York City REIT's boolean
+        ("False", ([], ["placeholder"])),
+        ("NA", ([], ["placeholder"])),  # TETRA, CenterPoint and others: not a symbol
+        ("NONE", ([], ["placeholder"])),
+        # A venue alone is no symbol (Box Ships' OTCQB, Natura's NYSE, Zion's OTCQX).
+        ("OTCQB", ([], ["placeholder"])),
+        ("NYSE", ([], ["placeholder"])),
+        ("NYSE American", ([], ["placeholder"])),
+        ("ABC, true", (["ABC"], ["placeholder"])),
         ("No Trading Symbol", ([], ["placeholder"])),
         ("XXXXXXXXXX", ([], ["placeholder"])),
         ("OTCBB", ([], ["placeholder"])),
@@ -376,6 +410,21 @@ def _filing(adsh: str) -> str:
          ("ADSs (1) , each representing 100 Class H ordinary shares, par value RMB 1.00 per "
           "share. Class H Ordinary Shares of par value RMB1.00 per Share", "equity", 1, None,
           None, None, "unknown", None)),
+        # Forms 8-A (Codex thread 4223111409): what a registration registers. PepsiCo
+        # registers its common stock on Nasdaq the day its Form 25 leaves the NYSE
+        # (2017), then its notes (2018); Statera's 8-A12G registers the Series B
+        # Preferred Stock it paid as a dividend, the day Nasdaq delisted its common.
+        ("0000950103-17-012545", "8-A12B",
+         ("Common Stock, par value 1-2/3 cents per share The Nasdaq Stock Market LLC",
+          "equity", 1, None, None, None, "unknown", None)),
+        ("0000950103-18-014472", "8-A12B",
+         ("2.500% Senior Notes due 2022 1.750% Senior Notes due 2021 2.625% Senior Notes due "
+          "2026 0.875% Senior Notes due 2028 The Nasdaq Stock Market LLC The Nasdaq Stock "
+          "Market LLC The Nasdaq Stock Market LLC The Nasdaq Stock Market LLC", "other", 1,
+          None, None, None, "unknown", None)),
+        ("0001437749-23-002250", "8-A12G",
+         ("Series B Preferred Stock, par value $0.005 per share", "other", 1, None, None, None,
+          "unknown", None)),
     ],
 )
 def test_end_filings_state_their_class_provision_and_exchange(
@@ -443,6 +492,32 @@ def test_class_descriptions_name_equity_or_other_classes(
         ("Class A Common Stock; Series A Preferred Stock", 1),
         ("Class 1 Common Stock and Class 2 Common Stock", 2),
         ("Class I and Class II Common Shares", 2),
+        # Classes named without a Class/Series label (Codex thread 4222376247),
+        # real end filings read with sec_event_class_v3 as one class.
+        ("Common Stock and Voting Common Stock", 2),
+        ("Voting Common Stock, $0.01 Par Value Per Share Non-Voting Common Stock, $0.01 Par "
+         "Value Per Share", 2),
+        ("Common Stock, no par value; Class A Common Stock, no par value", 2),
+        ("Class B-2 Common Stock, par value $0.01 per share Class B-3 Common Stock, par value "
+         "$0.01 per share", 2),
+        ("Series A Liberty Capital Common Stock, Series B Liberty Capital Common Stock, "
+         "Liberty Starz Ser A Common Stock, Liberty Starz Ser B Common Stock", 4),
+        ("Class A Common Stock - $.01 par value Class B Common Stock - $.01 par value Common "
+         "Stock - $.10 par value", 3),
+        # One class, however often or in whatever company it is named.
+        ("Ordinary Shares (Common Stock), Representative's Unit Purchase Options, Warrants", 1),
+        ('Common Stock, par value $0.001 per share (the "Common Stock") 5.625% Senior Notes '
+         'due 2021', 1),
+        ("Common Stock; American Depositary Shares, each representing five (5) shares of "
+         "Common Stock", 1),
+        ("American Depositary Shares (ADSs), each representing four shares of Common Stock "
+         "Nasdaq Stock Market Common Stock, par value ARS 100.00 per share", 1),
+        ("Ordinary Shares, nominal value US$0.11 3/7 American Depositary Shares each "
+         "representing ten Ordinary Shares of Vodafone Group Plc", 1),
+        ("Common Stock, par value $0.0001 per share; Warrants, exercisable for Common Stock at "
+         "an exercise price of $12.00 per share; and Units, each consisting of one share", 1),
+        ("Common Stock, $1.25 par value per share Common Stock Purchase Rights", 1),
+        ("Purchase of Common Stock Warrants & Common Stock", 1),
     ],
 )
 def test_class_counts_read_enumerations(description: str, count: int) -> None:
@@ -597,21 +672,64 @@ def test_package_parse_keeps_registrant_lines_with_their_class(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("symbols", "others", "classes"),
     [
-        ({""}, set(), 1),  # one undimensioned symbol
-        ({""}, {CLASS_A}, 1),  # the symbol is the one counted class
-        ({""}, {CLASS_A, CLASS_B}, 2),  # American Greetings: AM beside Class A and B counts
-        ({"", CLASS_B}, {CLASS_A, CLASS_B}, 2),
-        ({"", CLASS_B}, {CLASS_B}, 2),  # the undimensioned symbol is another class
-        ({CLASS_A}, {CLASS_B}, 2),  # an unlisted class B ("N/A" symbol) still counts
-        ({CLASS_A, CLASS_B}, {CLASS_A, CLASS_B}, 2),
+        ({"": {"AM"}}, set(), 1),  # one undimensioned symbol
+        ({"": {"AM"}}, {CLASS_A}, 1),  # the symbol is the one counted class
+        ({"": {"AM"}}, {CLASS_A, CLASS_B}, 2),  # American Greetings: AM beside A and B counts
+        ({"": {"X"}, CLASS_B: {"XB"}}, {CLASS_A, CLASS_B}, 2),
+        ({"": {"X"}, CLASS_B: {"XB"}}, {CLASS_B}, 2),  # the undimensioned symbol is another
+        ({CLASS_A: {"AAA"}}, {CLASS_B}, 2),  # an unlisted class B ("N/A" symbol) still counts
+        ({CLASS_A: {"AAA"}, CLASS_B: {"BBB"}}, {CLASS_A, CLASS_B}, 2),
+        # Codex thread 4222086431: distinct symbols of one context are distinct
+        # classes (JWA/JWB; Google Inc's "GOOG, GOOGL" beside its A, B and C counts).
+        ({"": {"JWA", "JWB"}}, set(), 2),
+        ({"": {"GOOG", "GOOGL"}}, {CLASS_A, CLASS_B, "ClassOfStock=CapitalClassC;"}, 3),
     ],
 )
 def test_filing_profile_counts_every_equity_class(
-    symbols: set[str], others: set[str], classes: int,
+    symbols: dict[str, set[str]], others: set[str], classes: int,
 ) -> None:
     filing = (A1, 1)
     profiles = loader._filing_profiles({filing: symbols}, {filing: others}, {filing})
     assert profiles == {filing: (classes, True)}
+
+
+def test_an_undimensioned_multi_symbol_fact_is_two_classes(tmp_path: Path) -> None:
+    """Codex thread 4222086431: one undimensioned fact "JWA/JWB" beside the
+    filing's total. The filing shows two classes, so the total is neither class's
+    count."""
+    path = _write_package(
+        tmp_path / "2024q1_notes.zip",
+        [_sub(A1, 61, "10-Q", "20240306", "2024-03-06 08:00:00.0")],
+        [_fact(A1, "TradingSymbol", "JWA/JWB")],
+        [_shares(A1, "55000000")],
+    )
+    result = loader.parse_package(path)
+    assert [(o.ticker, o.class_key, o.filing_equity_classes, o.filing_complete)
+            for o in result.observations] == [("JWA", "", 2, True), ("JWB", "", 2, True)]
+
+
+def test_co_registrants_sharing_a_context_keep_their_own_counts(tmp_path: Path) -> None:
+    """Codex thread 4222924612: the parent and a co-registrant state the same
+    count (100 shares) in one context of a combined filing; each keeps its row."""
+    adsh = "0000000012-24-000001"
+    path = _write_package(
+        tmp_path / "2024q1_notes.zip",
+        [_sub(adsh, 1111, "10-K", "20240226", "2024-02-26 08:00:00.0", nciks=2)],
+        [
+            _fact(adsh, "TradingSymbol", "PARENT"),
+            _fact(adsh, "EntityCentralIndexKey", "0000002222", dimh="0xsub",
+                  coreg="SubsidiaryMember"),
+        ],
+        [
+            _shares(adsh, "100", dimh="0xsub"),
+            _shares(adsh, "100", dimh="0xsub", coreg="SubsidiaryMember"),
+        ],
+        DIMS,
+    )
+    result = loader.parse_package(path)
+    assert sorted((s.cik, s.class_key, s.shares) for s in result.share_counts) == [
+        (1111, "", Decimal("100")), (2222, "", Decimal("100")),
+    ]
 
 
 def test_an_unlisted_titled_class_counts_toward_the_filing_classes(tmp_path: Path) -> None:
@@ -853,7 +971,7 @@ def test_end_filings_of_cover_ciks_are_described(tmp_path: Path) -> None:
     events = [
         loader.RegistrationEvent("0000876661-13-000657", 5133, "25-NSE", d(2013, 8, 12), "q"),
         loader.RegistrationEvent("0001193125-13-343607", 5133, "15-12B", d(2013, 8, 22), "q"),
-        loader.RegistrationEvent("0000000001-13-000001", 5133, "8-A12B", d(2013, 9, 1), "q"),
+        loader.RegistrationEvent("0000000001-13-000001", 5133, "10-12B", d(2013, 9, 1), "q"),
         loader.RegistrationEvent("0000000002-13-000001", 4242, "15-12G", d(2013, 9, 1), "q"),
         loader.RegistrationEvent("0000000003-13-000001", 5133, "15-15D", d(2013, 9, 2), "q"),
     ]
@@ -863,12 +981,63 @@ def test_end_filings_of_cover_ciks_are_described(tmp_path: Path) -> None:
             for e in described] == [
         ("25-NSE", "equity", 1, True, loader.EVENT_PARSER_VERSION),
         ("15-12B", "equity", 2, None, loader.EVENT_PARSER_VERSION),
-        ("8-A12B", None, None, None, None),  # registrations are not read
+        ("10-12B", None, None, None, None),  # a Form 10 is not read
         ("15-12G", None, None, None, None),  # no cover data for CIK 4242
         ("15-15D", None, None, None, None),  # not cached and no client
     ]
     assert dict(stats) == {"class_equity": 2, "class_unread": 1, "filings_missing": 1}
     assert described[0].fact_hash != events[0].fact_hash  # the class is part of the fact
+
+
+def test_an_event_read_by_this_parser_is_carried_without_a_fetch(tmp_path: Path) -> None:
+    """Codex thread 4223252991: a worker without a persistent cache must not fetch
+    every Form 15/25/8-A of both quarters again each week. An event already read
+    by this parser version is carried; one read by another version is read again."""
+    adsh = "0000876661-13-000657"
+    event = loader.RegistrationEvent(adsh, 5133, "25-NSE", d(2013, 8, 12), "2013QTR3.form.gz")
+    read = loader.RegistrationEvent(
+        adsh, 5133, "25-NSE", d(2013, 8, 12), "old", class_kind="equity", class_count=1,
+        extinguished=True, venue_kind="primary", parser_version=loader.EVENT_PARSER_VERSION)
+    client = _Client([_Response(200, (FILINGS / f"{adsh}.txt").read_bytes())])
+    documents = loader.EventDocuments(tmp_path / "docs", client, spacing=0)
+    key = (adsh, 5133, "25-NSE", d(2013, 8, 12))
+    described, stats = loader.describe_events([event], documents, {5133}, {key: read})
+    assert described == [replace(read, source_package="2013QTR3.form.gz")]
+    assert (dict(stats), client.urls) == ({"class_reused": 1}, [])
+    older = replace(read, parser_version="sec_event_class_v3")
+    described, stats = loader.describe_events([event], documents, {5133}, {key: older})
+    assert described[0].parser_version == loader.EVENT_PARSER_VERSION
+    assert (dict(stats), len(client.urls)) == ({"class_equity": 1}, 1)
+
+
+def test_a_body_that_is_not_the_submission_is_never_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4222376284: a 200 maintenance page is no filing. It is not
+    cached, counts as rejected, and the class derived before is carried."""
+    monkeypatch.setattr(loader.time, "sleep", lambda seconds: None)
+    adsh = "0000876661-13-000657"
+    page = b"<html><body>EDGAR is undergoing maintenance.</body></html>"
+    client = _Client([_Response(200, page)] * 6)
+    documents = loader.EventDocuments(tmp_path / "docs", client, spacing=0)
+    assert documents.text(5133, adsh) is None
+    assert (documents.fetched, documents.failed, documents.rejected) == (0, 0, 1)
+    assert len(client.urls) == 3  # tried three times
+    assert not (tmp_path / "docs" / f"{adsh}.txt").exists()
+    event = loader.RegistrationEvent(adsh, 5133, "25-NSE", d(2013, 8, 12), "q")
+    prior = replace(event, class_kind="other", class_count=1,
+                           parser_version="sec_event_class_v3")
+    key = (adsh, 5133, "25-NSE", d(2013, 8, 12))
+    described, stats = loader.describe_events([event], documents, {5133}, {key: prior})
+    assert described == [prior] and stats["class_carried"] == 1
+    # A non-filing body cached before this check is not read as a filing either.
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / f"{adsh}.txt").write_bytes(page)
+    offline = loader.EventDocuments(tmp_path / "docs", None)
+    assert offline.text(5133, adsh) is None and offline.rejected == 1
+    real = (FILINGS / f"{adsh}.txt").read_bytes()
+    assert loader.is_submission(real.decode("latin-1"), adsh)
+    assert not loader.is_submission(real.decode("latin-1"), "0000876661-13-000658")
 
 
 # --------------------------------------------------------------------------- #
