@@ -464,6 +464,66 @@ SELECT
     (SELECT h.adsh FROM chosen h) AS adsh
 $fn$;
 
+-- The cover share count of the class that trades as p_ticker, joined inside each
+-- filing: a count whose class is tagged with the ticker in the same filing, or
+-- the filing's total when its one equity class (not a depositary line) shows
+-- the ticker. Member names change between filings (Berkshire's 10-Q counts
+-- 'CommonClassB' while its 8-K covers tag BRK.B on 'ClassBCommonStock'), so the
+-- filing, not the member, ties a count to a symbol. Latest stated date first,
+-- then the latest filing; a class count wins over a total in one filing.
+-- status resolved | stale | ambiguous | missing; basis 'class' | 'sole_class_total'.
+CREATE OR REPLACE FUNCTION sec_cover_ticker_shares_at(
+    p_ticker text, p_cik bigint, p_as_of date, p_max_age_days integer DEFAULT 400
+)
+RETURNS TABLE (
+    status text,
+    shares numeric,
+    shares_as_of date,
+    adsh text,
+    basis text
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+WITH candidates AS (
+    SELECT c.adsh, c.stated_on, c.available_on, c.accepted, c.shares,
+           CASE WHEN c.class_key = '' THEN 'sole_class_total' ELSE 'class' END AS basis
+    FROM sec_cover_share_counts c
+    WHERE c.cik = p_cik AND c.available_on <= p_as_of AND c.stated_on <= p_as_of
+      AND (
+          EXISTS (
+              SELECT 1 FROM sec_ticker_cik_observations o
+              WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.class_key = c.class_key
+                AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'))
+          OR (c.class_key = '' AND EXISTS (
+              SELECT 1 FROM sec_ticker_cik_observations o
+              WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.line_key = '*'
+                AND o.security_kind = 'equity'
+                AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')))
+      )
+), chosen AS (
+    SELECT k.* FROM candidates k
+    ORDER BY k.stated_on DESC, k.available_on DESC, k.accepted DESC NULLS LAST, k.adsh DESC,
+             k.basis
+    LIMIT 1
+), counts AS (
+    SELECT DISTINCT k.shares
+    FROM candidates k, chosen h
+    WHERE k.adsh = h.adsh AND k.stated_on = h.stated_on AND k.basis = h.basis
+)
+SELECT
+    CASE
+        WHEN NOT EXISTS (SELECT 1 FROM chosen) THEN 'missing'
+        WHEN (SELECT h.stated_on FROM chosen h) < p_as_of - p_max_age_days THEN 'stale'
+        WHEN (SELECT count(*) FROM counts) > 1 THEN 'ambiguous'
+        ELSE 'resolved'
+    END AS status,
+    CASE WHEN (SELECT count(*) FROM counts) = 1 THEN (SELECT k.shares FROM counts k) END
+        AS shares,
+    (SELECT h.stated_on FROM chosen h) AS shares_as_of,
+    (SELECT h.adsh FROM chosen h) AS adsh,
+    (SELECT h.basis FROM chosen h) AS basis
+$fn$;
+
 -- Price lineage: which stored price rows of a ticker belong to an issuer's line.
 -- This is a data-lineage question about a vendor series stitched under today's
 -- symbol, so it uses everything known today (issuer resolution at D stays
@@ -651,6 +711,7 @@ REVOKE ALL ON FUNCTION sec_registration_end_events(bigint, date),
     sec_ticker_issuer_at(text, date, integer),
     sec_issuer_line_at(bigint, text, date, integer),
     sec_cover_class_shares_at(bigint, text, date, integer),
+    sec_cover_ticker_shares_at(text, bigint, date, integer),
     sec_ticker_price_span(text, bigint, text) FROM PUBLIC;
 DO $$
 DECLARE
@@ -668,6 +729,8 @@ BEGIN
         ALTER FUNCTION sec_ticker_issuer_at(text, date, integer) OWNER TO worker_writer;
         ALTER FUNCTION sec_issuer_line_at(bigint, text, date, integer) OWNER TO worker_writer;
         ALTER FUNCTION sec_cover_class_shares_at(bigint, text, date, integer)
+            OWNER TO worker_writer;
+        ALTER FUNCTION sec_cover_ticker_shares_at(text, bigint, date, integer)
             OWNER TO worker_writer;
         ALTER FUNCTION sec_ticker_price_span(text, bigint, text) OWNER TO worker_writer;
     END IF;
@@ -687,6 +750,7 @@ BEGIN
                 'sec_ticker_issuer_at(text, date, integer), '
                 'sec_issuer_line_at(bigint, text, date, integer), '
                 'sec_cover_class_shares_at(bigint, text, date, integer), '
+                'sec_cover_ticker_shares_at(text, bigint, date, integer), '
                 'sec_ticker_price_span(text, bigint, text) TO %I', reader);
         END IF;
     END LOOP;

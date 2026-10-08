@@ -4,6 +4,7 @@
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 DROP FUNCTION IF EXISTS sec_ticker_price_span(text, bigint, text);
+DROP FUNCTION IF EXISTS sec_cover_ticker_shares_at(text, bigint, date, integer);
 DROP FUNCTION IF EXISTS sec_cover_class_shares_at(bigint, text, date, integer);
 DROP FUNCTION IF EXISTS sec_issuer_line_at(bigint, text, date, integer);
 DROP FUNCTION IF EXISTS sec_ticker_issuer_at(text, date, integer);

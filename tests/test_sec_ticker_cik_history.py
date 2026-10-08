@@ -34,6 +34,7 @@ FUNCTIONS = (
     "sec_ticker_issuer_at(text,date,integer)",
     "sec_issuer_line_at(bigint,text,date,integer)",
     "sec_cover_class_shares_at(bigint,text,date,integer)",
+    "sec_cover_ticker_shares_at(text,bigint,date,integer)",
     "sec_ticker_price_span(text,bigint,text)",
 )
 TABLES = (
@@ -905,6 +906,53 @@ def test_notes_lines_tagged_with_the_common_symbol_never_decide(schema_dsn) -> N
     assert _issuer(conn, "USB-PA", "2025-06-06")[:2] == ("resolved", 36104)
 
 
+def _ticker_shares(conn, ticker: str, cik: int, as_of: str) -> tuple:
+    return conn.execute(
+        "SELECT status, shares, shares_as_of, basis "
+        "FROM sec_cover_ticker_shares_at(%s, %s, %s)", (ticker, cik, as_of),
+    ).fetchone()
+
+
+def test_a_ticker_count_follows_the_filing_not_the_member_name(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    d = dt.date
+    # Berkshire's 10-Q tags BRK.B and counts it on 'CommonClassB'; its later 8-K
+    # tags BRK.B on 'ClassBCommonStock' and counts nothing.
+    q = _observe(conn, 1067983, "BRK-A", "2022-05-02", class_key="ClassOfStock=CommonClassA;")
+    _observe(conn, 1067983, "BRK-B", "2022-05-02", class_key="ClassOfStock=CommonClassB;",
+             adsh=q)
+    _count(conn, 1067983, "ClassOfStock=CommonClassA;", "2022-04-20", 613_707, "2022-05-02",
+           adsh=q)
+    _count(conn, 1067983, "ClassOfStock=CommonClassB;", "2022-04-20", 1_285_751_332,
+           "2022-05-02", adsh=q)
+    k = _observe(conn, 1067983, "BRK-A", "2022-05-04", class_key="ClassOfStock=ClassACommonStock;")
+    _observe(conn, 1067983, "BRK-B", "2022-05-04", class_key="ClassOfStock=ClassBCommonStock;",
+             adsh=k)
+    assert _issuer(conn, "BRK-B", "2022-06-30")[2] == "ClassOfStock=ClassBCommonStock;"
+    assert _class_shares(conn, 1067983, "ClassOfStock=ClassBCommonStock;", "2022-06-30")[0] == (
+        "missing"
+    )
+    assert _ticker_shares(conn, "BRK.B", 1067983, "2022-06-30") == (
+        "resolved", Decimal(1_285_751_332), d(2022, 4, 20), "class",
+    )
+    # A single-class filer's total is its one class's count; never an ADS's.
+    a = _observe(conn, 320193, "AAPL", "2024-02-02")
+    _count(conn, 320193, "", "2024-01-19", 15_441_881_000, "2024-02-02", adsh=a)
+    assert _ticker_shares(conn, "AAPL", 320193, "2024-02-05") == (
+        "resolved", Decimal(15_441_881_000), d(2024, 1, 19), "sole_class_total",
+    )
+    r = _observe(conn, 1811115, "RNLX", "2024-02-14", kind="depositary",
+                 class_key="LegalEntity=AmericanDepositaryShares;")
+    _count(conn, 1811115, "", "2024-02-13", 99_930_156, "2024-02-14", adsh=r)
+    assert _ticker_shares(conn, "RNLX", 1811115, "2024-02-20")[0] == "missing"
+    # Two classes in one filing never share a total.
+    g = _observe(conn, 1652044, "GOOGL", "2024-02-01", class_key="ClassOfStock=CommonClassA;")
+    _observe(conn, 1652044, "GOOG", "2024-02-01", class_key="ClassOfStock=CapitalClassC;",
+             adsh=g)
+    _count(conn, 1652044, "", "2024-01-25", 12_000_000_000, "2024-02-01", adsh=g)
+    assert _ticker_shares(conn, "GOOGL", 1652044, "2024-02-05")[0] == "missing"
+
+
 def test_resolvers_inline_into_lateral_joins(schema_dsn) -> None:
     conn, _ = schema_dsn
     rows = conn.execute(
@@ -918,6 +966,8 @@ def test_resolvers_inline_into_lateral_joins(schema_dsn) -> None:
         "LATERAL sec_issuer_line_at(c, '', DATE '2024-01-01') i",
         "SELECT i.* FROM unnest(ARRAY[1::bigint]) c, "
         "LATERAL sec_cover_class_shares_at(c, '', DATE '2024-01-01') i",
+        "SELECT i.* FROM unnest(ARRAY['T']) t, "
+        "LATERAL sec_cover_ticker_shares_at(t, 1, DATE '2024-01-01') i",
     ):
         plan = "\n".join(r[0] for r in conn.execute("EXPLAIN " + query).fetchall())
         assert "Function Scan on sec_" not in plan, plan

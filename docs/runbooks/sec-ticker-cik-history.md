@@ -93,6 +93,14 @@ relabelled, so other holders are other CIKs. Equity and depositary lines decide
 whenever any showed the ticker, in both the point functions and the span: filers
 also tag their common symbol on notes lines.
 
+`sec_cover_ticker_shares_at(T, cik, D)` returns the cover count of the class that
+trades as T, joined inside each filing: a count whose class is tagged with T in
+the same filing, or the filing's total when its one equity class (never a
+depositary line) shows T. Member names change between filings (Berkshire's
+10-Q counts `CommonClassB` while its 8-Ks tag BRK.B on `ClassBCommonStock`), so the
+filing, not the member, ties a count to a symbol. This is the per-class count
+consumers should use.
+
 `sec_cover_class_shares_at(cik, class_key, D)` returns the class's own cover
 count: the latest stated date (`stated_on <= D`, filing public by D), then the
 latest filing (acceptance time, then accession); distinct values within that one
@@ -134,10 +142,12 @@ refuses to run before the governed schema exists, and holds advisory lock 900_36
 so it never interleaves with the recurring worker.
 
 Full local run (2026-10-08, postgres:16 on the same workstation): 79 DERA packages
-(2009q1 to 2026_09, 25 GB of zips) and 72 EDGAR quarterly indexes in **12.6 min**
-(parsing 700 s, database writes 42 s): 885,052 submissions, 866,258
-`TradingSymbol` facts, **859,862** observations, **480,903** cover share counts,
-**47,512** registration events.
+(2009q1 to 2026_09, 25 GB of zips) and 72 EDGAR quarterly indexes in **11.4 min**
+(after the review fixes: 11.4 min, parsing 610 s, database writes 61 s): 885,052
+submissions, 866,258 `TradingSymbol` facts, **860,525** observations (504
+attributed to a co-registrant's own CIK, 220 legal-entity facts rejected),
+**485,238** cover share counts, **48,450** registration events (938 of them `/A`
+amendments).
 
 ## Recurring worker
 
@@ -158,13 +168,13 @@ run without the schema. Exit is non-zero on an error or `lock_busy`. Env:
 
 1. Apply `schemas/sec_ticker_cik_history_v1.sql` as `postgres` (or `worker_writer`)
    with `psql -v ON_ERROR_STOP=1 -f schemas/sec_ticker_cik_history_v1.sql`. It
-   creates the five tables, the view and six functions, sets the owner to
+   creates the five tables, the view and seven functions, sets the owner to
    `worker_writer`, revokes PUBLIC and grants SELECT/EXECUTE to `app_runtime`,
    `app_analytics_ro` and `mcp_ro`.
 2. Run the initial load as `worker_writer`, from the workstation that holds
    `E:/Edgard/fsn` and `E:/Edgard/edgar-index` (add `--download` to fetch what is
    missing): `python -m scripts.load_sec_ticker_cik_history --dsn <worker_writer DSN>`.
-   Expect about 860k observations, 481k share counts and 47.5k events, and
+   Expect about 861k observations, 485k share counts and 48.5k events, and
    15-25 minutes (parsing is local; the writes are 1.4M rows of COPY).
 3. Check: `SELECT count(*), max(available_on) FROM sec_ticker_cik_observations;`,
    `SELECT * FROM sec_ticker_issuer_at('BRK-B', current_date);` (resolved, CIK
