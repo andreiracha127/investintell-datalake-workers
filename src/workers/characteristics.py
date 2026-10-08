@@ -1131,6 +1131,7 @@ def run(
                 "equity_processed": equity_processed,
                 "equity_upserted": equity_upserted,
                 "source_as_of": str(source.as_of), "freshness": postcheck,
+                "rebuild_reason": freshness.rebuild_evidence(current, forced=standalone),
             }
     except Exception as exc:
         conn.rollback()

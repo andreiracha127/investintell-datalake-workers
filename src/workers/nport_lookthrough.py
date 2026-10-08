@@ -59,6 +59,20 @@ MAX_WORKERS_CAP = 24            # Railway vCPU count; bounds the cloud pool
 NUMERIC_14_6_MAX = 99_999_999.999999
 INSERT_CHUNK = 1_000
 
+# Serving publication against compressed history (see ``_publish_staged``).
+# Light's columnstore policy compresses nport_lookthrough_exposures after six
+# months (segmentby series_id,dimension,key; orderby report_date DESC). The
+# ceiling bounds how many compressed serving tuples one publication may
+# decompress. 1,000,000 is roughly one 30-day exposure chunk (production
+# averaged 1.16M tuples per compressed chunk on 2026-10-08) and 10x Timescale's
+# default per-DML limit. A normal publication touches only the anchored cohort,
+# whose chunks are younger than six months, so its bound is 0. Raise it only
+# for an authorized historical republication; 0 (Timescale's "unlimited") is
+# refused.
+DECOMPRESSION_CEILING_ENV = "NPORT_LOOKTHROUGH_MAX_DECOMPRESSED_TUPLES"
+DEFAULT_DECOMPRESSION_CEILING = 1_000_000
+PUBLISH_SERIES_BATCH = 1_000
+
 # N-PORT derivative asset categories (DBT is plain debt, NOT a derivative).
 DERIVATIVE_CLASSES = {"DE", "DFE", "DFF", "DIR", "DCO", "DCR", "DO"}
 
@@ -539,13 +553,15 @@ def build_sector_map(conn) -> dict[str, str]:
     munis are absent by construction and fall back to readable issuerCat buckets
     (see ``sector_label``). CUSIP-6 (issuer grain) lets a corporate *bond*
     inherit its issuer's equity sector. First non-null wins per issuer
-    (one issuer = one sector).
+    (one issuer = one sector), in a fixed order so a rebuild over unchanged
+    inputs reproduces the same sectors.
     """
     out: dict[str, str] = {}
     with conn.cursor() as cur:
         cur.execute(
             "SELECT cusip, gics_sector FROM sec_cusip_ticker_map "
-            "WHERE gics_sector IS NOT NULL AND cusip IS NOT NULL"
+            "WHERE gics_sector IS NOT NULL AND cusip IS NOT NULL "
+            "ORDER BY cusip, gics_sector"
         )
         for cusip, gics in cur.fetchall():
             if len(cusip) >= 6:
@@ -556,7 +572,8 @@ def build_sector_map(conn) -> dict[str, str]:
         if cur.execute("SELECT to_regclass('public.sec_isin_sector')").fetchone()[0]:
             cur.execute(
                 "SELECT isin, gics_sector FROM sec_isin_sector "
-                "WHERE gics_sector IS NOT NULL AND isin IS NOT NULL"
+                "WHERE gics_sector IS NOT NULL AND isin IS NOT NULL "
+                "ORDER BY isin, gics_sector"
             )
             for isin, gics in cur.fetchall():
                 out.setdefault(isin, gics)
@@ -589,9 +606,13 @@ def make_db_get_holdings(
             if report_date is None or (minimum_report_date and report_date < minimum_report_date):
                 memo[series_id] = None
                 return None
+            # (report_date, series_id, cusip) is the holdings key, so this is a
+            # total order: float sums and first-seen issuer labels repeat
+            # exactly, and an unchanged key republishes as unchanged.
             cur.execute(
                 f"""SELECT {', '.join(HOLDING_COLS)} FROM sec_nport_holdings
-                    WHERE series_id = %s AND report_date = %s""",
+                    WHERE series_id = %s AND report_date = %s
+                    ORDER BY cusip""",
                 (series_id, report_date),
             )
             holdings = [dict(zip(HOLDING_COLS, row)) for row in cur.fetchall()]
@@ -842,36 +863,221 @@ def _probe_staged(conn, source: freshness.SourceCohort, run_id: str) -> dict:
     return verdict
 
 
-def _publish_staged(conn, run_id: str) -> None:
-    """One transaction replaces exactly this candidate's (series, report) keys."""
-    exposure_cols = "series_id, report_date, dimension, key, label, direct_pct, indirect_pct, computed_at"
+def decompression_ceiling() -> int:
+    """Configured cap on compressed serving tuples one publication may decompress."""
+    raw = os.getenv(DECOMPRESSION_CEILING_ENV, "").strip()
+    if not raw:
+        return DEFAULT_DECOMPRESSION_CEILING
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        # Timescale reads 0 as "unlimited"; an unbounded publication is refused.
+        raise ValueError(f"{DECOMPRESSION_CEILING_ENV} must be a positive integer")
+    return value
+
+
+_EXPOSURE_COLS = ("series_id", "report_date", "dimension", "key", "label",
+                  "direct_pct", "indirect_pct", "computed_at")
+# Content excludes computed_at: a recomputation that reproduces the same rows
+# is not a change.
+_EXPOSURE_CONTENT = ("dimension", "key", "label", "direct_pct", "indirect_pct")
+_SUMMARY_CONTENT = _SUMMARY_COLS[2:]
+_KEY_QUALS = "report_date = %(day)s AND series_id = ANY(%(series)s)"
+
+_CHANGED_KEYS_SQL = f"""
+    WITH candidate AS (
+        SELECT series_id, {', '.join(_EXPOSURE_CONTENT)}
+        FROM nport_lookthrough_candidate_exposures
+        WHERE run_id = %(run_id)s AND {_KEY_QUALS}
+    ), serving AS (
+        SELECT series_id, {', '.join(_EXPOSURE_CONTENT)}
+        FROM nport_lookthrough_exposures WHERE {_KEY_QUALS}
+    ), serving_summary AS (
+        SELECT series_id, {', '.join(_SUMMARY_CONTENT)}
+        FROM nport_lookthrough_summary WHERE {_KEY_QUALS}
+    )
+    SELECT series_id FROM (SELECT * FROM candidate EXCEPT SELECT * FROM serving) added
+    UNION
+    SELECT series_id FROM (SELECT * FROM serving EXCEPT SELECT * FROM candidate) removed
+    UNION
+    SELECT c.series_id
+    FROM nport_lookthrough_candidate_summary c
+    LEFT JOIN serving_summary s ON s.series_id = c.series_id
+    WHERE c.run_id = %(run_id)s AND c.report_date = %(day)s AND c.series_id = ANY(%(series)s)
+      AND (s.series_id IS NULL
+           OR ROW({', '.join('c.' + col for col in _SUMMARY_CONTENT)})
+              IS DISTINCT FROM ROW({', '.join('s.' + col for col in _SUMMARY_CONTENT)}))
+"""
+
+
+def _batches(items: list[str]):
+    for start in range(0, len(items), PUBLISH_SERIES_BATCH):
+        yield items[start:start + PUBLISH_SERIES_BATCH]
+
+
+def _decompression_bound(cur, touched: dict[str, dict[_dt.date, list[str]]]) -> int:
+    """Upper bound on compressed serving tuples the publication DML can decompress.
+
+    A batch belongs to one ``(series_id, dimension, key)`` segment of one chunk
+    and can also hold that segment's other report dates in the chunk, so the
+    bound counts every compressed row of the touched series in each touched
+    compressed chunk: all rows in the chunk's range minus its uncompressed
+    heap. Timescale 2.27 deletes a batch wholly inside the constant quals
+    without decompressing it, so the actual count is usually lower.
+    """
+    cur.execute("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')")
+    if not cur.fetchone()[0]:
+        return 0
+    bound = 0
+    for table, by_day in touched.items():
+        if not by_day:
+            continue
+        # Date-partitioned slices are UTC-midnight instants; converting at UTC
+        # keeps the bounds independent of the session TimeZone.
+        cur.execute(
+            """SELECT format('%%I.%%I', chunk_schema, chunk_name),
+                      (range_start AT TIME ZONE 'UTC')::date,
+                      (range_end AT TIME ZONE 'UTC')::date
+               FROM timescaledb_information.chunks
+               WHERE is_compressed
+                 AND format('%%I.%%I', hypertable_schema, hypertable_name)::regclass
+                     = to_regclass(%s)
+               ORDER BY 2""",
+            (table,),
+        )
+        for chunk, low, high in cur.fetchall():
+            series = sorted({sid for day, ids in by_day.items() if low <= day < high for sid in ids})
+            if not series:
+                continue
+            cur.execute(
+                f"""SELECT (SELECT count(*) FROM {table}
+                            WHERE report_date >= %s AND report_date < %s
+                              AND series_id = ANY(%s))
+                         - (SELECT count(*) FROM ONLY {chunk} WHERE series_id = ANY(%s))""",
+                (low, high, series, series),
+            )
+            bound += int(cur.fetchone()[0])
+    return bound
+
+
+def _publish_staged(conn, run_id: str) -> dict[str, Any]:
+    """One transaction replaces exactly this candidate's changed (series, report) keys.
+
+    Incident 2026-10-08: the previous ``DELETE ... USING candidate`` join had no
+    constant quals, so TimescaleDB decompressed every compressed exposure chunk
+    (91,770,997 tuples against the 100,000 default limit) even though the
+    candidate's keys all lived in uncompressed chunks. TimescaleDB derives
+    compressed-batch filters only from constant quals (see
+    ``instrument_ingestion._write_instrument_nav_tx``), so:
+
+    * only keys whose content differs from serving are replaced: the summary
+      columns or the exposure row set (computed_at excluded). Unchanged keys
+      get no exposure DML; only their summary ``computed_at`` advances (the
+      summary is uncompressed), because freshness reads it as the time the key
+      was last verified;
+    * every statement is grouped by report date with constant
+      ``report_date = d AND series_id = ANY(...)`` quals under
+      ``force_custom_plan``, which excludes other chunks and limits a
+      compressed chunk to the touched series' segments;
+    * the decompression limit is set LOCAL to the counted upper bound (never 0,
+      which Timescale reads as unlimited); a bound above the configured
+      ceiling fails loud before any write, preserving the last good output.
+
+    SHARE ROW EXCLUSIVE on the serving tables (it recurses to chunks) keeps the
+    compression policy from compressing a chunk between the count and the DML;
+    readers are not blocked. Returns publication statistics.
+    """
+    exposure_cols = ", ".join(_EXPOSURE_COLS)
     summary_cols = ", ".join((*_SUMMARY_COLS, "computed_at"))
+    ceiling = decompression_ceiling()
     with conn.cursor() as cur:
         # Bound lock acquisition; a stalled consumer cannot hold this final
         # promotion open indefinitely. The session's 900204 mutex is also the
         # Light classification reader guard.
         cur.execute("SET LOCAL lock_timeout = '5s'")
-        for table in ("nport_lookthrough_exposures", "nport_lookthrough_summary"):
-            cur.execute(
-                f"""DELETE FROM {table} target USING nport_lookthrough_candidate_summary candidate
-                    WHERE candidate.run_id = %s AND target.series_id = candidate.series_id
-                      AND target.report_date = candidate.report_date""", (run_id,),
-            )
+        cur.execute("SET LOCAL plan_cache_mode = force_custom_plan")
+        cur.execute("LOCK TABLE nport_lookthrough_exposures, nport_lookthrough_summary "
+                    "IN SHARE ROW EXCLUSIVE MODE")
         cur.execute(
-            f"""INSERT INTO nport_lookthrough_exposures ({exposure_cols})
-                SELECT {exposure_cols} FROM nport_lookthrough_candidate_exposures WHERE run_id = %s""",
+            """SELECT report_date, array_agg(series_id ORDER BY series_id)
+               FROM nport_lookthrough_candidate_summary WHERE run_id = %s
+               GROUP BY report_date ORDER BY report_date""",
             (run_id,),
         )
+        candidate = {day: list(ids) for day, ids in cur.fetchall()}
+        changed: dict[_dt.date, list[str]] = {}
+        unchanged: dict[_dt.date, list[str]] = {}
+        for day, ids in candidate.items():
+            differing: set[str] = set()
+            for batch in _batches(ids):
+                cur.execute(_CHANGED_KEYS_SQL, {"run_id": run_id, "day": day, "series": batch})
+                differing.update(row[0] for row in cur.fetchall())
+            if differing:
+                changed[day] = sorted(differing)
+            if same := [sid for sid in ids if sid not in differing]:
+                unchanged[day] = same
+        bound = _decompression_bound(cur, {
+            "nport_lookthrough_exposures": changed,
+            "nport_lookthrough_summary": candidate,
+        })
+        stats = {
+            "candidate_keys": sum(map(len, candidate.values())),
+            "changed_keys": sum(map(len, changed.values())),
+            "unchanged_keys": sum(map(len, unchanged.values())),
+            "report_dates": len(candidate),
+            "decompression_bound": bound,
+            "decompression_ceiling": ceiling,
+        }
+        if bound > ceiling:
+            raise freshness.FundPipelineBlocked({
+                "stage": "lookthrough", "alarm": True,
+                "breaches": ["LOOKTHROUGH_DECOMPRESSION_CEILING_EXCEEDED"],
+                "ceiling_env": DECOMPRESSION_CEILING_ENV, **stats,
+                "last_good_preserved": True,
+            })
         cur.execute(
-            f"""INSERT INTO nport_lookthrough_summary ({summary_cols})
-                SELECT {summary_cols} FROM nport_lookthrough_candidate_summary WHERE run_id = %s""",
-            (run_id,),
+            "SELECT set_config('timescaledb.max_tuples_decompressed_per_dml_transaction', %s, true)",
+            (str(max(bound, 1)),),
         )
+        exposure_rows = 0
+        for day, ids in changed.items():
+            for batch in _batches(ids):
+                params = {"run_id": run_id, "day": day, "series": batch}
+                cur.execute(f"DELETE FROM nport_lookthrough_exposures WHERE {_KEY_QUALS}", params)
+                cur.execute(f"DELETE FROM nport_lookthrough_summary WHERE {_KEY_QUALS}", params)
+                cur.execute(
+                    f"""INSERT INTO nport_lookthrough_exposures ({exposure_cols})
+                        SELECT {exposure_cols} FROM nport_lookthrough_candidate_exposures
+                        WHERE run_id = %(run_id)s AND {_KEY_QUALS}""",
+                    params,
+                )
+                exposure_rows += cur.rowcount
+                cur.execute(
+                    f"""INSERT INTO nport_lookthrough_summary ({summary_cols})
+                        SELECT {summary_cols} FROM nport_lookthrough_candidate_summary
+                        WHERE run_id = %(run_id)s AND {_KEY_QUALS}""",
+                    params,
+                )
+        for day, ids in unchanged.items():
+            for batch in _batches(ids):
+                cur.execute(
+                    """UPDATE nport_lookthrough_summary target
+                       SET computed_at = candidate.computed_at
+                       FROM nport_lookthrough_candidate_summary candidate
+                       WHERE target.report_date = %(day)s AND target.series_id = ANY(%(series)s)
+                         AND candidate.run_id = %(run_id)s AND candidate.report_date = %(day)s
+                         AND candidate.series_id = target.series_id""",
+                    {"run_id": run_id, "day": day, "series": batch},
+                )
+        stats["exposure_rows_inserted"] = exposure_rows
     _cleanup_staged(conn, run_id)
+    return stats
 
 
 def _promote(conn, source: freshness.SourceCohort, run_id: str, cutoff: _dt.date | None,
-             input_snapshot: dict) -> None:
+             input_snapshot: dict) -> dict[str, Any]:
     """Publish ``run_id`` unless an N-PORT load is running or landed after ``source``.
 
     Opens a fresh transaction; the caller commits. The only sec_nport_holdings
@@ -892,8 +1098,9 @@ def _promote(conn, source: freshness.SourceCohort, run_id: str, cutoff: _dt.date
     latest = freshness.read_source_cohort(conn, cutoff=cutoff)
     freshness.require_unchanged("lookthrough", source, latest)
     freshness.require(latest.verdict)
-    _publish_staged(conn, run_id)
+    publication = _publish_staged(conn, run_id)
     inputs.certify(conn, source, "lookthrough", input_snapshot)
+    return publication
 
 
 def ensure_schema(conn) -> None:
@@ -979,6 +1186,7 @@ def run(
     if force_env not in {"", "0", "1"}:
         raise ValueError("NPORT_LOOKTHROUGH_FORCE_REBUILD must be 0 or 1")
     force_rebuild = force_rebuild or force_env == "1"
+    decompression_ceiling()  # a bad ceiling fails before the heavy build
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_NPORT_LOOKTHROUGH) as got:
             if not got:
@@ -1038,7 +1246,7 @@ def run(
                             exposure_rows += e
                 postcheck = freshness.require(_probe_staged(conn, source, run_id))
                 conn.commit()
-                _promote(conn, source, run_id, cutoff, input_snapshot)
+                publication = _promote(conn, source, run_id, cutoff, input_snapshot)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -1057,4 +1265,6 @@ def run(
                 "calc_date": cdate_iso,
                 "workers": n_workers,
                 "identifier_coverage": identifier, "freshness": postcheck,
+                "publication": publication,
+                "rebuild_reason": freshness.rebuild_evidence(current, forced=force_rebuild),
             }
