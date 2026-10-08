@@ -8,11 +8,15 @@
 # per run), WORKER_CALC_DATE (replay the index quarters of a date).
 #
 # Each run loads every DERA Financial Statement and Notes package not loaded yet
-# (oldest first), reloads the newest one if it was republished, and refreshes
-# the EDGAR form indexes of the current and previous quarter. DERA publishes
-# one package a month; Monday 10:00 UTC picks it up within a week.
-# Prerequisite: the owner applied schemas/sec_ticker_cik_history_v1.sql; the
-# worker refuses to run without it and never applies DDL.
+# (oldest first), reloads every loaded package the SEC republished (one HEAD per
+# listed package), and refreshes the EDGAR form indexes of the current and
+# previous quarter, reading the Forms 15/15F/25/8-A of CIKs with cover data that
+# the current parser has not read. DERA publishes one package a month; Monday
+# 10:00 UTC picks it up within a week.
+# Prerequisite: the owner applied schemas/sec_ticker_cik_history_v1.sql, then
+# schemas/sec_ticker_cik_history_v2.sql, and ran the v2 re-derivation
+# (docs/runbooks/sec-ticker-cik-history.md, Production steps); the worker refuses
+# to run without both schema files and never applies DDL.
 # Never set cronSchedule to null or "" on Railway: null means RUN CONTINUOUSLY.
 # restartPolicy=never: a failed run must surface as failed, not loop.
 
