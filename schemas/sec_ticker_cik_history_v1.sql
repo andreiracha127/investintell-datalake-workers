@@ -388,9 +388,11 @@ $fn$;
 --   same day), unless the class was extinguished.
 -- An applying end of an equity class (class_kind 'equity', naming at least as
 -- many classes as the issuer has) is DEFINITIVE when the 25-NSE says the class
--- was extinguished (12d2-2(a)), or when a delisting (25/25-NSE, not secondary,
--- not a transfer) and a termination (15-12B/15-12G/15-15D) of the equity are both
--- on file within 120 days of each other, unless the shareholder base continued:
+-- was extinguished (12d2-2(a)), or when an applying delisting (25/25-NSE, not
+-- secondary, not a transfer) naming every listed class (as many classes as the
+-- issuer showed equity symbols) and an applying termination (15-12B/15-12G/
+-- 15-15D) naming every equity class are both on file within 120 days of each
+-- other, unless the shareholder base continued:
 -- the first cover share count after the end is within 0.8-1.25 times the last
 -- one before it (a holding-company reorganization or REIT conversion that keeps
 -- the CIK: United Fire 2012, Ulta and SBA 2017; American Greetings reported 100
@@ -507,12 +509,12 @@ SELECT a.effective_on, a.filed, a.form, a.adsh,
            (a.form = '25-NSE' AND COALESCE(a.extinguished, false))
            OR (a.form IN ('15-12B', '15-12G', '15-15D') AND EXISTS (
                SELECT 1 FROM applies d
-               WHERE d.effective AND d.form IN ('25', '25-NSE') AND d.class_kind = 'equity'
-                 AND d.venue_kind IS DISTINCT FROM 'secondary' AND NOT d.transfer
+               WHERE d.effective AND d.applying AND d.equity_delisting
+                 AND d.class_count >= d.prior_symbols
                  AND d.filed BETWEEN a.filed - 120 AND a.filed + 120))
-           OR (a.equity_delisting AND EXISTS (
+           OR (a.equity_delisting AND a.class_count >= a.prior_symbols AND EXISTS (
                SELECT 1 FROM applies t
-               WHERE t.effective AND t.form IN ('15-12B', '15-12G', '15-15D')
+               WHERE t.effective AND t.applying AND t.form IN ('15-12B', '15-12G', '15-15D')
                  AND t.class_kind = 'equity' AND t.class_count >= t.prior_classes
                  AND t.filed BETWEEN a.filed - 120 AND a.filed + 120))
        ) AS definitive
@@ -940,70 +942,140 @@ $fn$;
 
 -- The LINES of a CIK as known today: one row per class it ever stated, with the
 -- line (one security) the class belongs to. Equity/depositary classes are
--- linked when
--- * they showed the same symbol and no filing shows both as distinct classes
---   (Berkshire's 10-Qs tag BRK.B on CommonClassB, its 8-Ks on ClassBCommonStock;
---   Google's class A and class C both showed GOOG, but side by side from April
---   2014, so they stay two lines), or
+-- linked by evidence edges:
+-- * they showed the same symbol and no filing shows both (Berkshire's 10-Qs tag
+--   BRK.B on CommonClassB, its 8-Ks on ClassBCommonStock; Google's class A and
+--   class C both showed GOOG, but side by side from April 2014, so no edge), or
 -- * they are the one equity class of consecutive complete filings (a
 --   single-class filer renaming its member or dropping the dimension).
--- line_key is the line's first-stated class (then the lowest class_key). Other
--- classes are their own line.
+-- Edges are applied in order of the date the link is first evidenced, then by
+-- their evidence count (filings, descending), then by class keys; an edge whose
+-- two lines have classes that appear side by side in any filing is dropped, so
+-- no line ever holds two classes that coexist (A-B then B-C, with A and C in one
+-- filing, gives the lines {A, B} and {C}). line_key is the line's first-stated
+-- class (then the lowest class_key). Other classes are their own line.
 CREATE OR REPLACE FUNCTION sec_issuer_lines(p_cik bigint)
 RETURNS TABLE (class_key text, line_key text)
-LANGUAGE sql STABLE PARALLEL SAFE
+LANGUAGE plpgsql STABLE PARALLEL SAFE
 -- Planned once per call; JIT compilation would cost more than the query.
 SET jit = off
 AS $fn$
-WITH RECURSIVE equity_rows AS (
-    SELECT o.adsh, o.class_key, o.ticker_key, o.source_available_on AS on_date, o.accepted,
-           o.filing_equity_classes, o.filing_complete
-    FROM sec_observations_at('infinity'::date, true) o
-    WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary')
-), classes AS (
-    SELECT o.class_key, min(o.source_available_on) AS first_on,
-           bool_or(o.security_kind IN ('equity', 'depositary')) AS equity
-    FROM sec_observations_at('infinity'::date, true) o
-    WHERE o.cik = p_cik
-    GROUP BY o.class_key
-), together AS (
-    SELECT DISTINCT x.class_key AS a, y.class_key AS b
-    FROM equity_rows x
-    JOIN equity_rows y ON y.adsh = x.adsh AND y.class_key <> x.class_key
-), sole AS (
-    SELECT f.key,
-           lag(f.key) OVER (ORDER BY f.on_date, f.accepted NULLS FIRST, f.adsh) AS prev_key
+#variable_conflict use_column
+DECLARE
+    keys text[];
+    firsts date[];
+    equity boolean[];
+    comp integer[];
+    pairs text[];
+    edge record;
+    ia integer;
+    ib integer;
+    ca integer;
+    cb integer;
+    i integer;
+    j integer;
+    clash boolean;
+BEGIN
+    SELECT array_agg(c.class_key ORDER BY c.class_key),
+           array_agg(c.first_on ORDER BY c.class_key),
+           array_agg(c.equity ORDER BY c.class_key)
+      INTO keys, firsts, equity
     FROM (
-        SELECT e.adsh, min(e.on_date) AS on_date, max(e.accepted) AS accepted,
-               CASE WHEN count(DISTINCT e.class_key) = 1 AND bool_and(e.filing_equity_classes = 1)
-                    THEN min(e.class_key) END AS key
-        FROM equity_rows e
-        WHERE e.filing_complete
-        GROUP BY e.adsh
-    ) f
-), edges AS (
-    SELECT DISTINCT x.class_key AS a, y.class_key AS b
-    FROM equity_rows x
-    JOIN equity_rows y ON y.ticker_key = x.ticker_key AND y.class_key <> x.class_key
-    WHERE NOT EXISTS (SELECT 1 FROM together t WHERE t.a = x.class_key AND t.b = y.class_key)
-    UNION
-    SELECT s.prev_key, s.key FROM sole s
-    WHERE s.key IS NOT NULL AND s.prev_key IS NOT NULL AND s.prev_key <> s.key
-    UNION
-    SELECT s.key, s.prev_key FROM sole s
-    WHERE s.key IS NOT NULL AND s.prev_key IS NOT NULL AND s.prev_key <> s.key
-), reach (node, root) AS (
-    SELECT c.class_key, c.class_key FROM classes c WHERE c.equity
-    UNION
-    SELECT e.b, r.root FROM reach r JOIN edges e ON e.a = r.node
-)
-SELECT c.class_key,
-       CASE WHEN c.equity THEN (
-           SELECT (array_agg(r.root ORDER BY k.first_on, r.root))[1]
-           FROM reach r JOIN classes k ON k.class_key = r.root
-           WHERE r.node = c.class_key)
-       ELSE c.class_key END AS line_key
-FROM classes c
+        SELECT o.class_key, min(o.source_available_on) AS first_on,
+               bool_or(o.security_kind IN ('equity', 'depositary')) AS equity
+        FROM sec_observations_at('infinity'::date, true) o
+        WHERE o.cik = p_cik
+        GROUP BY o.class_key
+    ) c;
+    IF keys IS NULL THEN
+        RETURN;
+    END IF;
+    comp := ARRAY(SELECT generate_series(1, cardinality(keys)));
+    -- classes that appear side by side in one filing, as 'a' || chr(31) || 'b'
+    SELECT COALESCE(array_agg(DISTINCT x.class_key || chr(31) || y.class_key), '{}')
+      INTO pairs
+    FROM sec_observations_at('infinity'::date, true) x
+    JOIN sec_observations_at('infinity'::date, true) y
+      ON y.adsh = x.adsh AND y.cik = x.cik AND y.class_key <> x.class_key
+    WHERE x.cik = p_cik
+      AND x.security_kind IN ('equity', 'depositary')
+      AND y.security_kind IN ('equity', 'depositary');
+    FOR edge IN
+        WITH equity_rows AS (
+            SELECT o.adsh, o.class_key, o.ticker_key, o.source_available_on AS on_date,
+                   o.accepted, o.filing_equity_classes, o.filing_complete
+            FROM sec_observations_at('infinity'::date, true) o
+            WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary')
+        ), shown AS (
+            SELECT e.class_key, e.ticker_key, min(e.on_date) AS first_on,
+                   count(DISTINCT e.adsh) AS filings
+            FROM equity_rows e
+            GROUP BY e.class_key, e.ticker_key
+        ), shared AS (
+            SELECT x.class_key AS a, y.class_key AS b,
+                   min(GREATEST(x.first_on, y.first_on)) AS on_date,
+                   sum(x.filings + y.filings) AS evidence
+            FROM shown x
+            JOIN shown y ON y.ticker_key = x.ticker_key AND y.class_key > x.class_key
+            GROUP BY x.class_key, y.class_key
+        ), sole AS (
+            SELECT f.key, f.on_date,
+                   lag(f.key) OVER (ORDER BY f.on_date, f.accepted NULLS FIRST, f.adsh)
+                       AS prev_key
+            FROM (
+                SELECT e.adsh, min(e.on_date) AS on_date, max(e.accepted) AS accepted,
+                       CASE WHEN count(DISTINCT e.class_key) = 1
+                                 AND bool_and(e.filing_equity_classes = 1)
+                            THEN min(e.class_key) END AS key
+                FROM equity_rows e
+                WHERE e.filing_complete
+                GROUP BY e.adsh
+            ) f
+        ), relabels AS (
+            SELECT LEAST(s.prev_key, s.key) AS a, GREATEST(s.prev_key, s.key) AS b,
+                   min(s.on_date) AS on_date, count(*) AS evidence
+            FROM sole s
+            WHERE s.key IS NOT NULL AND s.prev_key IS NOT NULL AND s.prev_key <> s.key
+            GROUP BY LEAST(s.prev_key, s.key), GREATEST(s.prev_key, s.key)
+        )
+        SELECT u.a, u.b, min(u.on_date) AS on_date, sum(u.evidence) AS evidence
+        FROM (SELECT * FROM shared UNION ALL SELECT * FROM relabels) u
+        GROUP BY u.a, u.b
+        ORDER BY min(u.on_date), sum(u.evidence) DESC, u.a, u.b
+    LOOP
+        ia := array_position(keys, edge.a);
+        ib := array_position(keys, edge.b);
+        ca := comp[ia];
+        cb := comp[ib];
+        CONTINUE WHEN ca = cb OR (edge.a || chr(31) || edge.b) = ANY(pairs);
+        clash := false;
+        FOR i IN 1 .. cardinality(keys) LOOP
+            CONTINUE WHEN comp[i] <> ca;
+            FOR j IN 1 .. cardinality(keys) LOOP
+                IF comp[j] = cb AND (keys[i] || chr(31) || keys[j]) = ANY(pairs) THEN
+                    clash := true;
+                    EXIT;
+                END IF;
+            END LOOP;
+            EXIT WHEN clash;
+        END LOOP;
+        CONTINUE WHEN clash;
+        FOR i IN 1 .. cardinality(keys) LOOP
+            IF comp[i] = cb THEN
+                comp[i] := ca;
+            END IF;
+        END LOOP;
+    END LOOP;
+    RETURN QUERY
+    SELECT k.key,
+           CASE WHEN equity[k.n::integer] THEN (
+               SELECT keys[m.n] FROM generate_subscripts(keys, 1) AS m(n)
+               WHERE comp[m.n] = comp[k.n::integer] AND equity[m.n]
+               ORDER BY firsts[m.n], keys[m.n]
+               LIMIT 1)
+           ELSE k.key END
+    FROM unnest(keys) WITH ORDINALITY AS k(key, n);
+END
 $fn$;
 
 -- Lineage engine (today's truth: current rows at their filing's public date,

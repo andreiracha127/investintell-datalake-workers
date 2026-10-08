@@ -105,7 +105,7 @@ EVENT_FORMS = EVENT_ORIGINAL_FORMS + tuple(f"{form}/A" for form in EVENT_ORIGINA
 END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS))
 # Names the parser of the end filings; a new version re-derives every end event
 # as a correction (derive_event_classes).
-EVENT_PARSER_VERSION = "sec_event_class_v1"
+EVENT_PARSER_VERSION = "sec_event_class_v2"
 CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_carried",
                    "class_unread", "filings_missing")
 FETCH_STAT_KEYS = ("filings_fetched", "filings_failed")
@@ -146,6 +146,15 @@ PERIODIC_FORMS = frozenset({
 
 def is_periodic_form(form: str) -> bool:
     return form.removesuffix("/A") in PERIODIC_FORMS
+
+
+# Forms whose cover enumerates every class with its share count. An 8-K or 6-K
+# count is never a complete inventory.
+INVENTORY_FORMS = frozenset({"10-K", "10-Q", "20-F", "40-F", "10-KT", "10-QT"})
+
+
+def is_inventory_form(form: str) -> bool:
+    return form.removesuffix("/A") in INVENTORY_FORMS
 
 
 # Values filers put in dei:TradingSymbol when a security has no symbol.
@@ -763,7 +772,8 @@ def _filing_profiles(
     other_classes: dict[tuple[str, int], set[str]],
     counted: set[tuple[str, int]],
 ) -> dict[tuple[str, int], tuple[int, bool]]:
-    """(equity classes shown in total, reports a count) per (accession, CIK).
+    """(equity classes shown in total, complete) per (accession, CIK); complete:
+    a 10-K/10-Q/20-F/40-F/10-KT/10-QT (or /A) cover that reports a share count.
 
     The classes are those of the filing's equity/depositary symbols, plus the
     dimensioned classes of its share counts and of its titled equity classes
@@ -848,7 +858,7 @@ def build_observations(
     for share in share_counts:
         if share.class_key:
             other_classes.setdefault((share.adsh, share.cik), set()).add(share.class_key)
-    counted = {(share.adsh, share.cik) for share in share_counts}
+    counted = {(share.adsh, share.cik) for share in share_counts if is_inventory_form(share.form)}
     seen: set[tuple[str, str, str]] = set()
     for (adsh, dimh), entry in sorted(facts.items()):
         if not entry.symbols and not entry.titles:
@@ -1007,16 +1017,42 @@ def fetch_form_index(client, year: int, quarter: int, target: Path) -> Path:
     return target
 
 
-def download_form_indexes(index_dir: Path, *, refresh_current: bool = True) -> list[Path]:
-    """Fetch every quarterly form index since 2009 (the open quarter is re-fetched)."""
+def quarter_closed_on(year: int, quarter: int) -> dt.date:
+    """The day after a quarter's last day, from which its index is complete."""
+    return dt.date(year + 1, 1, 1) if quarter == 4 else dt.date(year, 3 * quarter + 1, 1)
+
+
+def index_needs_refresh(path: Path, year: int, quarter: int, today: dt.date) -> bool:
+    """A cached index is refreshed when it is missing, when its quarter is the
+    current or the previous one, or when it was downloaded (file time, UTC)
+    before the day after its quarter closed: EDGAR adds the quarter's last
+    filings to it up to then."""
+    if not path.exists():
+        return True
+    current = (today.year, (today.month - 1) // 3 + 1)
+    previous = (current[0] - 1, 4) if current[1] == 1 else (current[0], current[1] - 1)
+    if (year, quarter) in (current, previous):
+        return True
+    fetched_on = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).date()
+    return fetched_on <= quarter_closed_on(year, quarter)
+
+
+def download_form_indexes(index_dir: Path, *, today: dt.date | None = None,
+                          client=None) -> list[Path]:
+    """Fetch every quarterly form index since 2009 that is missing or may be
+    incomplete (index_needs_refresh)."""
     index_dir.mkdir(parents=True, exist_ok=True)
-    quarters = quarters_through(dt.date.today())
-    with sec_client() as client:
-        for year, quarter in quarters:
+    today = today or dt.date.today()
+    owns_client = client is None
+    client = client or sec_client()
+    try:
+        for year, quarter in quarters_through(today):
             target = index_dir / f"{year}QTR{quarter}.form.gz"
-            if target.exists() and not (refresh_current and (year, quarter) == quarters[-1]):
-                continue
-            fetch_form_index(client, year, quarter, target)
+            if index_needs_refresh(target, year, quarter, today):
+                fetch_form_index(client, year, quarter, target)
+    finally:
+        if owns_client:
+            client.close()
     return sorted(index_dir.glob("*.form.gz"), key=index_sort_key)
 
 
@@ -1091,7 +1127,12 @@ _EQUITY_CLASS_RE = re.compile(
     re.I,
 )
 _PREFERRED_BEFORE_RE = re.compile(r"\b(?:preferred|preference)\s*(?:shares?|stock)?\s*$", re.I)
-_CLASS_MENTION_RE = re.compile(r"\bclass\s+([A-Z])\b", re.I)
+# "Class A", "Class A and B", "Classes A, B and C", "Class A/B", "Class A and Class B".
+_CLASS_MENTION_RE = re.compile(
+    r"\bclass(?:es)?\s+([A-Z](?:\s*(?:,|/|&|\band\b|\bor\b)\s*(?:class\s+)?[A-Z])*)\b",
+    re.I,
+)
+_CLASS_LETTER_RE = re.compile(r"(?<![A-Za-z])([A-Za-z])(?![A-Za-z])")
 _EXTINGUISHED_RE = re.compile(r"12d2-2\s*\(\s*a\s*\)", re.I)
 # An amendment that withdraws the removal (Minim's 25-NSE/A of 2025-04-09: "will
 # not be delisting the common stock ... per the Form 25 filed on October 24, 2024").
@@ -1142,10 +1183,16 @@ def event_class_kind(description: str | None) -> str:
 
 
 def class_count(description: str | None) -> int:
-    """Distinct share classes a description names (Class A ... Class B -> 2); at least 1."""
+    """Distinct share classes a description names ("Class A ... Class B",
+    "Class A and B", "Classes A, B and C", "Class A/B"); at least 1."""
     if not description:
         return 1
-    return max(1, len({m.upper() for m in _CLASS_MENTION_RE.findall(description)}))
+    letters = {
+        letter.upper()
+        for group in _CLASS_MENTION_RE.findall(description)
+        for letter in _CLASS_LETTER_RE.findall(re.sub(r"(?i)\b(?:and|or|class)\b", " ", group))
+    }
+    return max(1, len(letters))
 
 
 def venue_kind(venue: str | None) -> str:

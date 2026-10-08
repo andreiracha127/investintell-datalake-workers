@@ -247,6 +247,33 @@ def test_listing_links_are_absolute_and_deduplicated() -> None:
     ]
 
 
+def test_cached_indexes_of_open_quarters_are_refreshed(tmp_path: Path) -> None:
+    """Codex thread 4221720847: an index downloaded before its quarter closed."""
+    import os
+
+    today = d(2026, 10, 8)
+
+    def cached(name: str, fetched: dt.datetime) -> Path:
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        stamp = fetched.replace(tzinfo=dt.timezone.utc).timestamp()
+        os.utime(path, (stamp, stamp))
+        return path
+
+    early = cached("2025QTR2.form.gz", dt.datetime(2025, 6, 20, 12))
+    late = cached("2025QTR1.form.gz", dt.datetime(2025, 4, 3, 12))
+    closing = cached("2024QTR4.form.gz", dt.datetime(2025, 1, 1, 6))
+    assert loader.quarter_closed_on(2025, 2) == d(2025, 7, 1)
+    assert loader.index_needs_refresh(early, 2025, 2, today)  # its quarter was open
+    assert not loader.index_needs_refresh(late, 2025, 1, today)  # complete when fetched
+    assert loader.index_needs_refresh(closing, 2024, 4, today)  # the day after it closed
+    assert loader.index_needs_refresh(tmp_path / "2025QTR3.form.gz", 2025, 3, today)
+    current = cached("2026QTR4.form.gz", dt.datetime(2026, 10, 8, 6))
+    previous = cached("2026QTR3.form.gz", dt.datetime(2026, 10, 5, 6))
+    assert loader.index_needs_refresh(current, 2026, 4, today)
+    assert loader.index_needs_refresh(previous, 2026, 3, today)
+
+
 def test_index_quarters_start_with_the_first_package() -> None:
     quarters = loader.quarters_through(d(2010, 5, 1))
     assert quarters == [(2009, 1), (2009, 2), (2009, 3), (2009, 4), (2010, 1), (2010, 2)]
@@ -346,6 +373,27 @@ def test_class_descriptions_name_equity_or_other_classes(
     description: str | None, kind: str,
 ) -> None:
     assert loader.event_class_kind(description) == kind
+
+
+@pytest.mark.parametrize(
+    ("description", "count"),
+    [
+        # Real descriptions (American Greetings 15-12B, Google 25-NSE of 2015-10-02).
+        ("Class A Common Shares, Par Value $1.00 Class B Common Shares, Par Value $1.00", 2),
+        ("Class A Common Stock and Class C Capital Stock", 2),
+        ("Class A Common Stock, $0.01 par value", 1),
+        ("Common Stock", 1),
+        # Enumerations (Codex thread 4221720837).
+        ("Class A and B Common Stock", 2),
+        ("Classes A, B and C Common Stock", 3),
+        ("Class A/B Common Shares", 2),
+        ("Class A or B Common Stock", 2),
+        ("Class A & Class B common", 2),
+        ("Class A, Inc. Common Stock", 1),
+    ],
+)
+def test_class_counts_read_enumerations(description: str, count: int) -> None:
+    assert loader.class_count(description) == count
 
 
 def test_a_filing_without_a_class_block_is_unknown_never_other() -> None:
@@ -468,11 +516,12 @@ def test_package_parse_keeps_registrant_lines_with_their_class(tmp_path: Path) -
     )
     assert rows[(A1, "BRK34")].security_kind == "debt"
     assert rows[(A2, "BFB")].accepted is None
-    # A1 shows two equity classes and counts them; A2 one class and its count.
+    # A1 (a 10-K) shows two equity classes and counts them: complete. A2 is an
+    # 8-K: its count never makes it a complete inventory of classes.
     assert {key: (row.filing_equity_classes, row.filing_complete)
             for key, row in rows.items()} == {
         (A1, "BRK-A"): (2, True), (A1, "BRK-B"): (2, True), (A1, "BRK34"): (2, True),
-        (A2, "BFB"): (1, True),
+        (A2, "BFB"): (1, False),
     }
     assert result.symbol_facts == 10
     assert dict(result.rejected) == {
@@ -1664,6 +1713,20 @@ def test_a_reorganization_that_keeps_the_shareholder_base_is_not_a_definitive_en
     assert _issuer(conn, "UFCS", "2012-04-01")[:2] == ("resolved", 101199)
 
 
+def test_a_definitive_pair_needs_a_delisting_of_every_listed_class(schema_dsn) -> None:
+    """Codex thread 4221720827: two listed classes; only class B is delisted, while
+    the Form 15 names both."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 98, "TWA", "2019-01-10", class_key=CLASS_A)
+    _observe(conn, 98, "TWB", "2019-01-10", class_key=CLASS_B, adsh=q)
+    _event(conn, 98, "25-NSE", "2019-02-01", kind="equity", count=1, venue_kind="primary")
+    _event(conn, 98, "15-12G", "2019-02-11", kind="equity", count=2)
+    assert _ends(conn, 98, "2019-03-01") == [("15-12G", d(2019, 2, 12), False)]
+    _event(conn, 98, "25-NSE", "2019-02-05", kind="equity", count=1, venue_kind="primary")
+    _event(conn, 98, "25-NSE", "2019-02-05", kind="equity", count=2, venue_kind="primary")
+    assert [e[2] for e in _ends(conn, 98, "2019-03-01")] == [True, True]
+
+
 def test_a_new_symbol_of_the_same_cik_after_a_definitive_end_is_a_new_line(
     schema_dsn,
 ) -> None:
@@ -1836,6 +1899,21 @@ def test_another_line_of_the_same_issuer_is_another_holder(schema_dsn) -> None:
         ("other_holder", 1288776, CLASS_A, d(2013, 10, 25), d(2014, 4, 25), "other_symbol",
          ["GOOG"]),
     ]
+
+
+def test_a_line_never_joins_classes_that_appear_together(schema_dsn) -> None:
+    """Codex thread 4221720858: A and B share a symbol, B and C share another, and
+    A and C appear in one filing. The earlier edge (A-B) wins; B-C is dropped."""
+    conn, _ = schema_dsn
+    a, b, c = (f"ClassOfStock={m};" for m in ("ShareA", "ShareB", "ShareC"))
+    _observe(conn, 99, "XX", "2020-01-10", class_key=a)
+    _observe(conn, 99, "XX", "2020-04-10", class_key=b)
+    _observe(conn, 99, "YY", "2020-07-10", class_key=b)
+    _observe(conn, 99, "YY", "2020-10-10", class_key=c)
+    both = _observe(conn, 99, "XX", "2021-01-10", class_key=a)
+    _observe(conn, 99, "ZZ", "2021-01-10", class_key=c, adsh=both)
+    assert sorted(conn.execute("SELECT class_key, line_key FROM sec_issuer_lines(99)"
+                               ).fetchall()) == [(a, a), (b, a), (c, c)]
 
 
 def test_relabelled_members_of_one_class_are_one_line(schema_dsn) -> None:
@@ -2227,7 +2305,8 @@ def test_a_parser_change_re_derives_events_as_corrections(
         "derived": 1, "class_equity": 1, "class_other": 0, "class_unknown": 0,
         "class_carried": 0, "class_unread": 0, "filings_missing": 0,
     }
-    monkeypatch.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_v2")
+    current = loader.EVENT_PARSER_VERSION
+    monkeypatch.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_next")
     assert loader.derive_event_classes(conn, documents, reconciled_on=d(2013, 11, 1))[
         "derived"] == 1
     assert conn.execute(
@@ -2235,8 +2314,8 @@ def test_a_parser_change_re_derives_events_as_corrections(
         "FROM sec_registration_events ORDER BY id"
     ).fetchall() == [
         (None, None, d(2013, 8, 13), d(2013, 10, 1)),
-        ("equity", "sec_event_class_v1", d(2013, 10, 1), d(2013, 11, 1)),
-        ("equity", "sec_event_class_v2", d(2013, 11, 1), None),
+        ("equity", current, d(2013, 10, 1), d(2013, 11, 1)),
+        ("equity", "sec_event_class_next", d(2013, 11, 1), None),
     ]
     # The index that carried the first version now carries the current one: a
     # reload under the new parser changes nothing.
