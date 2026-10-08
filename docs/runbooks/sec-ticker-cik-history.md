@@ -143,7 +143,7 @@ so it never interleaves with the recurring worker.
 
 Full local run (2026-10-08, postgres:16 on the same workstation): 79 DERA packages
 (2009q1 to 2026_09, 25 GB of zips) and 72 EDGAR quarterly indexes in **11.4 min**
-(after the review fixes: 11.4 min, parsing 610 s, database writes 61 s): 885,052
+(parsing 610 s, database writes 61 s): 885,052
 submissions, 866,258 `TradingSymbol` facts, **860,525** observations (504
 attributed to a co-registrant's own CIK, 220 legal-entity facts rejected),
 **485,238** cover share counts, **48,450** registration events (938 of them `/A`
