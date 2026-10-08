@@ -263,9 +263,10 @@ $fn$;
 -- amended by D. An amendment applies to exactly one original: the latest
 -- original of its form for the CIK filed on or before it (then by accession),
 -- from the amendment's own knowledge date. A cancelling amendment removes the
--- original; a restating one replaces its class attributes; an amendment that was
--- not read leaves the original in force. p_current (lineage: today's truth)
--- applies every current amendment, whenever it was filed.
+-- original; a restating one replaces its class attributes (the original's are
+-- returned as original_*, and restated_on is the amendment's knowledge date); an
+-- amendment that was not read leaves the original in force. p_current (lineage:
+-- today's truth) applies every current amendment, whenever it was filed.
 CREATE OR REPLACE FUNCTION sec_registration_end_events(
     p_cik bigint, p_as_of date, p_current boolean DEFAULT false
 )
@@ -277,7 +278,12 @@ RETURNS TABLE (
     class_kind text,
     class_count integer,
     extinguished boolean,
-    venue_kind text
+    venue_kind text,
+    restated_on date,
+    original_class_kind text,
+    original_class_count integer,
+    original_extinguished boolean,
+    original_venue_kind text
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
@@ -314,7 +320,9 @@ SELECT v.known_on, v.filed, v.form, v.adsh,
        CASE WHEN l.amendment_effect = 'restates' THEN l.class_kind ELSE v.class_kind END,
        CASE WHEN l.amendment_effect = 'restates' THEN l.class_count ELSE v.class_count END,
        CASE WHEN l.amendment_effect = 'restates' THEN l.extinguished ELSE v.extinguished END,
-       CASE WHEN l.amendment_effect = 'restates' THEN l.venue_kind ELSE v.venue_kind END
+       CASE WHEN l.amendment_effect = 'restates' THEN l.venue_kind ELSE v.venue_kind END,
+       CASE WHEN l.amendment_effect = 'restates' THEN l.known_on END,
+       v.class_kind, v.class_count, v.extinguished, v.venue_kind
 FROM visible v
 LEFT JOIN latest_amendment l ON l.original = v.adsh
 WHERE v.form NOT LIKE '%/A'
@@ -359,8 +367,11 @@ $fn$;
 -- on file within 120 days of each other. Other applying ends (including
 -- class_kind 'unknown' or unread) end the lines until a later statement shows the
 -- symbol again (an exchange delisting to OTC, a stale 12(g) registration).
--- p_current (lineage): ends filed by D, judged with every current filing
--- (a transfer registration or a paired Form 15 filed after D still counts).
+-- A restated end that applies only as restated is public from the amendment's
+-- knowledge date (available_on); one that no longer applies as restated is
+-- withdrawn from it. p_current (lineage): ends filed by D, judged with every
+-- current filing (a transfer registration, a paired Form 15 or an amendment filed
+-- after D still counts), each at its original's date.
 CREATE OR REPLACE FUNCTION sec_issuer_end_events(
     p_cik bigint, p_as_of date, p_current boolean DEFAULT false
 )
@@ -384,52 +395,78 @@ WITH horizon AS (
     WHERE o.cik = p_cik
     GROUP BY o.adsh
     HAVING bool_or(o.security_kind IN ('equity', 'depositary'))
-), judged AS (
+), events AS (
     SELECT e.*,
-           (SELECT CASE WHEN e.class_kind = 'equity' THEN f.equity_symbols ELSE f.symbols END
-            FROM filings f WHERE f.known_on < e.available_on
-            ORDER BY f.known_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
-            LIMIT 1) AS prior_symbols,
-           GREATEST(COALESCE((
-               SELECT f.classes FROM filings f WHERE f.complete AND f.known_on < e.available_on
-               ORDER BY f.known_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
-               LIMIT 1), 1), 1) AS prior_classes,
            EXISTS (
                SELECT 1 FROM horizon h
                CROSS JOIN LATERAL sec_registration_starts(p_cik, h.on_date, p_current) r
                WHERE r.filed BETWEEN e.filed - 30 AND e.filed + 10
-           ) AND NOT COALESCE(e.extinguished, false) AS transfer
+           ) AS registered_nearby
     FROM horizon h
     CROSS JOIN LATERAL sec_registration_end_events(p_cik, h.on_date, p_current) e
-), applying AS (
+), versions AS (
+    -- each end as it reads now ('effective') and, when restated, as filed
+    SELECT e.adsh, e.form, e.filed, e.available_on, e.restated_on, e.registered_nearby,
+           true AS effective, e.class_kind, e.class_count, e.extinguished, e.venue_kind
+    FROM events e
+    UNION ALL
+    SELECT e.adsh, e.form, e.filed, e.available_on, e.restated_on, e.registered_nearby,
+           false, e.original_class_kind, e.original_class_count, e.original_extinguished,
+           e.original_venue_kind
+    FROM events e
+    WHERE e.restated_on IS NOT NULL
+), judged AS (
+    SELECT v.*,
+           (SELECT CASE WHEN v.class_kind = 'equity' THEN f.equity_symbols ELSE f.symbols END
+            FROM filings f WHERE f.known_on < v.available_on
+            ORDER BY f.known_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
+            LIMIT 1) AS prior_symbols,
+           GREATEST(COALESCE((
+               SELECT f.classes FROM filings f WHERE f.complete AND f.known_on < v.available_on
+               ORDER BY f.known_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
+               LIMIT 1), 1), 1) AS prior_classes,
+           v.registered_nearby AND NOT COALESCE(v.extinguished, false) AS transfer
+    FROM versions v
+), applies AS (
     SELECT j.*,
+           COALESCE(j.class_kind, 'unknown') <> 'other'
+           AND (j.form IN ('15-12G', '15-15D')
+                OR (NOT j.transfer AND j.venue_kind IS DISTINCT FROM 'secondary'
+                    AND (j.prior_symbols = 1
+                         OR (j.class_kind = 'equity' AND j.class_count >= j.prior_classes))))
+               AS applying,
            j.class_kind = 'equity' AND j.class_count >= j.prior_classes AS whole_equity,
            j.form IN ('25', '25-NSE')
                AND j.class_kind = 'equity'
                AND j.venue_kind IS DISTINCT FROM 'secondary'
                AND NOT j.transfer AS equity_delisting
     FROM judged j
-    WHERE COALESCE(j.class_kind, 'unknown') <> 'other'
-      AND (j.form IN ('15-12G', '15-15D')
-           OR (NOT j.transfer AND j.venue_kind IS DISTINCT FROM 'secondary'
-               AND (j.prior_symbols = 1
-                    OR (j.class_kind = 'equity' AND j.class_count >= j.prior_classes))))
+), current_ends AS (
+    SELECT a.*,
+           CASE WHEN a.restated_on IS NOT NULL AND NOT p_current
+                     AND NOT COALESCE((SELECT o.applying FROM applies o
+                                       WHERE o.adsh = a.adsh AND NOT o.effective), false)
+                THEN a.restated_on
+                ELSE a.available_on
+           END AS effective_on
+    FROM applies a
+    WHERE a.effective AND a.applying
 )
-SELECT a.available_on, a.filed, a.form, a.adsh,
+SELECT a.effective_on, a.filed, a.form, a.adsh,
        a.whole_equity AND (
            (a.form = '25-NSE' AND COALESCE(a.extinguished, false))
            OR (a.form IN ('15-12B', '15-12G', '15-15D') AND EXISTS (
-               SELECT 1 FROM judged d
-               WHERE d.form IN ('25', '25-NSE') AND d.class_kind = 'equity'
+               SELECT 1 FROM applies d
+               WHERE d.effective AND d.form IN ('25', '25-NSE') AND d.class_kind = 'equity'
                  AND d.venue_kind IS DISTINCT FROM 'secondary' AND NOT d.transfer
                  AND d.filed BETWEEN a.filed - 120 AND a.filed + 120))
            OR (a.equity_delisting AND EXISTS (
-               SELECT 1 FROM judged t
-               WHERE t.form IN ('15-12B', '15-12G', '15-15D') AND t.class_kind = 'equity'
-                 AND t.class_count >= t.prior_classes
+               SELECT 1 FROM applies t
+               WHERE t.effective AND t.form IN ('15-12B', '15-12G', '15-15D')
+                 AND t.class_kind = 'equity' AND t.class_count >= t.prior_classes
                  AND t.filed BETWEEN a.filed - 120 AND a.filed + 120))
        ) AS definitive
-FROM applying a
+FROM current_ends a
 WHERE a.available_on <= p_as_of
 $fn$;
 

@@ -1266,9 +1266,11 @@ def describe_events(
 
 
 def cover_ciks(conn) -> set[int]:
-    """CIKs with current cover observations: their end filings are read."""
+    """CIKs with any cover observation, current or retired: their end filings are
+    read. Runs load packages before indexes, so on a first load every CIK with
+    cover data is known before its events are inserted."""
     return {cik for (cik,) in conn.execute(
-        "SELECT DISTINCT cik FROM sec_ticker_cik_observations WHERE retired_on IS NULL"
+        "SELECT DISTINCT cik FROM sec_ticker_cik_observations"
     ).fetchall()}
 
 

@@ -1546,6 +1546,31 @@ def test_unread_and_restating_amendments_leave_the_end_in_force(schema_dsn) -> N
     assert _issuer(conn, "RST", "2024-03-02")[:2] == ("resolved", 93)
 
 
+def test_a_restatement_that_makes_an_end_apply_counts_from_the_amendment(
+    schema_dsn,
+) -> None:
+    """Codex thread 4220893560: read as notes, then restated as the common stock;
+    a cover statement filed in between must not outrank the restated end."""
+    conn, _ = schema_dsn
+    _observe(conn, 94, "RSA", "2024-01-02")
+    _event(conn, 94, "25-NSE", "2024-01-10", kind="other", venue_kind="primary")
+    _observe(conn, 94, "RSA", "2024-02-01")
+    _event(conn, 94, "25-NSE/A", "2024-03-01", kind="equity", venue_kind="primary",
+           effect="restates")
+    assert _ends(conn, 94, "2024-02-15") == []
+    assert _issuer(conn, "RSA", "2024-02-15")[:2] == ("resolved", 94)
+    assert _ends(conn, 94, "2024-03-05") == [("25-NSE", d(2024, 3, 2), False)]
+    assert _issuer(conn, "RSA", "2024-03-05")[:2] == ("ended", None)
+    _observe(conn, 94, "RSA", "2024-04-01")  # not definitive: a later statement reopens
+    assert _issuer(conn, "RSA", "2024-04-05")[:2] == ("resolved", 94)
+    # An end that applied as filed keeps its own date when restated.
+    _observe(conn, 96, "KEEPD", "2024-01-02")
+    _event(conn, 96, "25-NSE", "2024-01-10", kind="equity", venue_kind="primary")
+    _event(conn, 96, "25-NSE/A", "2024-03-01", kind="equity", count=1, venue_kind="primary",
+           effect="restates")
+    assert _ends(conn, 96, "2024-03-05") == [("25-NSE", d(2024, 1, 11), False)]
+
+
 def _american_greetings(conn) -> None:
     """CIK 5133 listed AM (Class A; Class B unlisted, both counted). Merger: NYSE's
     25-NSE (12d2-2(a)(3)) on 2013-08-12 and the Form 15-12B naming both classes
@@ -1957,6 +1982,27 @@ def test_index_loads_read_the_end_filings_of_cover_ciks(schema_dsn, tmp_path: Pa
     again = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], documents=documents,
                        reconciled_on=d(2013, 11, 1))
     assert (again[0]["inserted"], again[0]["retired"]) == (0, 0)
+
+
+def test_end_filings_of_a_cik_whose_covers_were_all_retired_are_still_read(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Codex thread 4220893585: a CIK keeps its historical cover evidence after a
+    reconciliation retires it, so its Form 15/25 filings are read too."""
+    conn, dsn = schema_dsn
+    _observe(conn, 5133, "AM", "2013-07-10", retired_on="2013-09-01")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "0000876661-13-000657.txt").write_bytes(
+        (FILINGS / "0000876661-13-000657.txt").read_bytes())
+    index = _index(tmp_path / "2013QTR3.form.gz",
+                   ("25-NSE", 5133, "2013-08-12", "0000876661-13-000657"))
+    stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
+                       documents=loader.EventDocuments(docs, None),
+                       reconciled_on=d(2013, 10, 1))
+    assert stats[0]["class_equity"] == 1
+    assert conn.execute("SELECT class_kind, available_on FROM sec_registration_events"
+                        ).fetchall() == [("equity", d(2013, 8, 13))]
 
 
 def test_a_parser_change_re_derives_events_as_corrections(
