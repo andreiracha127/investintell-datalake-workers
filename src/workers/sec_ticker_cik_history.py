@@ -63,16 +63,24 @@ def _remote_size(client, url: str) -> int | None:
 
 
 def _packages_to_load(conn, client, urls: list[str]) -> list[tuple[str, bool]]:
-    """(url, republished) of every package to load, oldest first."""
+    """(url, republished) of every package to load, oldest first. A monthly
+    package whose quarterly is loaded (current) or listed is not queued: the
+    quarterly supersedes it, so it never takes a WORKER_LIMIT slot."""
     recorded = dict(conn.execute(
         "SELECT source_package, package_bytes FROM sec_ticker_cik_packages"
     ).fetchall())
+    quarters = {name.split("_", 1)[0] for (name,) in conn.execute(
+        "SELECT source_package FROM sec_ticker_cik_packages WHERE superseded_by IS NULL"
+    ).fetchall() if history.quarter_months(name)}
     names = {url: url.rsplit("/", 1)[1] for url in urls}
+    quarters |= {names[url].split("_", 1)[0] for url in urls
+                 if history.PACKAGE_RE.match(names[url]) and history.quarter_months(names[url])}
     listed = sorted(
         (url for url in urls if history.PACKAGE_RE.match(names[url])),
         key=lambda url: history.package_sort_key(Path(names[url])),
     )
-    todo = [(url, False) for url in listed if names[url] not in recorded]
+    todo = [(url, False) for url in listed if names[url] not in recorded
+            and history.covering_quarter(names[url]) not in quarters]
     if listed and names[listed[-1]] in recorded:
         newest = listed[-1]
         if _remote_size(client, newest) not in (None, recorded[names[newest]]):
@@ -141,6 +149,7 @@ def run(
                     target.unlink()
             stats["event_classes"] = history.derive_event_classes(conn, documents)
             stats["filings_fetched"] = documents.fetched
+            stats["filings_failed"] = documents.failed
     finally:
         if owns_client:
             client.close()

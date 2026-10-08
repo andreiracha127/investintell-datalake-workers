@@ -72,7 +72,8 @@ SEC_BASE_URL = "https://www.sec.gov"
 EDGAR_INDEX_URL = "https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{quarter}/form.gz"
 FIRST_INDEX_QUARTER = (2009, 1)  # the first FSN package
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
-EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{adsh}.txt"
+# A submission's full text in its accession folder.
+EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{folder}/{adsh}.txt"
 # SEC fair access: at most 10 requests per second.
 FILING_SPACING_S = 0.11
 # SEC fair access allows 10 requests/s; downloads run one at a time, spaced.
@@ -107,6 +108,7 @@ END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS)
 EVENT_PARSER_VERSION = "sec_event_class_v1"
 CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_carried",
                    "class_unread", "filings_missing")
+FETCH_STAT_KEYS = ("filings_fetched", "filings_failed")
 
 PACKAGE_RE = re.compile(
     r"^(?P<year>\d{4})(?:q(?P<quarter>[1-4])|_(?P<month>\d{2}))_notes(?:_\d+)?\.zip$"
@@ -1212,7 +1214,9 @@ class EventDocuments:
     accession) so a re-parse never fetches again. A missing file is fetched with
     ``client`` (the SEC User-Agent) at most once per ``spacing`` seconds; 429 and
     5xx answers and transport errors back off (Retry-After when given) and retry.
-    Without a client only cached filings are read."""
+    Without a client only cached filings are read. A filing that cannot be
+    fetched (404 or any other HTTP error, or no answer after the retries) is not
+    a document: ``text`` returns None and ``failed`` counts it."""
 
     def __init__(self, cache_dir: Path, client=None, *, spacing: float | None = None,
                  retries: int = 6) -> None:
@@ -1221,11 +1225,12 @@ class EventDocuments:
         self.spacing = FILING_SPACING_S if spacing is None else spacing
         self.retries = retries
         self.fetched = 0
+        self.failed = 0
         self._last = 0.0
 
     def text(self, cik: int, adsh: str) -> str | None:
-        """The filing's full text; '' when EDGAR has none; None when it is not
-        cached and there is no client."""
+        """The filing's full text, or None when it is not cached and cannot be
+        fetched now."""
         target = self.cache_dir / f"{adsh}.txt"
         if target.exists():
             return target.read_bytes().decode("latin-1")
@@ -1237,7 +1242,7 @@ class EventDocuments:
             transport_errors: tuple[type[BaseException], ...] = (httpx.TransportError, OSError)
         except ImportError:  # a client that is not httpx
             transport_errors = (OSError,)
-        url = EDGAR_FILING_URL.format(cik=cik, adsh=adsh)
+        url = EDGAR_FILING_URL.format(cik=cik, folder=adsh.replace("-", ""), adsh=adsh)
         for attempt in range(self.retries):
             wait = self.spacing - (time.monotonic() - self._last)
             if wait > 0:
@@ -1256,14 +1261,13 @@ class EventDocuments:
                 partial.replace(target)
                 self.fetched += 1
                 return response.content.decode("latin-1")
-            if response.status_code == 404:
-                return ""
             if response.status_code in (429, 500, 502, 503, 504):
                 retry_after = response.headers.get("retry-after", "")
                 time.sleep(float(retry_after) if retry_after.isdigit() else backoff)
                 continue
-            response.raise_for_status()
-        raise RuntimeError(f"{url}: no answer after {self.retries} attempts")
+            break  # 404 or another HTTP error: not fetched
+        self.failed += 1
+        return None
 
 
 def _event_key(event: RegistrationEvent) -> tuple[str, int, str, dt.date]:
@@ -1387,23 +1391,26 @@ def _fact_hash(values: Iterable[object]) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
-def _replace_members(cur, package: str, members: Iterable[tuple[str, int]],
+def _replace_members(cur, package: str, members: Iterable[tuple[str, str, int]],
                      on: dt.date) -> None:
-    """The package's (accession, CIK) pairs as of ``on``: pairs it no longer
-    contains are retired, new ones inserted; history is kept."""
-    cur.execute("CREATE TEMP TABLE tmp_sec_members (adsh text, cik bigint) ON COMMIT DROP")
-    _copy(cur, "tmp_sec_members", ("adsh", "cik"), sorted(set(members)))
+    """The package's (fact family, accession, CIK) triples as of ``on``: triples
+    it no longer contains are retired, new ones inserted; history is kept."""
+    cur.execute("CREATE TEMP TABLE tmp_sec_members (fact_table text, adsh text, cik bigint) "
+                "ON COMMIT DROP")
+    _copy(cur, "tmp_sec_members", ("fact_table", "adsh", "cik"), sorted(set(members)))
     cur.execute(
         "UPDATE sec_ticker_cik_package_members m SET retired_on = %(on)s "
         "WHERE m.source_package = %(p)s AND m.retired_on IS NULL AND NOT EXISTS ("
-        "SELECT 1 FROM tmp_sec_members n WHERE n.adsh = m.adsh AND n.cik = m.cik)",
+        "SELECT 1 FROM tmp_sec_members n WHERE n.fact_table = m.fact_table "
+        "AND n.adsh = m.adsh AND n.cik = m.cik)",
         {"on": on, "p": package},
     )
     cur.execute(
-        "INSERT INTO sec_ticker_cik_package_members (source_package, adsh, cik, loaded_on) "
-        "SELECT %(p)s, n.adsh, n.cik, %(on)s FROM tmp_sec_members n WHERE NOT EXISTS ("
-        "SELECT 1 FROM sec_ticker_cik_package_members m WHERE m.source_package = %(p)s "
-        "AND m.adsh = n.adsh AND m.cik = n.cik AND m.retired_on IS NULL)",
+        "INSERT INTO sec_ticker_cik_package_members (source_package, fact_table, adsh, cik, "
+        "loaded_on) SELECT %(p)s, n.fact_table, n.adsh, n.cik, %(on)s FROM tmp_sec_members n "
+        "WHERE NOT EXISTS (SELECT 1 FROM sec_ticker_cik_package_members m "
+        "WHERE m.source_package = %(p)s AND m.fact_table = n.fact_table AND m.adsh = n.adsh "
+        "AND m.cik = n.cik AND m.retired_on IS NULL)",
         {"on": on, "p": package},
     )
 
@@ -1443,9 +1450,11 @@ def _reconcile(cur, *, package: str, fact_table: str, temp: str | None,
     """Retire what the package no longer carries (and no other current package
     does); add what it newly carries. Never deletes or overwrites a fact row.
 
-    A newly carried fact of an accession any package ever contained (current or
-    retired membership) is a correction: knowable from the later of its filing's
-    public date and the reconciliation date. That includes a fact retired earlier
+    A newly carried fact of an accession any package ever contained for the same
+    fact family (current or retired membership) is a correction: knowable from
+    the later of its filing's public date and the reconciliation date. Another
+    family's history does not count (a 10-12B carried by an FSN package is first
+    seen as an index event when the index lists it). That includes a fact retired earlier
     and carried again: it is available again from this reconciliation, and its
     retired interval stays. A fact of an accession never loaded before is
     knowable from its filing's public date. ``temp`` None carries nothing (a
@@ -1476,7 +1485,8 @@ def _reconcile(cur, *, package: str, fact_table: str, temp: str | None,
         INSERT INTO {table} ({", ".join(columns)}, fact_hash, available_on, loaded_on)
         SELECT {", ".join(f"n.{c}" for c in columns)}, n.fact_hash,
                CASE WHEN EXISTS (
-                        SELECT 1 FROM sec_ticker_cik_package_members m WHERE m.adsh = n.adsh)
+                        SELECT 1 FROM sec_ticker_cik_package_members m
+                        WHERE m.adsh = n.adsh AND m.fact_table = %(fact_table)s)
                     THEN GREATEST({availability}, %(on)s)
                     ELSE {availability}
                END,
@@ -1485,7 +1495,7 @@ def _reconcile(cur, *, package: str, fact_table: str, temp: str | None,
         WHERE NOT EXISTS (
             SELECT 1 FROM {table} t WHERE t.fact_hash = n.fact_hash AND t.retired_on IS NULL)
         """,
-        {"on": reconciled_on},
+        {"on": reconciled_on, "fact_table": fact_table},
     )
     return {"retired": retired, "inserted": cur.rowcount}
 
@@ -1529,9 +1539,12 @@ def load_package(conn, result: PackageResult, *,
                 *(("share_count", s.fact_hash) for s in result.share_counts),
             ], on)
             _replace_members(cur, package, [
-                *((adsh, submission.cik) for adsh, submission in result.submissions.items()),
-                *((o.adsh, o.cik) for o in result.observations),
-                *((s.adsh, s.cik) for s in result.share_counts),
+                *(("observation", adsh, submission.cik)
+                  for adsh, submission in result.submissions.items()),
+                *(("share_count", adsh, submission.cik)
+                  for adsh, submission in result.submissions.items()),
+                *(("observation", o.adsh, o.cik) for o in result.observations),
+                *(("share_count", s.adsh, s.cik) for s in result.share_counts),
             ], on)
             _record_package(
                 cur, package=package, sha256=result.sha256, size=result.size_bytes,
@@ -1624,7 +1637,7 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
                 columns=EVENT_COLUMNS, availability=_EVENT_AVAILABILITY, reconciled_on=on,
             )
             _replace_facts(cur, package, (("event", e.fact_hash) for e in events), on)
-            _replace_members(cur, package, ((e.adsh, e.cik) for e in events), on)
+            _replace_members(cur, package, (("event", e.adsh, e.cik) for e in events), on)
             _record_package(
                 cur, package=package, sha256=sha256, size=size, submissions=0,
                 symbol_facts=0, observations=0, share_counts=0, events=len(events),
@@ -1810,7 +1823,7 @@ def run(
             item = {"package": "derive_event_classes",
                     **derive_event_classes(conn, documents, reconciled_on=reconciled_on,
                                            ciks=ciks),
-                    "filings_fetched": documents.fetched}
+                    "filings_fetched": documents.fetched, "filings_failed": documents.failed}
             print(json.dumps(item), flush=True)
             stats.append(item)
     finally:
@@ -1871,7 +1884,7 @@ def main(argv: list[str] | None = None) -> int:
     for item in stats:
         for key in ("submissions", "symbol_facts", "observations", "share_counts", "events",
                     "inserted", "retired", "shares_inserted", "shares_retired", "derived",
-                    "filings_fetched", *CLASS_STAT_KEYS):
+                    *FETCH_STAT_KEYS, *CLASS_STAT_KEYS):
             totals[key] += int(item.get(key, 0) or 0)  # type: ignore[call-overload]
     print(json.dumps({
         "packages": len(packages),

@@ -217,13 +217,16 @@ CREATE TABLE IF NOT EXISTS sec_ticker_cik_packages (
     CHECK ((superseded_by IS NULL) = (superseded_on IS NULL))
 );
 
--- The (accession, CIK) pairs each package or index contains, over time (never
--- deleted): an accession any package ever contained makes a newly carried fact of
--- it a correction, knowable from the reconciliation date, including a fact that
--- was retired and is carried again.
+-- The (fact family, accession, CIK) triples each package or index contains,
+-- over time (never deleted): an accession any package ever contained for a fact
+-- family makes a newly carried fact of that family a correction, knowable from
+-- the reconciliation date, including a fact that was retired and is carried
+-- again. A DERA package records its submissions for observations and share
+-- counts; an index records its rows for events.
 CREATE TABLE IF NOT EXISTS sec_ticker_cik_package_members (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_package text NOT NULL,
+    fact_table text NOT NULL CHECK (fact_table IN ('observation', 'share_count', 'event')),
     adsh text NOT NULL,
     cik bigint NOT NULL,
     loaded_on date NOT NULL,
@@ -231,9 +234,10 @@ CREATE TABLE IF NOT EXISTS sec_ticker_cik_package_members (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS sec_ticker_cik_package_members_current_idx
-    ON sec_ticker_cik_package_members (source_package, adsh, cik) WHERE retired_on IS NULL;
+    ON sec_ticker_cik_package_members (source_package, fact_table, adsh, cik)
+    WHERE retired_on IS NULL;
 CREATE INDEX IF NOT EXISTS sec_ticker_cik_package_members_adsh_idx
-    ON sec_ticker_cik_package_members (adsh, cik);
+    ON sec_ticker_cik_package_members (adsh, fact_table);
 
 -- Which fact versions each package carries, over time (never deleted): a fact
 -- is retired only when no current package carries it any more.

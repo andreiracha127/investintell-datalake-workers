@@ -679,17 +679,23 @@ class _Client:
 def test_event_filings_are_fetched_politely_and_cached(tmp_path: Path) -> None:
     body = (FILINGS / "0000876661-13-000657.txt").read_bytes()
     client = _Client([_Response(503, headers={"retry-after": "0"}), _Response(200, body),
-                      _Response(404)])
+                      _Response(404), _Response(403)])
     documents = loader.EventDocuments(tmp_path / "docs", client, spacing=0)
     assert documents.text(5133, "0000876661-13-000657") == body.decode("latin-1")
-    assert client.urls == [
-        "https://www.sec.gov/Archives/edgar/data/5133/0000876661-13-000657.txt"] * 2
+    assert client.urls == [  # the submission text in its accession folder
+        "https://www.sec.gov/Archives/edgar/data/5133/000087666113000657/"
+        "0000876661-13-000657.txt"] * 2
     assert (tmp_path / "docs" / "0000876661-13-000657.txt").read_bytes() == body
     assert documents.text(5133, "0000876661-13-000657") == body.decode("latin-1")  # cached
     assert len(client.urls) == 2
-    assert documents.text(5133, "0000000000-13-000001") == ""  # EDGAR has none
+    # Codex thread 4221400830: an HTTP error is "not fetched", never an empty document.
+    assert documents.text(5133, "0000000000-13-000001") is None  # 404
+    assert documents.text(5133, "0000000000-13-000003") is None  # 403
+    assert (documents.fetched, documents.failed) == (1, 2)
+    assert not (tmp_path / "docs" / "0000000000-13-000001.txt").exists()
     offline = loader.EventDocuments(tmp_path / "docs", None)
     assert offline.text(5133, "0000000000-13-000002") is None  # not cached, no client
+    assert offline.failed == 0
 
 
 def test_end_filings_of_cover_ciks_are_described(tmp_path: Path) -> None:
@@ -2146,7 +2152,8 @@ def test_index_loads_read_the_end_filings_of_cover_ciks(schema_dsn, tmp_path: Pa
     }
     assert stats[1] == {"package": "derive_event_classes", "derived": 0, "class_equity": 0,
                         "class_other": 0, "class_unknown": 0, "class_carried": 0,
-                        "class_unread": 0, "filings_missing": 0, "filings_fetched": 0}
+                        "class_unread": 0, "filings_missing": 0, "filings_fetched": 0,
+                        "filings_failed": 0}
     assert conn.execute(
         "SELECT cik, form, class_kind, class_count, extinguished, venue_kind, parser_version "
         "FROM sec_registration_events ORDER BY filed"
@@ -2251,9 +2258,13 @@ def test_a_fact_dropped_and_carried_again_is_known_again_from_its_return(
     assert _issuer(conn, "BF-B", "2024-05-15")[0] == "missing"  # known absent then
     assert _issuer(conn, "BF-B", "2024-06-01")[:2] == ("resolved", 14693)
     assert conn.execute(
-        "SELECT loaded_on, retired_on FROM sec_ticker_cik_package_members "
+        "SELECT fact_table, loaded_on, retired_on FROM sec_ticker_cik_package_members "
         "WHERE adsh = %s ORDER BY id", (A2,)
-    ).fetchall() == [(d(2024, 4, 1), d(2024, 5, 1)), (d(2024, 6, 1), None)]
+    ).fetchall() == [
+        ("observation", d(2024, 4, 1), d(2024, 5, 1)), ("share_count", d(2024, 4, 1),
+                                                         d(2024, 5, 1)),
+        ("observation", d(2024, 6, 1), None), ("share_count", d(2024, 6, 1), None),
+    ]
 
 
 def test_an_unreadable_filing_carries_its_derived_class_forward(
@@ -2346,6 +2357,23 @@ def test_quarterly_packages_sort_after_their_months() -> None:
     assert loader.quarter_months("2025q4_notes.zip") == (2025, (10, 11, 12))
     assert loader.quarter_months("2025_10_notes.zip") is None
     assert loader.covering_quarter("2025_11_notes.zip") == "2025q4"
+
+
+def test_a_registration_carried_by_a_dera_package_is_first_seen_by_its_index(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Codex thread 4221400851: an XBRL 10-12B carried by an FSN package is a
+    first-seen event when the index lists it, dated filed + 1."""
+    conn, dsn = schema_dsn
+    reg = "0000000070-24-000010"
+    package = _write_package(tmp_path / "2024q1_notes.zip",
+                             [_sub(reg, 70, "10-12B", "20240212", "")],
+                             [_fact(reg, "TradingSymbol", "NEWCO")])
+    index = _index(tmp_path / "2024QTR1.form.gz", ("10-12B", 70, "2024-02-12", reg))
+    loader.run([package], dsn=dsn, dry_run=False, form_indexes=[index],
+               reconciled_on=d(2024, 6, 1))
+    assert conn.execute("SELECT form, available_on FROM sec_registration_events"
+                        ).fetchall() == [("10-12B", d(2024, 2, 13))]
 
 
 def test_loader_refuses_a_database_without_the_governed_schema(tmp_path: Path) -> None:
@@ -2458,7 +2486,7 @@ def test_worker_loads_new_packages_and_the_open_quarter_then_idles(
     stats = worker.run(dsn, calc_date="2024-11-15", client=client)
     assert [p["package"] for p in stats["packages"]] == ["2024_10_notes.zip"]
     assert stats["filings_fetched"] == 1
-    assert ("GET", f"{FILING_BASE}732717/{notes}.txt") in calls
+    assert ("GET", f"{FILING_BASE}732717/{notes.replace('-', '')}/{notes}.txt") in calls
     assert conn.execute(
         "SELECT class_kind FROM sec_registration_events WHERE retired_on IS NULL AND cik = 732717"
     ).fetchall() == [("other",)]
@@ -2588,6 +2616,33 @@ def test_worker_supersedes_monthly_packages_when_their_quarter_is_listed(
     assert conn.execute(
         "SELECT ticker FROM sec_ticker_cik_observations WHERE retired_on IS NULL ORDER BY 1"
     ).fetchall() == [("AAA",), ("CCC",)]
+
+
+def test_superseded_monthly_packages_never_take_a_worker_slot(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4221400839: with WORKER_LIMIT 1, a listed monthly package of a
+    consolidated quarter must not starve a new package."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    quarter = _month(build / "2025q4_notes.zip", [(B1, 61, "20251015", "AAA")])
+    loader.run([quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 1, 5))
+    packages = {
+        "2025_11_notes.zip": _month(build / "2025_11_notes.zip",
+                                    [(B3, 63, "20251110", "CCC")]).read_bytes(),
+        "2025q4_notes.zip": quarter.read_bytes(),
+        "2026_01_notes.zip": _month(build / "2026_01_notes.zip",
+                                    [(B4, 64, "20260115", "DDD")]).read_bytes(),
+    }
+    client, _ = _fake_sec(tmp_path, packages, {})
+    stats = worker.run(dsn, calc_date="2026-02-01", limit=1, client=client)
+    assert stats["backlog"] == 1
+    assert [p["package"] for p in stats["packages"]] == ["2026_01_notes.zip"]
 
 
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:
