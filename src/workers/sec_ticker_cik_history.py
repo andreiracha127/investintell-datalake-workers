@@ -9,9 +9,12 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
 2. Read the DERA Financial Statement and Notes listing. Every listed package
    whose name is not in ``sec_ticker_cik_packages`` is loaded, oldest first,
    and so is the newest listed package when its size differs from the recorded
-   one (a republished month). Each package is downloaded, loaded in its own
-   transaction and deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it, so a
-   run never needs more than one package of disk. ``WORKER_LIMIT`` caps the
+   one (a republished month; it is downloaded again even when a cached copy
+   exists, and a cached copy of any package is replaced when its size differs
+   from the remote one). Each package is loaded in its own transaction, which
+   also removes the evidence of accessions it no longer contains, and is deleted
+   again unless ``SEC_TICKER_CACHE_DIR`` keeps it, so a run never needs more than
+   one package of disk. ``WORKER_LIMIT`` caps the
    packages per run (the backlog resumes next run).
 3. Re-fetch the EDGAR form indexes of the calc date's quarter and the one before
    (an index keeps growing until its quarter closes) and load their
@@ -51,7 +54,8 @@ def _remote_size(client, url: str) -> int | None:
     return int(length) if length else None
 
 
-def _packages_to_load(conn, client, urls: list[str]) -> list[str]:
+def _packages_to_load(conn, client, urls: list[str]) -> list[tuple[str, bool]]:
+    """(url, republished) of every package to load, oldest first."""
     recorded = dict(conn.execute(
         "SELECT source_package, package_bytes FROM sec_ticker_cik_packages"
     ).fetchall())
@@ -60,12 +64,20 @@ def _packages_to_load(conn, client, urls: list[str]) -> list[str]:
         (url for url in urls if history.PACKAGE_RE.match(names[url])),
         key=lambda url: history.package_sort_key(Path(names[url])),
     )
-    todo = [url for url in listed if names[url] not in recorded]
-    if listed and listed[-1] not in todo:
+    todo = [(url, False) for url in listed if names[url] not in recorded]
+    if listed and names[listed[-1]] in recorded:
         newest = listed[-1]
         if _remote_size(client, newest) not in (None, recorded[names[newest]]):
-            todo.append(newest)
+            todo.append((newest, True))
     return todo
+
+
+def _needs_download(client, url: str, target: Path, *, republished: bool) -> bool:
+    """A republished package is always fetched again; a cached one only if it differs."""
+    if republished or not target.exists():
+        return True
+    remote = _remote_size(client, url)
+    return remote is not None and remote != target.stat().st_size
 
 
 def run(
@@ -94,9 +106,9 @@ def run(
             history.require_schema(conn)
             todo = _packages_to_load(conn, client, history.list_package_urls(client))
             stats["backlog"] = len(todo)
-            for url in todo[:limit] if limit else todo:
+            for url, republished in todo[:limit] if limit else todo:
                 target = workdir / url.rsplit("/", 1)[1]
-                if not target.exists():
+                if _needs_download(client, url, target, republished=republished):
                     history.fetch_package(client, url, target)
                 result = history.parse_package(target)
                 stats["packages"].append({**result.stats(), **history.load_package(conn, result)})

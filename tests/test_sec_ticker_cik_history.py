@@ -29,6 +29,7 @@ ROLLBACK_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v1.rollback.sql").rea
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 READERS = ("app_runtime", "app_analytics_ro", "mcp_ro")
 FUNCTIONS = (
+    "sec_registration_end_events(bigint,date)",
     "sec_ticker_lines_at(text,date,integer)",
     "sec_ticker_issuer_at(text,date,integer)",
     "sec_issuer_line_at(bigint,text,date,integer)",
@@ -37,10 +38,11 @@ FUNCTIONS = (
 )
 TABLES = (
     "sec_ticker_cik_observations", "sec_cover_share_counts", "sec_registration_events",
-    "sec_ticker_cik_packages", "sec_ticker_intervals",
+    "sec_ticker_cik_packages", "sec_ticker_cik_package_members", "sec_ticker_intervals",
 )
 
-SUB_HEADER = ("adsh", "cik", "name", "form", "period", "fy", "fp", "filed", "accepted")
+SUB_HEADER = ("adsh", "cik", "name", "form", "period", "fy", "fp", "filed", "accepted",
+              "nciks")
 TXT_HEADER = (
     "adsh", "tag", "version", "ddate", "qtrs", "iprx", "lang", "dcml", "durp", "datp",
     "dimh", "dimn", "coreg", "escaped", "srclen", "txtlen", "footnote", "footlen",
@@ -124,6 +126,28 @@ def test_class_key_drops_listing_and_entity_axes(segments: str, key: str) -> Non
     assert loader.class_key(segments) == key
 
 
+def test_class_key_keeps_a_legal_entity_member_used_as_a_class() -> None:
+    segments = "EntityListingsExchange=NASDAQ;LegalEntity=AmericanDepositaryShares;"
+    assert loader.class_key(segments, keep_entity=True) == "LegalEntity=AmericanDepositaryShares;"
+    assert loader.legal_entity_member(segments) == "AmericanDepositaryShares"
+    assert loader.legal_entity_member(CLASS_A) is None
+
+
+@pytest.mark.parametrize(
+    ("ddate", "datp", "stated"),
+    [
+        ("20260930", "14.0", dt.date(2026, 9, 16)),  # Campbell 0000016732-26-000026
+        ("20240131", "-13.0", dt.date(2024, 2, 13)),  # Renalytix: after the month end
+        ("20231231", "0.0", dt.date(2023, 12, 31)),
+        ("20231231", "", dt.date(2023, 12, 31)),
+    ],
+)
+def test_share_counts_are_dated_by_the_stated_day_not_the_rounded_month_end(
+    ddate: str, datp: str, stated: dt.date,
+) -> None:
+    assert loader.stated_date(ddate, datp) == (stated, dt.datetime.strptime(ddate, "%Y%m%d").date())
+
+
 @pytest.mark.parametrize(
     ("title", "ticker", "segments", "kind"),
     [
@@ -193,10 +217,12 @@ def _fact(adsh: str, tag: str, value: str, *, dimh: str = "0x00000000", coreg: s
             "dimh": dimh, "coreg": coreg, "value": value}
 
 
-def _shares(adsh: str, value: str, *, dimh: str = "0x00000000", ddate: str = "20240220",
-            uom: str = "shares", coreg: str = "") -> dict[str, str]:
+def _shares(adsh: str, value: str, *, dimh: str = "0x00000000", ddate: str = "20240229",
+            datp: str = "0.0", uom: str = "shares", coreg: str = "") -> dict[str, str]:
+    """A num.tsv cover count: DERA's rounded month-end ddate plus datp."""
     return {"adsh": adsh, "tag": "EntityCommonStockSharesOutstanding", "version": "dei/2024",
-            "ddate": ddate, "uom": uom, "dimh": dimh, "coreg": coreg, "value": value}
+            "ddate": ddate, "datp": datp, "uom": uom, "dimh": dimh, "coreg": coreg,
+            "value": value}
 
 
 def _write_package(path: Path, submissions: list[dict[str, str]], facts: list[dict[str, str]],
@@ -218,9 +244,10 @@ def _write_package(path: Path, submissions: list[dict[str, str]], facts: list[di
     return path
 
 
-def _sub(adsh: str, cik: int, form: str, filed: str, accepted: str = "") -> dict[str, str]:
+def _sub(adsh: str, cik: int, form: str, filed: str, accepted: str = "",
+         nciks: int = 1) -> dict[str, str]:
     return {"adsh": adsh, "cik": str(cik), "name": f"CIK {cik}", "form": form,
-            "period": filed, "filed": filed, "accepted": accepted}
+            "period": filed, "filed": filed, "accepted": accepted, "nciks": str(nciks)}
 
 
 A1 = "0000000001-24-000001"
@@ -232,6 +259,7 @@ DIMS = {
     "0xbbx": "ClassOfStock=CommonClassB;EntityListingsExchange=NYSE;",
     "0xnot": "LongtermDebtType=Notes2034;",
     "0xccc": NONVOTING,
+    "0xsub": "LegalEntity=SubsidiaryMember;",
 }
 
 
@@ -255,17 +283,18 @@ def _sample_package(tmp_path: Path) -> Path:
             _fact(A2, "TradingSymbol", "BFB", dimh="0xccc"),
             _fact(A2, "TradingSymbol", "BFB", dimh="0xccc", iprx=1),  # same fact twice
             # Not the registrant's symbol, not a dei fact, a placeholder, no submission.
-            _fact(A3, "TradingSymbol", "SUB", coreg="SubsidiaryMember"),
+            _fact(A3, "TradingSymbol", "SUB", dimh="0xsub", coreg="SubsidiaryMember"),
             _fact(A3, "TradingSymbol", "CUST", version="0000000003-24-000001"),
             _fact(A3, "TradingSymbol", "None"),
             _fact("0000000009-24-000009", "TradingSymbol", "GHOST"),
         ],
         [
-            _shares(A1, "511820.0000", dimh="0xaaa", ddate="20240212"),
-            _shares(A1, "1389605139.0000", dimh="0xbbb", ddate="20240212"),
-            _shares(A2, "290262390", dimh="0xccc"),
+            # Stated 2024-02-12 and 2024-02-20; DERA rounds both to 2024-02-29.
+            _shares(A1, "511820.0000", dimh="0xaaa", datp="17.0"),
+            _shares(A1, "1389605139.0000", dimh="0xbbb", datp="17.0"),
+            _shares(A2, "290262390", dimh="0xccc", datp="9.0"),
             _shares(A2, "12", dimh="0xccc", uom="USD"),  # not a share count
-            _shares(A3, "1000", coreg="SubsidiaryMember"),
+            _shares(A3, "1000", dimh="0xsub", coreg="SubsidiaryMember"),
         ],
         DIMS,
     )
@@ -290,19 +319,103 @@ def test_package_parse_keeps_registrant_lines_with_their_class(tmp_path: Path) -
     )
     assert rows[(A1, "BRK34")].security_kind == "debt"
     assert rows[(A2, "BFB")].accepted is None
+    # A1 lists two equity classes: each is its own line. A2 lists one: the
+    # issuer's sole equity line, whatever its member is called.
+    assert {key: row.line_key for key, row in rows.items()} == {
+        (A1, "BRK-A"): CLASS_A, (A1, "BRK-B"): "ClassOfStock=CommonClassB;",
+        (A1, "BRK34"): "LongtermDebtType=Notes2034;", (A2, "BFB"): "*",
+    }
     assert result.symbol_facts == 9
     assert dict(result.rejected) == {
         "coregistrant": 1, "non_dei_tag": 1, "placeholder": 1, "no_submission": 1,
-        "duplicate_in_context": 1, "share_count_other_entity_or_unit": 2,
+        "duplicate_in_context": 1, "share_count_unit": 1, "share_count_coregistrant": 1,
     }
-    shares = {(s.adsh, s.class_key): s.shares for s in result.share_counts}
+    shares = {(s.adsh, s.class_key): (s.shares, s.stated_on, s.ddate_rounded)
+              for s in result.share_counts}
+    rounded = dt.date(2024, 2, 29)
     assert shares == {
-        (A1, CLASS_A): Decimal("511820.0000"),
-        (A1, "ClassOfStock=CommonClassB;"): Decimal("1389605139.0000"),
-        (A2, NONVOTING): Decimal("290262390"),
+        (A1, CLASS_A): (Decimal("511820.0000"), dt.date(2024, 2, 12), rounded),
+        (A1, "ClassOfStock=CommonClassB;"): (
+            Decimal("1389605139.0000"), dt.date(2024, 2, 12), rounded),
+        (A2, NONVOTING): (Decimal("290262390"), dt.date(2024, 2, 20), rounded),
     }
     assert len(result.submissions) == 3
     assert len(result.sha256) == 64
+
+
+RNLX = "0000950170-24-015276"
+SRE = "0001032208-24-000010"
+
+
+def _legal_entity_package(tmp_path: Path) -> Path:
+    """Renalytix names its own ADS with a LegalEntity member; Sempra files with
+    a genuine co-registrant (SDG&E) that carries its own CIK."""
+    return _write_package(
+        tmp_path / "2024q1_notes.zip",
+        [
+            _sub(RNLX, 1811115, "10-K", "20240214", "2024-02-14 16:30:00.0"),
+            _sub(SRE, 1032208, "10-K", "20240227", "2024-02-27 16:10:00.0", nciks=2),
+        ],
+        [
+            _fact(RNLX, "EntityCentralIndexKey", "0001811115"),
+            _fact(RNLX, "Security12bTitle", "Ordinary shares, nominal value 0.0025 per share"),
+            _fact(RNLX, "TradingSymbol", "RNLX", dimh="0xads",
+                  coreg="AmericanDepositaryShares"),
+            _fact(RNLX, "Security12bTitle", "American Depositary Shares, each representing "
+                  "two ordinary shares", dimh="0xads", coreg="AmericanDepositaryShares"),
+            _fact(RNLX, "SecurityExchangeName", "NASDAQ", dimh="0xads",
+                  coreg="AmericanDepositaryShares"),
+            _fact(SRE, "EntityCentralIndexKey", "0001032208"),
+            _fact(SRE, "TradingSymbol", "SRE", dimh="0xsre"),
+            _fact(SRE, "Security12bTitle", "Sempra Common Stock", dimh="0xsre"),
+            _fact(SRE, "EntityCentralIndexKey", "0000086521", dimh="0xsdge",
+                  coreg="SanDiegoGasAndElectricCompany"),
+            _fact(SRE, "TradingSymbol", "SDGE-PB", dimh="0xsdgepb",
+                  coreg="SanDiegoGasAndElectricCompany"),
+            _fact(SRE, "Security12bTitle", "Series B Preferred Stock", dimh="0xsdgepb",
+                  coreg="SanDiegoGasAndElectricCompany"),
+            # A legal-entity context that names no CIK, in a multi-registrant filing.
+            _fact(SRE, "TradingSymbol", "SCG", dimh="0xscg", coreg="SoCalGasMember"),
+            _fact(SRE, "Security12bTitle", "SoCalGas Preferred", dimh="0xscg",
+                  coreg="SoCalGasMember"),
+        ],
+        [
+            _shares(RNLX, "99930156", ddate="20240131", datp="-13.0"),
+            _shares(SRE, "631000000", dimh="0xsre", ddate="20240229", datp="9.0"),
+            _shares(SRE, "116583358", dimh="0xsdge", coreg="SanDiegoGasAndElectricCompany",
+                    ddate="20240229", datp="9.0"),
+        ],
+        {
+            "0xads": "LegalEntity=AmericanDepositaryShares;",
+            "0xsre": "ClassOfStock=CommonStock;",
+            "0xsdge": "LegalEntity=SanDiegoGasAndElectricCompany;",
+            "0xsdgepb": "ClassOfStock=SeriesBPreferredStock;"
+                        "LegalEntity=SanDiegoGasAndElectricCompany;",
+            "0xscg": "LegalEntity=SoCalGasMember;",
+        },
+    )
+
+
+def test_legal_entity_contexts_resolve_to_the_entity_they_name(tmp_path: Path) -> None:
+    result = loader.parse_package(_legal_entity_package(tmp_path))
+    rows = {o.ticker: (o.cik, o.class_key, o.line_key, o.security_kind)
+            for o in result.observations}
+    assert rows == {
+        # Single registrant, no CIK on the member, a titled context: its own ADS class.
+        "RNLX": (1811115, "LegalEntity=AmericanDepositaryShares;", "*", "depositary"),
+        "SRE": (1032208, "ClassOfStock=CommonStock;", "*", "equity"),
+        # The member carries SDG&E's own CIK: the line is SDG&E's, not Sempra's.
+        "SDGE-PB": (86521, "ClassOfStock=SeriesBPreferredStock;",
+                    "ClassOfStock=SeriesBPreferredStock;", "preferred"),
+    }
+    assert result.rejected["coregistrant"] == 1  # SCG: a member without a CIK, 2 registrants
+    assert result.rejected["attributed_to_coregistrant"] == 1
+    shares = {(s.cik, s.class_key): (s.shares, s.stated_on) for s in result.share_counts}
+    assert shares == {
+        (1811115, ""): (Decimal("99930156"), dt.date(2024, 2, 13)),
+        (1032208, "ClassOfStock=CommonStock;"): (Decimal("631000000"), dt.date(2024, 2, 20)),
+        (86521, ""): (Decimal("116583358"), dt.date(2024, 2, 20)),
+    }
 
 
 def test_a_corrupt_package_member_fails_the_parse(tmp_path: Path) -> None:
@@ -336,6 +449,8 @@ def test_form_index_keeps_only_deregistration_and_delisting_rows(tmp_path: Path)
         "2020-01-29  edgar/data/1070336/0001070336-20-000003.txt",
         "SC 13D           HOLDER 25 LLC                                     777         "
         "2020-01-05  edgar/data/777/0000000777-20-000001.txt",
+        "25-NSE/A         ACHILLION PHARMACEUTICALS INC                     1070336     "
+        "2020-02-10  edgar/data/1070336/0001354457-20-000099.txt",
     ]
     path.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode("latin-1")))
     events, sha256, size = loader.parse_form_index(path)
@@ -343,6 +458,7 @@ def test_form_index_keeps_only_deregistration_and_delisting_rows(tmp_path: Path)
         ("15-12G", 5907, dt.date(2020, 3, 2), "0000005907-20-000001"),
         ("25", 1070336, dt.date(2020, 1, 29), "0001070336-20-000003"),
         ("25-NSE", 1070336, dt.date(2020, 1, 28), "0001354457-20-000034"),
+        ("25-NSE/A", 1070336, dt.date(2020, 2, 10), "0001354457-20-000099"),
     ]
     assert len(sha256) == 64 and size == path.stat().st_size
 
@@ -388,31 +504,45 @@ def _observe(conn, cik: int, ticker: str, filed: str, *, accepted: str | None = 
     adsh = adsh or f"{next(_SEQ):010d}-24-000001"
     conn.execute(
         "INSERT INTO sec_ticker_cik_observations (adsh, cik, dimh, segments, class_key, "
-        "ticker, ticker_raw, security_kind, form, filed, accepted, source_package) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, '10-Q', %s, %s, 'test')",
-        (adsh, cik, class_key or "0x00000000", class_key, class_key, ticker, ticker, kind,
-         filed, accepted),
+        "line_key, ticker, ticker_raw, security_kind, form, filed, accepted, source_package) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, '10-Q', %s, %s, 'test')",
+        (adsh, cik, class_key or "0x00000000", class_key, class_key, class_key, ticker, ticker,
+         kind, filed, accepted),
+    )
+    # The loader's line rule (tested on a parsed package): a filing's one
+    # equity/depositary class is the sole equity line '*'.
+    conn.execute(
+        "UPDATE sec_ticker_cik_observations o SET line_key = CASE "
+        "WHEN o.security_kind IN ('equity', 'depositary') AND (SELECT count(DISTINCT f.class_key) "
+        "FROM sec_ticker_cik_observations f WHERE f.adsh = o.adsh AND f.cik = o.cik "
+        "AND f.security_kind IN ('equity', 'depositary')) = 1 THEN '*' ELSE o.class_key END "
+        "WHERE o.adsh = %s AND o.cik = %s",
+        (adsh, cik),
     )
     return adsh
 
 
-def _event(conn, cik: int, form: str, filed: str) -> None:
+def _event(conn, cik: int, form: str, filed: str) -> str:
+    adsh = f"{next(_SEQ):010d}-24-000009"
     conn.execute(
         "INSERT INTO sec_registration_events (adsh, cik, form, filed, source_package) "
         "VALUES (%s, %s, %s, %s, 'test')",
-        (f"{next(_SEQ):010d}-24-000009", cik, form, filed),
+        (adsh, cik, form, filed),
     )
+    return adsh
 
 
-def _count(conn, cik: int, class_key: str, ddate: str, shares: int, filed: str,
-           adsh: str | None = None) -> None:
+def _count(conn, cik: int, class_key: str, stated: str, shares: int, filed: str,
+           adsh: str | None = None, accepted: str | None = None) -> str:
+    adsh = adsh or f"{next(_SEQ):010d}-24-000002"
     conn.execute(
-        "INSERT INTO sec_cover_share_counts (adsh, cik, dimh, segments, class_key, ddate, "
-        "shares, form, filed, source_package) VALUES (%s, %s, %s, %s, %s, %s, %s, '10-Q', %s, "
-        "'test')",
-        (adsh or f"{next(_SEQ):010d}-24-000002", cik, class_key or "0x00000000", class_key,
-         class_key, ddate, shares, filed),
+        "INSERT INTO sec_cover_share_counts (adsh, cik, dimh, segments, class_key, stated_on, "
+        "ddate_rounded, shares, form, filed, accepted, source_package) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, '10-Q', %s, %s, 'test')",
+        (adsh, cik, class_key or "0x00000000", class_key, class_key, stated, stated, shares,
+         filed, accepted),
     )
+    return adsh
 
 
 def _issuer(conn, ticker: str, as_of: str) -> tuple:
@@ -602,11 +732,32 @@ def test_class_share_count_rules(schema_dsn) -> None:
     )
     _count(conn, 9, CLASS_A, "2023-01-31", 120, "2023-03-01")  # amendment, same date
     assert _class_shares(conn, 9, CLASS_A, "2023-03-02")[:2] == ("resolved", Decimal(120))
-    _count(conn, 9, CLASS_A, "2023-04-30", 130, "2023-05-10")
-    _count(conn, 9, CLASS_A, "2023-04-30", 131, "2023-05-10")  # conflicting in one filing
+    filing = _count(conn, 9, CLASS_A, "2023-04-30", 130, "2023-05-10")
+    _count(conn, 9, CLASS_A, "2023-04-30", 131, "2023-05-10", adsh=filing)  # same filing
     assert _class_shares(conn, 9, CLASS_A, "2023-05-11")[:2] == ("ambiguous", None)
     assert _class_shares(conn, 9, CLASS_A, "2024-06-03")[0] == "ambiguous"  # 2023-04-30 + 400
     assert _class_shares(conn, 9, CLASS_A, "2024-06-04")[0] == "stale"
+
+
+def test_a_same_day_amendment_replaces_the_original_count(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    _count(conn, 9, CLASS_A, "2023-04-28", 100, "2023-05-10", accepted="2023-05-10 09:00:00")
+    _count(conn, 9, CLASS_A, "2023-04-28", 120, "2023-05-10", accepted="2023-05-10 15:00:00")
+    assert _class_shares(conn, 9, CLASS_A, "2023-05-10") == (
+        "resolved", Decimal(120), dt.date(2023, 4, 28),
+    )
+
+
+def test_a_count_is_found_from_its_stated_day_not_the_rounded_month_end(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    # Campbell: stated 2026-09-16, accepted 2026-09-24, DERA ddate 2026-09-30.
+    _count(conn, 16732, "", "2026-06-01", 298_000_000, "2026-06-10")
+    _count(conn, 16732, "", "2026-09-16", 298_234_693, "2026-09-24",
+           accepted="2026-09-24 16:05:00")
+    for as_of in ("2026-09-24", "2026-09-29"):
+        assert _class_shares(conn, 16732, "", as_of) == (
+            "resolved", Decimal(298_234_693), dt.date(2026, 9, 16),
+        )
 
 
 def test_future_filings_never_change_an_earlier_answer(schema_dsn) -> None:
@@ -724,13 +875,12 @@ def test_price_span_is_per_class_for_a_multi_class_issuer(schema_dsn) -> None:
     assert _span(conn, "BF-B", 14693, NONVOTING) == [(NONVOTING, *run[1:])]
     assert _span(conn, "BF-B", 14693, CLASS_A) == []
     assert _span(conn, "BF-A", 14693) == [(CLASS_A, *run[1:])]
-    # A single-class filer relabelling its line is one security: both runs, no
+    # A single-class filer relabelling its class is one line: one run, no
     # other holder.
     _observe(conn, 55, "SOLO", "2020-02-10")
     _observe(conn, 55, "SOLO", "2021-02-10", class_key="ClassOfStock=CommonStock;")
     assert _span(conn, "SOLO", 55) == [
-        ("", dt.date(2020, 2, 11), None, None, dt.date(2020, 2, 11), None, None),
-        ("ClassOfStock=CommonStock;", dt.date(2021, 2, 11), None, None, dt.date(2021, 2, 11),
+        ("ClassOfStock=CommonStock;", dt.date(2020, 2, 11), None, None, dt.date(2021, 2, 11),
          None, None),
     ]
 
@@ -773,6 +923,52 @@ def test_resolvers_inline_into_lateral_joins(schema_dsn) -> None:
         assert "Function Scan on sec_" not in plan, plan
 
 
+def test_class_relabel_with_a_rename_closes_the_old_symbol_everywhere(schema_dsn) -> None:
+    """A single-class issuer drops the dimension and renames in the same step."""
+    conn, _ = schema_dsn
+    d = dt.date
+    _observe(conn, 55, "OLDSYM", "2024-02-10")  # available 2024-02-11, class ''
+    _observe(conn, 55, "NEWSYM", "2024-04-10", class_key="ClassOfStock=CommonStock;")
+    assert _issuer(conn, "OLDSYM", "2024-05-01")[:2] == ("ended", None)
+    assert _issuer(conn, "NEWSYM", "2024-05-01")[:3] == (
+        "resolved", 55, "ClassOfStock=CommonStock;",
+    )
+    assert _line(conn, 55, "ClassOfStock=CommonStock;", "2024-03-01") == (
+        "resolved", "", ["OLDSYM"], d(2024, 2, 11), 1,
+    )
+    assert _span(conn, "OLDSYM", 55) == [
+        ("", d(2024, 2, 11), d(2024, 4, 11), "other_symbol", d(2024, 2, 11), None, None),
+    ]
+    # Another issuer takes OLDSYM: it holds it alone, not jointly with CIK 55.
+    _observe(conn, 66, "OLDSYM", "2024-06-03")
+    assert _issuer(conn, "OLDSYM", "2024-06-05") == (
+        "resolved", 66, "", d(2024, 6, 4), [66],
+    )
+    assert _span(conn, "OLDSYM", 66)[0][5] == d(2024, 4, 11)  # prior holder's end
+
+
+def test_a_delisting_amendment_withdraws_the_original_from_its_own_date(schema_dsn) -> None:
+    """Minim: 25-NSE 2024-10-24, then 25-NSE/A 2025-04-09 (Nasdaq will not delist)."""
+    conn, _ = schema_dsn
+    d = dt.date
+    _observe(conn, 1467761, "MINM", "2024-08-13")
+    _event(conn, 1467761, "25-NSE", "2024-10-24")
+    _event(conn, 1467761, "25-NSE/A", "2025-04-09")
+    assert _issuer(conn, "MINM", "2024-10-24")[:2] == ("resolved", 1467761)
+    assert _issuer(conn, "MINM", "2024-10-25")[:2] == ("ended", None)  # original public
+    assert _issuer(conn, "MINM", "2025-04-09")[:2] == ("ended", None)  # amendment not yet
+    assert _issuer(conn, "MINM", "2025-04-10")[:2] == ("resolved", 1467761)
+    assert _line(conn, 1467761, "", "2025-01-02")[0] == "ended"
+    assert _line(conn, 1467761, "", "2025-04-10")[0] == "resolved"
+    # Lineage uses today's knowledge: the withdrawn delisting ends nothing.
+    assert _span(conn, "MINM", 1467761) == [
+        ("", d(2024, 8, 14), None, None, d(2024, 8, 14), None, None),
+    ]
+    # A later original of the same form is not covered by the earlier amendment.
+    _event(conn, 1467761, "25-NSE", "2025-09-01")
+    assert _issuer(conn, "MINM", "2025-09-02")[:2] == ("ended", None)
+
+
 def test_interval_view_lists_each_hold(schema_dsn) -> None:
     conn, _ = schema_dsn
     _observe(conn, 1512673, "SQ", "2024-11-05")
@@ -784,6 +980,21 @@ def test_interval_view_lists_each_hold(schema_dsn) -> None:
     ).fetchall() == [
         ("SQ", dt.date(2024, 11, 6), dt.date(2024, 12, 6), dt.date(2025, 1, 22), 2),
         ("XYZ", dt.date(2025, 1, 22), dt.date(2025, 1, 22), None, 1),
+    ]
+
+
+def test_interval_view_ends_every_symbol_of_a_run_at_the_next_run(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    first = _observe(conn, 8, "OLD1", "2024-01-10")
+    _observe(conn, 8, "OLD2", "2024-01-10", adsh=first)
+    _observe(conn, 8, "NEW", "2024-05-10")
+    assert conn.execute(
+        "SELECT ticker, valid_from, valid_to FROM sec_ticker_intervals "
+        "WHERE cik = 8 ORDER BY valid_from, ticker"
+    ).fetchall() == [
+        ("OLD1", dt.date(2024, 1, 11), dt.date(2024, 5, 11)),
+        ("OLD2", dt.date(2024, 1, 11), dt.date(2024, 5, 11)),
+        ("NEW", dt.date(2024, 5, 11), None),
     ]
 
 
@@ -878,19 +1089,72 @@ def test_loader_upserts_idempotently_and_converges_on_rerun(
         package,
         [_sub(A1, 1067983, "10-K", "20240226", "2024-02-24 08:00:05.0")],
         [_fact(A1, "TradingSymbol", "BRK.B", dimh="0xbbx")],
-        [_shares(A1, "1389605139.0000", dimh="0xbbb", ddate="20240212")],
+        [_shares(A1, "1389605139.0000", dimh="0xbbb", datp="17.0")],
         DIMS,
     )
     third = loader.run([package], dsn=dsn, dry_run=False)
-    assert (third[0]["inserted"], third[0]["updated"], third[0]["removed"]) == (0, 1, 2)
-    assert third[0]["shares_removed"] == 1
+    # BRK-A and BRK34 leave A1; A2 and A3 are no longer in the package at all,
+    # and no other package carries them, so A2's symbol and count go too.
+    assert (third[0]["inserted"], third[0]["updated"], third[0]["removed"]) == (0, 1, 3)
+    assert (third[0]["shares_removed"], third[0]["accessions_dropped"]) == (2, 2)
     assert conn.execute(
         "SELECT adsh, ticker FROM sec_ticker_cik_observations ORDER BY adsh, ticker"
-    ).fetchall() == [(A1, "BRK-B"), (A2, "BFB")]
+    ).fetchall() == [(A1, "BRK-B")]
+    assert conn.execute("SELECT DISTINCT adsh FROM sec_cover_share_counts").fetchall() == [(A1,)]
     assert conn.execute(
         "SELECT source_package, submissions, symbol_facts, observations, share_counts, events "
         'FROM sec_ticker_cik_packages ORDER BY source_package COLLATE "C"'
     ).fetchall() == [("2024QTR1.form.gz", 0, 0, 0, 0, 1), ("2024q1_notes.zip", 1, 1, 1, 1, 0)]
+
+
+def test_an_accession_another_package_still_carries_survives_a_republication(
+    schema_dsn, tmp_path: Path
+) -> None:
+    conn, dsn = schema_dsn
+    package = _sample_package(tmp_path)
+    other = _write_package(
+        tmp_path / "2024_03_notes.zip",
+        [_sub(A2, 14693, "8-K", "20240305", "")],
+        [_fact(A2, "TradingSymbol", "BFB", dimh="0xccc")],
+        [_shares(A2, "290262390", dimh="0xccc", datp="9.0")],
+        DIMS,
+    )
+    loader.run([package, other], dsn=dsn, dry_run=False)
+    package.unlink()
+    _write_package(package, [_sub(A1, 1067983, "10-K", "20240226", "2024-02-24 08:00:05.0")],
+                   [_fact(A1, "TradingSymbol", "BRK.B", dimh="0xbbx")], [], DIMS)
+    loader.run([package], dsn=dsn, dry_run=False)
+    assert conn.execute(
+        "SELECT adsh, ticker FROM sec_ticker_cik_observations ORDER BY adsh, ticker"
+    ).fetchall() == [(A1, "BRK-B"), (A2, "BFB")]
+    assert conn.execute("SELECT DISTINCT adsh FROM sec_cover_share_counts").fetchall() == [(A2,)]
+
+
+def _index(path: Path, *rows: tuple[str, int, str, str]) -> Path:
+    path.write_bytes(gzip.compress("".join(
+        f"{form:<17}SOME CO      {cik}     {filed}  edgar/data/{cik}/{adsh}.txt\n"
+        for form, cik, filed, adsh in rows
+    ).encode()))
+    return path
+
+
+def test_an_index_reload_removes_and_reassigns_events_it_no_longer_lists(
+    schema_dsn, tmp_path: Path
+) -> None:
+    conn, dsn = schema_dsn
+    q1 = tmp_path / "2024QTR1.form.gz"
+    gone, moved, kept = "0000000001-24-000101", "0000000001-24-000102", "0000000001-24-000103"
+    _index(q1, ("25-NSE", 10, "2024-01-10", gone), ("15-12G", 20, "2024-01-11", moved),
+           ("15-12B", 30, "2024-01-12", kept))
+    q2 = _index(tmp_path / "2024QTR2.form.gz", ("15-12B", 30, "2024-01-12", kept))
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[q1, q2])
+    # The rebuilt index drops one event and corrects the CIK of another.
+    _index(q1, ("15-12G", 21, "2024-01-11", moved))
+    stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[q1])
+    assert (stats[0]["removed"], stats[0]["inserted"]) == (2, 1)
+    assert conn.execute(
+        "SELECT adsh, cik, form FROM sec_registration_events ORDER BY adsh, cik"
+    ).fetchall() == [(moved, 21, "15-12G"), (kept, 30, "15-12B")]  # q2 still lists `kept`
 
 
 def test_loader_refuses_a_database_without_the_governed_schema(tmp_path: Path) -> None:
@@ -1006,6 +1270,45 @@ def test_worker_loads_new_packages_and_the_open_quarter_then_idles(
     assert [(p["package"], p["updated"]) for p in stats["packages"]] == [("2024_10_notes.zip", 1)]
     assert stats["state"] == "ok"
     assert list(scratch.iterdir()) == []  # every run removed its downloads
+
+
+def test_worker_refetches_a_republished_package_over_its_cached_copy(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    cache = tmp_path / "cache"
+    build = tmp_path / "build"
+    build.mkdir()
+
+    def month(symbol: str) -> bytes:
+        return _write_package(
+            build / "2024_10_notes.zip",
+            [_sub("0000000005-24-000001", 732717, "8-K", "20241105")],
+            [_fact("0000000005-24-000001", "TradingSymbol", symbol)],
+        ).read_bytes()
+
+    packages = {"2024_10_notes.zip": month("T")}
+    client, calls = _fake_sec(tmp_path, packages, {})
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    first = worker.run(dsn, calc_date="2024-11-15", client=client, cache_dir=cache)
+    assert [p["package"] for p in first["packages"]] == ["2024_10_notes.zip"]
+    assert (cache / "2024_10_notes.zip").exists()  # kept in the persistent cache
+
+    packages["2024_10_notes.zip"] = month("TLONGER")  # republished: different size
+    calls.clear()
+    second = worker.run(dsn, calc_date="2024-11-15", client=client, cache_dir=cache)
+    assert ("GET", FSN_BASE + "2024_10_notes.zip") in calls
+    assert second["state"] == "ok"
+    assert [(p["package"], p["inserted"], p["removed"]) for p in second["packages"]] == [
+        ("2024_10_notes.zip", 1, 1),
+    ]
+    assert conn.execute("SELECT ticker FROM sec_ticker_cik_observations").fetchall() == [
+        ("TLONGER",),
+    ]
+    assert (cache / "2024_10_notes.zip").read_bytes() == packages["2024_10_notes.zip"]
 
 
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:

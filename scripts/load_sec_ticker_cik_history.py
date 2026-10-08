@@ -49,7 +49,7 @@ import re
 import time
 import zipfile
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import IO, Iterable
@@ -73,15 +73,22 @@ SCHEMA_PATH = ROOT / "schemas" / "sec_ticker_cik_history_v1.sql"
 SYMBOL_TAG = "TradingSymbol"
 TITLE_TAG = "Security12bTitle"
 EXCHANGE_TAG = "SecurityExchangeName"
+ENTITY_CIK_TAG = "EntityCentralIndexKey"
 SHARES_TAG = "EntityCommonStockSharesOutstanding"
-COVER_TAGS = frozenset({SYMBOL_TAG, TITLE_TAG, EXCHANGE_TAG})
+COVER_TAGS = frozenset({SYMBOL_TAG, TITLE_TAG, EXCHANGE_TAG, ENTITY_CIK_TAG})
 # Byte prefilters: the tag is the second tab-separated field of txt/num rows.
 _COVER_TAG_MARKERS = tuple(f"\t{tag}\t".encode() for tag in COVER_TAGS)
 _SHARES_MARKER = f"\t{SHARES_TAG}\t".encode()
 NO_DIMENSIONS = "0x00000000"
 # Axes that qualify where/for whom a class is reported, not which class it is.
-NON_CLASS_AXES = frozenset({"EntityListingsExchange", "LegalEntity"})
-EVENT_FORMS = ("15-12B", "15-12G", "15-15D", "25", "25-NSE")
+EXCHANGE_AXIS = "EntityListingsExchange"
+LEGAL_ENTITY_AXIS = "LegalEntity"
+EQUITY_KINDS = frozenset({"equity", "depositary"})
+# The line of a filing's one equity/depositary class (schema: line_key).
+SOLE_EQUITY_LINE = "*"
+# Deregistration / delisting originals and their amendments ('/A' supersedes).
+EVENT_ORIGINAL_FORMS = ("15-12B", "15-12G", "15-15D", "25", "25-NSE")
+EVENT_FORMS = EVENT_ORIGINAL_FORMS + tuple(f"{form}/A" for form in EVENT_ORIGINAL_FORMS)
 
 PACKAGE_RE = re.compile(
     r"^(?P<year>\d{4})(?:q(?P<quarter>[1-4])|_(?P<month>\d{2}))_notes(?:_\d+)?\.zip$"
@@ -93,12 +100,13 @@ _INDEX_LINE_RE = re.compile(
 )
 
 OBSERVATION_COLUMNS = (
-    "adsh", "cik", "dimh", "segments", "class_key", "ticker", "ticker_raw",
+    "adsh", "cik", "dimh", "segments", "class_key", "line_key", "ticker", "ticker_raw",
     "security_title", "exchange", "security_kind", "ddate", "form", "period",
     "filed", "accepted", "source_package",
 )
 SHARE_COLUMNS = (
-    "adsh", "cik", "dimh", "segments", "class_key", "ddate", "shares", "form",
+    "adsh", "cik", "dimh", "segments", "class_key", "stated_on", "ddate_rounded", "shares",
+    "form",
     "filed", "accepted", "source_package",
 )
 EVENT_COLUMNS = ("adsh", "cik", "form", "filed", "source_package")
@@ -161,6 +169,7 @@ class Submission:
     period: dt.date | None
     filed: dt.date
     accepted: dt.datetime | None
+    nciks: int = 1
 
 
 @dataclass(frozen=True)
@@ -170,6 +179,7 @@ class Observation:
     dimh: str
     segments: str
     class_key: str
+    line_key: str
     ticker: str
     ticker_raw: str
     security_title: str | None
@@ -193,7 +203,8 @@ class ShareCount:
     dimh: str
     segments: str
     class_key: str
-    ddate: dt.date
+    stated_on: dt.date
+    ddate_rounded: dt.date
     shares: Decimal
     form: str
     filed: dt.date
@@ -289,10 +300,31 @@ def normalize_symbols(raw: str) -> tuple[list[str], list[str]]:
     return tickers, rejections
 
 
-def class_key(segments: str) -> str:
-    """The class part of a context's segments, in a stable order."""
-    parts = [part for part in segments.split(";") if part]
-    kept = sorted(part for part in parts if part.split("=", 1)[0] not in NON_CLASS_AXES)
+def _segment_parts(segments: str) -> list[str]:
+    return [part for part in segments.split(";") if part]
+
+
+def legal_entity_member(segments: str) -> str | None:
+    """The LegalEntityAxis member of a context, if any."""
+    for part in _segment_parts(segments):
+        axis, _, member = part.partition("=")
+        if axis == LEGAL_ENTITY_AXIS:
+            return member
+    return None
+
+
+def class_key(segments: str, *, keep_entity: bool = False) -> str:
+    """The class part of a context's segments, in a stable order.
+
+    The listing-exchange axis never distinguishes a class. The legal-entity axis
+    is dropped when it names a registrant, and kept when a single registrant
+    uses it to name one of its own classes (Renalytix's
+    ``LegalEntity=AmericanDepositaryShares``).
+    """
+    dropped = {EXCHANGE_AXIS} if keep_entity else {EXCHANGE_AXIS, LEGAL_ENTITY_AXIS}
+    kept = sorted(
+        part for part in _segment_parts(segments) if part.split("=", 1)[0] not in dropped
+    )
     return "".join(f"{part};" for part in kept)
 
 
@@ -343,6 +375,26 @@ def parse_fsn_date(value: str) -> dt.date | None:
     return dt.datetime.strptime(value, "%Y%m%d").date()
 
 
+def stated_date(ddate: str, datp: str) -> tuple[dt.date, dt.date] | None:
+    """(stated date, DERA rounded ddate) of a numeric fact.
+
+    DERA rounds ``ddate`` to the nearest month end and reports ``datp``, the days
+    from the stated date to that month end, so the stated date is ``ddate - datp``.
+    Checked against the exact XBRL context dates (companyfacts ``period_end`` of
+    the same accession): 352 of 353 sampled cover counts with a nonzero datp in
+    2010-2024 packages. Campbell 0000016732-26-000026 (ddate 2026-09-30, datp 14)
+    states 2026-09-16 on its cover.
+    """
+    rounded = parse_fsn_date(ddate)
+    if rounded is None:
+        return None
+    try:
+        days = round(float(datp)) if datp.strip() else 0
+    except ValueError:
+        return None
+    return rounded - dt.timedelta(days=days), rounded
+
+
 def parse_accepted(value: str) -> dt.datetime | None:
     """EDGAR acceptance datetime (America/New_York wall clock, no zone)."""
     value = value.strip()
@@ -375,27 +427,31 @@ def read_submissions(stream: IO[bytes]) -> dict[str, Submission]:
         cik = int(fields[index["cik"]] or 0)
         if filed is None or cik <= 0:
             continue
+        nciks = fields[index["nciks"]].strip() if "nciks" in index else ""
         submissions[fields[index["adsh"]]] = Submission(
             cik=cik,
             form=fields[index["form"]].strip(),
             period=parse_fsn_date(fields[index["period"]]),
             filed=filed,
             accepted=parse_accepted(fields[index["accepted"]]) if "accepted" in index else None,
+            nciks=int(nciks) if nciks.isdigit() else 1,
         )
     return submissions
 
 
 @dataclass
 class _CoverFacts:
+    coreg: str = ""
     symbols: list[tuple[int, str, str]] = field(default_factory=list)  # iprx, value, ddate
     titles: list[tuple[int, str]] = field(default_factory=list)
     exchanges: list[tuple[int, str]] = field(default_factory=list)
+    entity_ciks: list[tuple[int, str]] = field(default_factory=list)
 
 
 def read_cover_facts(
     stream: IO[bytes], rejected: Counter
 ) -> tuple[dict[tuple[str, str], _CoverFacts], int]:
-    """dei cover facts of the registrant keyed by (adsh, dimh); all symbol facts seen."""
+    """dei cover facts keyed by (adsh, dimh); all symbol facts seen."""
     index = _header(stream)
     width = len(index)
     facts: dict[tuple[str, str], _CoverFacts] = {}
@@ -415,29 +471,36 @@ def read_cover_facts(
             if tag == SYMBOL_TAG:
                 rejected["non_dei_tag"] += 1
             continue
-        if fields[index["coreg"]].strip():
-            if tag == SYMBOL_TAG:
-                rejected["coregistrant"] += 1
-            continue
         value = fields[index["value"]].strip()
         iprx = int(fields[index["iprx"]] or 0)
         entry = facts.setdefault((fields[index["adsh"]], fields[index["dimh"]]), _CoverFacts())
+        entry.coreg = fields[index["coreg"]].strip()
         if tag == SYMBOL_TAG:
             entry.symbols.append((iprx, value, fields[index["ddate"]]))
         elif tag == TITLE_TAG:
             entry.titles.append((iprx, value))
-        else:
+        elif tag == EXCHANGE_TAG:
             entry.exchanges.append((iprx, value))
+        else:
+            entry.entity_ciks.append((iprx, value))
     return facts, symbol_facts
 
 
-def read_share_facts(
-    stream: IO[bytes], rejected: Counter
-) -> list[tuple[str, str, str, Decimal]]:
-    """(adsh, dimh, ddate, shares) of the registrant's cover share counts."""
+@dataclass(frozen=True)
+class _ShareFact:
+    adsh: str
+    dimh: str
+    coreg: str
+    ddate: str
+    datp: str
+    shares: Decimal
+
+
+def read_share_facts(stream: IO[bytes], rejected: Counter) -> list[_ShareFact]:
+    """The cover share counts (any entity; resolved against the contexts later)."""
     index = _header(stream)
     width = len(index)
-    found: list[tuple[str, str, str, Decimal]] = []
+    found: list[_ShareFact] = []
     for raw in stream:
         if _SHARES_MARKER not in raw:
             continue
@@ -446,8 +509,8 @@ def read_share_facts(
             raise ValueError(f"num.tsv row has {len(fields)} fields, expected {width}")
         if fields[index["tag"]] != SHARES_TAG or not fields[index["version"]].startswith("dei/"):
             continue
-        if fields[index["coreg"]].strip() or fields[index["uom"]] != "shares":
-            rejected["share_count_other_entity_or_unit"] += 1
+        if fields[index["uom"]] != "shares":
+            rejected["share_count_unit"] += 1
             continue
         try:
             shares = Decimal(fields[index["value"]])
@@ -457,7 +520,14 @@ def read_share_facts(
         if not shares.is_finite() or shares < 0:
             rejected["share_count_unparseable"] += 1
             continue
-        found.append((fields[index["adsh"]], fields[index["dimh"]], fields[index["ddate"]], shares))
+        found.append(_ShareFact(
+            adsh=fields[index["adsh"]],
+            dimh=fields[index["dimh"]],
+            coreg=fields[index["coreg"]].strip(),
+            ddate=fields[index["ddate"]],
+            datp=fields[index["datp"]] if "datp" in index else "",
+            shares=shares,
+        ))
     return found
 
 
@@ -479,6 +549,70 @@ def _first(values: list[tuple[int, str]]) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class _Entities:
+    """Who each legal-entity context of a filing is, from dei:EntityCentralIndexKey."""
+
+    by_member: dict[tuple[str, str], int]  # (adsh, LegalEntity member) -> CIK
+    registrant_members: set[str]  # adsh in which some legal-entity member names a CIK
+    titled_members: set[tuple[str, str]]  # (adsh, member) whose context titles a security
+
+
+def _entities(facts: dict[tuple[str, str], _CoverFacts], segments: dict[str, str]) -> _Entities:
+    by_member: dict[tuple[str, str], int] = {}
+    titled: set[tuple[str, str]] = set()
+    for (adsh, dimh), entry in facts.items():
+        member = legal_entity_member(segments.get(dimh, ""))
+        if member is None:
+            continue
+        value = _first(entry.entity_ciks)
+        if value and value.isdigit() and int(value) > 0:
+            by_member[(adsh, member)] = int(value)
+        if _first(entry.titles):
+            titled.add((adsh, member))
+    return _Entities(by_member, {adsh for adsh, _ in by_member}, titled)
+
+
+def resolve_owner(
+    adsh: str, coreg: str, context: str, submission: Submission, entities: _Entities
+) -> tuple[int, str] | None:
+    """(CIK, class_key) a cover fact belongs to, or None when it cannot be attributed.
+
+    A fact without a co-registrant belongs to ``sub.cik``. A legal-entity context
+    whose member carries its own dei:EntityCentralIndexKey belongs to that CIK (a
+    genuine co-registrant, or the registrant itself). A member without one is the
+    registrant's own class only in a single-registrant filing in which no member
+    names a registrant and the member's context titles a security: Renalytix
+    and Nano Dimension name their ADS that way. Anything else is unattributable.
+    """
+    if not coreg:
+        return submission.cik, class_key(context)
+    member = legal_entity_member(context)
+    if member is None:
+        return None
+    mapped = entities.by_member.get((adsh, member))
+    if mapped is not None:
+        return mapped, class_key(context)
+    if (submission.nciks <= 1 and adsh not in entities.registrant_members
+            and (adsh, member) in entities.titled_members):
+        return submission.cik, class_key(context, keep_entity=True)
+    return None
+
+
+def _with_line_keys(rows: list[Observation]) -> list[Observation]:
+    """Mark the one equity/depositary class of a filing as the sole equity line."""
+    equity: dict[tuple[str, int], set[str]] = {}
+    for row in rows:
+        if row.security_kind in EQUITY_KINDS:
+            equity.setdefault((row.adsh, row.cik), set()).add(row.class_key)
+    return [
+        replace(row, line_key=SOLE_EQUITY_LINE)
+        if row.security_kind in EQUITY_KINDS and len(equity[(row.adsh, row.cik)]) == 1
+        else row
+        for row in rows
+    ]
+
+
 def build_observations(
     package: str,
     submissions: dict[str, Submission],
@@ -486,7 +620,8 @@ def build_observations(
     segments: dict[str, str],
     rejected: Counter,
 ) -> list[Observation]:
-    """Join symbols to their submission and class; one row per (adsh, dimh, ticker)."""
+    """Join symbols to submission, owner and class; one row per (adsh, dimh, ticker)."""
+    entities = _entities(facts, segments)
     rows: dict[tuple[str, str, str], Observation] = {}
     for (adsh, dimh), entry in sorted(facts.items()):
         if not entry.symbols:
@@ -502,6 +637,13 @@ def build_observations(
             if context is None:
                 rejected["unknown_dimension"] += 1
                 continue
+            owner = resolve_owner(adsh, entry.coreg, context, submission, entities)
+            if owner is None:
+                rejected["coregistrant"] += 1
+                continue
+            cik, key = owner
+            if cik != submission.cik:
+                rejected["attributed_to_coregistrant"] += 1
             tickers, reasons = normalize_symbols(raw)
             rejected.update(reasons)
             for ticker in tickers:
@@ -510,10 +652,11 @@ def build_observations(
                     continue
                 rows[(adsh, dimh, ticker)] = Observation(
                     adsh=adsh,
-                    cik=submission.cik,
+                    cik=cik,
                     dimh=dimh,
                     segments=context,
-                    class_key=class_key(context),
+                    class_key=key,
+                    line_key=key,
                     ticker=ticker,
                     ticker_raw=raw,
                     security_title=title,
@@ -526,32 +669,41 @@ def build_observations(
                     accepted=submission.accepted,
                     source_package=package,
                 )
-    return [rows[key] for key in sorted(rows)]
+    return _with_line_keys([rows[key] for key in sorted(rows)])
 
 
 def build_share_counts(
     package: str,
     submissions: dict[str, Submission],
-    facts: list[tuple[str, str, str, Decimal]],
+    facts: list[_ShareFact],
+    cover: dict[tuple[str, str], _CoverFacts],
     segments: dict[str, str],
     rejected: Counter,
 ) -> list[ShareCount]:
+    entities = _entities(cover, segments)
     rows: dict[tuple[str, str, dt.date, Decimal], ShareCount] = {}
-    for adsh, dimh, ddate, shares in facts:
-        submission = submissions.get(adsh)
-        context = segments.get(dimh)
-        as_of = parse_fsn_date(ddate)
-        if submission is None or context is None or as_of is None:
+    for fact in facts:
+        submission = submissions.get(fact.adsh)
+        context = segments.get(fact.dimh)
+        dates = stated_date(fact.ddate, fact.datp)
+        if submission is None or context is None or dates is None:
             rejected["share_count_unjoined"] += 1
             continue
-        rows.setdefault((adsh, dimh, as_of, shares), ShareCount(
-            adsh=adsh,
-            cik=submission.cik,
-            dimh=dimh,
+        owner = resolve_owner(fact.adsh, fact.coreg, context, submission, entities)
+        if owner is None:
+            rejected["share_count_coregistrant"] += 1
+            continue
+        cik, key = owner
+        stated_on, rounded = dates
+        rows.setdefault((fact.adsh, fact.dimh, stated_on, fact.shares), ShareCount(
+            adsh=fact.adsh,
+            cik=cik,
+            dimh=fact.dimh,
             segments=context,
-            class_key=class_key(context),
-            ddate=as_of,
-            shares=shares,
+            class_key=key,
+            stated_on=stated_on,
+            ddate_rounded=rounded,
+            shares=fact.shares,
             form=submission.form,
             filed=submission.filed,
             accepted=submission.accepted,
@@ -578,11 +730,13 @@ def parse_package(path: Path) -> PackageResult:
             facts, symbol_facts = read_cover_facts(io.BufferedReader(stream, 1 << 20), rejected)
         with archive.open("num.tsv") as stream:
             share_facts = read_share_facts(io.BufferedReader(stream, 1 << 20), rejected)
-        wanted = {dimh for _, dimh in facts} | {dimh for _, dimh, _, _ in share_facts}
+        wanted = {dimh for _, dimh in facts} | {fact.dimh for fact in share_facts}
         with archive.open("dim.tsv") as stream:
             segments = read_segments(io.BufferedReader(stream, 1 << 20), wanted)
     observations = build_observations(path.name, submissions, facts, segments, rejected)
-    share_counts = build_share_counts(path.name, submissions, share_facts, segments, rejected)
+    share_counts = build_share_counts(
+        path.name, submissions, share_facts, facts, segments, rejected
+    )
     return PackageResult(
         package=path.name,
         sha256=_sha256(path),
@@ -685,7 +839,8 @@ def require_schema(conn) -> None:
         "SELECT to_regclass('sec_ticker_cik_observations') IS NOT NULL "
         "AND to_regclass('sec_cover_share_counts') IS NOT NULL "
         "AND to_regclass('sec_registration_events') IS NOT NULL "
-        "AND to_regclass('sec_ticker_cik_packages') IS NOT NULL"
+        "AND to_regclass('sec_ticker_cik_packages') IS NOT NULL "
+        "AND to_regclass('sec_ticker_cik_package_members') IS NOT NULL"
     ).fetchone()[0]
     if not present:
         raise RuntimeError(
@@ -735,8 +890,21 @@ _OBSERVATION_CHANGED = (
 )
 
 
+def _replace_members(cur, package: str, members: Iterable[tuple[str, int]]) -> None:
+    cur.execute("DELETE FROM sec_ticker_cik_package_members WHERE source_package = %s",
+                (package,))
+    _copy(cur, "sec_ticker_cik_package_members", ("source_package", "adsh", "cik"),
+          ((package, adsh, cik) for adsh, cik in members))
+
+
 def load_package(conn, result: PackageResult) -> dict[str, int]:
-    """Upsert one package in a single transaction; converge its submissions."""
+    """Replace one package's evidence in a single transaction.
+
+    Rows of the package's accessions converge to what it now contains; an
+    accession the previous version of the package contained and this one does
+    not loses its rows, unless another loaded package also contains it.
+    """
+    package = result.package
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
@@ -755,10 +923,25 @@ def load_package(conn, result: PackageResult) -> dict[str, int]:
             _copy(cur, "tmp_sec_adsh", ("adsh",), ((adsh,) for adsh in result.submissions))
             cur.execute(
                 """
-                DELETE FROM sec_ticker_cik_observations o USING tmp_sec_adsh a
-                WHERE o.adsh = a.adsh AND NOT EXISTS (
-                    SELECT 1 FROM tmp_sec_obs t
-                    WHERE t.adsh = o.adsh AND t.dimh = o.dimh AND t.ticker = o.ticker)
+                CREATE TEMP TABLE tmp_sec_dropped ON COMMIT DROP AS
+                SELECT DISTINCT m.adsh
+                FROM sec_ticker_cik_package_members m
+                WHERE m.source_package = %(package)s
+                  AND NOT EXISTS (SELECT 1 FROM tmp_sec_adsh a WHERE a.adsh = m.adsh)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sec_ticker_cik_package_members o
+                      WHERE o.adsh = m.adsh AND o.source_package <> %(package)s
+                        AND o.source_package LIKE '%%.zip')
+                """,
+                {"package": package},
+            )
+            cur.execute(
+                """
+                DELETE FROM sec_ticker_cik_observations o
+                WHERE o.adsh IN (SELECT adsh FROM tmp_sec_dropped)
+                   OR (o.adsh IN (SELECT adsh FROM tmp_sec_adsh) AND NOT EXISTS (
+                       SELECT 1 FROM tmp_sec_obs t
+                       WHERE t.adsh = o.adsh AND t.dimh = o.dimh AND t.ticker = o.ticker))
                 """
             )
             removed = cur.rowcount
@@ -775,10 +958,12 @@ def load_package(conn, result: PackageResult) -> dict[str, int]:
             written = [row[0] for row in cur.fetchall()]
             cur.execute(
                 """
-                DELETE FROM sec_cover_share_counts c USING tmp_sec_adsh a
-                WHERE c.adsh = a.adsh AND NOT EXISTS (
-                    SELECT 1 FROM tmp_sec_shares t
-                    WHERE (t.adsh, t.dimh, t.ddate, t.shares) = (c.adsh, c.dimh, c.ddate, c.shares))
+                DELETE FROM sec_cover_share_counts c
+                WHERE c.adsh IN (SELECT adsh FROM tmp_sec_dropped)
+                   OR (c.adsh IN (SELECT adsh FROM tmp_sec_adsh) AND NOT EXISTS (
+                       SELECT 1 FROM tmp_sec_shares t
+                       WHERE (t.adsh, t.dimh, t.stated_on, t.shares)
+                           = (c.adsh, c.dimh, c.stated_on, c.shares)))
                 """
             )
             shares_removed = cur.rowcount
@@ -786,24 +971,30 @@ def load_package(conn, result: PackageResult) -> dict[str, int]:
                 f"""
                 INSERT INTO sec_cover_share_counts ({", ".join(SHARE_COLUMNS)})
                 SELECT {", ".join(SHARE_COLUMNS)} FROM tmp_sec_shares
-                ON CONFLICT (adsh, dimh, ddate, shares) DO UPDATE SET
+                ON CONFLICT (adsh, dimh, stated_on, shares) DO UPDATE SET
                     cik = EXCLUDED.cik, segments = EXCLUDED.segments,
-                    class_key = EXCLUDED.class_key, form = EXCLUDED.form,
-                    filed = EXCLUDED.filed, accepted = EXCLUDED.accepted,
+                    class_key = EXCLUDED.class_key, ddate_rounded = EXCLUDED.ddate_rounded,
+                    form = EXCLUDED.form, filed = EXCLUDED.filed, accepted = EXCLUDED.accepted,
                     source_package = EXCLUDED.source_package
                 WHERE (sec_cover_share_counts.cik, sec_cover_share_counts.segments,
-                       sec_cover_share_counts.class_key, sec_cover_share_counts.form,
-                       sec_cover_share_counts.filed, sec_cover_share_counts.accepted,
-                       sec_cover_share_counts.source_package)
+                       sec_cover_share_counts.class_key, sec_cover_share_counts.ddate_rounded,
+                       sec_cover_share_counts.form, sec_cover_share_counts.filed,
+                       sec_cover_share_counts.accepted, sec_cover_share_counts.source_package)
                     IS DISTINCT FROM (EXCLUDED.cik, EXCLUDED.segments, EXCLUDED.class_key,
-                       EXCLUDED.form, EXCLUDED.filed, EXCLUDED.accepted,
-                       EXCLUDED.source_package)
+                       EXCLUDED.ddate_rounded, EXCLUDED.form, EXCLUDED.filed,
+                       EXCLUDED.accepted, EXCLUDED.source_package)
                 RETURNING (xmax = 0)
                 """
             )
             shares_written = [row[0] for row in cur.fetchall()]
+            cur.execute("SELECT count(*) FROM tmp_sec_dropped")
+            dropped = cur.fetchone()[0]
+            _replace_members(
+                cur, package,
+                ((adsh, submission.cik) for adsh, submission in result.submissions.items()),
+            )
             _record_package(
-                cur, package=result.package, sha256=result.sha256, size=result.size_bytes,
+                cur, package=package, sha256=result.sha256, size=result.size_bytes,
                 submissions=len(result.submissions), symbol_facts=result.symbol_facts,
                 observations=len(result.observations), share_counts=len(result.share_counts),
                 events=0, rejected=result.rejected,
@@ -812,13 +1003,21 @@ def load_package(conn, result: PackageResult) -> dict[str, int]:
         "inserted": sum(1 for inserted in written if inserted),
         "updated": sum(1 for inserted in written if not inserted),
         "removed": removed,
+        "accessions_dropped": dropped,
         "shares_inserted": sum(1 for inserted in shares_written if inserted),
         "shares_removed": shares_removed,
     }
 
 
 def load_form_index(conn, path: Path) -> dict[str, object]:
+    """Replace one quarterly index's events in a single transaction.
+
+    An (accession, CIK) event the previous version of this index contained and
+    this one does not (removed, or its CIK corrected) is deleted, unless another
+    loaded index also contains it.
+    """
     events, sha256, size = parse_form_index(path)
+    package = path.name
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
@@ -826,6 +1025,23 @@ def load_form_index(conn, path: Path) -> dict[str, object]:
                 "INCLUDING DEFAULTS) ON COMMIT DROP"
             )
             _copy(cur, "tmp_sec_events", EVENT_COLUMNS, (e.as_tuple() for e in events))
+            cur.execute(
+                """
+                DELETE FROM sec_registration_events e
+                USING sec_ticker_cik_package_members m
+                WHERE m.source_package = %(package)s
+                  AND (e.adsh, e.cik) = (m.adsh, m.cik)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM tmp_sec_events t WHERE (t.adsh, t.cik) = (m.adsh, m.cik))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sec_ticker_cik_package_members o
+                      WHERE (o.adsh, o.cik) = (m.adsh, m.cik)
+                        AND o.source_package <> %(package)s
+                        AND o.source_package LIKE '%%.form.gz')
+                """,
+                {"package": package},
+            )
+            removed = cur.rowcount
             cur.execute(
                 f"""
                 INSERT INTO sec_registration_events ({", ".join(EVENT_COLUMNS)})
@@ -840,17 +1056,19 @@ def load_form_index(conn, path: Path) -> dict[str, object]:
                 """
             )
             written = [row[0] for row in cur.fetchall()]
+            _replace_members(cur, package, ((e.adsh, e.cik) for e in events))
             _record_package(
-                cur, package=path.name, sha256=sha256, size=size, submissions=0,
+                cur, package=package, sha256=sha256, size=size, submissions=0,
                 symbol_facts=0, observations=0, share_counts=0, events=len(events),
                 rejected=Counter(),
             )
     return {
-        "package": path.name,
+        "package": package,
         "events": len(events),
         "forms": dict(Counter(e.form for e in events).most_common()),
         "inserted": sum(1 for inserted in written if inserted),
         "updated": sum(1 for inserted in written if not inserted),
+        "removed": removed,
     }
 
 
