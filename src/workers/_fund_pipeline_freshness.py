@@ -15,7 +15,7 @@ import datetime as dt
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from src.db import LOCK_NPORT_LOAD
 
@@ -204,6 +204,38 @@ def require_unchanged(stage: str, before: SourceCohort, after: SourceCohort) -> 
         "load_watermark_after": list(after.load_watermark),
         "last_good_preserved": True,
     })
+
+
+def request_profile_refresh(conn: Any) -> int:
+    """Ask the postgres-owned profile policy to run soon; return its job id.
+
+    The id is a request receipt, never proof of a completed refresh. Source
+    writes must already be committed. The request is committed here, before any
+    poll: an uncommitted ``next_start`` change is invisible to the scheduler.
+    Runtime never CALLs the owner-only Timescale refresh procedure itself
+    (docs/runbooks/nport-series-profile-refresh.md).
+    """
+    job_id = conn.execute("SELECT public.request_nport_series_profile_refresh()").fetchone()[0]
+    conn.commit()
+    return job_id
+
+
+def poll_alignment(
+    check: Callable[[], tuple[dict[str, Any], bool]], *, attempts: int, interval: float,
+    sleeper: Callable[[float], None],
+) -> tuple[dict[str, Any], int]:
+    """Re-run ``check`` until it reports alignment or ``attempts`` polls are spent.
+
+    ``check`` returns ``(evidence, aligned)``. Returns the last evidence and the
+    number of polls; the caller treats unaligned evidence as pending, not fresh.
+    """
+    for poll in range(1, attempts + 1):
+        if poll > 1:
+            sleeper(interval)
+        evidence, aligned = check()
+        if aligned:
+            break
+    return evidence, poll
 
 
 def lock_source(conn: Any, stage: str) -> None:

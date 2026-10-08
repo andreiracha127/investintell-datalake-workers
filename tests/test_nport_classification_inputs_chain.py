@@ -33,6 +33,9 @@ def _patch(monkeypatch, cagg_alarms):
         def fetchone(self):
             return (1078,)
 
+        def commit(self):
+            calls.append("commit")
+
     @contextmanager
     def lock(*_a):
         yield True
@@ -66,7 +69,9 @@ def test_chain_waits_for_cagg_proof_before_characteristics_and_lookthrough(monke
     assert stats["state"] == "complete"
     assert calls.index("request") < calls.index("compute_characteristics")
     assert calls.index("compute_characteristics") < calls.index("compute_lookthrough")
-    assert calls[:4] == ["cagg", "request", "cagg", "cagg"]
+    # The request is committed before the first poll: an uncommitted next_start
+    # change is invisible to the Timescale scheduler.
+    assert calls[:5] == ["cagg", "request", "commit", "cagg", "cagg"]
 
 
 def test_pending_owner_refresh_does_not_run_or_publish_downstream(monkeypatch):

@@ -2,8 +2,8 @@
 
 This lane feeds `sec_nport_holdings` from monthly `form-nport` containers.
 Amounts are USD. Characteristics, N-PORT lookthrough and Light fund classification
-consume these rows. No service or cron is enabled by this PR; it remains
-**DO NOT MERGE** until the owner schedules the lane.
+consume these rows. No service or cron is attached; scheduling the lane is an
+owner decision (`railway.nport-secapi-monthly.toml`).
 
 | Component | Responsibility |
 |---|---|
@@ -11,7 +11,7 @@ consume these rows. No service or cron is enabled by this PR; it remains
 | `convert.py` | One winning filing per date/series, one CSV per date, source accounting in `manifest.json` |
 | `contract.py` / `validate.py` | Shared exact quality predicates / offline profile and verdict |
 | `nport_parallel_load.py` | Read-only preflight, atomic COPY/insert/verify, compression maintenance |
-| `nport_secapi_monthly.py` | Monthly window, new-series planning, result reporting, cagg refresh/recovery |
+| `nport_secapi_monthly.py` | Monthly window, new-series planning, result reporting, cagg refresh request and alignment check |
 
 ## Validation contract
 
@@ -169,18 +169,28 @@ Partial target dates, empty conversions, value failures and loader errors
 produce failed stats. One date's exception retains its result and permits
 assessment of the remaining dates.
 
-The lane refreshes `cagg_nport_series_profile` per maximal accepted range,
-never across a failed date. `stats.cagg_refreshed` lists successes;
-`cagg_refresh_failed` preserves failures. A later no-new-series run compares
-table/cagg series counts and retries a stale cagg after read-only ISIN checking.
+The cagg is owned by `postgres` and is `materialized_only`. The lane runs as
+`worker_writer`, which cannot refresh it. After the loads commit, the lane calls
+`public.request_nport_series_profile_refresh()` once, on an autocommit
+connection, so the request is committed before any poll. The function advances
+the owner policy, live job **1078** (every **6 h**, NULL `start_offset`, `1 day`
+`end_offset`), which refreshes the whole invalidated window. Its job id is a
+receipt, not completion; see [the capability runbook](nport-series-profile-refresh.md).
 
-The cagg is owned by `postgres` and is `materialized_only`. Live job **1078**
-was scheduled every **6 h**, with NULL `start_offset` and `1 day` `end_offset`;
-its last run succeeded. Explicit refreshes run outside a transaction block.
-Atomic rejection prevents direct readers and this independent job from seeing
-rejected rows. Proposed cron `0 9 3 * *` remains disabled. The nixpacks image
-must include `tools/`; it needs `SEC_API_IO_KEY`. Cache/log paths scrub tokens
-and failed transfers preserve the last verified cache.
+The lane then polls up to 30 times, 10 seconds apart. Alignment needs each
+accepted date's profile to hold every committed series, and the shared cohort
+check in `_fund_pipeline_freshness` to pass. A confirmed run is `ok`. An
+unconfirmed one is `blocked` with `reason: cagg_refresh_pending` and exits 1;
+its loads stay committed. A request that raises makes the run `failed`.
+`stats.cagg_refresh` records `report_dates`, `requested`, `job_id`, `aligned`,
+`polls`, `pending_report_dates`, the cohort verdict, and `error` on failure.
+
+Rejected loads roll back, so the policy never materializes rejected rows. A
+later no-new-series run compares table and profile series counts per date and,
+after read-only ISIN checking, requests again for a stale profile. Proposed cron
+`0 9 3 * *` remains disabled. The nixpacks image must include `tools/`; it needs
+`SEC_API_IO_KEY`. Cache/log paths scrub tokens and failed transfers preserve
+the last verified cache.
 
 ## Reproduction
 
@@ -200,6 +210,6 @@ py -3.13 -m pytest tests/test_nport_parallel_load_timescale.py -q
 Cases prove actual post-insert rejection, revisits, concurrent lifecycle/insert
 locks, compressed chunks, exact policy preservation, restoration errors,
 same-date CSV rollback, rejected replacement, independent dates, post-preflight
-market-value/percentage corruption and stale-cagg recovery. The real date gate
+market-value/percentage corruption and stale-cagg detection. The real date gate
 loads 58,691 rows / 197 series, checks per-series rows/values/exact percentages
 against CSV and cagg, then proves an idempotent zero-insert rerun.

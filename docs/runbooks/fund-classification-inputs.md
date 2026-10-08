@@ -19,10 +19,10 @@ green. These are separate legacy sources from V2 artifact-only look-through.
 
 `nport_ingestion` ingests local raw/landing packages. It is not the recurring
 writer of `sec_nport_holdings`; an empty package scope now fails explicitly.
-The recurring legacy loader is workers PR
-[#153](https://github.com/andreiracha127/investintell-datalake-workers/pull/153),
-now merged into main. Its remaining direct owner-only cagg refresh is a separate
-follow-up; this branch does not modify that loader.
+The recurring legacy loader is `nport_secapi_monthly` (workers PR
+[#153](https://github.com/andreiracha127/investintell-datalake-workers/pull/153)).
+It requests the profile refresh through the same governed function as this
+chain and never calls the owner-only refresh procedure.
 
 ## Explicit policy
 
@@ -135,30 +135,23 @@ orders cannot deadlock with the loader's 900363 -> 900365 -> 900364. A partial
 `WORKER_LIMIT` cannot publish a full fund cohort.
 A replay cutoff does not replace the UTC clock used to judge live freshness.
 
-## PR #153 integration still required
+## Monthly loader integration
 
-At the read-only snapshot of 2026-10-07 03:46 UTC, PR #153 head `3c3afab`
-remained open, **DO NOT MERGE**, and its checks were unstable. The loader now
-validates the actual inserted rows before commit and rolls rejected rows back;
-the other agent also addressed the converter/value review findings. The
-remaining integration is the direct owner-only `CALL` in `refresh_cagg`, the
-approved request/completion contract below, and the downstream trigger/retry.
-Another agent owns that branch. Recheck its head, review threads, CI, and the
-owner's release authorization before merging; this snapshot is not approval.
+`nport_secapi_monthly` commits its verified loads, then requests the refresh once
+through the shared `_fund_pipeline_freshness.request_profile_refresh`, which
+commits the request before any poll. Its own bounded wait is 30 polls, 10
+seconds apart. Every loaded date's profile must hold all committed series, and
+the cagg cohort check above must pass. An unconfirmed refresh ends the run
+`blocked` (`cagg_refresh_pending`, exit 1) with the loads committed; a later
+lane run or this chain's retries confirm alignment. Rejected loads roll back,
+so policy 1078 never materializes them.
 
-The central dispatcher in this PR already enforces the shared source gate after
-future `nport_secapi_monthly` **successful or noop** runs. It reads in a separate
-read-only transaction and turns stale/insufficient source evidence into a
-structured blocked exit. This protects the lane when the two branches are
-integrated without modifying PR #153 here. After its own loader/value/transaction
-review is complete, integrate the same contract at its release boundary. Use
-the fixed request function and commit the request before any poll; never
-restore the direct `CALL`. A successful load can invoke this input-chain module
-or rely on its scheduled retries. Do not run heavy downstream stages when the
-loader failed or the broad source gate did not pass. Late/new series at an
-unchanged max date are detected by per-series holding counts and source load
-timestamps. Loader regression coverage must include a no-op against stale
-inputs and a rejected load that cannot later be materialized by policy 1078.
+The central dispatcher still enforces the shared source gate after monthly
+**successful or noop** runs. It reads in a separate read-only transaction and
+turns stale or insufficient source evidence into a structured blocked exit. The
+lane runs no downstream stages; this chain's scheduled retries build them from
+the committed source. Late or new series at an unchanged max date are detected
+by per-series holding counts and source load timestamps.
 
 ## Interrupted-run cleanup and retry
 

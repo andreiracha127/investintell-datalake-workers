@@ -30,6 +30,9 @@ fresh output. The worker must poll its source/profile alignment check with its
 bounded timeout, exit non-zero while pending, and preserve the last good output.
 Commit source writes before requesting, then commit the request transaction
 before polling. An uncommitted `next_start` change is invisible to the scheduler.
+Both callers, `nport_classification_inputs_chain` and `nport_secapi_monthly`, go
+through `_fund_pipeline_freshness.request_profile_refresh`, which commits the
+request itself.
 
 ## Permission and load limits
 
