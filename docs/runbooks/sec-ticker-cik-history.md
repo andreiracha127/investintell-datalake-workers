@@ -229,14 +229,14 @@ holds advisory lock 900_368 so it never interleaves with the recurring worker.
 
 Full local run (2026-10-08, postgres:16 on the same workstation, filings
 cached): 79 DERA packages (2009q1 to 2026_09, 25 GB of zips) and 72 EDGAR
-quarterly indexes in **about 11.5 min** (676 s): 885,052 submissions, 866,258
+quarterly indexes in **about 11 min** (670 s): 885,052 submissions, 866,258
 `TradingSymbol` facts, **858,894** observations, **483,745** cover share counts,
-**79,693** registration events (ends, starts and amendments). 15,718 end filings
-of CIKs with cover data were read: 9,693 name an equity class, 5,934 another
-class, 91 state none (`class_unknown`); 0 cache misses, 0 fetch failures. No
-fact is dated after its filing's public date on a first load. Filling an empty
-filing cache takes about 15,700 requests (about 70 min at the observed
-sequential rate, never above 10 per second).
+**80,225** registration events (ends, starts and amendments; 532 of them Forms
+15F). 15,880 end filings of CIKs with cover data were read: 9,832 name an
+equity class, 5,956 another class, 92 state none (`class_unknown`); 0 cache
+misses, 0 fetch failures. No fact is dated after its filing's public date on a
+first load. Filling an empty filing cache takes about 15,900 requests (about
+70 min at the observed sequential rate, never above 10 per second).
 
 ## Lineage for price rows
 
@@ -325,9 +325,9 @@ API key.
    Last-Modified; record only those fresh validators; the first log line reports
    `fetched_again`): `PYTHONPATH=. python -m scripts.load_sec_ticker_cik_history
    --verify-cache --download --dsn <worker_writer DSN>`. On 2026-10-08 the cache
-   was current (79 listed, 0 fetched again). Expect 858,894 observations, 483,745 share counts and
-   79,693 events, `class_unknown` 91, `filings_missing` and `filings_failed` 0;
-   11-12 minutes locally, about 20-30 minutes against the remote database (the
+   was current (79 listed, 0 fetched again). Expect 858,894 observations,
+   483,745 share counts and 80,225 events, `class_unknown` 92, `filings_missing`
+   and `filings_failed` 0; 11-13 minutes locally, about 20-30 minutes against the remote database (the
    writes are 1.4M rows of COPY).
 3. Check: `SELECT count(*), max(available_on) FROM sec_ticker_cik_observations;`,
    `SELECT * FROM sec_ticker_issuer_at('BRK-B', current_date);` (resolved, CIK
@@ -336,15 +336,17 @@ API key.
    WHERE available_on > source_available_on;` (0 after a first load).
 4. Only after the follow-up PR on republication checks of every loaded package
    (connector thread 4221867196), validator recovery after a failed load
-   (4221867184) and digest validation of a same-size cached copy (4222197135)
+   (4221867184), digest validation of a same-size cached copy (4222197135),
+   path-level verification of a positional package (4222924629) and carrying
+   events already parsed under the current parser version (4223252991)
    merges: create the Railway service `sec-ticker-cik-history` from
    this repository with `railway.sec-ticker-cik-history.toml`,
    `WORKER=sec_ticker_cik_history` and the `worker_writer` `DATABASE_URL`. The
    cron is in the config file.
 5. Light's walk-forward equity sizing calls these functions: deploy the Light
    change only after steps 1-2 and after the follow-up PR (connector threads
-   4222086431, 4222086445, 4222086476, 4222376247, 4222376271, 4222376284)
-   merges. Light must handle `security_kind = 'unknown'` and the share status
+   4222086431, 4222086445, 4222086476, 4222376247, 4222376271, 4222376284,
+   4222924612, 4223111409, 4223111418, 4223252982) merges. Light must handle `security_kind = 'unknown'` and the share status
    `refused` (`foreign_issuer_listing_unverified`). W1c (above) is a separate
    follow-up that restores sizing for foreign issuers' lines.
 
