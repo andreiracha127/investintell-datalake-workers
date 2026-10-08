@@ -11,8 +11,9 @@ Scope (Increment 3 Task 2):
   callable bonds (the call schedule is carried on the terms and validated, but a
   call affects yield-to-worst later, not the base to-maturity schedule);
 * coupon frequencies annual / semiannual / quarterly;
-* day-count conventions 30/360 US (bond basis), ACT/ACT ICMA (Rule 251),
-  ACT/360, and ACT/365F;
+* day-count conventions 30/360 US (SIFMA bond basis with the February rules,
+  = QuantLib ``Thirty360::USA``), ACT/ACT ICMA (Rule 251), ACT/360, and
+  ACT/365F;
 * accrued interest with the coupon period resolved from the schedule.
 
 Degenerate inputs raise a typed :class:`~src.bonds.errors.BondError` with a
@@ -35,8 +36,8 @@ from .errors import BondError
 # Validation status (code marker consumed by the Phase-10 gate — Increment 3).
 # --------------------------------------------------------------------------- #
 # The cash-flow motor's numbers (day counts, coupon dates, accrued) are validated
-# in ``tests/bonds/test_cashflows.py`` against DOCUMENTED CONVENTIONS (ISDA 2006
-# 30/360, ACT/360, ACT/365F, ICMA Rule 251) — the convention IS the ground truth
+# in ``tests/bonds/test_cashflows.py`` against DOCUMENTED CONVENTIONS (SIFMA
+# 30/360 US, ACT/360, ACT/365F, ICMA Rule 251) — the convention IS the ground truth
 # for a cash-flow schedule; there is no separate "market" cash flow to reconcile
 # against.  The honest status is therefore ``convention_derived`` (validated by
 # convention, not by a printed market sample).  The Phase-10 gate reads this exact
@@ -165,22 +166,38 @@ class AccruedInterest:
 # --------------------------------------------------------------------------- #
 # Day counts
 # --------------------------------------------------------------------------- #
+def _is_last_day_of_february(value: date) -> bool:
+    return value.month == 2 and value.day == calendar.monthrange(value.year, 2)[1]
+
+
 def _thirty_360_us_days(start: date, end: date) -> int:
-    """30/360 (bond basis), basic variant — no end-of-February refinement.
+    """30/360 US (SIFMA bond basis, "30U/360") day count, February rules included.
 
-    Follows ISDA 2006 Definitions §4.16(f) "30/360" (a.k.a. Bond Basis):
-    D1=31 -> 30; then D2=31 -> 30 only when D1 (post-adjustment) is 30.
+    Rule set — SIFMA "Standard Securities Calculation Methods" 30/360 US, the
+    arithmetic of QuantLib ``Thirty360::USA`` and of Light's
+    ``app.bond_optimizer.cashflows._days_30_360_us`` (one convention across
+    both repositories, owner decision D3 / audit A2-02):
 
-    Note (honest scope): SIFMA's "Standard Securities Calculation Methods"
-    30U/360 adds an end-of-February refinement (both dates on the last day of
-    February collapse to day 30, and a February month-end D1 forces D2). That
-    refinement is deliberately NOT applied here, so this variant is cited to
-    ISDA §4.16(f) only, not to SIFMA. A licensed 30U/360 would be a distinct
-    ``DayCount`` member rather than a mutation of this one.
+    1. if D1 is the last day of February, or D1 = 31: D1 = 30;
+    2. if D1 and D2 are BOTH the last day of February: D2 = 30;
+    3. if D2 = 31 and the adjusted D1 = 30: D2 = 30;
+    4. days = 360·(Y2−Y1) + 30·(M2−M1) + (D2−D1).
+
+    This is NOT ISDA 2006 Definitions §4.16(f) "30/360" (bond basis), which
+    carries rules 1 (31 only) and 3 but no February rule and so counts
+    2007-02-28 → 2007-08-31 as 183 days instead of 180; and it is NOT
+    30E/360 ISDA (§4.16(h)), whose February rule adjusts D2 regardless of D1
+    and counts 2007-08-31 → 2008-02-28 as 180 instead of 178.  The rule set
+    was checked against QuantLib 1.43 ``Thirty360(Thirty360.USA)`` on 343,824
+    date pairs (every 1st/15th/27th–31st start in 2019–2024, spans 0–740
+    days): no difference; the previous basic variant differed on 4,435.
     """
     d1, d2 = start.day, end.day
-    if d1 == 31:
+    start_last_february = _is_last_day_of_february(start)
+    if start_last_february or d1 == 31:
         d1 = 30
+    if start_last_february and _is_last_day_of_february(end):
+        d2 = 30
     if d2 == 31 and d1 == 30:
         d2 = 30
     return 360 * (end.year - start.year) + 30 * (end.month - start.month) + (d2 - d1)

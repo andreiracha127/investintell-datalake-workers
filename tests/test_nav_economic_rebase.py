@@ -7,6 +7,7 @@ import json
 import math
 import socket
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -514,3 +515,44 @@ def test_cli_validation_never_touches_db_or_network(monkeypatch, capsys):
         out = json.loads(capsys.readouterr().out)
         assert out["code"] == code and out["status"] == "blocked"
         assert "postgres" not in json.dumps(out)
+
+
+@pytest.mark.parametrize(
+    "name", ["NAV_COVERAGE_MIN_ACTIVE_SHARE", "NAV_COVERAGE_MIN_READY_SHARE"]
+)
+@pytest.mark.parametrize("value", ["not-a-number", "nan", "inf", "-inf", "-0.1", "1.1"])
+def test_cli_rejects_invalid_coverage_floors_before_work(monkeypatch, capsys, name, value):
+    monkeypatch.setenv("NAV_COVERAGE_MIN_ACTIVE_SHARE", "0.85")
+    monkeypatch.setenv("NAV_COVERAGE_MIN_READY_SHARE", "0.80")
+    monkeypatch.setenv(name, value)
+    monkeypatch.setenv("NAV_READINESS_DATABASE_URL", "postgresql://unused")
+
+    # Let the original CLI reach the real floor parser without a live database,
+    # so the regression fails with the uncaught ValueError before the fix.
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.side_effect = [
+        {"now": dt.datetime(2026, 10, 6, tzinfo=dt.timezone.utc)},
+        {"present": True},
+    ]
+    connect = MagicMock()
+    connect.return_value.__enter__.return_value = conn
+    pins = MagicMock(return_value={})
+    current_pins = MagicMock(return_value=({}, SESSIONS, SESSIONS[-1]))
+    monkeypatch.setattr(cli.psycopg, "connect", connect)
+    monkeypatch.setattr(cli, "_schema_pins", pins)
+    monkeypatch.setattr(cli.schema_operator, "_check", lambda *_: {"ready": True})
+    monkeypatch.setattr(rebase, "_current_pins", current_pins)
+
+    assert cli.main([
+        "--schema", "s", "--contract", rebase.CONTRACT_VERSION,
+        "--max-requests", "1", "--max-seconds", "10",
+        "--rate-per-second", "1", "--batch-size", "1",
+    ]) == rebase.EXIT_FAILED
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out) == {
+        **rebase._empty_result(None), "code": "COVERAGE_FLOORS_INVALID",
+    }
+    pins.assert_not_called()
+    connect.assert_not_called()
+    current_pins.assert_not_called()

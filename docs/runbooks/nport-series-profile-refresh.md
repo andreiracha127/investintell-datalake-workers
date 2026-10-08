@@ -47,7 +47,7 @@ before polling. An uncommitted `next_start` change is invisible to the scheduler
   changed policy state raises SQLSTATE `55000` before scheduling anything.
 - A running or already due policy is left due. A start in the previous 15 minutes
   suppresses another expedited attempt. Concurrent requests use advisory
-  transaction lock `900365`; lock waits are capped at two seconds. These checks
+  transaction lock `900367`; lock waits are capped at two seconds. These checks
   prevent callers from turning retries into frequent heavy refreshes.
 - The existing policy's invalidation processing and date window are preserved.
   A request introduces no all-history forced refresh. The existing unbounded

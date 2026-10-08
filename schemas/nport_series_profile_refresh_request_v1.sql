@@ -84,7 +84,7 @@ BEGIN
             MESSAGE = 'nport_cagg_refresh_requires_one_owner_policy';
     END IF;
 
-    request_lock_acquired := pg_catalog.pg_try_advisory_xact_lock(900365::bigint);
+    request_lock_acquired := pg_catalog.pg_try_advisory_xact_lock(900367::bigint);
     SELECT j.*, s.job_status, s.last_run_started_at INTO target_job
     FROM timescaledb_information.jobs AS j
     LEFT JOIN timescaledb_information.job_stats AS s ON s.job_id = j.job_id

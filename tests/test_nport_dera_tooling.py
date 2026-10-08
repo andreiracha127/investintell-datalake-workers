@@ -15,6 +15,7 @@ that a repair reload can silently do nothing.
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import subprocess
 import sys
 from pathlib import Path
@@ -269,9 +270,9 @@ def test_delete_first_refuses_to_run_unscoped(tmp_path):
     assert excinfo.value.code == 2
 
 
-def test_delete_report_dates_refuses_an_empty_list():
+def test_replacement_refuses_an_empty_date_list():
     with pytest.raises(ValueError):
-        load.delete_report_dates("postgresql:///nope", [])
+        load.load_batch("postgresql:///nope", [], dt.datetime(2026, 10, 7), [], delete_first=True)
 
 
 # --------------------------------------------------------------------------

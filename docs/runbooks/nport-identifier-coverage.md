@@ -14,7 +14,9 @@ configuration is changed by this documentation.
 
 `sec_nport_holdings` is loaded one DERA quarterly package at a time by
 `tools/nport_dera/nport_bulk_parse.py` → `tools/nport_dera/nport_parallel_load.py`,
-run by hand. Until 2026-08-05 those two scripts lived only on the operator's disk,
+run by hand. Report months newer than the last DERA package come from sec-api.io's
+monthly bulk N-PORT through the same loader (`tools/nport_secapi`, see
+`nport-secapi-monthly.md`). Until 2026-08-05 those two scripts lived only on the operator's disk,
 untracked and untested; that is the reason two bad quarters went unnoticed for one
 and two years, and it is why they are now in this repository with a fixture-backed
 suite (`tests/test_nport_dera_tooling.py`). The parse builds a `HOLDING_ID → ISIN`

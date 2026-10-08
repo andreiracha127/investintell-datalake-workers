@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from contextlib import contextmanager
+from pathlib import Path
 
+from src import db
 from src.workers import _fund_pipeline_freshness as freshness
 from src.workers import nport_classification_inputs_chain as chain
 
@@ -93,3 +96,13 @@ def test_stale_source_cannot_trigger_cagg_or_downstream_work(monkeypatch):
                       lookthrough_runner=lambda *_a, **_k: calls.append("bad"))
     assert stats["state"] == "blocked"
     assert calls == []
+
+
+def test_cagg_request_lock_is_registered_and_not_shared():
+    sql = (Path(__file__).resolve().parents[1]
+           / "schemas" / "nport_series_profile_refresh_request_v1.sql").read_text(encoding="utf-8")
+    assert re.findall(r"advisory_xact_lock\((\d+)::bigint\)", sql) == [
+        str(db.LOCK_NPORT_SERIES_PROFILE_REFRESH_REQUEST)]
+    ids = [v for k, v in vars(db).items() if k.startswith("LOCK_") and isinstance(v, int)]
+    assert ids.count(db.LOCK_NPORT_SERIES_PROFILE_REFRESH_REQUEST) == 1
+    assert ids.count(db.LOCK_NPORT_CLASSIFICATION_INPUTS_CHAIN) == 1

@@ -352,7 +352,27 @@ LOCK_FUND_NAV_CURRENT_CHAIN = 900_361
 # INGESTION -> READINESS transaction locks. No other worker takes it. 900_362
 # is the next free id after LOCK_FUND_NAV_CURRENT_CHAIN (no other use in repo).
 LOCK_NAV_ECONOMIC_REBASE = 900_362
+# Monthly sec-api.io top-up of sec_nport_holdings (src/workers/nport_secapi_monthly).
+# Held on an autocommit connection for the whole download -> convert -> per-date
+# load -> cagg refresh run, so two runs never decompress and load the same chunk
+# at once. 900_363 is the next free id after LOCK_NAV_ECONOMIC_REBASE, found by
+# grepping this whole file.
+LOCK_NPORT_SECAPI_MONTHLY = 900_363
+# Transaction-level lock tools/nport_dera/nport_parallel_load takes around every
+# --new-series-only INSERT (its NEW_SERIES_LOCK, which must equal this), from
+# any process: two concurrent NOT EXISTS checks for the same absent series would
+# both pass and graft two filings into one series. Next free id after 900_363.
+LOCK_NPORT_NEW_SERIES_INSERT = 900_364
+# Loader lifecycle session mutex protects compression maintenance across
+# standalone invocations while disjoint date COPY transactions run in parallel.
+# Lock order: monthly worker 900_363 -> lifecycle 900_365 -> insert 900_364.
+LOCK_NPORT_LOAD = 900_365
 # Legacy fund-classification input chain; distinct from its children 900202
-# (characteristics) and 900204 (lookthrough/Light reader). 900363/900364 belong
-# to the pending monthly N-PORT loader; 900365 is the governed cagg request.
+# (characteristics) and 900204 (lookthrough/Light reader) and from the monthly
+# N-PORT loader locks 900_363/900_364/900_365 above.
 LOCK_NPORT_CLASSIFICATION_INPUTS_CHAIN = 900_366
+# Transaction-level try-lock public.request_nport_series_profile_refresh() takes
+# (schemas/nport_series_profile_refresh_request_v1.sql); that SQL literal must
+# equal this. It was 900365 until main's LOCK_NPORT_LOAD took that id, and a
+# shared id would make every request issued during a monthly load silently skip.
+LOCK_NPORT_SERIES_PROFILE_REFRESH_REQUEST = 900_367

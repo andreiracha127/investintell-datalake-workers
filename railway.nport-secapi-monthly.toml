@@ -1,0 +1,24 @@
+# Monthly sec-api.io top-up of sec_nport_holdings (src/workers/nport_secapi_monthly.py).
+#
+# NOT ATTACHED TO ANY SERVICE AND NO CRON. Creating the service and scheduling it
+# are operator decisions; see docs/runbooks/nport-secapi-monthly.md.
+#
+# Env: WORKER=nport_secapi_monthly, DATABASE_URL (datalake `market`),
+# SEC_API_IO_KEY. Optional: NPORT_SECAPI_CACHE_DIR (a mounted volume keeps the
+# containers between runs; without it ~0.5 GB is fetched per run),
+# WORKER_CALC_DATE (replay a month), WORKER_LIMIT (cap report_dates per run).
+#
+# Proposed schedule once the first manual load has been verified:
+#   cronSchedule = "0 9 3 * *"   # 09:00 UTC on the 3rd: month M-1 is complete
+# Never set cronSchedule to null or "" on Railway: null means RUN CONTINUOUSLY.
+#
+# Builds with nixpacks from the whole repository: the worker imports
+# tools/nport_dera and tools/nport_secapi, which the fleet Dockerfile does not COPY.
+# restartPolicy=never: a failed run must surface as failed, not loop.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"

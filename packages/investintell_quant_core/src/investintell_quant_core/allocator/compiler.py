@@ -33,11 +33,19 @@ def _issue(
 def _signature(
     *,
     category_ids: tuple[str, ...],
+    category_sleeve_ids: tuple[str, ...],
     instrument_ids: tuple[str, ...],
+    S: np.ndarray,
     M: np.ndarray,
     return_dates: tuple[str, ...],
+    blocks: tuple[BlockBudget, ...],
     linear: tuple[LinearConstraint, ...],
+    cvar_alpha: float,
+    cvar_limit: float,
+    min_weight: float | None,
+    tolerances: Tolerances,
     mapping_version: str,
+    decision_mode: str,
 ) -> str:
     constraints = [
         {
@@ -48,13 +56,36 @@ def _signature(
         }
         for constraint in linear
     ]
+    # Return values are data, not structure: the signature identifies the
+    # problem shape and policy, and ``return_dates`` already pins the window.
     payload = {
         "category_ids": category_ids,
+        "category_sleeve_ids": category_sleeve_ids,
         "instrument_ids": instrument_ids,
+        "S": np.round(S, 12).tolist(),
         "M": np.round(M, 12).tolist(),
         "return_dates": return_dates,
+        "blocks": [
+            {
+                "label": block.label,
+                "indices": list(block.indices),
+                "lo": float(block.lo),
+                "hi": float(block.hi),
+            }
+            for block in blocks
+        ],
         "constraints": constraints,
+        "cvar_alpha": float(cvar_alpha),
+        "cvar_limit": float(cvar_limit),
+        "min_weight": None if min_weight is None else float(min_weight),
+        "tolerances": {
+            "sum": float(tolerances.sum),
+            "weight": float(tolerances.weight),
+            "constraint": float(tolerances.constraint),
+            "cvar": float(tolerances.cvar),
+        },
         "mapping_version": mapping_version,
+        "decision_mode": decision_mode,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -249,13 +280,22 @@ def compile_problem(
         )
 
     linear_tuple = tuple(linear)
+    blocks_tuple = tuple(blocks)
     signature = _signature(
         category_ids=category_ids_tuple,
+        category_sleeve_ids=category_sleeve_ids,
         instrument_ids=instrument_ids,
+        S=S,
         M=M,
         return_dates=universe.return_dates,
+        blocks=blocks_tuple,
         linear=linear_tuple,
+        cvar_alpha=policy.cvar_alpha,
+        cvar_limit=policy.cvar_limit,
+        min_weight=policy.instrument_floor,
+        tolerances=tolerances,
         mapping_version=universe.mapping_version,
+        decision_mode=universe.decision_mode,
     )
     return CompileResult(
         problem=CompiledProblem(
@@ -269,7 +309,7 @@ def compile_problem(
             daily_returns=daily_returns,
             category_returns=category_returns,
             return_dates=universe.return_dates,
-            blocks=tuple(blocks),
+            blocks=blocks_tuple,
             linear_constraints=linear_tuple,
             cvar_alpha=policy.cvar_alpha,
             cvar_limit=policy.cvar_limit,

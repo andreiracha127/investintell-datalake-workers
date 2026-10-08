@@ -1606,8 +1606,19 @@ FOR EACH ROW EXECUTE FUNCTION fund_nav_readiness_pointer_stamp_v1();
 
 -- Current-pointer semantics, not a PIT ledger: every server instant used as
 -- evidence (both pointers, policy publication, risk completion, feature
--- computation, lifecycle knowledge) must be <= t; a superseded pointer, newer
--- NAV head, current hold or replaced risk can still make an older t false.
+-- computation, lifecycle knowledge) must be <= t; a superseded readiness
+-- pointer, changed NAV prefix, current hold or replaced risk can still make
+-- an older t false. The snapshot owns its immutable policy version until a
+-- replacement snapshot publishes, provided its publication is no later than
+-- the active policy version. A rollback refuses snapshots from a newer
+-- policy; a freshly stamped pointer is not version ordering. An active successor must still
+-- permit the instrument's lifecycle; missing or revoked evidence fails shut.
+-- A newer NAV head is safe only with an intact revision ledger proving every
+-- intervening mutation is an attributed INSERT strictly after as_of_session,
+-- or its derived-return initialization in that same insertion transaction.
+-- The bounded sample never reads those rows. Other updates, deletes,
+-- backfills, unattributed inserts and a head absent from the ledger remain
+-- invalidating.
 -- Instants are server clock readings inside the writing transaction, not
 -- commit timestamps; readers only see committed transactions.
 -- Session lag (MAX_SNAPSHOT_SESSION_LAG = 1, src/workers/_nav_policy.py,
@@ -1623,8 +1634,10 @@ SELECT COALESCE((
     SELECT run.state='complete' AND $3 >= run.completed_at
        AND p.published_at <= $3
        AND $3 <= policy.valid_through
+       AND $3 <= active_version.valid_through
        AND policy.policy_hash = run.policy_hash
        AND policy.published_at <= $3
+       AND policy.published_at <= active_version.published_at
        AND active_policy.published_at <= $3
        AND published_risk.completed_at <= $3
        AND published_risk.policy_id = run.policy_id
@@ -1636,7 +1649,49 @@ SELECT COALESCE((
        AND closed_lag.sessions <= 1  -- MAX_SNAPSHOT_SESSION_LAG
        AND due.session_date BETWEEN policy.coverage_start AND policy.coverage_end
        AND active.evidence_id IS NOT DISTINCT FROM r.lifecycle_evidence_id
-       AND COALESCE(nav_head.revision_id, 0) = r.nav_revision_id
+       AND (
+            COALESCE(nav_head.revision_id, 0) = r.nav_revision_id
+            OR (
+                nav_head.revision_id > r.nav_revision_id
+                AND r.nav_revision_id > 0
+                AND EXISTS (
+                    SELECT 1 FROM fund_nav_data_revisions pinned
+                    WHERE pinned.instrument_id = r.instrument_id
+                      AND pinned.revision_id = r.nav_revision_id
+                )
+                AND nav_head.revision_id = (
+                    SELECT max(tail.revision_id) FROM fund_nav_data_revisions tail
+                    WHERE tail.instrument_id = r.instrument_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM fund_nav_data_revisions changed
+                    WHERE changed.instrument_id = r.instrument_id
+                      AND changed.revision_id > r.nav_revision_id
+                      AND (changed.nav_date <= run.as_of_session
+                           OR changed.source_run_id IS NULL
+                           OR changed.source_provider IS NULL
+                           OR changed.source_attempt_xid IS NULL
+                           OR NOT (
+                               changed.mutation_kind = 'INSERT'
+                               OR (
+                                   changed.mutation_kind = 'UPDATE'
+                                   AND changed.derived_return_only
+                                   AND EXISTS (
+                                       SELECT 1 FROM fund_nav_data_revisions inserted
+                                       WHERE inserted.instrument_id = changed.instrument_id
+                                         AND inserted.nav_date = changed.nav_date
+                                         AND inserted.mutation_kind = 'INSERT'
+                                         AND inserted.revision_id > r.nav_revision_id
+                                         AND inserted.revision_id < changed.revision_id
+                                         AND inserted.source_run_id = changed.source_run_id
+                                         AND inserted.source_provider = changed.source_provider
+                                         AND inserted.source_attempt_xid = changed.source_attempt_xid
+                                   )
+                               )
+                           ))
+                )
+            )
+       )
        AND risk_pub.state = 'idle'
        AND risk_pub.revision_id = run.risk_publication_revision
        AND risk_pub.published_risk_run_id = run.published_risk_run_id
@@ -1644,6 +1699,18 @@ SELECT COALESCE((
        AND published_risk.run_scope = 'current_full'
        AND (NOT r.admissible OR (
             r.risk_run_id = risk_pub.published_risk_run_id
+            AND (
+                (active_policy.policy_id = run.policy_id
+                 AND active_policy.policy_version = run.policy_version)
+                OR COALESCE(
+                    successor.fund_status = 'ACTIVE'
+                    AND successor.valuation_frequency = 'daily'
+                    AND successor.identity_verified
+                    AND successor.return_basis_verified
+                    AND successor.currency_verified,
+                    false
+                )
+            )
             AND NOT EXISTS (
                 SELECT 1 FROM fund_nav_reexpression_holds hold
                 WHERE hold.instrument_id = r.instrument_id
@@ -1670,8 +1737,9 @@ SELECT COALESCE((
       ON policy.policy_id = run.policy_id AND policy.policy_version = run.policy_version
     JOIN nav_policy_current active_policy
       ON active_policy.readiness_profile = run.readiness_profile
-     AND active_policy.policy_id = run.policy_id
-     AND active_policy.policy_version = run.policy_version
+    JOIN nav_policy_versions active_version
+      ON active_version.policy_id = active_policy.policy_id
+     AND active_version.policy_version = active_policy.policy_version
     LEFT JOIN fund_nav_data_heads nav_head ON nav_head.instrument_id = r.instrument_id
     JOIN fund_nav_risk_publication risk_pub
       ON risk_pub.readiness_profile = run.readiness_profile
@@ -1709,6 +1777,18 @@ SELECT COALESCE((
                  e.evidence_id DESC
         LIMIT 1
     ) active ON true
+    LEFT JOIN LATERAL (
+        SELECT e.fund_status, e.valuation_frequency, e.identity_verified,
+               e.return_basis_verified, e.currency_verified
+        FROM nav_instrument_policy_evidence e
+        WHERE e.instrument_id = r.instrument_id
+          AND e.policy_id = active_policy.policy_id
+          AND e.policy_version = active_policy.policy_version
+          AND e.known_at <= $3 AND e.effective_at <= $3 AND e.recorded_at <= $3
+        ORDER BY e.effective_at DESC, e.known_at DESC, e.recorded_at DESC,
+                 e.evidence_id DESC
+        LIMIT 1
+    ) successor ON true
     WHERE p.readiness_profile='current_daily_nav_v1'
       AND p.run_id=$2
     LIMIT 1

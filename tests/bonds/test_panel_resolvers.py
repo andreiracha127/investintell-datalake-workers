@@ -13,6 +13,8 @@ from src.bonds.panel_resolvers import (
     build_universe_snapshot,
     build_db_monthly_panel,
     compute_spread,
+    coupon_from_price_ytm,
+    default_flat_windows,
     eligibility,
     fuse_live_panel,
     monthly_treasury_curve,
@@ -148,7 +150,7 @@ def test_typed_exits_are_matured_distressed_or_last_price_flat() -> None:
                           "bond_maturity": [1., 5., 5.], "pr": [80., 60., 100.],
                           "rating_bucket": ["A", "A", "A"], "ytm": [.06, .08, .05]})
     realized, exited, reasons = apply_typed_exits(np.array([np.nan, np.nan, np.nan]), attrs, np.array([True, True, True]), return_reasons=True)
-    matured_carry = bond_coupons(attrs.iloc[[0]]).iloc[0] / 12
+    matured_carry = coupon_from_price_ytm(attrs["pr"].iloc[[0]], attrs["ytm"].iloc[[0]], attrs["bond_maturity"].iloc[[0]]).iloc[0] / 12
     assert reasons.tolist() == ["matured", "distressed", "unexplained"]
     assert realized.tolist() == pytest.approx([(100. + matured_carry - 80.) / 80., (40. - 60.) / 60., 0.])
     assert exited.tolist() == [True, True, True]
@@ -261,6 +263,253 @@ def test_monthly_returns_prefers_contractual_coupon_over_implied_coupon() -> Non
     assert row["price_return"] == 0
     assert row["carry_return"] == pytest.approx((6. / 12) / 80.)
     assert row["total_return"] == pytest.approx((6. / 12) / 80.)
+
+
+def _distress_regime_panel(coupon_pct: object = "absent") -> pd.DataFrame:
+    """Audit A2-01 synthetic: 30 months at par / 5% YTM, then 30 months at 70 / 18% YTM."""
+    months = pd.date_range("2020-01-01", periods=60, freq="MS")
+    panel = pd.DataFrame({
+        "cusip_id": ["AAA"] * 60,
+        "month": months,
+        "pr": [100.0] * 30 + [70.0] * 30,
+        "ytm": [0.05] * 30 + [0.18] * 30,
+        "bond_maturity": [8.0] * 60,
+    })
+    if coupon_pct != "absent":
+        panel["coupon_pct"] = coupon_pct
+    return panel
+
+
+@pytest.mark.parametrize("coupon_pct", ["absent", np.nan])
+def test_bond_coupons_are_point_in_time_not_full_history(coupon_pct: object) -> None:
+    panel = _distress_regime_panel(coupon_pct)
+
+    coupons = bond_coupons(panel)
+
+    # Months <= 30 saw only par/5% observations: the coupon is exactly 5.0,
+    # whatever the distressed tail later does.  A full-history median over
+    # the same panel would attach the same inflated coupon to every month.
+    assert coupons.iloc[:30].to_numpy() == pytest.approx(np.full(30, 5.0), abs=1e-9)
+    distressed = coupon_from_price_ytm(pd.Series([70.0]), pd.Series([0.18]), pd.Series([8.0])).iloc[0]
+    full_history = float(np.median(np.r_[np.full(30, 5.0), np.full(30, distressed)]))
+    assert full_history > 5.5
+    # The running median leaves 5.0 only at month 60, when the distressed
+    # observations reach parity with the healthy ones.
+    assert coupons.iloc[:59].to_numpy() == pytest.approx(np.full(59, 5.0), abs=1e-9)
+    assert coupons.iloc[59] == pytest.approx(full_history, abs=1e-9)
+
+    returns = monthly_returns(panel).set_index("month")
+    # First return month whose PREVIOUS price is the distressed 70 (month 32):
+    # carry = 5.0 / 12 / 70, not the full-history coupon over 70.
+    assert returns.loc[pd.Timestamp("2022-08-01"), "carry_return"] == pytest.approx(5.0 / 12 / 70.0, abs=1e-12)
+    assert returns.loc[pd.Timestamp("2021-06-01"), "carry_return"] == pytest.approx(5.0 / 12 / 100.0, abs=1e-12)
+
+
+def test_bond_coupons_never_use_later_months() -> None:
+    panel = _distress_regime_panel()
+    full = bond_coupons(panel)
+    for cutoff in (10, 30, 31, 45):
+        truncated = bond_coupons(panel.iloc[:cutoff])
+        assert truncated.to_numpy() == pytest.approx(full.iloc[:cutoff].to_numpy(), abs=0)
+
+
+def test_bond_coupons_prefer_contractual_terms_and_align_to_the_caller_index() -> None:
+    panel = pd.DataFrame({
+        "cusip_id": ["BBB", "AAA", "AAA", "BBB", "AAA"],
+        "month": pd.to_datetime(["2024-02-01", "2024-03-01", "2024-01-01", "2024-01-01", "2024-02-01"]),
+        "pr": [95.0, 70.0, 100.0, 96.0, 100.0],
+        "ytm": [0.07, 0.18, 0.05, 0.065, 0.05],
+        "bond_maturity": [8.0, 8.0, 8.0, 8.0, 8.0],
+        "coupon_pct": [6.25, np.nan, 5.0, 6.25, "5.0"],
+    }, index=[20, 11, 7, 3, 42])
+
+    coupons = bond_coupons(panel)
+
+    assert coupons.index.tolist() == [20, 11, 7, 3, 42]
+    # Contractual rows keep their own coupon, whatever the inversion says.
+    assert coupons.loc[[20, 7, 3, 42]].tolist() == pytest.approx([6.25, 5.0, 6.25, 5.0])
+    # The one terms-missing row (AAA 2024-03, distressed) falls back to the
+    # PIT median of AAA's inversions at months <= 2024-03: two par months and
+    # one distressed month -> the par coupon, exactly.
+    assert coupons.loc[11] == pytest.approx(5.0, abs=1e-9)
+
+
+def test_monthly_returns_mix_contractual_and_pit_fallback_per_row() -> None:
+    panel = pd.DataFrame({
+        "cusip_id": ["AAA", "AAA", "AAA"],
+        "month": pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01"]),
+        "pr": [100.0, 100.0, 70.0],
+        "ytm": [0.05, 0.05, 0.18],
+        "bond_maturity": [8.0, 8.0, 8.0],
+        "coupon_pct": [np.nan, 6.0, np.nan],
+    })
+
+    out = monthly_returns(panel).set_index("month")
+
+    assert out.loc[pd.Timestamp("2024-02-01"), "carry_return"] == pytest.approx(6.0 / 12 / 100.0)
+    assert out.loc[pd.Timestamp("2024-03-01"), "carry_return"] == pytest.approx(5.0 / 12 / 100.0, abs=1e-12)
+
+
+def test_live_anchor_plus_closed_month_carry_is_unchanged_by_the_pit_fallback() -> None:
+    # Stage 6 shape (``_closed_returns_and_tombstones``): one parent anchor
+    # month plus the closed month, no terms.  Over two observations the
+    # expanding median at the closed month equals the median of both rows,
+    # which is what the full-history median produced on the same input, so the
+    # cron's facts and fingerprints do not move on deploy.
+    panel = pd.DataFrame({
+        "cusip_id": ["AAA", "AAA"],
+        "month": pd.to_datetime(["2026-06-01", "2026-07-01"]),
+        "pr": [98.0, 90.0],
+        "ytm": [0.06, 0.09],
+        "bond_maturity": [6.0, 5.9],
+    })
+    inversions = coupon_from_price_ytm(panel["pr"], panel["ytm"], panel["bond_maturity"])
+    legacy_full_history = float(inversions.median())
+
+    out = monthly_returns(panel)
+
+    assert len(out) == 1
+    assert out.loc[0, "carry_return"] == pytest.approx(legacy_full_history / 12 / 98.0, abs=1e-12)
+
+
+def _implied(cusip: str, rows: list[tuple[str, str, bool, int, bool, str | None]]) -> pd.DataFrame:
+    """``bond_market_implied_rating_v1`` rows: (month, bucket, witnessed, spell, d_candidate, d_event_month)."""
+    return pd.DataFrame([
+        {
+            "cusip_id": cusip, "month": pd.Timestamp(month), "implied_bucket": bucket,
+            "witnessed": witnessed, "spell_id": spell, "d_candidate": candidate,
+            "d_confirmed": bucket == "D", "d_event_month": pd.Timestamp(event) if event else pd.NaT,
+        }
+        for month, bucket, witnessed, spell, candidate, event in rows
+    ])
+
+
+def _defaulting_bond(prices: list[float]) -> pd.DataFrame:
+    """A 5% contractual coupon bond, one row per month from 2024-01."""
+    months = pd.date_range("2024-01-01", periods=len(prices), freq="MS")
+    return pd.DataFrame({
+        "cusip_id": "DFLT", "month": months, "pr": prices, "ytm": 0.30,
+        "bond_maturity": 6.0, "coupon_pct": 5.0,
+    })
+
+
+def test_a_confirmed_default_trades_flat_from_its_event_month() -> None:
+    # Candidate at 2024-04 (price <= 50, wide spread), confirmed 2024-05: the
+    # event month is the candidate month, when the coupon stopped.
+    panel = _defaulting_bond([98.0, 96.0, 60.0, 45.0, 40.0, 38.0, 41.0])
+    implied = _implied("DFLT", [
+        ("2024-01-01", "BB", True, 1, False, None),
+        ("2024-02-01", "BB", True, 1, False, None),
+        ("2024-03-01", "CCC", True, 1, False, None),
+        ("2024-04-01", "CCC", True, 1, True, None),
+        ("2024-05-01", "D", True, 1, True, "2024-04-01"),
+        ("2024-06-01", "D", True, 1, True, "2024-04-01"),
+        ("2024-07-01", "D", True, 1, False, "2024-04-01"),
+    ])
+    windows = default_flat_windows(implied)
+    baseline = monthly_returns(panel).set_index("month")
+
+    out = monthly_returns(panel, default_windows=windows, default_basis="realized").set_index("month")
+
+    assert windows[["event_month", "confirmation_month"]].iloc[0].tolist() == [pd.Timestamp("2024-04-01"), pd.Timestamp("2024-05-01")]
+    assert windows["event_month_source"].tolist() == ["d_event_month"]
+    assert pd.isna(windows["cure_month"].iloc[0])
+    before, after = out.index < pd.Timestamp("2024-04-01"), out.index >= pd.Timestamp("2024-04-01")
+    assert out.loc[before, "carry_return"].to_numpy() == pytest.approx(baseline.loc[before, "carry_return"].to_numpy())
+    assert out.loc[before, "carry_return"].to_numpy() == pytest.approx(5.0 / 12 / np.array([98.0, 96.0]))
+    assert (out.loc[after, "carry_return"] == 0.0).all()
+    assert out["price_return"].to_numpy() == pytest.approx(baseline["price_return"].to_numpy())
+    assert out.loc[after, "total_return"].to_numpy() == pytest.approx(out.loc[after, "price_return"].to_numpy())
+    assert out.loc[after, "carry_basis"].eq("default_flat").all()
+    assert out.loc[before, "carry_basis"].eq("coupon").all()
+    assert out.loc[after, "default_event_month"].eq(pd.Timestamp("2024-04-01")).all()
+
+
+def test_point_in_time_basis_flattens_only_from_the_confirmation_month() -> None:
+    panel = _defaulting_bond([98.0, 96.0, 60.0, 45.0, 40.0, 38.0])
+    implied = _implied("DFLT", [
+        ("2024-04-01", "CCC", True, 1, True, None),
+        ("2024-05-01", "D", True, 1, True, "2024-04-01"),
+        ("2024-06-01", "D", True, 1, True, "2024-04-01"),
+    ])
+
+    out = monthly_returns(panel, default_windows=default_flat_windows(implied), default_basis="point_in_time").set_index("month")
+
+    # 2024-04 is the event, but at 2024-04 the market had not confirmed it yet.
+    assert out.loc[pd.Timestamp("2024-04-01"), "carry_return"] == pytest.approx(5.0 / 12 / 60.0)
+    assert out.loc[pd.Timestamp("2024-05-01"):, "carry_return"].eq(0.0).all()
+
+
+def test_an_unconfirmed_candidate_keeps_the_contractual_carry_of_a_distressed_bond() -> None:
+    # Deep distress (prices 30-45, d_candidate set) that never confirms: no
+    # window, so the carry stays coupon / 12 / previous price.
+    panel = _defaulting_bond([45.0, 40.0, 32.0, 30.0, 33.0])
+    implied = _implied("DFLT", [
+        ("2024-01-01", "CCC", True, 1, True, None),
+        ("2024-02-01", "CCC", True, 1, False, None),
+        ("2024-03-01", "CCC", True, 1, False, None),
+        ("2024-04-01", "CCC", True, 1, False, None),
+        ("2024-05-01", "CCC", True, 1, True, None),
+    ])
+    windows = default_flat_windows(implied)
+
+    out = monthly_returns(panel, default_windows=windows, default_basis="realized")
+
+    assert windows.empty
+    assert out["carry_return"].to_numpy() == pytest.approx(5.0 / 12 / np.array([45.0, 40.0, 32.0, 30.0]))
+    assert out["carry_basis"].eq("coupon").all()
+
+
+def test_a_cure_restores_carry_and_a_withdrawal_does_not() -> None:
+    implied = pd.concat([
+        # Cured: D from 2024-02, three months >= p_cure open a rated spell at 2024-06.
+        _implied("CURE", [
+            ("2024-01-01", "CCC", True, 1, False, None),
+            ("2024-02-01", "D", True, 1, False, "2024-02-01"),
+            ("2024-03-01", "D", True, 1, False, "2024-02-01"),
+            ("2024-04-01", "D", True, 1, False, "2024-02-01"),
+            ("2024-05-01", "D", True, 1, False, "2024-02-01"),
+            ("2024-06-01", "B", True, 2, False, None),
+        ]),
+        # Withdrawn: D, three carried D months, WITHDRAWN, then unwitnessed grid months.
+        _implied("GONE", [
+            ("2024-02-01", "D", True, 1, False, "2024-02-01"),
+            ("2024-03-01", "D", False, 1, False, "2024-02-01"),
+            ("2024-04-01", "D", False, 1, False, "2024-02-01"),
+            ("2024-05-01", "D", False, 1, False, "2024-02-01"),
+            ("2024-06-01", "WITHDRAWN", False, 1, False, None),
+            ("2024-07-01", "NOT_RATED", False, 2, False, None),
+        ]),
+    ], ignore_index=True)
+    months = pd.date_range("2024-01-01", periods=8, freq="MS")
+    panel = pd.concat([
+        pd.DataFrame({"cusip_id": cusip, "month": months, "pr": 50.0, "ytm": 0.2, "bond_maturity": 6.0, "coupon_pct": 6.0})
+        for cusip in ("CURE", "GONE")
+    ], ignore_index=True)
+
+    windows = default_flat_windows(implied).set_index("cusip_id")
+    out = monthly_returns(panel, default_windows=windows.reset_index(), default_basis="realized")
+    flat = out.set_index(["cusip_id", "month"])["carry_return"].eq(0.0)
+
+    assert windows.loc["CURE", "cure_month"] == pd.Timestamp("2024-06-01")
+    assert pd.isna(windows.loc["GONE", "cure_month"])
+    assert flat["CURE"].tolist() == [True, True, True, True, False, False, False]
+    assert flat["GONE"].tolist() == [True] * 7
+
+
+def test_default_windows_fall_back_to_the_first_d_row_and_refuse_inconsistent_rows() -> None:
+    implied = _implied("DFLT", [
+        ("2024-03-01", "D", True, 1, False, None),
+        ("2024-04-01", "D", True, 1, False, None),
+    ])
+
+    windows = default_flat_windows(implied)
+
+    assert windows["event_month"].tolist() == [pd.Timestamp("2024-03-01")]
+    assert windows["event_month_source"].tolist() == ["first_d_row"]
+    broken = implied.assign(d_confirmed=False)
+    with pytest.raises(ValueError, match="d_confirmed"):
+        default_flat_windows(broken)
 
 
 def test_matured_exit_prefers_contractual_coupon_when_present() -> None:

@@ -171,6 +171,8 @@ def kalman_fused_filter_series(
         robust MAD-of-first-differences estimator (same floor, same warmup, same
         quality inflation) — the fusion weight is therefore DATA-ESTIMATED, never
         a calibrated blend parameter (no new knob enters the frozen policy);
+        a missing month resets that sensor's diff anchor (both sensors alike),
+        so no first difference is ever taken across a gap;
       * the process noise keys off the primary sensor (Q = lam * R_primary), so
         the state dynamics are unchanged from the single-sensor v2 filter.
 
@@ -211,6 +213,8 @@ def kalman_fused_filter_series(
         a_R: float | None = None
         if a_score is not None:
             a_R = _inflate(_r_base(a_noise, a_score), a_q)
+        else:
+            a_noise["prev"] = None  # gap: never diff across it (parity with primary)
         if p_score is None:
             if m is not None and P is not None:
                 P = P + last_q

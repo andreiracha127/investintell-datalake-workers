@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import datetime as _dt
 
+import pytest
+
 from src.workers import regime_composite as rc
 
 
@@ -69,22 +71,93 @@ def test_trend_uses_only_completed_prior_months():
 # ──────────────────────────────────────────────────────────────────────────────
 def test_nfci_hysteresis_enter_hold_exit_reenter():
     obs = [
-        (_dt.date(2020, 1, 1), 0.50),   # > 0 → entra
-        (_dt.date(2020, 1, 8), -0.02),  # ≥ −0,05 → segura (histerese)
-        (_dt.date(2020, 1, 15), -0.10),  # < −0,05 → sai
-        (_dt.date(2020, 1, 22), 0.10),  # > 0 → reentra
+        (_dt.date(2020, 1, 3), 0.50),    # sex 03/01: > 0 → entra
+        (_dt.date(2020, 1, 10), -0.02),  # ≥ −0,05 → segura (histerese)
+        (_dt.date(2020, 1, 17), -0.10),  # < −0,05 → sai
+        (_dt.date(2020, 1, 24), 0.10),   # > 0 → reentra
     ]
     states = rc.nfci_states(obs)
     assert [s[2] for s in states] == [True, True, False, True]
-    # carrega valor + data para proveniência/forward-fill
-    assert states[0][0] == _dt.date(2020, 1, 1)
+    # carrega valor + carimbo de DIVULGAÇÃO (sex 03/01 → qua 08/01/2020) para
+    # proveniência/forward-fill — nunca a data de observação
+    assert states[0][0] == _dt.date(2020, 1, 8)
+    # sex 17/01 → semana do MLK Day (seg 20/01/2020) → quinta 23/01
+    assert states[2][0] == _dt.date(2020, 1, 23)
     assert states[2][1] == -0.10
+    # a regra de carimbo é injetável (identidade = carimbo na própria observação)
+    raw = rc.nfci_states(obs, release_date=lambda d: d)
+    assert [s[0] for s in raw] == [o[0] for o in obs]
+    assert [s[2] for s in raw] == [True, True, False, True]
 
 
 def test_nfci_below_entry_stays_inactive():
-    obs = [(_dt.date(2020, 1, 1), -0.5), (_dt.date(2020, 1, 8), -0.01)]
+    obs = [(_dt.date(2020, 1, 3), -0.5), (_dt.date(2020, 1, 10), -0.01)]
     # nunca > 0 → nunca entra
     assert [s[2] for s in rc.nfci_states(obs)] == [False, False]
+
+
+@pytest.mark.parametrize("obs, release, why", [
+    (_dt.date(2020, 3, 13), _dt.date(2020, 3, 18), "semana normal: a quarta seguinte"),
+    (_dt.date(2025, 1, 17), _dt.date(2025, 1, 23), "MLK Day seg 2025-01-20 → quinta"),
+    (_dt.date(2025, 11, 7), _dt.date(2025, 11, 13), "Veterans Day ter 2025-11-11 → quinta"),
+    (_dt.date(2024, 12, 27), _dt.date(2025, 1, 2), "Ano Novo na própria quarta 2025-01-01 → quinta"),
+    (_dt.date(2024, 6, 14), _dt.date(2024, 6, 20), "Juneteenth qua 2024-06-19 → quinta"),
+    (_dt.date(2022, 6, 17), _dt.date(2022, 6, 23), "Juneteenth dom 2022-06-19, observado seg 20 → quinta"),
+    (_dt.date(2025, 11, 21), _dt.date(2025, 11, 26), "Thanksgiving qui 2025-11-27 NÃO atrasa a quarta"),
+    (_dt.date(2025, 7, 4), _dt.date(2025, 7, 9), "feriado na própria sexta de referência NÃO atrasa"),
+    (_dt.date(2026, 7, 3), _dt.date(2026, 7, 8), "4 de julho no sábado 2026-07-04 (não movido) NÃO atrasa"),
+])
+def test_nfci_release_date_follows_the_chicago_fed_schedule(obs, release, why):
+    """Regra oficial (chicagofed.org/research/data/nfci/current-data): quarta 8h30 ET
+    cobrindo até a sexta anterior; quinta quando um feriado federal cai na quarta ou
+    antes na mesma semana. Feriados fora de seg–qua não atrasam nada."""
+    assert obs.weekday() == rc.NFCI_REFERENCE_WEEKDAY, why
+    assert rc.nfci_release_date(obs) == release, why
+    assert release.weekday() in (rc.NFCI_RELEASE_WEEKDAY, rc.NFCI_RELEASE_WEEKDAY + 1), why
+
+
+def test_nfci_release_date_anchors_on_the_reference_week():
+    # o FRED carimba sextas; um input fora da sexta é levado à sexta da SUA semana
+    assert rc.nfci_release_date(_dt.date(2020, 3, 12)) == _dt.date(2020, 3, 18)  # qui → sex 13 → qua 18
+    assert rc.nfci_release_date(_dt.date(2020, 3, 9)) == _dt.date(2020, 3, 18)   # seg → sex 13 → qua 18
+    assert rc.nfci_release_date(_dt.date(2020, 3, 14)) == _dt.date(2020, 3, 25)  # sáb → sex 20 → qua 25
+
+
+def test_nfci_vote_waits_for_the_wednesday_release():
+    """Regressão MR-1 (auditoria quant 2026-10-07): a observação NFCI de sex
+    2020-03-13 (1.2 > 0 → entra) só é divulgada na qua 2020-03-18 às 8h30 ET. Com
+    crédito e tendência inativos, o voto NFCI é o único que varia: False em 13, 16 e
+    17/03 (inclusive a data de observação), True a partir da PRÓPRIA quarta 18/03 —
+    a linha de d é uma decisão de fechamento de d — e carregado adiante."""
+    days = [_dt.date(2020, 3, d) for d in (13, 16, 17, 18, 19, 20)]
+    credit = [_credit(d, 0.9, 0.8) for d in days]      # ratio > p20 → credit False
+    trend = {(2020, 3): False}
+    nfci = rc.nfci_states([(_dt.date(2020, 3, 13), 1.2)])
+    assert nfci == [(_dt.date(2020, 3, 18), 1.2, True)]
+    rows = rc.compose(credit, trend, nfci)
+    by_date = {r["regime_date"]: r for r in rows}
+    for d in days[:3]:  # 13/03 (obs), 16 e 17/03: ainda não divulgado
+        assert by_date[d]["nfci_vote"] is False, d
+        assert by_date[d]["vote_count"] == 0 and by_date[d]["nfci"] is None
+    for d in days[3:]:  # qua 18/03 (divulgação) em diante: forward-fill
+        assert by_date[d]["nfci_vote"] is True, d
+        assert by_date[d]["vote_count"] == 1 and by_date[d]["nfci"] == 1.2
+    assert all(r["credit_vote"] is False and r["trend_vote"] is False for r in rows)
+    assert all(r["state"] == "risk_on" for r in rows)  # 1 voto nunca decide sozinho
+
+
+def test_nfci_vote_waits_one_more_day_in_a_holiday_week():
+    """Semana com feriado federal (MLK Day seg 2025-01-20): a observação de sex
+    2025-01-17 só é divulgada na QUINTA 23/01 — a quarta 22/01 ainda não vota."""
+    days = [_dt.date(2025, 1, d) for d in (17, 21, 22, 23, 24)]
+    credit = [_credit(d, 0.9, 0.8) for d in days]
+    nfci = rc.nfci_states([(_dt.date(2025, 1, 17), 0.8)])
+    assert nfci == [(_dt.date(2025, 1, 23), 0.8, True)]
+    rows = rc.compose(credit, {(2025, 1): False}, nfci)
+    votes = {r["regime_date"]: r["nfci_vote"] for r in rows}
+    assert votes == {_dt.date(2025, 1, 17): False, _dt.date(2025, 1, 21): False,
+                     _dt.date(2025, 1, 22): False, _dt.date(2025, 1, 23): True,
+                     _dt.date(2025, 1, 24): True}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

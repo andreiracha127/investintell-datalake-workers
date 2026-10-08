@@ -586,3 +586,15 @@ def test_materialize_harness_source_from_manifest_verifies_sha(tmp_path: Path) -
 
     assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
     assert (tmp_path / "project" / "src" / "db.py").exists()
+
+
+def test_metrics_hash_policy_version_is_in_lockstep_with_the_wheel() -> None:
+    """The QC project copy writes its own constant into cloud-side parity reports
+    while hashing through the shipped harness canonicalizer, so it must move with
+    the wheel's policy version."""
+    from investintell_quant_core.a3 import metrics as core_metrics
+
+    project_qc = _load_qc_project_copy()
+    assert core_metrics.METRICS_HASH_POLICY_VERSION == "qc_a3_metrics_float_canonical_v2"
+    assert qc.METRICS_HASH_POLICY_VERSION == core_metrics.METRICS_HASH_POLICY_VERSION
+    assert project_qc.METRICS_HASH_POLICY_VERSION == core_metrics.METRICS_HASH_POLICY_VERSION

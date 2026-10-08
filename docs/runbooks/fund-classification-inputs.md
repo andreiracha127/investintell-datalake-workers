@@ -115,7 +115,8 @@ No queue, new privileged job, or synchronous refresh is introduced.
 The shared look-through/Light-reader lock remains **900204** intentionally;
 Light's transaction reader guard prevents classification during publication.
 The outer chain has **900366**, distinct from its children; the cagg request
-uses **900365**. A partial `WORKER_LIMIT` cannot publish a full fund cohort.
+uses **900367** (900363-900365 belong to the monthly N-PORT loader). A partial
+`WORKER_LIMIT` cannot publish a full fund cohort.
 A replay cutoff does not replace the UTC clock used to judge live freshness.
 
 ## PR #153 integration still required

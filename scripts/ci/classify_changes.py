@@ -43,6 +43,10 @@ NPORT_PATTERNS = (
     # now, not tooling on the side.
     "tools/nport_dera/*.py",
     "tests/fixtures/nport_dera/*/*.tsv",
+    # The sec-api.io monthly feed into the same write path (2026-10).
+    "tools/nport_secapi/*.py",
+    "tests/fixtures/nport_secapi/*/*/*.jsonl",
+    "tests/fixtures/nport_secapi/*/*/*.jsonl.gz",
     "tests/test_nport_*.py",
     "tests/test_fund_pipeline_health.py",
     "tests/test_openfigi.py",

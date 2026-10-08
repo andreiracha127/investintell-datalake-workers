@@ -172,7 +172,10 @@ def _plan(conn, args, limits, pins, finish) -> int:
             conn, scope, limits, schema=args.schema, schema_pins=pins
         )
     except rebase.RebaseError as exc:
-        return finish(rebase.EXIT_FAILED, code=exc.code)
+        return finish(
+            rebase.EXIT_FAILED, code=exc.code,
+            retryable=exc.retryable,
+        )
     finally:
         conn.rollback()
     if args.plan_file:
