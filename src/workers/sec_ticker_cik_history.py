@@ -125,8 +125,9 @@ def run(
             client.close()
         if cache is None:
             shutil.rmtree(workdir, ignore_errors=True)
-    changed = any(p["inserted"] or p["updated"] or p["removed"] for p in stats["packages"]) or any(
-        i["inserted"] or i["updated"] for i in stats["form_indexes"]
-    )
+    changed = any(
+        p["inserted"] or p["retired"] or p["shares_inserted"] or p["shares_retired"]
+        for p in stats["packages"]
+    ) or any(i["inserted"] or i["retired"] for i in stats["form_indexes"])
     stats["state"] = "ok" if changed else "noop"
     return stats

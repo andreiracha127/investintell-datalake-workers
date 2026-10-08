@@ -49,7 +49,7 @@ import re
 import time
 import zipfile
 from collections import Counter
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import IO, Iterable
@@ -100,9 +100,9 @@ _INDEX_LINE_RE = re.compile(
 )
 
 OBSERVATION_COLUMNS = (
-    "adsh", "cik", "dimh", "segments", "class_key", "line_key", "ticker", "ticker_raw",
-    "security_title", "exchange", "security_kind", "ddate", "form", "period",
-    "filed", "accepted", "source_package",
+    "adsh", "cik", "dimh", "segments", "class_key", "ticker", "ticker_raw",
+    "security_title", "exchange", "security_kind", "filing_equity_classes",
+    "filing_complete", "ddate", "form", "period", "filed", "accepted", "source_package",
 )
 SHARE_COLUMNS = (
     "adsh", "cik", "dimh", "segments", "class_key", "stated_on", "ddate_rounded", "shares",
@@ -111,17 +111,43 @@ SHARE_COLUMNS = (
 )
 EVENT_COLUMNS = ("adsh", "cik", "form", "filed", "source_package")
 
+# Forms in which the filer reports on its own listed securities. Registration
+# statements (S-1, S-3, S-4, S-8, F-1, F-4, POS AM...) state securities of other
+# or future entities (Medtronic plc's S-4 named MDT months before it existed).
+PERIODIC_FORMS = frozenset({
+    "10-K", "10-Q", "8-K", "8-K12B", "8-K12G3", "8-K15D5", "20-F", "40-F", "6-K",
+    "10-KT", "10-QT",
+})
+
+
+def is_periodic_form(form: str) -> bool:
+    return form.removesuffix("/A") in PERIODIC_FORMS
+
+
 # Values filers put in dei:TradingSymbol when a security has no symbol.
 PLACEHOLDER_KEYS = frozenset({
     "NONE", "NA", "NOTAPPLICABLE", "NOTAVAILABLE", "TRUE", "FALSE", "NULL", "NIL",
     "NOSYMBOL", "NOTRADINGSYMBOL", "NOTLISTED", "NOTTRADED", "UNLISTED", "TBD",
+    "OTCBB", "OB",
 })
+_FILLER_RE = re.compile(r"^X{3,}$")
 MAX_KEY_LENGTH = 12
 _EXCHANGE_PREFIX_RE = re.compile(
-    r"^(?:NYSE\s*AMERICAN|NYSE\s*ARCA|NYSE\s*MKT|NYSE|NASDAQ|AMEX|OTCQX|OTCQB|OTC|CBOE|TSX)"
-    r"\s*[:\-]\s*",
+    r"^(?:NYSE\s*AMERICAN|NYSE\s*ARCA|NYSE\s*MKT|NYSE|NASDAQ(?:GS|GM|CM)?|AMEX|OTCQX|"
+    r"OTCQB|OTCBB|OTC|CBOE|TSX)\s*[:\-/]\s*",
     re.IGNORECASE,
 )
+EXCHANGE_TOKENS = frozenset({
+    "NYSE", "NASDAQ", "NASDAQGS", "NASDAQGM", "NASDAQCM", "AMEX", "ARCA", "NYSEARCA",
+    "NYSEAMERICAN", "NYSEMKT", "AMERICAN", "MKT", "CBOE", "BATS", "OTC", "OTCBB", "OTCQB",
+    "OTCQX", "TSX",
+})
+_OTC_SUFFIX_RE = re.compile(r"[.\s]+(?:OB|OTCBB|OTCQB|OTCQX|OTC)$", re.IGNORECASE)
+# A token that qualifies the symbol before it rather than naming another one:
+# a class letter, a preferred/series marker, warrants, units, rights, a note year.
+_SUFFIX_TOKEN_RE = re.compile(r"^(?:[A-Z]|WS|WT|W|U|UN|R|RT|PR|PR[A-Z]|P[A-Z]|[0-9][0-9A-Z]*)$")
+_GROUP_RE = re.compile(r"[(\[{]([^)\]}]*)[)\]}]")
+_QUOTES_RE = re.compile(r"[\"\u201c\u201d\u00ab\u00bb]")
 # Preferred series: an uppercase root, a preferred marker, one series letter.
 # A lowercase marker (``Pr``, ``pr``, ``p``) is unambiguous even without a
 # separator (PSAPrM, CDRpB); an uppercase marker needs one (WFC.PRA, USB PRA).
@@ -129,7 +155,7 @@ _PREFERRED_RE = re.compile(
     r"^(?P<root>[A-Z0-9]+)(?P<sep>\s*[.\-/]?\s*)(?P<marker>Pr|pr|p|PR|P)"
     r"\s*[.\-/]?\s*(?P<series>[A-Za-z])$"
 )
-_SEPARATORS_RE = re.compile(r"[\s./\-_:]+")
+_SEPARATORS_RE = re.compile(r"[\s./\-_:']+")
 _TICKER_RE = re.compile(r"^[A-Z0-9]+(?:-[A-Z0-9]+)*$")
 
 # Security kind from the Security12bTitle, checked in this order. A rights
@@ -179,12 +205,13 @@ class Observation:
     dimh: str
     segments: str
     class_key: str
-    line_key: str
     ticker: str
     ticker_raw: str
     security_title: str | None
     exchange: str | None
     security_kind: str
+    filing_equity_classes: int
+    filing_complete: bool
     ddate: dt.date | None
     form: str
     period: dt.date | None
@@ -194,6 +221,10 @@ class Observation:
 
     def as_tuple(self) -> tuple:
         return tuple(getattr(self, column) for column in OBSERVATION_COLUMNS)
+
+    @property
+    def fact_hash(self) -> str:
+        return _fact_hash(getattr(self, c) for c in OBSERVATION_COLUMNS if c != "source_package")
 
 
 @dataclass(frozen=True)
@@ -214,6 +245,10 @@ class ShareCount:
     def as_tuple(self) -> tuple:
         return tuple(getattr(self, column) for column in SHARE_COLUMNS)
 
+    @property
+    def fact_hash(self) -> str:
+        return _fact_hash(getattr(self, c) for c in SHARE_COLUMNS if c != "source_package")
+
 
 @dataclass(frozen=True)
 class RegistrationEvent:
@@ -225,6 +260,10 @@ class RegistrationEvent:
 
     def as_tuple(self) -> tuple:
         return tuple(getattr(self, column) for column in EVENT_COLUMNS)
+
+    @property
+    def fact_hash(self) -> str:
+        return _fact_hash((self.adsh, self.cik, self.form, self.filed))
 
 
 @dataclass
@@ -263,10 +302,26 @@ def ticker_key(ticker: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", ticker.upper())
 
 
+def _unwrap(raw: str) -> str:
+    """Drop quotes; unwrap bracketed symbols; drop bracketed exchange names or prose."""
+    def group(match: re.Match[str]) -> str:
+        inner = match.group(1).strip()
+        stripped = _EXCHANGE_PREFIX_RE.sub("", inner).strip()
+        if stripped != inner:
+            return f" {stripped} "  # (NYSE:FBC)
+        words = inner.split()
+        if not words or all(w.upper() in EXCHANGE_TOKENS for w in words):
+            return " "  # (NYSE)
+        if len(words) > 1 and re.search(r"[a-z]", inner):
+            return " "  # (The Nasdaq Stock Market LLC)
+        return f" {inner} "  # (SIRI)
+    return _QUOTES_RE.sub(" ", _GROUP_RE.sub(group, raw))
+
+
 def normalize_symbol(raw: str) -> tuple[str | None, str | None]:
     """One filer-typed symbol -> (ticker, None) or (None, rejection reason)."""
-    value = re.sub(r"\([^)]*\)", " ", raw).strip()
-    value = _EXCHANGE_PREFIX_RE.sub("", value).strip()
+    value = _EXCHANGE_PREFIX_RE.sub("", raw.strip()).strip()
+    value = _OTC_SUFFIX_RE.sub("", value).strip()
     if not value:
         return None, "empty"
     preferred = _PREFERRED_RE.match(value)
@@ -277,26 +332,75 @@ def normalize_symbol(raw: str) -> tuple[str | None, str | None]:
     else:
         ticker = _SEPARATORS_RE.sub("-", value.upper()).strip("-")
     key = ticker_key(ticker)
-    if key in PLACEHOLDER_KEYS:
+    if key in PLACEHOLDER_KEYS or _FILLER_RE.match(key):
         return None, "placeholder"
-    if not _TICKER_RE.match(ticker):
+    if not _TICKER_RE.match(ticker) or not re.search(r"[A-Z]", key):
         return None, "malformed"
     if len(key) > MAX_KEY_LENGTH:
         return None, "too_long"
     return ticker, None
 
 
+def _is_suffix_token(token: str) -> bool:
+    """A token that qualifies the symbol before it (class, series, warrant, unit,
+    note year) rather than naming another security: BRK B, ACHR WS, USB PrA, T 25."""
+    return bool(_SUFFIX_TOKEN_RE.match(token)) or bool(re.fullmatch(r"[Pp]r[A-Za-z]?", token))
+
+
+def _split_field(field: str) -> list[str]:
+    """Symbols written in one field: separated by space or slash unless the next
+    token only qualifies the previous symbol."""
+    field = _EXCHANGE_PREFIX_RE.sub("", field.strip()).strip()
+    tokens = [t for t in re.split(r"[\s/]+", field) if t and not re.fullmatch(r"[-.:]+", t)]
+    tokens = [t for t in tokens if t.upper() not in EXCHANGE_TOKENS]
+    symbols: list[list[str]] = []
+    for token in tokens:
+        if symbols and _is_suffix_token(token):
+            symbols[-1].append(token)
+        else:
+            symbols.append([token])
+    return [" ".join(parts) for parts in symbols]
+
+
 def normalize_symbols(raw: str) -> tuple[list[str], list[str]]:
-    """A dei:TradingSymbol value may list several symbols (``BIP; BIP UN``)."""
+    """A dei:TradingSymbol value -> its symbols, and the reasons for rejected parts.
+
+    Brackets and quotes are unwrapped (``(SIRI)``, ``[USG]``, ``"WM"``); exchange
+    prefixes and OTC suffixes are dropped (``NYSE: KO``, ``NYSE/TRN``,
+    ``WELPP.OB``); a field lists several symbols when they are separated by
+    ``,`` ``;`` ``&`` ``AND``, or by a space or slash before a full symbol
+    (``JWA/JWB``, ``CRDA CRDB``) - not before a class or series suffix
+    (``BRK B``, ``USB PrA``, ``USB/28``). A field that reads as prose or a
+    placeholder (``No Trading Symbol``, ``Common Stock par value``) is rejected
+    whole.
+    """
+    unwrapped = _unwrap(raw)
+    whole = ticker_key(_SEPARATORS_RE.sub("", unwrapped))
+    if whole in PLACEHOLDER_KEYS or _FILLER_RE.match(whole):
+        return [], ["placeholder"]
+    if not whole:
+        return [], ["empty"]
     tickers: list[str] = []
     rejections: list[str] = []
-    for part in re.split(r"[;,]", raw):
-        ticker, reason = normalize_symbol(part)
-        if ticker is not None:
-            if ticker not in tickers:
-                tickers.append(ticker)
-        elif reason != "empty" or not tickers:
-            rejections.append(reason or "malformed")
+    for part in re.split(r"[;,&]|\s+AND\s+", unwrapped, flags=re.IGNORECASE):
+        if not part.strip():
+            continue
+        tokens = [t for t in re.split(r"[\s/]+", part.strip()) if t]
+        if len(tokens) > 1 and any(
+            len(t) >= 3 and re.search(r"[a-z]", t) and not _is_suffix_token(t)
+            for t in tokens
+        ):
+            rejections.append("malformed")  # prose, not symbols
+            continue
+        for symbol in _split_field(part):
+            ticker, reason = normalize_symbol(symbol)
+            if ticker is not None:
+                if ticker not in tickers:
+                    tickers.append(ticker)
+            elif reason != "empty":
+                rejections.append(reason or "malformed")
+    if not tickers and not rejections:
+        rejections.append("empty")
     return tickers, rejections
 
 
@@ -599,77 +703,29 @@ def resolve_owner(
     return None
 
 
-def _with_line_keys(rows: list[Observation]) -> list[Observation]:
-    """Mark the one equity/depositary class of a filing as the sole equity line."""
-    equity: dict[tuple[str, int], set[str]] = {}
-    for row in rows:
-        if row.security_kind in EQUITY_KINDS:
-            equity.setdefault((row.adsh, row.cik), set()).add(row.class_key)
-    return [
-        replace(row, line_key=SOLE_EQUITY_LINE)
-        if row.security_kind in EQUITY_KINDS and len(equity[(row.adsh, row.cik)]) == 1
-        else row
-        for row in rows
-    ]
+def _filing_profiles(
+    symbol_classes: dict[tuple[str, int], set[str]],
+    other_classes: dict[tuple[str, int], set[str]],
+    counted: set[tuple[str, int]],
+) -> dict[tuple[str, int], tuple[int, bool]]:
+    """(equity classes shown in total, reports a count) per (accession, CIK).
 
-
-def build_observations(
-    package: str,
-    submissions: dict[str, Submission],
-    facts: dict[tuple[str, str], _CoverFacts],
-    segments: dict[str, str],
-    rejected: Counter,
-) -> list[Observation]:
-    """Join symbols to submission, owner and class; one row per (adsh, dimh, ticker)."""
-    entities = _entities(facts, segments)
-    rows: dict[tuple[str, str, str], Observation] = {}
-    for (adsh, dimh), entry in sorted(facts.items()):
-        if not entry.symbols:
-            continue
-        submission = submissions.get(adsh)
-        title = _first(entry.titles)
-        exchange = _first(entry.exchanges)
-        context = segments.get(dimh)
-        for iprx, raw, ddate in sorted(entry.symbols):
-            if submission is None:
-                rejected["no_submission"] += 1
-                continue
-            if context is None:
-                rejected["unknown_dimension"] += 1
-                continue
-            owner = resolve_owner(adsh, entry.coreg, context, submission, entities)
-            if owner is None:
-                rejected["coregistrant"] += 1
-                continue
-            cik, key = owner
-            if cik != submission.cik:
-                rejected["attributed_to_coregistrant"] += 1
-            tickers, reasons = normalize_symbols(raw)
-            rejected.update(reasons)
-            for ticker in tickers:
-                if (adsh, dimh, ticker) in rows:
-                    rejected["duplicate_in_context"] += 1
-                    continue
-                rows[(adsh, dimh, ticker)] = Observation(
-                    adsh=adsh,
-                    cik=cik,
-                    dimh=dimh,
-                    segments=context,
-                    class_key=key,
-                    line_key=key,
-                    ticker=ticker,
-                    ticker_raw=raw,
-                    security_title=title,
-                    exchange=exchange,
-                    security_kind=security_kind(title, ticker, context),
-                    ddate=parse_fsn_date(ddate),
-                    form=submission.form,
-                    period=submission.period,
-                    filed=submission.filed,
-                    accepted=submission.accepted,
-                    source_package=package,
-                )
-    return _with_line_keys([rows[key] for key in sorted(rows)])
+    The classes are those of the filing's equity/depositary symbols, plus the
+    dimensioned classes of its share counts and of its titled equity classes
+    without an accepted symbol (an unlisted class B with ticker "N/A" still
+    counts). An undimensioned symbol next to exactly one dimensioned class is
+    that class (a filer tags the symbol without a member and the count with one).
+    """
+    profiles: dict[tuple[str, int], tuple[int, bool]] = {}
+    for filing in set(symbol_classes) | set(other_classes):
+        symbols = symbol_classes.get(filing, set())
+        others = other_classes.get(filing, set())
+        if symbols == {""} and len(others) == 1:
+            count = 1
+        else:
+            count = len(symbols | others)
+        profiles[filing] = (count, filing in counted)
+    return profiles
 
 
 def build_share_counts(
@@ -688,6 +744,9 @@ def build_share_counts(
         dates = stated_date(fact.ddate, fact.datp)
         if submission is None or context is None or dates is None:
             rejected["share_count_unjoined"] += 1
+            continue
+        if not is_periodic_form(submission.form):
+            rejected["share_count_non_periodic_form"] += 1
             continue
         owner = resolve_owner(fact.adsh, fact.coreg, context, submission, entities)
         if owner is None:
@@ -712,6 +771,84 @@ def build_share_counts(
     return [rows[key] for key in sorted(rows)]
 
 
+def build_observations(
+    package: str,
+    submissions: dict[str, Submission],
+    facts: dict[tuple[str, str], _CoverFacts],
+    segments: dict[str, str],
+    share_counts: list[ShareCount],
+    rejected: Counter,
+) -> list[Observation]:
+    """Join symbols to submission, owner and class; one row per (adsh, dimh, ticker).
+
+    Only periodic reports and current reports describe the filer's own listed
+    securities (PERIODIC_FORMS); a registration statement (S-1, S-4, F-4...)
+    states the securities of other or future entities and is skipped.
+    """
+    entities = _entities(facts, segments)
+    pending: list[dict] = []
+    symbol_classes: dict[tuple[str, int], set[str]] = {}
+    other_classes: dict[tuple[str, int], set[str]] = {}
+    for share in share_counts:
+        if share.class_key:
+            other_classes.setdefault((share.adsh, share.cik), set()).add(share.class_key)
+    counted = {(share.adsh, share.cik) for share in share_counts}
+    seen: set[tuple[str, str, str]] = set()
+    for (adsh, dimh), entry in sorted(facts.items()):
+        if not entry.symbols and not entry.titles:
+            continue
+        submission = submissions.get(adsh)
+        context = segments.get(dimh)
+        title = _first(entry.titles)
+        if submission is None or context is None:
+            if entry.symbols:
+                rejected["no_submission" if submission is None else "unknown_dimension"] += (
+                    len(entry.symbols))
+            continue
+        if not is_periodic_form(submission.form):
+            rejected["non_periodic_form"] += len(entry.symbols)
+            continue
+        owner = resolve_owner(adsh, entry.coreg, context, submission, entities)
+        if owner is None:
+            rejected["coregistrant"] += len(entry.symbols)
+            continue
+        cik, key = owner
+        accepted: list[tuple[str, str, str]] = []
+        for iprx, raw, ddate in sorted(entry.symbols):
+            tickers, reasons = normalize_symbols(raw)
+            rejected.update(reasons)
+            for ticker in tickers:
+                if (adsh, dimh, ticker) in seen:
+                    rejected["duplicate_in_context"] += 1
+                    continue
+                seen.add((adsh, dimh, ticker))
+                accepted.append((ticker, raw, ddate))
+        if accepted and cik != submission.cik:
+            rejected["attributed_to_coregistrant"] += len(accepted)
+        for ticker, raw, ddate in accepted:
+            kind = security_kind(title, ticker, context)
+            if kind in EQUITY_KINDS:
+                symbol_classes.setdefault((adsh, cik), set()).add(key)
+            pending.append({
+                "adsh": adsh, "cik": cik, "dimh": dimh, "segments": context, "class_key": key,
+                "ticker": ticker, "ticker_raw": raw, "security_title": title,
+                "exchange": _first(entry.exchanges), "security_kind": kind,
+                "ddate": parse_fsn_date(ddate), "form": submission.form,
+                "period": submission.period, "filed": submission.filed,
+                "accepted": submission.accepted, "source_package": package,
+            })
+        if not accepted and title and key and security_kind(title, "", context) in EQUITY_KINDS:
+            other_classes.setdefault((adsh, cik), set()).add(key)  # an unlisted class
+    profiles = _filing_profiles(symbol_classes, other_classes, counted)
+    rows = [
+        Observation(**row, filing_equity_classes=profiles.get((row["adsh"], row["cik"]),
+                                                              (0, False))[0],
+                    filing_complete=profiles.get((row["adsh"], row["cik"]), (0, False))[1])
+        for row in pending
+    ]
+    return sorted(rows, key=lambda o: (o.adsh, o.dimh, o.ticker))
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -733,9 +870,11 @@ def parse_package(path: Path) -> PackageResult:
         wanted = {dimh for _, dimh in facts} | {fact.dimh for fact in share_facts}
         with archive.open("dim.tsv") as stream:
             segments = read_segments(io.BufferedReader(stream, 1 << 20), wanted)
-    observations = build_observations(path.name, submissions, facts, segments, rejected)
     share_counts = build_share_counts(
         path.name, submissions, share_facts, facts, segments, rejected
+    )
+    observations = build_observations(
+        path.name, submissions, facts, segments, share_counts, rejected
     )
     return PackageResult(
         package=path.name,
@@ -840,7 +979,8 @@ def require_schema(conn) -> None:
         "AND to_regclass('sec_cover_share_counts') IS NOT NULL "
         "AND to_regclass('sec_registration_events') IS NOT NULL "
         "AND to_regclass('sec_ticker_cik_packages') IS NOT NULL "
-        "AND to_regclass('sec_ticker_cik_package_members') IS NOT NULL"
+        "AND to_regclass('sec_ticker_cik_package_members') IS NOT NULL "
+        "AND to_regclass('sec_ticker_cik_package_facts') IS NOT NULL"
     ).fetchone()[0]
     if not present:
         raise RuntimeError(
@@ -880,119 +1020,121 @@ def _record_package(cur, *, package: str, sha256: str, size: int, submissions: i
     )
 
 
-_OBSERVATION_UPDATE = ", ".join(
-    f"{column} = EXCLUDED.{column}"
-    for column in OBSERVATION_COLUMNS if column not in ("adsh", "dimh", "ticker")
-)
-_OBSERVATION_CHANGED = (
-    "(" + ", ".join(f"sec_ticker_cik_observations.{c}" for c in OBSERVATION_COLUMNS) + ")"
-    " IS DISTINCT FROM (" + ", ".join(f"EXCLUDED.{c}" for c in OBSERVATION_COLUMNS) + ")"
-)
+def _fact_hash(values: Iterable[object]) -> str:
+    """md5 of a fact's content columns: one version of one fact."""
+    text = "\x1f".join("\x00" if v is None else str(v) for v in values)
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
 def _replace_members(cur, package: str, members: Iterable[tuple[str, int]]) -> None:
     cur.execute("DELETE FROM sec_ticker_cik_package_members WHERE source_package = %s",
                 (package,))
     _copy(cur, "sec_ticker_cik_package_members", ("source_package", "adsh", "cik"),
-          ((package, adsh, cik) for adsh, cik in members))
+          ((package, adsh, cik) for adsh, cik in sorted(set(members))))
 
 
-def load_package(conn, result: PackageResult) -> dict[str, int]:
-    """Replace one package's evidence in a single transaction.
+def _replace_facts(cur, package: str, facts: Iterable[tuple[str, str]]) -> None:
+    cur.execute("DELETE FROM sec_ticker_cik_package_facts WHERE source_package = %s",
+                (package,))
+    _copy(cur, "sec_ticker_cik_package_facts", ("source_package", "fact_table", "fact_hash"),
+          ((package, table, fact_hash) for table, fact_hash in sorted(set(facts))))
 
-    Rows of the package's accessions converge to what it now contains; an
-    accession the previous version of the package contained and this one does
-    not loses its rows, unless another loaded package also contains it.
+
+_BITEMPORAL_TABLES = {
+    "observation": "sec_ticker_cik_observations",
+    "share_count": "sec_cover_share_counts",
+    "event": "sec_registration_events",
+}
+
+
+def _reconcile(cur, *, package: str, fact_table: str, temp: str, columns: tuple[str, ...],
+               availability: str, reconciled_on: dt.date) -> dict[str, int]:
+    """Retire what the package no longer carries (and no other package does); add
+    what it newly carries. Never deletes or overwrites a fact row.
+
+    A newly carried fact of an accession some package carried before is a
+    correction: knowable from the later of its filing's public date and the
+    reconciliation date. A fact of an accession never loaded before is knowable
+    from its filing's public date.
     """
+    table = _BITEMPORAL_TABLES[fact_table]
+    cur.execute(
+        f"""
+        UPDATE {table} t SET retired_on = %(on)s
+        WHERE t.retired_on IS NULL AND t.fact_hash IN (
+            SELECT f.fact_hash FROM sec_ticker_cik_package_facts f
+            WHERE f.source_package = %(package)s AND f.fact_table = %(fact_table)s
+              AND NOT EXISTS (SELECT 1 FROM {temp} n WHERE n.fact_hash = f.fact_hash)
+              AND NOT EXISTS (
+                  SELECT 1 FROM sec_ticker_cik_package_facts o
+                  WHERE o.fact_table = f.fact_table AND o.fact_hash = f.fact_hash
+                    AND o.source_package <> %(package)s))
+        """,
+        {"on": reconciled_on, "package": package, "fact_table": fact_table},
+    )
+    retired = cur.rowcount
+    cur.execute(
+        f"""
+        INSERT INTO {table} ({", ".join(columns)}, fact_hash, available_on, loaded_on)
+        SELECT {", ".join(f"n.{c}" for c in columns)}, n.fact_hash,
+               CASE WHEN EXISTS (
+                        SELECT 1 FROM sec_ticker_cik_package_members m WHERE m.adsh = n.adsh)
+                    THEN GREATEST({availability}, %(on)s)
+                    ELSE {availability}
+               END,
+               %(on)s
+        FROM {temp} n
+        WHERE NOT EXISTS (
+            SELECT 1 FROM {table} t WHERE t.fact_hash = n.fact_hash AND t.retired_on IS NULL)
+        """,
+        {"on": reconciled_on},
+    )
+    return {"retired": retired, "inserted": cur.rowcount}
+
+
+_OBS_AVAILABILITY = "COALESCE(n.accepted::date, n.filed + 1)"
+_EVENT_AVAILABILITY = "n.filed + 1"
+
+
+def load_package(conn, result: PackageResult, *,
+                 reconciled_on: dt.date | None = None) -> dict[str, int]:
+    """Reconcile one package version in a single transaction (bitemporal)."""
     package = result.package
+    on = reconciled_on or dt.date.today()
+    obs_rows = [(*o.as_tuple(), o.fact_hash) for o in result.observations]
+    share_rows = [(*s.as_tuple(), s.fact_hash) for s in result.share_counts]
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
-                "CREATE TEMP TABLE tmp_sec_obs (LIKE sec_ticker_cik_observations "
-                "INCLUDING DEFAULTS) ON COMMIT DROP"
+                f"CREATE TEMP TABLE tmp_sec_obs ON COMMIT DROP AS SELECT "
+                f"{', '.join(OBSERVATION_COLUMNS)}, fact_hash "
+                f"FROM sec_ticker_cik_observations WITH NO DATA"
             )
             cur.execute(
-                "CREATE TEMP TABLE tmp_sec_shares (LIKE sec_cover_share_counts "
-                "INCLUDING DEFAULTS) ON COMMIT DROP"
+                f"CREATE TEMP TABLE tmp_sec_shares ON COMMIT DROP AS SELECT "
+                f"{', '.join(SHARE_COLUMNS)}, fact_hash "
+                f"FROM sec_cover_share_counts WITH NO DATA"
             )
-            cur.execute("CREATE TEMP TABLE tmp_sec_adsh (adsh text PRIMARY KEY) ON COMMIT DROP")
-            _copy(cur, "tmp_sec_obs", OBSERVATION_COLUMNS,
-                  (o.as_tuple() for o in result.observations))
-            _copy(cur, "tmp_sec_shares", SHARE_COLUMNS,
-                  (s.as_tuple() for s in result.share_counts))
-            _copy(cur, "tmp_sec_adsh", ("adsh",), ((adsh,) for adsh in result.submissions))
-            cur.execute(
-                """
-                CREATE TEMP TABLE tmp_sec_dropped ON COMMIT DROP AS
-                SELECT DISTINCT m.adsh
-                FROM sec_ticker_cik_package_members m
-                WHERE m.source_package = %(package)s
-                  AND NOT EXISTS (SELECT 1 FROM tmp_sec_adsh a WHERE a.adsh = m.adsh)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM sec_ticker_cik_package_members o
-                      WHERE o.adsh = m.adsh AND o.source_package <> %(package)s
-                        AND o.source_package LIKE '%%.zip')
-                """,
-                {"package": package},
+            _copy(cur, "tmp_sec_obs", (*OBSERVATION_COLUMNS, "fact_hash"), obs_rows)
+            _copy(cur, "tmp_sec_shares", (*SHARE_COLUMNS, "fact_hash"), share_rows)
+            observations = _reconcile(
+                cur, package=package, fact_table="observation", temp="tmp_sec_obs",
+                columns=OBSERVATION_COLUMNS, availability=_OBS_AVAILABILITY,
+                reconciled_on=on,
             )
-            cur.execute(
-                """
-                DELETE FROM sec_ticker_cik_observations o
-                WHERE o.adsh IN (SELECT adsh FROM tmp_sec_dropped)
-                   OR (o.adsh IN (SELECT adsh FROM tmp_sec_adsh) AND NOT EXISTS (
-                       SELECT 1 FROM tmp_sec_obs t
-                       WHERE t.adsh = o.adsh AND t.dimh = o.dimh AND t.ticker = o.ticker))
-                """
+            shares = _reconcile(
+                cur, package=package, fact_table="share_count", temp="tmp_sec_shares",
+                columns=SHARE_COLUMNS, availability=_OBS_AVAILABILITY, reconciled_on=on,
             )
-            removed = cur.rowcount
-            cur.execute(
-                f"""
-                INSERT INTO sec_ticker_cik_observations ({", ".join(OBSERVATION_COLUMNS)})
-                SELECT {", ".join(OBSERVATION_COLUMNS)} FROM tmp_sec_obs
-                ON CONFLICT (adsh, dimh, ticker) DO UPDATE SET
-                    {_OBSERVATION_UPDATE}, updated_at = now()
-                WHERE {_OBSERVATION_CHANGED}
-                RETURNING (xmax = 0) AS inserted
-                """
-            )
-            written = [row[0] for row in cur.fetchall()]
-            cur.execute(
-                """
-                DELETE FROM sec_cover_share_counts c
-                WHERE c.adsh IN (SELECT adsh FROM tmp_sec_dropped)
-                   OR (c.adsh IN (SELECT adsh FROM tmp_sec_adsh) AND NOT EXISTS (
-                       SELECT 1 FROM tmp_sec_shares t
-                       WHERE (t.adsh, t.dimh, t.stated_on, t.shares)
-                           = (c.adsh, c.dimh, c.stated_on, c.shares)))
-                """
-            )
-            shares_removed = cur.rowcount
-            cur.execute(
-                f"""
-                INSERT INTO sec_cover_share_counts ({", ".join(SHARE_COLUMNS)})
-                SELECT {", ".join(SHARE_COLUMNS)} FROM tmp_sec_shares
-                ON CONFLICT (adsh, dimh, stated_on, shares) DO UPDATE SET
-                    cik = EXCLUDED.cik, segments = EXCLUDED.segments,
-                    class_key = EXCLUDED.class_key, ddate_rounded = EXCLUDED.ddate_rounded,
-                    form = EXCLUDED.form, filed = EXCLUDED.filed, accepted = EXCLUDED.accepted,
-                    source_package = EXCLUDED.source_package
-                WHERE (sec_cover_share_counts.cik, sec_cover_share_counts.segments,
-                       sec_cover_share_counts.class_key, sec_cover_share_counts.ddate_rounded,
-                       sec_cover_share_counts.form, sec_cover_share_counts.filed,
-                       sec_cover_share_counts.accepted, sec_cover_share_counts.source_package)
-                    IS DISTINCT FROM (EXCLUDED.cik, EXCLUDED.segments, EXCLUDED.class_key,
-                       EXCLUDED.ddate_rounded, EXCLUDED.form, EXCLUDED.filed,
-                       EXCLUDED.accepted, EXCLUDED.source_package)
-                RETURNING (xmax = 0)
-                """
-            )
-            shares_written = [row[0] for row in cur.fetchall()]
-            cur.execute("SELECT count(*) FROM tmp_sec_dropped")
-            dropped = cur.fetchone()[0]
-            _replace_members(
-                cur, package,
-                ((adsh, submission.cik) for adsh, submission in result.submissions.items()),
-            )
+            _replace_facts(cur, package, [
+                *(("observation", o.fact_hash) for o in result.observations),
+                *(("share_count", s.fact_hash) for s in result.share_counts),
+            ])
+            _replace_members(cur, package, [
+                *((adsh, submission.cik) for adsh, submission in result.submissions.items()),
+                *((o.adsh, o.cik) for o in result.observations),
+                *((s.adsh, s.cik) for s in result.share_counts),
+            ])
             _record_package(
                 cur, package=package, sha256=result.sha256, size=result.size_bytes,
                 submissions=len(result.submissions), symbol_facts=result.symbol_facts,
@@ -1000,62 +1142,36 @@ def load_package(conn, result: PackageResult) -> dict[str, int]:
                 events=0, rejected=result.rejected,
             )
     return {
-        "inserted": sum(1 for inserted in written if inserted),
-        "updated": sum(1 for inserted in written if not inserted),
-        "removed": removed,
-        "accessions_dropped": dropped,
-        "shares_inserted": sum(1 for inserted in shares_written if inserted),
-        "shares_removed": shares_removed,
+        "inserted": observations["inserted"],
+        "retired": observations["retired"],
+        "shares_inserted": shares["inserted"],
+        "shares_retired": shares["retired"],
     }
 
 
-def load_form_index(conn, path: Path) -> dict[str, object]:
-    """Replace one quarterly index's events in a single transaction.
+def load_form_index(conn, path: Path, *,
+                    reconciled_on: dt.date | None = None) -> dict[str, object]:
+    """Reconcile one quarterly index version in a single transaction (bitemporal).
 
-    An (accession, CIK) event the previous version of this index contained and
-    this one does not (removed, or its CIK corrected) is deleted, unless another
-    loaded index also contains it.
+    An event the previous version listed and this one does not (removed, or its
+    CIK corrected) is retired unless another loaded index still lists it.
     """
     events, sha256, size = parse_form_index(path)
     package = path.name
+    on = reconciled_on or dt.date.today()
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
-                "CREATE TEMP TABLE tmp_sec_events (LIKE sec_registration_events "
-                "INCLUDING DEFAULTS) ON COMMIT DROP"
+                f"CREATE TEMP TABLE tmp_sec_events ON COMMIT DROP AS SELECT "
+                f"{', '.join(EVENT_COLUMNS)}, fact_hash FROM sec_registration_events WITH NO DATA"
             )
-            _copy(cur, "tmp_sec_events", EVENT_COLUMNS, (e.as_tuple() for e in events))
-            cur.execute(
-                """
-                DELETE FROM sec_registration_events e
-                USING sec_ticker_cik_package_members m
-                WHERE m.source_package = %(package)s
-                  AND (e.adsh, e.cik) = (m.adsh, m.cik)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM tmp_sec_events t WHERE (t.adsh, t.cik) = (m.adsh, m.cik))
-                  AND NOT EXISTS (
-                      SELECT 1 FROM sec_ticker_cik_package_members o
-                      WHERE (o.adsh, o.cik) = (m.adsh, m.cik)
-                        AND o.source_package <> %(package)s
-                        AND o.source_package LIKE '%%.form.gz')
-                """,
-                {"package": package},
+            _copy(cur, "tmp_sec_events", (*EVENT_COLUMNS, "fact_hash"),
+                  ((*e.as_tuple(), e.fact_hash) for e in events))
+            counts = _reconcile(
+                cur, package=package, fact_table="event", temp="tmp_sec_events",
+                columns=EVENT_COLUMNS, availability=_EVENT_AVAILABILITY, reconciled_on=on,
             )
-            removed = cur.rowcount
-            cur.execute(
-                f"""
-                INSERT INTO sec_registration_events ({", ".join(EVENT_COLUMNS)})
-                SELECT {", ".join(EVENT_COLUMNS)} FROM tmp_sec_events
-                ON CONFLICT (adsh, cik) DO UPDATE SET
-                    form = EXCLUDED.form, filed = EXCLUDED.filed,
-                    source_package = EXCLUDED.source_package
-                WHERE (sec_registration_events.form, sec_registration_events.filed,
-                       sec_registration_events.source_package)
-                    IS DISTINCT FROM (EXCLUDED.form, EXCLUDED.filed, EXCLUDED.source_package)
-                RETURNING (xmax = 0)
-                """
-            )
-            written = [row[0] for row in cur.fetchall()]
+            _replace_facts(cur, package, (("event", e.fact_hash) for e in events))
             _replace_members(cur, package, ((e.adsh, e.cik) for e in events))
             _record_package(
                 cur, package=package, sha256=sha256, size=size, submissions=0,
@@ -1066,9 +1182,7 @@ def load_form_index(conn, path: Path) -> dict[str, object]:
         "package": package,
         "events": len(events),
         "forms": dict(Counter(e.form for e in events).most_common()),
-        "inserted": sum(1 for inserted in written if inserted),
-        "updated": sum(1 for inserted in written if not inserted),
-        "removed": removed,
+        **counts,
     }
 
 
@@ -1129,7 +1243,10 @@ def run(
     dsn: str | None,
     dry_run: bool,
     form_indexes: Iterable[Path] = (),
+    reconciled_on: dt.date | None = None,
 ) -> list[dict[str, object]]:
+    """Parse and reconcile packages, then indexes; ``reconciled_on`` dates every
+    retirement and correction (default: today)."""
     stats: list[dict[str, object]] = []
     # Autocommit: each package commits in its own explicit transaction. The
     # session lock keeps this script and the recurring worker from interleaving.
@@ -1147,7 +1264,7 @@ def run(
             item = result.stats()
             if conn is not None:
                 started = time.monotonic()
-                item.update(load_package(conn, result))
+                item.update(load_package(conn, result, reconciled_on=reconciled_on))
                 item["load_seconds"] = round(time.monotonic() - started, 1)
             print(json.dumps(item), flush=True)
             stats.append(item)
@@ -1156,7 +1273,7 @@ def run(
                 events, _, _ = parse_form_index(path)
                 item = {"package": path.name, "events": len(events)}
             else:
-                item = load_form_index(conn, path)
+                item = load_form_index(conn, path, reconciled_on=reconciled_on)
             print(json.dumps(item), flush=True)
             stats.append(item)
     finally:
@@ -1179,6 +1296,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="parse and report; no database")
     parser.add_argument("--apply-schema", action="store_true",
                         help="local/dev: apply the schema first")
+    parser.add_argument("--reconciled-on", type=dt.date.fromisoformat, default=None,
+                        help="date of retirements and corrections (default: today)")
     args = parser.parse_args(argv)
 
     if args.download:
@@ -1198,11 +1317,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.apply_schema and not args.dry_run:
         apply_schema(args.dsn)
     started = time.monotonic()
-    stats = run(packages, dsn=args.dsn, dry_run=args.dry_run, form_indexes=form_indexes)
+    stats = run(packages, dsn=args.dsn, dry_run=args.dry_run, form_indexes=form_indexes,
+                reconciled_on=args.reconciled_on)
     totals: Counter = Counter()
     for item in stats:
         for key in ("submissions", "symbol_facts", "observations", "share_counts", "events",
-                    "inserted", "updated", "removed"):
+                    "inserted", "retired", "shares_inserted", "shares_retired"):
             totals[key] += int(item.get(key, 0) or 0)  # type: ignore[call-overload]
     print(json.dumps({
         "packages": len(packages),
