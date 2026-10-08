@@ -12,8 +12,8 @@ Sources (public, fetched with the SEC User-Agent, one request at a time):
   of loading partial data.
 * EDGAR full-index form indexes (``full-index/YYYY/QTRn/form.gz``): the ends
   (Forms 15-12B, 15-12G, 15-15D, their foreign private issuer forms 15F-12B,
-  15F-12G, 15F-15D, 25, 25-NSE) and starts (8-A12B, 8-A12G, 10-12B, 10-12G) of
-  registrations, and their amendments.
+  15F-12G, 15F-15D, 25, 25-NSE) and starts (8-A12B, 8-A12G, 10-12B, 10-12G, and a
+  successor's 8-K12B or 8-K12G3) of registrations, and their amendments.
 * The EDGAR filings of those ends for CIKs with cover data
   (``Archives/edgar/data/<cik>/<adsh>.txt``), read for the class, rule provision
   and exchange they state, cached on disk one file per accession.
@@ -110,7 +110,12 @@ LISTED_KINDS = EQUITY_KINDS | {UNKNOWN_KIND}
 # (8-A12B/8-A12G/10-12B/10-12G). An '/A' amends the latest original of its form.
 END_FORMS = ("15-12B", "15-12G", "15-15D", "15F-12B", "15F-12G", "15F-15D", "25", "25-NSE")
 REGISTRATION_FORMS = ("8-A12B", "8-A12G", "10-12B", "10-12G")
-EVENT_ORIGINAL_FORMS = END_FORMS + REGISTRATION_FORMS
+# A successor issuer's notice that it assumed the registration of a class (Rules
+# 12g-3, 12b): filed under the CIK whose class it substitutes, it continues that
+# CIK's listed line (KKR's 8-K12B of 2022-05-31, a holding-company
+# reorganization the day before NYSE's 25-NSE of the old common stock).
+SUCCESSOR_FORMS = ("8-K12B", "8-K12G3")
+EVENT_ORIGINAL_FORMS = END_FORMS + REGISTRATION_FORMS + SUCCESSOR_FORMS
 EVENT_FORMS = EVENT_ORIGINAL_FORMS + tuple(f"{form}/A" for form in EVENT_ORIGINAL_FORMS)
 END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS))
 # Registrations read for the class they register: a delisting is a transfer only

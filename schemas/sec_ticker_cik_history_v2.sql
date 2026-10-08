@@ -26,6 +26,11 @@
 -- * An end that names some of an issuer's listed classes by letter ("Class B
 --   common stock") ends those classes' holds and lines only (class_keys); one
 --   naming only classes the issuer does not list ends none.
+-- * A successor's registration of the CIK's class (8-K12B, 8-K12G3 under the same
+--   CIK) near an end makes it no end, and after a definitive end relists the class.
+-- * An end of an equity class ends the listed lines, and a preferred, warrant,
+--   unit, right or notes line of the same CIK only when it names that instrument
+--   (sec_issuer_end_events.class_kind, named_kinds).
 -- * After a definitive end only a registration of the class (or a symbol first
 --   shown after it) starts a new run: a later cover, even with a 12(b) title, no
 --   longer reopens it.
@@ -72,6 +77,27 @@ ALTER TABLE sec_registration_events
     ADD COLUMN IF NOT EXISTS retired_reason text;
 ALTER TABLE sec_ticker_cik_packages
     ADD COLUMN IF NOT EXISTS parser_version text;
+-- Successor registrations (8-K12B, 8-K12G3 and their /A) are registration
+-- events too. The CHECK v1 put on form is replaced by one that admits them (NOT
+-- VALID: every existing row satisfies the narrower v1 list).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint
+                   WHERE conrelid = to_regclass('sec_registration_events')
+                     AND conname = 'sec_registration_events_form_v2_check') THEN
+        ALTER TABLE sec_registration_events
+            DROP CONSTRAINT IF EXISTS sec_registration_events_form_check;
+        ALTER TABLE sec_registration_events
+            ADD CONSTRAINT sec_registration_events_form_v2_check CHECK (form IN (
+                '15-12B', '15-12G', '15-15D', '15F-12B', '15F-12G', '15F-15D', '25', '25-NSE',
+                '15-12B/A', '15-12G/A', '15-15D/A', '15F-12B/A', '15F-12G/A', '15F-15D/A',
+                '25/A', '25-NSE/A',
+                '8-A12B', '8-A12G', '10-12B', '10-12G',
+                '8-A12B/A', '8-A12G/A', '10-12B/A', '10-12G/A',
+                '8-K12B', '8-K12G3', '8-K12B/A', '8-K12G3/A'
+            )) NOT VALID;
+    END IF;
+END $$;
 DO $$
 DECLARE
     item text;
@@ -210,12 +236,13 @@ WHERE v.form NOT LIKE '%/A'
   AND l.amendment_effect IS DISTINCT FROM 'cancels'
 $fn$;
 
--- The registration filings (8-A12B/8-A12G/10-12B/10-12G originals) of a CIK
--- visible at D that register an equity class, or a class not read: a Form 8-A of
--- notes, preferred or warrants is no transfer of a delisted common stock and no
--- relisting of it (Statera's 8-A12G of its Series B Preferred Stock, filed the
--- day Nasdaq delisted its common, 2023-02-01). Forms 8-A of CIKs with cover data
--- are read (class_kind); a Form 10 is not.
+-- The registration filings (8-A12B/8-A12G/10-12B/10-12G originals, and a
+-- successor's 8-K12B/8-K12G3) of a CIK visible at D that register an equity
+-- class, or a class not read: a Form 8-A of notes, preferred or warrants is no
+-- transfer of a delisted common stock and no relisting of it (Statera's 8-A12G of
+-- its Series B Preferred Stock, filed the day Nasdaq delisted its common,
+-- 2023-02-01). Forms 8-A of CIKs with cover data are read (class_kind); a Form 10
+-- or 8-K12B is not.
 CREATE OR REPLACE FUNCTION sec_registration_starts(
     p_cik bigint, p_as_of date, p_current boolean DEFAULT false
 )
@@ -226,7 +253,7 @@ SELECT CASE WHEN p_current THEN e.source_available_on ELSE e.available_on END,
        e.filed, e.form, e.adsh
 FROM sec_registration_events e
 WHERE e.cik = p_cik
-  AND e.form IN ('8-A12B', '8-A12G', '10-12B', '10-12G')
+  AND e.form IN ('8-A12B', '8-A12G', '10-12B', '10-12G', '8-K12B', '8-K12G3')
   AND e.class_kind IS DISTINCT FROM 'other'
   AND CASE WHEN p_current
            THEN e.retired_on IS NULL AND e.source_available_on <= p_as_of
@@ -264,6 +291,10 @@ $fn$;
 --   not listed, and names fewer equity classes than the issuer's latest complete
 --   filing showed, listed or not (listed class A, unlisted class B, a 15-12G for
 --   one class: B's), or
+-- * a successor registered the CIK's class (8-K12B or 8-K12G3 under the same CIK,
+--   filed from 30 days before to 10 days after it: a holding-company
+--   reorganization that keeps the CIK, such as KKR's of 2022, whose share count
+--   rose 45%), or
 -- * it is a 25/25-NSE/15-12B (12(b) removal) on a secondary exchange, or one
 --   that a registration of an equity class (or of a class not read) filed from 30
 --   days before to 10 days after makes a transfer (PepsiCo's NYSE -> Nasdaq move:
@@ -284,6 +315,13 @@ $fn$;
 -- (including class_kind 'unknown' or unread) end the lines until a later
 -- statement shows the symbol again (an exchange delisting to OTC, a stale 12(g)
 -- registration).
+-- class_kind: what the end names as it applies; named_kinds: the other
+-- instruments its description also names (warrant, unit, right, preferred,
+-- debt). An end of an equity class ends the listed lines, and a preferred,
+-- warrant, unit, right or notes line only when it names that instrument: the
+-- 25-NSE of a common stock taken private does not end its preferred or notes,
+-- which may stay listed (Triton's and Brookfield Property's preferreds did), while
+-- a SPAC's "Units; Class A common stock; Warrants" ends all three.
 -- effective_on: the date the end takes effect, its filing date + 1; a restated
 -- end that applies only as restated takes effect point-in-time from the
 -- amendment's filing date + 1. available_on: the date the end, as it applies,
@@ -303,7 +341,9 @@ RETURNS TABLE (
     adsh text,
     definitive boolean,
     effective_on date,
-    class_keys text[]
+    class_keys text[],
+    class_kind text,
+    named_kinds text[]
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
@@ -355,19 +395,28 @@ WITH horizon AS (
                SELECT 1 FROM horizon h
                CROSS JOIN LATERAL sec_registration_starts(p_cik, h.on_date, p_current) r
                WHERE r.filed BETWEEN e.filed - 30 AND e.filed + 10
-           ) AS registered_nearby
+           ) AS registered_nearby,
+           -- a successor registered this CIK's class (8-K12B/8-K12G3 under the
+           -- same CIK): its line continues under the successor
+           EXISTS (
+               SELECT 1 FROM horizon h
+               CROSS JOIN LATERAL sec_registration_starts(p_cik, h.on_date, p_current) r
+               WHERE r.form IN ('8-K12B', '8-K12G3')
+                 AND r.filed BETWEEN e.filed - 30 AND e.filed + 10
+           ) AS succeeded
     FROM horizon h
     CROSS JOIN LATERAL sec_registration_end_events(p_cik, h.on_date, p_current) e
 ), versions AS (
     -- each end as it reads now ('effective') and, when restated, as filed
     SELECT e.adsh, e.form, e.filed, e.available_on, e.restated_on, e.restated_filed,
-           e.registered_nearby, true AS effective, e.class_kind, e.class_count,
+           e.registered_nearby, e.succeeded, true AS effective, e.class_kind, e.class_count,
            e.extinguished, e.venue_kind, e.class_description
     FROM events e
     UNION ALL
     SELECT e.adsh, e.form, e.filed, e.available_on, e.restated_on, e.restated_filed,
-           e.registered_nearby, false, e.original_class_kind, e.original_class_count,
-           e.original_extinguished, e.original_venue_kind, e.original_class_description
+           e.registered_nearby, e.succeeded, false, e.original_class_kind,
+           e.original_class_count, e.original_extinguished, e.original_venue_kind,
+           e.original_class_description
     FROM events e
     WHERE e.restated_on IS NOT NULL
 ), judged AS (
@@ -415,6 +464,7 @@ WITH horizon AS (
 ), applies AS (
     SELECT j.*,
            COALESCE(j.class_kind, 'unknown') <> 'other'
+           AND NOT j.succeeded
            AND CASE WHEN j.scoped THEN cardinality(j.matched) > 0
                     ELSE (j.prior_symbols = 1
                           OR (j.class_kind = 'equity' AND j.class_count >= j.prior_symbols))
@@ -474,7 +524,13 @@ SELECT CASE WHEN a.restated_only THEN a.restated_on ELSE a.available_on END,
            )
        END AS definitive,
        CASE WHEN a.restated_only THEN a.restated_filed + 1 ELSE a.filed + 1 END,
-       a.class_keys
+       a.class_keys, a.class_kind,
+       ARRAY(SELECT n.kind
+             FROM (VALUES ('warrant', '\mwarrants?\M'), ('unit', '\munits?\M'),
+                          ('right', '\mrights?\M'), ('preferred', 'preferred|preference'),
+                          ('debt', '\mnotes?\M|debentures?|\mbonds?\M')) n(kind, pattern)
+             WHERE a.class_description ~* n.pattern
+             ORDER BY 1)
 FROM current_ends a
 WHERE a.available_on <= p_as_of
 $fn$;
@@ -553,6 +609,8 @@ WITH shown AS (
            (array_agg(r.security_kind ORDER BY r.known_on DESC, r.accepted DESC NULLS LAST,
                       r.adsh DESC, r.class_key))[1] AS security_kind,
            array_agg(DISTINCT r.class_key) AS classes,
+           bool_or(r.security_kind IN ('equity', 'depositary', 'unknown')) AS listed,
+           array_agg(DISTINCT r.security_kind) AS kinds,
            COALESCE((array_agg(r.filing_equity_classes = 1 ORDER BY r.known_on DESC,
                                r.accepted DESC NULLS LAST, r.adsh DESC)
                      FILTER (WHERE r.filing_complete))[1], false) AS sole
@@ -580,7 +638,8 @@ WITH shown AS (
             WHERE c.cik = p.cik AND c.shows AND c.known_on >= e.effective_on) AS first_post_on
     FROM per_cik p
     CROSS JOIN LATERAL sec_issuer_end_events(p.cik, p_as_of, p_current) e
-    WHERE e.class_keys IS NULL OR e.class_keys && p.classes
+    WHERE (e.class_keys IS NULL OR e.class_keys && p.classes)
+      AND (e.class_kind IS DISTINCT FROM 'equity' OR p.listed OR e.named_kinds && p.kinds)
 ), last_end AS (
     SELECT DISTINCT ON (e.cik) e.*
     FROM ends e
@@ -677,8 +736,12 @@ WITH own AS (
                AND f.security_kind IN ('equity', 'depositary', 'unknown')))
 ), ends AS (
     SELECT e.* FROM sec_issuer_end_events(p_cik, p_as_of, false) e
-    WHERE e.class_keys IS NULL OR p_class_key = ANY(e.class_keys)
-       OR e.class_keys && ARRAY(SELECT DISTINCT r.class_key FROM rows r)
+    WHERE (e.class_keys IS NULL OR p_class_key = ANY(e.class_keys)
+           OR e.class_keys && ARRAY(SELECT DISTINCT r.class_key FROM rows r))
+      AND (e.class_kind IS DISTINCT FROM 'equity'
+           OR EXISTS (SELECT 1 FROM rows r
+                      WHERE r.security_kind IN ('equity', 'depositary', 'unknown')
+                         OR r.security_kind = ANY(e.named_kinds)))
 ), last_end AS (
     SELECT e.* FROM ends e ORDER BY e.effective_on DESC, e.adsh DESC LIMIT 1
 ), candidates AS (
@@ -933,7 +996,9 @@ WITH key AS (
     SELECT h.cik, l.class_key, l.line_key
     FROM holder_ciks h CROSS JOIN LATERAL sec_issuer_lines(h.cik) l
 ), held AS (
-    SELECT r.cik, l.line_key, min(r.known_on) AS first_on
+    SELECT r.cik, l.line_key, min(r.known_on) AS first_on,
+           bool_or(r.security_kind IN ('equity', 'depositary', 'unknown')) AS listed,
+           array_agg(DISTINCT r.security_kind) AS kinds
     FROM relevant r JOIN lines l ON l.cik = r.cik AND l.class_key = r.class_key
     GROUP BY r.cik, l.line_key
 ), cik_first AS (
@@ -971,7 +1036,8 @@ WITH key AS (
                          AND o.source_available_on > s.sole_until))
     GROUP BY h.cik, h.line_key, o.adsh
 ), ends AS MATERIALIZED (
-    SELECT h.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive, e.class_keys
+    SELECT h.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive, e.class_keys,
+           e.class_kind, e.named_kinds
     FROM holder_ciks h
     CROSS JOIN LATERAL sec_issuer_end_events(h.cik, 'infinity'::date, true) e
 ), starts AS MATERIALIZED (
@@ -984,9 +1050,11 @@ WITH key AS (
     SELECT h.cik, h.line_key, e.effective_on, e.filed, e.form, e.adsh, e.definitive
     FROM held h
     JOIN ends e ON e.cik = h.cik
-    WHERE e.class_keys IS NULL OR EXISTS (
-        SELECT 1 FROM lines l
-        WHERE l.cik = h.cik AND l.line_key = h.line_key AND l.class_key = ANY(e.class_keys))
+    WHERE (e.class_keys IS NULL OR EXISTS (
+               SELECT 1 FROM lines l
+               WHERE l.cik = h.cik AND l.line_key = h.line_key
+                 AND l.class_key = ANY(e.class_keys)))
+      AND (e.class_kind IS DISTINCT FROM 'equity' OR h.listed OR e.named_kinds && h.kinds)
 ), blocking AS (
     -- ends after which the line's later candidates do not count (definitive end
     -- of a ticker shown before it, or the ticker moved to another CIK)
@@ -1143,8 +1211,15 @@ WITH lines AS MATERIALIZED (
     GROUP BY o.adsh
 ), ends AS MATERIALIZED (
     SELECT e.* FROM sec_issuer_end_events(p_cik, 'infinity'::date, true) e
-    WHERE e.class_keys IS NULL OR EXISTS (
-        SELECT 1 FROM lines l WHERE l.line_key = p_line_key AND l.class_key = ANY(e.class_keys))
+    WHERE (e.class_keys IS NULL OR EXISTS (
+               SELECT 1 FROM lines l
+               WHERE l.line_key = p_line_key AND l.class_key = ANY(e.class_keys)))
+      AND (e.class_kind IS DISTINCT FROM 'equity' OR EXISTS (
+               SELECT 1 FROM sec_observations_at('infinity'::date, true) o
+               JOIN lines l ON l.class_key = o.class_key
+               WHERE o.cik = p_cik AND l.line_key = p_line_key
+                 AND (o.security_kind IN ('equity', 'depositary', 'unknown')
+                      OR o.security_kind = ANY(e.named_kinds))))
 ), counted AS MATERIALIZED (
     SELECT c.* FROM candidates c
     WHERE NOT EXISTS (

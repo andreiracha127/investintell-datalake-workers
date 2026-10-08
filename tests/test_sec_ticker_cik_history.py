@@ -913,6 +913,8 @@ def test_form_index_keeps_registration_end_and_start_rows(tmp_path: Path) -> Non
     path.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode("latin-1")))
     events, sha256, size = loader.parse_form_index(path)
     assert [(e.form, e.cik, e.filed, e.adsh) for e in events] == [
+        # A successor's 8-K12B registers the class it substitutes.
+        ("8-K12B", 888, d(2020, 2, 12), "0000000888-20-000001"),
         ("15-12G", 5907, d(2020, 3, 2), "0000005907-20-000001"),
         ("15F-12B", 1108329, d(2020, 2, 5), "0000947871-20-000089"),
         ("8-A12B", 77476, d(2020, 2, 11), "0000950103-20-000001"),
@@ -2381,6 +2383,62 @@ def test_an_undimensioned_total_is_no_count_of_two_symbols(
     loader.run([path], dsn=dsn, dry_run=False, reconciled_on=d(2024, 4, 1))
     assert [_ticker_shares(conn, t, 61, "2024-04-01")[0] for t in ("JWA", "JWB")] == [
         "missing", "missing"]
+
+
+def test_a_successor_registration_under_the_same_cik_is_no_end(schema_dsn) -> None:
+    """KKR & Co. (CIK 1404912) reorganized as a holding company in 2022 under the
+    same CIK: its 8-K12B (2022-05-31), NYSE's 25-NSE of the old common stock
+    (12d2-2(a)(3), 2022-06-01) and a 15-12B; its count rose from 592.6 to 859.8
+    million shares, so the base check alone reads a definitive end. The successor
+    registration says the class went on under the CIK: no end. ODP (2020) and
+    ADTRAN (2022) did the same."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 1404912, "KKR", "2022-05-06", title="Common Stock")
+    _count(conn, 1404912, "", "2022-05-04", 592_607_251, "2022-05-06", adsh=q)
+    _event(conn, 1404912, "8-K12B", "2022-05-31")
+    _event(conn, 1404912, "25-NSE", "2022-06-01", kind="equity", extinguished=True,
+           venue_kind="primary", description="Common Stock")
+    _event(conn, 1404912, "15-12B", "2022-06-13", kind="equity",
+           description="Common Stock, par value $0.01 per share, of KKR Group Co. Inc.")
+    k = _observe(conn, 1404912, "KKR", "2022-08-05", title="Common Stock")
+    _count(conn, 1404912, "", "2022-08-04", 859_833_444, "2022-08-05", adsh=k)
+    assert _ends(conn, 1404912, "2024-12-31") == []
+    for as_of in ("2022-06-20", "2022-12-31"):
+        assert _issuer(conn, "KKR", as_of)[:2] == ("resolved", 1404912), as_of
+    assert _alive(conn, "KKR", 1404912, "", d(2022, 6, 20))
+    # Without the successor registration the same filings are a definitive end.
+    q = _observe(conn, 1404913, "KKRX", "2022-05-06", title="Common Stock")
+    _count(conn, 1404913, "", "2022-05-04", 592_607_251, "2022-05-06", adsh=q)
+    _event(conn, 1404913, "25-NSE", "2022-06-01", kind="equity", extinguished=True,
+           venue_kind="primary", description="Common Stock")
+    k = _observe(conn, 1404913, "KKRX", "2022-08-05", title="Common Stock")
+    _count(conn, 1404913, "", "2022-08-04", 859_833_444, "2022-08-05", adsh=k)
+    assert _ends(conn, 1404913, "2024-12-31") == [("25-NSE", d(2022, 6, 2), True)]
+    assert _issuer(conn, "KKRX", "2022-12-31")[:2] == ("ended", None)
+
+
+def test_the_end_of_a_common_stock_leaves_its_listed_preferreds(schema_dsn) -> None:
+    """Triton (CIK 1660734) was taken private in 2023: NYSE removed its common
+    shares (25-NSE, 12d2-2(a)(3)) and it deregistered them, while its preferred
+    shares stayed listed and kept their covers. An end of an equity class ends the
+    listed equity lines, not the preferred ones."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 1660734, "TRTN", "2023-07-27", class_key="ClassOfStock=CommonStock;",
+                 title="Common shares")
+    _observe(conn, 1660734, "TRTN-PA", "2023-07-27", kind="preferred", adsh=q,
+             class_key="ClassOfStock=SeriesAPreferredStock;", title="8.50% Series A Preference")
+    _count(conn, 1660734, "ClassOfStock=CommonStock;", "2023-07-20", 54_000_000, "2023-07-27",
+           adsh=q)
+    _event(conn, 1660734, "25-NSE", "2023-09-28", kind="equity", extinguished=True,
+           venue_kind="primary", description="Common shares, par value $0.01 per share")
+    _event(conn, 1660734, "15-12G", "2023-10-10", kind="equity",
+           description="Common shares, par value $0.01 per share")
+    for filed in ("2023-11-02", "2024-05-01"):
+        _observe(conn, 1660734, "TRTN-PA", filed, kind="preferred",
+                 class_key="ClassOfStock=SeriesAPreferredStock;", title="8.50% Series A Preference")
+    assert _issuer(conn, "TRTN", "2024-06-01")[:2] == ("ended", None)
+    assert _issuer(conn, "TRTN-PA", "2024-06-01")[:2] == ("resolved", 1660734)
+    assert _span(conn, "TRTN-PA", 1660734)[0][2:4] == (None, None)
 
 
 def test_a_stray_claim_inside_another_holders_claims_does_not_count(schema_dsn) -> None:
