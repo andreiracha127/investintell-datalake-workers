@@ -665,6 +665,44 @@ def test_legal_entity_contexts_resolve_to_the_entity_they_name(tmp_path: Path) -
     }
 
 
+def test_two_registrants_sharing_the_undimensioned_context_stay_apart(
+    tmp_path: Path,
+) -> None:
+    """Codex thread 4222086457: the parent's and a co-registrant's facts share
+    dimh 0x00000000 in a combined filing; the co-registrant's row (listed last)
+    must not take the parent's symbol with it."""
+    adsh = "0000000011-24-000001"
+    path = _write_package(
+        tmp_path / "2024q1_notes.zip",
+        [_sub(adsh, 1111, "10-K", "20240226", "2024-02-26 08:00:00.0", nciks=2)],
+        [
+            _fact(adsh, "TradingSymbol", "PARENT"),
+            _fact(adsh, "Security12bTitle", "Common Stock"),
+            _fact(adsh, "TradingSymbol", "SUBX", coreg="SubsidiaryMember"),
+            _fact(adsh, "EntityCentralIndexKey", "0000002222", coreg="SubsidiaryMember"),
+        ],
+    )
+    result = loader.parse_package(path)
+    assert [(o.ticker, o.cik, o.security_title) for o in result.observations] == [
+        ("PARENT", 1111, "Common Stock"),
+    ]
+    assert result.rejected["coregistrant"] == 1  # no legal-entity member to attribute it
+
+
+def test_an_empty_package_listing_is_an_error() -> None:
+    """Codex thread 4222086469."""
+    httpx = pytest.importorskip("httpx")
+
+    def answer(status: int, text: str):
+        return httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, text=text)))
+
+    with pytest.raises(RuntimeError, match="no package links"):
+        loader.list_package_urls(answer(200, "<html>maintenance</html>"))
+    with pytest.raises(httpx.HTTPStatusError):
+        loader.list_package_urls(answer(503, ""))
+
+
 def test_a_corrupt_package_member_fails_the_parse(tmp_path: Path) -> None:
     stored = _write_package(
         tmp_path / "2024q2_notes.zip",
@@ -2875,6 +2913,16 @@ def test_a_stopped_supersession_is_completed_by_the_next_run(
     ).fetchall() == [("AAA", None), ("BBB", dt.date.today())]
     again = worker.run(dsn, calc_date="2026-12-08", client=client)
     assert again["resumed_supersession"] == [] and again["state"] == "noop"
+
+
+def test_worker_fails_on_an_empty_package_listing(schema_dsn, tmp_path: Path) -> None:
+    """Codex thread 4222086469: no package link is an error, not "nothing new"."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    _, dsn = schema_dsn
+    client, _ = _fake_sec(tmp_path, {}, {})
+    with pytest.raises(RuntimeError, match="no package links"):
+        worker.run(dsn, calc_date="2024-11-15", client=client)
 
 
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:

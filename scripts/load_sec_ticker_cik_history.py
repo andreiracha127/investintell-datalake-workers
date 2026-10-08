@@ -618,11 +618,13 @@ class _CoverFacts:
 
 def read_cover_facts(
     stream: IO[bytes], rejected: Counter
-) -> tuple[dict[tuple[str, str], _CoverFacts], int]:
-    """dei cover facts keyed by (adsh, dimh); all symbol facts seen."""
+) -> tuple[dict[tuple[str, str, str], _CoverFacts], int]:
+    """dei cover facts keyed by (adsh, dimh, coreg): two registrants of a combined
+    filing can share a context hash (the undimensioned one), so the co-registrant
+    is part of the key; also all symbol facts seen."""
     index = _header(stream)
     width = len(index)
-    facts: dict[tuple[str, str], _CoverFacts] = {}
+    facts: dict[tuple[str, str, str], _CoverFacts] = {}
     symbol_facts = 0
     for raw in stream:
         if not any(marker in raw for marker in _COVER_TAG_MARKERS):
@@ -641,8 +643,9 @@ def read_cover_facts(
             continue
         value = fields[index["value"]].strip()
         iprx = int(fields[index["iprx"]] or 0)
-        entry = facts.setdefault((fields[index["adsh"]], fields[index["dimh"]]), _CoverFacts())
-        entry.coreg = fields[index["coreg"]].strip()
+        coreg = fields[index["coreg"]].strip()
+        entry = facts.setdefault((fields[index["adsh"]], fields[index["dimh"]], coreg),
+                                 _CoverFacts(coreg=coreg))
         if tag == SYMBOL_TAG:
             entry.symbols.append((iprx, value, fields[index["ddate"]]))
         elif tag == TITLE_TAG:
@@ -726,10 +729,11 @@ class _Entities:
     titled_members: set[tuple[str, str]]  # (adsh, member) whose context titles a security
 
 
-def _entities(facts: dict[tuple[str, str], _CoverFacts], segments: dict[str, str]) -> _Entities:
+def _entities(facts: dict[tuple[str, str, str], _CoverFacts],
+              segments: dict[str, str]) -> _Entities:
     by_member: dict[tuple[str, str], int] = {}
     titled: set[tuple[str, str]] = set()
-    for (adsh, dimh), entry in facts.items():
+    for (adsh, dimh, _), entry in facts.items():
         member = legal_entity_member(segments.get(dimh, ""))
         if member is None:
             continue
@@ -798,7 +802,7 @@ def build_share_counts(
     package: str,
     submissions: dict[str, Submission],
     facts: list[_ShareFact],
-    cover: dict[tuple[str, str], _CoverFacts],
+    cover: dict[tuple[str, str, str], _CoverFacts],
     segments: dict[str, str],
     rejected: Counter,
 ) -> list[ShareCount]:
@@ -840,7 +844,7 @@ def build_share_counts(
 def build_observations(
     package: str,
     submissions: dict[str, Submission],
-    facts: dict[tuple[str, str], _CoverFacts],
+    facts: dict[tuple[str, str, str], _CoverFacts],
     segments: dict[str, str],
     share_counts: list[ShareCount],
     rejected: Counter,
@@ -859,8 +863,8 @@ def build_observations(
         if share.class_key:
             other_classes.setdefault((share.adsh, share.cik), set()).add(share.class_key)
     counted = {(share.adsh, share.cik) for share in share_counts if is_inventory_form(share.form)}
-    seen: set[tuple[str, str, str]] = set()
-    for (adsh, dimh), entry in sorted(facts.items()):
+    seen: set[tuple[str, str, str, str]] = set()
+    for (adsh, dimh, coreg), entry in sorted(facts.items()):
         if not entry.symbols and not entry.titles:
             continue
         submission = submissions.get(adsh)
@@ -874,7 +878,7 @@ def build_observations(
         if not is_periodic_form(submission.form):
             rejected["non_periodic_form"] += len(entry.symbols)
             continue
-        owner = resolve_owner(adsh, entry.coreg, context, submission, entities)
+        owner = resolve_owner(adsh, coreg, context, submission, entities)
         if owner is None:
             rejected["coregistrant"] += len(entry.symbols)
             continue
@@ -884,10 +888,10 @@ def build_observations(
             tickers, reasons = normalize_symbols(raw)
             rejected.update(reasons)
             for ticker in tickers:
-                if (adsh, dimh, ticker) in seen:
+                if (adsh, dimh, coreg, ticker) in seen:
                     rejected["duplicate_in_context"] += 1
                     continue
-                seen.add((adsh, dimh, ticker))
+                seen.add((adsh, dimh, coreg, ticker))
                 accepted.append((ticker, raw, ddate))
         if accepted and cik != submission.cik:
             rejected["attributed_to_coregistrant"] += len(accepted)
@@ -933,7 +937,7 @@ def parse_package(path: Path) -> PackageResult:
             facts, symbol_facts = read_cover_facts(io.BufferedReader(stream, 1 << 20), rejected)
         with archive.open("num.tsv") as stream:
             share_facts = read_share_facts(io.BufferedReader(stream, 1 << 20), rejected)
-        wanted = {dimh for _, dimh in facts} | {fact.dimh for fact in share_facts}
+        wanted = {dimh for _, dimh, _ in facts} | {fact.dimh for fact in share_facts}
         with archive.open("dim.tsv") as stream:
             segments = read_segments(io.BufferedReader(stream, 1 << 20), wanted)
     share_counts = build_share_counts(
@@ -1822,10 +1826,17 @@ def listed_package_urls(html: str) -> list[str]:
 
 
 def list_package_urls(client) -> list[str]:
+    """The listed DERA package URLs. A response other than 200, or a page without a
+    package link, is an error: an empty listing must never read as "nothing new"."""
     listing = client.get(LISTING_URL)
     listing.raise_for_status()
+    if listing.status_code != 200:
+        raise RuntimeError(f"DERA listing answered {listing.status_code}: {LISTING_URL}")
     time.sleep(DOWNLOAD_SPACING_S)
-    return listed_package_urls(listing.text)
+    urls = listed_package_urls(listing.text)
+    if not urls:
+        raise RuntimeError(f"DERA listing has no package links: {LISTING_URL}")
+    return urls
 
 
 def fetch_package(client, url: str, target: Path) -> Path:
