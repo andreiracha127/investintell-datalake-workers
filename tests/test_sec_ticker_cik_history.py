@@ -3707,6 +3707,145 @@ def test_a_verified_load_reads_only_the_listed_packages(
     assert conn.execute("SELECT count(*) FROM sec_ticker_cik_packages").fetchone() == (1,)
 
 
+def _stored_month(build: Path, name: str, symbol: str, adsh: str = "0000000005-24-000001",
+                  filed: str = "20241105") -> bytes:
+    """A one-filing package, stored uncompressed so equal-length symbols give
+    equal-length zips."""
+    return _write_package(
+        build / name, [_sub(adsh, 732717, "8-K", filed)], [_fact(adsh, "TradingSymbol", symbol)],
+        compression=zipfile.ZIP_STORED,
+    ).read_bytes()
+
+
+def test_worker_reloads_an_older_package_the_sec_republished(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4221867196: the SEC republished 2010q1-2013q4 in 2024. Every
+    loaded package still listed is checked, not only the newest."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    packages = {
+        "2024q1_notes.zip": _stored_month(build, "2024q1_notes.zip", "OLD",
+                                          "0000000004-24-000001", "20240305"),
+        "2024_10_notes.zip": _stored_month(build, "2024_10_notes.zip", "TT"),
+    }
+    stamps = {"2024q1_notes.zip": "Mon, 01 Apr 2024 10:00:00 GMT",
+              "2024_10_notes.zip": "Tue, 05 Nov 2024 10:00:00 GMT"}
+    client, calls = _fake_sec(tmp_path, packages, {}, last_modified=stamps)
+    worker.run(dsn, calc_date="2024-11-15", client=client)
+    calls.clear()
+    assert worker.run(dsn, calc_date="2024-11-15", client=client)["state"] == "noop"
+    assert not [url for method, url in calls if method == "GET" and url.startswith(FSN_BASE)]
+    # The older quarterly is republished: same size, a new Last-Modified.
+    packages["2024q1_notes.zip"] = _stored_month(build, "2024q1_notes.zip", "NEW",
+                                                 "0000000004-24-000001", "20240305")
+    stamps["2024q1_notes.zip"] = "Wed, 25 Sep 2024 11:44:37 GMT"
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert stats["republished"] == ["2024q1_notes.zip"]
+    assert [(p["package"], p["inserted"], p["retired"]) for p in stats["packages"]] == [
+        ("2024q1_notes.zip", 1, 1)]
+    assert conn.execute(
+        "SELECT remote_last_modified FROM sec_ticker_cik_packages "
+        "WHERE source_package = '2024q1_notes.zip'").fetchone() == (stamps["2024q1_notes.zip"],)
+
+
+def test_a_package_recorded_without_validators_is_downloaded_once(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4221867184: the validators recorded are those of the download
+    that was loaded, in its transaction. A package recorded without them (a v1
+    run whose HEAD after the load failed) is downloaded once, its digest matches,
+    and its validators are recorded: the next run compares them, no download."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    packages = {"2024_10_notes.zip": _stored_month(build, "2024_10_notes.zip", "TT")}
+    stamp = "Tue, 05 Nov 2024 10:00:00 GMT"
+    client, calls = _fake_sec(tmp_path, packages, {},
+                              last_modified={"2024_10_notes.zip": stamp})
+    worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert ("HEAD", FSN_BASE + "2024_10_notes.zip") not in calls  # no HEAD after the load
+    validators = "SELECT remote_last_modified FROM sec_ticker_cik_packages"
+    assert conn.execute(validators).fetchall() == [(stamp,)]
+    conn.execute("UPDATE sec_ticker_cik_packages SET remote_last_modified = NULL")
+    gets = [("GET", FSN_BASE + "2024_10_notes.zip")]
+    calls.clear()
+    assert worker.run(dsn, calc_date="2024-11-15", client=client)["state"] == "noop"
+    assert [c for c in calls if c[0] == "GET" and c[1].startswith(FSN_BASE)] == gets
+    assert conn.execute(validators).fetchall() == [(stamp,)]
+    calls.clear()
+    assert worker.run(dsn, calc_date="2024-11-15", client=client)["state"] == "noop"
+    assert not [c for c in calls if c[0] == "GET" and c[1].startswith(FSN_BASE)]
+
+
+def test_a_cached_copy_of_an_unrecorded_package_is_never_loaded(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4222197135: the persistent cache holds an older revision of a
+    package not loaded yet, of the same byte length. The worker loads the bytes it
+    downloads, and records their digest with their validators."""
+    import hashlib
+
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    conn, dsn = schema_dsn
+    build, cache = tmp_path / "build", tmp_path / "cache"
+    build.mkdir()
+    cache.mkdir()
+    stale = _stored_month(build, "stale.zip", "XX")
+    remote = _stored_month(build, "2024_10_notes.zip", "YY")
+    assert len(stale) == len(remote) and stale != remote
+    (cache / "2024_10_notes.zip").write_bytes(stale)
+    client, calls = _fake_sec(tmp_path, {"2024_10_notes.zip": remote}, {})
+    worker.run(dsn, calc_date="2024-11-15", client=client, cache_dir=cache)
+    assert ("GET", FSN_BASE + "2024_10_notes.zip") in calls
+    assert conn.execute("SELECT DISTINCT ticker FROM sec_ticker_cik_observations"
+                        ).fetchall() == [("YY",)]
+    assert conn.execute("SELECT package_sha256 FROM sec_ticker_cik_packages").fetchone() == (
+        hashlib.sha256(remote).hexdigest(),)
+    assert (cache / "2024_10_notes.zip").read_bytes() == remote
+
+
+def test_verify_cache_checks_the_package_file_named_on_the_command_line(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Codex thread 4222924629: with --verify-cache, a package passed by path is
+    the file verified (and fetched again when stale), not the file of the same name
+    under --packages-dir."""
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    build, cache, other = tmp_path / "build", tmp_path / "cache", tmp_path / "other"
+    for directory in (build, cache, other):
+        directory.mkdir()
+    remote = _stored_month(build, "2024_10_notes.zip", "BB")
+    (cache / "2024_10_notes.zip").write_bytes(remote)  # current
+    (other / "2024_10_notes.zip").write_bytes(_stored_month(build, "x.zip", "XXXX"))  # stale
+    monkeypatch.setattr(loader, "sec_client", lambda: _fake_sec(
+        tmp_path, {"2024_10_notes.zip": remote}, {},
+        last_modified={"2024_10_notes.zip": ""})[0])
+    assert loader.main([str(other / "2024_10_notes.zip"), "--verify-cache", "--no-events",
+                        "--packages-dir", str(cache), "--dsn", dsn,
+                        "--reconciled-on", "2024-12-10"]) == 0
+    assert '"fetched_again": 1, "size": 1' in capsys.readouterr().out
+    assert (other / "2024_10_notes.zip").read_bytes() == remote
+    assert conn.execute("SELECT DISTINCT ticker FROM sec_ticker_cik_observations"
+                        ).fetchall() == [("BB",)]
+
+
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:
     import psycopg
 
