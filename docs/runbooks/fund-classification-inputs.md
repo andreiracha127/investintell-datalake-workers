@@ -32,7 +32,7 @@ still **DO NOT MERGE**. This branch does not modify it.
 | Equity characteristics | At least 90% of the mapped, positive-value EC/EP source series have their exact source report date and `computed_at >=` that series' latest source `created_at`. | Fund output is validated before commit. An unchanged fully matched cohort skips the heavy chain rebuild. |
 | Identifier coverage | Existing 90% ISIN fill floor, judged per report date with at least 1,000 holdings over 150 days through the anchor. | `degraded` or `undecidable` blocks candidates before writes. |
 | Look-through | At least 90% of the same source series match report date/count/source load time and have exposures for that same report. Computation age is at most seven days. Expanded child reports are at most 180 UTC calendar days old. | Older child holdings are left as an explicit unexpanded-fund residual. Shards write candidates; only a checked complete batch replaces serving output atomically. |
-| Classification health | Nonempty `status='completed'` run within 36 hours, after the latest raw-tail load; run as-of within 120 days and at least the broad anchor and actual raw max. Source and all derived cohort checks pass, and each derived global watermark reaches the actual loaded raw max. | Independent read-only monitor exits 1 even if the classifier did not execute or did not publish. A recent replay of an older as-of cannot renew health. |
+| Classification health | Nonempty `status='completed'` run that started at or after the most recent 08:00 UTC classifier slot (five-minute start grace; the slot counts once its one-hour completion window has elapsed, so the 09:00 check requires today's run) and completed after the latest raw-tail load; run as-of within 120 days and at least the broad anchor and actual raw max. Source and all derived cohort checks pass, and each derived global watermark reaches the actual loaded raw max. | Independent read-only monitor exits 1 even if the classifier did not execute or did not publish. A recent replay of an older as-of cannot renew health. |
 
 The three-month union is necessary: the observed staggered May/June/July cohorts
 were approximately 2,505 / 7,026 / 4,194 series. Comparing July alone with June
@@ -104,9 +104,10 @@ No queue, new privileged job, or synchronous refresh is introduced.
 4. Add the independent health service with
    `railway.fund-pipeline-health.toml`, `WORKER=fund_pipeline_health`, and the
    existing DB credential. Proposed cron is 09:00 UTC, after Light's 08:00 run.
-   Configure the platform's failed-job alert destination; nonzero exits and
-   JSON event lines are the alarm signal, not an external notification sent by
-   these workers.
+   If Light's classifier cron moves, update `CLASSIFIER_START_UTC` in
+   `src/workers/fund_pipeline_health.py` and this cron together. Configure the
+   platform's failed-job alert destination; nonzero exits and JSON event lines
+   are the alarm signal, not an external notification sent by these workers.
 5. Verify read-only: broad source anchor/retention; exact cagg matches; exact
    characteristics matches; complete look-through summary/exposures; fresh
    nonempty completed classification. Inspect the JSON `fund_pipeline_alarm`
@@ -152,5 +153,7 @@ the producer mutex, later builds remove at most 5,000 orphan rows per candidate
 table that are older than seven days; this avoids a large cleanup transaction.
 For a large abandoned run, an authorized operator may repeat the same bounded
 age cleanup until it drains. Do not delete serving output to make a retry pass.
-Every retry checks the source signature again before publication; a concurrent
-source change blocks that candidate and leaves the previous complete output.
+Every retry checks the source signature and the live raw watermark (global
+latest report date and newest load in the raw tail, never capped by the chain's
+anchor) again before publication; a concurrent source change or newly loaded
+month blocks that candidate and leaves the previous complete output.

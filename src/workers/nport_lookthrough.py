@@ -1008,12 +1008,11 @@ def run(
                             upserted += u
                             exposure_rows += e
                 postcheck = freshness.require(_probe_staged(conn, source, run_id))
-                latest_source = freshness.read_source_cohort(conn, cutoff=cutoff)
-                if latest_source.signature != source.signature:
-                    raise freshness.FundPipelineBlocked({
-                        "stage": "lookthrough", "alarm": True,
-                        "breaches": ["SOURCE_CHANGED_DURING_BUILD"], "last_good_preserved": True,
-                    })
+                # The chain passes calc_date=source.as_of, which caps this cohort
+                # read; the live watermark still sees a month loaded mid-build.
+                freshness.require_unchanged(
+                    "lookthrough", source, freshness.read_source_cohort(conn, cutoff=cutoff),
+                )
                 _publish_staged(conn, run_id)
                 conn.commit()
             except Exception:

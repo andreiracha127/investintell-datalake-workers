@@ -78,7 +78,8 @@ def run(
                 final = freshness.require(freshness.probe_stage(guard, source, stage))
                 latest = freshness.read_source_cohort(guard, cutoff=cutoff)
                 freshness.require(latest.verdict)
-                if latest.signature != source.signature:
+                if (latest.signature != source.signature
+                        or latest.load_watermark != source.load_watermark):
                     return _blocked("source_changed_during_chain", stages)
                 return {"state": "complete", "source_as_of": str(source.as_of),
                         "source_signature": source.signature, "stages": stages, "freshness": final}

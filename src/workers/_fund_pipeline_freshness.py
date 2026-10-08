@@ -47,6 +47,10 @@ class SourceCohort:
     verdict: dict[str, Any] = field(default_factory=dict)
     policy: Policy = field(default_factory=Policy)
     latest_loaded_at: dt.datetime | None = None
+    # Newest load in the raw tail through today, ignoring any replay cutoff.
+    # With the global raw_max it is the live watermark: a cohort read capped at
+    # an old anchor cannot see a newer month, this can.
+    live_loaded_at: dt.datetime | None = None
 
     @property
     def signature(self) -> str:
@@ -55,6 +59,10 @@ class SourceCohort:
             for key, row in sorted(self.series.items())
         ]
         return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+
+    @property
+    def load_watermark(self) -> tuple[str, str]:
+        return str(self.raw_max), str(self.live_loaded_at)
 
 
 class FundPipelineBlocked(RuntimeError):
@@ -74,7 +82,7 @@ def utc_today() -> dt.date:
 
 def source_from_rows(
     raw_rows: list[tuple], profile_rows: list[tuple], *, raw_max: dt.date | None,
-    today: dt.date, policy: Policy | None = None,
+    today: dt.date, policy: Policy | None = None, live_loaded_at: dt.datetime | None = None,
 ) -> SourceCohort:
     policy = policy or Policy()
     months: dict[dt.date, set[str]] = {}
@@ -121,7 +129,8 @@ def source_from_rows(
         "last_good_preserved": True,
     }
     latest_loaded_at = max((row[3] for row in raw_rows if row[3] is not None), default=None)
-    return SourceCohort(anchor, raw_max, start, current, verdict, policy, latest_loaded_at)
+    return SourceCohort(anchor, raw_max, start, current, verdict, policy, latest_loaded_at,
+                        live_loaded_at or latest_loaded_at)
 
 
 def read_source_cohort(
@@ -132,6 +141,8 @@ def read_source_cohort(
     The raw tail begins two report months before the 120-day age boundary, so
     the oldest still-admissible anchor's complete rolling quarter is included.
     A replay cutoff never changes the UTC wall clock used to judge staleness.
+    The tail is always scanned through today: a cutoff bounds the cohort, never
+    the live load watermark.
     """
     today = today or utc_today()
     cutoff = min(cutoff or today, today)
@@ -152,16 +163,32 @@ def read_source_cohort(
                FROM public.sec_nport_holdings
                WHERE report_date >= %s AND report_date <= %s
                GROUP BY series_id, report_date""",
-            (start, cutoff),
+            (start, today),
         )
-        raw = cur.fetchall()
-    return source_from_rows(raw, profiles, raw_max=raw_max, today=today)
+        tail = cur.fetchall()
+    return source_from_rows(
+        [row for row in tail if row[1] <= cutoff], profiles, raw_max=raw_max, today=today,
+        live_loaded_at=max((row[3] for row in tail if row[3] is not None), default=None),
+    )
 
 
 def require(verdict: dict[str, Any]) -> dict[str, Any]:
     if verdict.get("alarm"):
         raise FundPipelineBlocked(verdict)
     return verdict
+
+
+def require_unchanged(stage: str, before: SourceCohort, after: SourceCohort) -> None:
+    """Refuse promotion if the cohort or the live raw watermark moved during a build."""
+    if after.signature == before.signature and after.load_watermark == before.load_watermark:
+        return
+    raise FundPipelineBlocked({
+        "stage": stage, "alarm": True, "breaches": ["SOURCE_CHANGED_DURING_BUILD"],
+        "source_as_of": str(before.as_of),
+        "load_watermark_before": list(before.load_watermark),
+        "load_watermark_after": list(after.load_watermark),
+        "last_good_preserved": True,
+    })
 
 
 def assess_stage(

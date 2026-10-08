@@ -15,7 +15,8 @@
 #                        inputs are checked without a heavy daily rebuild.
 #   fund_pipeline_health -> proposed 09:00 UTC independent read-only check,
 #                        railway.fund-pipeline-health.toml; classification
-#                        completed within36h plus source/derived cohort guards.
+#                        run started at/after today's 08:00 UTC slot plus
+#                        source/derived cohort guards.
 #   factor_model/fund_factors -> unscheduled; sequenced by the governed IPCA
 #                           pack at 06:00 UTC after characteristics.
 #   nport_lookthrough -> called by the proposed ordered input chain; replace its

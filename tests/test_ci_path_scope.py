@@ -52,6 +52,12 @@ def test_nport_enrichment_helpers_select_only_nport(path: str) -> None:
         "tests/test_nport_lookthrough_pipeline.py",
         "tests/test_nport_pipeline_freshness.py",
         "tests/test_nport_classification_inputs_chain.py",
+        # The Timescale contract suites run in the N-PORT lane's disposable-DB step.
+        "tests/test_nport_lookthrough_staging_db.py",
+        "tests/test_nport_series_profile_refresh_request_db.py",
+        "schemas/nport_lookthrough.sql",
+        "schemas/nport_series_profile_refresh_request_v1.sql",
+        "schemas/nport_series_profile_refresh_request_v1.rollback.sql",
     ],
 )
 def test_fund_classification_pipeline_selects_nport(path: str) -> None:
