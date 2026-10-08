@@ -2501,6 +2501,28 @@ def test_an_undimensioned_sole_class_is_not_merged_into_a_later_class(schema_dsn
     assert _issuer(conn, "GOOG", on.isoformat())[:2] == ("resolved", 1288776)
     assert not _alive(conn, "GOOG", 1288776, "ClassC", on)
     assert _alive(conn, "GOOG", 1288776, "ClassC", d(2014, 5, 1))
+    # The old sole class's run ends at the split, so it does not hold GOOG beside
+    # class C (a run left open would refuse class C's rows until it went stale).
+    assert _evidence(conn, "GOOG", 1288776, "ClassC") == [
+        ("alive", 1288776, "ClassC", d(2014, 4, 4), d(2015, 5, 10), "stale", ["GOOG"]),
+        ("other_holder", 1288776, "", d(2014, 3, 2), d(2014, 4, 4), "other_symbol", ["GOOG"]),
+    ]
+
+
+def test_a_sole_class_that_starts_being_dimensioned_stays_one_line(schema_dsn) -> None:
+    """The undimensioned sole class keeps its line when the filer dimensions it
+    and counts an unlisted class beside it: one listed class, nothing to choose."""
+    conn, _ = schema_dsn
+    old = _observe(conn, 77, "XYZ", "2018-03-01")
+    _count(conn, 77, "", "2018-02-28", 1000, "2018-03-01", adsh=old)
+    new = _observe(conn, 77, "XYZ", "2019-08-01", class_key=CLASS_A)
+    _count(conn, 77, CLASS_A, "2019-07-31", 900, "2019-08-01", adsh=new)
+    _count(conn, 77, CLASS_B, "2019-07-31", 100, "2019-08-01", adsh=new)
+    assert sorted(conn.execute("SELECT class_key, line_key FROM sec_issuer_lines(77)"
+                               ).fetchall()) == [("", ""), (CLASS_A, "")]
+    assert _span(conn, "XYZ", 77, CLASS_A) == [
+        (CLASS_A, d(2018, 3, 2), None, None, d(2019, 8, 2), None, None),
+    ]
 
 
 def test_issuer_at_takes_class_and_kind_from_the_same_row(schema_dsn) -> None:

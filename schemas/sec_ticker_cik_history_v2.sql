@@ -30,8 +30,10 @@
 --   shown after it) starts a new run: a later cover, even with a 12(b) title, no
 --   longer reopens it.
 -- * An undimensioned class shown only on one-class covers is not linked to a
---   dimensioned class shown only beside other classes merely because it later
---   carries the same symbol (Google's GOOG before and after its 2014 class C).
+--   dimensioned class shown only beside another listed class merely because it
+--   later carries the same symbol (Google's GOOG before and after its 2014 class
+--   C); in lineage, such a sole-class line is followed through the issuer's later
+--   complete filings, so the recapitalization ends its run.
 -- * A non-listed row (debt, preferred...) showing a ticker is evidence only while
 --   no listed row showing it was known at or before it, per holder and over time,
 --   not across the ticker's whole history: an earlier holder that tagged its
@@ -656,10 +658,12 @@ $fn$;
 -- * they are the one equity class of consecutive complete filings (a
 --   single-class filer renaming its member or dropping the dimension).
 -- An undimensioned class shown only on one-class covers and a dimensioned class
--- shown only beside other equity classes are not linked by a symbol they share:
+-- shown only beside another listed class are not linked by a symbol they share:
 -- the symbol moved in a recapitalization (Google's GOOG, its sole class until
--- 2014, then its class C beside class A's GOOGL), so it does not say which new
--- class continues the old one; only a relabel edge would.
+-- 2014, then its class C beside class A's GOOGL), so it does not say which of the
+-- listed classes continues the old one; only a relabel edge would. A class listed
+-- alone beside unlisted ones (a filer that starts dimensioning its one listed
+-- class) stays linked.
 -- Edges are applied in order of the date the link is first evidenced, then by
 -- their evidence count (filings, descending), then by class keys; an edge whose
 -- two lines have classes that appear side by side in any filing is dropped, so
@@ -723,10 +727,15 @@ BEGIN
                    count(DISTINCT e.adsh) AS filings
             FROM equity_rows e
             GROUP BY e.class_key, e.ticker_key
+        ), filing_lines AS (
+            SELECT e.adsh, count(DISTINCT e.class_key) AS listed
+            FROM equity_rows e
+            GROUP BY e.adsh
         ), structure AS (
             SELECT e.class_key, bool_and(e.filing_equity_classes = 1) AS sole_only,
-                   bool_and(e.filing_equity_classes > 1) AS multi_only
+                   bool_and(f.listed > 1) AS beside_listed
             FROM equity_rows e
+            JOIN filing_lines f ON f.adsh = e.adsh
             GROUP BY e.class_key
         ), shared AS (
             SELECT x.class_key AS a, y.class_key AS b,
@@ -736,7 +745,7 @@ BEGIN
             JOIN shown y ON y.ticker_key = x.ticker_key AND y.class_key > x.class_key
             JOIN structure sx ON sx.class_key = x.class_key
             JOIN structure sy ON sy.class_key = y.class_key
-            WHERE NOT (x.class_key = '' AND sx.sole_only AND sy.multi_only)
+            WHERE NOT (x.class_key = '' AND sx.sole_only AND sy.beside_listed)
             GROUP BY x.class_key, y.class_key
         ), sole AS (
             SELECT f.key, f.on_date,
@@ -848,6 +857,19 @@ WITH key AS (
     GROUP BY r.cik, l.line_key
 ), cik_first AS (
     SELECT r.cik, min(r.known_on) AS first_on FROM relevant r GROUP BY r.cik
+), sole_lines AS (
+    -- a line whose complete filings all listed one equity class is the issuer's
+    -- sole security: every later complete filing of the CIK is one of its
+    -- candidates (rule (b) of sec_ticker_holds), so a recapitalization that lists
+    -- the ticker on another class ends its run
+    SELECT h.cik, h.line_key, max(o.source_available_on) AS sole_until
+    FROM held h
+    JOIN lines l ON l.cik = h.cik AND l.line_key = h.line_key
+    JOIN sec_observations_at('infinity'::date, true) o
+      ON o.cik = l.cik AND o.class_key = l.class_key
+    WHERE o.filing_complete AND o.security_kind IN ('equity', 'depositary', 'unknown')
+    GROUP BY h.cik, h.line_key
+    HAVING bool_and(o.filing_equity_classes = 1)
 ), candidates AS MATERIALIZED (
     SELECT h.cik, h.line_key, o.adsh,
            max(o.source_available_on) AS known_on,
@@ -862,6 +884,10 @@ WITH key AS (
     WHERE l.line_key = h.line_key
        OR (o.filing_complete AND o.filing_equity_classes = 1
            AND o.security_kind IN ('equity', 'depositary', 'unknown'))
+       OR (o.filing_complete AND o.security_kind IN ('equity', 'depositary', 'unknown')
+           AND EXISTS (SELECT 1 FROM sole_lines s
+                       WHERE s.cik = h.cik AND s.line_key = h.line_key
+                         AND o.source_available_on > s.sole_until))
     GROUP BY h.cik, h.line_key, o.adsh
 ), ends AS MATERIALIZED (
     SELECT h.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive, e.class_keys
@@ -1008,6 +1034,15 @@ SET jit = off
 AS $fn$
 WITH lines AS MATERIALIZED (
     SELECT l.class_key, l.line_key FROM sec_issuer_lines(p_cik) l
+), sole AS (
+    -- the line is the issuer's sole security until its last one-class complete
+    -- filing when all its complete filings listed one class (see sec_ticker_line_runs)
+    SELECT max(o.source_available_on) AS sole_until
+    FROM sec_observations_at('infinity'::date, true) o
+    JOIN lines l ON l.class_key = o.class_key
+    WHERE o.cik = p_cik AND l.line_key = p_line_key AND o.filing_complete
+      AND o.security_kind IN ('equity', 'depositary', 'unknown')
+    HAVING bool_and(o.filing_equity_classes = 1)
 ), candidates AS MATERIALIZED (
     SELECT o.adsh,
            max(o.source_available_on) AS known_on,
@@ -1021,7 +1056,9 @@ WITH lines AS MATERIALIZED (
     WHERE o.cik = p_cik
       AND (l.line_key = p_line_key
            OR (o.filing_complete AND o.filing_equity_classes = 1
-               AND o.security_kind IN ('equity', 'depositary', 'unknown')))
+               AND o.security_kind IN ('equity', 'depositary', 'unknown'))
+           OR (o.filing_complete AND o.security_kind IN ('equity', 'depositary', 'unknown')
+               AND o.source_available_on > (SELECT s.sole_until FROM sole s)))
     GROUP BY o.adsh
 ), ends AS MATERIALIZED (
     SELECT e.* FROM sec_issuer_end_events(p_cik, 'infinity'::date, true) e
