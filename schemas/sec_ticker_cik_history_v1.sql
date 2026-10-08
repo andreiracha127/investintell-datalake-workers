@@ -212,6 +212,10 @@ CREATE TABLE IF NOT EXISTS sec_ticker_cik_packages (
     events integer NOT NULL CHECK (events >= 0),
     rejected jsonb NOT NULL DEFAULT '{}'::jsonb,
     loaded_at timestamptz NOT NULL DEFAULT now(),
+    -- The SEC's validators for the loaded version (HEAD ETag / Last-Modified),
+    -- when it sends them; the worker compares them, else the SHA-256 above.
+    remote_etag text,
+    remote_last_modified text,
     superseded_by text,
     superseded_on date,
     CHECK ((superseded_by IS NULL) = (superseded_on IS NULL))

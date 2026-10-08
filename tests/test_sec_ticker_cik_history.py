@@ -2376,6 +2376,36 @@ def test_a_registration_carried_by_a_dera_package_is_first_seen_by_its_index(
                         ).fetchall() == [("10-12B", d(2024, 2, 13))]
 
 
+def test_an_event_listed_again_keeps_the_class_read_before(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Codex thread 4221526158: an index drops an event and lists it again while
+    its filing cannot be read; the class read before is carried."""
+    conn, dsn = schema_dsn
+    _observe(conn, 5133, "AM", "2013-07-10")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "0000876661-13-000657.txt").write_bytes(
+        (FILINGS / "0000876661-13-000657.txt").read_bytes())
+    row = ("25-NSE", 5133, "2013-08-12", "0000876661-13-000657")
+    other = ("15-12G", 4242, "2013-08-23", "0000004242-13-000001")
+    index = _index(tmp_path / "2013QTR3.form.gz", row, other)
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
+               documents=loader.EventDocuments(docs, None), reconciled_on=d(2013, 10, 1))
+    _index(index, other)
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], reconciled_on=d(2013, 11, 1))
+    _index(index, row, other)
+    stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
+                       documents=loader.EventDocuments(tmp_path / "empty", None),
+                       reconciled_on=d(2013, 12, 1))
+    assert (stats[0]["inserted"], stats[0]["class_carried"]) == (1, 1)
+    assert conn.execute(
+        "SELECT class_kind, available_on, retired_on FROM sec_registration_events "
+        "WHERE cik = 5133 ORDER BY id"
+    ).fetchall() == [("equity", d(2013, 8, 13), d(2013, 11, 1)),
+                     ("equity", d(2013, 12, 1), None)]
+
+
 def test_loader_refuses_a_database_without_the_governed_schema(tmp_path: Path) -> None:
     import psycopg
     from psycopg import sql
@@ -2403,11 +2433,21 @@ FILING_BASE = "https://www.sec.gov/Archives/edgar/data/"
 
 
 def _fake_sec(tmp_path: Path, packages: dict[str, bytes], indexes: dict[str, bytes],
-              filings: dict[str, bytes] | None = None):
-    """An httpx client answering the SEC listing, package, index and filing URLs."""
+              filings: dict[str, bytes] | None = None,
+              last_modified: dict[str, str] | None = None):
+    """An httpx client answering the SEC listing, package, index and filing URLs.
+    Packages carry a Last-Modified header (as the SEC sends) from
+    ``last_modified``, by default one that changes with the content; an empty
+    string sends none."""
+    import hashlib
+
     import httpx
 
     calls: list[tuple[str, str]] = []
+
+    def validators(name: str, body: bytes) -> dict[str, str]:
+        stamp = (last_modified or {}).get(name, hashlib.sha1(body).hexdigest()[:12])
+        return {"last-modified": stamp} if stamp else {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -2420,10 +2460,12 @@ def _fake_sec(tmp_path: Path, packages: dict[str, bytes], indexes: dict[str, byt
             )
             return httpx.Response(200, text=links)
         if url.startswith(FSN_BASE):
-            body = packages[url[len(FSN_BASE):]]
+            name = url[len(FSN_BASE):]
+            body = packages[name]
             if request.method == "HEAD":
-                return httpx.Response(200, headers={"content-length": str(len(body))})
-            return httpx.Response(200, content=body)
+                return httpx.Response(200, headers={"content-length": str(len(body)),
+                                                    **validators(name, body)})
+            return httpx.Response(200, content=body, headers=validators(name, body))
         if url.startswith(FILING_BASE):
             adsh = url.rsplit("/", 1)[1].removesuffix(".txt")
             if adsh in (filings or {}):
@@ -2643,6 +2685,85 @@ def test_superseded_monthly_packages_never_take_a_worker_slot(
     stats = worker.run(dsn, calc_date="2026-02-01", limit=1, client=client)
     assert stats["backlog"] == 1
     assert [p["package"] for p in stats["packages"]] == ["2026_01_notes.zip"]
+
+
+def test_worker_detects_a_same_size_republication_by_its_validator_or_digest(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4221526170: a republished month of the same byte length."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+
+    def month(symbol: str) -> bytes:
+        return _write_package(
+            build / "2024_10_notes.zip",
+            [_sub("0000000005-24-000001", 732717, "8-K", "20241105")],
+            [_fact("0000000005-24-000001", "TradingSymbol", symbol)],
+            compression=zipfile.ZIP_STORED,
+        ).read_bytes()
+
+    first, second = month("TT"), month("TU")
+    assert len(first) == len(second) and first != second
+    # The Last-Modified the SEC sends decides when both sides have one.
+    packages, stamps = {"2024_10_notes.zip": first}, {"2024_10_notes.zip": "Mon, 07 Oct"}
+    client, calls = _fake_sec(tmp_path, packages, {}, last_modified=stamps)
+    worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert conn.execute("SELECT remote_last_modified FROM sec_ticker_cik_packages"
+                        ).fetchall() == [("Mon, 07 Oct",)]
+    calls.clear()
+    assert worker.run(dsn, calc_date="2024-11-15", client=client)["state"] == "noop"
+    assert ("GET", FSN_BASE + "2024_10_notes.zip") not in calls
+    packages["2024_10_notes.zip"], stamps["2024_10_notes.zip"] = second, "Tue, 08 Oct"
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert [(p["inserted"], p["retired"]) for p in stats["packages"]] == [(1, 1)]
+    # Without validators, the newest package is downloaded and its SHA-256 compared.
+    packages["2024_10_notes.zip"], stamps["2024_10_notes.zip"] = first, ""
+    conn.execute("UPDATE sec_ticker_cik_packages SET remote_last_modified = NULL")
+    calls.clear()
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert [(p["inserted"], p["retired"]) for p in stats["packages"]] == [(1, 1)]
+    assert calls.count(("GET", FSN_BASE + "2024_10_notes.zip")) == 1  # fetched once
+    calls.clear()
+    assert worker.run(dsn, calc_date="2024-11-15", client=client)["state"] == "noop"
+    assert conn.execute(
+        "SELECT ticker FROM sec_ticker_cik_observations WHERE retired_on IS NULL"
+    ).fetchall() == [("TT",)]
+
+
+def test_a_stopped_supersession_is_completed_by_the_next_run(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4221526183: the quarterly committed, its supersession did not."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    m10 = _month(build / "2025_10_notes.zip",
+                 [(B1, 61, "20251015", "AAA"), (B2, 62, "20251020", "BBB")])
+    loader.run([m10], dsn=dsn, dry_run=False, reconciled_on=d(2025, 12, 1))
+    q4 = _month(build / "2025q4_notes.zip", [(B1, 61, "20251015", "AAA")])
+    loader.load_package(conn, loader.parse_package(q4), reconciled_on=d(2026, 12, 1))
+    # ... the run stops here, before supersede_monthly_packages.
+    client, _ = _fake_sec(tmp_path, {"2025q4_notes.zip": q4.read_bytes()}, {})
+    stats = worker.run(dsn, calc_date="2026-12-08", client=client)
+    assert [(r["package"], r["superseded"], r["superseded_retired"])
+            for r in stats["resumed_supersession"]] == [
+        ("2025q4_notes.zip", ["2025_10_notes.zip"], 1),
+    ]
+    assert stats["state"] == "ok"
+    assert conn.execute(
+        "SELECT ticker, retired_on FROM sec_ticker_cik_observations ORDER BY ticker"
+    ).fetchall() == [("AAA", None), ("BBB", dt.date.today())]
+    again = worker.run(dsn, calc_date="2026-12-08", client=client)
+    assert again["resumed_supersession"] == [] and again["state"] == "noop"
 
 
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:

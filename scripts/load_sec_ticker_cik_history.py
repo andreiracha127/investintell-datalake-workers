@@ -1310,10 +1310,14 @@ def describe_events(
 
 def derived_events(conn, adshs: Iterable[str]) -> dict[tuple[str, int, str, dt.date],
                                                       RegistrationEvent]:
-    """The current events of these accessions whose filing was read."""
+    """The latest version whose filing was read of each event of these
+    accessions: the current one, else the latest retired one (an event an index
+    dropped and lists again keeps the class read before)."""
     rows = conn.execute(
-        f"SELECT {', '.join(EVENT_COLUMNS)} FROM sec_registration_events "
-        "WHERE retired_on IS NULL AND parser_version IS NOT NULL AND adsh = ANY(%s)",
+        f"SELECT DISTINCT ON (adsh, cik, form, filed) {', '.join(EVENT_COLUMNS)} "
+        "FROM sec_registration_events "
+        "WHERE parser_version IS NOT NULL AND adsh = ANY(%s) "
+        "ORDER BY adsh, cik, form, filed, (retired_on IS NULL) DESC, id DESC",
         (sorted(set(adshs)),),
     ).fetchall()
     events = [RegistrationEvent(**dict(zip(EVENT_COLUMNS, row))) for row in rows]
@@ -1595,6 +1599,33 @@ def supersede_monthly_packages(conn, quarterly: str, *,
     return {"superseded": sorted(names), **counts}
 
 
+def resume_supersession(conn, *, reconciled_on: dt.date | None = None) -> list[dict]:
+    """Supersede the monthly packages still active under every loaded quarterly
+    package (idempotent). Runs first in every run, so a run that stopped between
+    a quarterly's load and its supersession is completed; each month's facts
+    retire on the date the supersession actually runs."""
+    done = []
+    for (name,) in conn.execute(
+        "SELECT source_package FROM sec_ticker_cik_packages WHERE superseded_by IS NULL "
+        "ORDER BY source_package"
+    ).fetchall():
+        if quarter_months(name) is None:
+            continue
+        item = supersede_monthly_packages(conn, name, reconciled_on=reconciled_on)
+        if item["superseded"]:
+            done.append({"package": name, **item})
+    return done
+
+
+def record_remote_validators(conn, package: str, *, etag: str | None,
+                             last_modified: str | None) -> None:
+    """The SEC's ETag / Last-Modified of the loaded package version."""
+    conn.execute(
+        "UPDATE sec_ticker_cik_packages SET remote_etag = %s, remote_last_modified = %s "
+        "WHERE source_package = %s", (etag, last_modified, package),
+    )
+
+
 def superseded_by(conn, name: str) -> str | None:
     """The current quarterly package that supersedes monthly package ``name``."""
     quarter = covering_quarter(name)
@@ -1792,6 +1823,9 @@ def run(
             if not locked:
                 raise RuntimeError("another sec_ticker_cik_history load holds the lock")
             require_schema(conn)
+            for item in resume_supersession(conn, reconciled_on=reconciled_on):
+                print(json.dumps(item), flush=True)
+                stats.append(item)
         for path in packages:
             quarterly = superseded_by(conn, path.name) if conn is not None else None
             if quarterly is not None:
