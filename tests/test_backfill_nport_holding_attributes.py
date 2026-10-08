@@ -713,3 +713,36 @@ def test_min_isin_fill_default_sits_between_the_readings_it_was_derived_from() -
     assert best_degraded < backfill.DEFAULT_MIN_ISIN_FILL < worst_healthy
     assert worst_healthy - backfill.DEFAULT_MIN_ISIN_FILL >= 0.05
     assert backfill.DEFAULT_MIN_ISIN_FILL - best_degraded >= 0.04
+
+
+def test_load_directories_refuses_incomplete_bundles_before_connecting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A flow-only bundle later in the list must not leave earlier bundles
+    committed: every directory is checked before the first connection."""
+    complete = tmp_path / "2026q1_nport"
+    flow_only = tmp_path / "2026q2_nport"
+    for directory in (complete, flow_only):
+        directory.mkdir()
+    for name in backfill.REQUIRED_BUNDLE_FILES:
+        (complete / name).write_text("", encoding="utf-8")
+    for name in ("SUBMISSION.tsv", "FUND_REPORTED_INFO.tsv"):
+        (flow_only / name).write_text("", encoding="utf-8")
+
+    def _no_connection(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the database must not be touched")
+
+    monkeypatch.setattr(backfill, "connect", _no_connection)
+
+    with pytest.raises(FileNotFoundError, match="nothing read or written") as caught:
+        backfill.load_directories(
+            None,
+            [complete, flow_only],
+            apply=True,
+            schema=False,
+            minimum_match_rate=0.0,
+        )
+    message = str(caught.value)
+    assert "FUND_REPORTED_HOLDING.tsv" in message
+    assert "IDENTIFIERS.tsv" in message
+    assert str(complete) not in message
