@@ -903,9 +903,10 @@ $fn$;
 -- its underlying shares, and its cover may tag the ADS symbol on that class: TSM's
 -- 20-Fs tag TSM "Common Shares" beside 25.9 billion common shares (five per ADS);
 -- FUTU's 2022 20-F tags FUTU on its Class A ordinary shares (eight per ADS) and
--- America Movil's 2021 20-F tags AMOV on its A shares (twenty per ADS). So from
--- such a filing a total, and a class count whose line is not an explicit
--- depositary class, are 'refused' (refusal 'foreign_issuer_listing_unverified':
+-- America Movil's 2021 20-F tags AMOV on its A shares (twenty per ADS), and its
+-- 2023 20-F titles AMX's B share member as its ADS. So from such a filing a
+-- total, and a class count whose member is not an explicit depositary member,
+-- are 'refused' (refusal 'foreign_issuer_listing_unverified':
 -- shares NULL; shares_as_of, adsh and basis kept for audit) until the cover page
 -- evidences what is listed.
 -- Latest stated date first, then the latest filing; a class count wins over a
@@ -932,7 +933,12 @@ WITH candidates AS (
     FROM sec_share_counts_at(p_as_of, false) c
     CROSS JOIN LATERAL (
         SELECT CASE WHEN c.class_key = '' THEN 'sole_class_total' ELSE 'class' END AS basis,
-               bool_or(o.security_kind = 'depositary') AS depositary
+               -- an explicit depositary member, not a depositary title on the
+               -- underlying class (AMX's 2023 20-F titles its B shares' member
+               -- "American Depositary Shares, each representing 20 B Shares")
+               bool_or(o.security_kind = 'depositary'
+                       AND c.class_key ~* '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$))')
+                   AS depositary
         FROM sec_observations_at(p_as_of, false) o
         WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.available_on <= p_as_of
           AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')

@@ -159,12 +159,16 @@ underlying shares, and its cover may tag the ADS symbol on that class:
   is twenty of them.
 - FUTU's 2022 20-F tags `FUTU` on its Class A ordinary shares as well as on its
   ADR class. Each ADS is eight Class A shares.
+- America Movil's 2023 20-F titles `AMX` "American Depositary Shares, each
+  representing 20 B Shares" on its B shares' member, which carries the B share
+  count.
 
 So, from such a filing, two kinds of count are refused:
 
 - the filing's total;
-- a class count whose line is not an explicit depositary class (a depositary
-  title or member).
+- a class count whose member is not an explicit depositary member (`Adr`,
+  `AmericanDepositaryShares`, `DepositoryShares` and the like). A depositary
+  title on the underlying class's member is not enough.
 
 A refused count returns status `refused`, `shares` NULL and `refusal =
 'foreign_issuer_listing_unverified'`, with `shares_as_of`, `adsh` and `basis`
@@ -191,7 +195,7 @@ foreign private issuer's filing is `refused` (`foreign_issuer_listing_unverified
 | Delisting to OTC (25-NSE under 12d2-2(b)) | Ends the hold; a later cover showing the symbol reopens it |
 | Multi-class issuer (BRK-A/BRK-B, BF-A/BF-B, GOOGL/GOOG) | Each class has its own symbol and, when the cover reports it, its own count. An issuer total is never spread over several classes, or given to a depositary line |
 | Class shares written without a separator (`BFB`) | Resolution matches on the separator-free key (`BF-B` = `BF.B` = `BFB`) |
-| ADRs and other foreign listings (20-F, 40-F, 6-K) | A depositary title or member gives `security_kind = 'depositary'`. That includes titles written without spaces, such as VALE's `AmericanDepositaryShares(...)`. An untitled line with no telling segment or suffix is `unknown`. No total from these forms sizes a line, and no class count does unless it is on an explicit depositary class: such counts are `refused` (`foreign_issuer_listing_unverified`) |
+| ADRs and other foreign listings (20-F, 40-F, 6-K) | A depositary title or member gives `security_kind = 'depositary'`. That includes titles written without spaces (VALE's `AmericanDepositaryShares(...)`), titles spelled "Depository" (14 issuers' 8-K/10-Q/10-K covers), and `Adr` members. An untitled line with no telling segment or suffix is `unknown`. No total from these forms sizes a line, and no class count does unless it is on an explicit depositary member: such counts are `refused` (`foreign_issuer_listing_unverified`) |
 | Co-registrant facts (`coreg`) | Attributed to the CIK the legal-entity member names; a single registrant's class-naming member (Renalytix's ADS) is its own class; anything else is rejected |
 | Parent symbol on a subsidiary's cover | Subsidiaries filing their own covers (NSP and PSCo with XEL) tag the parent's symbol under their own CIK; the symbol is `ambiguous` at those dates (about 0.5% of tickers). Follow-up: the parent's Exhibit 21 |
 | Before mandatory cover tagging | Mandatory for periods ending on or after 2019-06-15 (large accelerated), 2020-06-15 (accelerated), 2021-06-15 (others). Earlier, 1,500-3,000 issuers per quarter tagged `TradingSymbol` voluntarily and no cover carried a 12(b) title |
@@ -257,7 +261,7 @@ cost 1.5 s per call).
 | A symbol moving between classes of one issuer before 2019, when covers tagged every symbol undimensioned (Google 2014) | One line | Dimensioned covers from 2019 |
 | A tracking or secondary class delisted while the main symbol continues, pre-2019 (FNF / FNFV 2017) | The main symbol's hold ends until its next statement | Covers listing both symbols (2019+) |
 | Antero Midstream Partners (AM, 2014-2019) and other holders that never tagged a symbol | `ended` or `missing` | W1b |
-| Foreign private issuers' lines: ADSs tagged as the underlying class (TSM, AMOV, FUTU) and true direct listings (ZIM, QGEN, Canadian 40-F filers) alike | No total and no class count except on an explicit depositary class: `refused`, `foreign_issuer_listing_unverified` | W1c: the 20-F/40-F cover page (12(b) table and its footnotes) and F-6 ratios |
+| Foreign private issuers' lines: ADSs tagged as the underlying class (TSM, AMOV, AMX, FUTU) and true direct listings (ZIM, QGEN, Canadian 40-F filers) alike | No total and no class count except on an explicit depositary member: `refused`, `foreign_issuer_listing_unverified` | W1c: the 20-F/40-F cover page (12(b) table and its footnotes) and F-6 ratios |
 
 **W1c (follow-up).** Read the 20-F and 40-F cover page, which gives the listed
 security type in its 12(b) table and footnotes. TSM's says "Not for trading, but

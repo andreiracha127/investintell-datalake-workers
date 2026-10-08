@@ -220,13 +220,13 @@ _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("debt", re.compile(
         r"\bnotes?\b|debentures?|\bbonds?\b|\bdue\s+(?:19|20)\d\d\b|senior\s+(?:un)?secured"
         r"|subordinated|medium[-\s]term|\bloan\b", re.IGNORECASE)),
-    ("preferred", re.compile(r"preferred|preference|\bperpetual\b", re.IGNORECASE)),
+    ("preferred", re.compile(r"preferred|preference|\bperpetual\b|\bpref\b", re.IGNORECASE)),
     ("unit", re.compile(r"^\s*units?\b|\bunits?,?\s+each\b|\beach\s+unit\b", re.IGNORECASE)),
     ("warrant", re.compile(r"warrant", re.IGNORECASE)),
     ("right", re.compile(r"^\s*rights?\b|\brights?,?\s+each\b|\bcontingent\s+value\b",
                          re.IGNORECASE)),
     ("depositary", re.compile(
-        r"american\s*depositary|depositary\s*(?:shares|receipts)|\bADSs?\b|\bADRs?\b",
+        r"american\s*deposit[ao]ry|deposit[ao]ry\s*(?:shares|receipts)|\bADSs?\b|\bADRs?\b",
         re.IGNORECASE)),
 )
 _SEGMENT_KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -234,7 +234,7 @@ _SEGMENT_KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("preferred", re.compile(r"Preferred", re.IGNORECASE)),
     ("warrant", re.compile(r"Warrant", re.IGNORECASE)),
     ("unit", re.compile(r"=Units?Member|CapitalUnits", re.IGNORECASE)),
-    ("depositary", re.compile(r"Depositary|\bADS", re.IGNORECASE)),
+    ("depositary", re.compile(r"Deposit[ao]ry|\bADS|\bADRs?(?:\d|Member|;|$)", re.IGNORECASE)),
 )
 # An ordinary or common share member: on a foreign private issuer's form, the
 # segments that identify an untitled line as the ordinary class.

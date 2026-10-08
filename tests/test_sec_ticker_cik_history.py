@@ -212,6 +212,14 @@ def test_share_counts_are_dated_by_the_stated_day_not_the_rounded_month_end(
         (None, "ACHR-WS", "", "warrant"),
         (None, "BRK27", "", "debt"),
         (None, "ZZZ", "LongtermDebtType=Notes2029;", "debt"),
+        # Spelled "Depository" (14 CIKs' 8-K/10-Q/10-K covers, one at 2,000
+        # ordinary shares per ADS), abbreviated "Pref", or an "Adr" member.
+        ("American Depository Shares, each representing 2,000 Ordinary Shares", "XYZ", "",
+         "depositary"),
+        ("Depositary Shrs, each representing 1/40th intrst in a shr of 5.875% Non-Cum. Perp "
+         "Pref Stock, Srs E", "XYZ-PE", "", "preferred"),
+        (None, "FUTU", "ClassOfStock=Adr;", "depositary"),
+        (None, "XYZ", "ClassOfStock=OtherAddress;", "equity"),
         (None, "AAPL", "", "equity"),
     ],
 )
@@ -1583,13 +1591,15 @@ def test_no_count_on_a_foreign_issuers_filing_sizes_its_listed_line(
     A 20-F counts the underlying shares, and its cover may tag the ADS symbol
     untitled (TSM 2018), on the underlying class titled as such (TSM 2024 "Common
     Shares", 5 per ADS; America Movil's AMOV/AMX on its A/L shares, 20 per ADS)
-    or on the ordinary class beside the ADS class (FUTU, 8 per ADS). No such
-    count sizes the line: it is refused, loudly, with the filing kept for audit."""
+    or on the ordinary class beside the ADS class (FUTU, 8 per ADS), or title the
+    underlying class's member as the ADS (AMX 2023, B shares). No such count
+    sizes the line: it is refused, loudly, with the filing kept for audit."""
     conn, dsn = schema_dsn
     packages = [
         _fsn_fixture("fsn_2018q2_tsm", tmp_path / "2018q2_notes.zip"),
         _fsn_fixture("fsn_2021q2_amov", tmp_path / "2021q2_notes.zip"),
         _fsn_fixture("fsn_2022q1_futu", tmp_path / "2022q1_notes.zip"),
+        _fsn_fixture("fsn_2023q2_amx", tmp_path / "2023q2_notes.zip"),
         _fsn_fixture("fsn_2024q2_tsm", tmp_path / "2024q2_notes.zip"),
     ]
     loader.run(packages, dsn=dsn, dry_run=False, reconciled_on=d(2024, 6, 1))
@@ -1628,6 +1638,15 @@ def test_no_count_on_a_foreign_issuers_filing_sizes_its_listed_line(
     )
     assert _class_shares(conn, 1754581, "ClassOfStock=CommonClassA;", "2022-12-31") == (
         "resolved", Decimal("708482154"), d(2021, 12, 31),
+    )
+    # AMX 2023: a depositary line by its title, but on the B shares' member, whose
+    # count is of B shares: not an explicit depositary member.
+    amx = "0001193125-23-129777"
+    assert conn.execute(
+        "SELECT status, security_kind FROM sec_ticker_issuer_at('AMX', %s)", ("2023-06-30",),
+    ).fetchone() == ("resolved", "depositary")
+    assert _ticker_shares_row(conn, "AMX", 1129137, "2023-06-30") == (
+        "refused", None, d(2023, 3, 31), amx, "class", UNVERIFIED,
     )
 
 
