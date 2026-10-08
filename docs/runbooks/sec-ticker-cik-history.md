@@ -3,11 +3,11 @@
 Point-in-time answer to "which issuer, and which of its share classes, traded as
 ticker T on date D", from public SEC data only. Light's walk-forward market prior
 uses it to size equities at each fold (`sec_ticker_issuer_at`,
-`sec_issuer_line_at`, `sec_cover_class_shares_at`).
+`sec_issuer_line_at`, `sec_cover_ticker_shares_at`).
 
 | Object | What it holds |
 |---|---|
-| `sec_ticker_cik_observations` | One row per filing x class context x ticker: the registrant's cover-page `dei:TradingSymbol`, with `dei:Security12bTitle`, `dei:SecurityExchangeName`, the class segments, a `security_kind`, and the filing's equity-class count and whether it reports a share count |
+| `sec_ticker_cik_observations` | One row per filing x class context x ticker: the registrant's cover-page `dei:TradingSymbol`, with `dei:Security12bTitle`, `dei:SecurityExchangeName`, the class segments, a `security_kind` (`unknown`: a line on a foreign private issuer's form that no title, segment or symbol suffix identifies), and the filing's equity-class count and whether it reports a share count |
 | `sec_cover_share_counts` | Cover-page `dei:EntityCommonStockSharesOutstanding`, per class or in total, with the date the cover states it as of (`stated_on`) and DERA's rounded month end (`ddate_rounded`) |
 | `sec_registration_events` | From the EDGAR form indexes: ends (15-12B, 15-12G, 15-15D, 25, 25-NSE), starts (8-A12B, 8-A12G, 10-12B, 10-12G) and their `/A`; for the ends of CIKs with cover data, what the filing states (class, rule provision, exchange, amendment effect) and the parser version |
 | `sec_ticker_cik_packages` | One row per loaded DERA package or EDGAR index: digest, size and the loader's counts |
@@ -82,9 +82,9 @@ renames its member or adds a class); and through every complete filing that
 shows one equity class in total (classes merged). The hold's *statement* is the
 latest such filing. The hold has **ended** when the statement shows another
 symbol (`other_symbol`) or an applying end filing is newer than the statement; it
-is **stale** when the statement is older than 400 days; else **active**. Equity
-and depositary rows decide whenever any showed T (filers also tag their common
-symbol on notes lines).
+is **stale** when the statement is older than 400 days; else **active**. Listed
+rows (equity, depositary or unknown) decide whenever any showed T (filers also
+tag their common symbol on notes lines).
 
 **End filings.** For CIKs with cover data the loader reads each Form 15/25 for
 the class it concerns. An end applies unless it concerns another class (notes,
@@ -150,10 +150,34 @@ Member names change between filings (Berkshire's 10-Q counts `CommonClassB` whil
 its 8-Ks tag BRK.B on `ClassBCommonStock`), so the filing, not the member, ties a
 count to a symbol.
 
+**Foreign private issuers.** A 20-F, 40-F, 6-K or 20-FR (or its `/A`) counts the
+underlying shares, and its cover may tag the ADS symbol on that class:
+
+- TSM's 20-Fs tag `TSM` untitled (2018) or titled "Common Shares" (2020-2026),
+  beside 25.9 billion common shares. Each ADS is five common shares.
+- America Movil's 2021 20-F tags `AMOV` and `AMX` on its A and L shares. Each ADS
+  is twenty of them.
+- FUTU's 2022 20-F tags `FUTU` on its Class A ordinary shares as well as on its
+  ADR class. Each ADS is eight Class A shares.
+
+So, from such a filing, two kinds of count are refused:
+
+- the filing's total;
+- a class count whose line is not an explicit depositary class (a depositary
+  title or member).
+
+A refused count returns status `refused`, `shares` NULL and `refusal =
+'foreign_issuer_listing_unverified'`, with `shares_as_of`, `adsh` and `basis`
+kept for audit. Statuses are `resolved | stale | ambiguous | missing | refused`.
+Within one filing, an admissible count wins over a refused one. A depositary
+line is still sized only with a ratio (Light: `depositary_ratio_unsourced`).
+W1c lifts the guard per line once the cover page evidences what is listed.
+
 `sec_cover_class_shares_at(cik, class_key, D)` returns the class's own count: the
 latest stated date, then the latest filing (knowledge date, acceptance time,
 accession); distinct values within that filing are `ambiguous`; older than 400
-days is `stale`. `class_key = ''` is the issuer total.
+days is `stale`. `class_key = ''` is the issuer total; an issuer total from a
+foreign private issuer's filing is `refused` (`foreign_issuer_listing_unverified`).
 
 ## Edge cases
 
@@ -167,7 +191,7 @@ days is `stale`. `class_key = ''` is the issuer total.
 | Delisting to OTC (25-NSE under 12d2-2(b)) | Ends the hold; a later cover showing the symbol reopens it |
 | Multi-class issuer (BRK-A/BRK-B, BF-A/BF-B, GOOGL/GOOG) | Each class has its own symbol and, when the cover reports it, its own count. An issuer total is never spread over several classes, or given to a depositary line |
 | Class shares written without a separator (`BFB`) | Resolution matches on the separator-free key (`BF-B` = `BF.B` = `BFB`) |
-| ADRs (20-F/40-F filers) | `security_kind = 'depositary'`; the cover counts ordinary shares, so no total is returned for the ADS |
+| ADRs and other foreign listings (20-F, 40-F, 6-K) | A depositary title or member gives `security_kind = 'depositary'`. That includes titles written without spaces, such as VALE's `AmericanDepositaryShares(...)`. An untitled line with no telling segment or suffix is `unknown`. No total from these forms sizes a line, and no class count does unless it is on an explicit depositary class: such counts are `refused` (`foreign_issuer_listing_unverified`) |
 | Co-registrant facts (`coreg`) | Attributed to the CIK the legal-entity member names; a single registrant's class-naming member (Renalytix's ADS) is its own class; anything else is rejected |
 | Parent symbol on a subsidiary's cover | Subsidiaries filing their own covers (NSP and PSCo with XEL) tag the parent's symbol under their own CIK; the symbol is `ambiguous` at those dates (about 0.5% of tickers). Follow-up: the parent's Exhibit 21 |
 | Before mandatory cover tagging | Mandatory for periods ending on or after 2019-06-15 (large accelerated), 2020-06-15 (accelerated), 2021-06-15 (others). Earlier, 1,500-3,000 issuers per quarter tagged `TradingSymbol` voluntarily and no cover carried a 12(b) title |
@@ -233,6 +257,21 @@ cost 1.5 s per call).
 | A symbol moving between classes of one issuer before 2019, when covers tagged every symbol undimensioned (Google 2014) | One line | Dimensioned covers from 2019 |
 | A tracking or secondary class delisted while the main symbol continues, pre-2019 (FNF / FNFV 2017) | The main symbol's hold ends until its next statement | Covers listing both symbols (2019+) |
 | Antero Midstream Partners (AM, 2014-2019) and other holders that never tagged a symbol | `ended` or `missing` | W1b |
+| Foreign private issuers' lines: ADSs tagged as the underlying class (TSM, AMOV, FUTU) and true direct listings (ZIM, QGEN, Canadian 40-F filers) alike | No total and no class count except on an explicit depositary class: `refused`, `foreign_issuer_listing_unverified` | W1c: the 20-F/40-F cover page (12(b) table and its footnotes) and F-6 ratios |
+
+**W1c (follow-up).** Read the 20-F and 40-F cover page, which gives the listed
+security type in its 12(b) table and footnotes. TSM's says "Not for trading, but
+only in connection with the listing ... of American Depositary Shares". F-6
+filings give the ADS ratio. Both are effective-dated:
+
+1. Find the primary document through the filing's `-index.html` Type column,
+   because `index.json` does not mark it.
+2. Stream it and stop after the cover, because sec.gov ignores `Range` (a 20-F
+   `.txt` runs to tens of MB).
+3. Store what the cover states per filing.
+
+With that evidence, the guard lifts per line, and depositary lines get their
+ratios.
 
 ## Recurring worker
 
@@ -295,7 +334,10 @@ API key.
    cron is in the config file.
 5. Light's walk-forward equity sizing calls these functions: deploy the Light
    change only after steps 1-2 and after the follow-up PR (connector threads
-   4222086431, 4222086445, 4222086476) merges.
+   4222086431, 4222086445, 4222086476, 4222376247, 4222376271, 4222376284)
+   merges. Light must handle `security_kind = 'unknown'` and the share status
+   `refused` (`foreign_issuer_listing_unverified`). W1c (above) is a separate
+   follow-up that restores sizing for foreign issuers' lines.
 
 Rollback: `schemas/sec_ticker_cik_history_v1.rollback.sql` (as the same role),
 and remove the Railway service.

@@ -67,9 +67,12 @@ CREATE TABLE IF NOT EXISTS sec_ticker_cik_observations (
     ticker_raw text NOT NULL,
     security_title text,
     exchange text,
-    -- From the title, else the symbol/segments: what the class is.
+    -- From the title, else the symbol/segments: what the class is. 'unknown': a
+    -- line on a foreign private issuer's form (20-F, 40-F, 6-K, 20-FR) that no
+    -- title, segment or symbol suffix identifies (TSM's 2018 20-F tags TSM, its
+    -- ADS, untitled and undimensioned): a listed line, never taken for equity.
     security_kind text NOT NULL CHECK (security_kind IN (
-        'equity', 'depositary', 'preferred', 'debt', 'warrant', 'unit', 'right'
+        'equity', 'depositary', 'preferred', 'debt', 'warrant', 'unit', 'right', 'unknown'
     )),
     -- Equity classes the filing shows in total, and whether it reports a count.
     filing_equity_classes integer NOT NULL CHECK (filing_equity_classes >= 0),
@@ -419,14 +422,14 @@ WITH horizon AS (
            max(o.accepted) AS accepted,
            count(DISTINCT o.ticker_key) AS symbols,
            count(DISTINCT o.ticker_key) FILTER (
-               WHERE o.security_kind IN ('equity', 'depositary')) AS equity_symbols,
+               WHERE o.security_kind IN ('equity', 'depositary', 'unknown')) AS equity_symbols,
            max(o.filing_equity_classes) AS classes,
            bool_or(o.filing_complete) AS complete
     FROM horizon h
     CROSS JOIN LATERAL sec_observations_at(h.on_date, p_current) o
     WHERE o.cik = p_cik
     GROUP BY o.adsh
-    HAVING bool_or(o.security_kind IN ('equity', 'depositary'))
+    HAVING bool_or(o.security_kind IN ('equity', 'depositary', 'unknown'))
 ), totals AS (
     -- each filing's cover share count: its issuer total, else its class counts
     SELECT c.adsh,
@@ -523,8 +526,9 @@ WHERE a.available_on <= p_as_of
 $fn$;
 
 -- Each CIK's hold of a ticker at D (internal helper; one row per CIK that showed
--- the ticker by D). Equity/depositary rows decide whenever one showed the
--- ticker (filers also tag their common symbol on notes lines). A hold is
+-- the ticker by D). Listed rows (equity, depositary or unknown) decide whenever
+-- one showed the ticker (filers also tag their common symbol on notes lines). A
+-- hold is
 -- followed through its candidate statements:
 --   (a) every filing that tags a class that showed the ticker,
 --   (b) when the latest complete filing showing the ticker listed one equity
@@ -578,8 +582,9 @@ WITH shown AS (
     WHERE o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
 ), relevant AS (
     SELECT s.* FROM shown s
-    WHERE s.security_kind IN ('equity', 'depositary')
-       OR NOT EXISTS (SELECT 1 FROM shown e WHERE e.security_kind IN ('equity', 'depositary'))
+    WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
+       OR NOT EXISTS (SELECT 1 FROM shown e
+                      WHERE e.security_kind IN ('equity', 'depositary', 'unknown'))
 ), per_cik AS (
     SELECT r.cik,
            min(r.known_on) AS first_on,
@@ -607,7 +612,7 @@ WITH shown AS (
     JOIN sec_observations_at(p_as_of, p_current) f
       ON f.cik = p.cik
      AND (f.class_key = ANY(p.classes)
-          OR (f.filing_complete AND f.security_kind IN ('equity', 'depositary')
+          OR (f.filing_complete AND f.security_kind IN ('equity', 'depositary', 'unknown')
               AND (p.sole OR f.filing_equity_classes = 1)))
     GROUP BY p.cik, f.adsh
 ), ends AS (
@@ -780,7 +785,7 @@ WITH own AS (
       AND (f.class_key = p_class_key
            OR ((SELECT s.sole FROM follows_sole s) AND f.filing_complete
                AND f.filing_equity_classes = 1
-               AND f.security_kind IN ('equity', 'depositary')))
+               AND f.security_kind IN ('equity', 'depositary', 'unknown')))
 ), ends AS (
     SELECT e.* FROM sec_issuer_end_events(p_cik, p_as_of, false) e
 ), last_end AS (
@@ -839,7 +844,10 @@ $fn$;
 -- (stated_on <= D), then the latest filing (knowledge date, acceptance time,
 -- accession). A date older than p_max_age_days -> 'stale'; distinct values
 -- within that one filing -> 'ambiguous'; none -> 'missing'. class_key '' is the
--- issuer total.
+-- issuer total. An issuer total from a foreign private issuer's filing (20-F,
+-- 40-F, 6-K, 20-FR and their /A) -> 'refused', refusal
+-- 'foreign_issuer_listing_unverified' (see sec_cover_ticker_shares_at), with
+-- shares_as_of and adsh kept for audit.
 CREATE OR REPLACE FUNCTION sec_cover_class_shares_at(
     p_cik bigint, p_class_key text, p_as_of date, p_max_age_days integer DEFAULT 400
 )
@@ -847,12 +855,16 @@ RETURNS TABLE (
     status text,
     shares numeric,
     shares_as_of date,
-    adsh text
+    adsh text,
+    refusal text
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
 WITH chosen AS (
-    SELECT c.stated_on, c.available_on, c.adsh
+    SELECT c.stated_on, c.available_on, c.adsh,
+           CASE WHEN p_class_key = ''
+                     AND regexp_replace(c.form, '/A$', '') IN ('20-F', '40-F', '6-K', '20-FR')
+                THEN 'foreign_issuer_listing_unverified' END AS refusal
     FROM sec_share_counts_at(p_as_of, false) c
     WHERE c.cik = p_cik AND c.class_key = p_class_key AND c.stated_on <= p_as_of
     ORDER BY c.stated_on DESC, c.available_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
@@ -866,14 +878,16 @@ WITH chosen AS (
 SELECT
     CASE
         WHEN NOT EXISTS (SELECT 1 FROM chosen) THEN 'missing'
+        WHEN (SELECT h.refusal FROM chosen h) IS NOT NULL THEN 'refused'
         WHEN (SELECT h.stated_on FROM chosen h) < p_as_of - p_max_age_days THEN 'stale'
         WHEN (SELECT count(*) FROM counts) > 1 THEN 'ambiguous'
         ELSE 'resolved'
     END AS status,
-    CASE WHEN (SELECT count(*) FROM counts) = 1 THEN (SELECT k.shares FROM counts k) END
-        AS shares,
+    CASE WHEN (SELECT h.refusal FROM chosen h) IS NULL AND (SELECT count(*) FROM counts) = 1
+         THEN (SELECT k.shares FROM counts k) END AS shares,
     (SELECT h.stated_on FROM chosen h) AS shares_as_of,
-    (SELECT h.adsh FROM chosen h) AS adsh
+    (SELECT h.adsh FROM chosen h) AS adsh,
+    (SELECT h.refusal FROM chosen h) AS refusal
 $fn$;
 
 -- The cover share count of the class that trades as p_ticker, known at D, joined
@@ -884,9 +898,19 @@ $fn$;
 --   filing, not the member, ties a count to a symbol;
 -- * 'sole_class_total': the filing's undimensioned total, only when the filing
 --   shows exactly one equity class in total (listed or not) and that class is an
---   equity (never a depositary) line showing the ticker.
+--   equity (never a depositary) line showing the ticker, or an 'unknown' one.
+-- A foreign private issuer's filing (20-F, 40-F, 6-K, 20-FR and their /A) counts
+-- its underlying shares, and its cover may tag the ADS symbol on that class: TSM's
+-- 20-Fs tag TSM "Common Shares" beside 25.9 billion common shares (five per ADS);
+-- FUTU's 2022 20-F tags FUTU on its Class A ordinary shares (eight per ADS) and
+-- America Movil's 2021 20-F tags AMOV on its A shares (twenty per ADS). So from
+-- such a filing a total, and a class count whose line is not an explicit
+-- depositary class, are 'refused' (refusal 'foreign_issuer_listing_unverified':
+-- shares NULL; shares_as_of, adsh and basis kept for audit) until the cover page
+-- evidences what is listed.
 -- Latest stated date first, then the latest filing; a class count wins over a
--- total in one filing. status resolved | stale | ambiguous | missing.
+-- total in one filing, an admissible count over a refused one. status resolved |
+-- stale | ambiguous | missing | refused.
 CREATE OR REPLACE FUNCTION sec_cover_ticker_shares_at(
     p_ticker text, p_cik bigint, p_as_of date, p_max_age_days integer DEFAULT 400
 )
@@ -895,54 +919,60 @@ RETURNS TABLE (
     shares numeric,
     shares_as_of date,
     adsh text,
-    basis text
+    basis text,
+    refusal text
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
 WITH candidates AS (
-    SELECT c.adsh, c.stated_on, c.available_on, c.accepted, c.shares,
-           CASE WHEN c.class_key = '' THEN 'sole_class_total' ELSE 'class' END AS basis
+    SELECT c.adsh, c.stated_on, c.available_on, c.accepted, c.shares, l.basis,
+           CASE WHEN regexp_replace(c.form, '/A$', '') IN ('20-F', '40-F', '6-K', '20-FR')
+                     AND NOT (l.basis = 'class' AND l.depositary)
+                THEN 'foreign_issuer_listing_unverified' END AS refusal
     FROM sec_share_counts_at(p_as_of, false) c
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN c.class_key = '' THEN 'sole_class_total' ELSE 'class' END AS basis,
+               bool_or(o.security_kind = 'depositary') AS depositary
+        FROM sec_observations_at(p_as_of, false) o
+        WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.available_on <= p_as_of
+          AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
+          AND CASE WHEN c.class_key <> '' THEN o.class_key = c.class_key
+                   ELSE o.filing_equity_classes = 1
+                        AND o.security_kind IN ('equity', 'unknown')
+              END
+        HAVING count(*) > 0
+    ) l
     WHERE c.cik = p_cik AND c.stated_on <= p_as_of
-      AND CASE
-              WHEN c.class_key <> '' THEN EXISTS (
-                  SELECT 1 FROM sec_observations_at(p_as_of, false) o
-                  WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.class_key = c.class_key
-                    AND o.available_on <= p_as_of
-                    AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'))
-              ELSE EXISTS (
-                  SELECT 1 FROM sec_observations_at(p_as_of, false) o
-                  WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.available_on <= p_as_of
-                    AND o.filing_equity_classes = 1 AND o.security_kind = 'equity'
-                    AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'))
-          END
 ), chosen AS (
     SELECT k.* FROM candidates k
     ORDER BY k.stated_on DESC, k.available_on DESC, k.accepted DESC NULLS LAST, k.adsh DESC,
-             k.basis
+             k.basis, k.refusal IS NOT NULL
     LIMIT 1
 ), counts AS (
     SELECT DISTINCT k.shares
     FROM candidates k, chosen h
     WHERE k.adsh = h.adsh AND k.stated_on = h.stated_on AND k.basis = h.basis
+      AND k.refusal IS NOT DISTINCT FROM h.refusal
 )
 SELECT
     CASE
         WHEN NOT EXISTS (SELECT 1 FROM chosen) THEN 'missing'
+        WHEN (SELECT h.refusal FROM chosen h) IS NOT NULL THEN 'refused'
         WHEN (SELECT h.stated_on FROM chosen h) < p_as_of - p_max_age_days THEN 'stale'
         WHEN (SELECT count(*) FROM counts) > 1 THEN 'ambiguous'
         ELSE 'resolved'
     END AS status,
-    CASE WHEN (SELECT count(*) FROM counts) = 1 THEN (SELECT k.shares FROM counts k) END
-        AS shares,
+    CASE WHEN (SELECT h.refusal FROM chosen h) IS NULL AND (SELECT count(*) FROM counts) = 1
+         THEN (SELECT k.shares FROM counts k) END AS shares,
     (SELECT h.stated_on FROM chosen h) AS shares_as_of,
     (SELECT h.adsh FROM chosen h) AS adsh,
-    (SELECT h.basis FROM chosen h) AS basis
+    (SELECT h.basis FROM chosen h) AS basis,
+    (SELECT h.refusal FROM chosen h) AS refusal
 $fn$;
 
 -- The LINES of a CIK as known today: one row per class it ever stated, with the
--- line (one security) the class belongs to. Equity/depositary classes are
--- linked by evidence edges:
+-- line (one security) the class belongs to. Listed classes (equity, depositary
+-- or unknown) are linked by evidence edges:
 -- * they showed the same symbol and no filing shows both (Berkshire's 10-Qs tag
 --   BRK.B on CommonClassB, its 8-Ks on ClassBCommonStock; Google's class A and
 --   class C both showed GOOG, but side by side from April 2014, so no edge), or
@@ -982,7 +1012,7 @@ BEGIN
       INTO keys, firsts, equity
     FROM (
         SELECT o.class_key, min(o.source_available_on) AS first_on,
-               bool_or(o.security_kind IN ('equity', 'depositary')) AS equity
+               bool_or(o.security_kind IN ('equity', 'depositary', 'unknown')) AS equity
         FROM sec_observations_at('infinity'::date, true) o
         WHERE o.cik = p_cik
         GROUP BY o.class_key
@@ -998,14 +1028,14 @@ BEGIN
     JOIN sec_observations_at('infinity'::date, true) y
       ON y.adsh = x.adsh AND y.cik = x.cik AND y.class_key <> x.class_key
     WHERE x.cik = p_cik
-      AND x.security_kind IN ('equity', 'depositary')
-      AND y.security_kind IN ('equity', 'depositary');
+      AND x.security_kind IN ('equity', 'depositary', 'unknown')
+      AND y.security_kind IN ('equity', 'depositary', 'unknown');
     FOR edge IN
         WITH equity_rows AS (
             SELECT o.adsh, o.class_key, o.ticker_key, o.source_available_on AS on_date,
                    o.accepted, o.filing_equity_classes, o.filing_complete
             FROM sec_observations_at('infinity'::date, true) o
-            WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary')
+            WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary', 'unknown')
         ), shown AS (
             SELECT e.class_key, e.ticker_key, min(e.on_date) AS first_on,
                    count(DISTINCT e.adsh) AS filings
@@ -1112,8 +1142,9 @@ WITH key AS (
     WHERE o.ticker_key = key.k
 ), relevant AS (
     SELECT s.* FROM shown s
-    WHERE s.security_kind IN ('equity', 'depositary')
-       OR NOT EXISTS (SELECT 1 FROM shown e WHERE e.security_kind IN ('equity', 'depositary'))
+    WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
+       OR NOT EXISTS (SELECT 1 FROM shown e
+                      WHERE e.security_kind IN ('equity', 'depositary', 'unknown'))
 ), holder_ciks AS (
     SELECT DISTINCT r.cik FROM relevant r
 ), lines AS MATERIALIZED (
@@ -1140,7 +1171,7 @@ WITH key AS (
     LEFT JOIN lines l ON l.cik = o.cik AND l.class_key = o.class_key
     WHERE l.line_key = h.line_key
        OR (o.filing_complete AND o.filing_equity_classes = 1
-           AND o.security_kind IN ('equity', 'depositary'))
+           AND o.security_kind IN ('equity', 'depositary', 'unknown'))
     GROUP BY h.cik, h.line_key, o.adsh
 ), ends AS MATERIALIZED (
     SELECT h.cik, e.available_on, e.filed, e.form, e.adsh, e.definitive
@@ -1290,7 +1321,7 @@ WITH lines AS MATERIALIZED (
     WHERE o.cik = p_cik
       AND (l.line_key = p_line_key
            OR (o.filing_complete AND o.filing_equity_classes = 1
-               AND o.security_kind IN ('equity', 'depositary')))
+               AND o.security_kind IN ('equity', 'depositary', 'unknown')))
     GROUP BY o.adsh
 ), ends AS MATERIALIZED (
     SELECT e.* FROM sec_issuer_end_events(p_cik, 'infinity'::date, true) e

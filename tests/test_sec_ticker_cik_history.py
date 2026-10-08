@@ -30,6 +30,9 @@ ROLLBACK_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v1.rollback.sql").rea
     encoding="utf-8"
 )
 FILINGS = ROOT / "tests" / "fixtures" / "sec_ticker_cik_history" / "filings"
+# Cover rows of single filings carved verbatim from DERA's FSN packages (sub,
+# txt cover tags, the share counts and their dim rows): fsn_<package>_<issuer>.
+FSN_FIXTURES = ROOT / "tests" / "fixtures" / "sec_ticker_cik_history"
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 READERS = ("app_runtime", "app_analytics_ro", "mcp_ro")
 FUNCTIONS = (
@@ -216,6 +219,31 @@ def test_security_kind_reads_the_title_then_segments_then_symbol(
     title: str | None, ticker: str, segments: str, kind: str
 ) -> None:
     assert loader.security_kind(title, ticker, segments) == kind
+
+
+@pytest.mark.parametrize(
+    ("title", "ticker", "segments", "kind"),
+    [
+        (None, "TSM", "", "unknown"),  # TSM's 2018 20-F: its ADS, untitled
+        (None, "ABC", "ClassOfStock=OrdinarySharesMember;", "equity"),
+        (None, "ABC", "ClassOfStock=CommonStockMember;", "equity"),
+        (None, "ABC", "ClassOfStock=AmericanDepositarySharesMember;", "depositary"),
+        (None, "ABC", "ClassOfStock=SeriesXMember;", "unknown"),
+        (None, "ACHR-WS", "", "warrant"),
+        ("AmericanDepositaryShares(evidencedbyAmericanDepositaryReceipts),each representing "
+         "one common share", "VALE", "", "depositary"),
+        ("Common Shares", "CNQ", "", "equity"),
+    ],
+)
+def test_an_unidentified_line_on_a_foreign_issuers_form_is_unknown(
+    title: str | None, ticker: str, segments: str, kind: str
+) -> None:
+    """Gate P1 (fc7224c): on a 20-F/40-F/6-K, an untitled symbol is an ADS as
+    often as an ordinary share; without a title or a telling segment it is
+    'unknown', never equity."""
+    assert loader.security_kind(title, ticker, segments, foreign=True) == kind
+    assert loader.is_foreign_form("20-F/A") and loader.is_foreign_form("6-K")
+    assert not loader.is_foreign_form("10-K")
 
 
 def test_periodic_forms_are_the_filers_own_reports() -> None:
@@ -872,7 +900,7 @@ def _profile(conn, adsh: str, cik: int) -> None:
         WITH s AS (
             SELECT DISTINCT class_key FROM sec_ticker_cik_observations
             WHERE adsh = %(a)s AND cik = %(c)s AND retired_on IS NULL
-              AND security_kind IN ('equity', 'depositary')
+              AND security_kind IN ('equity', 'depositary', 'unknown')
         ), k AS (
             SELECT DISTINCT class_key FROM sec_cover_share_counts
             WHERE adsh = %(a)s AND cik = %(c)s AND retired_on IS NULL AND class_key <> ''
@@ -1526,6 +1554,116 @@ def test_an_issuer_total_never_goes_to_a_depositary_or_one_of_several_classes(
     _count(conn, 72, CLASS_A, "2023-11-10", 600, "2023-11-14", adsh=older)
     assert _ticker_shares(conn, "AAA", 72, "2024-02-20") == (
         "resolved", Decimal(600), d(2023, 11, 10), "class",
+    )
+
+
+def _fsn_fixture(name: str, target: Path) -> Path:
+    """A package named ``target`` holding the carved real rows of ``name``."""
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for member in ("sub.tsv", "txt.tsv", "num.tsv", "dim.tsv"):
+            archive.write(FSN_FIXTURES / name / member, member)
+        archive.writestr("pre.tsv", "adsh\treport\n")  # never read
+    return target
+
+
+UNVERIFIED = "foreign_issuer_listing_unverified"
+
+
+def _ticker_shares_row(conn, ticker: str, cik: int, as_of: str) -> tuple:
+    return conn.execute(
+        "SELECT status, shares, shares_as_of, adsh, basis, refusal "
+        "FROM sec_cover_ticker_shares_at(%s, %s, %s)", (ticker, cik, as_of),
+    ).fetchone()
+
+
+def test_no_count_on_a_foreign_issuers_filing_sizes_its_listed_line(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Gate P1 (fc7224c) and its decision (C), through ingestion of real DERA rows.
+    A 20-F counts the underlying shares, and its cover may tag the ADS symbol
+    untitled (TSM 2018), on the underlying class titled as such (TSM 2024 "Common
+    Shares", 5 per ADS; America Movil's AMOV/AMX on its A/L shares, 20 per ADS)
+    or on the ordinary class beside the ADS class (FUTU, 8 per ADS). No such
+    count sizes the line: it is refused, loudly, with the filing kept for audit."""
+    conn, dsn = schema_dsn
+    packages = [
+        _fsn_fixture("fsn_2018q2_tsm", tmp_path / "2018q2_notes.zip"),
+        _fsn_fixture("fsn_2021q2_amov", tmp_path / "2021q2_notes.zip"),
+        _fsn_fixture("fsn_2022q1_futu", tmp_path / "2022q1_notes.zip"),
+        _fsn_fixture("fsn_2024q2_tsm", tmp_path / "2024q2_notes.zip"),
+    ]
+    loader.run(packages, dsn=dsn, dry_run=False, reconciled_on=d(2024, 6, 1))
+    tsm18, tsm24 = "0001193125-18-121866", "0001193125-24-099840"
+    # TSM 2018: an untitled, undimensioned symbol on a 20-F is 'unknown'.
+    assert conn.execute(
+        "SELECT ticker, class_key, security_title, security_kind, filing_equity_classes, "
+        "filing_complete FROM sec_ticker_cik_observations WHERE adsh = %s", (tsm18,),
+    ).fetchall() == [("TSM", "", None, "unknown", 1, True)]
+    assert conn.execute(
+        "SELECT status, cik, class_key, security_kind FROM sec_ticker_issuer_at('TSM', %s)",
+        ("2018-12-31",),
+    ).fetchone() == ("resolved", 1046179, "", "unknown")
+    assert _ticker_shares_row(conn, "TSM", 1046179, "2018-12-31") == (
+        "refused", None, d(2017, 12, 31), tsm18, "sole_class_total", UNVERIFIED,
+    )
+    assert conn.execute(
+        "SELECT status, shares, adsh, refusal FROM sec_cover_class_shares_at(%s, '', %s)",
+        (1046179, "2018-12-31"),
+    ).fetchone() == ("refused", None, tsm18, UNVERIFIED)
+    # TSM 2024: titled "Common Shares" (the registered class behind the ADS).
+    assert _ticker_shares_row(conn, "TSM", 1046179, "2024-12-31") == (
+        "refused", None, d(2023, 12, 31), tsm24, "sole_class_total", UNVERIFIED,
+    )
+    # America Movil 2021: AMOV on its A shares, AMX on its L shares.
+    amov = "0001193125-21-137773"
+    for ticker in ("AMOV", "AMX"):
+        assert _ticker_shares_row(conn, ticker, 1129137, "2021-12-31") == (
+            "refused", None, d(2020, 12, 31), amov, "class", UNVERIFIED,
+        )
+    # FUTU 2022: tagged on its ADR class and on Class A (counted); the Class A
+    # count is the class's own fact, never the listed line's.
+    futu = "0001104659-22-035332"
+    assert _ticker_shares_row(conn, "FUTU", 1754581, "2022-12-31") == (
+        "refused", None, d(2021, 12, 31), futu, "class", UNVERIFIED,
+    )
+    assert _class_shares(conn, 1754581, "ClassOfStock=CommonClassA;", "2022-12-31") == (
+        "resolved", Decimal("708482154"), d(2021, 12, 31),
+    )
+
+
+def test_a_foreign_issuers_explicit_depositary_class_keeps_its_count(schema_dsn) -> None:
+    """Decision (C): a count dimensioned to an explicit depositary class is the
+    line's own count and keeps the existing rules; a domestic total is unchanged."""
+    conn, _ = schema_dsn
+
+    def foreign(adsh: str) -> None:
+        conn.execute("UPDATE sec_ticker_cik_observations SET form = '20-F' WHERE adsh = %s",
+                     (adsh,))
+        conn.execute("UPDATE sec_cover_share_counts SET form = '20-F/A' WHERE adsh = %s",
+                     (adsh,))
+
+    ads = "ClassOfStock=Adr;"
+    a = _observe(conn, 91, "ADRX", "2024-03-01", class_key=ads, kind="depositary")
+    _count(conn, 91, ads, "2024-02-29", 700, "2024-03-01", adsh=a)
+    foreign(a)
+    assert _ticker_shares_row(conn, "ADRX", 91, "2024-06-30") == (
+        "resolved", Decimal(700), d(2024, 2, 29), a, "class", None,
+    )
+    # The same issuer's later 20-F tags the symbol on its ordinary class too: the
+    # admissible ADS count of that filing wins over the refused ordinary one.
+    b = _observe(conn, 91, "ADRX", "2025-03-01", class_key=ads, kind="depositary")
+    _observe(conn, 91, "ADRX", "2025-03-01", class_key=CLASS_A, adsh=b)
+    _count(conn, 91, ads, "2025-02-28", 710, "2025-03-01", adsh=b)
+    _count(conn, 91, CLASS_A, "2025-02-28", 7100, "2025-03-01", adsh=b)
+    foreign(b)
+    assert _ticker_shares_row(conn, "ADRX", 91, "2025-06-30") == (
+        "resolved", Decimal(710), d(2025, 2, 28), b, "class", None,
+    )
+    # A 10-K total is untouched.
+    k = _observe(conn, 92, "DOMX", "2024-03-01")
+    _count(conn, 92, "", "2024-02-29", 500, "2024-03-01", adsh=k)
+    assert _ticker_shares_row(conn, "DOMX", 92, "2024-06-30") == (
+        "resolved", Decimal(500), d(2024, 2, 29), k, "sole_class_total", None,
     )
 
 
@@ -2972,6 +3110,45 @@ def test_a_workstation_cache_is_verified_before_the_initial_load(
     calls.clear()
     loader.verify_package_cache(client, cache)  # everything is current now
     assert not [url for method, url in calls if method == "GET" and url.startswith(FSN_BASE)]
+
+
+def test_a_verified_load_reads_only_the_listed_packages(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Gate P2 / Codex thread 4222376260: with --verify-cache, a zip in the cache
+    that the SEC no longer lists (or one passed by name) was not verified, so it
+    is ignored, with a log line, instead of loaded."""
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    build, cache = tmp_path / "build", tmp_path / "cache"
+    build.mkdir()
+    cache.mkdir()
+    listed = _write_package(
+        build / "2024_10_notes.zip", [_sub("0000000005-24-000001", 732717, "8-K", "20241105")],
+        [_fact("0000000005-24-000001", "TradingSymbol", "BB")], compression=zipfile.ZIP_STORED,
+    ).read_bytes()
+    (cache / "2024_10_notes.zip").write_bytes(listed)
+    stray = _write_package(
+        cache / "2024_09_notes.zip", [_sub("0000000006-24-000001", 732717, "8-K", "20241005")],
+        [_fact("0000000006-24-000001", "TradingSymbol", "AA")],
+    )
+    monkeypatch.setattr(loader, "sec_client", lambda: _fake_sec(
+        tmp_path, {"2024_10_notes.zip": listed}, {},
+        last_modified={"2024_10_notes.zip": ""})[0])
+    args = ["--verify-cache", "--no-events", "--packages-dir", str(cache), "--dsn", dsn,
+            "--reconciled-on", "2024-12-10"]
+    assert loader.main(args) == 0
+    assert '{"ignored_unlisted_packages": ["2024_09_notes.zip"]}' in capsys.readouterr().out
+    assert conn.execute("SELECT source_package FROM sec_ticker_cik_packages").fetchall() == [
+        ("2024_10_notes.zip",)]
+    assert conn.execute("SELECT DISTINCT ticker FROM sec_ticker_cik_observations"
+                        ).fetchall() == [("BB",)]
+    # Named on the command line, an unlisted package is ignored the same way.
+    with pytest.raises(SystemExit):
+        loader.main([str(stray), *args])
+    assert "ignored_unlisted_packages" in capsys.readouterr().out
+    assert conn.execute("SELECT count(*) FROM sec_ticker_cik_packages").fetchone() == (1,)
 
 
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:

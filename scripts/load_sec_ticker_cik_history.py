@@ -94,6 +94,12 @@ NO_DIMENSIONS = "0x00000000"
 EXCHANGE_AXIS = "EntityListingsExchange"
 LEGAL_ENTITY_AXIS = "LegalEntity"
 EQUITY_KINDS = frozenset({"equity", "depositary"})
+# A listed line whose kind nothing in the filing identifies (an untitled,
+# undimensioned symbol on a foreign private issuer's cover: TSM's 2018 20-F tags
+# TSM, its ADS, beside the count of its ordinary shares). It is the filer's listed
+# security, but neither an ordinary nor a depositary line.
+UNKNOWN_KIND = "unknown"
+LISTED_KINDS = EQUITY_KINDS | {UNKNOWN_KIND}
 # Registration filings from the form indexes. Ends: termination of a class's
 # registration or reporting duty (15-12B/15-12G/15-15D) and removal from listing
 # (25 by the issuer, 25-NSE by the exchange). Starts: registration of a class
@@ -157,6 +163,17 @@ def is_inventory_form(form: str) -> bool:
     return form.removesuffix("/A") in INVENTORY_FORMS
 
 
+# Forms of foreign private issuers. Their listed line is often an ADS whose cover
+# row names (or tags) the underlying class, so no count from these forms sizes a
+# listed line in the schema (sec_cover_ticker_shares_at), and an unidentified
+# line on them is 'unknown'.
+FOREIGN_FORMS = frozenset({"20-F", "40-F", "6-K", "20-FR"})
+
+
+def is_foreign_form(form: str) -> bool:
+    return form.removesuffix("/A") in FOREIGN_FORMS
+
+
 # Values filers put in dei:TradingSymbol when a security has no symbol.
 PLACEHOLDER_KEYS = frozenset({
     "NONE", "NA", "NOTAPPLICABLE", "NOTAVAILABLE", "TRUE", "FALSE", "NULL", "NIL",
@@ -209,7 +226,7 @@ _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("right", re.compile(r"^\s*rights?\b|\brights?,?\s+each\b|\bcontingent\s+value\b",
                          re.IGNORECASE)),
     ("depositary", re.compile(
-        r"american\s+depositary|depositary\s+(?:shares|receipts)|\bADSs?\b|\bADRs?\b",
+        r"american\s*depositary|depositary\s*(?:shares|receipts)|\bADSs?\b|\bADRs?\b",
         re.IGNORECASE)),
 )
 _SEGMENT_KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -219,6 +236,9 @@ _SEGMENT_KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("unit", re.compile(r"=Units?Member|CapitalUnits", re.IGNORECASE)),
     ("depositary", re.compile(r"Depositary|\bADS", re.IGNORECASE)),
 )
+# An ordinary or common share member: on a foreign private issuer's form, the
+# segments that identify an untitled line as the ordinary class.
+_EQUITY_SEGMENT_RE = re.compile(r"Ordinary|Common(?:Stock|Shares?|Class)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -475,8 +495,12 @@ def class_key(segments: str, *, keep_entity: bool = False) -> str:
     return "".join(f"{part};" for part in kept)
 
 
-def security_kind(title: str | None, ticker: str, segments: str) -> str:
-    """What a cover line is: from its title, else its segments, else its symbol."""
+def security_kind(title: str | None, ticker: str, segments: str, *,
+                  foreign: bool = False) -> str:
+    """What a cover line is: from its title, else its segments, else its symbol.
+    With no such evidence a line is equity, except on a foreign private issuer's
+    form (``foreign``), where it is ``unknown``: an ADS and an ordinary share look
+    alike without a title."""
     if title:
         text = _ATTACHED_RIGHTS_RE.sub("", title)
         for kind, pattern in _KIND_RULES:
@@ -496,6 +520,8 @@ def security_kind(title: str | None, ticker: str, segments: str) -> str:
         return "right"
     if re.search(r"\d", ticker):
         return "debt"
+    if foreign and not _EQUITY_SEGMENT_RE.search(segments):
+        return UNKNOWN_KIND
     return "equity"
 
 
@@ -896,8 +922,9 @@ def build_observations(
         if accepted and cik != submission.cik:
             rejected["attributed_to_coregistrant"] += len(accepted)
         for ticker, raw, ddate in accepted:
-            kind = security_kind(title, ticker, context)
-            if kind in EQUITY_KINDS:
+            kind = security_kind(title, ticker, context,
+                                 foreign=is_foreign_form(submission.form))
+            if kind in LISTED_KINDS:
                 symbol_classes.setdefault((adsh, cik), set()).add(key)
             pending.append({
                 "adsh": adsh, "cik": cik, "dimh": dimh, "segments": context, "class_key": key,
@@ -1928,6 +1955,17 @@ def discover_packages(packages_dir: Path) -> list[Path]:
     return sorted(found, key=package_sort_key)
 
 
+def listed_packages(packages: Iterable[Path], validators: dict[str, object]) -> list[Path]:
+    """After --verify-cache: only the packages the SEC lists (and that were just
+    verified) load. Any other zip in the cache, such as a package the SEC no
+    longer lists, is ignored and logged."""
+    packages = list(packages)
+    unlisted = sorted(path.name for path in packages if path.name not in validators)
+    if unlisted:
+        print(json.dumps({"ignored_unlisted_packages": unlisted}), flush=True)
+    return [path for path in packages if path.name in validators]
+
+
 def run(
     packages: Iterable[Path],
     *,
@@ -2011,7 +2049,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify-cache", action="store_true",
                         help="HEAD every listed package first; fetch again any cached zip "
                              "that is missing, changed size/ETag or is older than its "
-                             "Last-Modified; record only those fresh validators")
+                             "Last-Modified; record only those fresh validators; load "
+                             "only listed packages (unlisted zips are ignored, logged)")
     parser.add_argument("--no-events", action="store_true",
                         help="skip the EDGAR registration events")
     parser.add_argument("--event-docs-dir", type=Path, default=DEFAULT_EVENT_DOCS_DIR,
@@ -2038,6 +2077,8 @@ def main(argv: list[str] | None = None) -> int:
         sorted(args.packages, key=package_sort_key)
         if args.packages else discover_packages(args.packages_dir)
     )
+    if validators is not None:
+        packages = listed_packages(packages, validators)
     if not packages:
         parser.error(f"no FSN packages found in {args.packages_dir}")
     form_indexes = (

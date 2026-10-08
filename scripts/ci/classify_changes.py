@@ -61,6 +61,7 @@ NPORT_PATTERNS = (
     "schemas/sec_ticker_cik_history_v1*.sql",
     "tests/test_sec_ticker_cik_history.py",
     "tests/fixtures/sec_ticker_cik_history/*/*.txt",
+    "tests/fixtures/sec_ticker_cik_history/*/*.tsv",
 )
 SHARED_PATHS = {
     "src/db.py",

@@ -77,6 +77,7 @@ def test_fund_classification_pipeline_selects_nport(path: str) -> None:
         "schemas/sec_ticker_cik_history_v1.rollback.sql",
         "tests/test_sec_ticker_cik_history.py",
         "tests/fixtures/sec_ticker_cik_history/filings/0000876661-13-000657.txt",
+        "tests/fixtures/sec_ticker_cik_history/fsn_2018q2_tsm/txt.tsv",
     ],
 )
 def test_sec_ticker_history_loader_selects_only_nport(path: str) -> None:
