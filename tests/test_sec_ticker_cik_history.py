@@ -1224,6 +1224,7 @@ def test_schema_reapplies_and_rolls_back_cleanly(schema_dsn) -> None:
     _observe(conn, 732717, "T", "2024-01-10")
     assert conn.execute("SELECT ticker_key, available_on FROM sec_ticker_cik_observations"
                         ).fetchone() == ("T", d(2024, 1, 11))
+    conn.execute(V2_ROLLBACK_SQL)  # a full removal rolls v2 back first (the runbook)
     conn.execute(ROLLBACK_SQL)
     leftovers = conn.execute(
         "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
@@ -2630,6 +2631,147 @@ def test_an_undimensioned_sole_class_is_not_merged_into_a_later_class(schema_dsn
         ("alive", 1288776, "ClassC", d(2014, 4, 4), d(2015, 5, 10), "stale", ["GOOG"]),
         ("other_holder", 1288776, "", d(2014, 3, 2), d(2014, 4, 4), "other_symbol", ["GOOG"]),
     ]
+
+
+def _complete(conn, *adshs: str) -> None:
+    """Mark filings complete covers (a 10-K/10-Q-type cover lists every class)."""
+    for adsh in adshs:
+        conn.execute("UPDATE sec_ticker_cik_observations SET filing_complete = true "
+                     "WHERE adsh = %s", (adsh,))
+
+
+def test_a_registration_of_another_class_does_not_transfer_the_ended_class(
+    schema_dsn,
+) -> None:
+    """Light #223 follow-up contract (probe case registration_of_another_common_class):
+    an A/B issuer files a 25-NSE of class B and an 8-A12B of class A the same day.
+    The registration names class A, so it is no transfer of class B's listing:
+    B's hold and line end, A's stay. A registration of class B, or one that names
+    no class (a Form 10, not read), still makes the end a transfer."""
+    conn, _ = schema_dsn
+    for cik, registered in ((100, "Class A common stock"), (101, "Class B common stock"),
+                            (102, None)):
+        q = _observe(conn, cik, f"D{cik}A", "2024-02-01", class_key="CommonClassA",
+                     title="Class A common stock")
+        _observe(conn, cik, f"D{cik}B", "2024-02-01", class_key="CommonClassB",
+                 title="Class B common stock", adsh=q)
+        for class_key, shares in (("CommonClassA", 100), ("CommonClassB", 200)):
+            _count(conn, cik, class_key, "2024-01-31", shares, "2024-02-01", adsh=q)
+        _event(conn, cik, "25-NSE", "2024-03-01", kind="equity", extinguished=False,
+               venue_kind="primary", description="Class B common stock")
+        if registered is None:
+            _event(conn, cik, "10-12B", "2024-03-01")
+        else:
+            _event(conn, cik, "8-A12B", "2024-03-01", kind="equity", venue_kind="primary",
+                   description=registered)
+    on = d(2024, 3, 4)
+    assert conn.execute(
+        "SELECT r.classes FROM sec_registration_starts(100, '2024-03-04') r").fetchall() == [
+        (["a"],)]
+    assert conn.execute(
+        "SELECT form, effective_on, class_keys FROM sec_issuer_end_events(100, '2024-03-04')"
+    ).fetchall() == [("25-NSE", d(2024, 3, 2), ["CommonClassB"])]
+    assert _issuer(conn, "D100B", on.isoformat())[:2] == ("ended", None)
+    assert _issuer(conn, "D100A", on.isoformat())[:2] == ("resolved", 100)
+    assert (_alive(conn, "D100A", 100, "CommonClassA", on),
+            _alive(conn, "D100B", 100, "CommonClassB", on)) == (True, False)
+    assert _line(conn, 100, "CommonClassB", on.isoformat())[0] == "ended"
+    for cik in (101, 102):
+        assert _ends(conn, cik, on.isoformat()) == []
+        assert _issuer(conn, f"D{cik}B", on.isoformat())[:2] == ("resolved", cik)
+        assert _alive(conn, f"D{cik}B", cik, "CommonClassB", on)
+
+
+def test_a_preferred_only_holder_between_two_listed_holders_is_another_holder(
+    schema_dsn,
+) -> None:
+    """Light #223 follow-up contract (probe case intermediate_non_listed_holder):
+    CIK 200 listed REUSED until its 25-NSE extinguished the class (April 2023);
+    CIK 300 then showed REUSED on a preferred row (February 2024); CIK 400, alive
+    as PRIOR since January 2024, took REUSED in July 2024. On 2024-05-01 REUSED is
+    CIK 300's: an ended issuer's listed row does not hide a later holder's
+    preferred row, so CIK 300 is the other holder of CIK 400's line then and
+    REUSED's price that day is not CIK 400's."""
+    conn, _ = schema_dsn
+    old = _observe(conn, 200, "REUSED", "2023-01-01", class_key="CommonClassA",
+                   title="Class A common stock")
+    _event(conn, 200, "25-NSE", "2023-04-01", kind="equity", extinguished=True,
+           venue_kind="primary", description="Class A common stock")
+    _observe(conn, 300, "REUSED", "2024-02-01", kind="preferred", class_key="SeriesAPreferred",
+             title="Series A preferred stock")
+    prior = _observe(conn, 400, "PRIOR", "2024-01-01", class_key="Common", title="Common stock")
+    _count(conn, 400, "Common", "2023-12-31", 100, "2024-01-01", adsh=prior)
+    late = _observe(conn, 400, "REUSED", "2024-07-01", class_key="Common", title="Common stock")
+    _complete(conn, old, late)
+    on = d(2024, 5, 1)
+    assert _issuer(conn, "REUSED", on.isoformat())[:2] == ("resolved", 300)
+    holders = [row for row in _evidence(conn, "REUSED", 400, "Common")
+               if row[0] == "other_holder" and row[3] <= on and (row[4] is None or on < row[4])]
+    assert [(row[1], row[2]) for row in holders] == [(300, "SeriesAPreferred")]
+    assert _alive(conn, "REUSED", 400, "Common", d(2024, 7, 3))
+    # A listed row of an issuer whose class has not ended still hides another
+    # CIK's later non-listed row within the 400 days
+    # (test_notes_lines_tagged_with_the_common_symbol_never_decide).
+    _observe(conn, 210, "KEPT", "2023-01-01", class_key="CommonClassA",
+             title="Class A common stock")
+    _observe(conn, 310, "KEPT", "2023-06-01", kind="preferred", class_key="SeriesAPreferred")
+    assert _issuer(conn, "KEPT", "2023-07-01")[:2] == ("resolved", 210)
+
+
+def test_an_incomplete_cover_does_not_mask_a_named_class_end(schema_dsn) -> None:
+    """Light #223 follow-up contract (probe case incomplete_cover_masks_named_class_end):
+    a complete A/B 10-K, then an 8-K whose cover lists class A only, then a Form 15
+    naming class B. Only a complete cover defines the issuer's classes: the 8-K
+    does not drop class B, so the Form 15 ends class B's hold and line."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 500, "PART-A", "2024-02-01", class_key="CommonClassA",
+                 title="Class A common stock")
+    _observe(conn, 500, "PART-B", "2024-02-01", class_key="CommonClassB",
+             title="Class B common stock", adsh=q)
+    for class_key, shares in (("CommonClassA", 100), ("CommonClassB", 300)):
+        _count(conn, 500, class_key, "2024-01-31", shares, "2024-02-01", adsh=q)
+    _observe(conn, 500, "PART-A", "2024-02-15", class_key="CommonClassA",
+             title="Class A common stock")
+    assert conn.execute(
+        "SELECT DISTINCT filing_equity_classes, filing_complete FROM sec_ticker_cik_observations "
+        "WHERE cik = 500 AND filed = '2024-02-15'").fetchall() == [(1, False)]
+    _event(conn, 500, "15-12B", "2024-03-01", kind="equity", description="Class B common stock")
+    on = d(2024, 3, 4)
+    assert conn.execute(
+        "SELECT form, effective_on, class_keys FROM sec_issuer_end_events(500, '2024-03-04')"
+    ).fetchall() == [("15-12B", d(2024, 3, 2), ["CommonClassB"])]
+    assert _issuer(conn, "PART-B", on.isoformat())[:2] == ("ended", None)
+    assert _issuer(conn, "PART-A", on.isoformat())[:2] == ("resolved", 500)
+    assert (_alive(conn, "PART-A", 500, "CommonClassA", on),
+            _alive(conn, "PART-B", 500, "CommonClassB", on)) == (True, False)
+
+
+def test_an_incomplete_cover_does_not_rejoin_an_undimensioned_predecessor(
+    schema_dsn,
+) -> None:
+    """Light #223 follow-up contract (probe case
+    incomplete_cover_rejoins_undimensioned_predecessor): Google's undimensioned
+    sole class GOOG, the A/C 10-Q, then an 8-K whose cover lists class C only. The
+    8-K is no complete cover: it does not make class C look like a sole class, so
+    the old GOOG line stays apart from class C and is class C's other holder
+    before the split (test_an_undimensioned_sole_class_is_not_merged_into_a_later_class)."""
+    conn, _ = schema_dsn
+    old = _observe(conn, 1288776, "GOOG", "2014-03-01", title="Common stock")
+    _count(conn, 1288776, "", "2014-02-28", 100, "2014-03-01", adsh=old)
+    q = _observe(conn, 1288776, "GOOGL", "2014-04-03", class_key="ClassA",
+                 title="Class A common stock")
+    _observe(conn, 1288776, "GOOG", "2014-04-03", class_key="ClassC",
+             title="Class C common stock", adsh=q)
+    _complete(conn, q)
+    _observe(conn, 1288776, "GOOG", "2014-05-01", class_key="ClassC",
+             title="Class C common stock")
+    assert sorted(conn.execute("SELECT class_key, line_key FROM sec_issuer_lines(1288776)"
+                               ).fetchall()) == [("", ""), ("ClassA", "ClassA"),
+                                                 ("ClassC", "ClassC")]
+    on = d(2014, 3, 14)
+    assert not _alive(conn, "GOOG", 1288776, "ClassC", on)
+    assert [row[:4] for row in _evidence(conn, "GOOG", 1288776, "ClassC")
+            if row[0] == "other_holder"] == [("other_holder", 1288776, "", d(2014, 3, 2))]
 
 
 def test_a_sole_class_that_starts_being_dimensioned_stays_one_line(schema_dsn) -> None:

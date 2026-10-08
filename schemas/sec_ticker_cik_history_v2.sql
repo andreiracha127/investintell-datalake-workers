@@ -158,8 +158,48 @@ WHERE CASE WHEN p_current
       END
 $fn$;
 
+-- The class a cover line names: the identifier of its 12(b) title ("Class B common
+-- stock", "Class B-2 Common Stock", "Class III Common Stock"), else of its member
+-- (CommonClassB, ClassBCommonStock, CapitalClassC, ClassB2CommonStock), without
+-- its hyphen; NULL when neither names one.
+CREATE OR REPLACE FUNCTION sec_class_label(p_title text, p_class_key text)
+RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $fn$
+SELECT lower(replace(COALESCE(
+    substring(p_title
+              from '(?i)\m(?:class|series)\s+(viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)\M'),
+    substring(p_class_key from '(?:Class|Series)(VIII|VII|III|[A-Z][0-9]?|[0-9]{1,2})(?![a-z])')),
+    '-', ''))
+$fn$;
+
+-- The classes a Form 15/25/8-A description names by identifier ("Class B common
+-- stock", "Class A and B", "Classes A, B and C", "Class B-2", "Class III",
+-- "Series A ... Common Stock"), in sec_class_label's form; empty when it names
+-- none (an unlabelled "Common Stock", or a filing not read).
+CREATE OR REPLACE FUNCTION sec_named_classes(p_description text)
+RETURNS text[]
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $fn$
+SELECT ARRAY(
+    SELECT DISTINCT lower(replace(l.label, '-', ''))
+    FROM regexp_matches(
+        COALESCE(p_description, ''),
+        '(?i)\mclass(?:es)?\s+((?:viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)'
+        '(?:\s*(?:,|/|&|\mand\M|\mor\M)\s*(?:class\s+)?'
+        '(?:viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?))*)\M'
+        '|\mseries\s+([a-z0-9]{1,2})\s+(?:(?:non-?)?voting\s+)?(?:common|ordinary|capital)\M',
+        'g') AS m(groups)
+    CROSS JOIN LATERAL regexp_split_to_table(
+        COALESCE(m.groups[1], m.groups[2]),
+        '(?i)\s*(?:,|/|&|\mand\M|\mor\M|\mclass\M)\s*') AS l(label)
+    WHERE l.label <> ''
+    ORDER BY 1)
+$fn$;
+
 DROP FUNCTION IF EXISTS sec_issuer_end_events(bigint, date, boolean);
 DROP FUNCTION IF EXISTS sec_registration_end_events(bigint, date, boolean);
+DROP FUNCTION IF EXISTS sec_registration_starts(bigint, date, boolean);
 
 -- The end filings (15-12B/15-12G/15-15D, 15F-12B/15F-12G/15F-15D, 25/25-NSE) of
 -- a CIK visible at D, as amended by D. An amendment applies to exactly one
@@ -249,15 +289,18 @@ $fn$;
 -- transfer of a delisted common stock and no relisting of it (Statera's 8-A12G of
 -- its Series B Preferred Stock, filed the day Nasdaq delisted its common,
 -- 2023-02-01). Forms 8-A of CIKs with cover data are read (class_kind); a Form 10
--- or 8-K12B is not.
-CREATE OR REPLACE FUNCTION sec_registration_starts(
+-- or 8-K12B is not. classes: the classes it names by identifier
+-- (sec_named_classes; empty when it names none or was not read). A registration
+-- that names classes corroborates a transfer, or relists, only those classes:
+-- an 8-A of class A is no transfer of class B's listing.
+CREATE FUNCTION sec_registration_starts(
     p_cik bigint, p_as_of date, p_current boolean DEFAULT false
 )
-RETURNS TABLE (available_on date, filed date, form text, adsh text)
+RETURNS TABLE (available_on date, filed date, form text, adsh text, classes text[])
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
 SELECT CASE WHEN p_current THEN e.source_available_on ELSE e.available_on END,
-       e.filed, e.form, e.adsh
+       e.filed, e.form, e.adsh, sec_named_classes(e.class_description)
 FROM sec_registration_events e
 WHERE e.cik = p_cik
   AND e.form IN ('8-A12B', '8-A12G', '10-12B', '10-12G', '8-K12B', '8-K12G3')
@@ -376,12 +419,7 @@ WITH horizon AS (
     -- its 12(b) title ("Class B common stock", "Class B-2 Common Stock"), else of
     -- its member (CommonClassB, ClassBCommonStock, CapitalClassC, ClassB2...)
     SELECT o.adsh, o.class_key,
-           max(lower(replace(COALESCE(
-               substring(o.security_title
-                         from '(?i)\m(?:class|series)\s+(viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)\M'),
-               substring(o.class_key
-                         from '(?:Class|Series)(VIII|VII|III|[A-Z][0-9]?|[0-9]{1,2})(?![a-z])')),
-               '-', ''))) AS label
+           max(sec_class_label(o.security_title, o.class_key)) AS label
     FROM horizon h
     CROSS JOIN LATERAL sec_observations_at(h.on_date, p_current) o
     WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary', 'unknown')
@@ -401,11 +439,6 @@ WITH horizon AS (
     GROUP BY c.adsh
 ), events AS (
     SELECT e.*,
-           EXISTS (
-               SELECT 1 FROM horizon h
-               CROSS JOIN LATERAL sec_registration_starts(p_cik, h.on_date, p_current) r
-               WHERE r.filed BETWEEN e.filed - 30 AND e.filed + 10
-           ) AS registered_nearby,
            -- a successor registered this CIK's class (8-K12B/8-K12G3 under the
            -- same CIK): its line continues under the successor
            EXISTS (
@@ -419,12 +452,12 @@ WITH horizon AS (
 ), versions AS (
     -- each end as it reads now ('effective') and, when restated, as filed
     SELECT e.adsh, e.form, e.filed, e.available_on, e.restated_on, e.restated_filed,
-           e.registered_nearby, e.succeeded, true AS effective, e.class_kind, e.class_count,
+           e.succeeded, true AS effective, e.class_kind, e.class_count,
            e.extinguished, e.venue_kind, e.class_description
     FROM events e
     UNION ALL
     SELECT e.adsh, e.form, e.filed, e.available_on, e.restated_on, e.restated_filed,
-           e.registered_nearby, e.succeeded, false, e.original_class_kind,
+           e.succeeded, false, e.original_class_kind,
            e.original_class_count, e.original_extinguished, e.original_venue_kind,
            e.original_class_description
     FROM events e
@@ -437,7 +470,15 @@ WITH horizon AS (
                SELECT f.classes FROM filings f WHERE f.complete AND f.source_on < v.filed + 1
                ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
                LIMIT 1), 1), 1) AS prior_classes,
-           v.registered_nearby AND NOT COALESCE(v.extinguished, false) AS transfer,
+           -- a registration from 30 days before to 10 days after, of a class the end
+           -- names (either naming none: any class), makes it a transfer
+           EXISTS (
+               SELECT 1 FROM horizon h
+               CROSS JOIN LATERAL sec_registration_starts(p_cik, h.on_date, p_current) r
+               WHERE r.filed BETWEEN v.filed - 30 AND v.filed + 10
+                 AND (cardinality(r.classes) = 0 OR cardinality(named.labels) = 0
+                      OR r.classes && named.labels)
+           ) AND NOT COALESCE(v.extinguished, false) AS transfer,
            -- the classes the end names by letter ("Class B common stock", "Class
            -- A and B", "Series A ... Common Stock"), and the prior cover's listed
            -- classes that are those classes
@@ -449,25 +490,14 @@ WITH horizon AS (
                           ORDER BY c.class_key), '{}'::text[]) AS matched
     FROM versions v
     LEFT JOIN LATERAL (
+        -- the cover the end is judged against: the latest complete one (a
+        -- 10-K/10-Q-type cover lists every class) filed before it, else the latest;
+        -- an 8-K listing fewer classes never redefines the issuer's classes
         SELECT f.* FROM filings f WHERE f.source_on < v.filed + 1
-        ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
+        ORDER BY f.complete DESC, f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
         LIMIT 1
     ) pf ON true
-    CROSS JOIN LATERAL (
-        SELECT ARRAY(
-            SELECT DISTINCT lower(replace(l.label, '-', ''))
-            FROM regexp_matches(
-                COALESCE(v.class_description, ''),
-                '(?i)\mclass(?:es)?\s+((?:viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)'
-                '(?:\s*(?:,|/|&|\mand\M|\mor\M)\s*(?:class\s+)?'
-                '(?:viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?))*)\M'
-                '|\mseries\s+([a-z0-9]{1,2})\s+(?:(?:non-?)?voting\s+)?(?:common|ordinary|capital)\M',
-                'g') AS m(groups)
-            CROSS JOIN LATERAL regexp_split_to_table(
-                COALESCE(m.groups[1], m.groups[2]),
-                '(?i)\s*(?:,|/|&|\mand\M|\mor\M|\mclass\M)\s*') AS l(label)
-            WHERE l.label <> '') AS labels
-    ) named
+    CROSS JOIN LATERAL (SELECT sec_named_classes(v.class_description) AS labels) named
     CROSS JOIN LATERAL (
         SELECT count(*) AS listed, bool_and(c.label IS NOT NULL) AS labelled
         FROM listed_classes c WHERE c.adsh = pf.adsh
@@ -607,7 +637,7 @@ RETURNS TABLE (
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
 WITH shown AS (
-    SELECT o.cik, o.class_key, o.security_kind, o.adsh, o.accepted,
+    SELECT o.cik, o.class_key, o.security_kind, o.adsh, o.accepted, o.security_title,
            CASE WHEN p_current THEN o.source_available_on ELSE o.available_on END AS known_on,
            o.filing_equity_classes, o.filing_complete
     FROM sec_observations_at(p_as_of, p_current) o
@@ -615,10 +645,18 @@ WITH shown AS (
 ), relevant AS (
     SELECT s.* FROM shown s
     WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
-       OR NOT EXISTS (SELECT 1 FROM shown e
-                      WHERE e.security_kind IN ('equity', 'depositary', 'unknown')
-                        AND e.known_on <= s.known_on
-                        AND (e.cik = s.cik OR e.known_on > s.known_on - 400))
+       OR NOT EXISTS (
+           SELECT 1 FROM shown e
+           WHERE e.security_kind IN ('equity', 'depositary', 'unknown')
+             AND e.known_on <= s.known_on
+             AND (e.cik = s.cik
+                  -- another CIK's listed hold, active then: shown within the 400 days
+                  -- before, and not ended since
+                  OR (e.known_on > s.known_on - 400
+                      AND NOT EXISTS (
+                          SELECT 1 FROM sec_issuer_end_events(e.cik, p_as_of, p_current) x
+                          WHERE x.effective_on > e.known_on AND x.effective_on <= s.known_on
+                            AND (x.class_keys IS NULL OR e.class_key = ANY(x.class_keys))))))
 ), per_cik AS (
     SELECT r.cik,
            min(r.known_on) AS first_on,
@@ -628,6 +666,8 @@ WITH shown AS (
            (array_agg(r.security_kind ORDER BY r.known_on DESC, r.accepted DESC NULLS LAST,
                       r.adsh DESC, r.class_key))[1] AS security_kind,
            array_agg(DISTINCT r.class_key) AS classes,
+           array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key)),
+                        NULL) AS labels,
            bool_or(r.security_kind IN ('equity', 'depositary', 'unknown')) AS listed,
            array_agg(DISTINCT r.security_kind) AS kinds,
            COALESCE((array_agg(r.filing_equity_classes = 1 ORDER BY r.known_on DESC,
@@ -677,7 +717,9 @@ WITH shown AS (
                      AND o.first_on BETWEEN e.effective_on - 30 AND e.first_post_on))
           AND NOT EXISTS (
               SELECT 1 FROM sec_registration_starts(c.cik, p_as_of, p_current) r
-              WHERE r.filed > e.filed AND r.available_on <= c.known_on))
+              WHERE r.filed > e.filed AND r.available_on <= c.known_on
+                AND (cardinality(r.classes) = 0 OR cardinality(p.labels) = 0
+                     OR r.classes && p.labels)))
     ORDER BY c.cik, c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
 )
 SELECT p.cik,
@@ -768,8 +810,12 @@ WITH own AS (
            array_agg(DISTINCT r.ticker_key) AS keys
     FROM rows r
     GROUP BY r.adsh
+), line_labels AS (
+    SELECT array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key)),
+                        NULL) AS labels
+    FROM rows r
 ), chosen AS (
-    SELECT c.* FROM candidates c
+    SELECT c.* FROM candidates c, line_labels l
     WHERE NOT EXISTS (
         SELECT 1 FROM ends d
         WHERE d.definitive AND d.effective_on <= c.known_on
@@ -779,7 +825,9 @@ WITH own AS (
                 AND x.available_on < d.effective_on)
           AND NOT EXISTS (
               SELECT 1 FROM sec_registration_starts(p_cik, p_as_of, false) r
-              WHERE r.filed > d.filed AND r.available_on <= c.known_on))
+              WHERE r.filed > d.filed AND r.available_on <= c.known_on
+                AND (cardinality(r.classes) = 0 OR cardinality(l.labels) = 0
+                     OR r.classes && l.labels)))
     ORDER BY c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
     LIMIT 1
 ), statement AS (
@@ -820,8 +868,9 @@ $fn$;
 --   class C both showed GOOG, but side by side from April 2014, so no edge), or
 -- * they are the one equity class of consecutive complete filings (a
 --   single-class filer renaming its member or dropping the dimension).
--- An undimensioned class shown only on one-class covers and a dimensioned class
--- shown only beside another listed class are not linked by a symbol they share:
+-- An undimensioned class shown only on one-class complete covers and a
+-- dimensioned class a complete cover shows beside another listed class are not
+-- linked by a symbol they share (incomplete covers such as 8-Ks do not count):
 -- the symbol moved in a recapitalization (Google's GOOG, its sole class until
 -- 2014, then its class C beside class A's GOOGL), so it does not say which of the
 -- listed classes continues the old one; only a relabel edge would. A class listed
@@ -895,8 +944,12 @@ BEGIN
             FROM equity_rows e
             GROUP BY e.adsh
         ), structure AS (
-            SELECT e.class_key, bool_and(e.filing_equity_classes = 1) AS sole_only,
-                   bool_and(f.listed > 1) AS beside_listed
+            -- from complete covers only: an 8-K listing one class says nothing of
+            -- the issuer's class structure
+            SELECT e.class_key,
+                   bool_and(e.filing_equity_classes = 1) FILTER (WHERE e.filing_complete)
+                       AS sole_only,
+                   bool_or(f.listed > 1) FILTER (WHERE e.filing_complete) AS beside_listed
             FROM equity_rows e
             JOIN filing_lines f ON f.adsh = e.adsh
             GROUP BY e.class_key
@@ -908,7 +961,8 @@ BEGIN
             JOIN shown y ON y.ticker_key = x.ticker_key AND y.class_key > x.class_key
             JOIN structure sx ON sx.class_key = x.class_key
             JOIN structure sy ON sy.class_key = y.class_key
-            WHERE NOT (x.class_key = '' AND sx.sole_only AND sy.beside_listed)
+            WHERE NOT (x.class_key = '' AND COALESCE(sx.sole_only, true)
+                       AND COALESCE(sy.beside_listed, false))
             GROUP BY x.class_key, y.class_key
         ), sole AS (
             SELECT f.key, f.on_date,
@@ -1006,10 +1060,16 @@ WITH key AS (
 ), relevant AS (
     SELECT s.* FROM shown s
     WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
-       OR NOT EXISTS (SELECT 1 FROM shown e
-                      WHERE e.security_kind IN ('equity', 'depositary', 'unknown')
-                        AND e.known_on <= s.known_on
-                        AND (e.cik = s.cik OR e.known_on > s.known_on - 400))
+       OR NOT EXISTS (
+           SELECT 1 FROM shown e
+           WHERE e.security_kind IN ('equity', 'depositary', 'unknown')
+             AND e.known_on <= s.known_on
+             AND (e.cik = s.cik
+                  OR (e.known_on > s.known_on - 400
+                      AND NOT EXISTS (
+                          SELECT 1 FROM sec_issuer_end_events(e.cik, 'infinity'::date, true) x
+                          WHERE x.effective_on > e.known_on AND x.effective_on <= s.known_on
+                            AND (x.class_keys IS NULL OR e.class_key = ANY(x.class_keys))))))
 ), holder_ciks AS (
     SELECT DISTINCT r.cik FROM relevant r
 ), lines AS MATERIALIZED (
@@ -1023,6 +1083,16 @@ WITH key AS (
     GROUP BY r.cik, l.line_key
 ), cik_first AS (
     SELECT r.cik, min(r.known_on) AS first_on FROM relevant r GROUP BY r.cik
+), line_labels AS MATERIALIZED (
+    -- the classes each held line names (titles, members), for registrations
+    SELECT h.cik, h.line_key,
+           array_remove(array_agg(DISTINCT sec_class_label(o.security_title, o.class_key)),
+                        NULL) AS labels
+    FROM held h
+    JOIN lines l ON l.cik = h.cik AND l.line_key = h.line_key
+    JOIN sec_observations_at('infinity'::date, true) o
+      ON o.cik = l.cik AND o.class_key = l.class_key
+    GROUP BY h.cik, h.line_key
 ), sole_lines AS (
     -- a line whose complete filings all listed one equity class is the issuer's
     -- sole security: every later complete filing of the CIK is one of its
@@ -1061,7 +1131,7 @@ WITH key AS (
     FROM holder_ciks h
     CROSS JOIN LATERAL sec_issuer_end_events(h.cik, 'infinity'::date, true) e
 ), starts AS MATERIALIZED (
-    SELECT h.cik, r.filed, r.available_on
+    SELECT h.cik, r.filed, r.available_on, r.classes
     FROM holder_ciks h
     CROSS JOIN LATERAL sec_registration_starts(h.cik, 'infinity'::date, true) r
 ), line_ends AS MATERIALIZED (
@@ -1096,7 +1166,10 @@ WITH key AS (
         WHERE b.cik = c.cik AND b.line_key = c.line_key AND b.effective_on <= c.known_on
           AND NOT EXISTS (
               SELECT 1 FROM starts r
-              WHERE r.cik = c.cik AND r.filed > b.filed AND r.available_on <= c.known_on))
+              JOIN line_labels ll ON ll.cik = c.cik AND ll.line_key = c.line_key
+              WHERE r.cik = c.cik AND r.filed > b.filed AND r.available_on <= c.known_on
+                AND (cardinality(r.classes) = 0 OR cardinality(ll.labels) = 0
+                     OR r.classes && ll.labels)))
 ), bounds AS (
     SELECT DISTINCT h.cik, h.line_key, x.on_date
     FROM held h
@@ -1203,6 +1276,12 @@ SET jit = off
 AS $fn$
 WITH lines AS MATERIALIZED (
     SELECT l.class_key, l.line_key FROM sec_issuer_lines(p_cik) l
+), line_labels AS (
+    SELECT array_remove(array_agg(DISTINCT sec_class_label(o.security_title, o.class_key)),
+                        NULL) AS labels
+    FROM sec_observations_at('infinity'::date, true) o
+    JOIN lines l ON l.class_key = o.class_key
+    WHERE o.cik = p_cik AND l.line_key = p_line_key
 ), sole AS (
     -- the line is the issuer's sole security until its last one-class complete
     -- filing when all its complete filings listed one class (see sec_ticker_line_runs)
@@ -1249,8 +1328,11 @@ WITH lines AS MATERIALIZED (
               SELECT 1 FROM candidates x
               WHERE x.has_line AND x.known_on < d.effective_on AND x.keys && c.keys)
           AND NOT EXISTS (
-              SELECT 1 FROM sec_registration_starts(p_cik, 'infinity'::date, true) r
-              WHERE r.filed > d.filed AND r.available_on <= c.known_on))
+              SELECT 1 FROM sec_registration_starts(p_cik, 'infinity'::date, true) r,
+                            line_labels ll
+              WHERE r.filed > d.filed AND r.available_on <= c.known_on
+                AND (cardinality(r.classes) = 0 OR cardinality(ll.labels) = 0
+                     OR r.classes && ll.labels)))
 ), bounds AS (
     SELECT c.known_on AS on_date FROM counted c
     UNION
@@ -1319,7 +1401,8 @@ COMMENT ON FUNCTION sec_issuer_end_events(bigint, date, boolean) IS
 
 -- Ownership and grants of every routine (idempotent; the two functions created
 -- again above start with default privileges).
-REVOKE ALL ON FUNCTION sec_observations_at(date, boolean),
+REVOKE ALL ON FUNCTION sec_class_label(text, text), sec_named_classes(text),
+    sec_observations_at(date, boolean),
     sec_share_counts_at(date, boolean),
     sec_registration_end_events(bigint, date, boolean),
     sec_registration_starts(bigint, date, boolean),
@@ -1337,6 +1420,8 @@ REVOKE ALL ON FUNCTION sec_observations_at(date, boolean),
 DO $$
 DECLARE
     routines constant text[] := ARRAY[
+        'sec_class_label(text, text)',
+        'sec_named_classes(text)',
         'sec_observations_at(date, boolean)',
         'sec_share_counts_at(date, boolean)',
         'sec_registration_end_events(bigint, date, boolean)',

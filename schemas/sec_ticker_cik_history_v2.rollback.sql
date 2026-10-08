@@ -15,6 +15,7 @@ SET LOCAL lock_timeout = '5s';
 
 DROP FUNCTION IF EXISTS sec_issuer_end_events(bigint, date, boolean);
 DROP FUNCTION IF EXISTS sec_registration_end_events(bigint, date, boolean);
+DROP FUNCTION IF EXISTS sec_registration_starts(bigint, date, boolean);
 
 -- Visible rows. p_current = false: what was known at D (available_on <= D, not
 -- yet retired at D). p_current = true: today's truth up to D (current rows whose
@@ -960,6 +961,10 @@ FROM runs r
 LEFT JOIN run_ends e ON e.run_no = r.run_no
 ORDER BY r.valid_from
 $fn$;
+
+-- v2's helpers, which no v1 function uses.
+DROP FUNCTION IF EXISTS sec_class_label(text, text);
+DROP FUNCTION IF EXISTS sec_named_classes(text);
 
 -- Ownership and grants of every routine, as v1 sets them (the two functions
 -- created again above start with default privileges).
