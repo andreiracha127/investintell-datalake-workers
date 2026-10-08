@@ -60,6 +60,101 @@ written.
 5. **Run it**: `deploymentRestart`. A redeploy of a cron service does **not** execute
    the job.
 
+## 2.1 Required production receipt before every merge and redeploy
+
+For every change to the `open-macro-v03-chain` cron, the owner runs
+`scripts/receipt_chain_production.py` against production inputs before merging or
+redeploying. Both row digests must be identical and the command must exit 0. Attach
+its printed Markdown block and retain the JSON receipt and snapshot file. The
+pack-only `scripts/receipt_chain_coverage.py` receipt remains useful, but does not
+replace this production-input gate.
+
+Run context:
+
+| Item | Required value |
+|---|---|
+| Railway environment | `production` |
+| Service being certified | `open-macro-v03-chain` (`WORKER=open_macro_v03_chain`) |
+| Database | The same datalake `market` database that service reads |
+| Execution | Owner's local workers checkout, using its installed Python dependencies and Git |
+| Credential | `DATABASE_URL` supplied through the environment, for a SELECT-only role on the relations below |
+
+The role must have SELECT on `public.macro_observation_vintage`,
+`public.eod_prices`, and `public.open_macro_v03_decision_chain`, and **no INSERT,
+UPDATE, or DELETE privilege on any of them**, including inherited privileges. The
+last table is both a read input and the cron's output. Do not use the service's
+`worker_writer` credential or its writer mTLS identity. The repository documents
+`app_analytics_ro` with SELECT default grants in `schemas/bond_serving_v1.sql`;
+use that analytics role if its current privileges pass all three relation checks,
+or an owner-supplied SELECT-only role with those grants. The repository does not
+prove its current grants on these specific macro tables; the tool checks them at
+capture time. `app_runtime` is unsuitable as a default: the same schema documents
+write default grants for it. A read-only transaction alone does not make a
+write-capable role acceptable.
+
+From this worktree, with `DATABASE_URL` already injected using that credential:
+
+```powershell
+Set-Location E:\investintell-datalake-workers-sep\.worktrees\chain-coverage-recert
+if (-not $env:DATABASE_URL) { throw 'Set DATABASE_URL to the production SELECT-only role DSN first' }
+$python = (Resolve-Path build/recert-venv/Scripts/python.exe).Path
+git fetch origin
+if ($LASTEXITCODE -ne 0) { throw 'Could not refresh the before revision' }
+$referenceDate = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+$receiptDir = Join-Path $env:LOCALAPPDATA ('investintell/chain-receipts/' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))
+& $python scripts/receipt_chain_production.py `
+  --before origin/main --after HEAD `
+  --reference-date $referenceDate `
+  --snapshot "$receiptDir/snapshot.json" `
+  --output "$receiptDir/receipt.json"
+if ($LASTEXITCODE -ne 0) { throw 'Chain production receipt failed: do not merge or redeploy' }
+```
+
+The command uses this worktree's existing CPython 3.13.11 environment. In another
+checkout, select a Python environment with the repository dependencies installed.
+For subsequent redeploys, use
+`--before <currently-deployed-commit>` and `--after <candidate-commit>` when those
+revisions differ from the defaults. The receipt records resolved full commit SHAs.
+There is no `--dsn` argument. Private `*.railway.internal` database hosts are
+rewritten to `centerbeam.proxy.rlwy.net:36616` for local access; credentials and the
+database selection are preserved. The command does not invoke Railway, restart the
+service, or publish rows.
+
+The exporter connects with `default_transaction_read_only=on` and a bounded
+statement timeout (`--statement-timeout-ms`), asserts read-only mode, checks
+table- and column-level write privileges for the current role
+(`has_table_privilege`, `has_any_column_privilege`), and loads all database inputs once in
+one `REPEATABLE READ READ ONLY` transaction. It reuses the worker's pure read
+queries and mirrors its input assembly, including the certified pack and backfill
+boundaries. Fixture tests compare that assembly with the worker's read helpers;
+an additional source contract detects changes to the deployed orchestration.
+The receipt records row counts and canonical digests for each input set, the
+overall inputs digest, and the snapshot file's SHA-256. This chain resolves direct
+tables rather than a publication-pointer table; the captured provenance records
+the pack identity and latest stored chain month instead of inventing a pointer.
+
+The reference date defaults to the worker's UTC current date and is always
+recorded. The computation target is the next month-end after the newest stored
+chain row, as in the deployed worker. The recorded horizon and readiness describe
+whether the cron would currently proceed. The tool replays the candidate target
+even if the cron would currently be a no-op: the receipt proves pure computation
+equivalence on the captured inputs, not permission to publish or acceptance of the
+worker's prefix gate.
+
+Temporary detached worktrees run each revision's pure computation and `build_row`
+in separate processes against the same snapshot bytes. An input-contract check
+refuses reader, orchestration, pack identity, or pack path changes until loader
+fidelity has been reviewed. Each revision also verifies its pinned pack bytes.
+Both receipts share the existing
+12-field projection and canonical JSON digest definition, so volatile commit and
+load timestamps cannot create a false difference. The temporary worktrees are
+removed afterwards. If the projected rows differ, the JSON has `identical: false`,
+the tool prints the first differing rows field by field, and it exits non-zero.
+Keep that evidence and resolve the discrepancy before merging or redeploying.
+
+This receipt does not regenerate or update Stage A records. Their separate idle
+re-measurement remains a distinct step.
+
 ## 3. What the first run will do
 
 On any date before MICH's first print after the target month-end, the first run is a

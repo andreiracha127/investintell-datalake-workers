@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from src.macro_sources import SEED_SOURCES
-from src.quadrant_score import axis_score, standardized_latest
+from src.quadrant_score import axis_score, standardization_window, standardized_latest
 
 _INDPRO = next(s for s in SEED_SOURCES if s.series_id == "INDPRO")  # log_3m3m_ann_v1
 
@@ -17,6 +19,46 @@ def _monthly(values: list[float], start=dt.date(2020, 1, 1)) -> dict[dt.date, fl
         if m > 12:
             m, y = 1, y + 1
     return out
+
+
+@pytest.mark.parametrize("window_years", [1, 10])
+def test_standardization_window_includes_both_boundaries_in_input_order(window_years):
+    # A leap-day as_of still selects the FIRST of the cutoff month, not its 29th.
+    as_of = dt.date(2024, 2, 29)
+    cutoff = dt.date(2024 - window_years, 2, 1)
+    middle = dt.date(2023, 8, 1)
+    transformed = {
+        as_of + dt.timedelta(days=1): 99.0,
+        as_of: 3.0,
+        cutoff - dt.timedelta(days=1): -99.0,
+        middle: float("nan"),
+        cutoff: 1.0,
+    }
+    # Selection is date-only and does not reorder or alter transformed values.
+    assert standardization_window(transformed, as_of, window_years=window_years) == [
+        as_of, middle, cutoff,
+    ]
+
+
+@pytest.mark.parametrize("transformed", [
+    {},
+    {dt.date(2019, 5, 31): 1.0, dt.date(2020, 6, 16): 2.0},
+])
+def test_standardization_window_empty_when_no_period_is_eligible(transformed):
+    assert standardization_window(
+        transformed, dt.date(2020, 6, 15), window_years=1,
+    ) == []
+
+
+def test_standardization_window_respects_the_as_of_day_within_its_month():
+    transformed = {
+        dt.date(2020, 6, 1): 1.0,
+        dt.date(2020, 6, 15): 2.0,
+        dt.date(2020, 6, 16): 3.0,
+    }
+    assert standardization_window(
+        transformed, dt.date(2020, 6, 15), window_years=1,
+    ) == [dt.date(2020, 6, 1), dt.date(2020, 6, 15)]
 
 
 def test_standardized_latest_runs_transform_then_robust_z() -> None:
