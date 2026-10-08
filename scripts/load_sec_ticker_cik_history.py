@@ -1007,9 +1007,9 @@ _XML_EXCHANGE_RE = re.compile(
 _DOCUMENT_RE = re.compile(r"<DOCUMENT>(.*?)</DOCUMENT>", re.S | re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _CLASS_LABEL_RE = re.compile(
-    r"\(\s*(?:description\s+of\s+(?:the\s+)?class(?:es)?\s+of\s+securit(?:y|ies)"
-    r"|title\s+of\s+(?:each\s+)?class(?:es)?\s+of\s+securit(?:y|ies)\s+covered\s+by\s+this"
-    r"\s+form)\s*\)",
+    r"\(\s*(?:description\s+of\s+(?:the\s+)?(?:class(?:es)?\s+of\s+)?securit(?:y|ies)"
+    r"|title\s+of\s+(?:each\s+)?class(?:es)?\s+of\s+securit(?:y|ies)\s+covered\s+by"
+    r"\s+(?:this|the)\s+form)\s*\)",
     re.I,
 )
 _ADDRESS_LABEL_RE = re.compile(r"principal\s+executive\s+offices?\s*\)", re.I)
