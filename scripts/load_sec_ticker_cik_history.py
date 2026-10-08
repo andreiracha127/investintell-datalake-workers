@@ -123,6 +123,17 @@ READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
 # every such event as a correction (derive_event_classes). v4: equity classes named
 # without a Class/Series label count (equity_class_names); Forms 8-A are read.
 EVENT_PARSER_VERSION = "sec_event_class_v4"
+# Names the package parser (symbols, classes, share counts). Recorded on each
+# package and on each fact version it inserts; not part of a fact's hash.
+FSN_PARSER_VERSION = "sec_fsn_v2"
+# Why a fact version was retired (sec_*.retired_reason). SOURCE: the public record
+# changed (a republished package, an index that dropped or reassigned a row, a
+# monthly package superseded by its quarter): the old version stays visible before
+# its retirement. PARSER_CORRECTION: the same public filing read again by another
+# parser version: the old reading was never true, so it is visible at no date and
+# the new reading is knowable from the filing's own public date.
+SOURCE = "source"
+PARSER_CORRECTION = "parser_correction"
 CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_carried",
                    "class_reused", "class_unread", "filings_missing")
 FETCH_STAT_KEYS = ("filings_fetched", "filings_failed", "filings_rejected")
@@ -1580,10 +1591,15 @@ def describe_events(
     described: list[RegistrationEvent] = []
     stats: Counter = Counter()
     for event in events:
+        prior = (known or {}).get(_event_key(event))
+        if documents is None and prior is not None:
+            # No filings to read in this run: the class read before stands.
+            stats["class_carried"] += 1
+            described.append(replace(prior, source_package=event.source_package))
+            continue
         if documents is None or event.form not in READ_EVENT_FORMS or event.cik not in ciks:
             described.append(event)
             continue
-        prior = (known or {}).get(_event_key(event))
         if prior is not None and prior.parser_version == EVENT_PARSER_VERSION:
             stats["class_reused"] += 1
             described.append(replace(prior, source_package=event.source_package))
@@ -1652,7 +1668,10 @@ def require_schema(conn) -> None:
         "AND to_regclass('sec_ticker_cik_package_members') IS NOT NULL "
         "AND to_regclass('sec_ticker_cik_package_facts') IS NOT NULL, "
         "COALESCE((SELECT 'effective_on' = ANY(p.proargnames) FROM pg_catalog.pg_proc p "
-        "WHERE p.oid = to_regprocedure('sec_issuer_end_events(bigint,date,boolean)')), false)"
+        "WHERE p.oid = to_regprocedure('sec_issuer_end_events(bigint,date,boolean)')), false) "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a "
+        "WHERE a.attrelid = to_regclass('sec_ticker_cik_observations') "
+        "AND a.attname = 'retired_reason' AND NOT a.attisdropped)"
     ).fetchone()
     if not present:
         raise RuntimeError(
@@ -1674,17 +1693,19 @@ def _copy(cur, table: str, columns: tuple[str, ...], rows: Iterable[tuple]) -> N
 
 def _record_package(cur, *, package: str, sha256: str, size: int, submissions: int,
                     symbol_facts: int, observations: int, share_counts: int, events: int,
-                    rejected: Counter,
+                    rejected: Counter, parser_version: str,
                     validators: tuple[str | None, str | None] | None = None) -> None:
-    """Record a loaded version with the SEC's validators (ETag, Last-Modified) of
-    the very bytes loaded, in the load's transaction; None: not known for them."""
+    """Record a loaded version with the parser that read it and the SEC's
+    validators (ETag, Last-Modified) of the very bytes loaded, in the load's
+    transaction; None: not known for them."""
     etag, last_modified = validators or (None, None)
     cur.execute(
         """
         INSERT INTO sec_ticker_cik_packages (
             source_package, package_sha256, package_bytes, submissions, symbol_facts,
-            observations, share_counts, events, rejected, remote_etag, remote_last_modified
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+            observations, share_counts, events, rejected, remote_etag, remote_last_modified,
+            parser_version
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
         ON CONFLICT (source_package) DO UPDATE SET
             package_sha256 = EXCLUDED.package_sha256,
             package_bytes = EXCLUDED.package_bytes,
@@ -1696,10 +1717,12 @@ def _record_package(cur, *, package: str, sha256: str, size: int, submissions: i
             rejected = EXCLUDED.rejected,
             remote_etag = EXCLUDED.remote_etag,
             remote_last_modified = EXCLUDED.remote_last_modified,
+            parser_version = EXCLUDED.parser_version,
             loaded_at = now()
         """,
         (package, sha256, size, submissions, symbol_facts, observations, share_counts,
-         events, json.dumps(dict(sorted(rejected.items()))), etag, last_modified),
+         events, json.dumps(dict(sorted(rejected.items()))), etag, last_modified,
+         parser_version),
     )
 
 
@@ -1763,27 +1786,54 @@ _BITEMPORAL_TABLES = {
 
 
 def _reconcile(cur, *, package: str, fact_table: str, temp: str | None,
-               columns: tuple[str, ...], availability: str,
-               reconciled_on: dt.date) -> dict[str, int]:
+               columns: tuple[str, ...], availability: str, reconciled_on: dt.date,
+               reason: str = SOURCE, key_columns: tuple[str, ...] = (),
+               parser_version: str | None = None) -> dict[str, int]:
     """Retire what the package no longer carries (and no other current package
     does); add what it newly carries. Never deletes or overwrites a fact row.
 
-    A newly carried fact of an accession any package ever contained for the same
-    fact family (current or retired membership) is a correction: knowable from
-    the later of its filing's public date and the reconciliation date. Another
-    family's history does not count (a 10-12B carried by an FSN package is first
-    seen as an index event when the index lists it). That includes a fact retired earlier
-    and carried again: it is available again from this reconciliation, and its
-    retired interval stays. A fact of an accession never loaded before is
-    knowable from its filing's public date. ``temp`` None carries nothing (a
-    superseded package).
+    ``reason`` says why the package's facts differ from the stored ones.
+    SOURCE (the public record changed): the retired version keeps its interval,
+    and a newly carried fact of an accession any package ever contained for the
+    same fact family (current or retired membership) is a correction knowable
+    from the later of its filing's public date and the reconciliation date.
+    Another family's history does not count (a 10-12B carried by an FSN package
+    is first seen as an index event when the index lists it). That includes a
+    fact retired earlier and carried again: it is available again from this
+    reconciliation, and its retired interval stays. A fact of an accession never
+    loaded before is knowable from its filing's public date.
+    PARSER_CORRECTION (the same bytes read by another parser version): the retired
+    version is marked so (visible at no date) and the new one is knowable from its
+    filing's public date. With ``key_columns`` (events), a version that replaces a
+    current one of the same key (the same index row read differently) is a parser
+    correction whatever ``reason`` says. ``temp`` None carries nothing (a
+    superseded package). ``parser_version`` is stamped on inserted rows.
     """
     table = _BITEMPORAL_TABLES[fact_table]
     carried = (f"AND NOT EXISTS (SELECT 1 FROM {temp} n WHERE n.fact_hash = f.fact_hash)"
                if temp else "")
+    if temp is not None and key_columns:
+        keys = ", ".join(f"n.{c}" for c in key_columns)
+        on_keys = " AND ".join(f"t.{c} = n.{c}" for c in key_columns)
+        cur.execute(
+            f"CREATE TEMP TABLE tmp_sec_corrected ON COMMIT DROP AS "
+            f"SELECT DISTINCT {keys} FROM {temp} n JOIN {table} t ON {on_keys} "
+            f"WHERE t.retired_on IS NULL AND t.fact_hash <> n.fact_hash "
+            f"AND NOT EXISTS (SELECT 1 FROM {table} u "
+            f"WHERE u.fact_hash = n.fact_hash AND u.retired_on IS NULL)")
+
+        def corrected(alias: str) -> str:
+            match = " AND ".join(f"k.{c} = {alias}.{c}" for c in key_columns)
+            return f"EXISTS (SELECT 1 FROM tmp_sec_corrected k WHERE {match})"
+
+        retired_reason = f"CASE WHEN {corrected('t')} THEN '{PARSER_CORRECTION}' ELSE %(reason)s END"
+        restated = corrected("n")
+    else:
+        retired_reason = "%(reason)s"
+        restated = "true" if reason == PARSER_CORRECTION else "false"
     cur.execute(
         f"""
-        UPDATE {table} t SET retired_on = %(on)s
+        UPDATE {table} t SET retired_on = %(on)s, retired_reason = {retired_reason}
         WHERE t.retired_on IS NULL AND t.fact_hash IN (
             SELECT f.fact_hash FROM sec_ticker_cik_package_facts f
             WHERE f.source_package = %(package)s AND f.fact_table = %(fact_table)s
@@ -1793,27 +1843,29 @@ def _reconcile(cur, *, package: str, fact_table: str, temp: str | None,
                   WHERE o.fact_table = f.fact_table AND o.fact_hash = f.fact_hash
                     AND o.source_package <> %(package)s AND o.retired_on IS NULL))
         """,
-        {"on": reconciled_on, "package": package, "fact_table": fact_table},
+        {"on": reconciled_on, "package": package, "fact_table": fact_table, "reason": reason},
     )
     retired = cur.rowcount
     if temp is None:
         return {"retired": retired, "inserted": 0}
+    stamp = ", parser_version" if parser_version else ""
     cur.execute(
         f"""
-        INSERT INTO {table} ({", ".join(columns)}, fact_hash, available_on, loaded_on)
+        INSERT INTO {table} ({", ".join(columns)}, fact_hash, available_on, loaded_on{stamp})
         SELECT {", ".join(f"n.{c}" for c in columns)}, n.fact_hash,
-               CASE WHEN EXISTS (
+               CASE WHEN {restated} THEN {availability}
+                    WHEN EXISTS (
                         SELECT 1 FROM sec_ticker_cik_package_members m
                         WHERE m.adsh = n.adsh AND m.fact_table = %(fact_table)s)
                     THEN GREATEST({availability}, %(on)s)
                     ELSE {availability}
                END,
-               %(on)s
+               %(on)s{", %(parser)s" if parser_version else ""}
         FROM {temp} n
         WHERE NOT EXISTS (
             SELECT 1 FROM {table} t WHERE t.fact_hash = n.fact_hash AND t.retired_on IS NULL)
         """,
-        {"on": reconciled_on, "fact_table": fact_table},
+        {"on": reconciled_on, "fact_table": fact_table, "parser": parser_version},
     )
     return {"retired": retired, "inserted": cur.rowcount}
 
@@ -1833,6 +1885,13 @@ def load_package(conn, result: PackageResult, *, reconciled_on: dt.date | None =
     share_rows = [(*s.as_tuple(), s.fact_hash) for s in result.share_counts]
     with conn.transaction():
         with conn.cursor() as cur:
+            # The same bytes as the version loaded before: whatever differs is
+            # this parser's reading, not the SEC's data (a re-derivation).
+            recorded = cur.execute(
+                "SELECT package_sha256 FROM sec_ticker_cik_packages WHERE source_package = %s",
+                (package,)).fetchone()
+            reason = (PARSER_CORRECTION if recorded is not None and recorded[0] == result.sha256
+                      else SOURCE)
             cur.execute(
                 f"CREATE TEMP TABLE tmp_sec_obs ON COMMIT DROP AS SELECT "
                 f"{', '.join(OBSERVATION_COLUMNS)}, fact_hash "
@@ -1848,11 +1907,12 @@ def load_package(conn, result: PackageResult, *, reconciled_on: dt.date | None =
             observations = _reconcile(
                 cur, package=package, fact_table="observation", temp="tmp_sec_obs",
                 columns=OBSERVATION_COLUMNS, availability=_OBS_AVAILABILITY,
-                reconciled_on=on,
+                reconciled_on=on, reason=reason, parser_version=FSN_PARSER_VERSION,
             )
             shares = _reconcile(
                 cur, package=package, fact_table="share_count", temp="tmp_sec_shares",
                 columns=SHARE_COLUMNS, availability=_OBS_AVAILABILITY, reconciled_on=on,
+                reason=reason, parser_version=FSN_PARSER_VERSION,
             )
             _replace_facts(cur, package, [
                 *(("observation", o.fact_hash) for o in result.observations),
@@ -1871,8 +1931,10 @@ def load_package(conn, result: PackageResult, *, reconciled_on: dt.date | None =
                 submissions=len(result.submissions), symbol_facts=result.symbol_facts,
                 observations=len(result.observations), share_counts=len(result.share_counts),
                 events=0, rejected=result.rejected, validators=validators,
+                parser_version=FSN_PARSER_VERSION,
             )
     return {
+        "reconciled_as": reason,
         "inserted": observations["inserted"],
         "retired": observations["retired"],
         "shares_inserted": shares["inserted"],
@@ -1968,7 +2030,7 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
     events, sha256, size = parse_form_index(path)
     if documents is not None and ciks is None:
         ciks = cover_ciks(conn)
-    known = derived_events(conn, (e.adsh for e in events)) if documents is not None else {}
+    known = derived_events(conn, (e.adsh for e in events))
     events, classes = describe_events(events, documents, ciks or set(), known)
     package = path.name
     on = reconciled_on or dt.date.today()
@@ -1983,13 +2045,14 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
             counts = _reconcile(
                 cur, package=package, fact_table="event", temp="tmp_sec_events",
                 columns=EVENT_COLUMNS, availability=_EVENT_AVAILABILITY, reconciled_on=on,
+                key_columns=("adsh", "cik", "form", "filed"),
             )
             _replace_facts(cur, package, (("event", e.fact_hash) for e in events), on)
             _replace_members(cur, package, (("event", e.adsh, e.cik) for e in events), on)
             _record_package(
                 cur, package=package, sha256=sha256, size=size, submissions=0,
                 symbol_facts=0, observations=0, share_counts=0, events=len(events),
-                rejected=Counter(),
+                rejected=Counter(), parser_version=EVENT_PARSER_VERSION,
             )
     return {
         "package": package,
@@ -2003,12 +2066,13 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
 def derive_event_classes(conn, documents: EventDocuments, *,
                          reconciled_on: dt.date | None = None,
                          ciks: set[int] | None = None) -> dict[str, int]:
-    """Re-derive the class of current end events of CIKs with cover data whose
-    filing was not read, or was read by another parser version.
+    """Re-derive the class of current end and 8-A events of CIKs with cover data
+    whose filing was not read, or was read by another parser version.
 
-    A changed event is a correction: its version is retired and the re-derived
-    one is knowable from the later of the filing date + 1 and the reconciliation
-    date; the indexes that carried the old version carry the new one.
+    A changed event is a parser correction (the filing did not change, our
+    reading did): its version is retired as such (visible at no date) and the
+    re-derived one is knowable from the filing date + 1; the indexes that carried
+    the old version carry the new one.
     """
     on = reconciled_on or dt.date.today()
     ciks = cover_ciks(conn) if ciks is None else ciks
@@ -2032,17 +2096,17 @@ def derive_event_classes(conn, documents: EventDocuments, *,
         with conn.cursor() as cur:
             for old_hash, event in changed:
                 cur.execute(
-                    "UPDATE sec_registration_events SET retired_on = %s "
-                    "WHERE fact_hash = %s AND retired_on IS NULL", (on, old_hash),
+                    "UPDATE sec_registration_events SET retired_on = %s, retired_reason = %s "
+                    "WHERE fact_hash = %s AND retired_on IS NULL",
+                    (on, PARSER_CORRECTION, old_hash),
                 )
                 cur.execute(
                     f"INSERT INTO sec_registration_events "
                     f"({', '.join(EVENT_COLUMNS)}, fact_hash, available_on, loaded_on) "
-                    f"SELECT {', '.join(['%s'] * len(EVENT_COLUMNS))}, %s, "
-                    f"GREATEST(%s::date + 1, %s::date), %s "
+                    f"SELECT {', '.join(['%s'] * len(EVENT_COLUMNS))}, %s, %s::date + 1, %s "
                     f"WHERE NOT EXISTS (SELECT 1 FROM sec_registration_events "
                     f"WHERE fact_hash = %s AND retired_on IS NULL)",
-                    (*event.as_tuple(), event.fact_hash, event.filed, on, on, event.fact_hash),
+                    (*event.as_tuple(), event.fact_hash, event.filed, on, event.fact_hash),
                 )
                 cur.execute(
                     "INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, "

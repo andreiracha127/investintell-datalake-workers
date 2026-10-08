@@ -39,15 +39,91 @@
 --   not across the ticker's whole history: an earlier holder that tagged its
 --   ticker only on non-listed rows keeps its run when a later issuer reuses it.
 --
+-- * A parser correction is a restatement of our reading, not a change of the
+--   public record. The fact tables record why a version was retired
+--   (retired_reason): 'source' (the SEC republished a package, an index dropped or
+--   reassigned a row, a monthly package was superseded; NULL on rows retired
+--   before v2 means the same) keeps the retired version visible before its
+--   retirement date; 'parser_correction' (the same filing read again by another
+--   parser version) makes it visible at no date, and the loader dates the new
+--   reading from the filing's own public date. parser_version records the parser
+--   that read each fact version (NULL: read before v2) and each package version.
+--
 -- Governed, owner-applied migration (postgres or worker_writer, psql with
--- ON_ERROR_STOP), one transaction, idempotent. Two functions change their result
--- columns (sec_registration_end_events, sec_issuer_end_events) and are dropped
--- and created again; the others are replaced in place. No table, index or row is
--- touched: no relation lock beyond the catalog's, no rewrite.
+-- ON_ERROR_STOP), one transaction, idempotent. It adds nullable columns without
+-- a default (a catalog change: no rewrite, no scan; ACCESS EXCLUSIVE on the four
+-- tables for the transaction's milliseconds) and their CHECKs NOT VALID (every
+-- existing row is NULL there; new rows are checked). Two functions change their
+-- result columns (sec_registration_end_events, sec_issuer_end_events) and are
+-- dropped and created again; the others are replaced in place. No row is
+-- written.
 -- Rollback: schemas/sec_ticker_cik_history_v2.rollback.sql (restores the v1
--- functions; keeps every row).
+-- functions; keeps every row and the new columns, which v1 ignores).
 BEGIN;
 SET LOCAL lock_timeout = '5s';
+
+ALTER TABLE sec_ticker_cik_observations
+    ADD COLUMN IF NOT EXISTS parser_version text,
+    ADD COLUMN IF NOT EXISTS retired_reason text;
+ALTER TABLE sec_cover_share_counts
+    ADD COLUMN IF NOT EXISTS parser_version text,
+    ADD COLUMN IF NOT EXISTS retired_reason text;
+ALTER TABLE sec_registration_events
+    ADD COLUMN IF NOT EXISTS retired_reason text;
+ALTER TABLE sec_ticker_cik_packages
+    ADD COLUMN IF NOT EXISTS parser_version text;
+DO $$
+DECLARE
+    item text;
+BEGIN
+    FOREACH item IN ARRAY ARRAY['sec_ticker_cik_observations', 'sec_cover_share_counts',
+                                'sec_registration_events'] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint
+                       WHERE conrelid = to_regclass(item)
+                         AND conname = item || '_retired_reason_check') THEN
+            EXECUTE format(
+                'ALTER TABLE %I ADD CONSTRAINT %I CHECK (retired_reason IS NULL '
+                'OR (retired_reason IN (''source'', ''parser_correction'') '
+                'AND retired_on IS NOT NULL)) NOT VALID',
+                item, item || '_retired_reason_check');
+        END IF;
+    END LOOP;
+END $$;
+COMMENT ON COLUMN sec_ticker_cik_observations.retired_reason IS
+    'source (or NULL): the public record changed, visible before retired_on; '
+    'parser_correction: our reading was wrong, visible at no date';
+
+-- Visible rows. p_current = false: what was known at D (available_on <= D, not
+-- yet retired at D by a change of the public record; a version a parser
+-- correction retired is visible at no date). p_current = true: today's truth up
+-- to D (current rows whose filing was public by D). Inlined into every caller.
+CREATE OR REPLACE FUNCTION sec_observations_at(p_as_of date, p_current boolean)
+RETURNS SETOF sec_ticker_cik_observations
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+SELECT o.* FROM sec_ticker_cik_observations o
+WHERE CASE WHEN p_current
+           THEN o.retired_on IS NULL AND o.source_available_on <= p_as_of
+           ELSE o.available_on <= p_as_of
+                AND (o.retired_on IS NULL
+                     OR (o.retired_on > p_as_of
+                         AND o.retired_reason IS DISTINCT FROM 'parser_correction'))
+      END
+$fn$;
+
+CREATE OR REPLACE FUNCTION sec_share_counts_at(p_as_of date, p_current boolean)
+RETURNS SETOF sec_cover_share_counts
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+SELECT c.* FROM sec_cover_share_counts c
+WHERE CASE WHEN p_current
+           THEN c.retired_on IS NULL AND c.source_available_on <= p_as_of
+           ELSE c.available_on <= p_as_of
+                AND (c.retired_on IS NULL
+                     OR (c.retired_on > p_as_of
+                         AND c.retired_reason IS DISTINCT FROM 'parser_correction'))
+      END
+$fn$;
 
 DROP FUNCTION IF EXISTS sec_issuer_end_events(bigint, date, boolean);
 DROP FUNCTION IF EXISTS sec_registration_end_events(bigint, date, boolean);
@@ -98,7 +174,9 @@ WITH visible AS (
                THEN e.retired_on IS NULL
                     AND (e.source_available_on <= p_as_of OR e.form LIKE '%/A')
                ELSE e.available_on <= p_as_of
-                    AND (e.retired_on IS NULL OR e.retired_on > p_as_of)
+                    AND (e.retired_on IS NULL
+                         OR (e.retired_on > p_as_of
+                             AND e.retired_reason IS DISTINCT FROM 'parser_correction'))
           END
 ), amended AS (
     SELECT a.*, (
@@ -152,7 +230,10 @@ WHERE e.cik = p_cik
   AND e.class_kind IS DISTINCT FROM 'other'
   AND CASE WHEN p_current
            THEN e.retired_on IS NULL AND e.source_available_on <= p_as_of
-           ELSE e.available_on <= p_as_of AND (e.retired_on IS NULL OR e.retired_on > p_as_of)
+           ELSE e.available_on <= p_as_of
+                AND (e.retired_on IS NULL
+                     OR (e.retired_on > p_as_of
+                         AND e.retired_reason IS DISTINCT FROM 'parser_correction'))
       END
 $fn$;
 

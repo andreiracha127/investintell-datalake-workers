@@ -1,14 +1,41 @@
 -- Rollback of schemas/sec_ticker_cik_history_v2.sql: the v1 definitions of the
--- eight functions v2 changes, copied verbatim from
+-- ten functions v2 changes, copied verbatim from
 -- schemas/sec_ticker_cik_history_v1.sql, in one transaction. Every table and row
--- is kept (rows a v2 loader wrote, such as the class of a Form 8-A, are valid v1
--- rows). Apply as the role that applied v2, with psql -v ON_ERROR_STOP=1. To
+-- is kept, and so are the columns v2 added (parser_version, retired_reason), which
+-- v1 ignores: under v1 a version a parser correction retired counts as retired on
+-- its retirement date again. Rows a v2 loader wrote, such as the class of a Form
+-- 8-A, are valid v1 rows. Apply as the role that applied v2, with psql -v ON_ERROR_STOP=1. To
 -- remove the whole schema afterwards, apply schemas/sec_ticker_cik_history_v1.rollback.sql.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 
 DROP FUNCTION IF EXISTS sec_issuer_end_events(bigint, date, boolean);
 DROP FUNCTION IF EXISTS sec_registration_end_events(bigint, date, boolean);
+
+-- Visible rows. p_current = false: what was known at D (available_on <= D, not
+-- yet retired at D). p_current = true: today's truth up to D (current rows whose
+-- filing was public by D). Inlined into every caller.
+CREATE OR REPLACE FUNCTION sec_observations_at(p_as_of date, p_current boolean)
+RETURNS SETOF sec_ticker_cik_observations
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+SELECT o.* FROM sec_ticker_cik_observations o
+WHERE CASE WHEN p_current
+           THEN o.retired_on IS NULL AND o.source_available_on <= p_as_of
+           ELSE o.available_on <= p_as_of AND (o.retired_on IS NULL OR o.retired_on > p_as_of)
+      END
+$fn$;
+
+CREATE OR REPLACE FUNCTION sec_share_counts_at(p_as_of date, p_current boolean)
+RETURNS SETOF sec_cover_share_counts
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+SELECT c.* FROM sec_cover_share_counts c
+WHERE CASE WHEN p_current
+           THEN c.retired_on IS NULL AND c.source_available_on <= p_as_of
+           ELSE c.available_on <= p_as_of AND (c.retired_on IS NULL OR c.retired_on > p_as_of)
+      END
+$fn$;
 
 -- The end filings (15-12B/15-12G/15-15D, 15F-12B/15F-12G/15F-15D, 25/25-NSE) of
 -- a CIK visible at D, as

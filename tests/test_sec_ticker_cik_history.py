@@ -2946,6 +2946,114 @@ def test_an_index_reload_retires_removed_and_reassigned_events(
     assert _issuer(conn, "TWENTYONE", "2024-10-01")[0] == "ended"
 
 
+def test_a_parser_correction_restates_the_reading_from_the_filing_date(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Coordinator decision (2026-10-08): point-in-time means public at D. The
+    same package read again by a fixed parser restates our reading: a symbol the
+    old parser rejected (Outbrain's OB) and a class count it got wrong (JWA/JWB)
+    are knowable from their filings' public dates; the wrong rows are retired as
+    parser corrections and visible at no date. A republished package (other
+    bytes) stays a change of the public record, dated by its reconciliation."""
+    conn, dsn = schema_dsn
+    ob, jw = "0000000071-24-000001", "0000000072-24-000001"
+    path = _write_package(
+        tmp_path / "2024q1_notes.zip",
+        [_sub(ob, 1454938, "10-Q", "20240208", "2024-02-08 16:05:00.0"),
+         _sub(jw, 61, "10-Q", "20240306", "2024-03-06 08:00:00.0")],
+        [_fact(ob, "TradingSymbol", "OB"), _fact(jw, "TradingSymbol", "JWA/JWB")],
+        [_shares(jw, "55000000")],
+    )
+    with monkeypatch.context() as old_parser:  # the reading of an older parser
+        old_parser.setattr(loader, "FSN_PARSER_VERSION", "sec_fsn_v1")
+        old_parser.setattr(loader, "PLACEHOLDER_KEYS", loader.PLACEHOLDER_KEYS | {"OB"})
+        old_parser.setattr(loader, "_filing_profiles", lambda symbols, others, counted: {
+            f: (1, f in counted) for f in set(symbols) | set(others)})
+        loader.run([path], dsn=dsn, dry_run=False, reconciled_on=d(2024, 4, 1))
+    assert _issuer(conn, "OB", "2024-03-01")[0] == "missing"
+    assert _ticker_shares(conn, "JWA", 61, "2024-03-15")[0] == "resolved"  # the wrong total
+    stats = loader.run([path], dsn=dsn, dry_run=False, reconciled_on=d(2024, 9, 1))
+    assert (stats[0]["reconciled_as"], stats[0]["inserted"], stats[0]["retired"]) == (
+        "parser_correction", 3, 2)
+    assert conn.execute(
+        "SELECT ticker, filing_equity_classes, available_on, loaded_on, retired_on, "
+        "retired_reason, parser_version FROM sec_ticker_cik_observations "
+        "ORDER BY ticker, id"
+    ).fetchall() == [
+        ("JWA", 1, d(2024, 3, 6), d(2024, 4, 1), d(2024, 9, 1), "parser_correction",
+         "sec_fsn_v1"),
+        ("JWA", 2, d(2024, 3, 6), d(2024, 9, 1), None, None, loader.FSN_PARSER_VERSION),
+        ("JWB", 1, d(2024, 3, 6), d(2024, 4, 1), d(2024, 9, 1), "parser_correction",
+         "sec_fsn_v1"),
+        ("JWB", 2, d(2024, 3, 6), d(2024, 9, 1), None, None, loader.FSN_PARSER_VERSION),
+        ("OB", 1, d(2024, 2, 8), d(2024, 9, 1), None, None, loader.FSN_PARSER_VERSION),
+    ]
+    # Point-in-time before the re-derivation takes the corrected reading.
+    assert _issuer(conn, "OB", "2024-03-01")[:2] == ("resolved", 1454938)
+    assert _ticker_shares(conn, "JWA", 61, "2024-03-15")[0] == "missing"
+    # A republication changes the public record: knowledge-dated, as before.
+    path.unlink()
+    _write_package(
+        path, [_sub(ob, 1454938, "10-Q", "20240208", "2024-02-08 16:05:00.0")],
+        [_fact(ob, "TradingSymbol", "OB")],
+    )
+    stats = loader.run([path], dsn=dsn, dry_run=False, reconciled_on=d(2024, 10, 1))
+    assert (stats[0]["reconciled_as"], stats[0]["retired"]) == ("source", 2)
+    assert conn.execute(
+        "SELECT DISTINCT retired_reason FROM sec_ticker_cik_observations "
+        "WHERE retired_on = '2024-10-01'").fetchall() == [("source",)]
+    assert _issuer(conn, "JWB", "2024-09-15")[:2] == ("resolved", 61)  # as known then
+    assert _issuer(conn, "JWB", "2024-10-01")[0] == "missing"
+
+
+def test_v2_migrates_a_loaded_v1_schema_in_place_and_rolls_back() -> None:
+    """The production path: v1 applied and loaded, then v2. v2 rewrites no table,
+    keeps every row, applies twice; its rollback restores the v1 functions exactly
+    (and keeps the rows and the new columns), after which the loader refuses the
+    database until v2 is applied again."""
+    import psycopg
+    from psycopg import sql
+
+    dsn = _dsn()
+    schemas = [f"sec_ticker_{uuid4().hex}", f"sec_ticker_{uuid4().hex}"]
+    definitions = ("SELECT p.proname, pg_get_function_identity_arguments(p.oid), "
+                   "replace(pg_get_functiondef(p.oid), current_schema() || '.', '') "
+                   "FROM pg_proc p WHERE p.pronamespace = current_schema()::regnamespace "
+                   "ORDER BY 1, 2")
+    relfilenodes = ("SELECT relname, relfilenode FROM pg_class WHERE relnamespace = "
+                    "current_schema()::regnamespace AND relkind = 'r' ORDER BY 1")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        try:
+            for schema in schemas:
+                conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+            conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schemas[1])))
+            conn.execute(V1_SQL)
+            v1_functions = conn.execute(definitions).fetchall()
+            conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schemas[0])))
+            conn.execute(V1_SQL)
+            _observe(conn, 732717, "T", "2024-01-10")
+            _event(conn, 732717, "15-12G", "2024-02-01", kind="equity")
+            tables = conn.execute(relfilenodes).fetchall()
+            conn.execute(V2_SQL)
+            conn.execute(V2_SQL)
+            assert conn.execute(relfilenodes).fetchall() == tables  # no rewrite
+            loader.require_schema(conn)
+            assert _issuer(conn, "T", "2024-03-01")[:2] == ("ended", None)
+            conn.execute(V2_ROLLBACK_SQL)
+            assert conn.execute(definitions).fetchall() == v1_functions
+            assert conn.execute(
+                "SELECT count(*) FROM sec_ticker_cik_observations WHERE retired_reason IS NULL"
+            ).fetchone() == (1,)
+            with pytest.raises(RuntimeError, match="apply schemas/sec_ticker_cik_history_v2"):
+                loader.require_schema(conn)
+            conn.execute(V2_SQL)
+            loader.require_schema(conn)
+        finally:
+            for schema in schemas:
+                conn.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    sql.Identifier(schema)))
+
+
 def test_index_loads_read_the_end_filings_of_cover_ciks(schema_dsn, tmp_path: Path) -> None:
     conn, dsn = schema_dsn
     _observe(conn, 5133, "AM", "2013-07-10")
@@ -3024,14 +3132,21 @@ def test_a_parser_change_re_derives_events_as_corrections(
     monkeypatch.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_next")
     assert loader.derive_event_classes(conn, documents, reconciled_on=d(2013, 11, 1))[
         "derived"] == 1
+    # A re-derivation restates our reading of a public filing: the new reading is
+    # knowable from the filing's public date, and the old one, retired as a
+    # parser correction, is visible at no date.
     assert conn.execute(
-        "SELECT class_kind, parser_version, available_on, retired_on "
+        "SELECT class_kind, parser_version, available_on, retired_on, retired_reason "
         "FROM sec_registration_events ORDER BY id"
     ).fetchall() == [
-        (None, None, d(2013, 8, 13), d(2013, 10, 1)),
-        ("equity", current, d(2013, 10, 1), d(2013, 11, 1)),
-        ("equity", "sec_event_class_next", d(2013, 11, 1), None),
+        (None, None, d(2013, 8, 13), d(2013, 10, 1), "parser_correction"),
+        ("equity", current, d(2013, 8, 13), d(2013, 11, 1), "parser_correction"),
+        ("equity", "sec_event_class_next", d(2013, 8, 13), None, None),
     ]
+    # Point-in-time before either re-derivation, the corrected reading answers.
+    assert conn.execute(
+        "SELECT class_kind FROM sec_registration_end_events(5133, '2013-09-01')"
+    ).fetchall() == [("equity",)]
     # The index that carried the first version now carries the current one: a
     # reload under the new parser changes nothing.
     stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], documents=documents,
@@ -3042,12 +3157,14 @@ def test_a_parser_change_re_derives_events_as_corrections(
 def test_an_end_re_derived_years_later_takes_effect_at_its_filing(
     schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Codex thread 4223111427: a parser change re-derives an old end as a
-    correction known from its reconciliation date. It is still judged against the
-    issuer's covers filed before it, not the class structure of years later, and
-    it takes effect at its filing, not at its re-derivation: covers filed after
-    the end keep the hold they reopened (v1 dated the end 2020-06-01 and read
-    SOLO as ended in mid-2020)."""
+    """Codex thread 4223111427: a parser change re-derives an old end, a
+    restatement of our reading known from the filing's own date. It is still
+    judged against the issuer's covers filed before it, not the class structure
+    of years later. An end that the public record itself adds years later (a
+    rebuilt index that moves it to this CIK) is known only from that correction,
+    and takes effect at its filing all the same: covers filed after the end keep
+    the hold they reopened (v1 dated such an end at its correction and read the
+    holder as ended)."""
     conn, dsn = schema_dsn
     _observe(conn, 4242, "SOLO", "2016-01-10")
     docs = tmp_path / "docs"
@@ -3068,13 +3185,28 @@ def test_an_end_re_derived_years_later_takes_effect_at_its_filing(
         "derived"] == 1
     assert _ends(conn, 4242, "2019-01-01") == [("15-12G", d(2016, 3, 2), False)]
     assert _ends(conn, 4242, "2021-01-01") == [("15-12G", d(2016, 3, 2), False)]
-    # Visible from its re-derivation; in effect from its filing.
     assert conn.execute(
         "SELECT available_on, effective_on FROM sec_issuer_end_events(4242, '2021-01-01')"
+    ).fetchall() == [(d(2016, 3, 2), d(2016, 3, 2))]
+    # A source correction: the 2016 index is rebuilt in 2020 and lists a 15-12G
+    # of 2016 under CIK 4343, whose single class showed SOLE until 2016 and again
+    # from 2018. Visible from the correction; in effect from its filing.
+    _observe(conn, 4343, "SOLE", "2016-01-10")
+    for filed in ("2018-05-01", "2019-09-02"):
+        _observe(conn, 4343, "SOLE", filed)
+    moved = "0000004343-16-000001"
+    _index(index, ("15-12G", 4242, "2016-03-01", gmv), ("15-12G", 9999, "2016-03-01", moved))
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], reconciled_on=d(2016, 4, 2))
+    _index(index, ("15-12G", 4242, "2016-03-01", gmv), ("15-12G", 4343, "2016-03-01", moved))
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], reconciled_on=d(2020, 6, 1))
+    assert conn.execute(
+        "SELECT available_on, effective_on FROM sec_issuer_end_events(4343, '2021-01-01')"
     ).fetchall() == [(d(2020, 6, 1), d(2016, 3, 2))]
+    assert _ends(conn, 4343, "2020-05-31") == []
     for as_of in ("2020-05-31", "2020-07-01"):
-        assert _issuer(conn, "SOLO", as_of)[:2] == ("resolved", 4242), as_of
-    assert _line(conn, 4242, CLASS_A, "2020-07-01")[0] == "resolved"
+        assert _issuer(conn, "SOLE", as_of)[:2] == ("resolved", 4343), as_of
+    assert _issuer(conn, "SOLE", "2016-06-01")[:2] == ("resolved", 4343)  # as known then
+    assert _line(conn, 4343, "", "2020-07-01")[0] == "resolved"
 
 
 def test_a_fact_dropped_and_carried_again_is_known_again_from_its_return(
