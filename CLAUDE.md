@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+## Data sources and methodological gaps
+
+- Regulator data is public data. SEC/EDGAR filings, XBRL and the DERA datasets are public sources, and so are API services that relay them, including sec-api.io and all its endpoints (Mapping, XBRL-to-JSON, Form N-PORT, N-CEN, N-SAR, filing and full-text search). Use them freely, including bulk and backfill work. Paid sources are subscription vendors such as LSEG, Nasdaq and Morningstar.
+- Before calling SEC-derivable data unavailable, check sec-api and the DERA datasets. Missing or non-point-in-time data is a sourcing task, not a reason to stop.
+- A known methodological gap (look-ahead, a step that is not replayed, data that is not point-in-time) is never an acceptable final state. A disclosure, a gate or a refusal does not close it. Deliver the standard method with the data it needs; a temporary gate is only an interim safety measure, tracked to closure.
+
 ## Orchestration workflow
 
 You (Fable) are the orchestrator. Plan, decompose, synthesize.  
