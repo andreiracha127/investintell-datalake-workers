@@ -595,6 +595,25 @@ def load_directory(
     }
 
 
+# Every file ``load_directory`` reads. A bundle extracted only for the flow
+# loader (SUBMISSION + FUND_REPORTED_INFO) is not a holdings bundle.
+REQUIRED_BUNDLE_FILES = (
+    "SUBMISSION.tsv",
+    "FUND_REPORTED_INFO.tsv",
+    "FUND_REPORTED_HOLDING.tsv",
+    "IDENTIFIERS.tsv",
+)
+
+
+def missing_bundle_files(dirs: Iterable[Path]) -> list[Path]:
+    return [
+        Path(dataset_dir) / name
+        for dataset_dir in dirs
+        for name in REQUIRED_BUNDLE_FILES
+        if not (Path(dataset_dir) / name).exists()
+    ]
+
+
 def load_directories(
     dsn: str | None,
     dirs: Iterable[Path],
@@ -605,6 +624,15 @@ def load_directories(
     minimum_isin_fill: float = DEFAULT_MIN_ISIN_FILL,
     only_report_dates: frozenset[dt.date] | None = None,
 ) -> list[dict[str, int | float | str | bool | None]]:
+    dirs = list(dirs)
+    # Each directory commits on its own, so a bundle missing a file halfway
+    # through the list would leave a partial refresh. Check them all first.
+    missing = missing_bundle_files(dirs)
+    if missing:
+        raise FileNotFoundError(
+            "incomplete N-PORT bundles, nothing read or written: "
+            + ", ".join(str(path) for path in missing)
+        )
     results = []
     with connect(dsn) as conn:
         if apply and schema:
