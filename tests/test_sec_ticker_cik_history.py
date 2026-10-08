@@ -1643,6 +1643,27 @@ def test_a_cover_listing_the_symbol_as_12b_or_a_relisting_reopens_a_definitive_e
     assert _issuer(conn, "REL", "2017-06-01")[:2] == ("resolved", 95)
 
 
+def test_a_reorganization_that_keeps_the_shareholder_base_is_not_a_definitive_end(
+    schema_dsn,
+) -> None:
+    """United Fire (101199), 2012: its class was delisted (12d2-2(a)(3)) and
+    deregistered when a holding company took its place under the same CIK; the
+    cover count stayed about 25.5 million shares, unlike American Greetings' 100."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 101199, "UFCS", "2011-11-07")
+    _count(conn, 101199, "", "2011-11-01", 25_502_667, "2011-11-07", adsh=q)
+    _event(conn, 101199, "15-12B", "2012-02-01", kind="equity", count=1)
+    _event(conn, 101199, "25-NSE", "2012-02-02", kind="equity", extinguished=True,
+           venue_kind="primary")
+    k = _observe(conn, 101199, "UFCS", "2012-03-15")
+    _count(conn, 101199, "", "2012-03-01", 25_506_809, "2012-03-15", adsh=k)
+    assert _ends(conn, 101199, "2012-04-01") == [
+        ("15-12B", d(2012, 2, 2), False), ("25-NSE", d(2012, 2, 3), False),
+    ]
+    assert _issuer(conn, "UFCS", "2012-02-10")[0] == "ended"
+    assert _issuer(conn, "UFCS", "2012-04-01")[:2] == ("resolved", 101199)
+
+
 def test_a_new_symbol_of_the_same_cik_after_a_definitive_end_is_a_new_line(
     schema_dsn,
 ) -> None:

@@ -390,9 +390,13 @@ $fn$;
 -- many classes as the issuer has) is DEFINITIVE when the 25-NSE says the class
 -- was extinguished (12d2-2(a)), or when a delisting (25/25-NSE, not secondary,
 -- not a transfer) and a termination (15-12B/15-12G/15-15D) of the equity are both
--- on file within 120 days of each other. Other applying ends (including
--- class_kind 'unknown' or unread) end the lines until a later statement shows the
--- symbol again (an exchange delisting to OTC, a stale 12(g) registration).
+-- on file within 120 days of each other, unless the shareholder base continued:
+-- the first cover share count after the end is within 0.8-1.25 times the last
+-- one before it (a holding-company reorganization or REIT conversion that keeps
+-- the CIK: United Fire 2012, Ulta and SBA 2017; American Greetings reported 100
+-- shares after its merger). Other applying ends (including class_kind 'unknown'
+-- or unread) end the lines until a later statement shows the symbol again (an
+-- exchange delisting to OTC, a stale 12(g) registration).
 -- A restated end that applies only as restated is public from the amendment's
 -- knowledge date (available_on); one that no longer applies as restated is
 -- withdrawn from it. p_current (lineage): ends filed by D, judged with every
@@ -421,6 +425,18 @@ WITH horizon AS (
     WHERE o.cik = p_cik
     GROUP BY o.adsh
     HAVING bool_or(o.security_kind IN ('equity', 'depositary'))
+), totals AS (
+    -- each filing's cover share count: its issuer total, else its class counts
+    SELECT c.adsh,
+           max(CASE WHEN p_current THEN c.source_available_on ELSE c.available_on END)
+               AS known_on,
+           max(c.accepted) AS accepted,
+           COALESCE(max(c.shares) FILTER (WHERE c.class_key = ''),
+                    sum(c.shares) FILTER (WHERE c.class_key <> '')) AS total
+    FROM horizon h
+    CROSS JOIN LATERAL sec_share_counts_at(h.on_date, p_current) c
+    WHERE c.cik = p_cik
+    GROUP BY c.adsh
 ), events AS (
     SELECT e.*,
            EXISTS (
@@ -479,7 +495,15 @@ WITH horizon AS (
     WHERE a.effective AND a.applying
 )
 SELECT a.effective_on, a.filed, a.form, a.adsh,
-       a.whole_equity AND (
+       a.whole_equity AND NOT COALESCE((
+           SELECT after_end.total BETWEEN 0.8 * before_end.total AND 1.25 * before_end.total
+           FROM (SELECT t.total FROM totals t WHERE t.known_on < a.available_on
+                 ORDER BY t.known_on DESC, t.accepted DESC NULLS LAST, t.adsh DESC
+                 LIMIT 1) before_end,
+                (SELECT t.total FROM totals t WHERE t.known_on >= a.available_on
+                 ORDER BY t.known_on, t.accepted NULLS FIRST, t.adsh
+                 LIMIT 1) after_end), false)
+       AND (
            (a.form = '25-NSE' AND COALESCE(a.extinguished, false))
            OR (a.form IN ('15-12B', '15-12G', '15-15D') AND EXISTS (
                SELECT 1 FROM applies d
