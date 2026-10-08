@@ -18,7 +18,8 @@ Sources (public, fetched with the SEC User-Agent, one request at a time):
   (``Archives/edgar/data/<cik>/<adsh>.txt``), read for the class, rule provision
   and exchange they state, cached on disk one file per accession.
 
-Rules (schemas/sec_ticker_cik_history_v1.sql documents the tables):
+Rules (schemas/sec_ticker_cik_history_v1.sql documents the tables, _v2.sql the
+functions it changes):
 
 * only periodic and current reports carry cover evidence (PERIODIC_FORMS:
   10-K, 10-Q, 8-K, 20-F, 40-F, 6-K, 10-KT, 10-QT and their amendments);
@@ -79,7 +80,8 @@ EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{folder}/{adsh
 FILING_SPACING_S = 0.11
 # SEC fair access allows 10 requests/s; downloads run one at a time, spaced.
 DOWNLOAD_SPACING_S = 0.5
-SCHEMA_PATH = ROOT / "schemas" / "sec_ticker_cik_history_v1.sql"
+SCHEMA_PATHS = (ROOT / "schemas" / "sec_ticker_cik_history_v1.sql",
+                ROOT / "schemas" / "sec_ticker_cik_history_v2.sql")
 
 SYMBOL_TAG = "TradingSymbol"
 TITLE_TAG = "Security12bTitle"
@@ -1632,24 +1634,35 @@ def cover_ciks(conn) -> set[int]:
 # Database
 # --------------------------------------------------------------------------- #
 def apply_schema(dsn: str | None) -> None:
-    """Local/dev only: production applies the governed DDL by hand."""
+    """Local/dev only: production applies the governed DDL by hand, v1 then v2."""
     with connect(dsn, autocommit=True) as conn:
-        conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+        for path in SCHEMA_PATHS:
+            conn.execute(path.read_text(encoding="utf-8"))
 
 
 def require_schema(conn) -> None:
-    present = conn.execute(
+    """Refuse a database without the governed tables (v1) or without the v2
+    functions this loader's rows are judged by (sec_issuer_end_events with
+    effective_on)."""
+    present, v2 = conn.execute(
         "SELECT to_regclass('sec_ticker_cik_observations') IS NOT NULL "
         "AND to_regclass('sec_cover_share_counts') IS NOT NULL "
         "AND to_regclass('sec_registration_events') IS NOT NULL "
         "AND to_regclass('sec_ticker_cik_packages') IS NOT NULL "
         "AND to_regclass('sec_ticker_cik_package_members') IS NOT NULL "
-        "AND to_regclass('sec_ticker_cik_package_facts') IS NOT NULL"
-    ).fetchone()[0]
+        "AND to_regclass('sec_ticker_cik_package_facts') IS NOT NULL, "
+        "COALESCE((SELECT 'effective_on' = ANY(p.proargnames) FROM pg_catalog.pg_proc p "
+        "WHERE p.oid = to_regprocedure('sec_issuer_end_events(bigint,date,boolean)')), false)"
+    ).fetchone()
     if not present:
         raise RuntimeError(
             "sec_ticker_cik_observations is missing: apply "
-            "schemas/sec_ticker_cik_history_v1.sql first"
+            "schemas/sec_ticker_cik_history_v1.sql, then schemas/sec_ticker_cik_history_v2.sql"
+        )
+    if not v2:
+        raise RuntimeError(
+            "the sec_ticker_cik_history functions are v1: apply "
+            "schemas/sec_ticker_cik_history_v2.sql first"
         )
 
 

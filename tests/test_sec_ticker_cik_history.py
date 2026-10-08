@@ -26,8 +26,14 @@ import pytest
 from scripts import load_sec_ticker_cik_history as loader
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v1.sql").read_text(encoding="utf-8")
+V1_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v1.sql").read_text(encoding="utf-8")
+V2_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v2.sql").read_text(encoding="utf-8")
+# A fresh installation applies v1, then v2 (production applied v1 on 2026-10-08).
+SCHEMA_SQL = V1_SQL + V2_SQL
 ROLLBACK_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v1.rollback.sql").read_text(
+    encoding="utf-8"
+)
+V2_ROLLBACK_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v2.rollback.sql").read_text(
     encoding="utf-8"
 )
 FILINGS = ROOT / "tests" / "fixtures" / "sec_ticker_cik_history" / "filings"
@@ -1200,15 +1206,16 @@ def _span(conn, ticker: str, cik: int, class_key: str | None = None) -> list[tup
 
 
 def _ends(conn, cik: int, as_of: str) -> list[tuple]:
+    """(form, the date the end takes effect, definitive) of the ends at D."""
     return conn.execute(
-        "SELECT form, available_on, definitive FROM sec_issuer_end_events(%s, %s) "
-        "ORDER BY available_on, adsh", (cik, as_of),
+        "SELECT form, effective_on, definitive FROM sec_issuer_end_events(%s, %s) "
+        "ORDER BY effective_on, adsh", (cik, as_of),
     ).fetchall()
 
 
 def test_schema_reapplies_and_rolls_back_cleanly(schema_dsn) -> None:
     conn, _ = schema_dsn
-    conn.execute(SCHEMA_SQL)  # idempotent
+    conn.execute(V2_SQL)  # idempotent (v1 cannot replace the functions v2 reshaped)
     _observe(conn, 732717, "T", "2024-01-10")
     assert conn.execute("SELECT ticker_key, available_on FROM sec_ticker_cik_observations"
                         ).fetchone() == ("T", d(2024, 1, 11))
@@ -2228,6 +2235,150 @@ def test_a_form_15_for_one_class_of_a_multi_class_issuer_ends_no_line(schema_dsn
     assert _issuer(conn, "MCB", "2024-06-01")[:2] == ("ended", None)
 
 
+@pytest.mark.parametrize("form", loader.END_FORMS)
+@pytest.mark.parametrize("kind", ["equity", "unknown", None])
+def test_no_partial_end_form_ends_a_line_of_a_two_symbol_issuer(
+    schema_dsn, form: str, kind: str | None,
+) -> None:
+    """Codex thread 4222924619, re-checked for every end form: one that names
+    one class (or none, or was not read) of an issuer listing two symbols ends
+    neither line, as filed or as restated."""
+    conn, _ = schema_dsn
+    a = _observe(conn, 98, "MCA", "2024-02-10", class_key=CLASS_A)
+    _observe(conn, 98, "MCB", "2024-02-10", class_key=CLASS_B, adsh=a)
+    _event(conn, 98, form, "2024-03-01", kind=kind, count=1, venue_kind="primary")
+    _event(conn, 98, f"{form}/A", "2024-03-20", kind="equity", count=1, venue_kind="primary",
+           effect="restates")
+    assert _ends(conn, 98, "2024-04-01") == []
+    assert [_issuer(conn, t, "2024-04-01")[:2] for t in ("MCA", "MCB")] == [
+        ("resolved", 98), ("resolved", 98)]
+
+
+def test_a_form_15_for_an_unlisted_class_leaves_the_listed_class(schema_dsn) -> None:
+    """W1 re-gate (P2): the cover lists class A (AAA) and counts an unlisted class
+    B; a 15-12G or 15-15D naming one equity class may terminate B's registration
+    and must not close A. A delisting (25, 25-NSE) or a 15-12B concerns a listed
+    class, so one naming one class ends the one listed line."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 72, "AAA", "2024-02-14", class_key=CLASS_A)
+    _count(conn, 72, CLASS_A, "2024-02-13", 600, "2024-02-14", adsh=q)
+    _count(conn, 72, CLASS_B, "2024-02-13", 400, "2024-02-14", adsh=q)
+    _event(conn, 72, "15-12G", "2024-03-01", kind="equity", count=1)
+    _event(conn, 72, "15F-15D", "2024-03-04", kind="equity", count=1)
+    assert _ends(conn, 72, "2024-04-01") == []
+    assert _issuer(conn, "AAA", "2024-04-01")[:2] == ("resolved", 72)
+    _event(conn, 72, "15-15D", "2024-04-10", kind="equity", count=2)
+    assert _ends(conn, 72, "2024-05-01") == [("15-15D", d(2024, 4, 11), False)]
+    assert _issuer(conn, "AAA", "2024-05-01")[:2] == ("ended", None)
+    q = _observe(conn, 73, "BBB", "2024-02-14", class_key=CLASS_A)
+    _count(conn, 73, CLASS_A, "2024-02-13", 600, "2024-02-14", adsh=q)
+    _count(conn, 73, CLASS_B, "2024-02-13", 400, "2024-02-14", adsh=q)
+    _event(conn, 73, "25-NSE", "2024-03-01", kind="equity", count=1, venue_kind="primary")
+    assert _issuer(conn, "BBB", "2024-04-01")[:2] == ("ended", None)
+
+
+def test_a_count_stated_before_the_end_does_not_prove_the_base_continued(
+    schema_dsn,
+) -> None:
+    """Codex thread 4222086445: American Greetings' class A was extinguished and
+    both classes deregistered. A 10-Q filed after the end but stating its count as
+    of before the merger is not the post-end shareholder base; the first count
+    stated after the end (100 shares) is, so the end is definitive."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 5133, "AM", "2013-07-10")
+    _count(conn, 5133, CLASS_A, "2013-07-01", 29_294_198, "2013-07-10", adsh=q)
+    _count(conn, 5133, CLASS_B, "2013-07-01", 2_912_167, "2013-07-10", adsh=q)
+    _event(conn, 5133, "25-NSE", "2013-08-12", kind="equity", count=1, extinguished=True,
+           venue_kind="primary")
+    _event(conn, 5133, "15-12B", "2013-08-22", kind="equity", count=2, venue_kind="unknown")
+    late = _observe(conn, 5133, "AM", "2013-09-05")  # the quarter before the merger
+    _count(conn, 5133, CLASS_A, "2013-07-31", 29_294_200, "2013-09-05", adsh=late)
+    _count(conn, 5133, CLASS_B, "2013-07-31", 2_912_167, "2013-09-05", adsh=late)
+    after = _observe(conn, 5133, "AM", "2013-10-10")
+    _count(conn, 5133, "", "2013-10-01", 100, "2013-10-10", adsh=after)
+    assert _ends(conn, 5133, "2013-11-01") == [
+        ("25-NSE", d(2013, 8, 13), False), ("15-12B", d(2013, 8, 23), True),
+    ]
+    assert _issuer(conn, "AM", "2013-11-01")[:2] == ("ended", None)
+
+
+def test_a_registration_of_another_class_is_no_transfer(schema_dsn, tmp_path: Path) -> None:
+    """Codex thread 4223111409, real Forms 8-A read by the loader. Statera
+    (CIK 1318641) registered its Series B Preferred Stock (8-A12G) the day Nasdaq
+    delisted its common stock: no transfer, the delisting ends the hold. PepsiCo's
+    8-A12B of its common stock beside its Form 25 is a transfer; its 8-A12B of
+    notes beside a Form 25 of the common is not."""
+    conn, dsn = schema_dsn
+    _observe(conn, 1318641, "STAB", "2022-11-14")
+    _observe(conn, 77476, "PEP", "2017-10-04")
+    _observe(conn, 77477, "PEPX", "2018-10-04")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    statera, common, notes = ("0001437749-23-002250", "0000950103-17-012545",
+                              "0000950103-18-014472")
+    for adsh in (statera, common, notes):
+        (docs / f"{adsh}.txt").write_bytes((FILINGS / f"{adsh}.txt").read_bytes())
+    # The notes' 8-A, filed for a second CIK to pair it with a common stock's Form 25.
+    index = _index(tmp_path / "2023QTR1.form.gz",
+                   ("8-A12G", 1318641, "2023-02-01", statera),
+                   ("8-A12B", 77476, "2017-12-19", common),
+                   ("8-A12B", 77477, "2018-12-07", notes))
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
+               documents=loader.EventDocuments(docs, None), reconciled_on=d(2023, 3, 1))
+    assert conn.execute(
+        "SELECT cik, form, class_kind FROM sec_registration_events ORDER BY cik"
+    ).fetchall() == [(77476, "8-A12B", "equity"), (77477, "8-A12B", "other"),
+                     (1318641, "8-A12G", "other")]
+    _event(conn, 1318641, "25-NSE", "2023-02-01", kind="equity", extinguished=False,
+           venue_kind="primary")
+    _event(conn, 77476, "25", "2017-12-19", kind="equity", venue_kind="primary")
+    _event(conn, 77477, "25", "2018-12-07", kind="equity", venue_kind="primary")
+    assert _issuer(conn, "STAB", "2023-02-10")[:2] == ("ended", None)
+    assert _issuer(conn, "PEP", "2018-01-02")[:2] == ("resolved", 77476)
+    assert _issuer(conn, "PEPX", "2019-01-02")[:2] == ("ended", None)
+    # A registration that was not read (a Form 10) still corroborates a transfer.
+    _observe(conn, 4343, "TENX", "2021-01-10")
+    _event(conn, 4343, "10-12B", "2021-02-01")
+    _event(conn, 4343, "25", "2021-02-05", kind="equity", venue_kind="primary")
+    assert _issuer(conn, "TENX", "2021-03-01")[:2] == ("resolved", 4343)
+
+
+def test_a_reused_tickers_earlier_non_listed_holder_keeps_its_run(schema_dsn) -> None:
+    """Codex thread 4223111418: an earlier holder tagged its symbol only on rows
+    read as debt; years later another issuer lists it. The equity-first preference
+    applies over time: the earlier holder's rows count until a listed row shows
+    the symbol, so its lineage run survives the reuse."""
+    conn, _ = schema_dsn
+    for filed in ("2012-05-10", "2013-05-10", "2014-05-09"):
+        _observe(conn, 501, "OLDT", filed, kind="debt", class_key="LongtermDebtType=Notes;")
+    for filed in ("2016-03-01", "2016-06-01"):
+        _observe(conn, 502, "OLDT", filed)
+    notes = "LongtermDebtType=Notes;"
+    assert _span(conn, "OLDT", 501) == [
+        (notes, d(2012, 5, 11), None, None, d(2014, 5, 10), None, d(2016, 3, 2)),
+    ]
+    assert _span(conn, "OLDT", 502)[0][:2] == ("", d(2016, 3, 2))
+    assert _issuer(conn, "OLDT", "2013-06-01")[:2] == ("resolved", 501)
+    assert _issuer(conn, "OLDT", "2016-07-01")[:2] == ("resolved", 502)
+
+
+def test_an_undimensioned_total_is_no_count_of_two_symbols(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Codex thread 4222086431: "JWA/JWB" on one undimensioned fact beside the
+    filing's total; v1 read one class and sized either symbol with the total."""
+    conn, dsn = schema_dsn
+    path = _write_package(
+        tmp_path / "2024q1_notes.zip",
+        [_sub(A1, 61, "10-Q", "20240306", "2024-03-06 08:00:00.0")],
+        [_fact(A1, "TradingSymbol", "JWA/JWB")],
+        [_shares(A1, "55000000")],
+    )
+    loader.run([path], dsn=dsn, dry_run=False, reconciled_on=d(2024, 4, 1))
+    assert [_ticker_shares(conn, t, 61, "2024-04-01")[0] for t in ("JWA", "JWB")] == [
+        "missing", "missing"]
+
+
 def test_a_stray_claim_inside_another_holders_claims_does_not_count(schema_dsn) -> None:
     """Insider cross-check, item 11: a misfiled 10-Q put ANDE under a shell CIK
     (1650205) while The Andersons (821026) reported it every quarter."""
@@ -2491,7 +2642,8 @@ def test_readers_get_select_and_execute_only(schema_dsn) -> None:
     for role in (*created, stranger):
         conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
     try:
-        conn.execute(SCHEMA_SQL)
+        # With the roles present: back to v1, v1 again (tables), then v2 (routines).
+        conn.execute(V2_ROLLBACK_SQL + SCHEMA_SQL)
         for table in TABLES:
             relation = f"{schema}.{table}"
             assert conn.execute(
@@ -2695,12 +2847,12 @@ def test_index_loads_read_the_end_filings_of_cover_ciks(schema_dsn, tmp_path: Pa
                        reconciled_on=d(2013, 10, 1))
     assert {k: stats[0][k] for k in loader.CLASS_STAT_KEYS} == {
         "class_equity": 2, "class_other": 0, "class_unknown": 0, "class_carried": 0,
-        "class_unread": 0, "filings_missing": 0,
+        "class_reused": 0, "class_unread": 0, "filings_missing": 0,
     }
     assert stats[1] == {"package": "derive_event_classes", "derived": 0, "class_equity": 0,
                         "class_other": 0, "class_unknown": 0, "class_carried": 0,
-                        "class_unread": 0, "filings_missing": 0, "filings_fetched": 0,
-                        "filings_failed": 0}
+                        "class_reused": 0, "class_unread": 0, "filings_missing": 0,
+                        "filings_fetched": 0, "filings_failed": 0, "filings_rejected": 0}
     assert conn.execute(
         "SELECT cik, form, class_kind, class_count, extinguished, venue_kind, parser_version "
         "FROM sec_registration_events ORDER BY filed"
@@ -2711,7 +2863,7 @@ def test_index_loads_read_the_end_filings_of_cover_ciks(schema_dsn, tmp_path: Pa
     ]
     again = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], documents=documents,
                        reconciled_on=d(2013, 11, 1))
-    assert (again[0]["inserted"], again[0]["retired"]) == (0, 0)
+    assert (again[0]["inserted"], again[0]["retired"], again[0]["class_reused"]) == (0, 0, 2)
 
 
 def test_end_filings_of_a_cik_whose_covers_were_all_retired_are_still_read(
@@ -2751,7 +2903,7 @@ def test_a_parser_change_re_derives_events_as_corrections(
     documents = loader.EventDocuments(docs, None)
     assert loader.derive_event_classes(conn, documents, reconciled_on=d(2013, 10, 1)) == {
         "derived": 1, "class_equity": 1, "class_other": 0, "class_unknown": 0,
-        "class_carried": 0, "class_unread": 0, "filings_missing": 0,
+        "class_carried": 0, "class_reused": 0, "class_unread": 0, "filings_missing": 0,
     }
     current = loader.EVENT_PARSER_VERSION
     monkeypatch.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_next")
@@ -2772,12 +2924,15 @@ def test_a_parser_change_re_derives_events_as_corrections(
     assert (stats[0]["inserted"], stats[0]["retired"], stats[1]["derived"]) == (0, 0, 0)
 
 
-def test_an_end_re_derived_years_later_is_judged_against_the_covers_before_it(
+def test_an_end_re_derived_years_later_takes_effect_at_its_filing(
     schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex thread 4223111427: a parser change re-derives an old end as a
     correction known from its reconciliation date. It is still judged against the
-    issuer's covers filed before it, not the class structure of years later."""
+    issuer's covers filed before it, not the class structure of years later, and
+    it takes effect at its filing, not at its re-derivation: covers filed after
+    the end keep the hold they reopened (v1 dated the end 2020-06-01 and read
+    SOLO as ended in mid-2020)."""
     conn, dsn = schema_dsn
     _observe(conn, 4242, "SOLO", "2016-01-10")
     docs = tmp_path / "docs"
@@ -2789,14 +2944,22 @@ def test_an_end_re_derived_years_later_is_judged_against_the_covers_before_it(
     loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], documents=documents,
                reconciled_on=d(2016, 4, 1))
     # The issuer registers again, now with two listed classes.
-    two = _observe(conn, 4242, "SOLO", "2018-05-01", class_key=CLASS_A)
-    _observe(conn, 4242, "DUO", "2018-05-01", class_key=CLASS_B, adsh=two)
+    for filed in ("2018-05-01", "2019-09-02"):
+        two = _observe(conn, 4242, "SOLO", filed, class_key=CLASS_A)
+        _observe(conn, 4242, "DUO", filed, class_key=CLASS_B, adsh=two)
     assert _ends(conn, 4242, "2019-01-01") == [("15-12G", d(2016, 3, 2), False)]
     monkeypatch.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_next")
     assert loader.derive_event_classes(conn, documents, reconciled_on=d(2020, 6, 1))[
         "derived"] == 1
     assert _ends(conn, 4242, "2019-01-01") == [("15-12G", d(2016, 3, 2), False)]
-    assert _ends(conn, 4242, "2021-01-01") == [("15-12G", d(2020, 6, 1), False)]
+    assert _ends(conn, 4242, "2021-01-01") == [("15-12G", d(2016, 3, 2), False)]
+    # Visible from its re-derivation; in effect from its filing.
+    assert conn.execute(
+        "SELECT available_on, effective_on FROM sec_issuer_end_events(4242, '2021-01-01')"
+    ).fetchall() == [(d(2020, 6, 1), d(2016, 3, 2))]
+    for as_of in ("2020-05-31", "2020-07-01"):
+        assert _issuer(conn, "SOLO", as_of)[:2] == ("resolved", 4242), as_of
+    assert _line(conn, 4242, CLASS_A, "2020-07-01")[0] == "resolved"
 
 
 def test_a_fact_dropped_and_carried_again_is_known_again_from_its_return(
@@ -2843,10 +3006,11 @@ def test_a_fact_dropped_and_carried_again_is_known_again_from_its_return(
 
 
 def test_an_unreadable_filing_carries_its_derived_class_forward(
-    schema_dsn, tmp_path: Path,
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex thread 4221061363: under --no-fetch with a cache miss the event keeps
-    its class; only a parse replaces it."""
+    its class; only a parse replaces it. Read by this parser version, it is
+    carried without a read (Codex thread 4223252991)."""
     conn, dsn = schema_dsn
     _observe(conn, 5133, "AM", "2013-07-10")
     docs = tmp_path / "docs"
@@ -2857,15 +3021,25 @@ def test_an_unreadable_filing_carries_its_derived_class_forward(
                    ("25-NSE", 5133, "2013-08-12", "0000876661-13-000657"))
     loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
                documents=loader.EventDocuments(docs, None), reconciled_on=d(2013, 10, 1))
+    read_by = loader.EVENT_PARSER_VERSION
+    empty = tmp_path / "empty"
     stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
-                       documents=loader.EventDocuments(tmp_path / "empty", None),
+                       documents=loader.EventDocuments(empty, None),
                        reconciled_on=d(2013, 11, 1))
+    assert (stats[0]["inserted"], stats[0]["retired"], stats[0]["class_reused"]) == (0, 0, 1)
+    assert (stats[0]["filings_missing"], stats[1]["derived"]) == (0, 0)
+    # Under another parser version the filing must be read again; missing, the
+    # class read before is carried and nothing changes.
+    monkeypatch.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_next")
+    stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
+                       documents=loader.EventDocuments(empty, None),
+                       reconciled_on=d(2013, 12, 1))
     assert (stats[0]["inserted"], stats[0]["retired"]) == (0, 0)
     assert (stats[0]["class_carried"], stats[0]["filings_missing"]) == (1, 1)
-    assert (stats[1]["derived"], stats[1]["filings_missing"]) == (0, 0)
+    assert (stats[1]["derived"], stats[1]["filings_missing"]) == (0, 1)
     assert conn.execute(
         "SELECT class_kind, parser_version, retired_on FROM sec_registration_events"
-    ).fetchall() == [("equity", loader.EVENT_PARSER_VERSION, None)]
+    ).fetchall() == [("equity", read_by, None)]
 
 
 def _month(path: Path, filings: list[tuple[str, int, str, str]]) -> Path:
@@ -2973,7 +3147,7 @@ def test_an_event_listed_again_keeps_the_class_read_before(
     stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
                        documents=loader.EventDocuments(tmp_path / "empty", None),
                        reconciled_on=d(2013, 12, 1))
-    assert (stats[0]["inserted"], stats[0]["class_carried"]) == (1, 1)
+    assert (stats[0]["inserted"], stats[0]["class_reused"]) == (1, 1)
     assert conn.execute(
         "SELECT class_kind, available_on, retired_on FROM sec_registration_events "
         "WHERE cik = 5133 ORDER BY id"
