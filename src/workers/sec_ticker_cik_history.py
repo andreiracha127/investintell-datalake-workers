@@ -106,10 +106,13 @@ def _republished(conn, client, url: str, target: Path,
 
 
 def _packages_to_load(
-    conn, client, urls: list[str], workdir: Path,
+    conn, client, urls: list[str], workdir: Path, *, keep: bool = True,
 ) -> tuple[list[tuple[str, bool]], dict[str, Validators]]:
     """(url, republished) of every package to load, oldest first, and the
-    validators of the packages this check already downloaded into ``workdir``.
+    validators of the republished packages this check downloaded into
+    ``workdir`` (they are loaded from there). Without ``keep`` (no persistent
+    cache) a download whose digest matches the loaded version is deleted at once,
+    so checking every loaded package never holds them all on disk.
     New: listed and not loaded. Republished: loaded, current (not superseded) and
     listed, and different from the loaded version (every such package is
     checked, not only the newest). A monthly package whose quarterly is loaded
@@ -133,12 +136,15 @@ def _packages_to_load(
         name = names[url]
         if name not in current or history.covering_quarter(name) in quarters:
             continue  # not loaded, or about to be superseded by its quarterly
-        republished, validators = _republished(conn, client, url, workdir / name,
-                                               current[name])
+        target = workdir / name
+        downloaded = not target.exists()
+        republished, validators = _republished(conn, client, url, target, current[name])
         if republished:
             todo.append((url, True))
             if validators is not None:
                 fetched[name] = validators
+        elif not keep and downloaded:
+            target.unlink(missing_ok=True)
     todo.sort(key=lambda item: history.package_sort_key(Path(names[item[0]])))
     return todo, fetched
 
@@ -170,7 +176,7 @@ def run(
             history.require_schema(conn)
             stats["resumed_supersession"] = history.resume_supersession(conn)
             todo, fetched = _packages_to_load(conn, client, history.list_package_urls(client),
-                                              workdir)
+                                              workdir, keep=cache is not None)
             stats["backlog"] = len(todo)
             stats["republished"] = sorted(url.rsplit("/", 1)[1] for url, again in todo if again)
             for url, _ in todo[:limit] if limit else todo:

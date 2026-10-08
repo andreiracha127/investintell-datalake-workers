@@ -209,8 +209,8 @@ PLACEHOLDER_KEYS = frozenset({
     "NOSYMBOL", "NOTRADINGSYMBOL", "NOTLISTED", "NOTTRADED", "UNLISTED", "TBD",
 })
 # XBRL booleans typed as a symbol ("true", "True", "False": 107 facts of a dozen
-# filers) are placeholders in that lexical form only: an all-uppercase TRUE is
-# TrueCar's symbol (all 94 FSN facts written TRUE are TrueCar's).
+# filers) are placeholders. An all-uppercase TRUE is TrueCar's symbol (all 94 FSN
+# facts written TRUE are TrueCar's); FALSE in any case is a placeholder.
 BOOLEAN_KEYS = frozenset({"TRUE", "FALSE"})
 _FILLER_RE = re.compile(r"^X{3,}$")
 MAX_KEY_LENGTH = 12
@@ -425,8 +425,10 @@ def is_placeholder(value: str) -> bool:
     (None, N/A, "Not Applicable"), a filler (XXXXX), or an XBRL boolean in its
     lexical form ("true", "False"; TRUE is a symbol)."""
     key = ticker_key(_SEPARATORS_RE.sub("", value))
-    if key in BOOLEAN_KEYS:
+    if key == "TRUE":
         return not value.strip().isupper()
+    if key in BOOLEAN_KEYS:
+        return True
     return key in PLACEHOLDER_KEYS or bool(_FILLER_RE.match(key))
 
 
@@ -1655,9 +1657,13 @@ def cover_ciks(conn) -> set[int]:
 # Database
 # --------------------------------------------------------------------------- #
 def apply_schema(dsn: str | None) -> None:
-    """Local/dev only: production applies the governed DDL by hand, v1 then v2."""
+    """Local/dev only: production applies the governed DDL by hand, v1 then v2.
+    v1 is applied only to a database without its tables (v1 cannot replace the
+    functions v2 reshaped); v2 is idempotent and always applied."""
     with connect(dsn, autocommit=True) as conn:
-        for path in SCHEMA_PATHS:
+        base = conn.execute(
+            "SELECT to_regclass('sec_ticker_cik_observations') IS NOT NULL").fetchone()[0]
+        for path in SCHEMA_PATHS[1:] if base else SCHEMA_PATHS:
             conn.execute(path.read_text(encoding="utf-8"))
 
 

@@ -164,6 +164,7 @@ def test_real_symbols_that_look_like_placeholders_or_venues_are_kept(
         ("true", ([], ["placeholder"])),
         ("True", ([], ["placeholder"])),  # New York City REIT's boolean
         ("False", ([], ["placeholder"])),
+        ("FALSE", ([], ["placeholder"])),  # Codex thread 4224967446: only TRUE is a symbol
         ("NA", ([], ["placeholder"])),  # TETRA, CenterPoint and others: not a symbol
         ("NONE", ([], ["placeholder"])),
         # A venue alone is no symbol (Box Ships' OTCQB, Natura's NYSE, Zion's OTCQX).
@@ -2349,6 +2350,21 @@ def test_a_registration_of_another_class_is_no_transfer(schema_dsn, tmp_path: Pa
     assert _issuer(conn, "TENX", "2021-03-01")[:2] == ("resolved", 4343)
 
 
+def test_a_later_holder_seen_only_on_preferred_rows_is_not_hidden(schema_dsn) -> None:
+    """Codex thread 4224967437: an issuer listed T years before; a later issuer
+    shows T only on a preferred row. Another CIK's listed row hides a non-listed
+    one only within the 400 days before it (a stray notes tag beside the
+    holder's common, test_notes_lines_tagged_with_the_common_symbol_never_decide)."""
+    conn, _ = schema_dsn
+    for filed in ("2010-05-10", "2011-05-10"):
+        _observe(conn, 601, "PRF", filed)
+    for filed in ("2018-05-10", "2018-08-10"):
+        _observe(conn, 602, "PRF", filed, kind="preferred",
+                 class_key="ClassOfStock=SeriesAPreferredStock;")
+    assert _issuer(conn, "PRF", "2018-09-01")[:2] == ("resolved", 602)
+    assert _span(conn, "PRF", 602)[0][1] == d(2018, 5, 11)
+
+
 def test_a_reused_tickers_earlier_non_listed_holder_keeps_its_run(schema_dsn) -> None:
     """Codex thread 4223111418: an earlier holder tagged its symbol only on rows
     read as debt; years later another issuer lists it. The equity-first preference
@@ -2535,6 +2551,34 @@ def test_an_end_naming_a_compound_class_ends_that_class_only(schema_dsn) -> None
            description="Class B-3 Common Stock")
     assert [_issuer(conn, t, "2024-03-03")[0] for t in ("CTWO", "CTHREE")] == [
         "resolved", "ended"]
+
+
+def test_roman_classes_and_attached_rights_scope_an_end(schema_dsn) -> None:
+    """Codex threads 4224967423 and 4224967418: an end naming Class III ends Class
+    III only; a common stock's end that mentions its attached preferred purchase
+    rights names no preferred, so a listed preferred line stays."""
+    conn, _ = schema_dsn
+    q = _observe(conn, 104, "ROMB", "2024-02-01", class_key="ClassOfStock=ClassIICommonStock;",
+                 title="Class II Common Stock")
+    _observe(conn, 104, "ROMC", "2024-02-01", class_key="ClassOfStock=ClassIIICommonStock;",
+             title="Class III Common Stock", adsh=q)
+    _event(conn, 104, "25-NSE", "2024-03-01", kind="equity", venue_kind="primary",
+           description="Class III Common Stock")
+    assert [_issuer(conn, t, "2024-03-03")[0] for t in ("ROMB", "ROMC")] == [
+        "resolved", "ended"]
+    q = _observe(conn, 105, "RIG", "2024-02-01", title="Common Stock")
+    _observe(conn, 105, "RIG-PA", "2024-02-01", kind="preferred", adsh=q,
+             class_key="ClassOfStock=SeriesAPreferredStock;", title="Series A Preferred Stock")
+    _event(conn, 105, "25-NSE", "2024-03-01", kind="equity", venue_kind="primary",
+           extinguished=True,
+           description="Common Stock and associated Preferred Stock Purchase Rights")
+    assert conn.execute(
+        "SELECT named_kinds FROM sec_issuer_end_events(105, '2024-03-03')").fetchall() == [
+        ([],)]
+    _observe(conn, 105, "RIG-PA", "2024-04-01", kind="preferred",
+             class_key="ClassOfStock=SeriesAPreferredStock;", title="Series A Preferred Stock")
+    assert _issuer(conn, "RIG", "2024-04-03")[0] == "ended"
+    assert _issuer(conn, "RIG-PA", "2024-04-03")[:2] == ("resolved", 105)
 
 
 def test_a_definitive_end_is_not_reopened_by_a_titled_cover(schema_dsn) -> None:
@@ -3083,6 +3127,17 @@ def test_a_parser_correction_restates_the_reading_from_the_filing_date(
         "WHERE retired_on = '2024-10-01'").fetchall() == [("source",)]
     assert _issuer(conn, "JWB", "2024-09-15")[:2] == ("resolved", 61)  # as known then
     assert _issuer(conn, "JWB", "2024-10-01")[0] == "missing"
+
+
+def test_apply_schema_twice_reapplies_only_v2(schema_dsn) -> None:
+    """Codex thread 4224967442: --apply-schema on a database that has v2 applies
+    v2 again (idempotent), never v1, which cannot replace the reshaped functions."""
+    conn, dsn = schema_dsn
+    _observe(conn, 1, "AAA", "2024-01-10")
+    loader.apply_schema(dsn)
+    loader.apply_schema(dsn)
+    loader.require_schema(conn)
+    assert conn.execute("SELECT count(*) FROM sec_ticker_cik_observations").fetchone() == (1,)
 
 
 def test_v2_migrates_a_loaded_v1_schema_in_place_and_rolls_back() -> None:
@@ -4069,6 +4124,45 @@ def test_a_package_recorded_without_validators_is_downloaded_once(
     calls.clear()
     assert worker.run(dsn, calc_date="2024-11-15", client=client)["state"] == "noop"
     assert not [c for c in calls if c[0] == "GET" and c[1].startswith(FSN_BASE)]
+
+
+def test_a_check_without_a_cache_holds_no_download(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4224967431: without a persistent cache, each digest-check
+    download is deleted at once, so checking every loaded package never holds
+    more than one package of disk."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    build, work = tmp_path / "build", tmp_path / "work"
+    build.mkdir()
+    work.mkdir()
+    packages = {
+        "2024q1_notes.zip": _stored_month(build, "2024q1_notes.zip", "AA",
+                                          "0000000004-24-000001", "20240305"),
+        "2024_10_notes.zip": _stored_month(build, "2024_10_notes.zip", "TT"),
+    }
+    stamps = {name: "" for name in packages}  # the SEC sends no validator
+    for name in packages:
+        loader.load_package(conn, loader.parse_package(build / name),
+                            reconciled_on=d(2024, 11, 1))
+    client, _ = _fake_sec(tmp_path, packages, {}, last_modified=stamps)
+    sizes = []
+    real_republished = worker._republished
+
+    def republished(*args, **kwargs):
+        result = real_republished(*args, **kwargs)
+        sizes.append(len(list(work.glob("*.zip"))))
+        return result
+
+    monkeypatch.setattr(worker, "_republished", republished)
+    urls = [FSN_BASE + name for name in packages]
+    todo, fetched = worker._packages_to_load(conn, client, urls, work, keep=False)
+    assert (todo, fetched) == ([], {})
+    assert sizes == [1, 1] and list(work.glob("*.zip")) == []
 
 
 def test_a_cached_copy_of_an_unrecorded_package_is_never_loaded(

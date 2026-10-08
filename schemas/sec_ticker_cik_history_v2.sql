@@ -41,10 +41,13 @@
 --   later carries the same symbol (Google's GOOG before and after its 2014 class
 --   C); in lineage, such a sole-class line is followed through the issuer's later
 --   complete filings, so the recapitalization ends its run.
--- * A non-listed row (debt, preferred...) showing a ticker is evidence only while
---   no listed row showing it was known at or before it, per holder and over time,
---   not across the ticker's whole history: an earlier holder that tagged its
---   ticker only on non-listed rows keeps its run when a later issuer reuses it.
+-- * A non-listed row (debt, preferred...) showing a ticker is evidence unless a
+--   listed row showing it was known at or before it: one of the same CIK at any
+--   time, or one of another CIK within the 400 days before (that issuer then held
+--   the ticker), not across the ticker's whole history: an earlier holder that
+--   tagged its ticker only on non-listed rows keeps its run when a later issuer
+--   reuses it, and a later holder seen only on a preferred row is not hidden by
+--   an issuer that listed the ticker years before.
 --
 -- * A parser correction is a restatement of our reading, not a change of the
 --   public record. The fact tables record why a version was retired
@@ -375,8 +378,9 @@ WITH horizon AS (
     SELECT o.adsh, o.class_key,
            max(lower(replace(COALESCE(
                substring(o.security_title
-                         from '(?i)\m(?:class|series)\s+([a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)\M'),
-               substring(o.class_key from '(?:Class|Series)([A-Z][0-9]?|[0-9]{1,2})(?![a-z])')),
+                         from '(?i)\m(?:class|series)\s+(viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)\M'),
+               substring(o.class_key
+                         from '(?:Class|Series)(VIII|VII|III|[A-Z][0-9]?|[0-9]{1,2})(?![a-z])')),
                '-', ''))) AS label
     FROM horizon h
     CROSS JOIN LATERAL sec_observations_at(h.on_date, p_current) o
@@ -454,8 +458,9 @@ WITH horizon AS (
             SELECT DISTINCT lower(replace(l.label, '-', ''))
             FROM regexp_matches(
                 COALESCE(v.class_description, ''),
-                '(?i)\mclass(?:es)?\s+([a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?'
-                '(?:\s*(?:,|/|&|\mand\M|\mor\M)\s*(?:class\s+)?[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)*)\M'
+                '(?i)\mclass(?:es)?\s+((?:viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?)'
+                '(?:\s*(?:,|/|&|\mand\M|\mor\M)\s*(?:class\s+)?'
+                '(?:viii|vii|iii|[a-z0-9]{1,2}(?:-[a-z0-9]{1,2})?))*)\M'
                 '|\mseries\s+([a-z0-9]{1,2})\s+(?:(?:non-?)?voting\s+)?(?:common|ordinary|capital)\M',
                 'g') AS m(groups)
             CROSS JOIN LATERAL regexp_split_to_table(
@@ -535,7 +540,12 @@ SELECT CASE WHEN a.restated_only THEN a.restated_on ELSE a.available_on END,
              FROM (VALUES ('warrant', '\mwarrants?\M'), ('unit', '\munits?\M'),
                           ('right', '\mrights?\M'), ('preferred', 'preferred|preference'),
                           ('debt', '\mnotes?\M|debentures?|\mbonds?\M')) n(kind, pattern)
-             WHERE a.class_description ~* n.pattern
+             -- rights attached to the class ("Common Stock and associated Preferred
+             -- Stock Purchase Rights") name no instrument of their own
+             WHERE regexp_replace(
+                       a.class_description,
+                       '(?i)(?:\m(?:associated|attached)\s+)?(?:\w+\s+){0,4}purchase\s+rights?\M',
+                       ' ', 'g') ~* n.pattern
              ORDER BY 1)
 FROM current_ends a
 WHERE a.available_on <= p_as_of
@@ -544,10 +554,12 @@ $fn$;
 -- Each CIK's hold of a ticker at D (internal helper; one row per CIK that showed
 -- the ticker by D). Listed rows (equity, depositary or unknown) decide: a
 -- non-listed row showing the ticker (filers also tag their common symbol on
--- notes lines) counts only while no listed row showing it was known at or before
--- it, so a ticker only ever shown on preferred or notes lines resolves through
--- them, and an earlier holder that tagged it only on such lines keeps them when a
--- later issuer lists it. A hold is followed through its candidate statements:
+-- notes lines) does not count when a listed row showing it was known at or
+-- before it, of the same CIK at any time or of another CIK within the 400 days
+-- before. A ticker only ever shown on preferred or notes lines resolves through
+-- them; an earlier holder that tagged it only on such lines keeps them when a
+-- later issuer lists it; a later holder seen only on such lines is not hidden by
+-- an issuer that listed the ticker years before. A hold is followed through its candidate statements:
 --   (a) every filing that tags a class that showed the ticker,
 --   (b) when the latest complete filing showing the ticker listed one equity
 --       class: every complete filing (the issuer's sole security, however its
@@ -605,7 +617,8 @@ WITH shown AS (
     WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
        OR NOT EXISTS (SELECT 1 FROM shown e
                       WHERE e.security_kind IN ('equity', 'depositary', 'unknown')
-                        AND e.known_on <= s.known_on)
+                        AND e.known_on <= s.known_on
+                        AND (e.cik = s.cik OR e.known_on > s.known_on - 400))
 ), per_cik AS (
     SELECT r.cik,
            min(r.known_on) AS first_on,
@@ -995,7 +1008,8 @@ WITH key AS (
     WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
        OR NOT EXISTS (SELECT 1 FROM shown e
                       WHERE e.security_kind IN ('equity', 'depositary', 'unknown')
-                        AND e.known_on <= s.known_on)
+                        AND e.known_on <= s.known_on
+                        AND (e.cik = s.cik OR e.known_on > s.known_on - 400))
 ), holder_ciks AS (
     SELECT DISTINCT r.cik FROM relevant r
 ), lines AS MATERIALIZED (
