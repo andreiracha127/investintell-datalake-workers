@@ -1,0 +1,25 @@
+# Weekly top-up of the SEC cover-page ticker -> (CIK, class) history
+# (src/workers/sec_ticker_cik_history.py; docs/runbooks/sec-ticker-cik-history.md).
+#
+# Service: sec-ticker-cik-history. Env: WORKER=sec_ticker_cik_history,
+# DATABASE_URL (datalake `market`, worker_writer). Optional: SEC_TICKER_CACHE_DIR
+# (a mounted volume keeps the DERA zips; without it each package is fetched,
+# loaded and deleted, at most ~0.6 GB of disk at a time), WORKER_LIMIT (packages
+# per run), WORKER_CALC_DATE (replay the index quarters of a date).
+#
+# Each run loads every DERA Financial Statement and Notes package not loaded yet
+# (oldest first), reloads the newest one if it was republished, and refreshes
+# the EDGAR form indexes of the current and previous quarter. DERA publishes
+# one package a month; Monday 10:00 UTC picks it up within a week.
+# Prerequisite: the owner applied schemas/sec_ticker_cik_history_v1.sql; the
+# worker refuses to run without it and never applies DDL.
+# Never set cronSchedule to null or "" on Railway: null means RUN CONTINUOUSLY.
+# restartPolicy=never: a failed run must surface as failed, not loop.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"
+cronSchedule = "0 10 * * 1"

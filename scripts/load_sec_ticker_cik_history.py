@@ -54,7 +54,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import IO, Iterable
 
-from src.db import connect
+from src.db import LOCK_SEC_TICKER_CIK_HISTORY, connect
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PACKAGES_DIR = Path("E:/Edgard/fsn")
@@ -638,26 +638,36 @@ def quarters_through(today: dt.date) -> list[tuple[int, int]]:
     return out
 
 
-def download_form_indexes(index_dir: Path, *, refresh_current: bool = True) -> list[Path]:
-    """Fetch every quarterly form index since 2009 (the open quarter is re-fetched)."""
+def sec_client():
+    """An HTTP client that identifies itself to the SEC as fair access requires."""
     import httpx
 
+    return httpx.Client(headers={"User-Agent": USER_AGENT}, follow_redirects=True,
+                        timeout=600.0)
+
+
+def fetch_form_index(client, year: int, quarter: int, target: Path) -> Path:
+    """Download one quarter's form.gz, validated before it replaces ``target``."""
+    response = client.get(EDGAR_INDEX_URL.format(year=year, quarter=quarter))
+    response.raise_for_status()
+    partial = target.with_name(target.name + ".part")
+    partial.write_bytes(response.content)
+    gzip.decompress(partial.read_bytes())
+    partial.replace(target)
+    time.sleep(DOWNLOAD_SPACING_S)
+    return target
+
+
+def download_form_indexes(index_dir: Path, *, refresh_current: bool = True) -> list[Path]:
+    """Fetch every quarterly form index since 2009 (the open quarter is re-fetched)."""
     index_dir.mkdir(parents=True, exist_ok=True)
     quarters = quarters_through(dt.date.today())
-    with httpx.Client(
-        headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=600.0
-    ) as client:
+    with sec_client() as client:
         for year, quarter in quarters:
             target = index_dir / f"{year}QTR{quarter}.form.gz"
             if target.exists() and not (refresh_current and (year, quarter) == quarters[-1]):
                 continue
-            response = client.get(EDGAR_INDEX_URL.format(year=year, quarter=quarter))
-            response.raise_for_status()
-            partial = target.with_suffix(".gz.part")
-            partial.write_bytes(response.content)
-            gzip.decompress(partial.read_bytes())  # validate before replacing
-            partial.replace(target)
-            time.sleep(DOWNLOAD_SPACING_S)
+            fetch_form_index(client, year, quarter, target)
     return sorted(index_dir.glob("*.form.gz"), key=index_sort_key)
 
 
@@ -670,7 +680,7 @@ def apply_schema(dsn: str | None) -> None:
         conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
-def _require_schema(conn) -> None:
+def require_schema(conn) -> None:
     present = conn.execute(
         "SELECT to_regclass('sec_ticker_cik_observations') IS NOT NULL "
         "AND to_regclass('sec_cover_share_counts') IS NOT NULL "
@@ -854,34 +864,39 @@ def listed_package_urls(html: str) -> list[str]:
     return [SEC_BASE_URL + path for path in dict.fromkeys(paths)]
 
 
+def list_package_urls(client) -> list[str]:
+    listing = client.get(LISTING_URL)
+    listing.raise_for_status()
+    time.sleep(DOWNLOAD_SPACING_S)
+    return listed_package_urls(listing.text)
+
+
+def fetch_package(client, url: str, target: Path) -> Path:
+    """Stream one FSN zip to disk; it replaces ``target`` only once it opens."""
+    partial = target.with_name(target.name + ".part")
+    with client.stream("GET", url) as response:
+        response.raise_for_status()
+        with partial.open("wb") as fh:
+            for chunk in response.iter_bytes(1 << 20):
+                fh.write(chunk)
+    with zipfile.ZipFile(partial):
+        pass
+    partial.replace(target)
+    time.sleep(DOWNLOAD_SPACING_S)
+    return target
+
+
 def download_packages(packages_dir: Path) -> list[Path]:
     """Fetch every listed FSN package not already present (sequential, SEC UA)."""
-    import httpx
-
     packages_dir.mkdir(parents=True, exist_ok=True)
     fetched: list[Path] = []
-    with httpx.Client(
-        headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=600.0
-    ) as client:
-        listing = client.get(LISTING_URL)
-        listing.raise_for_status()
-        time.sleep(DOWNLOAD_SPACING_S)
-        for url in listed_package_urls(listing.text):
+    with sec_client() as client:
+        for url in list_package_urls(client):
             target = packages_dir / url.rsplit("/", 1)[1]
             if target.exists():
                 continue
-            partial = target.with_suffix(".zip.part")
-            with client.stream("GET", url) as response:
-                response.raise_for_status()
-                with partial.open("wb") as fh:
-                    for chunk in response.iter_bytes(1 << 20):
-                        fh.write(chunk)
-            with zipfile.ZipFile(partial):
-                pass
-            partial.replace(target)
-            fetched.append(target)
+            fetched.append(fetch_package(client, url, target))
             print(json.dumps({"downloaded": target.name, "bytes": target.stat().st_size}))
-            time.sleep(DOWNLOAD_SPACING_S)
     return fetched
 
 
@@ -898,11 +913,17 @@ def run(
     form_indexes: Iterable[Path] = (),
 ) -> list[dict[str, object]]:
     stats: list[dict[str, object]] = []
-    # Autocommit: each package commits in its own explicit transaction.
+    # Autocommit: each package commits in its own explicit transaction. The
+    # session lock keeps this script and the recurring worker from interleaving.
     conn = None if dry_run else connect(dsn, autocommit=True)
     try:
         if conn is not None:
-            _require_schema(conn)
+            locked = conn.execute(
+                "SELECT pg_try_advisory_lock(%s)", (LOCK_SEC_TICKER_CIK_HISTORY,)
+            ).fetchone()[0]
+            if not locked:
+                raise RuntimeError("another sec_ticker_cik_history load holds the lock")
+            require_schema(conn)
         for path in packages:
             result = parse_package(path)
             item = result.stats()

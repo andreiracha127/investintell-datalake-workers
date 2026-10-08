@@ -735,6 +735,26 @@ def test_price_span_is_per_class_for_a_multi_class_issuer(schema_dsn) -> None:
     ]
 
 
+def test_notes_lines_tagged_with_the_common_symbol_never_decide(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    d = dt.date
+    adsh = _observe(conn, 1140859, "COR", "2025-06-05", class_key="ClassOfStock=CommonStock;")
+    _observe(conn, 1140859, "COR", "2025-06-05", kind="debt", adsh=adsh,
+             class_key="ClassOfStock=Sec2.875SeniorNotesDue2028;")
+    _observe(conn, 1140859, "COR", "2025-06-05", kind="debt", adsh=adsh,
+             class_key="ClassOfStock=AaaNotesDue2027;")  # sorts before the common line
+    _observe(conn, 777, "COR", "2025-07-01", kind="debt")  # another issuer's notes line
+    assert _issuer(conn, "COR", "2025-08-01") == (
+        "resolved", 1140859, "ClassOfStock=CommonStock;", d(2025, 6, 6), [1140859],
+    )
+    assert _span(conn, "COR", 1140859) == [
+        ("ClassOfStock=CommonStock;", d(2025, 6, 6), None, None, d(2025, 6, 6), None, None),
+    ]
+    # A ticker only ever shown on non-equity lines still resolves through them.
+    _observe(conn, 36104, "USB-PA", "2025-06-05", kind="preferred")
+    assert _issuer(conn, "USB-PA", "2025-06-06")[:2] == ("resolved", 36104)
+
+
 def test_resolvers_inline_into_lateral_joins(schema_dsn) -> None:
     conn, _ = schema_dsn
     rows = conn.execute(
@@ -890,3 +910,114 @@ def test_loader_refuses_a_database_without_the_governed_schema(tmp_path: Path) -
                 )
         finally:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+# --------------------------------------------------------------------------- #
+# Recurring worker
+# --------------------------------------------------------------------------- #
+FSN_BASE = "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/"
+
+
+def _fake_sec(tmp_path: Path, packages: dict[str, bytes], indexes: dict[str, bytes]):
+    """An httpx client answering the SEC listing, package and index URLs."""
+    import httpx
+
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        calls.append((request.method, url))
+        assert request.headers["User-Agent"] == loader.USER_AGENT
+        if url == loader.LISTING_URL:
+            links = "".join(
+                f'<a href="/files/dera/data/financial-statement-notes-data-sets/{name}">x</a>'
+                for name in packages
+            )
+            return httpx.Response(200, text=links)
+        if url.startswith(FSN_BASE):
+            body = packages[url[len(FSN_BASE):]]
+            if request.method == "HEAD":
+                return httpx.Response(200, headers={"content-length": str(len(body))})
+            return httpx.Response(200, content=body)
+        for key, body in indexes.items():
+            if url.endswith(key):
+                return httpx.Response(200, content=body)
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler),
+                          headers={"User-Agent": loader.USER_AGENT})
+    return client, calls
+
+
+def _index_bytes(cik: int, filed: str) -> bytes:
+    return gzip.compress(
+        f"15-12G           SOME CO      {cik}     {filed}  "
+        f"edgar/data/{cik}/{cik:010d}-24-000001.txt\n".encode()
+    )
+
+
+def test_worker_loads_new_packages_and_the_open_quarter_then_idles(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tempfile
+
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    first = _sample_package(build).read_bytes()
+    newest = _write_package(
+        build / "2024_10_notes.zip",
+        [_sub("0000000005-24-000001", 732717, "8-K", "20241105")],
+        [_fact("0000000005-24-000001", "TradingSymbol", "T")],
+    ).read_bytes()
+    packages = {"2024q1_notes.zip": first, "2024_10_notes.zip": newest}
+    indexes = {"2024/QTR3/form.gz": _index_bytes(5907, "2024-08-01"),
+               "2024/QTR4/form.gz": _index_bytes(5908, "2024-11-01")}
+
+    client, calls = _fake_sec(tmp_path, packages, indexes)
+    stats = worker.run(dsn, calc_date="2024-11-15", limit=1, client=client)
+    assert stats["state"] == "ok" and stats["backlog"] == 2
+    assert [p["package"] for p in stats["packages"]] == ["2024q1_notes.zip"]  # oldest first
+    assert [i["events"] for i in stats["form_indexes"]] == [1, 1]
+
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert [p["package"] for p in stats["packages"]] == ["2024_10_notes.zip"]
+    assert _issuer(conn, "T", "2024-11-06")[:2] == ("resolved", 732717)
+
+    calls.clear()
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert stats["state"] == "noop" and stats["packages"] == [] and stats["backlog"] == 0
+    assert ("GET", FSN_BASE + "2024_10_notes.zip") not in calls  # HEAD only
+
+    # A republished newest month (different size) is reloaded.
+    packages["2024_10_notes.zip"] = _write_package(
+        build / "2024_10_notes.zip",
+        [_sub("0000000005-24-000001", 732717, "8-K", "20241105")],
+        [_fact("0000000005-24-000001", "TradingSymbol", "T"),
+         _fact("0000000005-24-000001", "Security12bTitle", "Common Stock")],
+    ).read_bytes()
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert [(p["package"], p["updated"]) for p in stats["packages"]] == [("2024_10_notes.zip", 1)]
+    assert stats["state"] == "ok"
+    assert list(scratch.iterdir()) == []  # every run removed its downloads
+
+
+def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:
+    import psycopg
+
+    from src.db import LOCK_SEC_TICKER_CIK_HISTORY
+    from src.workers import sec_ticker_cik_history as worker
+
+    _, dsn = schema_dsn
+    client, calls = _fake_sec(tmp_path, {}, {})
+    with psycopg.connect(dsn, autocommit=True) as holder:
+        holder.execute("SELECT pg_advisory_lock(%s)", (LOCK_SEC_TICKER_CIK_HISTORY,))
+        stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert stats["status"] == "lock_busy"
+    assert calls == []

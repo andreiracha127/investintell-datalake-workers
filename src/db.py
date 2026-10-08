@@ -377,3 +377,8 @@ LOCK_NPORT_CLASSIFICATION_INPUTS_CHAIN = 900_366
 # equal this. It was 900365 until main's LOCK_NPORT_LOAD took that id, and a
 # shared id would make every request issued during a monthly load silently skip.
 LOCK_NPORT_SERIES_PROFILE_REFRESH_REQUEST = 900_367
+# SEC cover-page ticker -> CIK history: the recurring worker
+# (src/workers/sec_ticker_cik_history.py) and the bulk loader script
+# (scripts/load_sec_ticker_cik_history.py) hold it for a whole run so two loads
+# never interleave package transactions. Next free id after 900_367.
+LOCK_SEC_TICKER_CIK_HISTORY = 900_368

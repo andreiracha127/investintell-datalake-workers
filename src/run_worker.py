@@ -109,7 +109,7 @@ def main(*, monthly_source_validator: Callable[[str], dict] | None = None) -> No
             "|tiingo_fund_meta|mixed_quant_publication|mixed_quant_retention"
             "|bond_live_daily|bond_reference_terms|bond_panel_parity"
             "|bond_market_implied_rating|bond_market_implied_rating_check"
-            "|fomc_sep_ingestion)"
+            "|fomc_sep_ingestion|sec_ticker_cik_history)"
         )
     try:
         mod = importlib.import_module(f"src.workers.{worker}")

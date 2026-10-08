@@ -152,7 +152,12 @@ RETURNS TABLE (
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
 WITH lines AS (
-    SELECT o.cik, o.class_key, max(o.available_on) AS confirmed_on
+    -- The line's kind for this ticker over every statement showing it by D
+    -- (an equity kind wins: one untitled statement must not demote it).
+    SELECT o.cik, o.class_key, max(o.available_on) AS confirmed_on,
+           COALESCE(min(o.security_kind) FILTER (
+                        WHERE o.security_kind IN ('equity', 'depositary')),
+                    min(o.security_kind)) AS line_kind
     FROM sec_ticker_cik_observations o
     WHERE o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
       AND o.available_on <= p_as_of
@@ -172,15 +177,13 @@ SELECT l.cik, l.class_key,
            WHEN st.statement_on < p_as_of - p_max_age_days THEN 'stale'
            ELSE 'active'
        END AS state,
-       st.security_kind, st.statement_on, st.statement_adsh, l.confirmed_on, st.shows_symbol
+       l.line_kind AS security_kind, st.statement_on, st.statement_adsh, l.confirmed_on,
+       st.shows_symbol
 FROM lines l
 CROSS JOIN LATERAL (
     SELECT s.available_on AS statement_on, s.adsh AS statement_adsh,
            bool_or(s.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'))
-               AS shows_symbol,
-           min(s.security_kind) FILTER (
-               WHERE s.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
-           ) AS security_kind
+               AS shows_symbol
     FROM sec_ticker_cik_observations s
     WHERE (s.cik, s.class_key, s.available_on, s.adsh) = (
         SELECT x.cik, x.class_key, x.available_on, x.adsh
@@ -195,6 +198,8 @@ $fn$;
 
 -- issuer_at(ticker, D): the (CIK, class) the ticker belonged to at D, from what
 -- was public at D (see sec_ticker_lines_at for the interval rule).
+-- Equity/depositary lines decide whenever one showed the ticker; other kinds
+-- (notes, preferred...) only for a ticker no equity line ever showed.
 -- * 'resolved'  : exactly one CIK holds an active interval; class_key is its
 --                 active line with the latest statement.
 -- * 'ambiguous' : two or more CIKs hold overlapping active intervals at D
@@ -226,16 +231,23 @@ WITH lines AS (
     SELECT * FROM sec_ticker_lines_at(p_ticker, p_as_of, p_max_age_days)
 ), ranked AS (
     SELECT l.*,
-           CASE l.state WHEN 'active' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END AS rank_state
+           CASE l.state WHEN 'active' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END AS rank_state,
+           -- Equity lines decide when there are any: filers also tag their
+           -- common symbol on notes lines, which must not pick the class or
+           -- make another issuer's notes line a rival holder.
+           CASE WHEN l.security_kind IN ('equity', 'depositary') THEN 0 ELSE 1 END
+               AS rank_kind
     FROM lines l
 ), decided AS (
     SELECT r.* FROM ranked r
-    ORDER BY r.rank_state, r.statement_on DESC, r.confirmed_on DESC, r.cik, r.class_key
+    ORDER BY r.rank_kind, r.rank_state, r.statement_on DESC, r.confirmed_on DESC, r.cik,
+             r.class_key
     LIMIT 1
 ), holders AS (
     SELECT r.cik, max(r.confirmed_on) AS confirmed_on
     FROM ranked r
-    WHERE r.rank_state = (SELECT d.rank_state FROM decided d) AND r.rank_state < 2
+    WHERE r.rank_state = (SELECT d.rank_state FROM decided d)
+      AND r.rank_kind = (SELECT d.rank_kind FROM decided d) AND r.rank_state < 2
     GROUP BY r.cik
 )
 SELECT
@@ -438,7 +450,7 @@ CROSS JOIN LATERAL unnest(r.tickers) AS t(ticker);
 --                       key that starts on or after this run's start; NULL if none.
 -- Lines of the same CIK showing the same symbol are one security relabelled (a
 -- single-class filer adding or dropping the class dimension), so other holders
--- are other CIKs. Consumers admit rows in [valid_from, valid_to), rows in
+-- are other CIKs. Only equity/depositary lines count when any showed the key. Consumers admit rows in [valid_from, valid_to), rows in
 -- (prior_holder_end, valid_from) only after a continuity check, and refuse rows
 -- at or before prior_holder_end or at or after next_holder_start.
 CREATE OR REPLACE FUNCTION sec_ticker_price_span(
@@ -455,10 +467,17 @@ RETURNS TABLE (
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
-WITH holder_lines AS (
-    SELECT DISTINCT o.cik, o.class_key
+WITH shown AS (
+    SELECT o.cik, o.class_key,
+           bool_or(o.security_kind IN ('equity', 'depositary')) AS is_equity
     FROM sec_ticker_cik_observations o
     WHERE o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
+    GROUP BY o.cik, o.class_key
+), holder_lines AS (
+    -- As in sec_ticker_issuer_at: equity/depositary lines only, unless no
+    -- equity line ever showed the ticker.
+    SELECT s.cik, s.class_key FROM shown s
+    WHERE s.is_equity OR NOT EXISTS (SELECT 1 FROM shown e WHERE e.is_equity)
 ), statements AS (
     SELECT s.cik, s.class_key, s.available_on, s.adsh,
            bool_or(s.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'))

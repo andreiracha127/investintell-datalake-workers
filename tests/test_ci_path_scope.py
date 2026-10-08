@@ -70,6 +70,21 @@ def test_fund_classification_pipeline_selects_nport(path: str) -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        "scripts/load_sec_ticker_cik_history.py",
+        "src/workers/sec_ticker_cik_history.py",
+        "railway.sec-ticker-cik-history.toml",
+        "schemas/sec_ticker_cik_history_v1.sql",
+        "schemas/sec_ticker_cik_history_v1.rollback.sql",
+        "tests/test_sec_ticker_cik_history.py",
+    ],
+)
+def test_sec_ticker_history_loader_selects_only_nport(path: str) -> None:
+    assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=False)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "src/workers/characteristics.py",
         "schemas/characteristics.sql",
         "src/run_worker.py",
