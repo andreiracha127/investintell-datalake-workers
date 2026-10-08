@@ -33,6 +33,7 @@ FUNCTIONS = (
     "sec_ticker_issuer_at(text,date,integer)",
     "sec_issuer_line_at(bigint,text,date,integer)",
     "sec_cover_class_shares_at(bigint,text,date,integer)",
+    "sec_ticker_price_span(text,bigint,text)",
 )
 TABLES = (
     "sec_ticker_cik_observations", "sec_cover_share_counts", "sec_registration_events",
@@ -641,6 +642,97 @@ def test_future_filings_never_change_an_earlier_answer(schema_dsn) -> None:
     _count(conn, 14693, NONVOTING, "2024-02-28", 1, "2025-04-01")  # late restatement
     _count(conn, 14693, NONVOTING, "2025-02-28", 2, "2025-03-05")
     assert answers() == before
+
+
+def _span(conn, ticker: str, cik: int, class_key: str | None = None) -> list[tuple]:
+    return conn.execute(
+        "SELECT class_key, valid_from, valid_to, end_reason, last_confirmed_on, "
+        "prior_holder_end, next_holder_start FROM sec_ticker_price_span(%s, %s, %s)",
+        (ticker, cik, class_key),
+    ).fetchall()
+
+
+def test_price_span_of_a_reused_ticker_bounds_each_holder(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    # AT&T Corp (5907) shows T, then T1; AT&T Inc (732717) then shows T.
+    _observe(conn, 5907, "T", "2009-11-05")
+    _observe(conn, 5907, "T", "2010-02-25")
+    _observe(conn, 5907, "T1", "2010-04-01")
+    _observe(conn, 732717, "T", "2010-05-07")
+    _observe(conn, 732717, "T", "2010-08-06")
+    d = dt.date
+    assert _span(conn, "T", 732717) == [
+        ("", d(2010, 5, 8), None, None, d(2010, 8, 7), d(2010, 4, 2), None),
+    ]
+    assert _span(conn, "T", 5907) == [
+        ("", d(2009, 11, 6), d(2010, 4, 2), "other_symbol", d(2010, 2, 26), None,
+         d(2010, 5, 8)),
+    ]
+    assert _span(conn, "T1", 5907) == [("", d(2010, 4, 2), None, None, d(2010, 4, 2), None, None)]
+    assert _span(conn, "T", 999) == []
+
+
+def test_price_span_ends_at_a_deregistration_and_reopens_on_a_later_statement(
+    schema_dsn,
+) -> None:
+    conn, _ = schema_dsn
+    d = dt.date
+    _observe(conn, 5907, "T", "2009-11-05")
+    _event(conn, 5907, "15-12G", "2010-03-15")
+    _observe(conn, 732717, "T", "2010-05-07")
+    assert _span(conn, "T", 5907) == [
+        ("", d(2009, 11, 6), d(2010, 3, 16), "15-12G", d(2009, 11, 6), None, d(2010, 5, 8)),
+    ]
+    assert _span(conn, "T", 732717)[0][5] == d(2010, 3, 16)  # prior holder ended there
+    # A class-specific delisting after a multi-symbol filing ends nothing.
+    adsh = _observe(conn, 20, "TWO", "2021-01-10")
+    _observe(conn, 20, "TWO-27", "2021-01-10", class_key="LongtermDebtType=Notes2027;",
+             kind="debt", adsh=adsh)
+    _event(conn, 20, "25-NSE", "2021-02-01")
+    _event(conn, 20, "15-15D", "2021-03-01")
+    _observe(conn, 20, "TWO", "2021-04-01")
+    assert _span(conn, "TWO", 20) == [
+        ("", d(2021, 1, 11), d(2021, 3, 2), "15-15D", d(2021, 1, 11), None, None),
+        ("", d(2021, 4, 2), None, None, d(2021, 4, 2), None, None),
+    ]
+
+
+def test_price_span_follows_a_rename_and_a_later_reuse(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    d = dt.date
+    _observe(conn, 1512673, "SQ", "2024-11-05")
+    _observe(conn, 1512673, "SQ", "2024-12-05")
+    _observe(conn, 1512673, "XYZ", "2025-01-21")
+    _observe(conn, 4242, "SQ", "2026-03-02")
+    assert _span(conn, "SQ", 1512673) == [
+        ("", d(2024, 11, 6), d(2025, 1, 22), "other_symbol", d(2024, 12, 6), None,
+         d(2026, 3, 3)),
+    ]
+    assert _span(conn, "XYZ", 1512673) == [
+        ("", d(2025, 1, 22), None, None, d(2025, 1, 22), None, None),
+    ]
+    assert _span(conn, "SQ", 4242) == [
+        ("", d(2026, 3, 3), None, None, d(2026, 3, 3), d(2025, 1, 22), None),
+    ]
+
+
+def test_price_span_is_per_class_for_a_multi_class_issuer(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    _two_class_issuer(conn)
+    run = ("", dt.date(2024, 3, 6), None, None, dt.date(2024, 3, 6), None, None)
+    assert _span(conn, "BF-B", 14693) == [(NONVOTING, *run[1:])]
+    assert _span(conn, "BF-B", 14693, NONVOTING) == [(NONVOTING, *run[1:])]
+    assert _span(conn, "BF-B", 14693, CLASS_A) == []
+    assert _span(conn, "BF-A", 14693) == [(CLASS_A, *run[1:])]
+    # A single-class filer relabelling its line is one security: both runs, no
+    # other holder.
+    _observe(conn, 55, "SOLO", "2020-02-10")
+    _observe(conn, 55, "SOLO", "2021-02-10", class_key="ClassOfStock=CommonStock;")
+    assert _span(conn, "SOLO", 55) == [
+        ("", dt.date(2020, 2, 11), None, None, dt.date(2020, 2, 11), None, None),
+        ("ClassOfStock=CommonStock;", dt.date(2021, 2, 11), None, None, dt.date(2021, 2, 11),
+         None, None),
+    ]
 
 
 def test_resolvers_inline_into_lateral_joins(schema_dsn) -> None:

@@ -418,6 +418,119 @@ SELECT r.cik, r.class_key, t.ticker, r.valid_from, r.last_confirmed_on,
 FROM runs r
 CROSS JOIN LATERAL unnest(r.tickers) AS t(ticker);
 
+-- Price lineage: which stored price rows of a ticker belong to an issuer's line.
+-- This is a data-lineage question about a vendor series stitched under today's
+-- symbol, so it uses everything known today (issuer resolution at D stays
+-- point-in-time through sec_ticker_issuer_at). One row per RUN: a maximal
+-- stretch in which a line of p_cik (only p_class_key when given) holds the
+-- ticker key, by the same rules as the point functions.
+-- * valid_from        : knowledge date of the run's first statement;
+-- * valid_to          : knowledge date of the first evidence of its end -- a later
+--                       statement of the line showing another symbol
+--                       (end_reason 'other_symbol'), or a 15-12G/15-15D, or a
+--                       15-12B/25/25-NSE when the run's last statement before it
+--                       listed a single symbol (end_reason = the form); NULL = open;
+-- * last_confirmed_on : the run's latest statement showing the ticker;
+-- * prior_holder_end  : the latest end evidence (valid_to, else last
+--                       confirmation) of any run of ANOTHER CIK holding the key
+--                       that started before this run; NULL if none;
+-- * next_holder_start : the earliest start of a run of another CIK holding the
+--                       key that starts on or after this run's start; NULL if none.
+-- Lines of the same CIK showing the same symbol are one security relabelled (a
+-- single-class filer adding or dropping the class dimension), so other holders
+-- are other CIKs. Consumers admit rows in [valid_from, valid_to), rows in
+-- (prior_holder_end, valid_from) only after a continuity check, and refuse rows
+-- at or before prior_holder_end or at or after next_holder_start.
+CREATE OR REPLACE FUNCTION sec_ticker_price_span(
+    p_ticker text, p_cik bigint, p_class_key text DEFAULT NULL
+)
+RETURNS TABLE (
+    class_key text,
+    valid_from date,
+    valid_to date,
+    end_reason text,
+    last_confirmed_on date,
+    prior_holder_end date,
+    next_holder_start date
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+WITH holder_lines AS (
+    SELECT DISTINCT o.cik, o.class_key
+    FROM sec_ticker_cik_observations o
+    WHERE o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
+), statements AS (
+    SELECT s.cik, s.class_key, s.available_on, s.adsh,
+           bool_or(s.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'))
+               AS shows,
+           (SELECT count(DISTINCT f.ticker_key) FROM sec_ticker_cik_observations f
+            WHERE f.adsh = s.adsh AND f.cik = s.cik) AS filing_symbols
+    FROM sec_ticker_cik_observations s
+    JOIN holder_lines h ON h.cik = s.cik AND h.class_key = s.class_key
+    GROUP BY s.cik, s.class_key, s.available_on, s.adsh
+), applied_events AS (
+    -- A deregistration ends a hold when the line's latest statement before it
+    -- (strictly earlier: a same-day statement prevails) shows the ticker.
+    SELECT h.cik, h.class_key, e.available_on, e.form
+    FROM holder_lines h
+    JOIN sec_registration_events e ON e.cik = h.cik
+    CROSS JOIN LATERAL (
+        SELECT st.available_on, st.shows, st.filing_symbols
+        FROM statements st
+        WHERE st.cik = h.cik AND st.class_key = h.class_key
+          AND st.available_on <= e.available_on
+        ORDER BY st.available_on DESC, st.adsh DESC
+        LIMIT 1
+    ) prev
+    WHERE prev.available_on < e.available_on AND prev.shows
+      AND (e.form IN ('15-12G', '15-15D') OR prev.filing_symbols = 1)
+), timeline AS (
+    SELECT st.cik, st.class_key, st.available_on, 0 AS ord, st.adsh, st.shows AS holding,
+           CASE WHEN NOT st.shows THEN 'other_symbol' END AS reason
+    FROM statements st
+    UNION ALL
+    SELECT ae.cik, ae.class_key, ae.available_on, 1, '', false, ae.form
+    FROM applied_events ae
+), marked AS (
+    SELECT t.*,
+           sum(CASE WHEN t.holding AND NOT COALESCE(t.prev_holding, false) THEN 1 ELSE 0 END)
+               OVER (PARTITION BY t.cik, t.class_key
+                     ORDER BY t.available_on, t.ord, t.adsh) AS run_no
+    FROM (
+        SELECT tl.*, lag(tl.holding) OVER (
+            PARTITION BY tl.cik, tl.class_key ORDER BY tl.available_on, tl.ord, tl.adsh
+        ) AS prev_holding
+        FROM timeline tl
+    ) t
+), runs AS (
+    SELECT m.cik, m.class_key, m.run_no,
+           min(m.available_on) FILTER (WHERE m.holding) AS valid_from,
+           max(m.available_on) FILTER (WHERE m.holding) AS last_confirmed_on
+    FROM marked m
+    WHERE m.run_no > 0
+    GROUP BY m.cik, m.class_key, m.run_no
+), ends AS (
+    SELECT DISTINCT ON (m.cik, m.class_key, m.run_no)
+           m.cik, m.class_key, m.run_no, m.available_on AS valid_to, m.reason
+    FROM marked m
+    WHERE m.run_no > 0 AND NOT m.holding
+    ORDER BY m.cik, m.class_key, m.run_no, m.available_on, m.ord, m.adsh
+), spans AS (
+    SELECT r.cik, r.class_key, r.valid_from, e.valid_to, e.reason AS end_reason,
+           r.last_confirmed_on
+    FROM runs r
+    LEFT JOIN ends e ON e.cik = r.cik AND e.class_key = r.class_key AND e.run_no = r.run_no
+)
+SELECT a.class_key, a.valid_from, a.valid_to, a.end_reason, a.last_confirmed_on,
+       (SELECT max(COALESCE(o.valid_to, o.last_confirmed_on)) FROM spans o
+        WHERE o.cik <> a.cik AND o.valid_from < a.valid_from) AS prior_holder_end,
+       (SELECT min(o.valid_from) FROM spans o
+        WHERE o.cik <> a.cik AND o.valid_from >= a.valid_from) AS next_holder_start
+FROM spans a
+WHERE a.cik = p_cik AND (p_class_key IS NULL OR a.class_key = p_class_key)
+ORDER BY a.valid_from, a.class_key
+$fn$;
+
 COMMENT ON TABLE sec_ticker_cik_observations IS
     'SEC XBRL cover-page dei:TradingSymbol statements: line (cik, class_key) traded as '
     'ticker as of filing adsh. Loaded from DERA Financial Statement and Notes data sets.';
@@ -432,7 +545,8 @@ REVOKE ALL ON TABLE sec_ticker_cik_observations, sec_cover_share_counts,
 REVOKE ALL ON FUNCTION sec_ticker_lines_at(text, date, integer),
     sec_ticker_issuer_at(text, date, integer),
     sec_issuer_line_at(bigint, text, date, integer),
-    sec_cover_class_shares_at(bigint, text, date, integer) FROM PUBLIC;
+    sec_cover_class_shares_at(bigint, text, date, integer),
+    sec_ticker_price_span(text, bigint, text) FROM PUBLIC;
 DO $$
 DECLARE
     reader text;
@@ -448,6 +562,7 @@ BEGIN
         ALTER FUNCTION sec_issuer_line_at(bigint, text, date, integer) OWNER TO worker_writer;
         ALTER FUNCTION sec_cover_class_shares_at(bigint, text, date, integer)
             OWNER TO worker_writer;
+        ALTER FUNCTION sec_ticker_price_span(text, bigint, text) OWNER TO worker_writer;
     END IF;
     FOREACH reader IN ARRAY ARRAY['app_runtime', 'app_analytics_ro', 'mcp_ro'] LOOP
         IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = reader) THEN
@@ -463,7 +578,8 @@ BEGIN
                 'GRANT EXECUTE ON FUNCTION sec_ticker_lines_at(text, date, integer), '
                 'sec_ticker_issuer_at(text, date, integer), '
                 'sec_issuer_line_at(bigint, text, date, integer), '
-                'sec_cover_class_shares_at(bigint, text, date, integer) TO %I', reader);
+                'sec_cover_class_shares_at(bigint, text, date, integer), '
+                'sec_ticker_price_span(text, bigint, text) TO %I', reader);
         END IF;
     END LOOP;
 END $$;
