@@ -53,6 +53,15 @@ NPORT_PATTERNS = (
     "tests/test_yahoo_sector.py",
     "tests/test_backfill_nport_holding_attributes.py",
     "tests/test_load_nport_*.py",
+    # The SEC cover-page ticker -> CIK history (2026-10) is a DERA bulk loader
+    # like scripts/load_nport_fund_flows.py: same lane, lint and compile steps.
+    "scripts/load_sec_ticker_cik_history.py",
+    "src/workers/sec_ticker_cik_history.py",
+    "railway.sec-ticker-cik-history.toml",
+    "schemas/sec_ticker_cik_history_v1*.sql",
+    "tests/test_sec_ticker_cik_history.py",
+    "tests/fixtures/sec_ticker_cik_history/*/*.txt",
+    "tests/fixtures/sec_ticker_cik_history/*/*.tsv",
 )
 SHARED_PATHS = {
     "src/db.py",

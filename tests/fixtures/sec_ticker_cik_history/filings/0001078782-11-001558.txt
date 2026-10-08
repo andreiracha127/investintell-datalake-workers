@@ -1,0 +1,181 @@
+<SEC-DOCUMENT>0001078782-11-001558.txt : 20110603
+<SEC-HEADER>0001078782-11-001558.hdr.sgml : 20110603
+<ACCEPTANCE-DATETIME>20110602173906
+ACCESSION NUMBER:		0001078782-11-001558
+CONFORMED SUBMISSION TYPE:	15-12G
+PUBLIC DOCUMENT COUNT:		1
+FILED AS OF DATE:		20110603
+DATE AS OF CHANGE:		20110602
+EFFECTIVENESS DATE:		20110603
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			GMV Wireless, Inc.
+		CENTRAL INDEX KEY:			0001454742
+		STANDARD INDUSTRIAL CLASSIFICATION:	SERVICES-COMPUTER PROCESSING & DATA PREPARATION [7374]
+		IRS NUMBER:				263988293
+		STATE OF INCORPORATION:			NV
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		15-12G
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	000-53949
+		FILM NUMBER:		11889539
+
+	BUSINESS ADDRESS:	
+		STREET 1:		345 S END AVE #7P
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10280
+		BUSINESS PHONE:		212-786-1290
+
+	MAIL ADDRESS:	
+		STREET 1:		345 S END AVE #7P
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10280
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>15-12G
+<SEQUENCE>1
+<FILENAME>gmvform15060211.htm
+<DESCRIPTION>FORM 15
+<TEXT>
+<!doctype html public "-//IETF//DTD HTML//EN">
+<HTML>
+<HEAD>
+<TITLE>Form 15</TITLE>
+<META NAME="author" CONTENT="Alexandra Falowski">
+<META NAME="date" CONTENT="06/02/2011">
+</HEAD>
+<BODY style="margin-top:0;font-family:Times New Roman; font-size:10pt; color:#000000">
+<DIV style="width:720px"><P style="margin:0px"><BR></P>
+<TABLE style="margin-top:0px; font-size:10pt" cellpadding=0 cellspacing=0 width=100%><TR height=0 style="font-size:0"><TD width=39.867 /><TD width=31.8 /><TD width=72 /><TD width=24.067 /><TD width=32 /><TD width=72.133 /><TD width=88 /><TD width=32 /><TD width=64.067 /><TD width=16 /><TD width=43.2 /><TD width=76.867 /><TD width=8.067 /><TD /></TR>
+<TR><TD style="margin-top:0px" valign=top width=167.733 colspan=4 rowspan=2><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=347.4 colspan=7 rowspan=2><P style="margin:0px" align=center><B>UNITED STATES</B></P>
+<P style="margin:0px" align=center><B>SECURITIES AND EXCHANGE COMMISSION</B></P>
+<P style="margin:0px" align=center><B>Washington, D.C.&nbsp;&nbsp;20549</B></P>
+</TD><TD style="margin-top:0px; border-top:1px solid #000000; border-bottom:1.333px solid #000000" valign=top width=204.867 colspan=3><P style="margin:0px" align=center>OMB APPROVAL</P>
+</TD></TR>
+<TR><TD style="margin-top:0px; border-bottom:1.333px solid #000000" valign=top width=204.867 colspan=3><P style="margin:0px">OMB Number:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;3235-0167</P>
+<P style="margin:0px">Expires:&nbsp;&nbsp;&nbsp;October 31, 2013</P>
+<P style="margin:0px">Estimated average burden</P>
+<P style="margin:0px">hours per response&#133;.&#133;..1.50</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+<P style="margin:0px; font-size:12pt" align=center><B>FORM 15</B></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px" align=center><B>CERTIFICATION AND NOTICE OF TERMINATION OF REGISTRATION UNDER SECTION</B></P>
+<P style="margin:0px" align=center><B>12(g) OF THE SECURITIES EXCHANGE ACT OF 1934 OR SUSPENSION OF DUTY TO FILE</B></P>
+<P style="margin:0px" align=center><B>REPORTS UNDER SECTIONS 13 AND 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934.</B></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=592 colspan=12><P style="margin:0px" align=right>Commission File Number</P>
+</TD><TD style="margin-top:0px" valign=bottom width=8.067><P style="margin:0px">&nbsp;&nbsp;</P>
+</TD><TD style="margin-top:0px; border-bottom:1.333px solid #000000" valign=bottom><P style="margin:0px" align=center><B>000-53949</B></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px; border-bottom:1.333px solid #000000" valign=bottom width=720 colspan=14><P style="margin:0px; font-size:14pt" align=center><B>GMV WIRELESS, INC.</B></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px" align=center>(Exact name of registrant as specified in its charter)</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px; border-bottom:1.333px solid #000000" valign=bottom width=720 colspan=14><P style="margin:0px" align=center><B>345 S. End Avenue, #7P</B></P>
+<P style="margin:0px" align=center><B>New York, NY 10280</B></P>
+<P style="margin:0px" align=center><B>(212)786-1290</B></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px" align=center>(Address, including zip code, and telephone number, including area code, of registrant&#146;s principal executive offices)</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px; border-bottom:1.333px solid #000000" valign=bottom width=720 colspan=14><P style="margin:0px" align=center><B>Common Stock, $0.001 par value per share</B></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px" align=center>(Title of class of securities covered by this Form)</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px; border-bottom:1.333px solid #000000" valign=bottom width=720 colspan=14><P style="margin:0px" align=center><B>None</B></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px" align=center>(Titles of all other classes of securities for which a duty to file reports under section 13(a) or 15(d) remains)</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px; text-indent:24px" align=justify>Please place an X in the box(es) to designate the appropriate rule provision(s) relied upon to terminate or suspend the duty to file reports::</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=71.667 colspan=2><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=128.067 colspan=3><P style="margin:0px">Rule 12g-4(a)(1)</P>
+</TD><TD style="margin-top:0px" valign=top width=520.267 colspan=9><P style="margin:0px">&nbsp;<FONT style="margin-bottom:1.333px; padding-top:1.333px; padding-bottom:0px; font-size:6pt; border:1px solid #000000">&nbsp;&nbsp;X &nbsp;</FONT><FONT style="font-size:6pt; color:#FFFFFF">.</FONT></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=71.667 colspan=2><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=128.067 colspan=3><P style="margin:0px">Rule 12g-4(a)(2)</P>
+</TD><TD style="margin-top:0px" valign=top width=520.267 colspan=9><P style="margin:0px">&nbsp;<FONT style="margin-bottom:1.333px; padding-top:1.333px; padding-bottom:0px; font-size:6pt; border:1px solid #000000">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</FONT><FONT style="font-size:6pt; color:#FFFFFF">.</FONT></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=71.667 colspan=2><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=128.067 colspan=3><P style="margin:0px">Rule 12h-3(b)(1)(i)</P>
+</TD><TD style="margin-top:0px" valign=top width=520.267 colspan=9><P style="margin:0px">&nbsp;<FONT style="margin-bottom:1.333px; padding-top:1.333px; padding-bottom:0px; font-size:6pt; border:1px solid #000000">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</FONT><FONT style="font-size:6pt; color:#FFFFFF">.</FONT></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=71.667 colspan=2><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=128.067 colspan=3><P style="margin:0px">Rule 12h-3(b)(1)(ii)</P>
+</TD><TD style="margin-top:0px" valign=top width=520.267 colspan=9><P style="margin:0px">&nbsp;<FONT style="margin-bottom:1.333px; padding-top:1.333px; padding-bottom:0px; font-size:6pt; border:1px solid #000000">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</FONT><FONT style="font-size:6pt; color:#FFFFFF">.</FONT></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=71.667 colspan=2><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=128.067 colspan=3><P style="margin:0px">Rule 15d-6</P>
+</TD><TD style="margin-top:0px" valign=top width=520.267 colspan=9><P style="margin:0px">&nbsp;<FONT style="margin-bottom:1.333px; padding-top:1.333px; padding-bottom:0px; font-size:6pt; border:1px solid #000000">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</FONT><FONT style="font-size:6pt; color:#FFFFFF">.</FONT></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=455.933 colspan=9><P style="margin:0px; text-indent:24px">Approximate number of holders of record as of the certification or notice date:</P>
+</TD><TD style="margin-top:0px; border-bottom:1.333px solid #000000" valign=top width=264.067 colspan=5><P style="margin:0px" align=center><B>22</B></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=720 colspan=14><P style="margin:0px; text-indent:24px" align=justify>Pursuant to the requirements of the Securities Exchange Act of 1934, GMV Wireless, Inc., has caused this certification/ notice to be signed on its behalf by the undersigned duly authorized person.</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=39.867><P style="margin:0px">Date:</P>
+</TD><TD style="margin-top:0px" valign=top width=232 colspan=5><P style="margin:0px">June 2, 2011</P>
+</TD><TD style="margin-top:0px" valign=top width=88><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=32><P style="margin:0px">By:</P>
+</TD><TD style="margin-top:0px" valign=top width=328.133 colspan=6><P style="margin:0px"><I><U>/s/ Mark Simon</U></I></P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=top width=39.867><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=232 colspan=5><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=88><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=32><P style="margin:0px">&nbsp;</P>
+</TD><TD style="margin-top:0px" valign=top width=328.133 colspan=6><P style="margin:0px">Mark Simon</P>
+<P style="margin:0px">President and Chief Executive Officer</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px" align=justify>Instruction: This form is required by Rules 12g-4, 12h-3 and 15d-6 of the General Rules and Regulations under the Securities Exchange Act of 1934.&nbsp;&nbsp;The registrant shall file with the Commission three copies of Form&nbsp;15, one of which shall be manually signed.&nbsp;&nbsp;It may be signed by an officer of the registrant, by counsel or by any other duly authorized person.&nbsp;&nbsp;The name and title of the person signing the form shall be typed or printed under the signature.</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" valign=bottom width=720 colspan=14><P style="margin:0px">&nbsp;&nbsp;</P>
+</TD></TR>
+<TR><TD style="margin-top:0px" width=143.667 colspan=3><P style="margin:0px">SEC 2069(02-08)</P>
+</TD><TD style="margin-top:0px" width=328.267 colspan=7><P style="margin:0px" align=justify><B>Persons who respond to the collection of information contained in this form are not required to respond unless the form displays a currently valid OMB control number.</B></P>
+</TD><TD style="margin-top:0px" width=248.067 colspan=4><P style="margin:0px">&nbsp;&nbsp;</P>
+</TD></TR>
+</TABLE>
+<P style="margin:0px"><BR></P>
+<P style="margin:0px"><BR>
+<BR></P>
+</DIV></BODY>
+<!-- EDGAR Validation Code: 0BC9740D -->
+</HTML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

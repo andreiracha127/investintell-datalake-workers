@@ -1,0 +1,133 @@
+<SEC-DOCUMENT>0000876661-17-000516.txt : 20170911
+<SEC-HEADER>0000876661-17-000516.hdr.sgml : 20170911
+<ACCEPTANCE-DATETIME>20170911155120
+ACCESSION NUMBER:		0000876661-17-000516
+CONFORMED SUBMISSION TYPE:	25-NSE/A
+PUBLIC DOCUMENT COUNT:		2
+FILED AS OF DATE:		20170911
+DATE AS OF CHANGE:		20170911
+EFFECTIVENESS DATE:		20170911
+
+SUBJECT COMPANY:	
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Knight-Swift Transportation Holdings Inc.
+		CENTRAL INDEX KEY:			0001492691
+		STANDARD INDUSTRIAL CLASSIFICATION:	TRUCKING (NO LOCAL) [4213]
+		IRS NUMBER:				205589597
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		25-NSE/A
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-35007
+		FILM NUMBER:		171079018
+
+	BUSINESS ADDRESS:	
+		STREET 1:		2200 SOUTH 75TH AVENUE
+		CITY:			PHOENIX
+		STATE:			AZ
+		ZIP:			85043
+		BUSINESS PHONE:		602-269-9700
+
+	MAIL ADDRESS:	
+		STREET 1:		2200 SOUTH 75TH AVENUE
+		CITY:			PHOENIX
+		STATE:			AZ
+		ZIP:			85043
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	SWIFT TRANSPORTATION Co
+		DATE OF NAME CHANGE:	20110512
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	SWIFT TRANSPORTATION CO
+		DATE OF NAME CHANGE:	20101209
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	SWIFT TRANSPORTATION Co
+		DATE OF NAME CHANGE:	20101129
+
+FILED BY:		
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			NEW YORK STOCK EXCHANGE LLC
+		CENTRAL INDEX KEY:			0000876661
+		IRS NUMBER:				000000000
+		STATE OF INCORPORATION:			NY
+
+	FILING VALUES:
+		FORM TYPE:		25-NSE/A
+
+	BUSINESS ADDRESS:	
+		STREET 1:		11 WALL STREET
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10005
+		BUSINESS PHONE:		212-656-2060
+
+	MAIL ADDRESS:	
+		STREET 1:		11 WALL STREET
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10005
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	NEW YORK STOCK EXCHANGE INC
+		DATE OF NAME CHANGE:	19910628
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>25-NSE/A
+<SEQUENCE>1
+<FILENAME>primary_doc.xml
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<notificationOfRemoval>
+
+    <schemaVersion>X0203</schemaVersion>
+
+    <exchange>
+        <cik>0000876661</cik>
+        <entityName>NEW YORK STOCK EXCHANGE LLC</entityName>
+    </exchange>
+
+    <issuer>
+        <cik>1492691</cik>
+        <entityName>Knight-Swift Transportation Holdings Inc.</entityName>
+        <fileNumber>001-35007</fileNumber>
+        <address>
+            <street1>2200 South 75th Avenue</street1>
+            <city>Phoenix</city>
+            <stateOrCountryCode>AZ</stateOrCountryCode>
+            <stateOrCountry>ARIZONA</stateOrCountry>
+            <zipCode>85043</zipCode>
+        </address>
+        <telephoneNumber>(602) 269-9700</telephoneNumber>
+    </issuer>
+
+    <descriptionClassSecurity>Class A Common Stock</descriptionClassSecurity>
+
+    <ruleProvision>17 CFR 240.12d2-2(a)(3)</ruleProvision>
+
+    <signatureData>
+        <signatureName>Benjamin Sawyer</signatureName>
+        <signatureTitle>Manager</signatureTitle>
+        <signatureDate>2017-09-11</signatureDate>
+    </signatureData>
+</notificationOfRemoval>
+</XML>
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-99.25
+<SEQUENCE>2
+<FILENAME>ruleprovisionnotice.htm
+<TEXT>
+NOTIFICATION OF THE AMENDMENT TO THE NOTICE OF REMOVAL FROM LISTING AND REGISTRATION OF THE STATED SECURITIES
+
+The New York Stock Exchange hereby notifies the SEC that the Form 25 filed earlier on September 11, 2017 (the 'Original Form 25') in relation to the Class A Common Stock of Swift Transportation Company, Inc. ('Swift') was filed in error. Consequently, the Original Form 25 has no effect and should be disregarded. Pursuant to the business combination transaction that closed on September 8, 2017, Swift effected a reverse stock split exchanging each previously outstanding Class A share for 0.72 shares. Also at that time, the name of Swift was changed to Knight-Swift Transportation Holdings Inc., whose stock continues to be listed and traded on the New York Stock Exchange under the ticker symbol 'KNX'.
+
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

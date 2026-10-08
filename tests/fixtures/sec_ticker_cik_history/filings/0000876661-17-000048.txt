@@ -1,0 +1,130 @@
+<SEC-DOCUMENT>0000876661-17-000048.txt : 20170131
+<SEC-HEADER>0000876661-17-000048.hdr.sgml : 20170131
+<ACCEPTANCE-DATETIME>20170131155834
+ACCESSION NUMBER:		0000876661-17-000048
+CONFORMED SUBMISSION TYPE:	25-NSE
+PUBLIC DOCUMENT COUNT:		2
+FILED AS OF DATE:		20170131
+DATE AS OF CHANGE:		20170131
+EFFECTIVENESS DATE:		20170131
+
+SUBJECT COMPANY:	
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Mondelez International, Inc.
+		CENTRAL INDEX KEY:			0001103982
+		STANDARD INDUSTRIAL CLASSIFICATION:	FOOD & KINDRED PRODUCTS [2000]
+		IRS NUMBER:				522284372
+		STATE OF INCORPORATION:			VA
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		25-NSE
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-16483
+		FILM NUMBER:		17561084
+
+	BUSINESS ADDRESS:	
+		STREET 1:		THREE PARKWAY NORTH
+		CITY:			DEERFIELD
+		STATE:			IL
+		ZIP:			60015
+		BUSINESS PHONE:		847-943-4000
+
+	MAIL ADDRESS:	
+		STREET 1:		THREE PARKWAY NORTH
+		CITY:			DEERFIELD
+		STATE:			IL
+		ZIP:			60015
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	KRAFT FOODS INC
+		DATE OF NAME CHANGE:	20000121
+
+FILED BY:		
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			NEW YORK STOCK EXCHANGE LLC
+		CENTRAL INDEX KEY:			0000876661
+		IRS NUMBER:				000000000
+		STATE OF INCORPORATION:			NY
+
+	FILING VALUES:
+		FORM TYPE:		25-NSE
+
+	BUSINESS ADDRESS:	
+		STREET 1:		11 WALL STREET
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10005
+		BUSINESS PHONE:		212-656-2060
+
+	MAIL ADDRESS:	
+		STREET 1:		11 WALL STREET
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10005
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	NEW YORK STOCK EXCHANGE INC
+		DATE OF NAME CHANGE:	19910628
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>25-NSE
+<SEQUENCE>1
+<FILENAME>primary_doc.xml
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<notificationOfRemoval>
+
+    <schemaVersion>X0203</schemaVersion>
+
+    <exchange>
+        <cik>0000876661</cik>
+        <entityName>NEW YORK STOCK EXCHANGE LLC</entityName>
+    </exchange>
+
+    <issuer>
+        <cik>1103982</cik>
+        <entityName>Mondelez International, Inc.</entityName>
+        <fileNumber>001-16483</fileNumber>
+        <address>
+            <street1>3 Parkway North</street1>
+            <street2>Suite 300</street2>
+            <city>Deerfield</city>
+            <stateOrCountryCode>IL</stateOrCountryCode>
+            <stateOrCountry>ILLINOIS</stateOrCountry>
+            <zipCode>60015</zipCode>
+        </address>
+        <telephoneNumber>+1.847.943.4000</telephoneNumber>
+    </issuer>
+
+    <descriptionClassSecurity>1.125% Notes due 2017</descriptionClassSecurity>
+
+    <ruleProvision>17 CFR 240.12d2-2(a)(2)</ruleProvision>
+
+    <signatureData>
+        <signatureName>Benjamin Sawyer</signatureName>
+        <signatureTitle>Manager</signatureTitle>
+        <signatureDate>2017-01-31</signatureDate>
+    </signatureData>
+</notificationOfRemoval>
+</XML>
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-99.25
+<SEQUENCE>2
+<FILENAME>ruleprovisionnotice.htm
+<TEXT>
+NOTIFICATION OF THE REMOVAL FROM LISTING AND REGISTRATION OF THE STATED SECURITIES
+
+The New York Stock Exchange hereby notifies the SEC of its intention to remove the entire class of the stated securities from listing and registration on the Exchange at the opening of business on February 13, 2017, pursuant to the provisions of Rule 12d2-2 (a).
+
+[ X ] 17 CFR 240.12d2-2(a)(2)  That the entire class of this security was redeemed or paid at maturity or retirement on January 26, 2017.
+
+The Exchange also notifies the Securities and Exchange Commission that as a result of the above indicated conditions this security was suspended from trading on January 26, 2017.
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

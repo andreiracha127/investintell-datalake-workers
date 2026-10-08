@@ -1,0 +1,607 @@
+<SEC-DOCUMENT>0000947871-24-000089.txt : 20240205
+<SEC-HEADER>0000947871-24-000089.hdr.sgml : 20240205
+<ACCEPTANCE-DATETIME>20240205085225
+ACCESSION NUMBER:		0000947871-24-000089
+CONFORMED SUBMISSION TYPE:	15F-12B
+PUBLIC DOCUMENT COUNT:		2
+FILED AS OF DATE:		20240205
+DATE AS OF CHANGE:		20240205
+EFFECTIVENESS DATE:		20240205
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			PETROCHINA CO LTD
+		CENTRAL INDEX KEY:			0001108329
+		STANDARD INDUSTRIAL CLASSIFICATION:	CRUDE PETROLEUM & NATURAL GAS [1311]
+		ORGANIZATION NAME:           	01 Energy & Transportation
+		IRS NUMBER:				000000000
+		STATE OF INCORPORATION:			F4
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		15F-12B
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-15006
+		FILM NUMBER:		24594182
+
+	BUSINESS ADDRESS:	
+		STREET 1:		9 DONGZHIMEN NORTH STREET
+		STREET 2:		DONGCHENG DISTRICT
+		CITY:			BEIJING
+		STATE:			F4
+		ZIP:			100007
+		BUSINESS PHONE:		861084886265
+
+	MAIL ADDRESS:	
+		STREET 1:		9 DONGZHIMEN NORTH STREET
+		STREET 2:		DONGCHENG DISTRICT
+		CITY:			BEIJING
+		STATE:			F4
+		ZIP:			100007
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>15F-12B
+<SEQUENCE>1
+<FILENAME>ss2990214_15f12b.htm
+<DESCRIPTION>FORM 15F
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 4pt 0 0; text-align: center; background-color: white"></P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 12pt; margin-bottom: 3pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 2pt solid; border-bottom: Black 1pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 4pt 0 0; text-align: center; background-color: white">&nbsp;</P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 4pt 0 0; text-align: center; background-color: white"><B>UNITED STATES</B></P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>SECURITIES AND EXCHANGE
+COMMISSION</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>Washington, D.C. 20549</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; background-color: white">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 3pt; margin-bottom: 3pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; background-color: white"></P>
+
+
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: center; background-color: white"><B>FORM 15F</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; background-color: white">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 3pt; margin-bottom: 3pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; background-color: white"></P>
+
+
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: center; background-color: white"><B>CERTIFICATION OF
+A FOREIGN PRIVATE ISSUER&rsquo;S TERMINATION OF REGISTRATION</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>OF A CLASS OF SECURITIES
+UNDER SECTION 12(g) OF THE SECURITIES EXCHANGE ACT OF 1934</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>OR ITS TERMINATION OF THE
+DUTY TO FILE REPORTS UNDER SECTION 13(a) OR SECTION 15(d)</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>OF THE SECURITIES EXCHANGE
+ACT OF 1934</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: center; background-color: white"><B>Commission File
+Number&nbsp;1-15006</B></P>
+
+<P STYLE="font: 9pt Sans-Serif; margin: 12pt 0 0; text-align: center; background-color: white; color: Red"><IMG SRC="image_001.jpg" ALT=""></P>
+
+<P STYLE="text-align: center; font: 11pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; background-color: white"><FONT STYLE="font-size: 12pt">&nbsp;</FONT><FONT STYLE="font-size: 24pt"><B>PetroChina
+Company Limited</B></FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>(Exact name of registrant
+as specified in its charter)</B></P>
+
+<P STYLE="font: 11pt Times New Roman, Times, Serif; margin: 0; background-color: white"><FONT STYLE="font-size: 12pt">&nbsp;</FONT><FONT STYLE="font-size: 13.5pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>9 Dongzhimen North Street</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>Dongcheng District, Beijing
+100007, the PRC</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>Telephone number: (8610)
+59982622</B></P>
+
+<P STYLE="font: 8pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>(Address, including zip
+code, and telephone number, including area code, of registrant&rsquo;s principal executive offices)</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 24pt 0 0; text-align: center; background-color: white"><B>ADSs<SUP>(1)</SUP>,
+each representing 100 Class H ordinary shares, par value RMB 1.00 per share.</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin-right: 0; margin-bottom: 0; text-align: center; background-color: white"><B>Class&nbsp;H Ordinary
+Shares of par value RMB1.00 per Share</B></P>
+
+<P STYLE="font: 8pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>(Title of each class of
+securities covered by this Form)</B></P>
+
+<P STYLE="font: 8pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>&nbsp;</B></P>
+
+<P STYLE="font: 8pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>&nbsp;</B></P>
+
+<P STYLE="font: 8pt Times New Roman, Times, Serif; margin: 0; text-align: left; background-color: white"><B>&nbsp;</B><FONT STYLE="font-family: SimSun">(1)
+</FONT><FONT STYLE="font-family: Times New Roman, Times, Serif">The Company has terminated its ADR Program on October 19, 2022.&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; background-color: white">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 3pt; margin-bottom: 3pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; background-color: white"></P>
+
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 12pt 0 0; background-color: white">Place an X in the appropriate box(es) to
+indicate the provision(s) relied upon to terminate the duty to file reports under the Securities Exchange Act of 1934:</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; background-color: white">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; border-collapse: collapse">
+  <TR>
+    <TD STYLE="width: 51%">&nbsp;</TD>
+    <TD STYLE="vertical-align: bottom; width: 1%">&nbsp;</TD>
+    <TD STYLE="width: 48%">&nbsp;</TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top">
+    <P STYLE="font: 10pt Calibri, Helvetica, Sans-Serif; margin: 0"><FONT STYLE="font-family: Times New Roman, Times, Serif">Rule&nbsp;12h-6(a)&nbsp;</FONT><FONT STYLE="font-family: Segoe UI Symbol,sans-serif">&#9746;</FONT></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0">(for equity securities)</P>
+    <P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0">&nbsp;</P>
+    <P STYLE="font: 10pt Calibri, Helvetica, Sans-Serif; margin: 0"><FONT STYLE="font-family: Times New Roman, Times, Serif">Rule&nbsp;12h-6(c)&nbsp;</FONT><FONT STYLE="font-family: Segoe UI Symbol,sans-serif">&#9744;</FONT></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0 0 1pt">(for debt securities)</P></TD>
+    <TD STYLE="vertical-align: bottom; font: 11pt Calibri, Helvetica, Sans-Serif">&nbsp;</TD>
+    <TD STYLE="vertical-align: top">
+    <P STYLE="margin: 0; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif">Rule&nbsp;12h-6(d)&nbsp;)
+    </FONT><FONT STYLE="font-family: Segoe UI Symbol,sans-serif">&#9744;</FONT></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0">(for successor registrants)</P>
+    <P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0">&nbsp;</P>
+    <P STYLE="font: 10pt Calibri, Helvetica, Sans-Serif; margin: 0"><FONT STYLE="font-family: Times New Roman, Times, Serif">Rule&nbsp;12h-6(i)&nbsp;</FONT><FONT>&#9744;</FONT></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0 0 1pt">(for prior Form 15 filers)</P></TD></TR>
+  </TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0; background-color: white">&nbsp;</P>
+
+
+
+
+
+
+<P STYLE="font: 10pt/107% Times New Roman, Times, Serif; margin: 0 0 8pt">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 3pt; margin-bottom: 12pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; border-bottom: Black 2pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 10pt/107% Times New Roman, Times, Serif; margin: 0 0 8pt"></P>
+
+<!-- Field: Page; Sequence: 1; Options: NewSection -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="border-collapse: collapse; width: 100%; font-size: 10pt"><TR STYLE="vertical-align: top; text-align: left"><TD STYLE="width: 33%">&nbsp;</TD><TD STYLE="width: 34%; text-align: center">&nbsp;<!-- Field: Sequence; Type: Arabic; Name: PageNo -->1<!-- Field: /Sequence --></TD><TD STYLE="width: 33%">&nbsp;</TD></TR></TABLE></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt/107% Times New Roman, Times, Serif; margin: 0 0 8pt"><B>&nbsp;</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>PART I</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; background-color: white"><B>Item&nbsp;1. Exchange Act Reporting
+History </B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">A.
+PetroChina Company Limited (the &ldquo;<U>Company</U>&rdquo;) first became subject to reporting obligations under Section&nbsp;13(a) or
+Section&nbsp;15(d) of the Securities Exchange Act of 1934, as amended (the &ldquo;<U>Exchange Act</U>&rdquo;), in April 2000, following
+the listing of the Company&rsquo;s American depositary shares (&ldquo;<U>ADSs</U>&rdquo;), representing its Class&nbsp;H Ordinary Shares,
+on the New York Stock Exchange (the &ldquo;<U>NYSE</U>&rdquo;). On August 29, 2022, the Company voluntarily filed a Form 25 with the Securities
+and Exchange Commission (the &ldquo;<U>Commission</U>&rdquo;) informing the Commission that the Company had determined to voluntarily
+delist the ADSs from the NYSE.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">B.
+The Company has filed or submitted all reports required under Section&nbsp;13(a) or Section&nbsp;15(d) of the Exchange Act and corresponding
+Commission rules for the&nbsp;12-months&nbsp;preceding the filing of this Form 15F. The Company has filed at least one annual report under
+Section&nbsp;13(a) of the Exchange Act.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0.25in 0 0; background-color: white"><B>Item&nbsp;2. Recent United States
+Market Activity</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">The
+Company&rsquo;s ADSs were last sold in the United States in a registered offering under the Securities Act of 1933, as amended (the &ldquo;<U>Securities
+Act</U>&rdquo;) in April 2000 pursuant to a registration statement on Form&nbsp;F-1 (Registration No. 333-11566) and Form&nbsp;F-6 (Registration
+No.333-11570),&nbsp;as amended.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0.25in 0 0; background-color: white"><B>Item&nbsp;3. Foreign Listing and Primary
+Trading Market </B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">A.
+The foreign exchange on which the Company has maintained a listing of its Class&nbsp;H Ordinary Shares is The Stock Exchange of Hong Kong
+Limited (the &ldquo;<U>SEHK</U>&rdquo;) and such exchange constitutes the primary trading market for the Company&rsquo; Class&nbsp;H Ordinary
+Shares.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">B.
+The Company was initially listed on SEHK in April 2000. The Company has maintained the listing of its Class&nbsp;H Ordinary Shares on
+SEHK for at least the&nbsp;12-months&nbsp;preceding the filing of this Form 15F.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white"></P>
+
+<!-- Field: Page; Sequence: 2 -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="border-collapse: collapse; width: 100%; font-size: 10pt"><TR STYLE="vertical-align: top; text-align: left"><TD STYLE="width: 33%">&nbsp;</TD><TD STYLE="width: 34%; text-align: center">&nbsp;<!-- Field: Sequence; Type: Arabic; Name: PageNo -->2<!-- Field: /Sequence --></TD><TD STYLE="width: 33%">&nbsp;</TD></TR></TABLE></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">C.
+The percentage of trading in Class&nbsp;H Ordinary Shares that occurred in Hong Kong for the&nbsp;12-month&nbsp;period from January 31,
+2023 to January 30, 2024 (both dates inclusive) was 99.8%.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0.25in 0 0; background-color: white"><B>Item&nbsp;4. Comparative Trading Volume
+Data</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">A.
+The&nbsp;12-month&nbsp;period used for calculations under Rule&nbsp;12h-6(a)(4)(i)&nbsp;was from January 31, 2023 to January 30, 2024
+(both dates inclusive).</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">B.
+The average daily trading volume of the Company&rsquo;s Class&nbsp;H Ordinary Shares in the United States was 211,637 shares for the same&nbsp;12-month&nbsp;period.
+The average daily trading volume of the Company&rsquo;s Class&nbsp;H Ordinary Shares worldwide was 117,628,748 shares for the same&nbsp;12-month&nbsp;period.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">C.
+The average daily trading volume of the Company&rsquo;s Class&nbsp;H Ordinary Shares in the United States as a percentage of the
+average daily trading volume of the Company&rsquo;s Class&nbsp;H Ordinary Shares on a worldwide basis for the
+same&nbsp;12-month&nbsp;period was approximately 0.2%.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">D.
+The Company delisted its ADSs from the NYSE effective as of the end of the trading day on September 8, 2022. As of September 8, 2022,
+the average daily trading volume of the Company&rsquo;s Class&nbsp;H Ordinary Shares in the United States as a percentage of the average
+daily trading volume for the Company&rsquo;s Class&nbsp;H Ordinary Shares on a worldwide basis for the preceding&nbsp;12-month&nbsp;period
+was approximately 15.3%.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">E.
+The Company has terminated its sponsored American Depositary Receipt facility regarding its Class&nbsp;H Ordinary Shares as of the end
+of the trading day of October&nbsp;19, 2022. The Bank of New York Mellon served as the depositary for the facility. As of October 19,
+2022, the average daily trading volume of the Company&rsquo;s Class H Ordinary Shares in the United States as a percentage of the average
+daily trading volume for the Company&rsquo;s Class H Ordinary Shares on a worldwide basis for the preceding 12-month period was approximately
+15.2%.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">F.
+The Company used Bloomberg L.P. as the source for determining whether it meets the average daily trading volume requirements of Rule&nbsp;12h-6.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0.25in 0 0; background-color: white"><B>Item&nbsp;5. Alternative Record Holder
+Information</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-indent: 24.5pt; background-color: white">Not applicable.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0.25in 0 0; background-color: white"><B>Item&nbsp;6. Debt Securities</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-indent: 24.5pt; background-color: white">Not applicable.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0.25in 0 0; background-color: white"><B>Item&nbsp;7. Notice Requirement</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">The
+Company published a notice of its intent to terminate its duty to file reports under Section&nbsp;13(a) and Section&nbsp;15(d) of the
+Exchange Act on February 5, 2024 and used ACCESSWIRE to disseminate the notice, including in the United States. A copy of the notice
+was posted to the Company&rsquo;s website and another copy of the notice was furnished to the Commission under the cover of Form&nbsp;6-K&nbsp;via
+EDGAR on February 5, 2024.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0.25in 0 0; background-color: white"><B>Item&nbsp;8. Prior Form 15 Filers</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-indent: 24.5pt; background-color: white">Not applicable.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white"></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: center; background-color: white"><B>PART II</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; background-color: white"><B>Item&nbsp;9. Rule&nbsp;12g3-2(b)&nbsp;Exemption</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">The
+Company will publish the information required under Rule&nbsp;12g3-2(b)(1)(iii)&nbsp;on its website, <FONT STYLE="color: Blue"><U>https://www.petrochina.com.cn/</U> </FONT>and
+the website of SEHK.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-indent: 24.5pt; background-color: white">&nbsp;</P>
+
+<!-- Field: Page; Sequence: 3 -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="border-collapse: collapse; width: 100%; font-size: 10pt"><TR STYLE="vertical-align: top; text-align: left"><TD STYLE="width: 33%">&nbsp;</TD><TD STYLE="width: 34%; text-align: center">&nbsp;<!-- Field: Sequence; Type: Arabic; Name: PageNo -->3<!-- Field: /Sequence --></TD><TD STYLE="width: 33%">&nbsp;</TD></TR></TABLE></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; background-color: white"></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 24pt 0 0; text-align: center; background-color: white"><B>PART III</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; background-color: white"><B>Item&nbsp;10. Exhibits </B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-indent: 24.5pt; background-color: white">None.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0.25in 0 0; background-color: white"><B>Item&nbsp;11. Undertakings</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">The
+undersigned issuer hereby undertakes to withdraw this Form 15F if, at any time before the effectiveness of its termination of reporting
+under Rule&nbsp;12h-6,&nbsp;it has actual knowledge of information that causes it reasonably to believe that, at the time of filing the
+Form 15F:</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">(1)
+The average daily trading volume of its subject class of securities in the United States exceeded 5&nbsp;percent of the average daily
+trading volume of that class of securities on a worldwide basis for the same recent&nbsp;12-month&nbsp;period that the issuer used for
+purposes of Rule&nbsp;12h-6(a)(4)(i);</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">(2)
+Its subject class of securities was held of record by 300 or more United States residents or 300 or more persons worldwide, if proceeding
+under Rule&nbsp;12h-6(a)(4)(ii)&nbsp;or Rule&nbsp;12h-6(c);&nbsp;or</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">(3)
+It otherwise did not qualify for termination of its Exchange Act reporting obligations under Rule&nbsp;12h-6.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">&nbsp;</P>
+
+<!-- Field: Page; Sequence: 4 -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="border-collapse: collapse; width: 100%; font-size: 10pt"><TR STYLE="vertical-align: top; text-align: left"><TD STYLE="width: 33%">&nbsp;</TD><TD STYLE="width: 34%; text-align: center">&nbsp;<!-- Field: Sequence; Type: Arabic; Name: PageNo -->4<!-- Field: /Sequence --></TD><TD STYLE="width: 33%">&nbsp;</TD></TR></TABLE></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-align: justify; background-color: white"></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0">&nbsp;</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white"><B>Signature</B></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; text-align: center; background-color: white">&nbsp;</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">Pursuant
+to the requirements of the Securities Exchange Act of 1934, PetroChina Company Limited has duly authorized the undersigned person to sign
+on its behalf this certification on Form 15F. In so doing, PetroChina Company Limited certifies that, as represented on this Form, it
+has complied with all of the conditions set forth in Rule&nbsp;12h-6&nbsp;for terminating its registration under Section&nbsp;12(g) of
+the Exchange Act, or its duty to file reports under Section&nbsp;13(a) or Section&nbsp;15(d) of the Exchange Act, or both.</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 6pt 0 0; text-align: justify; text-indent: 24.5pt; background-color: white">&nbsp;</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 12pt 0 0; background-color: white">Date: February 5, 2024</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; background-color: white">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; border-collapse: collapse">
+  <TR>
+    <TD STYLE="width: 60%">&nbsp;</TD>
+    <TD STYLE="width: 7%">&nbsp;</TD>
+    <TD STYLE="vertical-align: bottom; width: 1%">&nbsp;</TD>
+    <TD STYLE="width: 32%">&nbsp;</TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="3" STYLE="font: 11pt Calibri, Helvetica, Sans-Serif"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt"><B>PetroChina Company Limited</B></FONT></TD></TR>
+  <TR>
+    <TD>&nbsp;</TD>
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="2">&nbsp;</TD></TR>
+  <TR>
+    <TD>&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font: 11pt Calibri, Helvetica, Sans-Serif"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">By:</FONT></TD>
+    <TD STYLE="vertical-align: bottom; font: 11pt Calibri, Helvetica, Sans-Serif">&nbsp;</TD>
+    <TD STYLE="vertical-align: top">
+    <P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0 0 1pt; border-bottom: black 0.75pt solid">/s/ Hua WANG</P></TD></TR>
+  <TR>
+    <TD>&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font: 11pt Calibri, Helvetica, Sans-Serif"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">Name:</FONT></TD>
+    <TD STYLE="vertical-align: bottom; font: 11pt Calibri, Helvetica, Sans-Serif">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font: 11pt Calibri, Helvetica, Sans-Serif"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">Hua WANG</FONT></TD></TR>
+  <TR>
+    <TD>&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font: 11pt Calibri, Helvetica, Sans-Serif"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">Title:</FONT></TD>
+    <TD STYLE="vertical-align: bottom; font: 11pt Calibri, Helvetica, Sans-Serif">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font: 11pt Calibri, Helvetica, Sans-Serif"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">CFO and Secretary to the Board of Directors</FONT></TD></TR>
+  </TABLE>
+<P STYLE="font: 11pt/107% Calibri, Helvetica, Sans-Serif; margin: 0 0 8pt">&nbsp;</P>
+
+<P STYLE="font: 11pt/107% Calibri, Helvetica, Sans-Serif; margin: 0 0 8pt"></P>
+
+<!-- Field: Page; Sequence: 5 -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="border-collapse: collapse; width: 100%; font-size: 10pt"><TR STYLE="vertical-align: top; text-align: left"><TD STYLE="width: 33%">&nbsp;</TD><TD STYLE="width: 34%; text-align: center">&nbsp;<!-- Field: Sequence; Type: Arabic; Name: PageNo -->5<!-- Field: /Sequence --></TD><TD STYLE="width: 33%">&nbsp;</TD></TR></TABLE></DIV>
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 11pt/107% Calibri, Helvetica, Sans-Serif; margin: 0 0 8pt">&nbsp;</P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>GRAPHIC
+<SEQUENCE>2
+<FILENAME>image_001.jpg
+<DESCRIPTION>GRAPHIC
+<TEXT>
+begin 644 image_001.jpg
+M_]C_X  02D9)1@ ! 0$ 8 !@  #_VP!#  <%!08%! <&!08(!P<("A$+"@D)
+M"A4/$ P1&!4:&1@5&!<;'B<A&QTE'1<8(BXB)2@I*RPK&B O,R\J,B<J*RK_
+MVP!# 0<(" H)"A0+"Q0J'!@<*BHJ*BHJ*BHJ*BHJ*BHJ*BHJ*BHJ*BHJ*BHJ
+M*BHJ*BHJ*BHJ*BHJ*BHJ*BHJ*BHJ*BK_P  1"  J <P# 2(  A$! Q$!_\0
+M'P   04! 0$! 0$           $" P0%!@<("0H+_\0 M1   @$# P($ P4%
+M! 0   %] 0(#  01!1(A,4$&$U%A!R)Q%#*!D:$((T*QP152T? D,V)R@@D*
+M%A<8&1HE)B<H*2HT-38W.#DZ0T1%1D=(24I35%565UA96F-D969G:&EJ<W1U
+M=G=X>7J#A(6&AXB)BI*3E)66EYB9FJ*CI*6FIZBIJK*SM+6VM[BYNL+#Q,7&
+MQ\C)RM+3U-76U]C9VN'BX^3EYN?HZ>KQ\O/T]?;W^/GZ_\0 'P$  P$! 0$!
+M 0$! 0        $" P0%!@<("0H+_\0 M1$  @$"! 0#! <%! 0  0)W  $"
+M Q$$!2$Q!A)!40=A<1,B,H$(%$*1H;'!"2,S4O 58G+1"A8D-.$E\1<8&1HF
+M)R@I*C4V-S@Y.D-$149'2$E*4U155E=865IC9&5F9VAI:G-T=79W>'EZ@H.$
+MA8:'B(F*DI.4E9:7F)F:HJ.DI::GJ*FJLK.TM;:WN+FZPL/$Q<;'R,G*TM/4
+MU=;7V-G:XN/DY>;GZ.GJ\O/T]?;W^/GZ_]H # ,!  (1 Q$ /P#Z1HKC?BOX
+MJO\ P3\-]0U_2%A>[M'@V+.I9&#3(K @$'D$]#5@3_$# W:?X:)[XO[C_P",
+MT 1^"O'?_"8:OXCL1I4MF-"U&2P-P95=)RCLN1T(.%!(Q@9')KKJ\-^$LOBU
+M=6\>?V99Z+(Y\2W1N1<7<J!9=W(3$9ROH3@^U:7Q \:_$3PUJ_A6S@@T"W;5
+M]32T CEEF$A8A0K%D7:N6R2N3P/<$ ];NIQ:V<UPP+"*-G('? S7&:)\5M*U
+M_1;;4[#1?$3P7"[E*:3+(."01N0%3@@C@FNMU;_D"WW_ %[R?^@FO,/@MI&I
+M7GPA\/3V_B2_L+;[-(HMK:"W.&\^3+;I(V/(QQ[4 =C_ ,)]:?\ 0#\2?^"2
+MX_\ B:CG^(=E!;R3-H7B4B-"Q T6<9P,]2H'YFL'[5XA_P"%T?\ "(_\)7J7
+M]G_\(_\ VGYOV>T\WS?M'E8SY&-NWG&,Y[]JV1X6>RO=7U@^+=;U.1K1X)[.
+MYF@-NN$R/W:1+L89!XP3GG.: +/P\\<P?$+PG'KEKI]U8(TC1^7<+PQ4X)1N
+MC+GC/J".U7+WQSX3TR]EL]2\4:+:74)VR03ZA%&Z'T*ELBN3_9\_Y(3X>_[>
+M?_2F6O0)=.L9Y6EFL[>21OO.\2DGC'7% &)_PL?P1_T.7A__ ,&D'_Q5'_"Q
+M_!'_ $.7A_\ \&D'_P 57FWQ+TJW^(7Q'T?X>:/!%#9V1&HZ[/#&JF-.B1[A
+M_$0QX_VU/\)KU^'0]*MX(X8=,LTCC4(B+ H"@#  XH Y9OC#X&'BJTT"+Q!:
+M7%Q=H62>"59+=6[(T@.T,><#VYQD9["]N396,URMO-<F)"WDP*&D?'902,GV
+MJ,:3IP.186H(_P"F*_X5D>)_'&D>#I[7_A(OM%G971V+J!B+VZ2=D=ER5)Z@
+MD >_!P 6?#?BW0_%UG)<^']0CNUA;9,F"DD+?W71@&4\'J!T-'B[7CX7\'ZI
+MKBVXN3I]L\_DE]GF;1G&[!Q]<&O/==T?3=!\5ZAJGA"[D34?$%LVKWDD,B&*
+M."V3<KH .?-F:+.<A@7]ZYRZ\4^/?&7[.]_KE]%H'V"ZT^<3.K3).51F1B%
+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
+MZ$U'\5M6O=2\;?#9;SP]J6DA/$<!5[R2V82?O(^!Y4KGCWQ6]\%O^0U\1O\
+ML:[O_P!"KT^2V@FFBFF@CDEA),3L@+1DC!*GMD<<4 0ZM_R!;[_KWD_]!->;
+M?!_0K76_@;X66\GU"$0I,P^Q:A/:ELS2##&)U+#Z_P"->DZM_P @6^_Z]Y/_
+M $$UXO\ "?Q#H4'PJ\/P77Q'M]!FAMY$EL1=V*E6\Z0[F$R,X)!'&0,8XH L
+M7OA& _M!SZ=IUWJ2R_\ "'-/!)/K-Z6$OVO:H:03"0Q],H&QWQGFM/X:6N@S
+MZ!XGU/3]$N]&UQ);BRUF&?4)[D23H-Q?=(Y#9W9W8SR1G!R9/-\#_P#"5?\
+M"1_\+9A_M;[%]@^T?VEIW^HW^9LV^5M^]SG&??%5]1E\$2:E_;C_ !6%Q?6U
+MO(B1#6;)(I5899&CC10V[ R<9.%YX& #3_9\_P"2$^'O^WG_ -*9:Z'QQXO/
+MAG3XK;2[7^TM?U%C#IFG(?FF?'+-Z1KU9C@ =QFN>_9\_P"2$^'O^WG_ -*9
+M:ZW0O"UOH]Y<:G<SR:AK%VH6XU"<#<5!R(T XCC!Z*/J23S0!XY\#] \2ZUX
+M7U/Q%;>+I=.O=3U*4WI&GPSM*Z]R[C..3@=!DXZUZ4_A/QF\;)_PL6Y7<",K
+MI%L"/H<5P'P'\:>&]"^'<MGK&LVEG<_VE</Y4LF&P2,&O2_^%F^"O^AET_\
+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
+M\!>$5T?[4;IS<23R2XP"SGH!V& *ZNBB@#D?ACX&'P\\$PZ&;LWDBRO-)+C
+M+,>P[# %=)JFF6>LZ5=:;J<"W%G=Q-%-$Q(#JPP1D<CZBK5% &)IGA+2]'\&
+M#POIJ20::()(%7S"SJK[MWS-GG+'K3O"/A:P\%^%;+P_I#3/9V881M.P9VW.
+M7))  ZL>@%;-% &'XR\,6_C/PC?:!>S2P07JJKR1$!EVNK<9!'\/I6A%IJ6^
+MB)IEK--!'';BWCE1AYB +M# D8W#KTZU<HH Q-"\(:)X<EFGTRS'VRXYN+V=
+MVFN)S_MRN2QZ=,X]!6W110 UT26-HY%5T8%65AD$'J"*P]%\#^%_#EQ-/H>@
+MV%E--(9'DB@ ;/L?X1[# 'I6]10!R6L?#?1M>\?:;XLU6:]GNM+51:VAF'V=
+M&!+"39C.[)!SG'RCCBK_ (E\':5XLN-)EUA97&DWBWL$:/A6D7IN&.1WQQ6]
+M10!C:SX3TCQ!J^D:EJMMY]QH\S3V9+$!'./F([XV@CW%5O%G@;1?&DNE/KD4
+MCG2KM;N (P 9A_"V0<J>,@8Z#FNBHH **** "L;Q5X4T?QGH$NC^(;07-I(0
+MPYPT;CHZMV89//N0<@D5LT4 <)\-/AY<_#S1]4T:/5WNM-GN#-990>;;[EPV
+M6Q@GA3TQG/'-=5HVA6.A:#!I%A%_HL*%<2'<TA))9G)^\S$DD]R36C10!YO9
+M_!#PO8:A>_9%N(--OB7N;&&8HMP2S'8[#YO*&0!&I"G'S!J] L;"TTRQBLM.
+MMH;6UA7;'#"@1$'H .!5BB@#@KSX*^!;[Q9_PD,VC[+LY+1PRM'$SY_UFU2,
+M-],#G)!/-=?JVEQ:KX?O=)=FCAN[62V+*>55D*Y&>^#5ZB@#A[+X6Z5#INDZ
+M3J%S=:AHVD1*MMIT[KY,D@))DE 4>8<] ?E']VNEU_P[I?B;19]+UJRANK:9
+M"NV1 =A(QN7/W6'8CD5IT4 <9\./AEHOPUTF6WTD2RW5UM-U=3-EI"H. ,
+M*,G QWYS79T44 4-=TW^V?#NI:7YGE_;;66WWX^[O0KG]:J>$O#<'A7P;IWA
+M^*1KB*SMQ$7DP=YZMVZ9)_"MJB@#S74/@GX?NO'VD>(;'?IL&FRI<?8+0[(7
+MF1MRMLP0O(&0N,XKTJBB@#E=1\%+J/Q0T?Q<]T5_LNSEMT@ ^^SY&2?3#'\<
+M5I^+/#T7BOPGJ.AW$\UO'?0-$98'*,N??T]1T(R.]:]% '-> _ ND> /#4.E
+M:/ H; :YN"/GN),<LQ_/ Z 5/X@\$>&O%=W9W7B+1K74)K)]T#S)DC_9/]Y?
+M]ELK[5O44 16]I;VEHEK:V\4%O&NU(8T"HH] !P!7G5M^S[\.(+B::70FN7E
+MD9P);J7:F23M"JP&!G R#P*]*HH Y2R^%O@33P/LWA'1\CHTMHDI'XL":H>)
+M_A/X?\0ZIX?O(K>/33HMX+E4LHDB$H^4[3A?5%_#-=U10 4444 %9?B'P[IG
+MBG1+C2M:M8[BVGC9/F12T9(QN4D'##.0>QK4HH YGP/\/] ^'NE26/ARW=!,
+6P>>:9]\DQ' +'V]  .OK73444 ?_V0$!
+
+end
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

@@ -1,0 +1,162 @@
+<SEC-DOCUMENT>0001354457-24-000828.txt : 20241024
+<SEC-HEADER>0001354457-24-000828.hdr.sgml : 20241024
+<ACCEPTANCE-DATETIME>20241024091704
+ACCESSION NUMBER:		0001354457-24-000828
+CONFORMED SUBMISSION TYPE:	25-NSE
+CONFIRMING COPY:	
+PUBLIC DOCUMENT COUNT:		2
+FILED AS OF DATE:		20241024
+DATE AS OF CHANGE:		20241024
+
+SUBJECT COMPANY:	
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			MINIM, INC.
+		CENTRAL INDEX KEY:			0001467761
+		STANDARD INDUSTRIAL CLASSIFICATION:	TELEPHONE & TELEGRAPH APPARATUS [3661]
+		ORGANIZATION NAME:           	04 Manufacturing
+		IRS NUMBER:				042621506
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		25-NSE
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	000-53722
+
+	BUSINESS ADDRESS:	
+		STREET 1:		848 ELM STREET
+		CITY:			MANCHESTER
+		STATE:			NH
+		ZIP:			03101
+		BUSINESS PHONE:		833-966-4646
+
+	MAIL ADDRESS:	
+		STREET 1:		848 ELM STREET
+		CITY:			MANCHESTER
+		STATE:			NH
+		ZIP:			03101
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	Zoom Telephonics, Inc.
+		DATE OF NAME CHANGE:	20090707
+
+FILED BY:		
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Nasdaq Stock Market LLC
+		CENTRAL INDEX KEY:			0001354457
+		ORGANIZATION NAME:           	
+		IRS NUMBER:				521165937
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		25-NSE
+
+	BUSINESS ADDRESS:	
+		STREET 1:		One Liberty Plaza
+		CITY:			New York
+		STATE:			NY
+		ZIP:			10006
+		BUSINESS PHONE:		301-978-4144
+
+	MAIL ADDRESS:	
+		STREET 1:		Office of General Counsel
+		STREET 2:		805 King Farm Blvd.
+		CITY:			ROCKVILLE
+		STATE:			MD
+		ZIP:			20850
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	The Nasdaq Stock Market LLC
+		DATE OF NAME CHANGE:	20060224
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>25-NSE
+<SEQUENCE>1
+<FILENAME>primary_doc.xml
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<notificationOfRemoval>
+
+    <schemaVersion>X0203</schemaVersion>
+
+    <exchange>
+        <cik>0001354457</cik>
+        <entityName>Nasdaq Stock Market LLC</entityName>
+    </exchange>
+
+    <issuer>
+        <cik>0001467761</cik>
+        <entityName>MINIM, INC.</entityName>
+        <fileNumber>000-53722</fileNumber>
+        <address>
+            <street1>848 Elm Street</street1>
+            <street2></street2>
+            <city>Manchester</city>
+            <stateOrCountryCode>NH</stateOrCountryCode>
+            <stateOrCountry>NEW HAMPSHIRE</stateOrCountry>
+            <zipCode>03101</zipCode>
+        </address>
+        <telephoneNumber>603-289-7277</telephoneNumber>
+    </issuer>
+
+    <descriptionClassSecurity>Common stock</descriptionClassSecurity>
+
+    <ruleProvision>17 CFR 240.12d2-2(b)</ruleProvision>
+
+    <signatureData>
+        <signatureName>Aravind Menon</signatureName>
+        <signatureTitle>Hearings Advisor</signatureTitle>
+        <signatureDate>2024-10-24</signatureDate>
+    </signatureData>
+</notificationOfRemoval>
+</XML>
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-99.25
+<SEQUENCE>2
+<FILENAME>minmdelistreason.txt
+<TEXT>
+Delisting Determination, The Nasdaq Stock Market LLC,
+October 24, 2024, Minim, Inc.
+The Nasdaq Stock Market LLC (the Exchange) has determined
+to remove from listing the securities of Minim, Inc.
+(the Company), effective at the opening of the trading
+session on November 4, 2024.
+Based on review of information provided by the Company,
+Nasdaq Staff determined that the Company no longer
+qualified for listing on the Exchange pursuant to
+Listing Rule 5550(b)(1).
+The Company was notified of the Staff determination
+on June 26, 2024. On June 29, 2024, the Company exercised
+its right to appeal the Staff determination to the
+Listing Qualifications Hearings Panel (Panel) under
+Listing Rule 5815.
+Pursuant to Listing Rule 5815(a)(5), the Company was
+required to provide a Written Submission to the Panel
+no later than July 12, 2024. The Hearings Department
+did not receive the Written Submission on July 12th
+and therefore closed the matter without further
+consideration.
+As a result, the securities of the Company were
+suspended on July 24, 2024.On August 20, 2024,
+the Company was granted a temporary restraining
+order (TRO) by the Supreme Court of the State of
+New York, Kings County temporarily prohibiting the
+Exchange from delisting the common stock of the
+Company.  That TRO continued until, on October 18, 2024,
+the Court denied the request by the Company for a
+preliminary injunction enjoining the Exchange from
+taking further action to delist the Company. The
+Company subsequently discontinued its case against the
+Exchange. The Exchange is therefore filing this Form 25
+pursuant to Nasdaq Rule 5830 because all available
+review and appeal procedures and periods available under
+Nasdaq Rules have expired.
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
