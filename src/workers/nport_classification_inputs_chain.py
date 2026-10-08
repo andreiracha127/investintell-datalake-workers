@@ -1,10 +1,12 @@
 """Retry the legacy fund input chain in dependency order, without daily rebuilds.
 
-The monthly loader is owned by PR #153 and is deliberately not imported here.
-Committed, verified holdings are the boundary: source -> owner-run cagg policy
--> characteristics -> atomic look-through. An asynchronous cagg request is only
-accepted work, never freshness proof. A bounded wait that expires is red; the
-next retry resumes. Existing unchanged derived cohorts are cheap worker no-ops.
+The monthly loader (``nport_secapi_monthly``) is a separate lane and is
+deliberately not imported here; it shares only the governed cagg request in
+``_fund_pipeline_freshness``. Committed, verified holdings are the boundary:
+source -> owner-run cagg policy -> characteristics -> atomic look-through. An
+asynchronous cagg request is only accepted work, never freshness proof. A
+bounded wait that expires is red; the next retry resumes. Existing unchanged
+derived cohorts are cheap worker no-ops.
 """
 
 from __future__ import annotations
@@ -55,23 +57,22 @@ def run(
                 stage = "cagg"
                 cagg = freshness.probe_stage(guard, source, stage)
                 if cagg["alarm"] or source.verdict["alarm"]:
-                    # Autocommit makes the advanced policy next_start visible
-                    # to the scheduler BEFORE any poll. Runtime never CALLs
-                    # the owner-only Timescale refresh procedure itself.
-                    job_id = guard.execute(
-                        "SELECT public.request_nport_series_profile_refresh()"
-                    ).fetchone()[0]
+                    job_id = freshness.request_profile_refresh(guard)
                     stages.append({"stage": "cagg_request", "job_id": job_id, "requested": True})
-                    for attempt in range(POLL_ATTEMPTS):
-                        if attempt:
-                            sleeper(POLL_INTERVAL_SECONDS)
+
+                    def aligned():
+                        nonlocal source
                         latest = freshness.read_source_cohort(guard, cutoff=cutoff)
                         _require_raw(latest)
                         freshness.require_unchanged("cagg", source, latest)
                         source = latest
-                        cagg = freshness.probe_stage(guard, source, stage)
-                        if not cagg["alarm"] and not source.verdict["alarm"]:
-                            break
+                        verdict = freshness.probe_stage(guard, source, "cagg")
+                        return verdict, not verdict["alarm"] and not source.verdict["alarm"]
+
+                    cagg, _polls = freshness.poll_alignment(
+                        aligned, attempts=POLL_ATTEMPTS, interval=POLL_INTERVAL_SECONDS,
+                        sleeper=sleeper,
+                    )
                 stages[0] = source.verdict
                 stages.append(cagg)
                 if cagg["alarm"]:

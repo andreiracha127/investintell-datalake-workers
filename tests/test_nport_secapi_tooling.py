@@ -30,6 +30,7 @@ from pathlib import Path
 
 import pytest
 
+from src.workers import _fund_pipeline_freshness as freshness
 from src.workers import nport_secapi_monthly as worker
 from tools.nport_dera import nport_parallel_load as loader
 from tools.nport_dera.nport_bulk_parse import CSV_COLS
@@ -546,14 +547,50 @@ def test_worker_window():
     assert (plan.container_from, plan.report_date_from, plan.report_date_to) == ("2025-10", "2025-08-01", "2025-10-31")
 
 
+REQUEST_SQL = "request_nport_series_profile_refresh"
+
+
 @pytest.fixture
 def wired(monkeypatch, tmp_path):
-    """The worker with its I/O replaced: fixture containers, a fake table, no lock contention."""
-    calls: dict = {"loads": [], "refresh": [], "existing": {"2026-05-31": {"S000000002"}}, "lock": True, "rc": {}}
+    """The worker with its I/O replaced: fixture containers, a fake table, no lock contention.
+
+    ``events`` records loads, every SQL statement, commits and alignment polls in
+    order. The profile counts as aligned from poll ``aligned_from_poll`` (never
+    when None); the shared cohort probe alarms while ``cohort_alarm`` is set.
+    """
+    calls: dict = {"loads": [], "events": [], "existing": {"2026-05-31": {"S000000002"}}, "lock": True,
+                   "rc": {}, "aligned_from_poll": 1, "cohort_alarm": False, "request_error": None}
+
+    class FakeConn:
+        def __init__(self, autocommit):
+            self.autocommit = autocommit
+
+        def execute(self, query, params=None):
+            calls["events"].append(("execute", str(query), self.autocommit))
+            if REQUEST_SQL in str(query) and calls["request_error"]:
+                raise calls["request_error"]
+            return self
+
+        def fetchone(self):
+            return (1078,)
+
+        def commit(self):
+            calls["events"].append(("commit", self.autocommit))
 
     @contextmanager
     def fake_connect(dsn, autocommit=False):
-        yield object()
+        yield FakeConn(autocommit)
+
+    def fake_cagg_counts(conn, dates):
+        calls["events"].append(("poll", tuple(dates)))
+        polls = sum(1 for event in calls["events"] if event[0] == "poll")
+        first = calls["aligned_from_poll"]
+        return {rd: 1 for rd in dates} if first is not None and polls >= first else {}
+
+    def fake_probe(conn, source, stage):
+        assert stage == "cagg" and source == "cohort"
+        return {"stage": "cagg", "alarm": calls["cohort_alarm"],
+                "breaches": ["DERIVED_COHORT_COVERAGE_BELOW_FLOOR"] if calls["cohort_alarm"] else []}
 
     @contextmanager
     def fake_lock(conn, lock_id):
@@ -566,6 +603,7 @@ def wired(monkeypatch, tmp_path):
 
     def fake_load(dsn, seed_dir, report_date):
         calls["loads"].append((report_date, sorted({r["series_id"] for r in _rows(seed_dir / f"{report_date}.csv")})))
+        calls["events"].append(("load", report_date))
         return calls["rc"].get(report_date, 0)
 
     monkeypatch.setenv("SEC_API_IO_KEY", "k" * 64)
@@ -575,7 +613,11 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(worker.downloader, "download_months", fake_download)
     monkeypatch.setattr(worker, "existing_series", lambda dsn, rd: calls["existing"].get(rd, set()))
     monkeypatch.setattr(worker, "load_report_date", fake_load)
-    monkeypatch.setattr(worker, "refresh_cagg", lambda dsn, lo, hi: calls["refresh"].append((lo, hi)))
+    # raising=False keeps the regression below runnable against the direct CALL.
+    monkeypatch.setattr(worker, "cagg_series_counts", fake_cagg_counts, raising=False)
+    monkeypatch.setattr(worker, "CAGG_POLL_INTERVAL_SECONDS", 0, raising=False)
+    monkeypatch.setattr(freshness, "read_source_cohort", lambda conn, cutoff=None: "cohort")
+    monkeypatch.setattr(freshness, "probe_stage", fake_probe)
     monkeypatch.setattr(worker, 'cagg_needs_refresh', lambda *args: False)
     monkeypatch.setattr(worker.loader, 'verify_isin_fill', lambda *args: ([], []))
     monkeypatch.setattr(worker, "report_date_counts",
@@ -593,7 +635,8 @@ def test_worker_loads_accepted_dates_in_window_one_at_a_time(wired):
     assert stats["report_dates"]["2026-05-31"]["new_series"] == 2  # S000000002 already loaded
     assert stats["report_dates"]["2026-05-31"]["validation"] == ["isin_fill 0.4286 < 0.90"]
     assert stats["outside_window"] == ["2026-03-31"]  # older than M-5: left to an operator
-    assert wired["refresh"] == [("2026-06-30", "2026-07-01")]
+    assert len(_requests(wired)) == 1
+    assert stats["cagg_refresh"]["report_dates"] == ["2026-06-30"]
 
 
 def test_worker_skips_dates_with_nothing_new_and_reports_failures(wired):
@@ -602,7 +645,8 @@ def test_worker_skips_dates_with_nothing_new_and_reports_failures(wired):
     stats = worker.run("dsn", calc_date="2026-09-10")
     assert stats["report_dates"]["2026-06-30"]["result"] == "no_new_series"
     assert stats["report_dates"]["2026-05-31"]["result"] == "failed"
-    assert stats["state"] == "failed" and wired["refresh"] == []
+    assert stats["state"] == "failed" and _requests(wired) == []
+    assert "cagg_refresh" not in stats
 
 
 def _converter_writing(csvs: dict[str, list[list[str]]], manifest_series: dict[str, int] | None = None):
@@ -619,17 +663,89 @@ def _converter_writing(csvs: dict[str, list[list[str]]], manifest_series: dict[s
     return fake_convert
 
 
-def test_worker_never_refreshes_across_a_failed_date(wired, monkeypatch):
-    """A rejected date rolls back and stays outside explicit refresh ranges."""
+def _requests(calls: dict) -> list[tuple]:
+    return [event for event in calls["events"] if event[0] == "execute" and REQUEST_SQL in event[1]]
+
+
+def _three_valid_dates(monkeypatch) -> list[str]:
     dates = ["2026-04-30", "2026-05-31", "2026-06-30"]
     monkeypatch.setattr(worker.converter, "convert",
                         _converter_writing({rd: [[rd, '123', '123456789', 'US1', 'A', 'EC', 'CORP',
                                                  '100', '1', 'USD', '100', 'false', '1', f'S-{rd}']]
                                             for rd in dates}))
+    return dates
+
+
+def test_worker_requests_the_governed_refresh_instead_of_calling_it(wired, monkeypatch):
+    """worker_writer does not own the postgres-owned cagg: a direct CALL fails in production.
+
+    One request after every load has committed, committed before the first poll,
+    on an autocommit connection; then alignment is polled, never assumed.
+    """
+    dates = _three_valid_dates(monkeypatch)
+    stats = worker.run("dsn", calc_date="2026-09-10")
+    executed = [event[1] for event in wired["events"] if event[0] == "execute"]
+    assert not any("refresh_continuous_aggregate" in statement for statement in executed)
+    requests = _requests(wired)
+    assert len(requests) == 1 and requests[0][2] is True  # autocommit
+    events = [event[0] for event in wired["events"]]
+    request_at = wired["events"].index(requests[0])
+    assert max(i for i, kind in enumerate(events) if kind == "load") < request_at
+    assert events[request_at + 1] == "commit"
+    assert events.index("poll") > request_at + 1
+    assert stats["state"] == "ok"
+    assert stats["cagg_refresh"] == {
+        "report_dates": dates, "requested": True, "job_id": 1078, "aligned": True, "polls": 1,
+        "pending_report_dates": [], "freshness": {"stage": "cagg", "alarm": False, "breaches": []},
+    }
+
+
+def test_worker_polls_until_the_owner_refresh_lands(wired, monkeypatch):
+    _three_valid_dates(monkeypatch)
+    wired["aligned_from_poll"] = 3
+    sleeps: list[float] = []
+    stats = worker.run("dsn", calc_date="2026-09-10", sleeper=sleeps.append)
+    assert stats["state"] == "ok"
+    assert stats["cagg_refresh"]["polls"] == 3 and stats["cagg_refresh"]["aligned"] is True
+    assert sleeps == [worker.CAGG_POLL_INTERVAL_SECONDS] * 2
+    assert len(_requests(wired)) == 1  # a poll never re-requests
+
+
+@pytest.mark.parametrize("cohort_alarm", [False, True], ids=["dates-pending", "cohort-misaligned"])
+def test_worker_pending_refresh_is_blocked_and_exits_non_zero(wired, monkeypatch, cohort_alarm):
+    """A receipt is not completion: an unconfirmed refresh is red until a later run confirms it."""
+    from src import run_worker
+
+    dates = _three_valid_dates(monkeypatch)
+    if cohort_alarm:
+        wired["cohort_alarm"] = True  # every loaded date holds its series; the shared cohort check does not pass
+    else:
+        wired["aligned_from_poll"] = None
+    sleeps: list[float] = []
+    stats = worker.run("dsn", calc_date="2026-09-10", sleeper=sleeps.append)
+    assert stats["state"] == "blocked" and stats["reason"] == "cagg_refresh_pending"
+    refresh = stats["cagg_refresh"]
+    assert refresh["requested"] is True and refresh["job_id"] == 1078 and refresh["aligned"] is False
+    assert refresh["polls"] == worker.CAGG_POLL_ATTEMPTS
+    assert len(sleeps) == worker.CAGG_POLL_ATTEMPTS - 1
+    assert len(_requests(wired)) == 1
+    if cohort_alarm:
+        assert refresh["pending_report_dates"] == [] and refresh["freshness"]["alarm"] is True
+    else:
+        assert refresh["pending_report_dates"] == dates
+    assert all(stats["report_dates"][rd]["result"] == "loaded" for rd in dates)
+    assert run_worker._fund_pipeline_alarm(stats)
+
+
+def test_worker_requests_once_for_accepted_dates_around_a_failed_one(wired, monkeypatch):
+    """A rejected date rolls back: it is neither awaited nor a reason for a second request."""
+    _three_valid_dates(monkeypatch)
     wired["rc"]["2026-05-31"] = 2  # transactional verify rejects and rolls back
     stats = worker.run("dsn", calc_date="2026-09-10")
     assert stats["state"] == "failed"
-    assert wired["refresh"] == [("2026-04-30", "2026-05-01"), ("2026-06-30", "2026-07-01")]
+    assert len(_requests(wired)) == 1
+    assert stats["cagg_refresh"]["report_dates"] == ["2026-04-30", "2026-06-30"]
+    assert {event[1] for event in wired["events"] if event[0] == "poll"} == {("2026-04-30", "2026-06-30")}
 
 
 def test_worker_validates_values_before_it_loads(wired, monkeypatch):
@@ -710,14 +826,15 @@ def test_worker_preserves_results_after_a_date_load_raises(wired, monkeypatch):
     assert stats['report_dates']['2026-06-30']['result'] == 'loaded'
 
 
-def test_worker_reports_a_failed_refresh_with_verified_load_results(wired, monkeypatch):
-    def refresh(*args):
-        raise RuntimeError('refresh failed')
-    monkeypatch.setattr(worker, 'refresh_cagg', refresh)
+def test_worker_reports_a_failed_refresh_request_with_verified_load_results(wired, monkeypatch):
+    _three_valid_dates(monkeypatch)
+    wired["request_error"] = RuntimeError("permission denied for function")
     stats = worker.run('dsn', calc_date='2026-09-10')
     assert stats['state'] == 'failed'
-    assert stats['cagg_refreshed'] == []
-    assert stats['cagg_refresh_failed']
+    refresh = stats['cagg_refresh']
+    assert refresh['requested'] is False and refresh['aligned'] is False
+    assert refresh['error'] == 'RuntimeError: permission denied for function'
+    assert not any(event[0] == 'poll' for event in wired['events'])
     assert stats['report_dates']['2026-06-30']['result'] == 'loaded'
 
 
@@ -729,7 +846,8 @@ def test_worker_retries_a_stale_cagg_when_no_series_are_new(wired, monkeypatch):
     monkeypatch.setattr(worker, 'cagg_needs_refresh', lambda *args: True)
     stats = worker.run('dsn', calc_date='2026-09-10')
     assert stats['state'] == 'ok' and wired['loads'] == []
-    assert wired['refresh'] == [('2026-05-31', '2026-07-01')]
+    assert len(_requests(wired)) == 1
+    assert stats['cagg_refresh']['report_dates'] == ['2026-05-31', '2026-06-30']
 
 
 def test_worker_refuses_a_date_whose_main_month_it_does_not_have(wired):

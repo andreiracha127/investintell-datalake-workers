@@ -68,7 +68,7 @@ def _fail_fund_pipeline(worker: str, exc: Exception, *, phase: str) -> None:
 
 
 def _validate_monthly_source(dsn: str) -> dict:
-    """Future PR #153 success/no-op runs still must prove current source data."""
+    """Monthly-lane success/no-op runs still must prove current source data."""
     from src.workers import _fund_pipeline_freshness as freshness
 
     with connect(dsn) as conn:

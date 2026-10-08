@@ -311,7 +311,7 @@ def test_monthly_revisit_rejects_zero_isin_cohort_without_existing_date_dilution
     if pct_total is None:
         assert any("no percentage values" in problem for problem in entry["validation"])
     assert _rows(database) == before
-    assert "cagg_refreshed" not in stats
+    assert "cagg_refresh" not in stats  # a rejected load requests no refresh
 
 
 def test_monthly_revisit_rejects_actual_zero_isin_cohort_and_rolls_back(
@@ -343,7 +343,7 @@ def test_monthly_revisit_rejects_actual_zero_isin_cohort_and_rolls_back(
         assert conn.execute(
             "SELECT last_value,is_called FROM new_cohort_insert_attempts"
         ).fetchone() == (4, True)
-    assert "cagg_refreshed" not in stats
+    assert "cagg_refresh" not in stats  # a rejected load requests no refresh
 
 
 @pytest.mark.parametrize(
@@ -758,7 +758,7 @@ def test_authentic_leverage_matches_source_percentage_reference(database, tmp_pa
         )
 
 
-def test_worker_detects_and_recovers_stale_cagg_after_committed_load(
+def test_worker_detects_stale_cagg_until_the_owner_refresh_lands(
     database, tmp_path
 ):
     from src.workers import nport_secapi_monthly as lane
@@ -771,13 +771,20 @@ def test_worker_detects_and_recovers_stale_cagg_after_committed_load(
     assert lane.cagg_needs_refresh(
         database, "2026-05-31", counts["2026-05-31"]["series"]
     )
-    ranges = lane.refresh_ranges(["2026-05-31"], set())
-    assert ranges == [("2026-05-31", "2026-06-01")]
-    for start, end in ranges:
-        lane.refresh_cagg(database, start, end)
+    with psycopg.connect(database) as conn:
+        assert lane.cagg_series_counts(conn, ["2026-05-31", "2026-06-30"]) == {}
+    # The aggregate owner's refresh job, which the lane only requests. This
+    # disposable role owns the aggregate; production's worker_writer does not.
+    with psycopg.connect(database, autocommit=True) as conn:
+        conn.execute(
+            "CALL refresh_continuous_aggregate('cagg_nport_series_profile', "
+            "'2026-05-31'::date, '2026-06-01'::date)"
+        )
     assert not lane.cagg_needs_refresh(
         database, "2026-05-31", counts["2026-05-31"]["series"]
     )
+    with psycopg.connect(database) as conn:
+        assert lane.cagg_series_counts(conn, ["2026-05-31", "2026-06-30"]) == {"2026-05-31": 1}
     with psycopg.connect(database) as conn:
         assert conn.execute(
             "SELECT n_holdings,coverage_pct FROM cagg_nport_series_profile"
