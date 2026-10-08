@@ -105,7 +105,8 @@ END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS)
 # Names the parser of the end filings; a new version re-derives every end event
 # as a correction (derive_event_classes).
 EVENT_PARSER_VERSION = "sec_event_class_v1"
-CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_unread")
+CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_carried",
+                   "class_unread", "filings_missing")
 
 PACKAGE_RE = re.compile(
     r"^(?P<year>\d{4})(?:q(?P<quarter>[1-4])|_(?P<month>\d{2}))_notes(?:_\d+)?\.zip$"
@@ -491,16 +492,37 @@ def security_kind(title: str | None, ticker: str, segments: str) -> str:
 # FSN package parsing
 # --------------------------------------------------------------------------- #
 def package_sort_key(path: Path) -> tuple[int, int, str]:
+    """(year, last month covered, name): a quarterly package sorts after the
+    monthly packages of its months, which it supersedes."""
     match = PACKAGE_RE.match(path.name)
     if match is None:
         raise ValueError(f"not a DERA FSN package name: {path.name}")
     year = int(match.group("year"))
     month = (
-        3 * (int(match.group("quarter")) - 1) + 1
+        3 * int(match.group("quarter"))
         if match.group("quarter")
         else int(match.group("month"))
     )
     return year, month, path.name
+
+
+def quarter_months(name: str) -> tuple[int, tuple[int, ...]] | None:
+    """(year, months) a quarterly package covers; None for a monthly one. DERA's
+    YYYYqN holds the filings of months 3N-2..3N, as its YYYY_MM packages did
+    (2025q3_notes.zip: filed 2025-07-01..2025-09-30; 2025_10_notes.zip: October)."""
+    match = PACKAGE_RE.match(name)
+    if match is None or not match.group("quarter"):
+        return None
+    quarter = int(match.group("quarter"))
+    return int(match.group("year")), tuple(range(3 * quarter - 2, 3 * quarter + 1))
+
+
+def covering_quarter(name: str) -> str | None:
+    """The quarterly package name prefix (YYYYqN) that supersedes a monthly one."""
+    match = PACKAGE_RE.match(name)
+    if match is None or not match.group("month"):
+        return None
+    return f"{match.group('year')}q{(int(match.group('month')) - 1) // 3 + 1}"
 
 
 def parse_fsn_date(value: str) -> dt.date | None:
@@ -1244,10 +1266,21 @@ class EventDocuments:
         raise RuntimeError(f"{url}: no answer after {self.retries} attempts")
 
 
+def _event_key(event: RegistrationEvent) -> tuple[str, int, str, dt.date]:
+    return event.adsh, event.cik, event.form, event.filed
+
+
 def describe_events(
     events: list[RegistrationEvent], documents: EventDocuments | None, ciks: set[int],
+    known: dict[tuple[str, int, str, dt.date], RegistrationEvent] | None = None,
 ) -> tuple[list[RegistrationEvent], Counter]:
-    """Read the end filings (and their amendments) of CIKs with cover data."""
+    """Read the end filings (and their amendments) of CIKs with cover data.
+
+    A filing that cannot be read now (not cached, no client) is no evidence: the
+    class already derived for that event (``known``) is carried forward
+    unchanged, and only a parse replaces it. Each such miss counts as
+    ``filings_missing``.
+    """
     described: list[RegistrationEvent] = []
     stats: Counter = Counter()
     for event in events:
@@ -1256,13 +1289,31 @@ def describe_events(
             continue
         raw = documents.text(event.cik, event.adsh)
         if raw is None:
-            stats["class_unread"] += 1
-            described.append(event)
+            stats["filings_missing"] += 1
+            prior = (known or {}).get(_event_key(event))
+            if prior is not None:
+                stats["class_carried"] += 1
+                described.append(replace(prior, source_package=event.source_package))
+            else:
+                stats["class_unread"] += 1
+                described.append(event)
             continue
         parsed = parse_event_document(raw, event.form)
         stats[f"class_{parsed.class_kind}"] += 1
         described.append(replace(event, **asdict(parsed), parser_version=EVENT_PARSER_VERSION))
     return described, stats
+
+
+def derived_events(conn, adshs: Iterable[str]) -> dict[tuple[str, int, str, dt.date],
+                                                      RegistrationEvent]:
+    """The current events of these accessions whose filing was read."""
+    rows = conn.execute(
+        f"SELECT {', '.join(EVENT_COLUMNS)} FROM sec_registration_events "
+        "WHERE retired_on IS NULL AND parser_version IS NOT NULL AND adsh = ANY(%s)",
+        (sorted(set(adshs)),),
+    ).fetchall()
+    events = [RegistrationEvent(**dict(zip(EVENT_COLUMNS, row))) for row in rows]
+    return {_event_key(e): e for e in events}
 
 
 def cover_ciks(conn) -> set[int]:
@@ -1336,18 +1387,47 @@ def _fact_hash(values: Iterable[object]) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
-def _replace_members(cur, package: str, members: Iterable[tuple[str, int]]) -> None:
-    cur.execute("DELETE FROM sec_ticker_cik_package_members WHERE source_package = %s",
-                (package,))
-    _copy(cur, "sec_ticker_cik_package_members", ("source_package", "adsh", "cik"),
-          ((package, adsh, cik) for adsh, cik in sorted(set(members))))
+def _replace_members(cur, package: str, members: Iterable[tuple[str, int]],
+                     on: dt.date) -> None:
+    """The package's (accession, CIK) pairs as of ``on``: pairs it no longer
+    contains are retired, new ones inserted; history is kept."""
+    cur.execute("CREATE TEMP TABLE tmp_sec_members (adsh text, cik bigint) ON COMMIT DROP")
+    _copy(cur, "tmp_sec_members", ("adsh", "cik"), sorted(set(members)))
+    cur.execute(
+        "UPDATE sec_ticker_cik_package_members m SET retired_on = %(on)s "
+        "WHERE m.source_package = %(p)s AND m.retired_on IS NULL AND NOT EXISTS ("
+        "SELECT 1 FROM tmp_sec_members n WHERE n.adsh = m.adsh AND n.cik = m.cik)",
+        {"on": on, "p": package},
+    )
+    cur.execute(
+        "INSERT INTO sec_ticker_cik_package_members (source_package, adsh, cik, loaded_on) "
+        "SELECT %(p)s, n.adsh, n.cik, %(on)s FROM tmp_sec_members n WHERE NOT EXISTS ("
+        "SELECT 1 FROM sec_ticker_cik_package_members m WHERE m.source_package = %(p)s "
+        "AND m.adsh = n.adsh AND m.cik = n.cik AND m.retired_on IS NULL)",
+        {"on": on, "p": package},
+    )
 
 
-def _replace_facts(cur, package: str, facts: Iterable[tuple[str, str]]) -> None:
-    cur.execute("DELETE FROM sec_ticker_cik_package_facts WHERE source_package = %s",
-                (package,))
-    _copy(cur, "sec_ticker_cik_package_facts", ("source_package", "fact_table", "fact_hash"),
-          ((package, table, fact_hash) for table, fact_hash in sorted(set(facts))))
+def _replace_facts(cur, package: str, facts: Iterable[tuple[str, str]], on: dt.date) -> None:
+    """The fact versions the package carries as of ``on`` (history is kept)."""
+    cur.execute("CREATE TEMP TABLE tmp_sec_carried (fact_table text, fact_hash text) "
+                "ON COMMIT DROP")
+    _copy(cur, "tmp_sec_carried", ("fact_table", "fact_hash"), sorted(set(facts)))
+    cur.execute(
+        "UPDATE sec_ticker_cik_package_facts f SET retired_on = %(on)s "
+        "WHERE f.source_package = %(p)s AND f.retired_on IS NULL AND NOT EXISTS ("
+        "SELECT 1 FROM tmp_sec_carried n WHERE n.fact_table = f.fact_table "
+        "AND n.fact_hash = f.fact_hash)",
+        {"on": on, "p": package},
+    )
+    cur.execute(
+        "INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, fact_hash, "
+        "loaded_on) SELECT %(p)s, n.fact_table, n.fact_hash, %(on)s FROM tmp_sec_carried n "
+        "WHERE NOT EXISTS (SELECT 1 FROM sec_ticker_cik_package_facts f "
+        "WHERE f.source_package = %(p)s AND f.fact_table = n.fact_table "
+        "AND f.fact_hash = n.fact_hash AND f.retired_on IS NULL)",
+        {"on": on, "p": package},
+    )
 
 
 _BITEMPORAL_TABLES = {
@@ -1357,32 +1437,40 @@ _BITEMPORAL_TABLES = {
 }
 
 
-def _reconcile(cur, *, package: str, fact_table: str, temp: str, columns: tuple[str, ...],
-               availability: str, reconciled_on: dt.date) -> dict[str, int]:
-    """Retire what the package no longer carries (and no other package does); add
-    what it newly carries. Never deletes or overwrites a fact row.
+def _reconcile(cur, *, package: str, fact_table: str, temp: str | None,
+               columns: tuple[str, ...], availability: str,
+               reconciled_on: dt.date) -> dict[str, int]:
+    """Retire what the package no longer carries (and no other current package
+    does); add what it newly carries. Never deletes or overwrites a fact row.
 
-    A newly carried fact of an accession some package carried before is a
-    correction: knowable from the later of its filing's public date and the
-    reconciliation date. A fact of an accession never loaded before is knowable
-    from its filing's public date.
+    A newly carried fact of an accession any package ever contained (current or
+    retired membership) is a correction: knowable from the later of its filing's
+    public date and the reconciliation date. That includes a fact retired earlier
+    and carried again: it is available again from this reconciliation, and its
+    retired interval stays. A fact of an accession never loaded before is
+    knowable from its filing's public date. ``temp`` None carries nothing (a
+    superseded package).
     """
     table = _BITEMPORAL_TABLES[fact_table]
+    carried = (f"AND NOT EXISTS (SELECT 1 FROM {temp} n WHERE n.fact_hash = f.fact_hash)"
+               if temp else "")
     cur.execute(
         f"""
         UPDATE {table} t SET retired_on = %(on)s
         WHERE t.retired_on IS NULL AND t.fact_hash IN (
             SELECT f.fact_hash FROM sec_ticker_cik_package_facts f
             WHERE f.source_package = %(package)s AND f.fact_table = %(fact_table)s
-              AND NOT EXISTS (SELECT 1 FROM {temp} n WHERE n.fact_hash = f.fact_hash)
+              AND f.retired_on IS NULL {carried}
               AND NOT EXISTS (
                   SELECT 1 FROM sec_ticker_cik_package_facts o
                   WHERE o.fact_table = f.fact_table AND o.fact_hash = f.fact_hash
-                    AND o.source_package <> %(package)s))
+                    AND o.source_package <> %(package)s AND o.retired_on IS NULL))
         """,
         {"on": reconciled_on, "package": package, "fact_table": fact_table},
     )
     retired = cur.rowcount
+    if temp is None:
+        return {"retired": retired, "inserted": 0}
     cur.execute(
         f"""
         INSERT INTO {table} ({", ".join(columns)}, fact_hash, available_on, loaded_on)
@@ -1439,12 +1527,12 @@ def load_package(conn, result: PackageResult, *,
             _replace_facts(cur, package, [
                 *(("observation", o.fact_hash) for o in result.observations),
                 *(("share_count", s.fact_hash) for s in result.share_counts),
-            ])
+            ], on)
             _replace_members(cur, package, [
                 *((adsh, submission.cik) for adsh, submission in result.submissions.items()),
                 *((o.adsh, o.cik) for o in result.observations),
                 *((s.adsh, s.cik) for s in result.share_counts),
-            ])
+            ], on)
             _record_package(
                 cur, package=package, sha256=result.sha256, size=result.size_bytes,
                 submissions=len(result.submissions), symbol_facts=result.symbol_facts,
@@ -1457,6 +1545,53 @@ def load_package(conn, result: PackageResult, *,
         "shares_inserted": shares["inserted"],
         "shares_retired": shares["retired"],
     }
+
+
+def supersede_monthly_packages(conn, quarterly: str, *,
+                               reconciled_on: dt.date | None = None) -> dict[str, object]:
+    """After quarterly package ``quarterly`` is loaded, retire the monthly packages
+    of its months: each of their facts retires on ``reconciled_on`` unless the
+    quarterly or another current package carries it, their memberships retire,
+    and the package rows record superseded_by/superseded_on."""
+    covered = quarter_months(quarterly)
+    if covered is None:
+        return {"superseded": []}
+    year, months = covered
+    on = reconciled_on or dt.date.today()
+    names = [name for (name,) in conn.execute(
+        "SELECT source_package FROM sec_ticker_cik_packages WHERE superseded_by IS NULL "
+        "AND source_package <> %s", (quarterly,)).fetchall()
+        if (m := PACKAGE_RE.match(name)) and m.group("month")
+        and int(m.group("year")) == year and int(m.group("month")) in months]
+    counts: Counter = Counter()
+    for name in sorted(names):
+        with conn.transaction():
+            with conn.cursor() as cur:
+                for fact_table, key in (("observation", "superseded_retired"),
+                                        ("share_count", "superseded_shares_retired")):
+                    counts[key] += _reconcile(
+                        cur, package=name, fact_table=fact_table, temp=None,
+                        columns=(), availability="", reconciled_on=on)["retired"]
+                cur.execute("UPDATE sec_ticker_cik_package_facts SET retired_on = %s "
+                            "WHERE source_package = %s AND retired_on IS NULL", (on, name))
+                cur.execute("UPDATE sec_ticker_cik_package_members SET retired_on = %s "
+                            "WHERE source_package = %s AND retired_on IS NULL", (on, name))
+                cur.execute("UPDATE sec_ticker_cik_packages SET superseded_by = %s, "
+                            "superseded_on = %s WHERE source_package = %s",
+                            (quarterly, on, name))
+    return {"superseded": sorted(names), **counts}
+
+
+def superseded_by(conn, name: str) -> str | None:
+    """The current quarterly package that supersedes monthly package ``name``."""
+    quarter = covering_quarter(name)
+    if quarter is None:
+        return None
+    row = conn.execute(
+        "SELECT source_package FROM sec_ticker_cik_packages WHERE superseded_by IS NULL "
+        "AND source_package LIKE %s ORDER BY source_package LIMIT 1", (f"{quarter}_notes%",),
+    ).fetchone()
+    return row[0] if row else None
 
 
 def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
@@ -1472,7 +1607,8 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
     events, sha256, size = parse_form_index(path)
     if documents is not None and ciks is None:
         ciks = cover_ciks(conn)
-    events, classes = describe_events(events, documents, ciks or set())
+    known = derived_events(conn, (e.adsh for e in events)) if documents is not None else {}
+    events, classes = describe_events(events, documents, ciks or set(), known)
     package = path.name
     on = reconciled_on or dt.date.today()
     with conn.transaction():
@@ -1487,8 +1623,8 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
                 cur, package=package, fact_table="event", temp="tmp_sec_events",
                 columns=EVENT_COLUMNS, availability=_EVENT_AVAILABILITY, reconciled_on=on,
             )
-            _replace_facts(cur, package, (("event", e.fact_hash) for e in events))
-            _replace_members(cur, package, ((e.adsh, e.cik) for e in events))
+            _replace_facts(cur, package, (("event", e.fact_hash) for e in events), on)
+            _replace_members(cur, package, ((e.adsh, e.cik) for e in events), on)
             _record_package(
                 cur, package=package, sha256=sha256, size=size, submissions=0,
                 symbol_facts=0, observations=0, share_counts=0, events=len(events),
@@ -1528,7 +1664,8 @@ def derive_event_classes(conn, documents: EventDocuments, *,
             continue
         (derived,), classes = describe_events([event], documents, ciks)
         stats.update(classes)
-        if derived.parser_version is not None and derived.fact_hash != row[-1]:
+        if (derived.parser_version is not None and classes.get("filings_missing", 0) == 0
+                and derived.fact_hash != row[-1]):
             changed.append((row[-1], derived))
     with conn.transaction():
         with conn.cursor() as cur:
@@ -1548,14 +1685,18 @@ def derive_event_classes(conn, documents: EventDocuments, *,
                 )
                 cur.execute(
                     "INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, "
-                    "fact_hash) SELECT source_package, fact_table, %s "
-                    "FROM sec_ticker_cik_package_facts "
-                    "WHERE fact_table = 'event' AND fact_hash = %s ON CONFLICT DO NOTHING",
-                    (event.fact_hash, old_hash),
+                    "fact_hash, loaded_on) SELECT f.source_package, f.fact_table, %s, %s "
+                    "FROM sec_ticker_cik_package_facts f "
+                    "WHERE f.fact_table = 'event' AND f.fact_hash = %s AND f.retired_on IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM sec_ticker_cik_package_facts g "
+                    "WHERE g.source_package = f.source_package AND g.fact_table = 'event' "
+                    "AND g.fact_hash = %s AND g.retired_on IS NULL)",
+                    (event.fact_hash, on, old_hash, event.fact_hash),
                 )
                 cur.execute(
-                    "DELETE FROM sec_ticker_cik_package_facts "
-                    "WHERE fact_table = 'event' AND fact_hash = %s", (old_hash,),
+                    "UPDATE sec_ticker_cik_package_facts SET retired_on = %s "
+                    "WHERE fact_table = 'event' AND fact_hash = %s AND retired_on IS NULL",
+                    (on, old_hash),
                 )
     return {
         "derived": len(changed),
@@ -1639,11 +1780,19 @@ def run(
                 raise RuntimeError("another sec_ticker_cik_history load holds the lock")
             require_schema(conn)
         for path in packages:
+            quarterly = superseded_by(conn, path.name) if conn is not None else None
+            if quarterly is not None:
+                item = {"package": path.name, "skipped": f"superseded by {quarterly}"}
+                print(json.dumps(item), flush=True)
+                stats.append(item)
+                continue
             result = parse_package(path)
             item = result.stats()
             if conn is not None:
                 started = time.monotonic()
                 item.update(load_package(conn, result, reconciled_on=reconciled_on))
+                item.update(supersede_monthly_packages(conn, path.name,
+                                                       reconciled_on=reconciled_on))
                 item["load_seconds"] = round(time.monotonic() - started, 1)
             print(json.dumps(item), flush=True)
             stats.append(item)

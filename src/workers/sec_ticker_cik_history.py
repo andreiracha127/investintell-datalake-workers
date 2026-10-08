@@ -15,7 +15,11 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
    facts it no longer carries (and no other package does) are retired, never
    deleted. The zip is deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it,
    so a run never needs more than one package of disk. ``WORKER_LIMIT`` caps
-   the packages per run (the backlog resumes next run).
+   the packages per run (the backlog resumes next run). DERA consolidates the
+   monthly packages of a quarter into ``YYYYqN`` after about a year: loading the
+   quarterly supersedes them (their facts retire unless a current package
+   carries them), and a listed monthly package whose quarterly is loaded is
+   skipped.
 3. Re-fetch the EDGAR form indexes of the calc date's quarter and the one before
    (an index keeps growing until its quarter closes) and reconcile their
    registration end/start rows. The end filings of CIKs with cover data are
@@ -112,11 +116,20 @@ def run(
             todo = _packages_to_load(conn, client, history.list_package_urls(client))
             stats["backlog"] = len(todo)
             for url, republished in todo[:limit] if limit else todo:
-                target = workdir / url.rsplit("/", 1)[1]
+                name = url.rsplit("/", 1)[1]
+                quarterly = history.superseded_by(conn, name)
+                if quarterly is not None:
+                    stats["packages"].append({"package": name,
+                                              "skipped": f"superseded by {quarterly}"})
+                    continue
+                target = workdir / name
                 if _needs_download(client, url, target, republished=republished):
                     history.fetch_package(client, url, target)
                 result = history.parse_package(target)
-                stats["packages"].append({**result.stats(), **history.load_package(conn, result)})
+                stats["packages"].append({
+                    **result.stats(), **history.load_package(conn, result),
+                    **history.supersede_monthly_packages(conn, name),
+                })
                 if cache is None:
                     target.unlink()
             for year, quarter in _quarters(as_of):
@@ -134,8 +147,9 @@ def run(
         if cache is None:
             shutil.rmtree(workdir, ignore_errors=True)
     changed = any(
-        p["inserted"] or p["retired"] or p["shares_inserted"] or p["shares_retired"]
-        for p in stats["packages"]
+        p.get(key) for p in stats["packages"]
+        for key in ("inserted", "retired", "shares_inserted", "shares_retired",
+                    "superseded_retired", "superseded_shares_retired")
     ) or any(i["inserted"] or i["retired"] for i in stats["form_indexes"]) or bool(
         stats.get("event_classes", {}).get("derived"))
     stats["state"] = "ok" if changed else "noop"

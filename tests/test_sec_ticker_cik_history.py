@@ -714,7 +714,7 @@ def test_end_filings_of_cover_ciks_are_described(tmp_path: Path) -> None:
         ("15-12G", None, None, None, None),  # no cover data for CIK 4242
         ("15-15D", None, None, None, None),  # not cached and no client
     ]
-    assert dict(stats) == {"class_equity": 2, "class_unread": 1}
+    assert dict(stats) == {"class_equity": 2, "class_unread": 1, "filings_missing": 1}
     assert described[0].fact_hash != events[0].fact_hash  # the class is part of the fact
 
 
@@ -2069,7 +2069,7 @@ def test_a_fact_another_package_still_carries_is_not_retired(
         )
 
     p = package("2024q1_notes.zip", "KEEP", "OLD")
-    q = package("2024_03_notes.zip", "KEEP", "OLD")
+    q = package("2024q2_notes.zip", "KEEP", "OLD")
     loader.run([p, q], dsn=dsn, dry_run=False, reconciled_on=d(2024, 4, 1))
     p.unlink()
     package("2024q1_notes.zip", "KEEP")
@@ -2080,7 +2080,7 @@ def test_a_fact_another_package_still_carries_is_not_retired(
                "WHERE retired_on IS NULL ORDER BY 1")
     assert [r[0] for r in conn.execute(current).fetchall()] == ["KEEP", "OLD"]
     q.unlink()
-    package("2024_03_notes.zip", "KEEP")
+    package("2024q2_notes.zip", "KEEP")
     loader.run([q], dsn=dsn, dry_run=False, reconciled_on=d(2024, 6, 1))
     assert [r[0] for r in conn.execute(current).fetchall()] == ["KEEP"]
     assert conn.execute(
@@ -2141,11 +2141,12 @@ def test_index_loads_read_the_end_filings_of_cover_ciks(schema_dsn, tmp_path: Pa
     stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], documents=documents,
                        reconciled_on=d(2013, 10, 1))
     assert {k: stats[0][k] for k in loader.CLASS_STAT_KEYS} == {
-        "class_equity": 2, "class_other": 0, "class_unknown": 0, "class_unread": 0,
+        "class_equity": 2, "class_other": 0, "class_unknown": 0, "class_carried": 0,
+        "class_unread": 0, "filings_missing": 0,
     }
     assert stats[1] == {"package": "derive_event_classes", "derived": 0, "class_equity": 0,
-                        "class_other": 0, "class_unknown": 0, "class_unread": 0,
-                        "filings_fetched": 0}
+                        "class_other": 0, "class_unknown": 0, "class_carried": 0,
+                        "class_unread": 0, "filings_missing": 0, "filings_fetched": 0}
     assert conn.execute(
         "SELECT cik, form, class_kind, class_count, extinguished, venue_kind, parser_version "
         "FROM sec_registration_events ORDER BY filed"
@@ -2196,7 +2197,7 @@ def test_a_parser_change_re_derives_events_as_corrections(
     documents = loader.EventDocuments(docs, None)
     assert loader.derive_event_classes(conn, documents, reconciled_on=d(2013, 10, 1)) == {
         "derived": 1, "class_equity": 1, "class_other": 0, "class_unknown": 0,
-        "class_unread": 0,
+        "class_carried": 0, "class_unread": 0, "filings_missing": 0,
     }
     monkeypatch.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_v2")
     assert loader.derive_event_classes(conn, documents, reconciled_on=d(2013, 11, 1))[
@@ -2214,6 +2215,137 @@ def test_a_parser_change_re_derives_events_as_corrections(
     stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], documents=documents,
                        reconciled_on=d(2013, 12, 1))
     assert (stats[0]["inserted"], stats[0]["retired"], stats[1]["derived"]) == (0, 0, 0)
+
+
+def test_a_fact_dropped_and_carried_again_is_known_again_from_its_return(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Codex thread 4221061354: a republication drops accession A2 whole, a later
+    one restores it. The restored fact is knowable from its return only."""
+    conn, dsn = schema_dsn
+    path = tmp_path / "2024q1_notes.zip"
+
+    def publish(with_a2: bool) -> None:
+        path.unlink(missing_ok=True)
+        _write_package(
+            path,
+            [_sub(A1, 1067983, "10-K", "20240226", "2024-02-24 08:00:05.0"),
+             *([_sub(A2, 14693, "8-K", "20240305", "")] if with_a2 else [])],
+            [_fact(A1, "TradingSymbol", "BRK.B", dimh="0xbbx"),
+             *([_fact(A2, "TradingSymbol", "BFB", dimh="0xccc")] if with_a2 else [])],
+            [], DIMS,
+        )
+
+    publish(True)
+    loader.run([path], dsn=dsn, dry_run=False, reconciled_on=d(2024, 4, 1))
+    publish(False)
+    loader.run([path], dsn=dsn, dry_run=False, reconciled_on=d(2024, 5, 1))
+    publish(True)
+    stats = loader.run([path], dsn=dsn, dry_run=False, reconciled_on=d(2024, 6, 1))
+    assert (stats[0]["inserted"], stats[0]["retired"]) == (1, 0)
+    assert conn.execute(
+        "SELECT available_on, retired_on FROM sec_ticker_cik_observations "
+        "WHERE ticker = 'BFB' ORDER BY id"
+    ).fetchall() == [(d(2024, 3, 6), d(2024, 5, 1)), (d(2024, 6, 1), None)]
+    assert _issuer(conn, "BF-B", "2024-04-15")[:2] == ("resolved", 14693)
+    assert _issuer(conn, "BF-B", "2024-05-15")[0] == "missing"  # known absent then
+    assert _issuer(conn, "BF-B", "2024-06-01")[:2] == ("resolved", 14693)
+    assert conn.execute(
+        "SELECT loaded_on, retired_on FROM sec_ticker_cik_package_members "
+        "WHERE adsh = %s ORDER BY id", (A2,)
+    ).fetchall() == [(d(2024, 4, 1), d(2024, 5, 1)), (d(2024, 6, 1), None)]
+
+
+def test_an_unreadable_filing_carries_its_derived_class_forward(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Codex thread 4221061363: under --no-fetch with a cache miss the event keeps
+    its class; only a parse replaces it."""
+    conn, dsn = schema_dsn
+    _observe(conn, 5133, "AM", "2013-07-10")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "0000876661-13-000657.txt").write_bytes(
+        (FILINGS / "0000876661-13-000657.txt").read_bytes())
+    index = _index(tmp_path / "2013QTR3.form.gz",
+                   ("25-NSE", 5133, "2013-08-12", "0000876661-13-000657"))
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
+               documents=loader.EventDocuments(docs, None), reconciled_on=d(2013, 10, 1))
+    stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
+                       documents=loader.EventDocuments(tmp_path / "empty", None),
+                       reconciled_on=d(2013, 11, 1))
+    assert (stats[0]["inserted"], stats[0]["retired"]) == (0, 0)
+    assert (stats[0]["class_carried"], stats[0]["filings_missing"]) == (1, 1)
+    assert (stats[1]["derived"], stats[1]["filings_missing"]) == (0, 0)
+    assert conn.execute(
+        "SELECT class_kind, parser_version, retired_on FROM sec_registration_events"
+    ).fetchall() == [("equity", loader.EVENT_PARSER_VERSION, None)]
+
+
+def _month(path: Path, filings: list[tuple[str, int, str, str]]) -> Path:
+    path.unlink(missing_ok=True)
+    return _write_package(
+        path,
+        [_sub(adsh, cik, "10-Q", filed) for adsh, cik, filed, _ in filings],
+        [_fact(adsh, "TradingSymbol", symbol) for adsh, _, _, symbol in filings],
+    )
+
+
+B1, B2, B3, B4 = ("0000000061-25-000001", "0000000062-25-000001",
+                  "0000000063-25-000001", "0000000064-25-000001")
+
+
+def test_a_quarterly_package_supersedes_the_months_it_consolidates(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Codex thread 4221061372: DERA replaces 2025_10..2025_12 with 2025q4."""
+    conn, dsn = schema_dsn
+    m10 = _month(tmp_path / "2025_10_notes.zip",
+                 [(B1, 61, "20251015", "AAA"), (B2, 62, "20251020", "BBB")])
+    m11 = _month(tmp_path / "2025_11_notes.zip", [(B3, 63, "20251110", "CCC")])
+    loader.run([m10, m11], dsn=dsn, dry_run=False, reconciled_on=d(2025, 12, 1))
+    # The quarterly keeps AAA, drops BBB, corrects CCC to CCD and adds DDD.
+    q4 = _month(tmp_path / "2025q4_notes.zip",
+                [(B1, 61, "20251015", "AAA"), (B3, 63, "20251110", "CCD"),
+                 (B4, 64, "20251215", "DDD")])
+    stats = loader.run([q4], dsn=dsn, dry_run=False, reconciled_on=d(2026, 12, 1))
+    assert (stats[0]["inserted"], stats[0]["superseded"], stats[0]["superseded_retired"]) == (
+        2, ["2025_10_notes.zip", "2025_11_notes.zip"], 2)
+    assert conn.execute(
+        "SELECT ticker, available_on, retired_on FROM sec_ticker_cik_observations ORDER BY ticker"
+    ).fetchall() == [
+        ("AAA", d(2025, 10, 16), None),  # carried by the quarterly: untouched
+        ("BBB", d(2025, 10, 21), d(2026, 12, 1)),
+        ("CCC", d(2025, 11, 11), d(2026, 12, 1)),
+        ("CCD", d(2026, 12, 1), None),  # a correction of a known accession
+        ("DDD", d(2025, 12, 16), None),  # first seen
+    ]
+    assert conn.execute(
+        "SELECT source_package, superseded_by, superseded_on FROM sec_ticker_cik_packages "
+        'ORDER BY source_package COLLATE "C"'
+    ).fetchall() == [
+        ("2025_10_notes.zip", "2025q4_notes.zip", d(2026, 12, 1)),
+        ("2025_11_notes.zip", "2025q4_notes.zip", d(2026, 12, 1)),
+        ("2025q4_notes.zip", None, None),
+    ]
+    assert _issuer(conn, "BBB", "2026-06-01")[:2] == ("resolved", 62)  # as known then
+    assert _issuer(conn, "BBB", "2026-12-01")[0] == "missing"
+    # A monthly package of a consolidated quarter is not loaded again.
+    again = loader.run([m11], dsn=dsn, dry_run=False, reconciled_on=d(2027, 1, 1))
+    assert again == [{"package": "2025_11_notes.zip",
+                      "skipped": "superseded by 2025q4_notes.zip"}]
+
+
+def test_quarterly_packages_sort_after_their_months() -> None:
+    names = ["2025q4_notes.zip", "2025_12_notes.zip", "2025_10_notes.zip", "2026_01_notes.zip",
+             "2025q3_notes.zip"]
+    assert [p.name for p in sorted((Path(n) for n in names), key=loader.package_sort_key)] == [
+        "2025q3_notes.zip", "2025_10_notes.zip", "2025_12_notes.zip", "2025q4_notes.zip",
+        "2026_01_notes.zip",
+    ]
+    assert loader.quarter_months("2025q4_notes.zip") == (2025, (10, 11, 12))
+    assert loader.quarter_months("2025_10_notes.zip") is None
+    assert loader.covering_quarter("2025_11_notes.zip") == "2025q4"
 
 
 def test_loader_refuses_a_database_without_the_governed_schema(tmp_path: Path) -> None:
@@ -2421,6 +2553,41 @@ def test_worker_reports_a_share_count_only_change_as_ok(
     assert [(p["inserted"], p["retired"], p["shares_inserted"], p["shares_retired"])
             for p in stats["packages"]] == [(0, 0, 1, 1)]
     assert stats["state"] == "ok"
+
+
+def test_worker_supersedes_monthly_packages_when_their_quarter_is_listed(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The DERA listing replaces 2025_10 and 2025_11 with 2025q4."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    packages = {
+        "2025_10_notes.zip": _month(build / "2025_10_notes.zip",
+                                    [(B1, 61, "20251015", "AAA"),
+                                     (B2, 62, "20251020", "BBB")]).read_bytes(),
+        "2025_11_notes.zip": _month(build / "2025_11_notes.zip",
+                                    [(B3, 63, "20251110", "CCC")]).read_bytes(),
+    }
+    client, _ = _fake_sec(tmp_path, packages, {})
+    assert worker.run(dsn, calc_date="2025-12-01", client=client)["state"] == "ok"
+    packages.clear()
+    packages["2025q4_notes.zip"] = _month(build / "2025q4_notes.zip",
+                                          [(B1, 61, "20251015", "AAA"),
+                                           (B3, 63, "20251110", "CCC")]).read_bytes()
+    stats = worker.run(dsn, calc_date="2026-12-01", client=client)
+    assert stats["state"] == "ok"
+    assert [(p["package"], p["inserted"], p["superseded"], p["superseded_retired"])
+            for p in stats["packages"]] == [
+        ("2025q4_notes.zip", 0, ["2025_10_notes.zip", "2025_11_notes.zip"], 1),
+    ]
+    assert conn.execute(
+        "SELECT ticker FROM sec_ticker_cik_observations WHERE retired_on IS NULL ORDER BY 1"
+    ).fetchall() == [("AAA",), ("CCC",)]
 
 
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:

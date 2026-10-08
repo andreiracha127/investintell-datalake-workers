@@ -196,7 +196,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS sec_registration_events_current_idx
 CREATE INDEX IF NOT EXISTS sec_registration_events_cik_idx
     ON sec_registration_events (cik, available_on DESC);
 
--- One row per loaded source package: provenance and the loader's counts.
+-- One row per loaded source package: provenance and the loader's counts. DERA
+-- consolidates monthly packages into a quarterly one after about a year
+-- (YYYYqN covers the filings of months 3N-2..3N, as the YYYY_MM packages did);
+-- once the quarterly is loaded, its months' packages are superseded_by it from
+-- superseded_on, and their facts retire unless a current package carries them.
 CREATE TABLE IF NOT EXISTS sec_ticker_cik_packages (
     source_package text PRIMARY KEY,
     package_sha256 text NOT NULL CHECK (package_sha256 ~ '^[0-9a-f]{64}$'),
@@ -207,32 +211,46 @@ CREATE TABLE IF NOT EXISTS sec_ticker_cik_packages (
     share_counts integer NOT NULL CHECK (share_counts >= 0),
     events integer NOT NULL CHECK (events >= 0),
     rejected jsonb NOT NULL DEFAULT '{}'::jsonb,
-    loaded_at timestamptz NOT NULL DEFAULT now()
+    loaded_at timestamptz NOT NULL DEFAULT now(),
+    superseded_by text,
+    superseded_on date,
+    CHECK ((superseded_by IS NULL) = (superseded_on IS NULL))
 );
 
--- The (accession, CIK) pairs each package or index contains: an accession seen
--- before makes a newly carried fact of it a correction.
+-- The (accession, CIK) pairs each package or index contains, over time (never
+-- deleted): an accession any package ever contained makes a newly carried fact of
+-- it a correction, knowable from the reconciliation date, including a fact that
+-- was retired and is carried again.
 CREATE TABLE IF NOT EXISTS sec_ticker_cik_package_members (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_package text NOT NULL,
     adsh text NOT NULL,
     cik bigint NOT NULL,
-    PRIMARY KEY (source_package, adsh, cik)
+    loaded_on date NOT NULL,
+    retired_on date
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS sec_ticker_cik_package_members_current_idx
+    ON sec_ticker_cik_package_members (source_package, adsh, cik) WHERE retired_on IS NULL;
 CREATE INDEX IF NOT EXISTS sec_ticker_cik_package_members_adsh_idx
     ON sec_ticker_cik_package_members (adsh, cik);
 
--- Which fact versions each package carries: a fact is retired only when no
--- loaded package carries it any more.
+-- Which fact versions each package carries, over time (never deleted): a fact
+-- is retired only when no current package carries it any more.
 CREATE TABLE IF NOT EXISTS sec_ticker_cik_package_facts (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_package text NOT NULL,
     fact_table text NOT NULL CHECK (fact_table IN ('observation', 'share_count', 'event')),
     fact_hash text NOT NULL,
-    PRIMARY KEY (source_package, fact_table, fact_hash)
+    loaded_on date NOT NULL,
+    retired_on date
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS sec_ticker_cik_package_facts_current_idx
+    ON sec_ticker_cik_package_facts (source_package, fact_table, fact_hash)
+    WHERE retired_on IS NULL;
 CREATE INDEX IF NOT EXISTS sec_ticker_cik_package_facts_hash_idx
-    ON sec_ticker_cik_package_facts (fact_table, fact_hash);
+    ON sec_ticker_cik_package_facts (fact_table, fact_hash) WHERE retired_on IS NULL;
 
 -- Visible rows. p_current = false: what was known at D (available_on <= D, not
 -- yet retired at D). p_current = true: today's truth up to D (current rows whose
