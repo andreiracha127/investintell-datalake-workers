@@ -9,15 +9,18 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
    any monthly supersession a stopped run left (resume_supersession).
 2. Read the DERA Financial Statement and Notes listing. Every listed package
    whose name is not in ``sec_ticker_cik_packages`` is loaded, oldest first,
-   and so is the newest listed package when it was republished: its size,
-   else the SEC's ETag or Last-Modified compared with the recorded ones, else
-   the SHA-256 of a fresh download differs (it is downloaded again even over a
-   cached copy, and a cached copy of any package is replaced when its size
-   differs from the remote one). Each package is reconciled in its own transaction:
-   facts it no longer carries (and no other package does) are retired, never
-   deleted. The zip is deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it,
-   so a run never needs more than one package of disk. ``WORKER_LIMIT`` caps
-   the packages per run (the backlog resumes next run). DERA consolidates the
+   and so is every loaded package still listed that was republished (the SEC
+   updated 2010q1-2013q4 in 2024): its size, else the SEC's ETag or
+   Last-Modified compared with the recorded ones, else the SHA-256 of a fresh
+   download differs. A download whose digest matches records its validators, so
+   a package recorded without them is downloaded once, not every run. Every
+   package loaded is downloaded by the run that loads it (a cached copy is never
+   trusted), and recorded with the validators of that download in the load's
+   own transaction. Each package is reconciled in its own transaction: facts it
+   no longer carries (and no other package does) are retired, never deleted.
+   The zip is deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it, so a run
+   never needs more than one package of disk. ``WORKER_LIMIT`` caps the
+   packages per run (the backlog resumes next run). DERA consolidates the
    monthly packages of a quarter into ``YYYYqN`` after about a year: loading the
    quarterly supersedes them (their facts retire unless a current package
    carries them), and a listed monthly package whose quarterly is loaded is
@@ -25,10 +28,11 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
 3. Re-fetch the EDGAR form indexes of the calc date's quarter and the one before
    (an index keeps growing until its quarter closes) and reconcile their
    registration end/start rows. The end filings of CIKs with cover data are
-   read for the class they concern (at most 10 requests per second), kept under
-   ``<cache>/event-docs``.
-4. Re-derive the class of end events read by another parser version, or not
-   read yet, as corrections.
+   read for the class they concern, and their Forms 8-A for the class they
+   register (at most 10 requests per second), kept under ``<cache>/event-docs``;
+   an event already read by the current parser version is carried, not fetched.
+4. Re-derive the class of end and 8-A events read by another parser version, or
+   not read yet, as corrections.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict``. ``state`` is ``ok``
 (something new was loaded) or ``noop``; an error propagates and ``run_worker``
@@ -45,6 +49,7 @@ import datetime as dt
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from scripts import load_sec_ticker_cik_history as history
@@ -57,8 +62,13 @@ def _quarters(calc_date: dt.date) -> list[tuple[int, int]]:
     return [previous, (year, quarter)]
 
 
+Validators = tuple[str | None, str | None]
+
+
 def _remote(client, url: str) -> tuple[int | None, str | None, str | None]:
-    """(size, ETag, Last-Modified) the SEC reports for a package."""
+    """(size, ETag, Last-Modified) the SEC reports for a package (HEAD, spaced to
+    stay within 10 requests per second)."""
+    time.sleep(history.FILING_SPACING_S)
     response = client.head(url)
     response.raise_for_status()
     length = response.headers.get("content-length")
@@ -66,68 +76,65 @@ def _remote(client, url: str) -> tuple[int | None, str | None, str | None]:
             response.headers.get("last-modified"))
 
 
-def _remote_size(client, url: str) -> int | None:
-    return _remote(client, url)[0]
-
-
-def _republished(client, url: str, target: Path, stored: tuple) -> bool:
-    """Whether the listed newest package differs from the loaded version: by size,
-    else by the SEC's ETag or Last-Modified when both sides have it, else by the
-    SHA-256 of a fresh download (left at ``target`` for the load)."""
+def _republished(conn, client, url: str, target: Path,
+                 stored: tuple) -> tuple[bool, Validators | None]:
+    """Whether a listed package differs from its loaded version: by size, else by
+    the SEC's ETag or Last-Modified when both sides have it, else by the SHA-256
+    of a fresh download (left at ``target``; its validators are returned). When
+    that download matches the loaded version, its validators are recorded, so the
+    next run compares them instead of downloading again."""
     size, sha256, etag, last_modified = stored
     remote_size, remote_etag, remote_modified = _remote(client, url)
     if remote_size is not None and remote_size != size:
-        return True
+        return True, None
     if remote_etag and etag:
-        return remote_etag != etag
+        return remote_etag != etag, None
     if remote_modified and last_modified:
-        return remote_modified != last_modified
-    history.fetch_package(client, url, target)
-    return history._sha256(target) != sha256
+        return remote_modified != last_modified, None
+    validators = history.fetch_package(client, url, target)
+    if history._sha256(target) != sha256:
+        return True, validators
+    history.record_remote_validators(conn, target.name, etag=validators[0],
+                                     last_modified=validators[1])
+    return False, None
 
 
-def _packages_to_load(conn, client, urls: list[str],
-                      workdir: Path | None = None) -> list[tuple[str, bool]]:
-    """(url, republished) of every package to load, oldest first. A monthly
-    package whose quarterly is loaded (current) or listed is not queued: the
-    quarterly supersedes it, so it never takes a WORKER_LIMIT slot."""
-    stored = {row[0]: row[1:] for row in conn.execute(
+def _packages_to_load(
+    conn, client, urls: list[str], workdir: Path,
+) -> tuple[list[tuple[str, bool]], dict[str, Validators]]:
+    """(url, republished) of every package to load, oldest first, and the
+    validators of the packages this check already downloaded into ``workdir``.
+    New: listed and not loaded. Republished: loaded, current (not superseded) and
+    listed, and different from the loaded version (every such package is
+    checked, not only the newest). A monthly package whose quarterly is loaded
+    (current) or listed is not queued: the quarterly supersedes it, so it never
+    takes a WORKER_LIMIT slot."""
+    recorded = {name for (name,) in conn.execute(
+        "SELECT source_package FROM sec_ticker_cik_packages").fetchall()}
+    current = {row[0]: row[1:] for row in conn.execute(
         "SELECT source_package, package_bytes, package_sha256, remote_etag, "
-        "remote_last_modified FROM sec_ticker_cik_packages"
+        "remote_last_modified FROM sec_ticker_cik_packages WHERE superseded_by IS NULL"
     ).fetchall()}
-    recorded = {name: values[0] for name, values in stored.items()}
-    quarters = {name.split("_", 1)[0] for (name,) in conn.execute(
-        "SELECT source_package FROM sec_ticker_cik_packages WHERE superseded_by IS NULL"
-    ).fetchall() if history.quarter_months(name)}
+    quarters = {name.split("_", 1)[0] for name in current if history.quarter_months(name)}
     names = {url: url.rsplit("/", 1)[1] for url in urls}
     quarters |= {names[url].split("_", 1)[0] for url in urls
                  if history.PACKAGE_RE.match(names[url]) and history.quarter_months(names[url])}
-    listed = sorted(
-        (url for url in urls if history.PACKAGE_RE.match(names[url])),
-        key=lambda url: history.package_sort_key(Path(names[url])),
-    )
+    listed = [url for url in urls if history.PACKAGE_RE.match(names[url])]
     todo = [(url, False) for url in listed if names[url] not in recorded
             and history.covering_quarter(names[url]) not in quarters]
-    if listed and names[listed[-1]] in recorded:
-        newest = listed[-1]
-        target = (workdir or Path(tempfile.gettempdir())) / names[newest]
-        if _republished(client, newest, target, stored[names[newest]]):
-            todo.append((newest, True))
-        elif workdir is None:
-            target.unlink(missing_ok=True)
-    return todo
-
-
-def _needs_download(client, url: str, target: Path, *, republished: bool,
-                    fresh: bool = False) -> bool:
-    """A republished package is fetched again unless this run just fetched it; a
-    cached one only if it differs."""
-    if fresh and target.exists():
-        return False
-    if republished or not target.exists():
-        return True
-    remote = _remote_size(client, url)
-    return remote is not None and remote != target.stat().st_size
+    fetched: dict[str, Validators] = {}
+    for url in listed:
+        name = names[url]
+        if name not in current:
+            continue
+        republished, validators = _republished(conn, client, url, workdir / name,
+                                               current[name])
+        if republished:
+            todo.append((url, True))
+            if validators is not None:
+                fetched[name] = validators
+    todo.sort(key=lambda item: history.package_sort_key(Path(names[item[0]])))
+    return todo, fetched
 
 
 def run(
@@ -156,12 +163,11 @@ def run(
                 return {**stats, "status": "lock_busy", "state": "noop"}
             history.require_schema(conn)
             stats["resumed_supersession"] = history.resume_supersession(conn)
-            before = {path.name: path.stat().st_mtime_ns for path in workdir.glob("*.zip")}
-            todo = _packages_to_load(conn, client, history.list_package_urls(client), workdir)
-            fresh = {path.name for path in workdir.glob("*.zip")
-                     if before.get(path.name) != path.stat().st_mtime_ns}
+            todo, fetched = _packages_to_load(conn, client, history.list_package_urls(client),
+                                              workdir)
             stats["backlog"] = len(todo)
-            for url, republished in todo[:limit] if limit else todo:
+            stats["republished"] = sorted(url.rsplit("/", 1)[1] for url, again in todo if again)
+            for url, _ in todo[:limit] if limit else todo:
                 name = url.rsplit("/", 1)[1]
                 quarterly = history.superseded_by(conn, name)
                 if quarterly is not None:
@@ -169,17 +175,14 @@ def run(
                                               "skipped": f"superseded by {quarterly}"})
                     continue
                 target = workdir / name
-                if _needs_download(client, url, target, republished=republished,
-                                   fresh=name in fresh):
-                    history.fetch_package(client, url, target)
+                # The bytes loaded are always those this run downloaded, so the
+                # validators recorded with them are theirs.
+                validators = fetched.get(name) or history.fetch_package(client, url, target)
                 result = history.parse_package(target)
                 stats["packages"].append({
-                    **result.stats(), **history.load_package(conn, result),
+                    **result.stats(), **history.load_package(conn, result, validators=validators),
                     **history.supersede_monthly_packages(conn, name),
                 })
-                _, etag, last_modified = _remote(client, url)
-                history.record_remote_validators(conn, name, etag=etag,
-                                                 last_modified=last_modified)
                 if cache is None:
                     target.unlink()
             for year, quarter in _quarters(as_of):
@@ -192,6 +195,7 @@ def run(
             stats["event_classes"] = history.derive_event_classes(conn, documents)
             stats["filings_fetched"] = documents.fetched
             stats["filings_failed"] = documents.failed
+            stats["filings_rejected"] = documents.rejected
     finally:
         if owns_client:
             client.close()

@@ -1674,13 +1674,17 @@ def _copy(cur, table: str, columns: tuple[str, ...], rows: Iterable[tuple]) -> N
 
 def _record_package(cur, *, package: str, sha256: str, size: int, submissions: int,
                     symbol_facts: int, observations: int, share_counts: int, events: int,
-                    rejected: Counter) -> None:
+                    rejected: Counter,
+                    validators: tuple[str | None, str | None] | None = None) -> None:
+    """Record a loaded version with the SEC's validators (ETag, Last-Modified) of
+    the very bytes loaded, in the load's transaction; None: not known for them."""
+    etag, last_modified = validators or (None, None)
     cur.execute(
         """
         INSERT INTO sec_ticker_cik_packages (
             source_package, package_sha256, package_bytes, submissions, symbol_facts,
-            observations, share_counts, events, rejected
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            observations, share_counts, events, rejected, remote_etag, remote_last_modified
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
         ON CONFLICT (source_package) DO UPDATE SET
             package_sha256 = EXCLUDED.package_sha256,
             package_bytes = EXCLUDED.package_bytes,
@@ -1690,10 +1694,12 @@ def _record_package(cur, *, package: str, sha256: str, size: int, submissions: i
             share_counts = EXCLUDED.share_counts,
             events = EXCLUDED.events,
             rejected = EXCLUDED.rejected,
+            remote_etag = EXCLUDED.remote_etag,
+            remote_last_modified = EXCLUDED.remote_last_modified,
             loaded_at = now()
         """,
         (package, sha256, size, submissions, symbol_facts, observations, share_counts,
-         events, json.dumps(dict(sorted(rejected.items())))),
+         events, json.dumps(dict(sorted(rejected.items()))), etag, last_modified),
     )
 
 
@@ -1816,9 +1822,11 @@ _OBS_AVAILABILITY = "COALESCE(n.accepted::date, n.filed + 1)"
 _EVENT_AVAILABILITY = "n.filed + 1"
 
 
-def load_package(conn, result: PackageResult, *,
-                 reconciled_on: dt.date | None = None) -> dict[str, int]:
-    """Reconcile one package version in a single transaction (bitemporal)."""
+def load_package(conn, result: PackageResult, *, reconciled_on: dt.date | None = None,
+                 validators: tuple[str | None, str | None] | None = None) -> dict[str, int]:
+    """Reconcile one package version in a single transaction (bitemporal), and
+    record it with ``validators``: the SEC's (ETag, Last-Modified) of the bytes
+    parsed (the GET that fetched them, or a --verify-cache HEAD of that file)."""
     package = result.package
     on = reconciled_on or dt.date.today()
     obs_rows = [(*o.as_tuple(), o.fact_hash) for o in result.observations]
@@ -1862,7 +1870,7 @@ def load_package(conn, result: PackageResult, *,
                 cur, package=package, sha256=result.sha256, size=result.size_bytes,
                 submissions=len(result.submissions), symbol_facts=result.symbol_facts,
                 observations=len(result.observations), share_counts=len(result.share_counts),
-                events=0, rejected=result.rejected,
+                events=0, rejected=result.rejected, validators=validators,
             )
     return {
         "inserted": observations["inserted"],
@@ -1927,7 +1935,8 @@ def resume_supersession(conn, *, reconciled_on: dt.date | None = None) -> list[d
 
 def record_remote_validators(conn, package: str, *, etag: str | None,
                              last_modified: str | None) -> None:
-    """The SEC's ETag / Last-Modified of the loaded package version."""
+    """The SEC's ETag / Last-Modified of the loaded package version, when a fresh
+    download proved the loaded version current (its SHA-256 matched)."""
     conn.execute(
         "UPDATE sec_ticker_cik_packages SET remote_etag = %s, remote_last_modified = %s "
         "WHERE source_package = %s", (etag, last_modified, package),
@@ -2080,11 +2089,13 @@ def list_package_urls(client) -> list[str]:
     return urls
 
 
-def fetch_package(client, url: str, target: Path) -> Path:
-    """Stream one FSN zip to disk; it replaces ``target`` only once it opens."""
+def fetch_package(client, url: str, target: Path) -> tuple[str | None, str | None]:
+    """Stream one FSN zip to disk; it replaces ``target`` only once it opens.
+    Returns the SEC's (ETag, Last-Modified) of the bytes fetched."""
     partial = target.with_name(target.name + ".part")
     with client.stream("GET", url) as response:
         response.raise_for_status()
+        validators = (response.headers.get("etag"), response.headers.get("last-modified"))
         with partial.open("wb") as fh:
             for chunk in response.iter_bytes(1 << 20):
                 fh.write(chunk)
@@ -2092,7 +2103,7 @@ def fetch_package(client, url: str, target: Path) -> Path:
         pass
     partial.replace(target)
     time.sleep(DOWNLOAD_SPACING_S)
-    return target
+    return validators
 
 
 def download_packages(packages_dir: Path) -> list[Path]:
@@ -2104,7 +2115,8 @@ def download_packages(packages_dir: Path) -> list[Path]:
             target = packages_dir / url.rsplit("/", 1)[1]
             if target.exists():
                 continue
-            fetched.append(fetch_package(client, url, target))
+            fetch_package(client, url, target)
+            fetched.append(target)
             print(json.dumps({"downloaded": target.name, "bytes": target.stat().st_size}))
     return fetched
 
@@ -2112,32 +2124,43 @@ def download_packages(packages_dir: Path) -> list[Path]:
 VALIDATORS_FILE = "validators.json"
 
 
-def verify_package_cache(client, packages_dir: Path) -> dict[str, tuple[str | None, str | None]]:
+def verify_package_cache(
+    client, packages_dir: Path, paths: Iterable[Path] = (),
+) -> dict[Path, tuple[str | None, str | None]]:
     """Before a load from a workstation cache: HEAD every listed package and fetch
     again any cached zip that is missing, whose size differs, whose ETag differs
     from the one recorded when it was fetched, or whose Last-Modified is newer
-    than the cached file. Returns the fresh (ETag, Last-Modified) per package,
-    the only validators the load records; prints how many were fetched again."""
+    than the cached file. The zip checked is the one the load will read: a path
+    named on the command line (``paths``), else ``packages_dir/<name>``. Returns
+    the fresh (ETag, Last-Modified) per verified path (resolved), the only
+    validators the load records; prints how many were fetched again."""
     from email.utils import parsedate_to_datetime
 
     packages_dir.mkdir(parents=True, exist_ok=True)
-    sidecar_path = packages_dir / VALIDATORS_FILE
-    try:
-        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        sidecar = {}
-    validators: dict[str, tuple[str | None, str | None]] = {}
+    named: dict[str, Path] = {}
+    for path in paths:
+        if named.setdefault(path.name, path).resolve() != path.resolve():
+            raise ValueError(f"two packages named {path.name}: {named[path.name]}, {path}")
+    sidecars: dict[Path, dict] = {}
+    validators: dict[Path, tuple[str | None, str | None]] = {}
     reasons: Counter = Counter()
     listed = [url for url in list_package_urls(client) if PACKAGE_RE.match(url.rsplit("/", 1)[1])]
     for url in listed:
         name = url.rsplit("/", 1)[1]
+        target = named.get(name, packages_dir / name)
+        if target.parent not in sidecars:
+            try:
+                sidecars[target.parent] = json.loads(
+                    (target.parent / VALIDATORS_FILE).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                sidecars[target.parent] = {}
+        sidecar = sidecars[target.parent]
         head = client.head(url)
         head.raise_for_status()
         time.sleep(DOWNLOAD_SPACING_S)
         length = head.headers.get("content-length")
         size = int(length) if length else None
         etag, modified = head.headers.get("etag"), head.headers.get("last-modified")
-        target = packages_dir / name
         reason = None
         if not target.exists():
             reason = "missing"
@@ -2153,11 +2176,14 @@ def verify_package_cache(client, packages_dir: Path) -> dict[str, tuple[str | No
             if stamp > cached:
                 reason = "last_modified"
         if reason:
-            fetch_package(client, url, target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            etag, modified = fetch_package(client, url, target)  # those of the bytes fetched
             reasons[reason] += 1
         sidecar[name] = {"etag": etag, "last_modified": modified, "size": size}
-        validators[name] = (etag, modified)
-    sidecar_path.write_text(json.dumps(sidecar, indent=1, sort_keys=True), encoding="utf-8")
+        validators[target.resolve()] = (etag, modified)
+    for directory, sidecar in sidecars.items():
+        (directory / VALIDATORS_FILE).write_text(json.dumps(sidecar, indent=1, sort_keys=True),
+                                                 encoding="utf-8")
     print(json.dumps({"verify_cache": {"listed": len(listed),
                                        "fetched_again": sum(reasons.values()),
                                        **dict(sorted(reasons.items()))}}), flush=True)
@@ -2169,15 +2195,15 @@ def discover_packages(packages_dir: Path) -> list[Path]:
     return sorted(found, key=package_sort_key)
 
 
-def listed_packages(packages: Iterable[Path], validators: dict[str, object]) -> list[Path]:
-    """After --verify-cache: only the packages the SEC lists (and that were just
-    verified) load. Any other zip in the cache, such as a package the SEC no
+def listed_packages(packages: Iterable[Path], validators: dict[Path, object]) -> list[Path]:
+    """After --verify-cache: only the package files the SEC lists and that were
+    just verified, by path, load. Any other zip, such as a package the SEC no
     longer lists, is ignored and logged."""
     packages = list(packages)
-    unlisted = sorted(path.name for path in packages if path.name not in validators)
+    unlisted = sorted(path.name for path in packages if path.resolve() not in validators)
     if unlisted:
         print(json.dumps({"ignored_unlisted_packages": unlisted}), flush=True)
-    return [path for path in packages if path.name in validators]
+    return [path for path in packages if path.resolve() in validators]
 
 
 def run(
@@ -2188,7 +2214,7 @@ def run(
     form_indexes: Iterable[Path] = (),
     reconciled_on: dt.date | None = None,
     documents: EventDocuments | None = None,
-    validators: dict[str, tuple[str | None, str | None]] | None = None,
+    validators: dict[Path, tuple[str | None, str | None]] | None = None,
 ) -> list[dict[str, object]]:
     """Parse and reconcile packages, then indexes (reading end filings with
     ``documents``), then re-derive end events read by another parser version;
@@ -2219,11 +2245,8 @@ def run(
             item = result.stats()
             if conn is not None:
                 started = time.monotonic()
-                item.update(load_package(conn, result, reconciled_on=reconciled_on))
-                if validators and path.name in validators:
-                    etag, modified = validators[path.name]
-                    record_remote_validators(conn, path.name, etag=etag,
-                                             last_modified=modified)
+                item.update(load_package(conn, result, reconciled_on=reconciled_on,
+                                         validators=(validators or {}).get(path.resolve())))
                 item.update(supersede_monthly_packages(conn, path.name,
                                                        reconciled_on=reconciled_on))
                 item["load_seconds"] = round(time.monotonic() - started, 1)
@@ -2283,7 +2306,7 @@ def main(argv: list[str] | None = None) -> int:
     validators = None
     if args.verify_cache:
         with sec_client() as verifier:
-            validators = verify_package_cache(verifier, args.packages_dir)
+            validators = verify_package_cache(verifier, args.packages_dir, args.packages)
     if args.download:
         download_packages(args.packages_dir)
         if not args.no_events:

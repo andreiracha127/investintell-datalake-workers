@@ -3562,7 +3562,8 @@ def test_a_workstation_cache_is_verified_before_the_initial_load(
     gets = [url for method, url in calls if method == "GET" and url.startswith(FSN_BASE)]
     assert sorted(gets) == [FSN_BASE + "2024_10_notes.zip", FSN_BASE + "2024_11_notes.zip"]
     assert (cache / "2024_10_notes.zip").read_bytes() == remote["2024_10_notes.zip"]
-    assert validators["2024_10_notes.zip"] == (None, "Fri, 06 Dec 2024 10:00:00 GMT")
+    assert validators[(cache / "2024_10_notes.zip").resolve()] == (
+        None, "Fri, 06 Dec 2024 10:00:00 GMT")
     loader.run(loader.discover_packages(cache), dsn=dsn, dry_run=False,
                validators=validators, reconciled_on=d(2024, 12, 10))
     assert conn.execute(
