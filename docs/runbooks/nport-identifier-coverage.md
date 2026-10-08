@@ -123,10 +123,8 @@ same two populations by 32.5 pp (worst clean 0.9445, best degraded 0.6198).
 4. **Re-run the probe** (`nport_lookthrough`, or `probe()` against the datalake
    directly) and confirm the readings return to the 0.98–0.99 band.
 
-## Deliberately not a gate
+## Publication gate
 
-The probe does not raise, and `nport_lookthrough` does not fail on a degraded
-verdict. The damage is to history already written; stopping the weekly run would
-cost a week of look-through exposures without repairing a single row. The verdict
-rides in the worker's stats so it is legible in the run log, and the WARNING
-carries the report_dates and the reason a re-run alone is a no-op.
+A degraded or undecidable identifier verdict now blocks look-through publication
+and preserves the last complete output. Repair the identified source packages
+and retry the ordered chain; do not delete serving output to clear the alarm.

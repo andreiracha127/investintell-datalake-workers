@@ -21,24 +21,29 @@ green. These are separate legacy sources from V2 artifact-only look-through.
 writer of `sec_nport_holdings`; an empty package scope now fails explicitly.
 The recurring legacy loader is workers PR
 [#153](https://github.com/andreiracha127/investintell-datalake-workers/pull/153),
-still **DO NOT MERGE**. This branch does not modify it.
+now merged into main. Its remaining direct owner-only cagg refresh is a separate
+follow-up; this branch does not modify that loader.
 
 ## Explicit policy
 
 | Stage | Evidence and threshold | Failure behavior |
 | --- | --- | --- |
 | N-PORT | Newest reporting month with at least 1,000 distinct series; anchor age at most 120 UTC calendar days. Distinct series across its three report months retain at least 90% of the preceding three-month cohort. | Blocks the fund chain; reports actual raw max separately. New series cannot compensate for missing previous series. |
-| Cagg | At least 90% of the anchored source series have the exact same latest report day and holding count. | Requests the existing owner-run policy, then polls six times with two seconds between polls. An unfinished refresh is `blocked`, never proof of freshness. |
-| Equity characteristics | At least 90% of the mapped, positive-value EC/EP source series have, for every instrument mapped to the series, a row at the exact source report date with `computed_at >=` that series' latest source `created_at`. One share class cannot cover a sibling. | Fund output is validated before commit. An unchanged fully matched cohort skips the heavy chain rebuild. |
+| Cagg | At least 90% of the anchored source series have the exact same latest report day, holding count, and sum of NAV weights. Equal row counts cannot hide a same-date weight repair. | Requests the existing owner-run policy, then polls six times with two seconds between polls. An unfinished refresh is `blocked`, never proof of freshness. |
+| Equity characteristics | At least 90% of the mapped, positive-value EC/EP source series have, for every instrument mapped to the series, a row at the exact source report date with `computed_at >=` that series' latest source `created_at`. One share class cannot cover a sibling. | Fund output and the persisted auxiliary-input signature are validated before commit under the loader lock. An unchanged fully matched cohort skips the history rebuild. |
 | Identifier coverage | Existing 90% ISIN fill floor, judged per report date with at least 1,000 holdings over 150 days through the anchor. | `degraded` or `undecidable` blocks candidates before writes. |
 | Look-through | At least 90% of the same source series match report date/count/source load time and have exposures for that same report. Computation age is at most seven days. Expanded child reports are at most 180 UTC calendar days old. | Older child holdings are left as an explicit unexpanded-fund residual. Shards write candidates; only a checked complete batch replaces serving output atomically. |
-| Classification health | Nonempty `status='completed'` run that started at or after the most recent 08:00 UTC classifier slot (five-minute start grace; the slot counts once its one-hour completion window has elapsed, so the 09:00 check requires today's run) and completed after the latest raw-tail load; run as-of within 120 days and at least the broad anchor and actual raw max. Source and all derived cohort checks pass, and each derived global watermark reaches the actual loaded raw max. | Independent read-only monitor exits 1 even if the classifier did not execute or did not publish. A recent replay of an older as-of cannot renew health. |
+| Classification health | Nonempty `status='completed'` run that started at or after the most recent 08:00 UTC classifier slot (five-minute start grace; the slot counts once its one-hour completion window has elapsed, so the 09:00 check requires today's run) and started after the latest raw-tail load and latest derived publication; run as-of within 120 days and at least the broad anchor and actual raw max. Source and all derived cohort/signature checks pass. Derived stages cover their exact anchored cohort, not the sparse raw tail; an equity-only subset need not contain the newest non-equity report. | Independent read-only monitor exits 1 even if the classifier did not execute or did not publish. A recent replay of an older as-of cannot renew health. |
 
 The three-month union is necessary: the observed staggered May/June/July cohorts
 were approximately 2,505 / 7,026 / 4,194 series. Comparing July alone with June
 would reject valid quarterly filers. A lone August row cannot advance the broad
 July anchor. Missing/empty baselines and empty eligible characteristics cohorts
-are alarms. The previous source baseline comes from the small cagg; the raw
+are alarms. A baseline alarm is recoverable by the chain: request the existing
+owner policy, then re-read both baseline retention and current cagg alignment
+on each bounded poll. Invalid/future/stale raw cohorts still stop immediately.
+A genuinely absent prior source window remains red after polling; a refresh
+request never waives retention. The previous source baseline comes from the small cagg; the raw
 scan is limited to the recent tail needed for the oldest admissible quarter.
 No freshness scan runs on a user-facing API route.
 
@@ -54,10 +59,11 @@ when N-PORT blocks the fund layer, and that partial fund-chain outcome is red.
 For a dependency-chain build, company and fund candidates share the validated
 transaction. Original calculations/history windows are preserved. A new source
 can still require the measured heavy history rebuild; schedule it off peak and
-watch shared DB IO. Daily retries validate unchanged output rather than
-recomputing it. Look-through additionally rebuilds at least every seven days,
-preserving the old weekly repair cadence for sector/security/ISIN maps and exact
-sidecars whose changes have no reliable source watermark. For an authorized
+watch shared DB IO. Daily retries validate unchanged output and content signatures rather than
+recomputing history. Look-through additionally rebuilds at least every seven
+days as a backstop. Exact sidecar, mapping, NAV, and company-value repairs now
+invalidate the relevant signature immediately, including deletes and updates
+that leave raw load times and sidecar computation times unchanged. For an authorized
 immediate mapping repair, call `nport_lookthrough.run(..., force_rebuild=True)`
 or set `NPORT_LOOKTHROUGH_FORCE_REBUILD=1` for one `src.run_worker` invocation,
 then unset it; leaving it set forces every retry to do heavy work.
@@ -120,8 +126,12 @@ uses **900367** (900363-900365 belong to the monthly N-PORT loader). Look-throug
 promotion also takes the loader's **900365** as a non-blocking transaction lock
 held through its commit: a running load blocks publication
 (`SOURCE_LOAD_IN_PROGRESS`), and a load starting meanwhile waits for the commit.
-The look-through never waits for 900365, so its order 900366 -> 900204 -> 900365
-cannot deadlock with the loader's 900363 -> 900365 -> 900364. A partial
+Characteristics takes the same non-blocking transaction lock before its final
+live recheck and holds it through COMMIT. It first takes the existing Light reader guard 900204 (also try-only), so a
+classifier cannot read old fund rows after the new receipt timestamp. Its order
+is 900366 -> 900202 -> 900204 -> 900365;
+look-through uses 900366 -> 900204 -> 900365. Neither waits for 900365, so these
+orders cannot deadlock with the loader's 900363 -> 900365 -> 900364. A partial
 `WORKER_LIMIT` cannot publish a full fund cohort.
 A replay cutoff does not replace the UTC clock used to judge live freshness.
 
@@ -162,3 +172,79 @@ Every retry checks the source signature and the live raw watermark (global
 latest report date and newest load in the raw tail, never capped by the chain's
 anchor) again before publication; a concurrent source change or newly loaded
 month blocks that candidate and leaves the previous complete output.
+
+
+## Snapshot and auxiliary lineage contract
+
+The meaningful anchor and each series' own latest date in its three-month
+cohort define required derived coverage. `raw_max` and the newest load time in
+the unbounded recent tail are change detectors, including when a caller passes
+an older `calc_date`. They do not move the derived publication target. Light's
+existing conservative raw-tail publication rule remains unchanged; health still
+checks its as-of against raw max and its start against the newest source load.
+A classifier that began before an input commit cannot certify that input merely
+by completing after it.
+
+`nport_pipeline_publications` stores one content-signature receipt per derived
+stage, in the same transaction as its serving rows. Missing receipts force one
+rebuild after this release. Characteristics fingerprints the fund identities,
+issuer mapping, company values, and mapped funds' NAV history through the anchor.
+Look-through fingerprints its fund/sector/ISIN maps and all three exact-equity
+sidecars throughout the possible child-report window, including series outside
+the parent cohort. Counts plus two independent hash-half sums detect value
+changes and deletion without materializing a large JSON array. These are content
+checks, not computation-time heuristics. The Cagg gate also checks raw NAV-weight
+sums, the additional source value consumed as look-through coverage.
+
+Before publication, the producer takes 900365, takes sorted `SHARE NOWAIT` locks
+on its auxiliary input tables, rechecks the input fingerprints and live source,
+and commits serving rows and the receipt together. A concurrent auxiliary writer
+returns `INPUT_WRITE_IN_PROGRESS`; a committed repair returns
+`INPUT_CHANGED_DURING_BUILD`. Existing sidecar and map writers need no new
+advisory-lock protocol: ordinary DML conflicts with the table locks. These locks
+are held only for final validation/promotion, not the heavy build. Manual raw
+COPY and the untracked legacy loader must honor 900365 and advance `created_at`
+on replacement loads; this PR does not
+claim to guard writers that ignore the raw loader protocol.
+
+The signatures certify the anchored classification cohort. Existing historical
+characteristics calculations remain intact. Fingerprints conservatively include
+some unused mapping/company rows and sidecars, so a repair may trigger an extra
+rebuild. They scan more input data than the old timestamp-only no-op; measure the
+first retry's IO and duration during the owner's off-peak rollout. The aggregate
+has constant memory, sidecars have a bounded report window, and NAV is restricted
+to mapped source funds. No request/API path performs these scans.
+
+The chain revalidates every dependency after look-through, catching a NAV or
+company repair that lands while the last stage is building. Read-only health
+uses the same lineage checks and requires the classifier to start after both
+receipts' publication times. Missing output tables or classification history
+produce explicit alarms without installing anything. Characteristics and
+look-through install their own idempotent output schemas before first use.
+
+## Additional owner release step for this revision
+
+The applied `nport_series_profile_refresh_request_v1.sql` is unchanged, with
+SHA-256 `c7ebf3eb6f90073a3bac4cbf86cfc39610f19df06add2d2fc46cb5ffec3a4523`.
+No replacement refresh function or new advisory-lock id is introduced.
+
+Apply `schemas/nport_pipeline_publications_v1.sql` as **worker_writer** (or allow
+the authorized worker bootstrap to install it). Rollback: first restore the
+previous callers, then run `schemas/nport_pipeline_publications_v1.rollback.sql`
+as that table owner; it drops only receipts, preserving serving data. Review
+`schemas/characteristics.sql` and `schemas/nport_lookthrough.sql` for a fresh
+installation. Existing populated plain characteristics tables are never
+silently migrated to hypertables during worker bootstrap.
+
+Before rollout, verify **worker_writer** owns or has a table-level UPDATE,
+DELETE, or TRUNCATE privilege on every auxiliary relation listed in
+`_fund_pipeline_inputs._relations`; SELECT alone cannot acquire SHARE locks.
+This is a read-only catalog/privilege preflight, not authorization to widen
+privileges. Missing rights must be resolved by the table owner before release;
+the worker fails closed. The postgres-owned cagg is deliberately excluded from
+these table locks and remains SELECT-only for runtime. Its NAV-weight aggregate
+is validated against raw holdings under the existing loader protocol.
+
+Initial receipt creation requires a full derived rebuild. Attach the planned
+retry/health services and validate the next classifier window only through the
+owner's existing deployment process. This change does not attach or deploy them.
