@@ -29,8 +29,12 @@ Decisões herdadas do estudo (não opcionais):
     semana (``nfci_release_date``; calendário em ``src/us_federal_holidays.py``).
     Point-in-time: cada observação só vota a partir da divulgação. O backtest
     ``7ecef2e31f1fa4c98b7c5cc732b1f259`` aplicou o NFCI na data de observação; a
-    revalidação com o carimbo de divulgação está pendente (auditoria quant
-    2026-10-07, MR-1).
+    revalidação com o carimbo de divulgação (auditoria quant 2026-10-07, MR-1) foi
+    feita localmente em 2026-10-07: de 2007-01-01 a 2026-06-01, os braços data de
+    observação e data de divulgação têm zero dias com estado diferente e as mesmas
+    métricas (CAGR 12,69%, vol 15,37%, Sharpe 0,856, maxDD 24,50%, 16 trocas), e o
+    braço de divulgação coincide com ``regime_composite_daily`` de produção em
+    4904/4904 dias.
 
 Contract:  run(dsn, *, calc_date=None, limit=None)
            -> {"days", "upserted", "state", "vote_count", "flips", "last_flip",

@@ -42,6 +42,8 @@ DEFAULT_NPORT_DIRS = tuple(
         "2025q3_nport",
         "2025q4_nport",
         "2026q1_nport",
+        "2026q2_nport",
+        "2026q3_nport",
     )
 )
 

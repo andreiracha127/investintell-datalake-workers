@@ -5,15 +5,28 @@ Parity strategy — the scoring formulas are IMPORTED UNMODIFIED from the frozen
 modules, and only the orchestration (which the DB-coupled worker performs) is
 reimplemented in-memory over pack-v2 vintage rows:
 
-* ``standardized_latest`` and ``axis_score`` (``src.quadrant_score``) UNMODIFIED,
-  fed the axis specs from ``src.macro_sources.SEED_SOURCES`` and the normalized
-  ``axis_weights``. This is exactly what ``quadrant_macro._score_axis`` does,
-  including the per-series ``z * spec.direction`` sign-flow and the None==missing
-  treatment.
+* ``axis_score`` (``src.quadrant_score``) UNMODIFIED, fed the axis specs from
+  ``src.macro_sources.SEED_SOURCES`` and the normalized ``axis_weights``. This is
+  exactly what ``quadrant_macro._score_axis`` does, including the per-series
+  ``z * spec.direction`` sign-flow and the None==missing treatment.
+* the per-series z: ``economic_transform`` and ``standardize``
+  (``src.macro_transforms``) UNMODIFIED; ``standardization_window``
+  (``src.quadrant_score``) is shared with ``standardized_latest`` and the worker's
+  history count, so z and the series' nValid come from ONE transform (calling
+  ``standardized_latest`` and counting separately ran every transform twice and
+  doubled the replay). A test holds it bit-for-bit to ``standardized_latest`` and to
+  ``quadrant_macro._valid_history_count`` over the certified pack.
 * ``uncertainty_raw`` / ``axis_confidence`` (``src.quadrant_confidence``) and
   ``axis_hysteresis`` (``src.quadrant_hysteresis``) UNMODIFIED, via
   ``quadrant_assemble.classify_axis`` / ``build_snapshot`` UNMODIFIED — so the
   hysteresis / latch / coverage / status semantics are parity by construction.
+* axis coverage = the frozen freeze §6 formula WITH its historyCoverage factor
+  (``min(1, nValid_i / minimum_valid_observations_i)``), nValid = the length of the
+  standardizer's own eligible window — parity with ``quadrant_macro._coverage`` /
+  ``_valid_history_count`` since the 2026-10-07 quant audit (workers PR #161). On the
+  certified pack every series that scores carries >= 24 valid months, so the factor
+  is exactly 1 there and the certified chain is byte-identical. The provenance hash
+  keeps its frozen (z, z, as_of) layout and the model labels are unchanged.
 
 The harness supplies the same per-run inputs the worker computes from the DB:
   * PIT read = ``harness.phase0q.pit.latest_vintage_as_of`` (parity-tested),
@@ -35,19 +48,24 @@ grid, which also makes the grid's ``identical decision series`` requirement exac
 from __future__ import annotations
 
 import datetime as _dt
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
-from src.macro_sources import SEED_SOURCES, axis_weights
-from src.quadrant_score import axis_score, standardized_latest
 from src import quadrant_assemble as _qa
+from src.macro_sources import SEED_SOURCES, axis_weights
+from src.macro_transforms import economic_transform, standardize
 from src.quadrant_confidence import U_FLOOR_SEED
+from src.quadrant_score import axis_score, standardization_window
 
 from .pit import PitIndex
 
 MODEL_VERSION = "macro_quadrant_us_v1"
 CONFIDENCE_METHOD = "rolling_score_mad_distinct_vintages_v1"
 SCORE_HISTORY_VINTAGES = 36  # mirrors quadrant_macro.SCORE_HISTORY_VINTAGES
+# standardized_latest's default trailing window — mirrors
+# quadrant_macro.STANDARDIZATION_WINDOW_YEARS
+STANDARDIZATION_WINDOW_YEARS = 10
 
 _AXES = ("growth", "inflation")
 
@@ -91,13 +109,15 @@ def _decision_time(as_of: _dt.date) -> _dt.datetime:
 def _score_axis(
     index: PitIndex, axis: str, decision_time: _dt.datetime,
     *, std_cache: dict | None = None,
-) -> tuple[float | None, dict[str, float], dict[str, float | None]]:
-    """(score, contributions, z_by_series) for one axis — parity with
-    ``quadrant_macro._score_axis`` (PIT read + per-series direction + axis_score).
+) -> tuple[float | None, dict[str, float], dict[str, float | None], dict[str, int]]:
+    """(score, contributions, z_by_series, history_counts) for one axis — parity
+    with ``quadrant_macro._score_axis`` (PIT read + per-series direction +
+    axis_score; history_counts = nValid per series for the §6 coverage, read from
+    the SAME PIT series the standardizer sees).
 
-    ``std_cache`` optionally memoizes ``standardized_latest`` by (series, as_of,
-    PIT-series signature) — a pure-function cache that only accelerates repeated
-    identical inputs and never changes the value.
+    ``std_cache`` optionally memoizes (z, nValid) by (series, as_of, PIT-series
+    signature) — a pure-function cache that only accelerates repeated identical
+    inputs and never changes the value.
     """
     specs = _axis_specs(axis)
     weights = axis_weights(axis)
@@ -106,42 +126,87 @@ def _score_axis(
     pit = index.latest_vintage_as_of(series_ids, decision_time)
 
     z_by_series: dict[str, float | None] = {}
+    history_counts: dict[str, int] = {}
     for spec in specs:
         series = pit.get(spec.series_id, {})
-        z = _standardized_latest_cached(spec, series, decision_date, std_cache)
+        z, n_valid = _standardized_latest_cached(spec, series, decision_date, std_cache)
         z_by_series[spec.series_id] = (z * spec.direction) if z is not None else None
+        history_counts[spec.series_id] = n_valid
 
     score, contributions = axis_score(weights, z_by_series)
-    return score, contributions, z_by_series
+    return score, contributions, z_by_series, history_counts
 
 
-def _standardized_latest_cached(spec, series, as_of, std_cache):
+def _standardized_latest_cached(spec, series, as_of, std_cache) -> tuple[float | None, int]:
+    """(z, nValid) for one series at ``as_of`` — see ``_standardized_latest_and_count``
+    — memoized when ``std_cache`` is given."""
     if std_cache is None:
-        return standardized_latest(spec, series, as_of)
+        return _standardized_latest_and_count(spec, series, as_of)
     # Signature: only the periods <= as_of feed the transform/standardizer, and the
     # transform's own trailing-window logic + the 10y cutoff select the inputs; the
     # full PIT dict signature is a safe (identity) key. Frozen tuple of sorted items.
     signature = (spec.series_id, as_of, tuple(sorted(series.items())))
     cached = std_cache.get(signature)
-    if cached is _MISS:
-        return None
-    if cached is not None:
-        return cached
-    value = standardized_latest(spec, series, as_of)
-    std_cache[signature] = value if value is not None else _MISS
-    return value
+    if cached is None:
+        cached = _standardized_latest_and_count(spec, series, as_of)
+        std_cache[signature] = cached
+    return cached
 
 
-_MISS = object()
+def _standardized_latest_and_count(
+    spec, series: Mapping[_dt.date, float], as_of: _dt.date,
+    *, window_years: int = STANDARDIZATION_WINDOW_YEARS,
+) -> tuple[float | None, int]:
+    """(``standardized_latest(spec, series, as_of)``, nValid_i) from ONE economic
+    transform.
+
+    ``standardization_window`` supplies the same eligible periods as
+    ``standardized_latest`` and ``quadrant_macro._valid_history_count`` without
+    importing the DB-coupled worker into the harness's pinned closure. nValid
+    (freeze §6) is the length of that eligible list — the history the standardizer
+    actually sees. z is None when nothing is eligible or the robust scale is
+    undefined.
+    """
+    transformed = economic_transform(
+        spec.economic_transform_id, series, neutral_level=spec.neutral_level)
+    eligible = standardization_window(transformed, as_of, window_years=window_years)
+    if not eligible:
+        return None, 0
+    latest_period = max(eligible)
+    history = [transformed[p] for p in eligible]
+    return (standardize(spec.standardizer_id, history, transformed[latest_period]),
+            len(eligible))
 
 
-def _coverage(z_by_series: Mapping[str, float | None], specs) -> float:
-    """Importance-weighted coverage — parity with ``quadrant_macro._coverage``."""
+def _coverage(
+    z_by_series: Mapping[str, float | None], specs,
+    history_counts: Mapping[str, int] | None = None,
+) -> float:
+    """Freeze §6 importance-weighted coverage — parity with
+    ``quadrant_macro._coverage`` (the frozen formula restated in
+    src/quadrant_confidence.py):
+
+        historyCoverage_i = min(1, nValid_i / minimum_valid_observations_i)
+        usable_i          = I(currentValueValid_i) · historyCoverage_i
+        coverage_a        = Σ|w_i|·usable_i / Σ|w_i|
+
+    ``history_counts`` = nValid_i per series_id (from ``_score_axis``). A valid series
+    absent from a supplied dict counts as nValid = 0 (fail-safe: it reads as
+    uncovered, never as fully covered). ``None`` keeps historyCoverage ≡ 1 — the
+    pre-audit behaviour, for callers that cannot supply the counts.
+    """
     total = sum(abs(s.weight) for s in specs)
     if total <= 0:
         return 0.0
-    have = sum(abs(s.weight) for s in specs
-               if z_by_series.get(s.series_id) is not None)
+    have = 0.0
+    for s in specs:
+        if z_by_series.get(s.series_id) is None:
+            continue
+        history_coverage = 1.0
+        if history_counts is not None and s.minimum_valid_observations > 0:
+            history_coverage = min(
+                1.0, history_counts.get(s.series_id, 0) / s.minimum_valid_observations)
+        have += abs(s.weight) * history_coverage
     return have / total
 
 
@@ -230,13 +295,13 @@ def run_decision_series(
     for as_of in month_end_decision_dates(start, end):
         decision_time = _decision_time(as_of)
 
-        g_score, g_contrib, g_z = score_axis("growth", decision_time)
-        i_score, i_contrib, i_z = score_axis("inflation", decision_time)
+        g_score, g_contrib, g_z, g_nvalid = score_axis("growth", decision_time)
+        i_score, i_contrib, i_z, i_nvalid = score_axis("inflation", decision_time)
         g_hist = score_history("growth", decision_time)
         i_hist = score_history("inflation", decision_time)
 
-        g_cov = _coverage(g_z, g_specs)
-        i_cov = _coverage(i_z, i_specs)
+        g_cov = _coverage(g_z, g_specs, g_nvalid)
+        i_cov = _coverage(i_z, i_specs, i_nvalid)
         g_health = 1.0 if g_score is not None else 0.0
         i_health = 1.0 if i_score is not None else 0.0
 
@@ -287,8 +352,9 @@ def run_decision_series(
 
 
 def _vintage_hash(g_z: Mapping[str, Any], i_z: Mapping[str, Any], as_of: _dt.date) -> str:
-    """Stable provenance hash of the axis inputs — parity with
-    ``quadrant_macro._vintage_hash`` (so snapshot ids match the worker)."""
+    """Stable provenance hash of the axis inputs — the frozen (z, z, as_of) layout of
+    the pre-audit ``quadrant_macro._vintage_hash``, kept for the frozen v1/v3 labels
+    (the worker's v*.1 layout also binds nValid and the confidence inputs)."""
     import hashlib
     payload = repr((sorted(g_z.items()), sorted(i_z.items()), as_of.isoformat()))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

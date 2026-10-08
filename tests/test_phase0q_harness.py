@@ -304,6 +304,178 @@ def test_decision_over_real_pack_full_basket_has_full_coverage_and_decisions():
 
 
 # --------------------------------------------------------------------------- #
+# Freeze §6 coverage: the historyCoverage factor (quant audit 2026-10-07)     #
+# --------------------------------------------------------------------------- #
+
+def _two_specs():
+    from src.macro_sources import _macro
+
+    a = _macro("YOUNG", "growth", "synthetic", 0.5, "log_3m3m_ann_v1")
+    b = _macro("GONE", "growth", "synthetic", 0.5, "log_3m3m_ann_v1")
+    assert a.minimum_valid_observations == b.minimum_valid_observations == 24
+    return a, b
+
+
+def _pre_audit_coverage(z_by_series, specs) -> float:
+    """What the harness computed before the fix: Σ|w|·I(valid) / Σ|w|."""
+    total = sum(abs(s.weight) for s in specs)
+    have = sum(abs(s.weight) for s in specs if z_by_series.get(s.series_id) is not None)
+    return have / total
+
+
+def test_coverage_applies_the_history_coverage_factor_to_a_young_series():
+    """Series A valid with 12 valid months, series B missing, weights 0.5/0.5:
+    0.5·min(1, 12/24) = 0.25. The harness used to return 0.5 (factor dropped)."""
+    a, b = _two_specs()
+    z = {"YOUNG": 1.0, "GONE": None}
+    assert decision._coverage(z, (a, b), {"YOUNG": 12, "GONE": 0}) == pytest.approx(0.25)
+    assert _pre_audit_coverage(z, (a, b)) == pytest.approx(0.5)
+    # a valid series absent from supplied counts is fail-safe: uncovered, never full
+    assert decision._coverage(z, (a, b), {}) == 0.0
+
+
+def test_coverage_is_bit_identical_to_the_old_value_from_24_months_on():
+    """nValid >= 24 makes the factor exactly 1, so the result equals the pre-fix
+    value bit-for-bit — the property that keeps the certified chain unchanged."""
+    a, b = _two_specs()
+    for counts in ({"YOUNG": 24, "GONE": 24}, {"YOUNG": 25, "GONE": 119},
+                   {"YOUNG": 600, "GONE": 24}):
+        for z in ({"YOUNG": 1.0, "GONE": -0.5}, {"YOUNG": 1.0, "GONE": None},
+                  {"YOUNG": None, "GONE": None}):
+            assert decision._coverage(z, (a, b), counts) == _pre_audit_coverage(z, (a, b))
+    for axis in ("growth", "inflation"):
+        specs = decision._axis_specs(axis)
+        counts = {s.series_id: 24 for s in specs}
+        z = {s.series_id: 0.3 for s in specs}
+        assert decision._coverage(z, specs, counts) == _pre_audit_coverage(z, specs) == 1.0
+        z[specs[0].series_id] = None
+        assert decision._coverage(z, specs, counts) == _pre_audit_coverage(z, specs) < 1.0
+
+
+def _assert_z_and_count_parity(spec, series, as_of, *, window_years=10):
+    from src.quadrant_score import standardized_latest
+    from src.workers import quadrant_macro as qm
+
+    z, n_valid = decision._standardized_latest_and_count(
+        spec, series, as_of, window_years=window_years)
+    expected_z = standardized_latest(spec, series, as_of, window_years=window_years)
+    assert z == expected_z, (spec.series_id, as_of)
+    if z is not None:
+        assert z.hex() == expected_z.hex(), (spec.series_id, as_of)
+    assert n_valid == qm._valid_history_count(
+        spec, series, as_of, window_years=window_years), (spec.series_id, as_of)
+    return z, n_valid
+
+
+def test_history_count_and_coverage_are_the_live_worker_s():
+    """The harness's §6 coverage and shared standardization window yield the
+    worker's answers, with one transform supplying both z and nValid."""
+    from src.macro_sources import SEED_SOURCES
+    from src.workers import quadrant_macro as qm
+
+    a, b = _two_specs()
+    for z, counts in (({"YOUNG": 1.0, "GONE": None}, {"YOUNG": 12, "GONE": 0}),
+                      ({"YOUNG": 1.0, "GONE": 2.0}, {"YOUNG": 6, "GONE": 30}),
+                      ({"YOUNG": 1.0, "GONE": 2.0}, {"YOUNG": 7}),
+                      ({"YOUNG": 1.0, "GONE": 2.0}, {}),
+                      ({"YOUNG": 1.0, "GONE": 2.0}, None)):
+        assert decision._coverage(z, (a, b), counts) == qm._coverage(z, (a, b), counts)
+
+    series = {}
+    period = dt.date(2010, 1, 1)
+    for k in range(150):
+        series[period] = 100.0 + 0.1 * k + (0.5 if k % 7 == 0 else 0.0)
+        period = _first_of_next_month(period)
+    for spec in SEED_SOURCES:
+        for as_of in (dt.date(2010, 3, 31), dt.date(2010, 12, 31), dt.date(2011, 6, 30),
+                      dt.date(2016, 1, 31), dt.date(2022, 6, 30)):
+            _assert_z_and_count_parity(spec, series, as_of)
+        _assert_z_and_count_parity(spec, {}, dt.date(2022, 6, 30))
+
+
+def test_z_and_history_count_match_the_standardizer_over_the_certified_pack():
+    """Bit-for-bit over the certified pack's real PIT series, around every series'
+    first vintage (PPIFIS 2014-02-19, ACOGNO 2011-06-24) and across the chain."""
+    from src.macro_sources import SEED_SOURCES
+
+    rows = json.loads((ROOT / "fixtures" / "p1_packs"
+                       / "open_macro_v03_certified_input_pack_003" / "data" / "canonical"
+                       / "macro_observation_vintage.json").read_text(encoding="utf-8"))
+    index = pit.PitIndex(rows)
+    series_ids = [s.series_id for s in SEED_SOURCES]
+    for as_of in (dt.date(1999, 3, 31), dt.date(2005, 1, 31), dt.date(2011, 6, 30),
+                  dt.date(2014, 2, 28), dt.date(2014, 3, 31), dt.date(2016, 12, 31),
+                  dt.date(2020, 4, 30), dt.date(2024, 1, 31), dt.date(2026, 6, 25)):
+        when = dt.datetime(as_of.year, as_of.month, as_of.day, tzinfo=dt.timezone.utc)
+        snapshot = index.latest_vintage_as_of(series_ids, when)
+        for spec in SEED_SOURCES:
+            _assert_z_and_count_parity(spec, snapshot.get(spec.series_id, {}), as_of)
+
+
+@pytest.mark.parametrize("n_months,nan_indices,as_of,window_years,expected_count", [
+    pytest.param(18, (), dt.date(2021, 5, 1), 10, 13, id="below-24-valid-observations"),
+    pytest.param(36, (12, 18), dt.date(2022, 11, 1), 10, 19, id="nan-gaps-in-window"),
+    pytest.param(20, (), dt.date(2021, 6, 1), 1, 13, id="exact-cutoff-and-as-of"),
+    pytest.param(1, (), dt.date(2019, 12, 1), 10, 0, id="single-observation"),
+    pytest.param(6, (), dt.date(2020, 5, 1), 10, 1, id="single-transformed-observation"),
+])
+def test_z_and_history_count_match_at_synthetic_window_edges(
+    n_months, nan_indices, as_of, window_years, expected_count, monkeypatch,
+):
+    from dataclasses import replace
+
+    from src.macro_sources import SEED_SOURCES
+
+    spec = replace(SEED_SOURCES[0], source_id="synthetic:EDGE", series_id="EDGE")
+    series = {}
+    period = dt.date(2019, 12, 1)
+    for k in range(n_months):
+        series[period] = float("nan") if k in nan_indices else 100.0 + k + 0.1 * k * k
+        period = _first_of_next_month(period)
+
+    transform = decision.economic_transform
+    transform_calls = []
+
+    def counted_transform(*args, **kwargs):
+        transform_calls.append(1)
+        return transform(*args, **kwargs)
+
+    monkeypatch.setattr(decision, "economic_transform", counted_transform)
+    z, n_valid = _assert_z_and_count_parity(spec, series, as_of, window_years=window_years)
+    assert len(transform_calls) == 1  # z and count still require just ONE transform.
+    assert n_valid == expected_count
+    assert (z is None) == (expected_count < 2)
+    assert spec.minimum_valid_observations == 24
+
+
+def test_the_certified_engines_feed_the_factor_into_coverage():
+    """End to end through both engines: a basket whose PPIFIS starts in 2014-01 has
+    5 valid transformed months at 2015-06-30 (ann3m_minus_yoy needs 12 months of
+    warm-up), so inflation coverage is 0.30 + 0.25 + 0.20 + 0.25·5/24 instead of 1.0,
+    and it is the binding axis of coverage_quality in v1 and in the certified v3."""
+    import math
+
+    from harness.phase0q import decision_v3
+
+    def path(k):
+        return 100.0 * (1.004 ** k) * (1.0 + 0.03 * math.sin(k / 5.0))
+
+    rows = [r for r in _synthetic_basket_rows(path, n_months=84)
+            if r["series_id"] != "PPIFIS" or r["observation_period"] >= "2014-01-01"]
+    as_of = dt.date(2015, 6, 30)
+    when = dt.datetime(2015, 6, 30, tzinfo=dt.timezone.utc)
+    _score, _contrib, z, counts = decision._score_axis(pit.PitIndex(rows), "inflation", when)
+    assert z["PPIFIS"] is not None
+    assert counts["PPIFIS"] == 5
+    expected = 0.30 + 0.25 + 0.20 + 0.25 * 5 / 24
+
+    [v1] = decision.run_decision_series(rows, as_of, as_of)
+    [v3] = decision_v3.run_decision_series_v3(rows, [], as_of, as_of)
+    assert v1.coverage_quality == pytest.approx(expected)
+    assert v3.coverage_quality == pytest.approx(expected)
+
+
+# --------------------------------------------------------------------------- #
 # Sleeve unit tests                                                           #
 # --------------------------------------------------------------------------- #
 
@@ -386,7 +558,7 @@ def test_sleeve_charges_one_way_cost_on_rebalance():
                                end=dt.date(2020, 2, 9), cost_bps=25)
     assert res_free.nav[-1] == pytest.approx(1.0, abs=1e-12)
     # one_way turnover 0.5 -> cost 25bps*0.5 = 12.5bps => NAV ~ 1 - 0.00125.
-    assert res_cost.one_way_turnover_by_date[list(res_cost.one_way_turnover_by_date)[0]] \
+    assert res_cost.one_way_turnover_by_date[next(iter(res_cost.one_way_turnover_by_date))] \
         == pytest.approx(0.5, abs=1e-12)
     assert res_cost.nav[-1] == pytest.approx(1.0 * (1 - 0.0025 * 0.5), abs=1e-9)
 
