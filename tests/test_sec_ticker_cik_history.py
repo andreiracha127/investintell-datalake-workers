@@ -390,6 +390,17 @@ def test_class_descriptions_name_equity_or_other_classes(
         ("Class A or B Common Stock", 2),
         ("Class A & Class B common", 2),
         ("Class A, Inc. Common Stock", 1),
+        # Series and non-letter classes (Codex thread 4221867175), real ones first
+        # (0001104659-25-041383, 0001354457-13-000110).
+        ("Series A common stock, par value $0.01 per share; Series B common stock, par "
+         "value $0.01 per share", 2),
+        ("Class A Common Stock, Class B Common Stock, Series C Common Stock", 3),
+        ("Series A Common Stock and Series B Common Stock", 2),
+        ("Series A and Series C Common Stock", 2),
+        ("Series A Junior Participating Preferred Stock Purchase Rights", 1),
+        ("Class A Common Stock; Series A Preferred Stock", 1),
+        ("Class 1 Common Stock and Class 2 Common Stock", 2),
+        ("Class I and Class II Common Shares", 2),
     ],
 )
 def test_class_counts_read_enumerations(description: str, count: int) -> None:

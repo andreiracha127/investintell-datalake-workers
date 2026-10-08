@@ -105,7 +105,7 @@ EVENT_FORMS = EVENT_ORIGINAL_FORMS + tuple(f"{form}/A" for form in EVENT_ORIGINA
 END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS))
 # Names the parser of the end filings; a new version re-derives every end event
 # as a correction (derive_event_classes).
-EVENT_PARSER_VERSION = "sec_event_class_v2"
+EVENT_PARSER_VERSION = "sec_event_class_v3"
 CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_carried",
                    "class_unread", "filings_missing")
 FETCH_STAT_KEYS = ("filings_fetched", "filings_failed")
@@ -1127,12 +1127,25 @@ _EQUITY_CLASS_RE = re.compile(
     re.I,
 )
 _PREFERRED_BEFORE_RE = re.compile(r"\b(?:preferred|preference)\s*(?:shares?|stock)?\s*$", re.I)
-# "Class A", "Class A and B", "Classes A, B and C", "Class A/B", "Class A and Class B".
+# A class name: a letter, a number, or a Roman numeral ("Class A", "Class 1",
+# "Class II").
+_CLASS_ID = r"(?:[A-Z]|\d{1,2}|I{1,3}|IV|VI{0,3})"
+# "Class A", "Class A and B", "Classes A, B and C", "Class A/B", "Class A and Class B",
+# "Class 1 and Class 2".
 _CLASS_MENTION_RE = re.compile(
-    r"\bclass(?:es)?\s+([A-Z](?:\s*(?:,|/|&|\band\b|\bor\b)\s*(?:class\s+)?[A-Z])*)\b",
+    rf"\bclass(?:es)?\s+({_CLASS_ID}(?:\s*(?:,|/|&|\band\b|\bor\b)\s*(?:class\s+)?"
+    rf"{_CLASS_ID})*)\b",
     re.I,
 )
-_CLASS_LETTER_RE = re.compile(r"(?<![A-Za-z])([A-Za-z])(?![A-Za-z])")
+# "Series A Common Stock and Series B Common Stock", "Series A and B common shares":
+# a series counts as a class only when it names common, ordinary or capital stock
+# ("Series A Preferred Stock" does not).
+_SERIES_MENTION_RE = re.compile(
+    rf"\bseries\s+({_CLASS_ID}(?:\s*(?:,|/|&|\band\b|\bor\b)\s*(?:series\s+)?"
+    rf"{_CLASS_ID})*)\s+(?:(?:non-?)?voting\s+)?(?:common|ordinary|capital)\b",
+    re.I,
+)
+_CLASS_ID_RE = re.compile(rf"(?<![A-Za-z0-9])({_CLASS_ID})(?![A-Za-z0-9])", re.I)
 _EXTINGUISHED_RE = re.compile(r"12d2-2\s*\(\s*a\s*\)", re.I)
 # An amendment that withdraws the removal (Minim's 25-NSE/A of 2025-04-09: "will
 # not be delisting the common stock ... per the Form 25 filed on October 24, 2024").
@@ -1184,15 +1197,18 @@ def event_class_kind(description: str | None) -> str:
 
 def class_count(description: str | None) -> int:
     """Distinct share classes a description names ("Class A ... Class B",
-    "Class A and B", "Classes A, B and C", "Class A/B"); at least 1."""
+    "Class A and B", "Classes A, B and C", "Class A/B", "Class 1 and Class 2",
+    "Series A Common Stock and Series B Common Stock"); at least 1."""
     if not description:
         return 1
-    letters = {
-        letter.upper()
-        for group in _CLASS_MENTION_RE.findall(description)
-        for letter in _CLASS_LETTER_RE.findall(re.sub(r"(?i)\b(?:and|or|class)\b", " ", group))
+    names = {
+        (kind, name.upper())
+        for kind, pattern in (("class", _CLASS_MENTION_RE), ("series", _SERIES_MENTION_RE))
+        for group in pattern.findall(description)
+        for name in _CLASS_ID_RE.findall(
+            re.sub(r"(?i)\b(?:and|or|class|series)\b", " ", group))
     }
-    return max(1, len(letters))
+    return max(1, len(names))
 
 
 def venue_kind(venue: str | None) -> str:
