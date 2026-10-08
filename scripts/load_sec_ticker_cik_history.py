@@ -1209,8 +1209,12 @@ class EventDocuments:
             return target.read_bytes().decode("latin-1")
         if self.client is None:
             return None
-        import httpx
+        try:
+            import httpx
 
+            transport_errors: tuple[type[BaseException], ...] = (httpx.TransportError, OSError)
+        except ImportError:  # a client that is not httpx
+            transport_errors = (OSError,)
         url = EDGAR_FILING_URL.format(cik=cik, adsh=adsh)
         for attempt in range(self.retries):
             wait = self.spacing - (time.monotonic() - self._last)
@@ -1220,7 +1224,7 @@ class EventDocuments:
             backoff = min(60.0, 2.0 ** attempt)
             try:
                 response = self.client.get(url)
-            except httpx.TransportError:
+            except transport_errors:
                 time.sleep(backoff)
                 continue
             if response.status_code == 200:
