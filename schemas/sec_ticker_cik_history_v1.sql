@@ -384,9 +384,12 @@ WHERE e.cik = p_cik
 $fn$;
 
 -- The end filings of a CIK that end its equity lines at D, and whether each is
--- DEFINITIVE. Judged against the CIK's latest filing with an equity line before
--- the event (prior symbols: its equity symbols when the end names an equity
--- class, else all its symbols) and its latest complete filing (prior classes).
+-- DEFINITIVE. Judged against the CIK's latest filing with an equity line filed
+-- before the event (prior symbols: its equity symbols when the end names an
+-- equity class, else all its symbols) and its latest complete filing filed before
+-- it (prior classes), among the filings visible at D: filing dates place them,
+-- knowledge dates only gate what is visible (an end re-derived years later is
+-- still judged against the covers before its filing).
 -- A Form 15F (a foreign private issuer's termination under Rule 12h-6) counts as
 -- the Form 15 it stands for: 15F-12B as 15-12B, 15F-12G as 15-12G, 15F-15D as
 -- 15-15D. An end APPLIES unless
@@ -405,10 +408,10 @@ $fn$;
 -- issuer showed equity symbols) and an applying termination (15-12B/15-12G/
 -- 15-15D or 15F) naming every equity class are both on file within 120 days of
 -- each other, unless the shareholder base continued:
--- the first cover share count after the end is within 0.8-1.25 times the last
--- one before it (a holding-company reorganization or REIT conversion that keeps
--- the CIK: United Fire 2012, Ulta and SBA 2017; American Greetings reported 100
--- shares after its merger). Other applying ends (including class_kind 'unknown'
+-- the first cover share count filed after the end is within 0.8-1.25 times the
+-- last one filed before it (a holding-company reorganization or REIT conversion
+-- that keeps the CIK: United Fire 2012, Ulta and SBA 2017; American Greetings
+-- reported 100 shares after its merger). Other applying ends (including class_kind 'unknown'
 -- or unread) end the lines until a later statement shows the symbol again (an
 -- exchange delisting to OTC, a stale 12(g) registration).
 -- A restated end that applies only as restated is public from the amendment's
@@ -425,9 +428,9 @@ AS $fn$
 WITH horizon AS (
     SELECT CASE WHEN p_current THEN 'infinity'::date ELSE p_as_of END AS on_date
 ), filings AS (
+    -- the covers visible at D, placed by when they were filed (source_on)
     SELECT o.adsh,
-           max(CASE WHEN p_current THEN o.source_available_on ELSE o.available_on END)
-               AS known_on,
+           max(o.source_available_on) AS source_on,
            max(o.accepted) AS accepted,
            count(DISTINCT o.ticker_key) AS symbols,
            count(DISTINCT o.ticker_key) FILTER (
@@ -442,8 +445,7 @@ WITH horizon AS (
 ), totals AS (
     -- each filing's cover share count: its issuer total, else its class counts
     SELECT c.adsh,
-           max(CASE WHEN p_current THEN c.source_available_on ELSE c.available_on END)
-               AS known_on,
+           max(c.source_available_on) AS source_on,
            max(c.accepted) AS accepted,
            COALESCE(max(c.shares) FILTER (WHERE c.class_key = ''),
                     sum(c.shares) FILTER (WHERE c.class_key <> '')) AS total
@@ -474,12 +476,12 @@ WITH horizon AS (
 ), judged AS (
     SELECT v.*,
            (SELECT CASE WHEN v.class_kind = 'equity' THEN f.equity_symbols ELSE f.symbols END
-            FROM filings f WHERE f.known_on < v.available_on
-            ORDER BY f.known_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
+            FROM filings f WHERE f.source_on < v.filed + 1
+            ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
             LIMIT 1) AS prior_symbols,
            GREATEST(COALESCE((
-               SELECT f.classes FROM filings f WHERE f.complete AND f.known_on < v.available_on
-               ORDER BY f.known_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
+               SELECT f.classes FROM filings f WHERE f.complete AND f.source_on < v.filed + 1
+               ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh DESC
                LIMIT 1), 1), 1) AS prior_classes,
            v.registered_nearby AND NOT COALESCE(v.extinguished, false) AS transfer
     FROM versions v
@@ -511,11 +513,11 @@ WITH horizon AS (
 SELECT a.effective_on, a.filed, a.form, a.adsh,
        a.whole_equity AND NOT COALESCE((
            SELECT after_end.total BETWEEN 0.8 * before_end.total AND 1.25 * before_end.total
-           FROM (SELECT t.total FROM totals t WHERE t.known_on < a.available_on
-                 ORDER BY t.known_on DESC, t.accepted DESC NULLS LAST, t.adsh DESC
+           FROM (SELECT t.total FROM totals t WHERE t.source_on < a.filed + 1
+                 ORDER BY t.source_on DESC, t.accepted DESC NULLS LAST, t.adsh DESC
                  LIMIT 1) before_end,
-                (SELECT t.total FROM totals t WHERE t.known_on >= a.available_on
-                 ORDER BY t.known_on, t.accepted NULLS FIRST, t.adsh
+                (SELECT t.total FROM totals t WHERE t.source_on >= a.filed + 1
+                 ORDER BY t.source_on, t.accepted NULLS FIRST, t.adsh
                  LIMIT 1) after_end), false)
        AND (
            (a.form = '25-NSE' AND COALESCE(a.extinguished, false))

@@ -93,9 +93,10 @@ private issuer's termination under Rule 12h-6, such as PetroChina's 15F-12B of
 concerns another class (notes, preferred, warrants, units, rights plans,
 employee-plan interests), or the issuer showed several symbols and the filing
 names fewer classes than the issuer has (a 15-12G or 15-15D for one class of a
-multi-class issuer too). A 25, 25-NSE or 15-12B also does not apply when the
-exchange is a secondary
-one (Chicago, Boston, Philadelphia, National, NYSE Arca/Pacific: IDEX and
+multi-class issuer too). The symbols and classes the issuer had are those of its
+covers filed before the end, among those known at D; a version of the end
+re-derived years later is judged the same way. A 25, 25-NSE or 15-12B also does
+not apply when the exchange is a secondary one (Chicago, Boston, Philadelphia, National, NYSE Arca/Pacific: IDEX and
 Weyerhaeuser dropping a Chicago listing), or when a registration (8-A12B, 8-A12G,
 10-12B, 10-12G) filed from 30 days before to 10 days after it makes it a transfer
 (PepsiCo's 2017 NYSE to Nasdaq move), unless the 25-NSE says the class was

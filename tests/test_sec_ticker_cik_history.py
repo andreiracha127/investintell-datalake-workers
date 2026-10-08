@@ -2603,6 +2603,33 @@ def test_a_parser_change_re_derives_events_as_corrections(
     assert (stats[0]["inserted"], stats[0]["retired"], stats[1]["derived"]) == (0, 0, 0)
 
 
+def test_an_end_re_derived_years_later_is_judged_against_the_covers_before_it(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4223111427: a parser change re-derives an old end as a
+    correction known from its reconciliation date. It is still judged against the
+    issuer's covers filed before it, not the class structure of years later."""
+    conn, dsn = schema_dsn
+    _observe(conn, 4242, "SOLO", "2016-01-10")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    gmv = "0001078782-11-001558"  # a 15-12G of the common stock
+    (docs / f"{gmv}.txt").write_bytes((FILINGS / f"{gmv}.txt").read_bytes())
+    index = _index(tmp_path / "2016QTR1.form.gz", ("15-12G", 4242, "2016-03-01", gmv))
+    documents = loader.EventDocuments(docs, None)
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], documents=documents,
+               reconciled_on=d(2016, 4, 1))
+    # The issuer registers again, now with two listed classes.
+    two = _observe(conn, 4242, "SOLO", "2018-05-01", class_key=CLASS_A)
+    _observe(conn, 4242, "DUO", "2018-05-01", class_key=CLASS_B, adsh=two)
+    assert _ends(conn, 4242, "2019-01-01") == [("15-12G", d(2016, 3, 2), False)]
+    monkeypatch.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_next")
+    assert loader.derive_event_classes(conn, documents, reconciled_on=d(2020, 6, 1))[
+        "derived"] == 1
+    assert _ends(conn, 4242, "2019-01-01") == [("15-12G", d(2016, 3, 2), False)]
+    assert _ends(conn, 4242, "2021-01-01") == [("15-12G", d(2020, 6, 1), False)]
+
+
 def test_a_fact_dropped_and_carried_again_is_known_again_from_its_return(
     schema_dsn, tmp_path: Path,
 ) -> None:
