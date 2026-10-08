@@ -11,8 +11,9 @@ Sources (public, fetched with the SEC User-Agent, one request at a time):
   member to its end checks its CRC, so a corrupt package fails the run instead
   of loading partial data.
 * EDGAR full-index form indexes (``full-index/YYYY/QTRn/form.gz``): the ends
-  (Forms 15-12B, 15-12G, 15-15D, 25, 25-NSE) and starts (8-A12B, 8-A12G, 10-12B,
-  10-12G) of registrations, and their amendments.
+  (Forms 15-12B, 15-12G, 15-15D, their foreign private issuer forms 15F-12B,
+  15F-12G, 15F-15D, 25, 25-NSE) and starts (8-A12B, 8-A12G, 10-12B, 10-12G) of
+  registrations, and their amendments.
 * The EDGAR filings of those ends for CIKs with cover data
   (``Archives/edgar/data/<cik>/<adsh>.txt``), read for the class, rule provision
   and exchange they state, cached on disk one file per accession.
@@ -101,10 +102,11 @@ EQUITY_KINDS = frozenset({"equity", "depositary"})
 UNKNOWN_KIND = "unknown"
 LISTED_KINDS = EQUITY_KINDS | {UNKNOWN_KIND}
 # Registration filings from the form indexes. Ends: termination of a class's
-# registration or reporting duty (15-12B/15-12G/15-15D) and removal from listing
+# registration or reporting duty (15-12B/15-12G/15-15D, and 15F-12B/15F-12G/
+# 15F-15D by a foreign private issuer under Rule 12h-6) and removal from listing
 # (25 by the issuer, 25-NSE by the exchange). Starts: registration of a class
 # (8-A12B/8-A12G/10-12B/10-12G). An '/A' amends the latest original of its form.
-END_FORMS = ("15-12B", "15-12G", "15-15D", "25", "25-NSE")
+END_FORMS = ("15-12B", "15-12G", "15-15D", "15F-12B", "15F-12G", "15F-15D", "25", "25-NSE")
 REGISTRATION_FORMS = ("8-A12B", "8-A12G", "10-12B", "10-12G")
 EVENT_ORIGINAL_FORMS = END_FORMS + REGISTRATION_FORMS
 EVENT_FORMS = EVENT_ORIGINAL_FORMS + tuple(f"{form}/A" for form in EVENT_ORIGINAL_FORMS)
@@ -1256,9 +1258,9 @@ def parse_event_document(raw: str, form: str) -> EventClass:
     """The class, rule provision and exchange a Form 15/25 filing states.
 
     A 25-NSE carries them as XML (``descriptionClassSecurity``,
-    ``ruleProvision``, ``exchange/entityName``). Forms 25 and 15 are HTML or text:
-    the class is the block between the address label and "(Description of class
-    of securities)" or "(Title of each class of securities covered by this
+    ``ruleProvision``, ``exchange/entityName``). Forms 25, 15 and 15F are HTML or
+    text: the class is the block between the address label and "(Description of
+    class of securities)" or "(Title of each class of securities covered by this
     Form)"; Form 25's exchange is named next to the issuer above "(Exact name of
     Issuer ...)". No such block -> class_kind 'unknown'.
     """

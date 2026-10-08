@@ -370,6 +370,12 @@ def _filing(adsh: str) -> str:
         ("0000876661-17-000516", "25-NSE/A",
          ("Class A Common Stock", "equity", 1, "17 CFR 240.12d2-2(a)(3)", True,
           "NEW YORK STOCK EXCHANGE LLC", "primary", "restates")),
+        # PetroChina's Form 15F (Rule 12h-6) after its ADSs left the NYSE (Codex
+        # thread 4222924635): the ADS and the H shares behind it.
+        ("0000947871-24-000089", "15F-12B",
+         ("ADSs (1) , each representing 100 Class H ordinary shares, par value RMB 1.00 per "
+          "share. Class H Ordinary Shares of par value RMB1.00 per Share", "equity", 1, None,
+          None, None, "unknown", None)),
     ],
 )
 def test_end_filings_state_their_class_provision_and_exchange(
@@ -774,12 +780,19 @@ def test_form_index_keeps_registration_end_and_start_rows(tmp_path: Path) -> Non
         "2020-02-11  edgar/data/77476/0000950103-20-000001.txt",
         "8-K12B           NEWCO INC                                         888         "
         "2020-02-12  edgar/data/888/0000000888-20-000001.txt",
+        # A foreign private issuer's terminations (Codex thread 4222924635).
+        "15F-12B          PETROCHINA CO LTD                                 1108329     "
+        "2020-02-05  edgar/data/1108329/0000947871-20-000089.txt",
+        "15F-15D/A        SOME FOREIGN PLC                                  999001      "
+        "2020-03-05  edgar/data/999001/0000999001-20-000002.txt",
     ]
     path.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode("latin-1")))
     events, sha256, size = loader.parse_form_index(path)
     assert [(e.form, e.cik, e.filed, e.adsh) for e in events] == [
         ("15-12G", 5907, d(2020, 3, 2), "0000005907-20-000001"),
+        ("15F-12B", 1108329, d(2020, 2, 5), "0000947871-20-000089"),
         ("8-A12B", 77476, d(2020, 2, 11), "0000950103-20-000001"),
+        ("15F-15D/A", 999001, d(2020, 3, 5), "0000999001-20-000002"),
         ("25", 1070336, d(2020, 1, 29), "0001070336-20-000003"),
         ("25-NSE", 1070336, d(2020, 1, 28), "0001354457-20-000034"),
         ("25-NSE/A", 1070336, d(2020, 2, 10), "0001354457-20-000099"),
@@ -1106,10 +1119,15 @@ def test_an_unread_delisting_ends_only_a_single_symbol_issuer(schema_dsn) -> Non
     _event(conn, 20, "25-NSE", "2021-02-01")  # could be the notes: does not end TWO
     assert _issuer(conn, "ONE", "2021-02-02")[:2] == ("ended", None)
     assert _issuer(conn, "TWO", "2021-02-02")[:2] == ("resolved", 20)
-    _event(conn, 20, "15-15D", "2021-03-01")  # the registrant stops reporting
-    assert _issuer(conn, "TWO", "2021-03-02")[:2] == ("ended", None)
-    _observe(conn, 20, "TWO", "2021-04-01")  # not definitive: a later statement reopens
-    assert _issuer(conn, "TWO", "2021-04-02")[:2] == ("resolved", 20)
+    # Nor does an unread 15-15D: it too could be the notes' (Codex thread
+    # 4222924619); after a single-symbol filing it ends the hold.
+    _event(conn, 20, "15-15D", "2021-03-01")
+    assert _issuer(conn, "TWO", "2021-03-02")[:2] == ("resolved", 20)
+    _event(conn, 10, "15-15D", "2021-03-01")
+    _observe(conn, 10, "ONE", "2021-02-20")  # reopened after the 25-NSE, then
+    assert _issuer(conn, "ONE", "2021-03-02")[:2] == ("ended", None)
+    _observe(conn, 10, "ONE", "2021-04-01")  # not definitive: a later statement reopens
+    assert _issuer(conn, "ONE", "2021-04-02")[:2] == ("resolved", 10)
 
 
 def test_rename_ends_the_old_symbol_and_the_line_shows_what_it_traded_as(schema_dsn) -> None:
@@ -1438,7 +1456,8 @@ def test_price_span_ends_at_a_deregistration_and_reopens_on_a_later_statement(
         ("", d(2009, 11, 6), d(2010, 3, 16), "15-12G", d(2009, 11, 6), None, d(2010, 5, 8)),
     ]
     assert _span(conn, "T", 732717)[0][5] == d(2010, 3, 16)  # prior holder ended there
-    # An unread delisting after a filing with two symbols ends nothing.
+    # An unread delisting or deregistration after a filing with two symbols ends
+    # nothing (Codex thread 4222924619); after a single-symbol filing it does.
     adsh = _observe(conn, 20, "TWO", "2021-01-10")
     _observe(conn, 20, "TWO-27", "2021-01-10", class_key="LongtermDebtType=Notes2027;",
              kind="debt", adsh=adsh)
@@ -1446,6 +1465,12 @@ def test_price_span_ends_at_a_deregistration_and_reopens_on_a_later_statement(
     _event(conn, 20, "15-15D", "2021-03-01")
     _observe(conn, 20, "TWO", "2021-04-01")
     assert _span(conn, "TWO", 20) == [
+        ("", d(2021, 1, 11), None, None, d(2021, 4, 2), None, None),
+    ]
+    _observe(conn, 21, "ONE", "2021-01-10")
+    _event(conn, 21, "15-15D", "2021-03-01")
+    _observe(conn, 21, "ONE", "2021-04-01")
+    assert _span(conn, "ONE", 21) == [
         ("", d(2021, 1, 11), d(2021, 3, 2), "15-15D", d(2021, 1, 11), None, None),
         ("", d(2021, 4, 2), None, None, d(2021, 4, 2), None, None),
     ]
@@ -1970,6 +1995,9 @@ def test_a_new_symbol_of_the_same_cik_after_a_definitive_end_is_a_new_line(
         ({"form": "25-NSE", "kind": "equity", "venue_kind": "primary", "extinguished": False},
          "ended"),
         ({"form": "15-12G", "kind": "equity"}, "ended"),
+        # A foreign private issuer's Form 15F (Codex thread 4222924635).
+        ({"form": "15F-12B", "kind": "equity"}, "ended"),
+        ({"form": "15F-15D", "kind": "equity"}, "ended"),
         # A filing that states no class is read as unknown: the old gate holds.
         ({"form": "25-NSE", "kind": "unknown"}, "ended"),
     ],
@@ -1986,6 +2014,49 @@ def test_an_end_filing_ends_the_hold_only_for_the_class_it_names(
     assert _issuer(conn, "PEP", "2018-01-02")[0] == status
     _observe(conn, 77476, "PEP", "2018-02-13")  # not definitive: a later statement reopens
     assert _issuer(conn, "PEP", "2018-03-01")[:2] == ("resolved", 77476)
+
+
+def test_a_foreign_issuers_form_15f_ends_its_hold_like_a_form_15(schema_dsn) -> None:
+    """Codex thread 4222924635. PetroChina delisted its ADSs from the NYSE with a
+    Form 25 (2022-08-29), kept filing 20-Fs, and terminated its registration with
+    a 15F-12B (2024-02-05)."""
+    conn, _ = schema_dsn
+    _observe(conn, 1108329, "PTR", "2022-04-28")
+    _event(conn, 1108329, "25", "2022-08-29", kind="equity", venue_kind="primary")
+    _observe(conn, 1108329, "PTR", "2023-04-27")  # the delisting alone is not definitive
+    assert _issuer(conn, "PTR", "2023-06-30")[:2] == ("resolved", 1108329)
+    _event(conn, 1108329, "15F-12B", "2024-02-05", kind="equity")
+    assert _ends(conn, 1108329, "2024-03-01") == [
+        ("25", d(2022, 8, 30), False), ("15F-12B", d(2024, 2, 6), False),
+    ]
+    assert _issuer(conn, "PTR", "2024-03-01")[:2] == ("ended", None)
+    # Within 120 days of the delisting a Form 15F makes the end definitive, as a
+    # Form 15 does: a later untitled cover does not reopen the hold.
+    _observe(conn, 1108330, "PTRX", "2022-04-28")
+    _event(conn, 1108330, "25", "2022-08-29", kind="equity", venue_kind="primary")
+    _event(conn, 1108330, "15F-15D", "2022-10-03", kind="equity")
+    _observe(conn, 1108330, "PTRX", "2023-04-27")
+    assert _ends(conn, 1108330, "2023-06-30") == [
+        ("25", d(2022, 8, 30), True), ("15F-15D", d(2022, 10, 4), True),
+    ]
+    assert _issuer(conn, "PTRX", "2023-06-30")[:2] == ("ended", None)
+
+
+def test_a_form_15_for_one_class_of_a_multi_class_issuer_ends_no_line(schema_dsn) -> None:
+    """Codex thread 4222924619: a 15-12G or 15-15D naming fewer classes than the
+    issuer listed needs the same whole-class coverage as other partial ends."""
+    conn, _ = schema_dsn
+    a = _observe(conn, 98, "MCA", "2024-02-10", class_key=CLASS_A)
+    _observe(conn, 98, "MCB", "2024-02-10", class_key=CLASS_B, adsh=a)
+    _event(conn, 98, "15-12G", "2024-03-01", kind="equity", count=1)
+    _event(conn, 98, "15F-15D", "2024-03-05", kind="equity", count=1)
+    assert _ends(conn, 98, "2024-04-01") == []
+    assert _issuer(conn, "MCA", "2024-04-01")[:2] == ("resolved", 98)
+    # Naming both classes, it ends both lines.
+    _event(conn, 98, "15-15D", "2024-05-01", kind="equity", count=2)
+    assert _ends(conn, 98, "2024-06-01") == [("15-15D", d(2024, 5, 2), False)]
+    assert _issuer(conn, "MCA", "2024-06-01")[:2] == ("ended", None)
+    assert _issuer(conn, "MCB", "2024-06-01")[:2] == ("ended", None)
 
 
 def test_a_stray_claim_inside_another_holders_claims_does_not_count(schema_dsn) -> None:
@@ -2065,7 +2136,9 @@ def test_a_symbol_taken_by_a_successor_cik_is_not_reopened_by_stale_covers(
         ("", d(2015, 10, 3), None, None, d(2015, 10, 30), d(2015, 10, 3), None),
     ]
     assert _span(conn, "GOOG", 1288776) == [
-        ("", d(2015, 7, 24), d(2015, 10, 3), "15-12G", d(2015, 7, 24), None, d(2015, 10, 3)),
+        # The 25-NSE of classes A and C ends it; the 15-12G of the unlisted class B
+        # alone would not (Codex thread 4222924619).
+        ("", d(2015, 7, 24), d(2015, 10, 3), "25-NSE", d(2015, 7, 24), None, d(2015, 10, 3)),
     ]
 
 

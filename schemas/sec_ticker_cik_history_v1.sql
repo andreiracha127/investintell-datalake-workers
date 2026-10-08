@@ -10,8 +10,9 @@
 --   (large accelerated), 2020-06-15 (accelerated) and 2021-06-15 (others); many
 --   filers tagged dei:TradingSymbol voluntarily since 2009.
 -- * EDGAR full-text indexes (https://www.sec.gov/Archives/edgar/full-index/):
---   Forms 15-12B, 15-12G, 15-15D, 25, 25-NSE (ends), 8-A12B, 8-A12G, 10-12B,
---   10-12G (registrations) and their /A amendments; for the ends of CIKs with
+--   Forms 15-12B, 15-12G, 15-15D, 15F-12B, 15F-12G, 15F-15D, 25, 25-NSE (ends),
+--   8-A12B, 8-A12G, 10-12B, 10-12G (registrations) and their /A amendments; for
+--   the ends of CIKs with
 --   cover data, the filing itself (https://www.sec.gov/Archives/edgar/data/),
 --   read for the class, rule provision and exchange it states.
 --
@@ -139,7 +140,9 @@ CREATE INDEX IF NOT EXISTS sec_cover_share_counts_adsh_idx
 
 -- Registration filings from the EDGAR form indexes (dates only):
 -- * ends: Forms 15-12B, 15-12G, 15-15D (termination of registration or of the
---   duty to report), 25 and 25-NSE (removal from listing), and their /A;
+--   duty to report), their foreign private issuer counterparts 15F-12B,
+--   15F-12G, 15F-15D (Rule 12h-6; PetroChina's 15F-12B of 2024-02-05 after its
+--   ADSs left the NYSE), 25 and 25-NSE (removal from listing), and their /A;
 -- * starts: Forms 8-A12B, 8-A12G, 10-12B, 10-12G (registration of a class), and
 --   their /A. A start near a delisting is a transfer; a start after an end is a
 --   relisting.
@@ -148,7 +151,7 @@ CREATE INDEX IF NOT EXISTS sec_cover_share_counts_adsh_idx
 -- * class_description: the class the form concerns (Form 25-NSE XML
 --   descriptionClassSecurity; the block above "(Description of class of
 --   securities)" on Form 25 and "(Title of each class of securities covered by
---   this Form)" on Form 15);
+--   this Form)" on Forms 15 and 15F);
 -- * class_kind: 'equity' (common/ordinary shares, depositary shares of them,
 --   partnership units), 'other' (notes, preferred, warrants, rights plans,
 --   units, employee-plan interests) or 'unknown' (the filing states no class,
@@ -170,8 +173,9 @@ CREATE TABLE IF NOT EXISTS sec_registration_events (
     adsh text NOT NULL CHECK (adsh ~ '^[0-9]{10}-[0-9]{2}-[0-9]{6}$'),
     cik bigint NOT NULL CHECK (cik > 0),
     form text NOT NULL CHECK (form IN (
-        '15-12B', '15-12G', '15-15D', '25', '25-NSE',
-        '15-12B/A', '15-12G/A', '15-15D/A', '25/A', '25-NSE/A',
+        '15-12B', '15-12G', '15-15D', '15F-12B', '15F-12G', '15F-15D', '25', '25-NSE',
+        '15-12B/A', '15-12G/A', '15-15D/A', '15F-12B/A', '15F-12G/A', '15F-15D/A',
+        '25/A', '25-NSE/A',
         '8-A12B', '8-A12G', '10-12B', '10-12G',
         '8-A12B/A', '8-A12G/A', '10-12B/A', '10-12G/A'
     )),
@@ -288,7 +292,8 @@ WHERE CASE WHEN p_current
       END
 $fn$;
 
--- The end filings (15-12B/15-12G/15-15D/25/25-NSE) of a CIK visible at D, as
+-- The end filings (15-12B/15-12G/15-15D, 15F-12B/15F-12G/15F-15D, 25/25-NSE) of
+-- a CIK visible at D, as
 -- amended by D. An amendment applies to exactly one original: the latest
 -- original of its form for the CIK filed on or before it (then by accession),
 -- from the amendment's own knowledge date. A cancelling amendment removes the
@@ -322,8 +327,9 @@ WITH visible AS (
            CASE WHEN p_current THEN e.source_available_on ELSE e.available_on END AS known_on
     FROM sec_registration_events e
     WHERE e.cik = p_cik
-      AND e.form IN ('15-12B', '15-12G', '15-15D', '25', '25-NSE',
-                     '15-12B/A', '15-12G/A', '15-15D/A', '25/A', '25-NSE/A')
+      AND e.form IN ('15-12B', '15-12G', '15-15D', '15F-12B', '15F-12G', '15F-15D',
+                     '25', '25-NSE', '15-12B/A', '15-12G/A', '15-15D/A', '15F-12B/A',
+                     '15F-12G/A', '15F-15D/A', '25/A', '25-NSE/A')
       AND CASE WHEN p_current
                THEN e.retired_on IS NULL
                     AND (e.source_available_on <= p_as_of OR e.form LIKE '%/A')
@@ -381,21 +387,24 @@ $fn$;
 -- DEFINITIVE. Judged against the CIK's latest filing with an equity line before
 -- the event (prior symbols: its equity symbols when the end names an equity
 -- class, else all its symbols) and its latest complete filing (prior classes).
--- An end APPLIES unless
+-- A Form 15F (a foreign private issuer's termination under Rule 12h-6) counts as
+-- the Form 15 it stands for: 15F-12B as 15-12B, 15F-12G as 15-12G, 15F-15D as
+-- 15-15D. An end APPLIES unless
 -- * the filing concerns another class (class_kind 'other'), or
--- * it is a 25/25-NSE/15-12B (12(b) removal) that may concern a class other than
---   the listed symbol: the issuer then showed several symbols and the filing
---   names fewer classes than it showed symbols, or the exchange is a
---   secondary one, or a registration filed from 30 days before to 10 days after
---   it makes it a transfer (PepsiCo's NYSE -> Nasdaq move: Form 25 and 8-A12B the
---   same day), unless the class was extinguished.
+-- * it may concern a class other than the listed symbol: the issuer then showed
+--   several symbols and the filing names fewer classes than it showed symbols
+--   (a 15-12G or 15-15D for one class of a multi-class issuer, too), or
+-- * it is a 25/25-NSE/15-12B (12(b) removal) on a secondary exchange, or one
+--   that a registration filed from 30 days before to 10 days after makes a
+--   transfer (PepsiCo's NYSE -> Nasdaq move: Form 25 and 8-A12B the same day),
+--   unless the class was extinguished.
 -- An applying end of an equity class (class_kind 'equity', naming at least as
 -- many classes as the issuer has) is DEFINITIVE when the 25-NSE says the class
 -- was extinguished (12d2-2(a)), or when an applying delisting (25/25-NSE, not
 -- secondary, not a transfer) naming every listed class (as many classes as the
 -- issuer showed equity symbols) and an applying termination (15-12B/15-12G/
--- 15-15D) naming every equity class are both on file within 120 days of each
--- other, unless the shareholder base continued:
+-- 15-15D or 15F) naming every equity class are both on file within 120 days of
+-- each other, unless the shareholder base continued:
 -- the first cover share count after the end is within 0.8-1.25 times the last
 -- one before it (a holding-company reorganization or REIT conversion that keeps
 -- the CIK: United Fire 2012, Ulta and SBA 2017; American Greetings reported 100
@@ -477,10 +486,10 @@ WITH horizon AS (
 ), applies AS (
     SELECT j.*,
            COALESCE(j.class_kind, 'unknown') <> 'other'
-           AND (j.form IN ('15-12G', '15-15D')
-                OR (NOT j.transfer AND j.venue_kind IS DISTINCT FROM 'secondary'
-                    AND (j.prior_symbols = 1
-                         OR (j.class_kind = 'equity' AND j.class_count >= j.prior_symbols))))
+           AND (j.prior_symbols = 1
+                OR (j.class_kind = 'equity' AND j.class_count >= j.prior_symbols))
+           AND (replace(j.form, '15F-', '15-') IN ('15-12G', '15-15D')
+                OR (NOT j.transfer AND j.venue_kind IS DISTINCT FROM 'secondary'))
                AS applying,
            j.class_kind = 'equity' AND j.class_count >= j.prior_classes AS whole_equity,
            j.form IN ('25', '25-NSE')
@@ -510,14 +519,15 @@ SELECT a.effective_on, a.filed, a.form, a.adsh,
                  LIMIT 1) after_end), false)
        AND (
            (a.form = '25-NSE' AND COALESCE(a.extinguished, false))
-           OR (a.form IN ('15-12B', '15-12G', '15-15D') AND EXISTS (
+           OR (replace(a.form, '15F-', '15-') IN ('15-12B', '15-12G', '15-15D') AND EXISTS (
                SELECT 1 FROM applies d
                WHERE d.effective AND d.applying AND d.equity_delisting
                  AND d.class_count >= d.prior_symbols
                  AND d.filed BETWEEN a.filed - 120 AND a.filed + 120))
            OR (a.equity_delisting AND a.class_count >= a.prior_symbols AND EXISTS (
                SELECT 1 FROM applies t
-               WHERE t.effective AND t.applying AND t.form IN ('15-12B', '15-12G', '15-15D')
+               WHERE t.effective AND t.applying
+                 AND replace(t.form, '15F-', '15-') IN ('15-12B', '15-12G', '15-15D')
                  AND t.class_kind = 'equity' AND t.class_count >= t.prior_classes
                  AND t.filed BETWEEN a.filed - 120 AND a.filed + 120))
        ) AS definitive
@@ -528,8 +538,7 @@ $fn$;
 -- Each CIK's hold of a ticker at D (internal helper; one row per CIK that showed
 -- the ticker by D). Listed rows (equity, depositary or unknown) decide whenever
 -- one showed the ticker (filers also tag their common symbol on notes lines). A
--- hold is
--- followed through its candidate statements:
+-- hold is followed through its candidate statements:
 --   (a) every filing that tags a class that showed the ticker,
 --   (b) when the latest complete filing showing the ticker listed one equity
 --       class: every complete filing (the issuer's sole security, however its

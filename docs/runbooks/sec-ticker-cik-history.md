@@ -9,7 +9,7 @@ uses it to size equities at each fold (`sec_ticker_issuer_at`,
 |---|---|
 | `sec_ticker_cik_observations` | One row per filing x class context x ticker: the registrant's cover-page `dei:TradingSymbol`, with `dei:Security12bTitle`, `dei:SecurityExchangeName`, the class segments, a `security_kind` (`unknown`: a line on a foreign private issuer's form that no title, segment or symbol suffix identifies), and the filing's equity-class count and whether it reports a share count |
 | `sec_cover_share_counts` | Cover-page `dei:EntityCommonStockSharesOutstanding`, per class or in total, with the date the cover states it as of (`stated_on`) and DERA's rounded month end (`ddate_rounded`) |
-| `sec_registration_events` | From the EDGAR form indexes: ends (15-12B, 15-12G, 15-15D, 25, 25-NSE), starts (8-A12B, 8-A12G, 10-12B, 10-12G) and their `/A`; for the ends of CIKs with cover data, what the filing states (class, rule provision, exchange, amendment effect) and the parser version |
+| `sec_registration_events` | From the EDGAR form indexes: ends (15-12B, 15-12G, 15-15D, 15F-12B, 15F-12G, 15F-15D, 25, 25-NSE), starts (8-A12B, 8-A12G, 10-12B, 10-12G) and their `/A`; for the ends of CIKs with cover data, what the filing states (class, rule provision, exchange, amendment effect) and the parser version |
 | `sec_ticker_cik_packages` | One row per loaded DERA package or EDGAR index: digest, size and the loader's counts |
 | `sec_ticker_cik_package_members` / `_package_facts` | The (accession, CIK) pairs and the fact versions each package or index carries, for reconciliation |
 | `sec_ticker_intervals` (view) | Every class's symbol runs as known today, for diagnostics; decisions use the functions |
@@ -18,7 +18,7 @@ uses it to size equities at each fold (`sec_ticker_issuer_at`,
 Sources: the DERA [Financial Statement and Notes data sets](https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets)
 (`sub.tsv`, `txt.tsv`, `num.tsv`, `dim.tsv`, streamed from each zip), the
 [EDGAR full-index](https://www.sec.gov/Archives/edgar/full-index/) `form.gz` files,
-and the Form 15/25 filings themselves (`Archives/edgar/data/<cik>/<adsh>.txt`).
+and the Form 15/15F/25 filings themselves (`Archives/edgar/data/<cik>/<adsh>.txt`).
 All are fetched with the SEC User-Agent, at most 10 requests per second, with
 back-off on 429/5xx; every fetched filing is cached on disk.
 
@@ -86,23 +86,27 @@ is **stale** when the statement is older than 400 days; else **active**. Listed
 rows (equity, depositary or unknown) decide whenever any showed T (filers also
 tag their common symbol on notes lines).
 
-**End filings.** For CIKs with cover data the loader reads each Form 15/25 for
-the class it concerns. An end applies unless it concerns another class (notes,
-preferred, warrants, units, rights plans, employee-plan interests). A 25, 25-NSE
-or 15-12B also does not apply when the issuer showed several symbols and the
-filing names fewer classes than the issuer has, when the exchange is a secondary
+**End filings.** For CIKs with cover data the loader reads each Form 15, 15F or
+25 for the class it concerns. A Form 15F (15F-12B, 15F-12G, 15F-15D: a foreign
+private issuer's termination under Rule 12h-6, such as PetroChina's 15F-12B of
+2024-02-05) counts as the Form 15 it stands for. An end applies unless it
+concerns another class (notes, preferred, warrants, units, rights plans,
+employee-plan interests), or the issuer showed several symbols and the filing
+names fewer classes than the issuer has (a 15-12G or 15-15D for one class of a
+multi-class issuer too). A 25, 25-NSE or 15-12B also does not apply when the
+exchange is a secondary
 one (Chicago, Boston, Philadelphia, National, NYSE Arca/Pacific: IDEX and
 Weyerhaeuser dropping a Chicago listing), or when a registration (8-A12B, 8-A12G,
 10-12B, 10-12G) filed from 30 days before to 10 days after it makes it a transfer
 (PepsiCo's 2017 NYSE to Nasdaq move), unless the 25-NSE says the class was
 extinguished. A filing that states no class (`class_kind = 'unknown'`, counted as
-`class_unknown`) or was not read keeps the structural gate (15-12G/15-15D always;
-the 12(b) forms after a single-symbol filing); a parse failure is never read as
+`class_unknown`) or was not read applies only after a single-symbol filing; a
+parse failure is never read as
 another class. An applying end is **definitive** when it names an equity class
 and at least as many classes as the issuer had, and either the 25-NSE cites Rule
 12d2-2(a) (the class was redeemed, retired, substituted in a merger or its rights
 extinguished) or a delisting (25/25-NSE) and a termination (15-12B, 15-12G,
-15-15D) of the equity are both on file within 120 days. After a definitive end a
+15-15D or their 15F) of the equity are both on file within 120 days. After a definitive end a
 later statement reopens the hold only if its row for T carries a 12(b) title, a
 registration filed after the end was public by then, or T first appeared after
 the end (Swift's SWFT ended in the merger and the same CIK traded as KNX).
