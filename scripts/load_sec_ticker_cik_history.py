@@ -1,6 +1,6 @@
 """Load the SEC cover-page ticker -> (CIK, class) history from public SEC data.
 
-Sources (both public, fetched with the SEC User-Agent, one request at a time):
+Sources (public, fetched with the SEC User-Agent, one request at a time):
 
 * DERA "Financial Statement and Notes" packages (quarterly ``YYYYqN_notes.zip``,
   later monthly ``YYYY_MM_notes.zip``). Four members are streamed from the zip
@@ -10,31 +10,35 @@ Sources (both public, fetched with the SEC User-Agent, one request at a time):
   and ``dim.tsv`` (the dimension segments of those facts' contexts). Reading a
   member to its end checks its CRC, so a corrupt package fails the run instead
   of loading partial data.
-* EDGAR full-index form indexes (``full-index/YYYY/QTRn/form.gz``): Forms
-  15-12B, 15-12G, 15-15D, 25 and 25-NSE, the deregistration/delisting events
-  that end an issuer's hold on its symbols.
+* EDGAR full-index form indexes (``full-index/YYYY/QTRn/form.gz``): the ends
+  (Forms 15-12B, 15-12G, 15-15D, 25, 25-NSE) and starts (8-A12B, 8-A12G, 10-12B,
+  10-12G) of registrations, and their amendments.
+* The EDGAR filings of those ends for CIKs with cover data
+  (``Archives/edgar/data/<cik>/<adsh>.txt``), read for the class, rule provision
+  and exchange they state, cached on disk one file per accession.
 
 Rules (schemas/sec_ticker_cik_history_v1.sql documents the tables):
 
-* every form that carries a tagged cover page is kept (10-K/10-Q/8-K/20-F/40-F,
-  amendments and others); ``form`` is stored;
-* a fact's security LINE is its class: the context's dimension segments
-  without the listing-exchange and legal-entity axes (``ClassOfStock=CommonClassA;``),
-  '' without dimensions. Symbols and share counts of the same class join on it;
+* only periodic and current reports carry cover evidence (PERIODIC_FORMS:
+  10-K, 10-Q, 8-K, 20-F, 40-F, 6-K, 10-KT, 10-QT and their amendments);
+  registration statements state the securities of other or future entities;
+* a fact's class is the context's dimension segments without the
+  listing-exchange axis, and without the legal-entity axis when it names a
+  registrant (``ClassOfStock=CommonClassA;``), '' without dimensions;
 * facts with a co-registrant (``coreg``) belong to that entity, not to
-  ``sub.cik``: skipped and counted;
+  ``sub.cik``;
 * the knowledge date comes from ``sub.tsv`` (``accepted``, else ``filed`` + 1);
-  the fact's ``ddate`` is stored but never dates a symbol statement;
 * symbols are normalized to the eod_prices / universe_constituents style
-  (``BRK.B`` -> ``BRK-B``, ``USB PrA`` -> ``USB-PA``); ``ticker_raw`` keeps the
-  filer's spelling; placeholders (``None``, ``N/A``, ``true``...) are rejected
-  and counted; each line gets a ``security_kind`` (equity, depositary,
-  preferred, debt, warrant, unit, right) from its title, else its symbol.
+  (``BRK.B`` -> ``BRK-B``, ``USB PrA`` -> ``USB-PA``, ``(SIRI)`` -> ``SIRI``,
+  ``JWA/JWB`` -> two symbols); ``ticker_raw`` keeps the filer's spelling;
+  placeholders (``None``, ``N/A``, ``true``...) are rejected and counted.
 
-Writes are idempotent upserts, one transaction per package; rows of a
-package's submissions that the current rules no longer produce are removed, so
-a re-run converges. ``--dry-run`` parses and reports without a database. The
-schema is governed: it is applied only with ``--apply-schema``.
+Storage is bitemporal: one transaction per package or index reconciles its
+facts against the stored ones; a fact the source no longer carries (and no other
+loaded source does) is retired, never deleted, and a fact newly carried for an
+accession already loaded is a correction knowable from the reconciliation date.
+``--dry-run`` parses and reports without a database. The schema is governed: it
+is applied only with ``--apply-schema``.
 """
 
 from __future__ import annotations
@@ -43,13 +47,14 @@ import argparse
 import datetime as dt
 import gzip
 import hashlib
+import html
 import io
 import json
 import re
 import time
 import zipfile
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import IO, Iterable
@@ -59,6 +64,7 @@ from src.db import LOCK_SEC_TICKER_CIK_HISTORY, connect
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PACKAGES_DIR = Path("E:/Edgard/fsn")
 DEFAULT_INDEX_DIR = Path("E:/Edgard/edgar-index")
+DEFAULT_EVENT_DOCS_DIR = Path("E:/Edgard/edgar-event-docs")
 LISTING_URL = (
     "https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets"
 )
@@ -66,6 +72,9 @@ SEC_BASE_URL = "https://www.sec.gov"
 EDGAR_INDEX_URL = "https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{quarter}/form.gz"
 FIRST_INDEX_QUARTER = (2009, 1)  # the first FSN package
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
+EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{adsh}.txt"
+# SEC fair access: at most 10 requests per second.
+FILING_SPACING_S = 0.11
 # SEC fair access allows 10 requests/s; downloads run one at a time, spaced.
 DOWNLOAD_SPACING_S = 0.5
 SCHEMA_PATH = ROOT / "schemas" / "sec_ticker_cik_history_v1.sql"
@@ -84,11 +93,19 @@ NO_DIMENSIONS = "0x00000000"
 EXCHANGE_AXIS = "EntityListingsExchange"
 LEGAL_ENTITY_AXIS = "LegalEntity"
 EQUITY_KINDS = frozenset({"equity", "depositary"})
-# The line of a filing's one equity/depositary class (schema: line_key).
-SOLE_EQUITY_LINE = "*"
-# Deregistration / delisting originals and their amendments ('/A' supersedes).
-EVENT_ORIGINAL_FORMS = ("15-12B", "15-12G", "15-15D", "25", "25-NSE")
+# Registration filings from the form indexes. Ends: termination of a class's
+# registration or reporting duty (15-12B/15-12G/15-15D) and removal from listing
+# (25 by the issuer, 25-NSE by the exchange). Starts: registration of a class
+# (8-A12B/8-A12G/10-12B/10-12G). An '/A' amends the latest original of its form.
+END_FORMS = ("15-12B", "15-12G", "15-15D", "25", "25-NSE")
+REGISTRATION_FORMS = ("8-A12B", "8-A12G", "10-12B", "10-12G")
+EVENT_ORIGINAL_FORMS = END_FORMS + REGISTRATION_FORMS
 EVENT_FORMS = EVENT_ORIGINAL_FORMS + tuple(f"{form}/A" for form in EVENT_ORIGINAL_FORMS)
+END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS))
+# Names the parser of the end filings; a new version re-derives every end event
+# as a correction (derive_event_classes).
+EVENT_PARSER_VERSION = "sec_event_class_v1"
+CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_unread")
 
 PACKAGE_RE = re.compile(
     r"^(?P<year>\d{4})(?:q(?P<quarter>[1-4])|_(?P<month>\d{2}))_notes(?:_\d+)?\.zip$"
@@ -109,7 +126,11 @@ SHARE_COLUMNS = (
     "form",
     "filed", "accepted", "source_package",
 )
-EVENT_COLUMNS = ("adsh", "cik", "form", "filed", "source_package")
+EVENT_COLUMNS = (
+    "adsh", "cik", "form", "filed", "class_description", "class_kind", "class_count",
+    "provision", "extinguished", "venue", "venue_kind", "amendment_effect", "parser_version",
+    "source_package",
+)
 
 # Forms in which the filer reports on its own listed securities. Registration
 # statements (S-1, S-3, S-4, S-8, F-1, F-4, POS AM...) state securities of other
@@ -257,13 +278,23 @@ class RegistrationEvent:
     form: str
     filed: dt.date
     source_package: str
+    # What the filing states (end filings of CIKs with cover data; None: not read).
+    class_description: str | None = None
+    class_kind: str | None = None
+    class_count: int | None = None
+    provision: str | None = None
+    extinguished: bool | None = None
+    venue: str | None = None
+    venue_kind: str | None = None
+    amendment_effect: str | None = None
+    parser_version: str | None = None
 
     def as_tuple(self) -> tuple:
         return tuple(getattr(self, column) for column in EVENT_COLUMNS)
 
     @property
     def fact_hash(self) -> str:
-        return _fact_hash((self.adsh, self.cik, self.form, self.filed))
+        return _fact_hash(getattr(self, c) for c in EVENT_COLUMNS if c != "source_package")
 
 
 @dataclass
@@ -713,17 +744,18 @@ def _filing_profiles(
     The classes are those of the filing's equity/depositary symbols, plus the
     dimensioned classes of its share counts and of its titled equity classes
     without an accepted symbol (an unlisted class B with ticker "N/A" still
-    counts). An undimensioned symbol next to exactly one dimensioned class is
-    that class (a filer tags the symbol without a member and the count with one).
+    counts). An undimensioned symbol next to a dimensioned class that no symbol
+    names is one of those classes (a filer tags the symbol without a member and
+    the counts with members: American Greetings' AM beside its Class A and
+    Class B counts is two classes, not three).
     """
     profiles: dict[tuple[str, int], tuple[int, bool]] = {}
     for filing in set(symbol_classes) | set(other_classes):
         symbols = symbol_classes.get(filing, set())
         others = other_classes.get(filing, set())
-        if symbols == {""} and len(others) == 1:
-            count = 1
-        else:
-            count = len(symbols | others)
+        count = len(symbols | others)
+        if "" in symbols and others - symbols:
+            count -= 1
         profiles[filing] = (count, filing in counted)
     return profiles
 
@@ -900,7 +932,7 @@ def index_sort_key(path: Path) -> tuple[int, int]:
 
 
 def parse_form_index(path: Path) -> tuple[list[RegistrationEvent], str, int]:
-    """Deregistration/delisting rows of one ``form.gz``; also its digest and size."""
+    """Registration end/start rows of one ``form.gz``; also its digest and size."""
     events: dict[tuple[str, int], RegistrationEvent] = {}
     with gzip.open(path, "rt", encoding="latin-1") as fh:
         for line in fh:
@@ -962,6 +994,278 @@ def download_form_indexes(index_dir: Path, *, refresh_current: bool = True) -> l
                 continue
             fetch_form_index(client, year, quarter, target)
     return sorted(index_dir.glob("*.form.gz"), key=index_sort_key)
+
+
+# --------------------------------------------------------------------------- #
+# Event filings: the class a Form 15/25 concerns
+# --------------------------------------------------------------------------- #
+_XML_DESCRIPTION_RE = re.compile(
+    r"<descriptionClassSecurity>(.*?)</descriptionClassSecurity>", re.S | re.I)
+_XML_PROVISION_RE = re.compile(r"<ruleProvision>(.*?)</ruleProvision>", re.S | re.I)
+_XML_EXCHANGE_RE = re.compile(
+    r"<exchange>.*?<entityName>(.*?)</entityName>.*?</exchange>", re.S | re.I)
+_DOCUMENT_RE = re.compile(r"<DOCUMENT>(.*?)</DOCUMENT>", re.S | re.I)
+_TAG_RE = re.compile(r"<[^>]+>")
+_CLASS_LABEL_RE = re.compile(
+    r"\(\s*(?:description\s+of\s+(?:the\s+)?class(?:es)?\s+of\s+securit(?:y|ies)"
+    r"|title\s+of\s+(?:each\s+)?class(?:es)?\s+of\s+securit(?:y|ies)\s+covered\s+by\s+this"
+    r"\s+form)\s*\)",
+    re.I,
+)
+_ADDRESS_LABEL_RE = re.compile(r"principal\s+executive\s+offices?\s*\)", re.I)
+_ISSUER_LABEL_RE = re.compile(r"\(\s*exact\s+name\s+of\s+(?:the\s+)?issuer", re.I)
+_FILE_NUMBER_RE = re.compile(r"commission\s+file\s+number", re.I)
+# Exchanges where issuers keep second listings next to a primary market.
+_SECONDARY_VENUE_RE = re.compile(
+    r"chicago\s+stock\s+exchange|nyse\s+chicago|\bchx\b|boston\s+stock\s+exchange"
+    r"|philadelphia\s+stock\s+exchange|\bphlx\b|nasdaq\s+(?:omx\s+)?bx\b"
+    r"|national\s+stock\s+exchange|cincinnati\s+stock\s+exchange"
+    r"|pacific\s+(?:stock\s+)?exchange|nyse\s+arca|archipelago",
+    re.I,
+)
+_PRIMARY_VENUE_RE = re.compile(
+    r"new\s+york\s+stock\s+exchange|\bnyse\b|nasdaq|american\s+stock\s+exchange|\bamex\b"
+    r"|\bbats\b|\bcboe\b|investors\s+exchange",
+    re.I,
+)
+# Interests in an employee plan, not a traded class.
+_PLAN_RE = re.compile(
+    r"\bplans?\b|\bsavings\b|401\s*\(?k\)?|profit[-\s]sharing|\bthrift\b|\besop\b"
+    r"|\bretirement\b|\bdeferred\s+compensation\b",
+    re.I,
+)
+# Phrases naming an instrument that only refers to an equity class.
+_DEPENDENT_RES = (
+    # units composed of shares and warrants
+    re.compile(r"\bunits?\b[^;]*?\b(?:consisting|comprised|composed|representing)\b[^;]*", re.I),
+    re.compile(r"\bunits?\s*,?\s*each\b[^;]*", re.I),
+    # rights, warrants or options to buy a class
+    re.compile(
+        r"\b(?:rights?|warrants?|options?)\b[^;]*?\b(?:to\s+(?:purchase|acquire|buy|subscribe)"
+        r"|exercisable|for\s+the\s+purchase\s+of)\b[^;]*",
+        re.I,
+    ),
+    re.compile(
+        r"(?:\b(?:common|preferred|preference|ordinary|capital|junior|participating|cumulative"
+        r"|series\s+\w+|class\s+\w|share|shares|stock)\s+)*(?:purchase|subscription)\s+"
+        r"(?:rights?|warrants?)",
+        re.I,
+    ),
+    # depositary shares of a preferred share or a debt instrument
+    re.compile(r"\bdepositary\s+(?:shares?|receipts?)\b[^;]*?\b(?:preferred|preference"
+               r"|notes?|debentures?)\b[^;]*", re.I),
+    # instruments convertible into or exchangeable for a class
+    re.compile(r"\b(?:convertible|exchangeable|exercisable)\s+(?:into|for)\b[^;]*", re.I),
+    re.compile(r"\bguarantee[sd]?\b[^;]*", re.I),
+)
+_EQUITY_CLASS_RE = re.compile(
+    r"\b(?:common|ordinary|capital)\s+(?:stock|shares?|units?)\b"
+    r"|\bshares?\s+of\s+beneficial\s+interest\b"
+    r"|\b(?:american\s+)?depositary\s+(?:shares?|receipts?)\b|\bADSs?\b|\bADRs?\b"
+    r"|\b(?:limited\s+)?partnership\s+(?:units|interests)\b|\btracking\s+stock\b"
+    r"|\bcommon\b|\bordinary\s+shares?\b",
+    re.I,
+)
+_PREFERRED_BEFORE_RE = re.compile(r"\b(?:preferred|preference)\s*(?:shares?|stock)?\s*$", re.I)
+_CLASS_MENTION_RE = re.compile(r"\bclass\s+([A-Z])\b", re.I)
+_EXTINGUISHED_RE = re.compile(r"12d2-2\s*\(\s*a\s*\)", re.I)
+# An amendment that withdraws the removal (Minim's 25-NSE/A of 2025-04-09: "will
+# not be delisting the common stock ... per the Form 25 filed on October 24, 2024").
+_CANCELS_RE = re.compile(
+    r"\b(?:will|shall)\s+not\s+(?:be\s+)?delist|\bnot\s+be\s+delisting\b"
+    r"|\b(?:withdraw(?:s|n|ing)?|withdrawal\s+of|rescind(?:s|ed|ing)?|rescission\s+of"
+    r"|cancel(?:s|l?ed|l?ing|l?ation\s+of)?)\s+(?:the\s+|its\s+|this\s+|our\s+|that\s+)?"
+    r"(?:previously\s+filed\s+|prior\s+|original\s+|above\s+)?(?:form\s*25|notification"
+    r"|notice\s+of\s+removal|delisting|removal)",
+    re.I,
+)
+
+
+@dataclass(frozen=True)
+class EventClass:
+    """What a Form 15/25 filing states about the class it concerns."""
+
+    class_description: str | None
+    class_kind: str  # equity | other | unknown
+    class_count: int
+    provision: str | None
+    extinguished: bool | None
+    venue: str | None
+    venue_kind: str  # primary | secondary | unknown
+    amendment_effect: str | None  # cancels | restates (amendments only)
+
+
+def _plain(text: str) -> str:
+    text = _TAG_RE.sub(" ", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def event_class_kind(description: str | None) -> str:
+    """'equity' when a Form 15/25 class description names an equity class, 'other'
+    when it names only other instruments, 'unknown' when there is none."""
+    if not description:
+        return "unknown"
+    if _PLAN_RE.search(description):
+        return "other"
+    text = description
+    for pattern in _DEPENDENT_RES:
+        text = pattern.sub(" ; ", text)
+    for match in _EQUITY_CLASS_RE.finditer(text):
+        if not _PREFERRED_BEFORE_RE.search(text[: match.start()]):
+            return "equity"  # but not "Preferred Shares of Beneficial Interest"
+    return "other"
+
+
+def class_count(description: str | None) -> int:
+    """Distinct share classes a description names (Class A ... Class B -> 2); at least 1."""
+    if not description:
+        return 1
+    return max(1, len({m.upper() for m in _CLASS_MENTION_RE.findall(description)}))
+
+
+def venue_kind(venue: str | None) -> str:
+    if not venue:
+        return "unknown"
+    if _SECONDARY_VENUE_RE.search(venue):
+        return "secondary"
+    if _PRIMARY_VENUE_RE.search(venue):
+        return "primary"
+    return "unknown"
+
+
+def parse_event_document(raw: str, form: str) -> EventClass:
+    """The class, rule provision and exchange a Form 15/25 filing states.
+
+    A 25-NSE carries them as XML (``descriptionClassSecurity``,
+    ``ruleProvision``, ``exchange/entityName``). Forms 25 and 15 are HTML or text:
+    the class is the block between the address label and "(Description of class
+    of securities)" or "(Title of each class of securities covered by this
+    Form)"; Form 25's exchange is named next to the issuer above "(Exact name of
+    Issuer ...)". No such block -> class_kind 'unknown'.
+    """
+    amendment_effect = None
+    if form.endswith("/A"):
+        amendment_effect = "cancels" if _CANCELS_RE.search(_plain(raw)) else "restates"
+    descriptions = [_plain(m) for m in _XML_DESCRIPTION_RE.findall(raw)]
+    if descriptions:
+        description = "; ".join(d for d in descriptions if d)[:500] or None
+        found = _XML_PROVISION_RE.search(raw)
+        provision = _plain(found.group(1)) if found else None
+        found = _XML_EXCHANGE_RE.search(raw)
+        venue = _plain(found.group(1)) if found else None
+    else:
+        documents = _DOCUMENT_RE.findall(raw)
+        body = _plain(documents[0] if documents else raw)
+        description = provision = venue = None
+        label = _CLASS_LABEL_RE.search(body)
+        if label:
+            before = body[: label.start()]
+            addresses = list(_ADDRESS_LABEL_RE.finditer(before))
+            if addresses:
+                block = before[addresses[-1].end():]
+            else:
+                cut = before.rfind(")")
+                block = before[cut + 1:] if cut >= 0 else before[-300:]
+            description = block.strip(" :;,.-")[-500:] or None
+        issuer = _ISSUER_LABEL_RE.search(body)
+        if issuer and form.startswith("25"):
+            numbers = list(_FILE_NUMBER_RE.finditer(body[: issuer.start()]))
+            start = numbers[-1].end() if numbers else max(0, issuer.start() - 300)
+            venue = body[start: issuer.start()].strip(" :;,.-")[-300:] or None
+    return EventClass(
+        class_description=description,
+        class_kind=event_class_kind(description),
+        class_count=class_count(description),
+        provision=provision,
+        extinguished=bool(_EXTINGUISHED_RE.search(provision)) if provision else None,
+        venue=venue,
+        venue_kind=venue_kind(venue),
+        amendment_effect=amendment_effect,
+    )
+
+
+class EventDocuments:
+    """The EDGAR filings of end events, kept in ``cache_dir`` (one file per
+    accession) so a re-parse never fetches again. A missing file is fetched with
+    ``client`` (the SEC User-Agent) at most once per ``spacing`` seconds; 429 and
+    5xx answers and transport errors back off (Retry-After when given) and retry.
+    Without a client only cached filings are read."""
+
+    def __init__(self, cache_dir: Path, client=None, *, spacing: float | None = None,
+                 retries: int = 6) -> None:
+        self.cache_dir = cache_dir
+        self.client = client
+        self.spacing = FILING_SPACING_S if spacing is None else spacing
+        self.retries = retries
+        self.fetched = 0
+        self._last = 0.0
+
+    def text(self, cik: int, adsh: str) -> str | None:
+        """The filing's full text; '' when EDGAR has none; None when it is not
+        cached and there is no client."""
+        target = self.cache_dir / f"{adsh}.txt"
+        if target.exists():
+            return target.read_bytes().decode("latin-1")
+        if self.client is None:
+            return None
+        import httpx
+
+        url = EDGAR_FILING_URL.format(cik=cik, adsh=adsh)
+        for attempt in range(self.retries):
+            wait = self.spacing - (time.monotonic() - self._last)
+            if wait > 0:
+                time.sleep(wait)
+            self._last = time.monotonic()
+            backoff = min(60.0, 2.0 ** attempt)
+            try:
+                response = self.client.get(url)
+            except httpx.TransportError:
+                time.sleep(backoff)
+                continue
+            if response.status_code == 200:
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+                partial = target.with_name(target.name + ".part")
+                partial.write_bytes(response.content)
+                partial.replace(target)
+                self.fetched += 1
+                return response.content.decode("latin-1")
+            if response.status_code == 404:
+                return ""
+            if response.status_code in (429, 500, 502, 503, 504):
+                retry_after = response.headers.get("retry-after", "")
+                time.sleep(float(retry_after) if retry_after.isdigit() else backoff)
+                continue
+            response.raise_for_status()
+        raise RuntimeError(f"{url}: no answer after {self.retries} attempts")
+
+
+def describe_events(
+    events: list[RegistrationEvent], documents: EventDocuments | None, ciks: set[int],
+) -> tuple[list[RegistrationEvent], Counter]:
+    """Read the end filings (and their amendments) of CIKs with cover data."""
+    described: list[RegistrationEvent] = []
+    stats: Counter = Counter()
+    for event in events:
+        if documents is None or event.form not in END_EVENT_FORMS or event.cik not in ciks:
+            described.append(event)
+            continue
+        raw = documents.text(event.cik, event.adsh)
+        if raw is None:
+            stats["class_unread"] += 1
+            described.append(event)
+            continue
+        parsed = parse_event_document(raw, event.form)
+        stats[f"class_{parsed.class_kind}"] += 1
+        described.append(replace(event, **asdict(parsed), parser_version=EVENT_PARSER_VERSION))
+    return described, stats
+
+
+def cover_ciks(conn) -> set[int]:
+    """CIKs with current cover observations: their end filings are read."""
+    return {cik for (cik,) in conn.execute(
+        "SELECT DISTINCT cik FROM sec_ticker_cik_observations WHERE retired_on IS NULL"
+    ).fetchall()}
 
 
 # --------------------------------------------------------------------------- #
@@ -1149,14 +1453,20 @@ def load_package(conn, result: PackageResult, *,
     }
 
 
-def load_form_index(conn, path: Path, *,
-                    reconciled_on: dt.date | None = None) -> dict[str, object]:
+def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
+                    documents: EventDocuments | None = None,
+                    ciks: set[int] | None = None) -> dict[str, object]:
     """Reconcile one quarterly index version in a single transaction (bitemporal).
 
     An event the previous version listed and this one does not (removed, or its
-    CIK corrected) is retired unless another loaded index still lists it.
+    CIK corrected) is retired unless another loaded index still lists it. With
+    ``documents``, the end filings of CIKs with cover data (``ciks``, default:
+    all with current observations) are read for their class first.
     """
     events, sha256, size = parse_form_index(path)
+    if documents is not None and ciks is None:
+        ciks = cover_ciks(conn)
+    events, classes = describe_events(events, documents, ciks or set())
     package = path.name
     on = reconciled_on or dt.date.today()
     with conn.transaction():
@@ -1182,7 +1492,68 @@ def load_form_index(conn, path: Path, *,
         "package": package,
         "events": len(events),
         "forms": dict(Counter(e.form for e in events).most_common()),
+        **{key: classes.get(key, 0) for key in CLASS_STAT_KEYS},
         **counts,
+    }
+
+
+def derive_event_classes(conn, documents: EventDocuments, *,
+                         reconciled_on: dt.date | None = None,
+                         ciks: set[int] | None = None) -> dict[str, int]:
+    """Re-derive the class of current end events of CIKs with cover data whose
+    filing was not read, or was read by another parser version.
+
+    A changed event is a correction: its version is retired and the re-derived
+    one is knowable from the later of the filing date + 1 and the reconciliation
+    date; the indexes that carried the old version carry the new one.
+    """
+    on = reconciled_on or dt.date.today()
+    ciks = cover_ciks(conn) if ciks is None else ciks
+    rows = conn.execute(
+        f"SELECT {', '.join(EVENT_COLUMNS)}, fact_hash FROM sec_registration_events "
+        "WHERE retired_on IS NULL AND form = ANY(%s) AND parser_version IS DISTINCT FROM %s",
+        (sorted(END_EVENT_FORMS), EVENT_PARSER_VERSION),
+    ).fetchall()
+    stats: Counter = Counter()
+    changed: list[tuple[str, RegistrationEvent]] = []
+    for row in rows:
+        event = RegistrationEvent(**dict(zip(EVENT_COLUMNS, row[:-1])))
+        if event.cik not in ciks:
+            continue
+        (derived,), classes = describe_events([event], documents, ciks)
+        stats.update(classes)
+        if derived.parser_version is not None and derived.fact_hash != row[-1]:
+            changed.append((row[-1], derived))
+    with conn.transaction():
+        with conn.cursor() as cur:
+            for old_hash, event in changed:
+                cur.execute(
+                    "UPDATE sec_registration_events SET retired_on = %s "
+                    "WHERE fact_hash = %s AND retired_on IS NULL", (on, old_hash),
+                )
+                cur.execute(
+                    f"INSERT INTO sec_registration_events "
+                    f"({', '.join(EVENT_COLUMNS)}, fact_hash, available_on, loaded_on) "
+                    f"SELECT {', '.join(['%s'] * len(EVENT_COLUMNS))}, %s, "
+                    f"GREATEST(%s::date + 1, %s::date), %s "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM sec_registration_events "
+                    f"WHERE fact_hash = %s AND retired_on IS NULL)",
+                    (*event.as_tuple(), event.fact_hash, event.filed, on, on, event.fact_hash),
+                )
+                cur.execute(
+                    "INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, "
+                    "fact_hash) SELECT source_package, fact_table, %s "
+                    "FROM sec_ticker_cik_package_facts "
+                    "WHERE fact_table = 'event' AND fact_hash = %s ON CONFLICT DO NOTHING",
+                    (event.fact_hash, old_hash),
+                )
+                cur.execute(
+                    "DELETE FROM sec_ticker_cik_package_facts "
+                    "WHERE fact_table = 'event' AND fact_hash = %s", (old_hash,),
+                )
+    return {
+        "derived": len(changed),
+        **{key: stats.get(key, 0) for key in CLASS_STAT_KEYS},
     }
 
 
@@ -1244,9 +1615,11 @@ def run(
     dry_run: bool,
     form_indexes: Iterable[Path] = (),
     reconciled_on: dt.date | None = None,
+    documents: EventDocuments | None = None,
 ) -> list[dict[str, object]]:
-    """Parse and reconcile packages, then indexes; ``reconciled_on`` dates every
-    retirement and correction (default: today)."""
+    """Parse and reconcile packages, then indexes (reading end filings with
+    ``documents``), then re-derive end events read by another parser version;
+    ``reconciled_on`` dates every retirement and correction (default: today)."""
     stats: list[dict[str, object]] = []
     # Autocommit: each package commits in its own explicit transaction. The
     # session lock keeps this script and the recurring worker from interleaving.
@@ -1268,12 +1641,21 @@ def run(
                 item["load_seconds"] = round(time.monotonic() - started, 1)
             print(json.dumps(item), flush=True)
             stats.append(item)
+        ciks = cover_ciks(conn) if conn is not None and documents is not None else None
         for path in form_indexes:
             if conn is None:
                 events, _, _ = parse_form_index(path)
                 item = {"package": path.name, "events": len(events)}
             else:
-                item = load_form_index(conn, path, reconciled_on=reconciled_on)
+                item = load_form_index(conn, path, reconciled_on=reconciled_on,
+                                       documents=documents, ciks=ciks)
+            print(json.dumps(item), flush=True)
+            stats.append(item)
+        if conn is not None and documents is not None:
+            item = {"package": "derive_event_classes",
+                    **derive_event_classes(conn, documents, reconciled_on=reconciled_on,
+                                           ciks=ciks),
+                    "filings_fetched": documents.fetched}
             print(json.dumps(item), flush=True)
             stats.append(item)
     finally:
@@ -1291,7 +1673,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--download", action="store_true",
                         help="fetch listed FSN packages and EDGAR form indexes missing locally")
     parser.add_argument("--no-events", action="store_true",
-                        help="skip the EDGAR deregistration/delisting events")
+                        help="skip the EDGAR registration events")
+    parser.add_argument("--event-docs-dir", type=Path, default=DEFAULT_EVENT_DOCS_DIR,
+                        help="cache of the end filings read for their class")
+    parser.add_argument("--no-fetch", action="store_true",
+                        help="read only end filings already in --event-docs-dir")
     parser.add_argument("--dsn", default=None, help="Database DSN; defaults to DATABASE_URL")
     parser.add_argument("--dry-run", action="store_true", help="parse and report; no database")
     parser.add_argument("--apply-schema", action="store_true",
@@ -1317,12 +1703,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.apply_schema and not args.dry_run:
         apply_schema(args.dsn)
     started = time.monotonic()
-    stats = run(packages, dsn=args.dsn, dry_run=args.dry_run, form_indexes=form_indexes,
-                reconciled_on=args.reconciled_on)
+    client = None if args.dry_run or args.no_events or args.no_fetch else sec_client()
+    documents = None if args.dry_run or args.no_events else EventDocuments(
+        args.event_docs_dir, client)
+    try:
+        stats = run(packages, dsn=args.dsn, dry_run=args.dry_run, form_indexes=form_indexes,
+                    reconciled_on=args.reconciled_on, documents=documents)
+    finally:
+        if client is not None:
+            client.close()
     totals: Counter = Counter()
     for item in stats:
         for key in ("submissions", "symbol_facts", "observations", "share_counts", "events",
-                    "inserted", "retired", "shares_inserted", "shares_retired"):
+                    "inserted", "retired", "shares_inserted", "shares_retired", "derived",
+                    "filings_fetched", *CLASS_STAT_KEYS):
             totals[key] += int(item.get(key, 0) or 0)  # type: ignore[call-overload]
     print(json.dumps({
         "packages": len(packages),

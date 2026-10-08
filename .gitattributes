@@ -61,3 +61,6 @@ contracts/fund-identity-sec/** text eol=lf
 
 # Railway authoring, snapshots and checks use portable LF endings.
 .railway/* text eol=lf
+
+# Verbatim SEC EDGAR filings (Forms 15 and 25) read by the ticker-history event parser.
+tests/fixtures/sec_ticker_cik_history/** -text

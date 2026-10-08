@@ -1,0 +1,190 @@
+<SEC-DOCUMENT>0000950103-17-012553.txt : 20171219
+<SEC-HEADER>0000950103-17-012553.hdr.sgml : 20171219
+<ACCEPTANCE-DATETIME>20171219163511
+ACCESSION NUMBER:		0000950103-17-012553
+CONFORMED SUBMISSION TYPE:	25
+PUBLIC DOCUMENT COUNT:		1
+FILED AS OF DATE:		20171219
+DATE AS OF CHANGE:		20171219
+EFFECTIVENESS DATE:		20171219
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			PEPSICO INC
+		CENTRAL INDEX KEY:			0000077476
+		STANDARD INDUSTRIAL CLASSIFICATION:	BEVERAGES [2080]
+		IRS NUMBER:				131584302
+		STATE OF INCORPORATION:			NC
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		25
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-01183
+		FILM NUMBER:		171264396
+
+	BUSINESS ADDRESS:	
+		STREET 1:		700 ANDERSON HILL RD
+		CITY:			PURCHASE
+		STATE:			NY
+		ZIP:			10577
+		BUSINESS PHONE:		9142532000
+
+	MAIL ADDRESS:	
+		STREET 1:		700 ANDERSON HILL ROAD
+		CITY:			PURCHASE
+		STATE:			NY
+		ZIP:			10577-1444
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	PEPSI COLA CO
+		DATE OF NAME CHANGE:	19700903
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>25
+<SEQUENCE>1
+<FILENAME>dp84108_25.htm
+<DESCRIPTION>FORM 25
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+<P STYLE="margin: 0"></P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in"><B>UNITED STATES<BR>
+SECURITIES AND EXCHANGE COMMISSION<BR>
+Washington, D. C. 20549</B></P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in"><B>FORM 25</B></P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in"><B>NOTIFICATION OF REMOVAL
+FROM LISTING AND/OR<BR>
+REGISTRATION UNDER SECTION 12(b) OF THE<BR>
+SECURITIES EXCHANGE ACT OF 1934.</B></P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="width: 100%; text-align: right; text-indent: 0in; font-size: 12pt">Commission File Number: <B>1-1183</B></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: right; text-indent: 0in; font-size: 12pt">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="border-bottom: Black 1pt solid; text-align: center; text-indent: 0in; font-size: 12pt"><B>PepsiCo, Inc. / New York Stock Exchange</B></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">(Exact name of Issuer as specified in its charter,</FONT><BR>
+<FONT STYLE="font-size: 10pt">and name of Exchange where security is listed and/or registered)</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-bottom: Black 1pt solid; text-align: center; text-indent: 0in; font-size: 12pt"><B>700 Anderson Hill Road</B><BR>
+<B>Purchase, New York 10577</B><BR>
+<B>(914) 253-2000</B></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">(Address, including zip code, and telephone number, including area code,</FONT><BR>
+<FONT STYLE="font-size: 10pt">of Issuer&rsquo;s principal executive offices)</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-bottom: Black 1pt solid; text-align: center; text-indent: 0in; font-size: 12pt"><B>Common Stock,</B><BR>
+<B>par value 1-2/3 cents per share</B></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">(Description of class of securities)</FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in">Please place an X in the box to designate
+the rule provision relied upon to strike the class of securities from listing and registration:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-family: Times New Roman, Times, Serif">&#9744;</FONT>
+&#9;17 CFR 240.12d2-2(a)(1)</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-family: Times New Roman, Times, Serif">&#9744;</FONT>
+&#9;17 CFR 240.12d2-2(a)(2)</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-family: Times New Roman, Times, Serif">&#9744;</FONT>
+&#9;17 CFR 240.12d2-2(a)(3)</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-family: Times New Roman, Times, Serif">&#9744;</FONT>
+&#9;17 CFR 240.12d2-2(a)(4)</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-family: Times New Roman, Times, Serif">&#9744;</FONT>
+&#9;Pursuant to 17 CFR 240.12d2-2(b), the Exchange has complied with its rules to strike the class of securities from listing and/or
+withdraw registration on the Exchange.<SUP>1</SUP></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-family: Times New Roman, Times, Serif">&#9746;</FONT>
+&#9;Pursuant to 17 CFR 240.12d2-2(c), the Issuer has complied with the rules of the Exchange and the requirements of 17 CFR 240.12d2-2(c)
+governing the voluntary withdrawal of the class of securities from listing and registration on the Exchange.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in">&nbsp;</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-size: 10pt">Pursuant to
+the requirements of the Securities Exchange Act of 1934, PepsiCo, Inc. certifies that it has reasonable grounds to believe that
+it meets all of the requirements for filing the Form 25 and has caused this notification to be signed on its behalf by the undersigned
+duly authorized person.</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="width: 24%; vertical-align: bottom; text-align: center"><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt">December
+19, 2017&nbsp;</FONT></P></TD>
+    <TD STYLE="width: 5%; text-align: center; text-indent: 0in; font-size: 12pt; vertical-align: bottom"><FONT STYLE="font-size: 10pt">By:</FONT></TD>
+    <TD STYLE="width: 36%; border-bottom: Black 1pt solid; font-size: 12pt; vertical-align: bottom; text-align: center; padding-right: 6pt"><FONT STYLE="font-size: 10pt">/s/ Cynthia A. Nastanski</FONT></TD>
+    <TD STYLE="width: 2%">&nbsp;</TD>
+    <TD STYLE="width: 33%; vertical-align: bottom; text-align: center"><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; border-bottom: Black 0.5pt solid; text-align: left"><FONT STYLE="font-size: 10pt">Senior
+Vice President, Corporate Law and Deputy Corporate Secretary&nbsp;</FONT></P></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">Date</FONT></TD>
+    <TD COLSPAN="2" STYLE="text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">Name</FONT></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">Title</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="text-align: center; text-indent: 0in; font-size: 12pt">&nbsp;</TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="text-align: center; text-indent: 0in; font-size: 12pt">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-bottom: Black 1pt solid; text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD COLSPAN="4" STYLE="text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD COLSPAN="5" STYLE="padding-left: 9pt; font-size: 12pt; text-indent: -9pt"><FONT STYLE="font-size: 10pt"><SUP>1</SUP>&#9;Form
+    25 and attached Notice will be considered compliance with the provisions of 17 CFR 240.19d-1 as applicable. See General Instructions.</FONT></TD></TR>
+</TABLE>
+
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<P STYLE="margin: 0"></P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

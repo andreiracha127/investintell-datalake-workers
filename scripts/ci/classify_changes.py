@@ -60,6 +60,7 @@ NPORT_PATTERNS = (
     "railway.sec-ticker-cik-history.toml",
     "schemas/sec_ticker_cik_history_v1*.sql",
     "tests/test_sec_ticker_cik_history.py",
+    "tests/fixtures/sec_ticker_cik_history/*/*.txt",
 )
 SHARED_PATHS = {
     "src/db.py",

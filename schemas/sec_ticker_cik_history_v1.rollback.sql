@@ -10,6 +10,8 @@ DROP FUNCTION IF EXISTS sec_cover_class_shares_at(bigint, text, date, integer);
 DROP FUNCTION IF EXISTS sec_issuer_line_at(bigint, text, date, integer);
 DROP FUNCTION IF EXISTS sec_ticker_issuer_at(text, date, integer);
 DROP FUNCTION IF EXISTS sec_ticker_holds(text, date, integer, boolean);
+DROP FUNCTION IF EXISTS sec_issuer_end_events(bigint, date, boolean);
+DROP FUNCTION IF EXISTS sec_registration_starts(bigint, date, boolean);
 DROP FUNCTION IF EXISTS sec_registration_end_events(bigint, date, boolean);
 DROP FUNCTION IF EXISTS sec_share_counts_at(date, boolean);
 DROP FUNCTION IF EXISTS sec_observations_at(date, boolean);

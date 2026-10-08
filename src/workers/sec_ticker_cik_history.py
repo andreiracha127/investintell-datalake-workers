@@ -11,14 +11,18 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
    and so is the newest listed package when its size differs from the recorded
    one (a republished month; it is downloaded again even when a cached copy
    exists, and a cached copy of any package is replaced when its size differs
-   from the remote one). Each package is loaded in its own transaction, which
-   also removes the evidence of accessions it no longer contains, and is deleted
-   again unless ``SEC_TICKER_CACHE_DIR`` keeps it, so a run never needs more than
-   one package of disk. ``WORKER_LIMIT`` caps the
-   packages per run (the backlog resumes next run).
+   from the remote one). Each package is reconciled in its own transaction:
+   facts it no longer carries (and no other package does) are retired, never
+   deleted. The zip is deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it,
+   so a run never needs more than one package of disk. ``WORKER_LIMIT`` caps
+   the packages per run (the backlog resumes next run).
 3. Re-fetch the EDGAR form indexes of the calc date's quarter and the one before
-   (an index keeps growing until its quarter closes) and load their
-   deregistration/delisting rows.
+   (an index keeps growing until its quarter closes) and reconcile their
+   registration end/start rows. The end filings of CIKs with cover data are
+   read for the class they concern (at most 10 requests per second), kept under
+   ``<cache>/event-docs``.
+4. Re-derive the class of end events read by another parser version, or not
+   read yet, as corrections.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict``. ``state`` is ``ok``
 (something new was loaded) or ``noop``; an error propagates and ``run_worker``
@@ -97,6 +101,7 @@ def run(
     owns_client = client is None
     client = client or history.sec_client()
     stats: dict = {"calc_date": as_of.isoformat(), "packages": [], "form_indexes": []}
+    documents = history.EventDocuments(workdir / "event-docs", client)
     try:
         with connect(dsn, autocommit=True) as conn, advisory_lock(
             conn, LOCK_SEC_TICKER_CIK_HISTORY
@@ -117,9 +122,12 @@ def run(
             for year, quarter in _quarters(as_of):
                 target = workdir / f"{year}QTR{quarter}.form.gz"
                 history.fetch_form_index(client, year, quarter, target)
-                stats["form_indexes"].append(history.load_form_index(conn, target))
+                stats["form_indexes"].append(
+                    history.load_form_index(conn, target, documents=documents))
                 if cache is None:
                     target.unlink()
+            stats["event_classes"] = history.derive_event_classes(conn, documents)
+            stats["filings_fetched"] = documents.fetched
     finally:
         if owns_client:
             client.close()
@@ -128,6 +136,7 @@ def run(
     changed = any(
         p["inserted"] or p["retired"] or p["shares_inserted"] or p["shares_retired"]
         for p in stats["packages"]
-    ) or any(i["inserted"] or i["retired"] for i in stats["form_indexes"])
+    ) or any(i["inserted"] or i["retired"] for i in stats["form_indexes"]) or bool(
+        stats.get("event_classes", {}).get("derived"))
     stats["state"] = "ok" if changed else "noop"
     return stats

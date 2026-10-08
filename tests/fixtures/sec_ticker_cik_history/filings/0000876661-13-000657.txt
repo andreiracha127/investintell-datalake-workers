@@ -1,0 +1,127 @@
+<SEC-DOCUMENT>0000876661-13-000657.txt : 20130812
+<SEC-HEADER>0000876661-13-000657.hdr.sgml : 20130812
+<ACCEPTANCE-DATETIME>20130812115434
+ACCESSION NUMBER:		0000876661-13-000657
+CONFORMED SUBMISSION TYPE:	25-NSE
+PUBLIC DOCUMENT COUNT:		2
+FILED AS OF DATE:		20130812
+DATE AS OF CHANGE:		20130812
+EFFECTIVENESS DATE:		20130812
+
+SUBJECT COMPANY:	
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			AMERICAN GREETINGS CORP
+		CENTRAL INDEX KEY:			0000005133
+		STANDARD INDUSTRIAL CLASSIFICATION:	GREETING CARDS [2771]
+		IRS NUMBER:				340065325
+		STATE OF INCORPORATION:			OH
+		FISCAL YEAR END:			0228
+
+	FILING VALUES:
+		FORM TYPE:		25-NSE
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-13859
+		FILM NUMBER:		131028886
+
+	BUSINESS ADDRESS:	
+		STREET 1:		ONE AMERICAN ROAD
+		CITY:			CLEVELAND
+		STATE:			OH
+		ZIP:			44144
+		BUSINESS PHONE:		2162527300
+
+	MAIL ADDRESS:	
+		STREET 1:		ONE AMERICAN ROAD
+		CITY:			CLEVELAND
+		STATE:			OH
+		ZIP:			44144
+
+FILED BY:		
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			NEW YORK STOCK EXCHANGE LLC
+		CENTRAL INDEX KEY:			0000876661
+		IRS NUMBER:				000000000
+		STATE OF INCORPORATION:			NY
+
+	FILING VALUES:
+		FORM TYPE:		25-NSE
+
+	BUSINESS ADDRESS:	
+		STREET 1:		11 WALL STREET
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10005
+		BUSINESS PHONE:		212-656-2060
+
+	MAIL ADDRESS:	
+		STREET 1:		11 WALL STREET
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10005
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	NEW YORK STOCK EXCHANGE INC
+		DATE OF NAME CHANGE:	19910628
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>25-NSE
+<SEQUENCE>1
+<FILENAME>primary_doc.xml
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<notificationOfRemoval>
+
+    <schemaVersion>X0203</schemaVersion>
+
+    <exchange>
+        <cik>0000876661</cik>
+        <entityName>NEW YORK STOCK EXCHANGE LLC</entityName>
+    </exchange>
+
+    <issuer>
+        <cik>5133</cik>
+        <entityName>AMERICAN GREETINGS CORP</entityName>
+        <fileNumber>001-13859</fileNumber>
+        <address>
+            <street1>One American Road</street1>
+            <city>Cleveland</city>
+            <stateOrCountryCode>OH</stateOrCountryCode>
+            <stateOrCountry>OHIO</stateOrCountry>
+            <zipCode>44144-2398</zipCode>
+        </address>
+        <telephoneNumber>(216) 252-7300</telephoneNumber>
+    </issuer>
+
+    <descriptionClassSecurity>Class A Common Shares</descriptionClassSecurity>
+
+    <ruleProvision>17 CFR 240.12d2-2(a)(3)</ruleProvision>
+
+    <signatureData>
+        <signatureName>Edwin Mecabe</signatureName>
+        <signatureTitle>Director</signatureTitle>
+        <signatureDate>2013-08-12</signatureDate>
+    </signatureData>
+</notificationOfRemoval>
+</XML>
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-99.25
+<SEQUENCE>2
+<FILENAME>ruleprovisionnotice.htm
+<TEXT>
+NOTIFICATION OF THE REMOVAL FROM LISTING AND REGISTRATION OF THE STATED SECURITIES
+
+The New York Stock Exchange hereby notifies the SEC of its intention to remove the entire class of the stated securities from listing and registration on the Exchange at the opening of business on August 23, 2013, pursuant to the provisions of Rule 12d2-2 (a).
+
+[  X  ] 17 CFR 240.12d2-2(a)(3)  That on August 9, 2013 the instruments representing the securities comprising the entire class of this security came to evidence, by operation of law or otherwise, other securities in substitution therefore and represent no other right except, if such be the fact, the right  to receive an immediate cash payment.
+
+The merger between American Greetings Corporation and Century Merger Company, an Ohio corporation and wholly owned subsidiary of Century Intermediate Holding Company. (The Weiss Family). became effective before the opening on August 9, 2013.  Each share of Class A Common Shares of American Greetings Corporation was converted into $19.00 in cash per share.
+
+The Exchange also notifies the Securities and Exchange Commission that as a result of the above indicated conditions this security was suspended from trading on August 9, 2013.
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
