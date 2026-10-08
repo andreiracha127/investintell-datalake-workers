@@ -194,23 +194,67 @@ read by another parser version (`EVENT_PARSER_VERSION`) or not read yet, as
 corrections. The loader refuses to run before the governed schema exists, and
 holds advisory lock 900_368 so it never interleaves with the recurring worker.
 
-FULL_LOAD_PLACEHOLDER
+Full local run (2026-10-08, postgres:16 on the same workstation, filings
+cached): 79 DERA packages (2009q1 to 2026_09, 25 GB of zips) and 72 EDGAR
+quarterly indexes in **about 11.5 min** (676 s): 885,052 submissions, 866,258
+`TradingSymbol` facts, **858,894** observations, **483,745** cover share counts,
+**79,693** registration events (ends, starts and amendments). 15,718 end filings
+of CIKs with cover data were read: 9,693 name an equity class, 5,934 another
+class, 91 state none (`class_unknown`); 0 cache misses, 0 fetch failures. No
+fact is dated after its filing's public date on a first load. Filling an empty
+filing cache takes about 15,700 requests (about 70 min at the observed
+sequential rate, never above 10 per second).
+
+## Lineage for price rows
+
+`sec_line_price_evidence(T, cik, class_key)` is the decision-grade lineage
+contract: a stored price row of T at date t belongs to issuer `cik`, line L (the
+line of `class_key`; pass the class of today's latest equity row showing T) only
+if an `alive` interval of L contains t and no `other_holder` interval does.
+Intervals are `[valid_from, valid_to)`; an open run ends at its stale cutoff
+(last statement + 401 days). `source` is `sec_cover` for cover-page statements
+and end filings; insider filings (W1b) are the planned second source and will
+add rows of their own. Lines (`sec_issuer_lines`) link the classes of one issuer
+that showed the same symbol and never appear side by side (Berkshire's
+CommonClassB / ClassBCommonStock), and the one class of consecutive complete
+filings; other lines of the same issuer under the same ticker are other holders
+(GOOG moved from class A to class C in 2014). `sec_ticker_price_span` remains the
+run-and-neighbour view of the same engine (`sec_ticker_line_runs`). Lineage
+functions run in 15-65 ms per ticker on the full load (JIT is off for them; it
+cost 1.5 s per call).
+
+## Known residuals
+
+| Case | Behaviour | Source that closes it |
+|---|---|---|
+| A true holder with no cover tag before 2019 and a stray claim (ANDE under ANDES 7 INC in 2016, EMR Technology Solutions 2017, CIK 1703975 tagging NI 2017-18) | The stray is the only claimant and resolves for up to 400 days | W1b insider filings of the true holder |
+| A stray claim between an end and the old holder's next statement | The successor rule treats it as the new holder | W1b |
+| Alphabet's GOOG between Google Inc's end (2015-10-03) and Alphabet's first tagged cover (2015-10-29) | In no evidence interval: price rows refused | W1b (Alphabet insiders filed with GOOG from October 2015) |
+| A symbol moving between classes of one issuer before 2019, when covers tagged every symbol undimensioned (Google 2014) | One line | Dimensioned covers from 2019 |
+| A tracking or secondary class delisted while the main symbol continues, pre-2019 (FNF / FNFV 2017) | The main symbol's hold ends until its next statement | Covers listing both symbols (2019+) |
+| Antero Midstream Partners (AM, 2014-2019) and other holders that never tagged a symbol | `ended` or `missing` | W1b |
 
 ## Recurring worker
 
 `src/workers/sec_ticker_cik_history.py` (`WORKER=sec_ticker_cik_history`), Railway
 config `railway.sec-ticker-cik-history.toml`, cron **`0 10 * * 1`** (Mondays
 10:00 UTC; DERA publishes one package a month). Each run takes lock 900_368,
-reconciles every listed package not yet in `sec_ticker_cik_packages` (oldest
-first), reconciles the newest one again when its size changed (downloading it
-again even over a cached copy), refreshes the EDGAR form indexes of the current
-and previous quarter, reads the end filings of CIKs with cover data (kept under
-`<cache>/event-docs`), and re-derives end events read by another parser version.
+first completes any monthly supersession a stopped run left, then reconciles
+every listed package not yet in `sec_ticker_cik_packages` (oldest first; a
+monthly package whose quarterly is loaded or listed is not queued), reconciles
+the newest one again when it was republished (its size, else the SEC's ETag or
+Last-Modified compared with the recorded ones, else the SHA-256 of a fresh
+download, differs), supersedes the monthly packages of a loaded quarterly,
+refreshes the EDGAR form indexes of the current and previous quarter, reads the
+end filings of CIKs with cover data (kept under `<cache>/event-docs`; a filing
+that cannot be fetched is counted and never replaces a class already read), and
+re-derives end events read by another parser version.
 Packages are fetched, loaded and deleted one at a time (about 0.6 GB of disk at
 most) unless `SEC_TICKER_CACHE_DIR` points at a volume; a cached copy whose size
 differs from the remote one is replaced before it is loaded. `WORKER_LIMIT` caps
 packages per run; the backlog resumes on the next run. `state` is `ok` when any
-observation, share count or event version was inserted or retired, else `noop`.
+observation, share count or event version was inserted or retired (supersession
+included), else `noop`.
 The worker never applies DDL and refuses to run without the schema. Exit is
 non-zero on an error or `lock_busy`. Env: `DATABASE_URL` (`worker_writer`); no
 API key.
@@ -219,17 +263,23 @@ API key.
 
 1. Apply `schemas/sec_ticker_cik_history_v1.sql` as `postgres` (or `worker_writer`)
    with `psql -v ON_ERROR_STOP=1 -f schemas/sec_ticker_cik_history_v1.sql`. It
-   creates the five tables, the view and seven functions, sets the owner to
+   creates the six tables, the view and fifteen functions, sets the owner to
    `worker_writer`, revokes PUBLIC and grants SELECT/EXECUTE to `app_runtime`,
    `app_analytics_ro` and `mcp_ro`.
 2. Run the initial load as `worker_writer`, from the workstation that holds
-   `E:/Edgard/fsn` and `E:/Edgard/edgar-index` (add `--download` to fetch what is
-   missing): `python -m scripts.load_sec_ticker_cik_history --dsn <worker_writer DSN>`.
-   Expect about 861k observations, 485k share counts and 48.5k events, and
-   15-25 minutes (parsing is local; the writes are 1.4M rows of COPY).
+   `E:/Edgard/fsn`, `E:/Edgard/edgar-index` and the filing cache
+   `E:/Edgard/edgar-event-docs` (add `--download` to fetch packages or indexes
+   that are missing; filings missing from the cache are fetched at most 10 per
+   second): `PYTHONPATH=. python -m scripts.load_sec_ticker_cik_history --dsn
+   <worker_writer DSN>`. Expect 858,894 observations, 483,745 share counts and
+   79,693 events, `class_unknown` 91, `filings_missing` and `filings_failed` 0;
+   11-12 minutes locally, about 20-30 minutes against the remote database (the
+   writes are 1.4M rows of COPY).
 3. Check: `SELECT count(*), max(available_on) FROM sec_ticker_cik_observations;`,
    `SELECT * FROM sec_ticker_issuer_at('BRK-B', current_date);` (resolved, CIK
-   1067983, class B line).
+   1067983, class B line), `SELECT * FROM sec_ticker_issuer_at('GOOG', '2015-11-15');`
+   (resolved, Alphabet 1652044), `SELECT count(*) FROM sec_registration_events
+   WHERE available_on > source_available_on;` (0 after a first load).
 4. Create the Railway service `sec-ticker-cik-history` from this repository with
    `railway.sec-ticker-cik-history.toml`, `WORKER=sec_ticker_cik_history` and the
    `worker_writer` `DATABASE_URL`. The cron is in the config file.
