@@ -2925,6 +2925,55 @@ def test_worker_fails_on_an_empty_package_listing(schema_dsn, tmp_path: Path) ->
         worker.run(dsn, calc_date="2024-11-15", client=client)
 
 
+def test_a_workstation_cache_is_verified_before_the_initial_load(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4222197135 / --verify-cache: a cached zip the SEC republished
+    (newer Last-Modified, or another size) is fetched again before the load, and
+    only the fresh validators are recorded."""
+    import os
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    build, cache = tmp_path / "build", tmp_path / "cache"
+    build.mkdir()
+    cache.mkdir()
+
+    def month(name: str, symbol: str) -> bytes:
+        return _write_package(
+            build / name, [_sub("0000000005-24-000001", 732717, "8-K", "20241105")],
+            [_fact("0000000005-24-000001", "TradingSymbol", symbol)],
+            compression=zipfile.ZIP_STORED,
+        ).read_bytes()
+
+    remote = {"2024_09_notes.zip": month("2024_09_notes.zip", "AA"),
+              "2024_10_notes.zip": month("2024_10_notes.zip", "BB"),
+              "2024_11_notes.zip": month("2024_11_notes.zip", "CC")}
+    stamps = {"2024_09_notes.zip": "Tue, 01 Oct 2024 10:00:00 GMT",
+              "2024_10_notes.zip": "Fri, 06 Dec 2024 10:00:00 GMT",
+              "2024_11_notes.zip": "Fri, 06 Dec 2024 10:00:00 GMT"}
+    (cache / "2024_09_notes.zip").write_bytes(remote["2024_09_notes.zip"])  # current
+    (cache / "2024_10_notes.zip").write_bytes(month("old", "XX"))  # republished since
+    for name in ("2024_09_notes.zip", "2024_10_notes.zip"):
+        cached_at = dt.datetime(2024, 11, 20, tzinfo=dt.timezone.utc).timestamp()
+        os.utime(cache / name, (cached_at, cached_at))
+    client, calls = _fake_sec(tmp_path, remote, {}, last_modified=stamps)
+    validators = loader.verify_package_cache(client, cache)
+    gets = [url for method, url in calls if method == "GET" and url.startswith(FSN_BASE)]
+    assert sorted(gets) == [FSN_BASE + "2024_10_notes.zip", FSN_BASE + "2024_11_notes.zip"]
+    assert (cache / "2024_10_notes.zip").read_bytes() == remote["2024_10_notes.zip"]
+    assert validators["2024_10_notes.zip"] == (None, "Fri, 06 Dec 2024 10:00:00 GMT")
+    loader.run(loader.discover_packages(cache), dsn=dsn, dry_run=False,
+               validators=validators, reconciled_on=d(2024, 12, 10))
+    assert conn.execute(
+        "SELECT source_package, remote_last_modified FROM sec_ticker_cik_packages "
+        "ORDER BY source_package"
+    ).fetchall() == [(name, stamps[name]) for name in sorted(remote)]
+    calls.clear()
+    loader.verify_package_cache(client, cache)  # everything is current now
+    assert not [url for method, url in calls if method == "GET" and url.startswith(FSN_BASE)]
+
+
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:
     import psycopg
 

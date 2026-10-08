@@ -271,8 +271,13 @@ API key.
    `E:/Edgard/fsn`, `E:/Edgard/edgar-index` and the filing cache
    `E:/Edgard/edgar-event-docs` (add `--download` to fetch packages or indexes
    that are missing; filings missing from the cache are fetched at most 10 per
-   second): `PYTHONPATH=. python -m scripts.load_sec_ticker_cik_history --dsn
-   <worker_writer DSN>`. Expect 858,894 observations, 483,745 share counts and
+   second). Precondition: the package cache must match the SEC listing, so the
+   run starts with `--verify-cache` (HEAD every listed package; fetch again any
+   cached zip that is missing, changed size or ETag, or is older than its
+   Last-Modified; record only those fresh validators; the first log line reports
+   `fetched_again`): `PYTHONPATH=. python -m scripts.load_sec_ticker_cik_history
+   --verify-cache --download --dsn <worker_writer DSN>`. On 2026-10-08 the cache
+   was current (79 listed, 0 fetched again). Expect 858,894 observations, 483,745 share counts and
    79,693 events, `class_unknown` 91, `filings_missing` and `filings_failed` 0;
    11-12 minutes locally, about 20-30 minutes against the remote database (the
    writes are 1.4M rows of COPY).
@@ -282,13 +287,15 @@ API key.
    (resolved, Alphabet 1652044), `SELECT count(*) FROM sec_registration_events
    WHERE available_on > source_available_on;` (0 after a first load).
 4. Only after the follow-up PR on republication checks of every loaded package
-   (connector thread 4221867196) and validator recovery after a failed load
-   (4221867184) merges: create the Railway service `sec-ticker-cik-history` from
+   (connector thread 4221867196), validator recovery after a failed load
+   (4221867184) and digest validation of a same-size cached copy (4222197135)
+   merges: create the Railway service `sec-ticker-cik-history` from
    this repository with `railway.sec-ticker-cik-history.toml`,
    `WORKER=sec_ticker_cik_history` and the `worker_writer` `DATABASE_URL`. The
    cron is in the config file.
 5. Light's walk-forward equity sizing calls these functions: deploy the Light
-   change only after steps 1-2.
+   change only after steps 1-2 and after the follow-up PR (connector threads
+   4222086431, 4222086445, 4222086476) merges.
 
 Rollback: `schemas/sec_ticker_cik_history_v1.rollback.sql` (as the same role),
 and remove the Railway service.

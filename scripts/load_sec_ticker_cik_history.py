@@ -1868,6 +1868,61 @@ def download_packages(packages_dir: Path) -> list[Path]:
     return fetched
 
 
+VALIDATORS_FILE = "validators.json"
+
+
+def verify_package_cache(client, packages_dir: Path) -> dict[str, tuple[str | None, str | None]]:
+    """Before a load from a workstation cache: HEAD every listed package and fetch
+    again any cached zip that is missing, whose size differs, whose ETag differs
+    from the one recorded when it was fetched, or whose Last-Modified is newer
+    than the cached file. Returns the fresh (ETag, Last-Modified) per package,
+    the only validators the load records; prints how many were fetched again."""
+    from email.utils import parsedate_to_datetime
+
+    packages_dir.mkdir(parents=True, exist_ok=True)
+    sidecar_path = packages_dir / VALIDATORS_FILE
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        sidecar = {}
+    validators: dict[str, tuple[str | None, str | None]] = {}
+    reasons: Counter = Counter()
+    listed = [url for url in list_package_urls(client) if PACKAGE_RE.match(url.rsplit("/", 1)[1])]
+    for url in listed:
+        name = url.rsplit("/", 1)[1]
+        head = client.head(url)
+        head.raise_for_status()
+        time.sleep(DOWNLOAD_SPACING_S)
+        length = head.headers.get("content-length")
+        size = int(length) if length else None
+        etag, modified = head.headers.get("etag"), head.headers.get("last-modified")
+        target = packages_dir / name
+        reason = None
+        if not target.exists():
+            reason = "missing"
+        elif size is not None and size != target.stat().st_size:
+            reason = "size"
+        elif etag and sidecar.get(name, {}).get("etag") not in (None, etag):
+            reason = "etag"
+        elif modified:
+            stamp = parsedate_to_datetime(modified)
+            cached = dt.datetime.fromtimestamp(target.stat().st_mtime, dt.timezone.utc)
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=dt.timezone.utc)
+            if stamp > cached:
+                reason = "last_modified"
+        if reason:
+            fetch_package(client, url, target)
+            reasons[reason] += 1
+        sidecar[name] = {"etag": etag, "last_modified": modified, "size": size}
+        validators[name] = (etag, modified)
+    sidecar_path.write_text(json.dumps(sidecar, indent=1, sort_keys=True), encoding="utf-8")
+    print(json.dumps({"verify_cache": {"listed": len(listed),
+                                       "fetched_again": sum(reasons.values()),
+                                       **dict(sorted(reasons.items()))}}), flush=True)
+    return validators
+
+
 def discover_packages(packages_dir: Path) -> list[Path]:
     found = [path for path in packages_dir.glob("*_notes*.zip") if PACKAGE_RE.match(path.name)]
     return sorted(found, key=package_sort_key)
@@ -1881,6 +1936,7 @@ def run(
     form_indexes: Iterable[Path] = (),
     reconciled_on: dt.date | None = None,
     documents: EventDocuments | None = None,
+    validators: dict[str, tuple[str | None, str | None]] | None = None,
 ) -> list[dict[str, object]]:
     """Parse and reconcile packages, then indexes (reading end filings with
     ``documents``), then re-derive end events read by another parser version;
@@ -1912,6 +1968,10 @@ def run(
             if conn is not None:
                 started = time.monotonic()
                 item.update(load_package(conn, result, reconciled_on=reconciled_on))
+                if validators and path.name in validators:
+                    etag, modified = validators[path.name]
+                    record_remote_validators(conn, path.name, etag=etag,
+                                             last_modified=modified)
                 item.update(supersede_monthly_packages(conn, path.name,
                                                        reconciled_on=reconciled_on))
                 item["load_seconds"] = round(time.monotonic() - started, 1)
@@ -1948,6 +2008,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--index-dir", type=Path, default=DEFAULT_INDEX_DIR)
     parser.add_argument("--download", action="store_true",
                         help="fetch listed FSN packages and EDGAR form indexes missing locally")
+    parser.add_argument("--verify-cache", action="store_true",
+                        help="HEAD every listed package first; fetch again any cached zip "
+                             "that is missing, changed size/ETag or is older than its "
+                             "Last-Modified; record only those fresh validators")
     parser.add_argument("--no-events", action="store_true",
                         help="skip the EDGAR registration events")
     parser.add_argument("--event-docs-dir", type=Path, default=DEFAULT_EVENT_DOCS_DIR,
@@ -1962,6 +2026,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="date of retirements and corrections (default: today)")
     args = parser.parse_args(argv)
 
+    validators = None
+    if args.verify_cache:
+        with sec_client() as verifier:
+            validators = verify_package_cache(verifier, args.packages_dir)
     if args.download:
         download_packages(args.packages_dir)
         if not args.no_events:
@@ -1984,7 +2052,8 @@ def main(argv: list[str] | None = None) -> int:
         args.event_docs_dir, client)
     try:
         stats = run(packages, dsn=args.dsn, dry_run=args.dry_run, form_indexes=form_indexes,
-                    reconciled_on=args.reconciled_on, documents=documents)
+                    reconciled_on=args.reconciled_on, documents=documents,
+                    validators=validators)
     finally:
         if client is not None:
             client.close()
