@@ -236,6 +236,7 @@ cost 1.5 s per call).
 
 ## Recurring worker
 
+Not enabled until the follow-up PR listed in Production steps merges.
 `src/workers/sec_ticker_cik_history.py` (`WORKER=sec_ticker_cik_history`), Railway
 config `railway.sec-ticker-cik-history.toml`, cron **`0 10 * * 1`** (Mondays
 10:00 UTC; DERA publishes one package a month). Each run takes lock 900_368,
@@ -280,9 +281,12 @@ API key.
    1067983, class B line), `SELECT * FROM sec_ticker_issuer_at('GOOG', '2015-11-15');`
    (resolved, Alphabet 1652044), `SELECT count(*) FROM sec_registration_events
    WHERE available_on > source_available_on;` (0 after a first load).
-4. Create the Railway service `sec-ticker-cik-history` from this repository with
-   `railway.sec-ticker-cik-history.toml`, `WORKER=sec_ticker_cik_history` and the
-   `worker_writer` `DATABASE_URL`. The cron is in the config file.
+4. Only after the follow-up PR on republication checks of every loaded package
+   (connector thread 4221867196) and validator recovery after a failed load
+   (4221867184) merges: create the Railway service `sec-ticker-cik-history` from
+   this repository with `railway.sec-ticker-cik-history.toml`,
+   `WORKER=sec_ticker_cik_history` and the `worker_writer` `DATABASE_URL`. The
+   cron is in the config file.
 5. Light's walk-forward equity sizing calls these functions: deploy the Light
    change only after steps 1-2.
 
