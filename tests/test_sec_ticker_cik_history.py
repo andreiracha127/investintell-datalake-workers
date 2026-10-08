@@ -43,6 +43,10 @@ FUNCTIONS = (
     "sec_issuer_line_at(bigint,text,date,integer)",
     "sec_cover_class_shares_at(bigint,text,date,integer)",
     "sec_cover_ticker_shares_at(text,bigint,date,integer)",
+    "sec_issuer_lines(bigint)",
+    "sec_ticker_line_runs(text,integer)",
+    "sec_line_alive_runs(bigint,text,integer)",
+    "sec_line_price_evidence(text,bigint,text)",
     "sec_ticker_price_span(text,bigint,text)",
 )
 TABLES = (
@@ -1707,6 +1711,177 @@ def test_a_stray_claim_inside_another_holders_claims_does_not_count(schema_dsn) 
     # A holder that keeps claiming after the incumbent stops is not a stray.
     _observe(conn, 999, "ANDE", "2017-03-01")
     assert _issuer(conn, "ANDE", "2017-03-10")[0] == "ambiguous"
+
+
+CAPITAL_C = "ClassOfStock=CapitalClassC;"
+
+
+def _evidence(conn, ticker: str, cik: int, class_key: str) -> list[tuple]:
+    return conn.execute(
+        "SELECT evidence, holder_cik, line_key, valid_from, valid_to, end_reason, symbols "
+        "FROM sec_line_price_evidence(%s, %s, %s)", (ticker, cik, class_key),
+    ).fetchall()
+
+
+def test_issuer_at_takes_class_and_kind_from_the_same_row(schema_dsn) -> None:
+    """Light #223 thread: an older depositary row and the latest ordinary row."""
+    conn, _ = schema_dsn
+    _observe(conn, 97, "KND", "2020-02-10", kind="depositary",
+             class_key="LegalEntity=AmericanDepositaryShares;")
+    _observe(conn, 97, "KND", "2021-02-10", class_key="ClassOfStock=OrdinaryShares;")
+    assert conn.execute(
+        "SELECT status, class_key, security_kind FROM sec_ticker_issuer_at('KND', '2021-03-01')"
+    ).fetchone() == ("resolved", "ClassOfStock=OrdinaryShares;", "equity")
+    assert conn.execute(
+        "SELECT status, class_key, security_kind FROM sec_ticker_issuer_at('KND', '2020-03-01')"
+    ).fetchone() == ("resolved", "LegalEntity=AmericanDepositaryShares;", "depositary")
+
+
+def _google_inc_to_alphabet(conn) -> None:
+    """Google Inc (1288776) tagged GOOG and GOOGL undimensioned beside its class
+    A, B and C counts. On 2015-10-02 Nasdaq removed classes A and C (12d2-2(a)(3))
+    and Alphabet (1652044) filed its 8-K12B as successor; Google Inc's 10-Q of
+    2015-10-29 still tagged both symbols, the day Alphabet's first 10-Q did."""
+    q = _observe(conn, 1288776, "GOOG", "2015-07-23")
+    _observe(conn, 1288776, "GOOGL", "2015-07-23", adsh=q)
+    for class_key, shares in ((CLASS_A, 289), (CLASS_B, 52), (CAPITAL_C, 345)):
+        _count(conn, 1288776, class_key, "2015-07-17", shares, "2015-07-23", adsh=q)
+    _event(conn, 1288776, "25-NSE", "2015-10-02", kind="equity", count=2, extinguished=True,
+           venue_kind="primary")
+    _event(conn, 1288776, "15-12G", "2015-10-02", kind="equity", count=1)  # class B
+    k = _observe(conn, 1652044, "GOOG", "2015-10-02")
+    _observe(conn, 1652044, "GOOGL", "2015-10-02", adsh=k)
+    for cik in (1288776, 1652044):
+        late = _observe(conn, cik, "GOOG", "2015-10-29")
+        _observe(conn, cik, "GOOGL", "2015-10-29", adsh=late)
+
+
+def test_a_symbol_taken_by_a_successor_cik_is_not_reopened_by_stale_covers(
+    schema_dsn,
+) -> None:
+    conn, _ = schema_dsn
+    _google_inc_to_alphabet(conn)
+    assert _issuer(conn, "GOOG", "2015-09-30")[:2] == ("resolved", 1288776)
+    for as_of in ("2015-10-05", "2015-11-15"):
+        assert _issuer(conn, "GOOG", as_of)[:2] == ("resolved", 1652044), as_of
+    assert _issuer(conn, "GOOGL", "2015-11-15")[:2] == ("resolved", 1652044)
+    assert _span(conn, "GOOG", 1652044) == [
+        ("", d(2015, 10, 3), None, None, d(2015, 10, 30), d(2015, 10, 3), None),
+    ]
+    assert _span(conn, "GOOG", 1288776) == [
+        ("", d(2015, 7, 24), d(2015, 10, 3), "15-12G", d(2015, 7, 24), None, d(2015, 10, 3)),
+    ]
+
+
+def _google_class_move(conn) -> None:
+    """Class A traded as GOOG until April 2014; then class C took GOOG and class A
+    became GOOGL (dimensioned covers; the class B count is unlisted)."""
+    for filed, symbols in (("2013-10-24", {CLASS_A: "GOOG"}),
+                           ("2014-02-11", {CLASS_A: "GOOG"}),
+                           ("2014-04-24", {CLASS_A: "GOOGL", CAPITAL_C: "GOOG"}),
+                           ("2014-07-24", {CLASS_A: "GOOGL", CAPITAL_C: "GOOG"})):
+        adsh = None
+        for class_key, ticker in symbols.items():
+            adsh = _observe(conn, 1288776, ticker, filed, class_key=class_key, adsh=adsh)
+        for class_key in (CLASS_A, CLASS_B, *([CAPITAL_C] if CAPITAL_C in symbols else [])):
+            _count(conn, 1288776, class_key, filed, 100, filed, adsh=adsh)
+
+
+def test_another_line_of_the_same_issuer_is_another_holder(schema_dsn) -> None:
+    """GOOG moved from class A to class C of one CIK: the class C line admits no
+    GOOG row from before its own start."""
+    conn, _ = schema_dsn
+    _google_class_move(conn)
+    assert sorted(conn.execute("SELECT class_key, line_key FROM sec_issuer_lines(1288776)"
+                               ).fetchall()) == [(CAPITAL_C, CAPITAL_C), (CLASS_A, CLASS_A)]
+    assert _span(conn, "GOOG", 1288776, CAPITAL_C) == [
+        (CAPITAL_C, d(2014, 4, 25), None, None, d(2014, 7, 25), d(2014, 4, 25), None),
+    ]
+    assert _span(conn, "GOOG", 1288776, CLASS_A) == [
+        (CLASS_A, d(2013, 10, 25), d(2014, 4, 25), "other_symbol", d(2014, 2, 12), None,
+         d(2014, 4, 25)),
+    ]
+    assert _span(conn, "GOOGL", 1288776, CLASS_A) == [
+        (CLASS_A, d(2014, 4, 25), None, None, d(2014, 7, 25), None, None),
+    ]
+    assert _evidence(conn, "GOOG", 1288776, CAPITAL_C) == [
+        ("alive", 1288776, CAPITAL_C, d(2014, 4, 25), d(2015, 8, 30), "stale", ["GOOG"]),
+        ("other_holder", 1288776, CLASS_A, d(2013, 10, 25), d(2014, 4, 25), "other_symbol",
+         ["GOOG"]),
+    ]
+
+
+def test_relabelled_members_of_one_class_are_one_line(schema_dsn) -> None:
+    """Berkshire tags BRK.B on CommonClassB in 10-Qs and on ClassBCommonStock in
+    8-Ks, for years."""
+    conn, _ = schema_dsn
+    for filed, (member_a, member_b), counted in (
+        ("2022-05-02", ("CommonClassA", "CommonClassB"), True),
+        ("2022-05-04", ("ClassACommonStock", "ClassBCommonStock"), False),
+        ("2022-08-01", ("CommonClassA", "CommonClassB"), True),
+        ("2022-08-08", ("ClassACommonStock", "ClassBCommonStock"), False),
+    ):
+        adsh = _observe(conn, 1067983, "BRK-A", filed, class_key=f"ClassOfStock={member_a};")
+        _observe(conn, 1067983, "BRK-B", filed, class_key=f"ClassOfStock={member_b};", adsh=adsh)
+        if counted:
+            _count(conn, 1067983, f"ClassOfStock={member_a};", filed, 600_000, filed, adsh=adsh)
+            _count(conn, 1067983, f"ClassOfStock={member_b};", filed, 1_300_000_000, filed,
+                   adsh=adsh)
+    assert sorted(conn.execute("SELECT class_key, line_key FROM sec_issuer_lines(1067983)"
+                               ).fetchall()) == [
+        ("ClassOfStock=ClassACommonStock;", "ClassOfStock=CommonClassA;"),
+        ("ClassOfStock=ClassBCommonStock;", "ClassOfStock=CommonClassB;"),
+        ("ClassOfStock=CommonClassA;", "ClassOfStock=CommonClassA;"),
+        ("ClassOfStock=CommonClassB;", "ClassOfStock=CommonClassB;"),
+    ]
+    assert _span(conn, "BRK-B", 1067983, "ClassOfStock=ClassBCommonStock;") == [
+        ("ClassOfStock=ClassBCommonStock;", d(2022, 5, 3), None, None, d(2022, 8, 9), None,
+         None),
+    ]
+    assert _evidence(conn, "BRK-B", 1067983, "ClassOfStock=ClassBCommonStock;") == [
+        ("alive", 1067983, "ClassOfStock=CommonClassB;", d(2022, 5, 3), d(2023, 9, 14),
+         "stale", ["BRK-B"]),
+    ]
+
+
+def test_a_renamed_line_is_alive_under_its_old_symbol(schema_dsn) -> None:
+    """Meta's line is alive through its FB years; another issuer briefly used META."""
+    conn, _ = schema_dsn
+    for filed in ("2014-07-24", "2015-07-30", "2016-07-28", "2017-07-27", "2018-07-26",
+                  "2019-07-25", "2020-07-31", "2021-07-29"):
+        _observe(conn, 1326801, "FB", filed)
+    for filed in ("2021-10-26", "2022-04-28"):
+        _observe(conn, 1326801, "META", filed)
+    _observe(conn, 1630113, "META", "2015-07-14")
+    _observe(conn, 1630113, "MMAT", "2015-11-29")
+    assert _evidence(conn, "META", 1326801, "") == [
+        ("alive", 1326801, "", d(2014, 7, 25), d(2023, 6, 4), "stale", ["FB", "META"]),
+        ("other_holder", 1630113, "", d(2015, 7, 15), d(2015, 11, 30), "other_symbol",
+         ["META"]),
+    ]
+
+
+def test_price_evidence_of_a_reused_ticker(schema_dsn) -> None:
+    """AT&T Corp (5907) showed T then T1; AT&T Inc (732717) then showed T. Without
+    an end, AT&T Corp's last confirmation holds T until it is stale."""
+    conn, _ = schema_dsn
+    _observe(conn, 5907, "T", "2009-11-05")
+    _observe(conn, 5907, "T", "2010-02-25")
+    _observe(conn, 5907, "T1", "2010-04-01")
+    _observe(conn, 732717, "T", "2010-05-07")
+    assert _evidence(conn, "T", 732717, "") == [
+        ("alive", 732717, "", d(2010, 5, 8), d(2011, 6, 13), "stale", ["T"]),
+        ("other_holder", 5907, "", d(2009, 11, 6), d(2010, 4, 2), "other_symbol", ["T"]),
+    ]
+
+
+def test_price_evidence_of_an_open_prior_holder_ends_at_its_stale_cutoff(schema_dsn) -> None:
+    conn, _ = schema_dsn
+    _att(conn, deregistered=False)
+    assert _evidence(conn, "T", 732717, "") == [
+        ("alive", 732717, "", d(2010, 5, 8), d(2011, 9, 12), "stale", ["T"]),
+        ("other_holder", 5907, "", d(2009, 11, 6), d(2011, 4, 3), "stale", ["T"]),
+    ]
 
 
 def test_interval_view_lists_each_hold(schema_dsn) -> None:

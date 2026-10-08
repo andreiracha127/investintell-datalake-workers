@@ -356,7 +356,7 @@ $fn$;
 -- * the filing concerns another class (class_kind 'other'), or
 -- * it is a 25/25-NSE/15-12B (12(b) removal) that may concern a class other than
 --   the listed symbol: the issuer then showed several symbols and the filing
---   does not name as many classes as the issuer has, or the exchange is a
+--   names fewer classes than it showed symbols, or the exchange is a
 --   secondary one, or a registration filed from 30 days before to 10 days after
 --   it makes it a transfer (PepsiCo's NYSE -> Nasdaq move: Form 25 and 8-A12B the
 --   same day), unless the class was extinguished.
@@ -433,7 +433,7 @@ WITH horizon AS (
            AND (j.form IN ('15-12G', '15-15D')
                 OR (NOT j.transfer AND j.venue_kind IS DISTINCT FROM 'secondary'
                     AND (j.prior_symbols = 1
-                         OR (j.class_kind = 'equity' AND j.class_count >= j.prior_classes))))
+                         OR (j.class_kind = 'equity' AND j.class_count >= j.prior_symbols))))
                AS applying,
            j.class_kind = 'equity' AND j.class_count >= j.prior_classes AS whole_equity,
            j.form IN ('25', '25-NSE')
@@ -480,19 +480,26 @@ $fn$;
 --       member is called, until a complete filing says otherwise), and
 --   (c) every complete filing that shows one equity class in total (classes
 --       that merged into one: the old symbols are gone unless it shows them).
--- Ends come from sec_issuer_end_events. After the latest DEFINITIVE end, a
--- candidate still counts only if its row for the ticker carries a 12(b) title,
--- or a registration (8-A12B/8-A12G/10-12B/10-12G) filed after the end was public
--- by then, or the ticker first appeared after the end (a new symbol of the same
--- CIK, as after Swift became Knight-Swift). American Greetings kept tagging AM
--- on 10-Qs for three years after its 2013 merger delisting and Form 15; those do
--- not reopen the hold.
+-- Ends come from sec_issuer_end_events. A candidate filed after an end does not
+-- count when
+--   * the end is DEFINITIVE and the ticker was shown before it (American
+--     Greetings tagged AM on 10-Qs for three years after its 2013 merger
+--     delisting and Form 15), or
+--   * another CIK first showed the ticker from 30 days before the end to this
+--     CIK's first statement after it (the symbol moved: Google Inc's 10-Q of
+--     2015-10-29 still tagged GOOG after its Form 15s, the day Alphabet's first
+--     10-Q did),
+-- unless its row for the ticker carries a 12(b) title or a registration
+-- (8-A12B/8-A12G/10-12B/10-12G) filed after the end was public by then. A
+-- symbol the CIK first showed after a definitive end is a new line (Swift's SWFT
+-- ended in the merger; the same CIK traded as KNX).
 -- The statement is the latest counting candidate. The hold has ended when the
 -- latest applying end is newer than the statement (end_reason: its form) or the
 -- statement does not show the ticker ('other_symbol'); an open hold whose
 -- statement is older than p_max_age_days is stale. first_on / confirmed_on: the
--- first and last knowledge dates of rows showing the ticker. Ordering within a
--- day is by acceptance time, then accession.
+-- first and last knowledge dates of rows showing the ticker; class_key and
+-- security_kind come from the latest of those rows. Ordering within a day is by
+-- acceptance time, then accession.
 CREATE OR REPLACE FUNCTION sec_ticker_holds(
     p_ticker text, p_as_of date, p_max_age_days integer DEFAULT 400,
     p_current boolean DEFAULT false
@@ -526,8 +533,9 @@ WITH shown AS (
            min(r.known_on) AS first_on,
            max(r.known_on) AS confirmed_on,
            (array_agg(r.class_key ORDER BY r.known_on DESC, r.accepted DESC NULLS LAST,
-                      r.adsh DESC))[1] AS class_key,
-           min(r.security_kind) AS security_kind,
+                      r.adsh DESC, r.class_key))[1] AS class_key,
+           (array_agg(r.security_kind ORDER BY r.known_on DESC, r.accepted DESC NULLS LAST,
+                      r.adsh DESC, r.class_key))[1] AS security_kind,
            array_agg(DISTINCT r.class_key) AS classes,
            COALESCE((array_agg(r.filing_equity_classes = 1 ORDER BY r.known_on DESC,
                                r.accepted DESC NULLS LAST, r.adsh DESC)
@@ -551,30 +559,30 @@ WITH shown AS (
               AND (p.sole OR f.filing_equity_classes = 1)))
     GROUP BY p.cik, f.adsh
 ), ends AS (
-    SELECT p.cik, e.available_on, e.filed, e.form, e.adsh, e.definitive
+    SELECT p.cik, e.available_on, e.filed, e.form, e.adsh, e.definitive,
+           (SELECT min(c.known_on) FROM candidates c
+            WHERE c.cik = p.cik AND c.shows AND c.known_on >= e.available_on) AS first_post_on
     FROM per_cik p
     CROSS JOIN LATERAL sec_issuer_end_events(p.cik, p_as_of, p_current) e
 ), last_end AS (
     SELECT DISTINCT ON (e.cik) e.*
     FROM ends e
     ORDER BY e.cik, e.available_on DESC, e.adsh DESC
-), final_end AS (
-    SELECT DISTINCT ON (e.cik) e.*
-    FROM ends e
-    WHERE e.definitive
-    ORDER BY e.cik, e.available_on DESC, e.adsh DESC
 ), statement AS (
     SELECT DISTINCT ON (c.cik) c.*
     FROM candidates c
     JOIN per_cik p ON p.cik = c.cik
-    LEFT JOIN final_end d ON d.cik = c.cik
-    WHERE d.cik IS NULL
-       OR c.known_on < d.available_on
-       OR c.titled
-       OR p.first_on >= d.available_on
-       OR EXISTS (
-           SELECT 1 FROM sec_registration_starts(c.cik, p_as_of, p_current) r
-           WHERE r.filed > d.filed AND r.available_on <= c.known_on)
+    WHERE c.titled OR NOT EXISTS (
+        SELECT 1 FROM ends e
+        WHERE e.cik = c.cik AND e.available_on <= c.known_on
+          AND ((e.definitive AND p.first_on < e.available_on)
+               OR EXISTS (
+                   SELECT 1 FROM per_cik o
+                   WHERE o.cik <> c.cik
+                     AND o.first_on BETWEEN e.available_on - 30 AND e.first_post_on))
+          AND NOT EXISTS (
+              SELECT 1 FROM sec_registration_starts(c.cik, p_as_of, p_current) r
+              WHERE r.filed > e.filed AND r.available_on <= c.known_on))
     ORDER BY c.cik, c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
 )
 SELECT p.cik,
@@ -672,9 +680,10 @@ $fn$;
 -- the symbol it had then. The class is followed through the filings that tag it
 -- and, when its latest complete filing listed one equity class (or the class is
 -- not yet known at D), through later complete filings that list one equity
--- class. Ends as in sec_ticker_holds: after the latest definitive end a filing
--- counts only with a 12(b) title, a registration after the end, or symbols the
--- CIK first showed after the end. status: 'resolved' | 'stale' | 'ended' |
+-- class. Ends as in sec_ticker_holds: a filing after a definitive end counts
+-- only with a 12(b) title, a registration after the end, or symbols the CIK
+-- first showed after the end. class_key and security_kind come from one row of
+-- the statement (the caller's class first). status: 'resolved' | 'stale' | 'ended' |
 -- 'missing' | 'ambiguous_class' (the class is not known at D and the issuer then
 -- listed several equity classes). equity_lines: equity classes in the issuer's
 -- latest complete filing by D.
@@ -724,39 +733,38 @@ WITH own AS (
     SELECT e.* FROM sec_issuer_end_events(p_cik, p_as_of, false) e
 ), last_end AS (
     SELECT e.* FROM ends e ORDER BY e.available_on DESC, e.adsh DESC LIMIT 1
-), final_end AS (
-    SELECT e.* FROM ends e WHERE e.definitive
-    ORDER BY e.available_on DESC, e.adsh DESC LIMIT 1
 ), candidates AS (
     SELECT r.adsh, max(r.available_on) AS known_on, max(r.accepted) AS accepted,
            bool_or(r.security_title IS NOT NULL) AS titled,
-           bool_and(NOT EXISTS (
-               SELECT 1 FROM sec_observations_at(p_as_of, false) x, final_end d
-               WHERE x.cik = p_cik AND x.ticker_key = r.ticker_key
-                 AND x.available_on < d.available_on)) AS new_symbols
+           array_agg(DISTINCT r.ticker_key) AS keys
     FROM rows r
     GROUP BY r.adsh
 ), chosen AS (
     SELECT c.* FROM candidates c
-    WHERE NOT EXISTS (SELECT 1 FROM final_end)
-       OR c.known_on < (SELECT d.available_on FROM final_end d)
-       OR c.titled
-       OR c.new_symbols
-       OR EXISTS (
-           SELECT 1 FROM sec_registration_starts(p_cik, p_as_of, false) r, final_end d
-           WHERE r.filed > d.filed AND r.available_on <= c.known_on)
+    WHERE c.titled OR NOT EXISTS (
+        SELECT 1 FROM ends d
+        WHERE d.definitive AND d.available_on <= c.known_on
+          AND EXISTS (
+              SELECT 1 FROM sec_observations_at(p_as_of, false) x
+              WHERE x.cik = p_cik AND x.ticker_key = ANY(c.keys)
+                AND x.available_on < d.available_on)
+          AND NOT EXISTS (
+              SELECT 1 FROM sec_registration_starts(p_cik, p_as_of, false) r
+              WHERE r.filed > d.filed AND r.available_on <= c.known_on))
     ORDER BY c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
     LIMIT 1
 ), statement AS (
     SELECT c.known_on, c.adsh,
            ARRAY(SELECT DISTINCT r.ticker FROM rows r WHERE r.adsh = c.adsh ORDER BY r.ticker)
                AS tickers,
-           (SELECT (array_agg(r.class_key ORDER BY r.class_key = p_class_key DESC,
-                              r.class_key))[1]
-            FROM rows r WHERE r.adsh = c.adsh) AS class_key,
-           (SELECT min(r.security_kind) FROM rows r WHERE r.adsh = c.adsh) AS security_kind,
+           first_row.class_key, first_row.security_kind,
            EXISTS (SELECT 1 FROM last_end l WHERE l.available_on > c.known_on) AS ended
     FROM chosen c
+    CROSS JOIN LATERAL (
+        SELECT r.class_key, r.security_kind FROM rows r WHERE r.adsh = c.adsh
+        ORDER BY r.class_key = p_class_key DESC, r.class_key, r.ticker
+        LIMIT 1
+    ) first_row
 )
 SELECT
     CASE
@@ -880,33 +888,446 @@ SELECT
     (SELECT h.basis FROM chosen h) AS basis
 $fn$;
 
--- Price lineage: which stored price rows of a ticker belong to an issuer.
--- This is a data-lineage question about a vendor series stitched under today's
--- symbol, so it uses today's truth (current rows at their filing's public date;
--- issuer resolution at D stays point-in-time through sec_ticker_issuer_at).
--- The holds are those of sec_ticker_holds, evaluated with today's truth at every
--- date a relevant filing or event of a holder became public; one row per RUN of
--- p_cik (when p_class_key is given, only if that class ever showed the ticker):
+-- The LINES of a CIK as known today: one row per class it ever stated, with the
+-- line (one security) the class belongs to. Equity/depositary classes are
+-- linked when
+-- * they showed the same symbol and no filing shows both as distinct classes
+--   (Berkshire's 10-Qs tag BRK.B on CommonClassB, its 8-Ks on ClassBCommonStock;
+--   Google's class A and class C both showed GOOG, but side by side from April
+--   2014, so they stay two lines), or
+-- * they are the one equity class of consecutive complete filings (a
+--   single-class filer renaming its member or dropping the dimension).
+-- line_key is the line's first-stated class (then the lowest class_key). Other
+-- classes are their own line.
+CREATE OR REPLACE FUNCTION sec_issuer_lines(p_cik bigint)
+RETURNS TABLE (class_key text, line_key text)
+LANGUAGE sql STABLE PARALLEL SAFE
+-- Planned once per call; JIT compilation would cost more than the query.
+SET jit = off
+AS $fn$
+WITH RECURSIVE equity_rows AS (
+    SELECT o.adsh, o.class_key, o.ticker_key, o.source_available_on AS on_date, o.accepted,
+           o.filing_equity_classes, o.filing_complete
+    FROM sec_observations_at('infinity'::date, true) o
+    WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary')
+), classes AS (
+    SELECT o.class_key, min(o.source_available_on) AS first_on,
+           bool_or(o.security_kind IN ('equity', 'depositary')) AS equity
+    FROM sec_observations_at('infinity'::date, true) o
+    WHERE o.cik = p_cik
+    GROUP BY o.class_key
+), together AS (
+    SELECT DISTINCT x.class_key AS a, y.class_key AS b
+    FROM equity_rows x
+    JOIN equity_rows y ON y.adsh = x.adsh AND y.class_key <> x.class_key
+), sole AS (
+    SELECT f.key,
+           lag(f.key) OVER (ORDER BY f.on_date, f.accepted NULLS FIRST, f.adsh) AS prev_key
+    FROM (
+        SELECT e.adsh, min(e.on_date) AS on_date, max(e.accepted) AS accepted,
+               CASE WHEN count(DISTINCT e.class_key) = 1 AND bool_and(e.filing_equity_classes = 1)
+                    THEN min(e.class_key) END AS key
+        FROM equity_rows e
+        WHERE e.filing_complete
+        GROUP BY e.adsh
+    ) f
+), edges AS (
+    SELECT DISTINCT x.class_key AS a, y.class_key AS b
+    FROM equity_rows x
+    JOIN equity_rows y ON y.ticker_key = x.ticker_key AND y.class_key <> x.class_key
+    WHERE NOT EXISTS (SELECT 1 FROM together t WHERE t.a = x.class_key AND t.b = y.class_key)
+    UNION
+    SELECT s.prev_key, s.key FROM sole s
+    WHERE s.key IS NOT NULL AND s.prev_key IS NOT NULL AND s.prev_key <> s.key
+    UNION
+    SELECT s.key, s.prev_key FROM sole s
+    WHERE s.key IS NOT NULL AND s.prev_key IS NOT NULL AND s.prev_key <> s.key
+), reach (node, root) AS (
+    SELECT c.class_key, c.class_key FROM classes c WHERE c.equity
+    UNION
+    SELECT e.b, r.root FROM reach r JOIN edges e ON e.a = r.node
+)
+SELECT c.class_key,
+       CASE WHEN c.equity THEN (
+           SELECT (array_agg(r.root ORDER BY k.first_on, r.root))[1]
+           FROM reach r JOIN classes k ON k.class_key = r.root
+           WHERE r.node = c.class_key)
+       ELSE c.class_key END AS line_key
+FROM classes c
+$fn$;
+
+-- Lineage engine (today's truth: current rows at their filing's public date,
+-- every current amendment, ends judged with everything known today). Each
+-- (CIK, line) that showed the ticker is followed through its candidate filings
+-- (filings tagging a class of the line, and every complete filing with one
+-- equity class in total) with the end, definitive-end and successor rules of
+-- sec_ticker_holds, evaluated once per change date (a filing, an end, or a
+-- statement reaching p_max_age_days). One row per RUN in which the line held the
+-- ticker: [valid_from, valid_to), valid_to NULL while open; end_reason
+-- 'other_symbol', the end form, or 'stale' (no confirmation within
+-- p_max_age_days; NULL p_max_age_days never goes stale); first/last_confirmed_on:
+-- the run's first and last statements showing the ticker.
+CREATE OR REPLACE FUNCTION sec_ticker_line_runs(p_ticker text, p_max_age_days integer DEFAULT NULL)
+RETURNS TABLE (
+    cik bigint,
+    line_key text,
+    class_key text,
+    valid_from date,
+    valid_to date,
+    end_reason text,
+    first_confirmed_on date,
+    last_confirmed_on date
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+-- Planned once per call; JIT compilation would cost more than the query.
+SET jit = off
+AS $fn$
+WITH key AS (
+    SELECT regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g') AS k
+), shown AS (
+    SELECT o.cik, o.class_key, o.security_kind, o.source_available_on AS known_on
+    FROM sec_observations_at('infinity'::date, true) o, key
+    WHERE o.ticker_key = key.k
+), relevant AS (
+    SELECT s.* FROM shown s
+    WHERE s.security_kind IN ('equity', 'depositary')
+       OR NOT EXISTS (SELECT 1 FROM shown e WHERE e.security_kind IN ('equity', 'depositary'))
+), holder_ciks AS (
+    SELECT DISTINCT r.cik FROM relevant r
+), lines AS MATERIALIZED (
+    SELECT h.cik, l.class_key, l.line_key
+    FROM holder_ciks h CROSS JOIN LATERAL sec_issuer_lines(h.cik) l
+), held AS (
+    SELECT r.cik, l.line_key, min(r.known_on) AS first_on
+    FROM relevant r JOIN lines l ON l.cik = r.cik AND l.class_key = r.class_key
+    GROUP BY r.cik, l.line_key
+), cik_first AS (
+    SELECT r.cik, min(r.known_on) AS first_on FROM relevant r GROUP BY r.cik
+), candidates AS MATERIALIZED (
+    SELECT h.cik, h.line_key, o.adsh,
+           max(o.source_available_on) AS known_on,
+           max(o.accepted) AS accepted,
+           bool_or(l.line_key = h.line_key AND o.ticker_key = key.k) AS shows,
+           bool_or(l.line_key = h.line_key AND o.ticker_key = key.k
+                   AND o.security_title IS NOT NULL) AS titled,
+           (array_agg(o.class_key ORDER BY o.class_key)
+               FILTER (WHERE l.line_key = h.line_key AND o.ticker_key = key.k))[1] AS class_key
+    FROM held h
+    CROSS JOIN key
+    JOIN sec_observations_at('infinity'::date, true) o ON o.cik = h.cik
+    LEFT JOIN lines l ON l.cik = o.cik AND l.class_key = o.class_key
+    WHERE l.line_key = h.line_key
+       OR (o.filing_complete AND o.filing_equity_classes = 1
+           AND o.security_kind IN ('equity', 'depositary'))
+    GROUP BY h.cik, h.line_key, o.adsh
+), ends AS MATERIALIZED (
+    SELECT h.cik, e.available_on, e.filed, e.form, e.adsh, e.definitive
+    FROM holder_ciks h
+    CROSS JOIN LATERAL sec_issuer_end_events(h.cik, 'infinity'::date, true) e
+), starts AS MATERIALIZED (
+    SELECT h.cik, r.filed, r.available_on
+    FROM holder_ciks h
+    CROSS JOIN LATERAL sec_registration_starts(h.cik, 'infinity'::date, true) r
+), blocking AS (
+    -- ends after which the line's later candidates do not count (definitive end
+    -- of a ticker shown before it, or the ticker moved to another CIK)
+    SELECT h.cik, h.line_key, e.available_on, e.filed
+    FROM held h
+    JOIN ends e ON e.cik = h.cik
+    WHERE (e.definitive AND h.first_on < e.available_on)
+       OR EXISTS (
+           SELECT 1 FROM cik_first o
+           WHERE o.cik <> h.cik
+             AND o.first_on BETWEEN e.available_on - 30 AND (
+                 SELECT min(c.known_on) FROM candidates c
+                 WHERE c.cik = h.cik AND c.line_key = h.line_key AND c.shows
+                   AND c.known_on >= e.available_on))
+), counted AS MATERIALIZED (
+    SELECT c.* FROM candidates c
+    WHERE c.titled OR NOT EXISTS (
+        SELECT 1 FROM blocking b
+        WHERE b.cik = c.cik AND b.line_key = c.line_key AND b.available_on <= c.known_on
+          AND NOT EXISTS (
+              SELECT 1 FROM starts r
+              WHERE r.cik = c.cik AND r.filed > b.filed AND r.available_on <= c.known_on))
+), bounds AS (
+    SELECT DISTINCT h.cik, h.line_key, x.on_date
+    FROM held h
+    CROSS JOIN LATERAL (
+        SELECT c.known_on AS on_date FROM counted c
+        WHERE c.cik = h.cik AND c.line_key = h.line_key
+        UNION
+        SELECT c.known_on + p_max_age_days + 1 FROM counted c
+        WHERE c.cik = h.cik AND c.line_key = h.line_key AND c.shows
+          AND p_max_age_days IS NOT NULL
+        UNION
+        SELECT e.available_on FROM ends e WHERE e.cik = h.cik
+    ) x
+), states AS (
+    SELECT b.cik, b.line_key, b.on_date, s.known_on AS statement_on, s.shows, s.class_key,
+           le.available_on AS end_on, le.form AS end_form,
+           (SELECT max(c.known_on) FROM counted c
+            WHERE c.cik = b.cik AND c.line_key = b.line_key AND c.shows
+              AND c.known_on <= b.on_date) AS confirmed_on
+    FROM bounds b
+    LEFT JOIN LATERAL (
+        SELECT c.known_on, c.shows, c.class_key FROM counted c
+        WHERE c.cik = b.cik AND c.line_key = b.line_key AND c.known_on <= b.on_date
+        ORDER BY c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
+        LIMIT 1
+    ) s ON true
+    LEFT JOIN LATERAL (
+        SELECT e.available_on, e.form FROM ends e
+        WHERE e.cik = b.cik AND e.available_on <= b.on_date
+        ORDER BY e.available_on DESC, e.adsh DESC
+        LIMIT 1
+    ) le ON true
+), judged AS (
+    SELECT st.*,
+           st.statement_on IS NOT NULL AND st.shows
+           AND NOT COALESCE(st.end_on > st.statement_on, false)
+           AND (p_max_age_days IS NULL OR st.on_date - st.statement_on <= p_max_age_days)
+               AS holding,
+           CASE
+               WHEN st.end_on > st.statement_on THEN st.end_form
+               WHEN NOT st.shows THEN 'other_symbol'
+               WHEN p_max_age_days IS NOT NULL AND st.on_date - st.statement_on > p_max_age_days
+                   THEN 'stale'
+           END AS reason
+    FROM states st
+), marked AS (
+    SELECT j.*,
+           sum(CASE WHEN j.holding AND NOT COALESCE(j.prev_holding, false) THEN 1 ELSE 0 END)
+               OVER (PARTITION BY j.cik, j.line_key ORDER BY j.on_date) AS run_no
+    FROM (
+        SELECT j.*, lag(j.holding) OVER (PARTITION BY j.cik, j.line_key ORDER BY j.on_date)
+                   AS prev_holding
+        FROM judged j
+    ) j
+), runs AS (
+    SELECT m.cik, m.line_key, m.run_no,
+           min(m.on_date) FILTER (WHERE m.holding) AS valid_from,
+           min(m.statement_on) FILTER (WHERE m.holding) AS first_confirmed_on,
+           max(m.confirmed_on) FILTER (WHERE m.holding) AS last_confirmed_on,
+           (array_agg(m.class_key ORDER BY m.on_date DESC) FILTER (WHERE m.holding))[1]
+               AS class_key
+    FROM marked m
+    WHERE m.run_no > 0
+    GROUP BY m.cik, m.line_key, m.run_no
+), run_ends AS (
+    SELECT DISTINCT ON (m.cik, m.line_key, m.run_no) m.cik, m.line_key, m.run_no,
+           m.on_date AS valid_to, m.reason
+    FROM marked m
+    WHERE m.run_no > 0 AND NOT m.holding
+    ORDER BY m.cik, m.line_key, m.run_no, m.on_date
+)
+SELECT r.cik, r.line_key, r.class_key, r.valid_from, e.valid_to, e.reason,
+       r.first_confirmed_on, r.last_confirmed_on
+FROM runs r
+LEFT JOIN run_ends e ON e.cik = r.cik AND e.line_key = r.line_key AND e.run_no = r.run_no
+$fn$;
+
+-- Lineage engine: when a line (p_cik, p_line_key) of an issuer was evidenced
+-- alive, under any symbol (Meta's line is alive through its FB years). The line
+-- is followed through its candidate filings (filings tagging one of its
+-- classes, and every complete filing with one equity class in total) with the
+-- end rules of sec_ticker_holds: after a definitive end a filing counts only with
+-- a 12(b) title, a registration after the end, or symbols the CIK first showed
+-- after the end. Alive at a date: its latest counting filing has a row of the
+-- line, no applying end is newer, and (p_max_age_days not NULL) it is at most
+-- p_max_age_days old. One row per run, [valid_from, valid_to); end_reason the
+-- end form, 'merged' (a one-class filing of another line), or 'stale'.
+CREATE OR REPLACE FUNCTION sec_line_alive_runs(
+    p_cik bigint, p_line_key text, p_max_age_days integer DEFAULT 400
+)
+RETURNS TABLE (
+    valid_from date,
+    valid_to date,
+    end_reason text,
+    first_confirmed_on date,
+    last_confirmed_on date,
+    symbols text[]
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+-- Planned once per call; JIT compilation would cost more than the query.
+SET jit = off
+AS $fn$
+WITH lines AS MATERIALIZED (
+    SELECT l.class_key, l.line_key FROM sec_issuer_lines(p_cik) l
+), candidates AS MATERIALIZED (
+    SELECT o.adsh,
+           max(o.source_available_on) AS known_on,
+           max(o.accepted) AS accepted,
+           bool_or(l.line_key = p_line_key) AS has_line,
+           bool_or(l.line_key = p_line_key AND o.security_title IS NOT NULL) AS titled,
+           array_agg(DISTINCT o.ticker_key) FILTER (WHERE l.line_key = p_line_key) AS keys,
+           array_agg(DISTINCT o.ticker ORDER BY o.ticker)
+               FILTER (WHERE l.line_key = p_line_key) AS tickers
+    FROM sec_observations_at('infinity'::date, true) o
+    LEFT JOIN lines l ON l.class_key = o.class_key
+    WHERE o.cik = p_cik
+      AND (l.line_key = p_line_key
+           OR (o.filing_complete AND o.filing_equity_classes = 1
+               AND o.security_kind IN ('equity', 'depositary')))
+    GROUP BY o.adsh
+), ends AS MATERIALIZED (
+    SELECT e.* FROM sec_issuer_end_events(p_cik, 'infinity'::date, true) e
+), counted AS MATERIALIZED (
+    SELECT c.* FROM candidates c
+    WHERE c.titled OR NOT EXISTS (
+        SELECT 1 FROM ends d
+        WHERE d.definitive AND d.available_on <= c.known_on
+          AND EXISTS (
+              SELECT 1 FROM candidates x
+              WHERE x.has_line AND x.known_on < d.available_on AND x.keys && c.keys)
+          AND NOT EXISTS (
+              SELECT 1 FROM sec_registration_starts(p_cik, 'infinity'::date, true) r
+              WHERE r.filed > d.filed AND r.available_on <= c.known_on))
+), bounds AS (
+    SELECT c.known_on AS on_date FROM counted c
+    UNION
+    SELECT c.known_on + p_max_age_days + 1 FROM counted c
+    WHERE c.has_line AND p_max_age_days IS NOT NULL
+    UNION
+    SELECT e.available_on FROM ends e
+), states AS (
+    SELECT b.on_date, s.known_on AS statement_on, s.has_line, s.tickers,
+           le.available_on AS end_on, le.form AS end_form
+    FROM bounds b
+    LEFT JOIN LATERAL (
+        SELECT c.known_on, c.has_line, c.tickers FROM counted c
+        WHERE c.known_on <= b.on_date
+        ORDER BY c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
+        LIMIT 1
+    ) s ON true
+    LEFT JOIN LATERAL (
+        SELECT e.available_on, e.form FROM ends e WHERE e.available_on <= b.on_date
+        ORDER BY e.available_on DESC, e.adsh DESC
+        LIMIT 1
+    ) le ON true
+), judged AS (
+    SELECT st.*,
+           st.statement_on IS NOT NULL AND st.has_line
+           AND NOT COALESCE(st.end_on > st.statement_on, false)
+           AND (p_max_age_days IS NULL OR st.on_date - st.statement_on <= p_max_age_days)
+               AS alive,
+           CASE
+               WHEN st.end_on > st.statement_on THEN st.end_form
+               WHEN NOT st.has_line THEN 'merged'
+               WHEN p_max_age_days IS NOT NULL AND st.on_date - st.statement_on > p_max_age_days
+                   THEN 'stale'
+           END AS reason
+    FROM states st
+), marked AS (
+    SELECT j.*,
+           sum(CASE WHEN j.alive AND NOT COALESCE(j.prev_alive, false) THEN 1 ELSE 0 END)
+               OVER (ORDER BY j.on_date) AS run_no
+    FROM (SELECT j.*, lag(j.alive) OVER (ORDER BY j.on_date) AS prev_alive FROM judged j) j
+), runs AS (
+    SELECT m.run_no,
+           min(m.on_date) FILTER (WHERE m.alive) AS valid_from,
+           min(m.statement_on) FILTER (WHERE m.alive) AS first_confirmed_on,
+           max(m.statement_on) FILTER (WHERE m.alive) AS last_confirmed_on
+    FROM marked m
+    WHERE m.run_no > 0
+    GROUP BY m.run_no
+), run_ends AS (
+    SELECT DISTINCT ON (m.run_no) m.run_no, m.on_date AS valid_to, m.reason
+    FROM marked m
+    WHERE m.run_no > 0 AND NOT m.alive
+    ORDER BY m.run_no, m.on_date
+)
+SELECT r.valid_from, e.valid_to, e.reason, r.first_confirmed_on, r.last_confirmed_on,
+       ARRAY(SELECT DISTINCT t FROM marked m, unnest(m.tickers) t
+             WHERE m.run_no = r.run_no AND m.alive ORDER BY t) AS symbols
+FROM runs r
+LEFT JOIN run_ends e ON e.run_no = r.run_no
+ORDER BY r.valid_from
+$fn$;
+
+-- Price lineage evidence for consumers that admit a stored price row of ticker T
+-- at date t for issuer p_cik, line L (the line of p_class_key: pass the class of
+-- today's latest equity row showing T) only if L is evidenced alive at t under
+-- any symbol and no other holder of T's key is evidenced holding it at t. Uses
+-- lineage semantics (today's truth). Rows:
+-- * evidence 'alive'        : the runs of sec_line_alive_runs(p_cik, L, 400);
+-- * evidence 'other_holder' : the runs of sec_ticker_line_runs(T, 400) of every
+--   other holder of T's key: another CIK, or another line of p_cik (Google's
+--   class A held GOOG until April 2014, then class C). A run of another CIK whose
+--   claims lie strictly inside a run of a different CIK (a misfiled 10-Q under a
+--   shell CIK, another issuer typing the symbol) is not evidence of holding.
+-- [valid_from, valid_to) with valid_to exclusive: an open run whose last
+-- statement is older than 400 days ends at its stale cutoff (statement + 401).
+-- source names the evidence ('sec_cover': cover-page statements and end filings;
+-- other sources, such as insider filings, add rows of their own).
+CREATE OR REPLACE FUNCTION sec_line_price_evidence(
+    p_ticker text, p_cik bigint, p_class_key text
+)
+RETURNS TABLE (
+    evidence text,
+    holder_cik bigint,
+    line_key text,
+    valid_from date,
+    valid_to date,
+    end_reason text,
+    first_confirmed_on date,
+    last_confirmed_on date,
+    symbols text[],
+    source text
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+-- Planned once per call; JIT compilation would cost more than the query.
+SET jit = off
+AS $fn$
+WITH wanted AS (
+    SELECT COALESCE((SELECT l.line_key FROM sec_issuer_lines(p_cik) l
+                     WHERE l.class_key = p_class_key), p_class_key) AS line_key
+), held AS MATERIALIZED (
+    SELECT r.* FROM sec_ticker_line_runs(p_ticker, 400) r
+)
+SELECT 'alive', p_cik, w.line_key, a.valid_from, a.valid_to, a.end_reason,
+       a.first_confirmed_on, a.last_confirmed_on, a.symbols, 'sec_cover'
+FROM wanted w
+CROSS JOIN LATERAL sec_line_alive_runs(p_cik, w.line_key, 400) a
+UNION ALL
+SELECT 'other_holder', o.cik, o.line_key, o.valid_from, o.valid_to, o.end_reason,
+       o.first_confirmed_on, o.last_confirmed_on,
+       ARRAY[regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')], 'sec_cover'
+FROM held o, wanted w
+WHERE (o.cik, o.line_key) <> (p_cik, w.line_key)
+  AND NOT (o.cik <> p_cik AND EXISTS (
+      SELECT 1 FROM held y
+      WHERE y.cik <> o.cik AND y.first_confirmed_on < o.first_confirmed_on
+        AND y.last_confirmed_on > o.last_confirmed_on))
+ORDER BY 1, 4, 2
+$fn$;
+
+-- Price lineage: which stored price rows of a ticker belong to an issuer's line,
+-- as runs with their neighbouring holders (sec_ticker_line_runs, no staleness).
+-- One row per run of a line of p_cik holding the ticker; with p_class_key, only
+-- the line that class belongs to (pass the class of today's latest equity row
+-- showing the ticker):
+-- * class_key         : the run's latest class showing the ticker;
 -- * valid_from        : the date the run starts;
 -- * valid_to          : the date its end is evidenced (end_reason 'other_symbol'
---                       or the deregistration form); NULL = open;
+--                       or the end form); NULL = open;
 -- * last_confirmed_on : the run's latest statement showing the ticker;
--- * prior_holder_end  : NULL when no run of ANOTHER CIK started before this run;
+-- * prior_holder_end  : NULL when no other holder's run started before this run;
 --                       this run's valid_from when such a run has no end
---                       evidence (valid_to NULL: open or only unconfirmed; its
---                       last confirmation is not an end, so nothing before this
---                       run is admitted); else the latest valid_to of those runs;
--- * next_holder_start : the earliest start of another CIK's run on or after
---                       this run's start; NULL if none. With prior_holder_end,
---                       each date is admitted for at most one CIK: an earlier
---                       open run yields at this run's valid_from;
---   a run whose claims lie strictly inside a run of a different CIK (that CIK
---   showed the ticker before its first and after its last statement: a misfiled
---   10-Q under a shell CIK, another issuer typing the symbol) bounds nothing;
--- * line_key          : the run's class (kept for callers that order by it).
+--                       evidence (valid_to NULL: open; its last confirmation is
+--                       not an end, so nothing before this run is admitted);
+--                       else the latest valid_to of those runs;
+-- * next_holder_start : the earliest start of another holder's run on or after
+--                       this run's start; NULL if none;
+-- * line_key          : the line (stable across member renames).
+-- Other holders are the lines of other CIKs and the OTHER LINES OF p_cik under
+-- the same ticker. Each date is admitted for at most one holder: an earlier open
+-- run yields at the next run's valid_from. A run of another CIK whose claims lie
+-- strictly inside a run of a different CIK bounds nothing.
 -- Consumers admit rows in [valid_from, valid_to), rows in
 -- (prior_holder_end, valid_from) only after a continuity check, and refuse rows
 -- at or before prior_holder_end or at or after next_holder_start.
+-- sec_line_price_evidence is the evidence-only alternative.
 CREATE OR REPLACE FUNCTION sec_ticker_price_span(
     p_ticker text, p_cik bigint, p_class_key text DEFAULT NULL
 )
@@ -921,77 +1342,36 @@ RETURNS TABLE (
     line_key text
 )
 LANGUAGE sql STABLE PARALLEL SAFE
+-- Planned once per call; JIT compilation would cost more than the query.
+SET jit = off
 AS $fn$
-WITH holders AS (
-    SELECT DISTINCT o.cik
-    FROM sec_observations_at('infinity'::date, true) o
-    WHERE o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
-), bounds AS (
-    SELECT DISTINCT b.on_date
-    FROM (
-        SELECT o.source_available_on AS on_date
-        FROM sec_observations_at('infinity'::date, true) o
-        WHERE o.cik IN (SELECT h.cik FROM holders h)
-        UNION
-        SELECT e.available_on
-        FROM holders h
-        CROSS JOIN LATERAL sec_registration_end_events(h.cik, 'infinity'::date, true) e
-    ) b
-), states AS (
-    SELECT b.on_date, s.cik, s.state, s.class_key, s.confirmed_on, s.end_reason
-    FROM bounds b
-    CROSS JOIN LATERAL sec_ticker_holds(p_ticker, b.on_date, 2147483647, true) s
-), marked AS (
-    SELECT st.*,
-           st.state = 'active' AS holding,
-           sum(CASE WHEN st.state = 'active' AND NOT COALESCE(st.prev_active, false)
-                    THEN 1 ELSE 0 END)
-               OVER (PARTITION BY st.cik ORDER BY st.on_date) AS run_no
-    FROM (
-        SELECT s.*, lag(s.state = 'active') OVER (PARTITION BY s.cik ORDER BY s.on_date)
-                   AS prev_active
-        FROM states s
-    ) st
-), runs AS (
-    SELECT m.cik, m.run_no,
-           min(m.on_date) FILTER (WHERE m.holding) AS valid_from,
-           max(m.confirmed_on) FILTER (WHERE m.holding) AS last_confirmed_on,
-           (array_agg(m.class_key ORDER BY m.on_date DESC) FILTER (WHERE m.holding))[1]
-               AS class_key
-    FROM marked m
-    WHERE m.run_no > 0
-    GROUP BY m.cik, m.run_no
-), ends AS (
-    SELECT DISTINCT ON (m.cik, m.run_no) m.cik, m.run_no, m.on_date AS valid_to, m.end_reason
-    FROM marked m
-    WHERE m.run_no > 0 AND NOT m.holding
-    ORDER BY m.cik, m.run_no, m.on_date
-), spans AS (
-    SELECT r.cik, r.class_key, r.valid_from, e.valid_to, e.end_reason, r.last_confirmed_on
-    FROM runs r
-    LEFT JOIN ends e ON e.cik = r.cik AND e.run_no = r.run_no
-)
-, others AS (
+WITH spans AS MATERIALIZED (
+    SELECT r.* FROM sec_ticker_line_runs(p_ticker, NULL) r
+), others AS (
     SELECT o.* FROM spans o
-    WHERE o.cik <> p_cik
-      AND NOT EXISTS (
-          SELECT 1 FROM spans y
-          WHERE y.cik <> o.cik AND y.valid_from < o.valid_from
-            AND y.last_confirmed_on > o.last_confirmed_on)
+    WHERE NOT (o.cik <> p_cik AND EXISTS (
+        SELECT 1 FROM spans y
+        WHERE y.cik <> o.cik AND y.first_confirmed_on < o.first_confirmed_on
+          AND y.last_confirmed_on > o.last_confirmed_on))
+), wanted AS (
+    SELECT CASE WHEN p_class_key IS NULL THEN NULL ELSE COALESCE((
+               SELECT l.line_key FROM sec_issuer_lines(p_cik) l
+               WHERE l.class_key = p_class_key), p_class_key) END AS line_key
 )
 SELECT a.class_key, a.valid_from, a.valid_to, a.end_reason, a.last_confirmed_on,
-       (SELECT CASE WHEN bool_or(o.valid_to IS NULL) THEN a.valid_from ELSE max(o.valid_to) END
-        FROM others o WHERE o.valid_from < a.valid_from) AS prior_holder_end,
+       (SELECT CASE WHEN bool_or(o.valid_to IS NULL) THEN a.valid_from
+                    ELSE max(o.valid_to) END
+        FROM others o
+        WHERE (o.cik, o.line_key) <> (a.cik, a.line_key)
+          AND o.valid_from < a.valid_from) AS prior_holder_end,
        (SELECT min(o.valid_from) FROM others o
-        WHERE o.valid_from >= a.valid_from) AS next_holder_start,
-       a.class_key AS line_key
-FROM spans a
+        WHERE (o.cik, o.line_key) <> (a.cik, a.line_key)
+          AND o.valid_from >= a.valid_from) AS next_holder_start,
+       a.line_key
+FROM spans a, wanted w
 WHERE a.cik = p_cik
-  AND (p_class_key IS NULL OR EXISTS (
-      SELECT 1 FROM sec_observations_at('infinity'::date, true) o
-      WHERE o.cik = p_cik AND o.class_key = p_class_key
-        AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')))
-ORDER BY a.valid_from
+  AND (w.line_key IS NULL OR a.line_key = w.line_key)
+ORDER BY a.valid_from, a.line_key
 $fn$;
 
 -- Diagnostics: every class interval as known today (current rows). A symbol
@@ -1057,6 +1437,10 @@ REVOKE ALL ON FUNCTION sec_observations_at(date, boolean),
     sec_issuer_line_at(bigint, text, date, integer),
     sec_cover_class_shares_at(bigint, text, date, integer),
     sec_cover_ticker_shares_at(text, bigint, date, integer),
+    sec_issuer_lines(bigint),
+    sec_ticker_line_runs(text, integer),
+    sec_line_alive_runs(bigint, text, integer),
+    sec_line_price_evidence(text, bigint, text),
     sec_ticker_price_span(text, bigint, text) FROM PUBLIC;
 DO $$
 DECLARE
@@ -1075,6 +1459,10 @@ DECLARE
         'sec_issuer_line_at(bigint, text, date, integer)',
         'sec_cover_class_shares_at(bigint, text, date, integer)',
         'sec_cover_ticker_shares_at(text, bigint, date, integer)',
+        'sec_issuer_lines(bigint)',
+        'sec_ticker_line_runs(text, integer)',
+        'sec_line_alive_runs(bigint, text, integer)',
+        'sec_line_price_evidence(text, bigint, text)',
         'sec_ticker_price_span(text, bigint, text)'];
     item text;
     reader text;
