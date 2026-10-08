@@ -67,6 +67,7 @@ never be re-flagged by this probe -- they are a repair, not an alert.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ def probe(
     window_days: int = DEFAULT_WINDOW_DAYS,
     floor: float = DEFAULT_FLOOR,
     min_rows: int = DEFAULT_MIN_ROWS,
+    as_of: date | None = None,
 ) -> dict[str, Any]:
     """Measure identifier coverage over the recent tail of ``sec_nport_holdings``.
 
@@ -130,7 +132,12 @@ def probe(
       says the table is empty or the load never landed.
     """
     with conn.cursor() as cur:
-        cur.execute(COVERAGE_SQL, (window_days,))
+        if as_of is None:
+            cur.execute(COVERAGE_SQL, (window_days,))
+        else:
+            sql = COVERAGE_SQL.replace("(SELECT max(report_date) FROM sec_nport_holdings)", "%s::date")
+            sql = sql.replace("GROUP BY 1", "AND report_date <= %s\nGROUP BY 1")
+            cur.execute(sql, (as_of, window_days, as_of))
         rows = cur.fetchall()
 
     checked: list[dict[str, Any]] = []

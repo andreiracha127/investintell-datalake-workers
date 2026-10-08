@@ -6,10 +6,21 @@
 #   DATABASE_URL=<cloud DSN>                                (shared)
 # and its own Cron Schedule (set per-service in dashboard/CLI):
 #   risk_metrics      -> daily   (NAV is daily)
-#   characteristics   -> monthly day 2 at 05:00 UTC.
+#   characteristics   -> monthly day 2 at 05:00 UTC (independent company/XBRL
+#                        refresh retained for stock screeners).
+#   nport_classification_inputs_chain -> proposed 04:00..07:00 UTC daily
+#                        retries in railway.nport-classification-inputs-chain.toml:
+#                        committed holdings -> owner cagg policy -> fund
+#                        characteristics -> atomic look-through. Unchanged
+#                        inputs are checked without a heavy daily rebuild.
+#   fund_pipeline_health -> proposed 09:00 UTC independent read-only check,
+#                        railway.fund-pipeline-health.toml; classification
+#                        run started at/after today's 08:00 UTC slot plus
+#                        source/derived cohort guards.
 #   factor_model/fund_factors -> unscheduled; sequenced by the governed IPCA
 #                           pack at 06:00 UTC after characteristics.
-#   nport_lookthrough -> weekly  (N-PORT é mensal/trimestral; dom 04:00 UTC)
+#   nport_lookthrough -> called by the proposed ordered input chain; replace its
+#                        standalone cron only after operator acceptance.
 #   credit_regime     -> daily 06:30 UTC (2 req Tiingo; precisa TIINGO_API_KEY)
 #   regime_composite  -> daily ~06:40 UTC (after credit_regime; needs FRED_API_KEY + Tiingo)
 #   regime_gate       -> daily ~06:50 UTC (self-contained: fetches SPY/HYG/IEF/TIP via

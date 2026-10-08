@@ -31,6 +31,8 @@ ALL_LANES = {
 NPORT_PATTERNS = (
     "requirements.txt",
     "src/workers/nport_*.py",
+    "src/workers/_fund_pipeline_*.py",
+    "src/workers/fund_pipeline_health.py",
     "src/workers/_openfigi.py",
     "src/workers/_yahoo_sector.py",
     "scripts/backfill_nport_holding_attributes.py",
@@ -46,12 +48,22 @@ NPORT_PATTERNS = (
     "tests/fixtures/nport_secapi/*/*/*.jsonl",
     "tests/fixtures/nport_secapi/*/*/*.jsonl.gz",
     "tests/test_nport_*.py",
+    "tests/test_fund_pipeline_health.py",
     "tests/test_openfigi.py",
     "tests/test_yahoo_sector.py",
     "tests/test_backfill_nport_holding_attributes.py",
     "tests/test_load_nport_*.py",
 )
-SHARED_PATHS = {"src/db.py"}
+SHARED_PATHS = {
+    "src/db.py",
+    # Dispatch and fund characteristics participate in the N-PORT publication
+    # chain as well as the rest of the worker fleet.
+    "src/run_worker.py",
+    "src/workers/characteristics.py",
+    "schemas/characteristics.sql",
+    "tests/test_characteristics_pipeline.py",
+    "tests/test_ci_path_scope.py",
+}
 QUANT_PATHS = {"requirements.quant-engine.in"}
 QUANT_PREFIXES = (
     "contracts/quant-engine/",

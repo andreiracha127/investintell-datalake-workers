@@ -32,21 +32,58 @@ import inspect
 import json
 import os
 import sys
+from typing import Callable
 
-from src.db import resolve_dsn
+from src.db import connect, resolve_dsn
 
 # The two NAV publication lanes succeed only when they actually published: a
 # lock_busy, blocked or otherwise unpublished result exits 1 (W2). The rest of
 # the fleet keeps its own contract below.
 NAV_PUBLICATION_LANES = frozenset({"fund_nav_readiness", "nav_current_daily_chain"})
+FUND_PIPELINE_LANES = frozenset({
+    "characteristics", "nport_lookthrough", "nport_ingestion",
+    "nport_secapi_monthly", "nport_classification_inputs_chain", "fund_pipeline_health",
+    "nport_holdings_identity_freshness",
+})
 
 
-def main() -> None:
+def _fund_pipeline_alarm(stats: dict) -> bool:
+    return bool(
+        not stats or (stats.get("freshness") or {}).get("alarm")
+        or stats.get("aborted")
+        or stats.get("status") in {"partial", "skipped", "failed", "blocked", "lock_busy"}
+        or stats.get("state") in {"partial", "locked", "failed", "blocked", "conflict"}
+        or stats.get("skipped") == "lock_busy"
+        or (stats.get("identifier_coverage") or {}).get("state") in {"degraded", "undecidable"}
+    )
+
+
+def _fail_fund_pipeline(worker: str, exc: Exception, *, phase: str) -> None:
+    print(json.dumps({
+        "worker": worker, "event": "fund_pipeline_alarm", "state": "failed", "phase": phase,
+        "error_type": type(exc).__name__, "last_good_preserved": True,
+        "freshness": getattr(exc, "verdict", None),
+    }, default=str), flush=True)
+    sys.exit(1)
+
+
+def _validate_monthly_source(dsn: str) -> dict:
+    """Future PR #153 success/no-op runs still must prove current source data."""
+    from src.workers import _fund_pipeline_freshness as freshness
+
+    with connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION READ ONLY")
+        return freshness.require(freshness.read_source_cohort(conn).verdict)
+
+
+def main(*, monthly_source_validator: Callable[[str], dict] | None = None) -> None:
     worker = os.getenv("WORKER")
     if not worker:
         sys.exit(
             "WORKER env var not set (expected risk_metrics|characteristics|factor_model"
             "|nport_lookthrough|credit_regime|regime_composite|regime_gate"
+            "|nport_classification_inputs_chain|fund_pipeline_health"
             "|quadrant_macro|quadrant_macro_v2|quadrant_macro_v3|quadrant_market"
             "|macro_ingestion"
             "|macro_vintage|treasury_ingestion|benchmark_ingest|instrument_ingestion"
@@ -74,7 +111,12 @@ def main() -> None:
             "|bond_market_implied_rating|bond_market_implied_rating_check"
             "|fomc_sep_ingestion)"
         )
-    mod = importlib.import_module(f"src.workers.{worker}")
+    try:
+        mod = importlib.import_module(f"src.workers.{worker}")
+    except Exception as exc:
+        if worker in FUND_PIPELINE_LANES:
+            _fail_fund_pipeline(worker, exc, phase="import")
+        raise
 
     # WORKER_LIMIT caps how many units one run processes. Workers whose sweep is
     # a resumable ring (eod_prices_warmer: priority head + cursor-rotated tail)
@@ -124,8 +166,30 @@ def main() -> None:
             sys.exit(f"WORKER_CALC_DATE is set but {worker}.run() takes no 'calc_date'")
         kwargs["calc_date"] = raw_calc_date
 
-    stats = mod.run(resolve_dsn(), **kwargs) or {}
+    try:
+        dsn = resolve_dsn()
+        stats = mod.run(dsn, **kwargs) or {}
+        if worker == "nport_secapi_monthly" and stats.get("state") in {"ok", "noop"}:
+            validator = monthly_source_validator or _validate_monthly_source
+            try:
+                stats["freshness"] = validator(dsn)
+            except Exception as exc:
+                if getattr(exc, "verdict", None) is None:
+                    raise
+                stats["freshness"] = exc.verdict
+            if stats["freshness"].get("alarm"):
+                stats["state"] = "blocked"
+    except Exception as exc:
+        if worker not in FUND_PIPELINE_LANES:
+            raise
+        # SQL/provider exception text can carry credentials. The structured
+        # guard's verdict is safe evidence; arbitrary exception text is not.
+        _fail_fund_pipeline(worker, exc, phase="execution")
     print(json.dumps({"worker": worker, **stats}, default=str), flush=True)
+    if worker in FUND_PIPELINE_LANES and _fund_pipeline_alarm(stats):
+        print(json.dumps({"worker": worker, "event": "fund_pipeline_alarm", **stats},
+                         default=str), flush=True)
+        sys.exit(1)
 
     # A sweep that hit the provider budget sets ``stats["aborted"]``, commits what
     # it got and advances its cursor so the next cycle resumes — all correct. What

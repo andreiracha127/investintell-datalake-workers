@@ -85,11 +85,15 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from psycopg import IsolationLevel
 
-from src.db import LOCK_CHARACTERISTICS, advisory_lock, connect
+from src.db import LOCK_CHARACTERISTICS, LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
+from src.workers import _fund_pipeline_freshness as freshness
+from src.workers import _fund_pipeline_inputs as inputs
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -499,7 +503,7 @@ ON CONFLICT (cik, period_end) DO UPDATE SET
 """
 
 
-def _run_layer1_setbased(conn, today: date, limit: int | None) -> tuple[int, int]:
+def _run_layer1_setbased(conn, today: date, limit: int | None, *, commit: bool = True) -> tuple[int, int]:
     """Set-based Layer 1: build temp tables, upsert all company rows in one pass.
 
     Returns (ciks_processed, rows_upserted). One transaction: the temp tables are
@@ -537,7 +541,8 @@ def _run_layer1_setbased(conn, today: date, limit: int | None) -> tuple[int, int
         rows_upserted = cur.rowcount
         cur.execute("SELECT count(DISTINCT cik) FROM tmp_l1_piv")
         ciks_processed = int(cur.fetchone()[0])
-    conn.commit()
+    if commit:
+        conn.commit()
     return ciks_processed, rows_upserted
 
 
@@ -975,7 +980,7 @@ ON CONFLICT (instrument_id, as_of) DO UPDATE SET
 """
 
 
-def _run_layer2_setbased(conn, limit: int | None) -> tuple[int, int]:
+def _run_layer2_setbased(conn, limit: int | None, *, commit: bool = True) -> tuple[int, int]:
     """Set-based Layer 2: build the fund universe temp table, then aggregate every
     (instrument_id, report_date) and upsert in a single server-side pass.
 
@@ -1003,7 +1008,8 @@ def _run_layer2_setbased(conn, limit: int | None) -> tuple[int, int]:
         rows_upserted = cur.rowcount
         cur.execute("SELECT count(*) FROM tmp_l2_funds")
         funds_processed = int(cur.fetchone()[0])
-    conn.commit()
+    if commit:
+        conn.commit()
     return funds_processed, rows_upserted
 
 
@@ -1020,7 +1026,17 @@ def _distinct_ciks_with_facts(conn, limit: int | None) -> list[int]:
         return [r[0] for r in cur.fetchall()]
 
 
-def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict:
+def ensure_schema(conn) -> None:
+    """Install missing outputs without migrating populated historical tables."""
+    conn.execute((Path(__file__).resolve().parents[2] / "schemas" / "characteristics.sql").read_text(encoding="utf-8"))
+    inputs.ensure_schema(conn)
+    conn.commit()
+
+
+def run(
+    dsn: str, *, calc_date: str | None = None, limit: int | None = None,
+    source: freshness.SourceCohort | None = None,
+) -> dict:
     """Recompute company + equity characteristics; upsert to the cloud.
 
     Runs Layer 1 (company chars from XBRL) then Layer 2 (fund aggregation),
@@ -1038,65 +1054,89 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
     today = (
         datetime.strptime(calc_date, "%Y-%m-%d").date()
         if calc_date
-        else date.today()
+        else freshness.utc_today()
     )
 
     conn = connect(dsn)
+    conn.isolation_level = IsolationLevel.READ_COMMITTED
+    company_processed = company_upserted = 0
+    standalone = source is None
     try:
-        with conn.cursor() as cur:
-            cur.execute("SET temp_buffers = '512MB'")
-            cur.execute("SET work_mem = '256MB'")
         with advisory_lock(conn, LOCK_CHARACTERISTICS) as got:
             if not got:
-                return {"status": "skipped", "reason": "lock_held",
+                return {"status": "lock_busy", "reason": "lock_held",
                         "processed": 0, "upserted": 0}
-
-            # ---- Layer 1: company characteristics (set-based) --------------
-            # One pass over the whole us-gaap fact table instead of 2 queries
-            # per CIK x ~14.5k CIKs. See _run_layer1_setbased for the SQL.
-            company_error = None
-            try:
+            ensure_schema(conn)
+            if standalone:
+                # The scheduled monthly worker also feeds stock screeners.
+                # Company/XBRL freshness must not wait for an N-PORT load.
                 company_processed, company_upserted = _run_layer1_setbased(
-                    conn, today, limit
+                    conn, today, limit, commit=False
                 )
-            except Exception as exc:
-                conn.rollback()
-                company_processed = company_upserted = 0
-                company_error = f"{type(exc).__name__}: {exc}"
-
-            # ---- Layer 2: fund/equity characteristics (set-based) ----------
-            # One server-side pass over every (instrument_id, report_date)
-            # instead of 3 queries per fund x ~18k funds x N report_dates.
-            # See _run_layer2_setbased for the SQL. The per-fund helpers
-            # (compute_fund_rows / _aggregate_one_date / _replace_fund_rows)
-            # are retained as the audited test oracle.
-            equity_error = None
-            try:
-                equity_processed, equity_upserted = _run_layer2_setbased(
-                    conn, limit
+                if not company_processed or not company_upserted:
+                    raise freshness.FundPipelineBlocked({
+                        "stage": "company_characteristics", "alarm": True,
+                        "breaches": ["COMPANY_CHARACTERISTICS_EMPTY"], "last_good_preserved": True,
+                    })
+                conn.commit()
+            source = source or freshness.read_source_cohort(conn, cutoff=today)
+            freshness.require(source.verdict)
+            freshness.require(freshness.probe_stage(conn, source, "cagg"))
+            current = freshness.probe_stage(conn, source, "characteristics")
+            if (not standalone and not current["alarm"] and current.get("matched_series_count")
+                    == current.get("expected_series_count")):
+                return {"status": "current", "processed": 0, "upserted": 0,
+                        "source_as_of": str(source.as_of), "freshness": current}
+            if limit is not None:
+                raise freshness.FundPipelineBlocked({
+                    "stage": "characteristics", "alarm": True,
+                    "breaches": ["PARTIAL_COHORT_CANNOT_PUBLISH"], "last_good_preserved": True,
+                })
+            # Dependency-chain runs stage both layers together. The standalone
+            # monthly job already committed its independent company refresh;
+            # either mode validates fund rows before committing them.
+            if not standalone:
+                company_processed, company_upserted = _run_layer1_setbased(
+                    conn, today, limit, commit=False
                 )
-            except Exception as exc:
-                conn.rollback()
-                equity_processed = equity_upserted = 0
-                equity_error = f"{type(exc).__name__}: {exc}"
-
-            errors = {
-                k: v
-                for k, v in (
-                    ("company_error", company_error),
-                    ("equity_error", equity_error),
-                )
-                if v
-            }
+                if not company_processed or not company_upserted:
+                    raise freshness.FundPipelineBlocked({
+                        "stage": "company_characteristics", "alarm": True,
+                        "breaches": ["COMPANY_CHARACTERISTICS_EMPTY"], "last_good_preserved": True,
+                    })
+            input_snapshot = inputs.snapshot(conn, source, "characteristics")
+            equity_processed, equity_upserted = _run_layer2_setbased(conn, limit, commit=False)
+            postcheck = freshness.require(freshness.probe_stage(conn, source, "characteristics", candidate=True))
+            # Light uses 900204 as its input-reader guard. Protect fund rows
+            # and their receipt through COMMIT just as look-through does.
+            if not conn.execute("SELECT pg_try_advisory_xact_lock(%s)",
+                                (LOCK_NPORT_LOOKTHROUGH,)).fetchone()[0]:
+                raise freshness.FundPipelineBlocked({
+                    "stage": "characteristics", "alarm": True,
+                    "breaches": ["INPUT_READER_IN_PROGRESS"], "last_good_preserved": True,
+                })
+            freshness.lock_source(conn, "characteristics")
+            inputs.guard(conn, source, "characteristics", input_snapshot)
+            latest_source = freshness.read_source_cohort(conn, cutoff=today)
+            freshness.require(latest_source.verdict)
+            freshness.require_unchanged("characteristics", source, latest_source)
+            inputs.certify(conn, source, "characteristics", input_snapshot)
+            conn.commit()
             return {
-                "status": "succeeded" if not errors else "partial",
+                "status": "succeeded",
                 "processed": company_processed + equity_processed,
                 "upserted": company_upserted + equity_upserted,
                 "company_processed": company_processed,
                 "company_upserted": company_upserted,
                 "equity_processed": equity_processed,
                 "equity_upserted": equity_upserted,
-                **errors,
+                "source_as_of": str(source.as_of), "freshness": postcheck,
             }
+    except Exception as exc:
+        conn.rollback()
+        if standalone and isinstance(exc, freshness.FundPipelineBlocked):
+            exc.verdict["company_processed"] = company_processed
+            exc.verdict["company_upserted"] = company_upserted
+        raise
     finally:
         conn.close()

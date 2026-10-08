@@ -1,9 +1,14 @@
 # N-PORT identifier coverage — what the warning means and how to repair it
 
-`src/workers/nport_identifier_coverage.probe` runs at the end of
-`nport_lookthrough` (Railway `nport-lookthrough`, cron `0 4 * * 0`). It reads the
-last 150 days of `sec_nport_holdings` and reports, per `report_date`, how much of
-it still carries an ISIN.
+`src/workers/nport_identifier_coverage.probe` runs before any look-through
+candidate is written. It reads the last 150 days through the certified broad
+N-PORT report anchor and reports the ISIN fill per report date. The explicit
+floor remains 90% for dates with at least 1,000 holdings; a degraded or
+undecidable verdict blocks publication and produces a structured
+`fund_pipeline_alarm` with exit code 1. The prior complete materialization
+remains available. The proposed dependency-driven retry schedule is documented
+in [the classification-input runbook](fund-classification-inputs.md); no Railway
+configuration is changed by this documentation.
 
 ## The failure it watches for
 
@@ -118,10 +123,8 @@ same two populations by 32.5 pp (worst clean 0.9445, best degraded 0.6198).
 4. **Re-run the probe** (`nport_lookthrough`, or `probe()` against the datalake
    directly) and confirm the readings return to the 0.98–0.99 band.
 
-## Deliberately not a gate
+## Publication gate
 
-The probe does not raise, and `nport_lookthrough` does not fail on a degraded
-verdict. The damage is to history already written; stopping the weekly run would
-cost a week of look-through exposures without repairing a single row. The verdict
-rides in the worker's stats so it is legible in the run log, and the WARNING
-carries the report_dates and the reason a re-run alone is a no-op.
+A degraded or undecidable identifier verdict now blocks look-through publication
+and preserves the last complete output. Repair the identified source packages
+and retry the ordered chain; do not delete serving output to clear the alarm.

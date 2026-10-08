@@ -31,22 +31,28 @@ Contract:  run(dsn, *, calc_date=None, limit=None, serial=False)
            -> {"processed", "upserted_series", "exposure_rows", "calc_date",
                "workers", "identifier_coverage"}
 
-``identifier_coverage`` is the post-verify from
+``identifier_coverage`` is the preflight gate from
 ``src.workers.nport_identifier_coverage``: a bounded read of how much of the
-recent tail of ``sec_nport_holdings`` still carries an ISIN. It observes, it does
-not gate -- see the note at the end of ``run``.
+recent tail of ``sec_nport_holdings`` still carries an ISIN. A degraded or
+undecidable verdict preserves the previous complete serving output.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from uuid import uuid4
 
 from src.db import LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
 from src.workers import nport_identifier_coverage
+from src.workers import _fund_pipeline_freshness as freshness
+from src.workers import _fund_pipeline_inputs as inputs
+
+LOGGER = logging.getLogger(__name__)
 
 MAX_DEPTH = 2
 MAX_WORKERS_CAP = 24            # Railway vCPU count; bounds the cloud pool
@@ -558,7 +564,8 @@ def build_sector_map(conn) -> dict[str, str]:
 
 
 def make_db_get_holdings(
-    conn, calc_date: _dt.date, cache: dict | None = None
+    conn, calc_date: _dt.date, cache: dict | None = None, *,
+    minimum_report_date: _dt.date | None = None,
 ) -> Callable[[str], tuple[_dt.date, list[dict]] | None]:
     """Fetcher over sec_nport_holdings: latest report ≤ calc_date per series.
 
@@ -579,7 +586,7 @@ def make_db_get_holdings(
                 (series_id, calc_date),
             )
             report_date = cur.fetchone()[0]
-            if report_date is None:
+            if report_date is None or (minimum_report_date and report_date < minimum_report_date):
                 memo[series_id] = None
                 return None
             cur.execute(
@@ -730,7 +737,7 @@ _SUMMARY_COLS = (
 
 
 def _upsert_series(conn, series_id: str, exposures: dict, summary: dict,
-                   coverage_pct: float | None) -> int:
+                   coverage_pct: float | None, staging_run_id: str | None = None) -> int:
     """Replace the materialization for (series, report) atomically.
 
     DELETE + INSERT inside the caller's transaction: recomputation reproduces
@@ -755,30 +762,138 @@ def _upsert_series(conn, series_id: str, exposures: dict, summary: dict,
         coverage_pct, summary["n_holdings"], summary["n_children_expanded"],
         summary["oldest_report_date"],
     )
+    exposure_table = ("nport_lookthrough_candidate_exposures" if staging_run_id
+                      else "nport_lookthrough_exposures")
+    summary_table = ("nport_lookthrough_candidate_summary" if staging_run_id
+                     else "nport_lookthrough_summary")
+    extra_cols = "run_id, " if staging_run_id else ""
+    extra_where = "run_id = %s AND " if staging_run_id else ""
+    key = (staging_run_id, series_id, report_date) if staging_run_id else (series_id, report_date)
+    if staging_run_id:
+        exposure_rows = [(staging_run_id, *row) for row in exposure_rows]
+        summary_row = (staging_run_id, *summary_row)
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM nport_lookthrough_exposures WHERE series_id = %s AND report_date = %s",
-            (series_id, report_date),
+            f"DELETE FROM {exposure_table} WHERE {extra_where}series_id = %s AND report_date = %s",
+            key,
         )
         for start in range(0, len(exposure_rows), INSERT_CHUNK):
             cur.executemany(
-                """INSERT INTO nport_lookthrough_exposures
-                   (series_id, report_date, dimension, key, label,
+                f"""INSERT INTO {exposure_table}
+                   ({extra_cols}series_id, report_date, dimension, key, label,
                     direct_pct, indirect_pct)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES ({', '.join(['%s'] * (8 if staging_run_id else 7))})""",
                 exposure_rows[start:start + INSERT_CHUNK],
             )
         cur.execute(
-            "DELETE FROM nport_lookthrough_summary WHERE series_id = %s AND report_date = %s",
-            (series_id, report_date),
+            f"DELETE FROM {summary_table} WHERE {extra_where}series_id = %s AND report_date = %s",
+            key,
         )
         cur.execute(
-            f"""INSERT INTO nport_lookthrough_summary
-                ({', '.join(_SUMMARY_COLS)})
-                VALUES ({', '.join(['%s'] * len(_SUMMARY_COLS))})""",
+            f"""INSERT INTO {summary_table}
+                ({extra_cols}{', '.join(_SUMMARY_COLS)})
+                VALUES ({', '.join(['%s'] * len(summary_row))})""",
             summary_row,
         )
     return len(exposure_rows)
+
+
+def _cleanup_staged(conn, run_id: str) -> None:
+    with conn.cursor() as cur:
+        for table in ("nport_lookthrough_candidate_exposures", "nport_lookthrough_candidate_summary"):
+            cur.execute(f"DELETE FROM {table} WHERE run_id = %s", (run_id,))
+
+
+def _cleanup_orphan_candidates(conn) -> None:
+    """Cap orphan cleanup per run; a killed candidate never becomes serving."""
+    with conn.cursor() as cur:
+        for table in ("nport_lookthrough_candidate_exposures", "nport_lookthrough_candidate_summary"):
+            cur.execute(
+                f"""DELETE FROM {table} WHERE ctid IN (
+                    SELECT ctid FROM {table} WHERE computed_at < now() - interval '7 days'
+                    ORDER BY computed_at LIMIT 5000
+                )"""
+            )
+    conn.commit()
+
+
+def _probe_staged(conn, source: freshness.SourceCohort, run_id: str) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT s.series_id, s.report_date, s.n_holdings, s.computed_at, s.oldest_report_date,
+                      EXISTS (SELECT 1 FROM nport_lookthrough_candidate_exposures e
+                              WHERE e.run_id = s.run_id AND e.series_id = s.series_id
+                                AND e.report_date = s.report_date)
+               FROM nport_lookthrough_candidate_summary s WHERE s.run_id = %s""", (run_id,),
+        )
+        rows = [freshness.Observation(str(sid), day, count, computed, oldest_report_date=oldest,
+                                      exposures_present=present)
+                for sid, day, count, computed, oldest, present in cur.fetchall()]
+        cur.execute(
+            "SELECT count(*) FROM nport_lookthrough_candidate_exposures WHERE run_id = %s", (run_id,),
+        )
+        exposure_count = cur.fetchone()[0]
+    verdict = freshness.assess_stage("lookthrough", source, rows, require_counts=True,
+                                     require_computed=True, require_chain_freshness=True,
+                                     require_exposures=True, require_recent_computation=True)
+    if exposure_count == 0:
+        verdict["alarm"] = True
+        verdict["breaches"].append("LOOKTHROUGH_EXPOSURES_EMPTY")
+    return verdict
+
+
+def _publish_staged(conn, run_id: str) -> None:
+    """One transaction replaces exactly this candidate's (series, report) keys."""
+    exposure_cols = "series_id, report_date, dimension, key, label, direct_pct, indirect_pct, computed_at"
+    summary_cols = ", ".join((*_SUMMARY_COLS, "computed_at"))
+    with conn.cursor() as cur:
+        # Bound lock acquisition; a stalled consumer cannot hold this final
+        # promotion open indefinitely. The session's 900204 mutex is also the
+        # Light classification reader guard.
+        cur.execute("SET LOCAL lock_timeout = '5s'")
+        for table in ("nport_lookthrough_exposures", "nport_lookthrough_summary"):
+            cur.execute(
+                f"""DELETE FROM {table} target USING nport_lookthrough_candidate_summary candidate
+                    WHERE candidate.run_id = %s AND target.series_id = candidate.series_id
+                      AND target.report_date = candidate.report_date""", (run_id,),
+            )
+        cur.execute(
+            f"""INSERT INTO nport_lookthrough_exposures ({exposure_cols})
+                SELECT {exposure_cols} FROM nport_lookthrough_candidate_exposures WHERE run_id = %s""",
+            (run_id,),
+        )
+        cur.execute(
+            f"""INSERT INTO nport_lookthrough_summary ({summary_cols})
+                SELECT {summary_cols} FROM nport_lookthrough_candidate_summary WHERE run_id = %s""",
+            (run_id,),
+        )
+    _cleanup_staged(conn, run_id)
+
+
+def _promote(conn, source: freshness.SourceCohort, run_id: str, cutoff: _dt.date | None,
+             input_snapshot: dict) -> None:
+    """Publish ``run_id`` unless an N-PORT load is running or landed after ``source``.
+
+    Opens a fresh transaction; the caller commits. The only sec_nport_holdings
+    writer here, tools/nport_dera/nport_parallel_load (also run by
+    nport_secapi_monthly), holds LOCK_NPORT_LOAD with a blocking session lock
+    from before its first insert until after its last commit. This try-lock is
+    transaction-scoped, so it is held through the caller's COMMIT: a load that
+    starts meanwhile waits for it, and none can commit between the READ
+    COMMITTED re-read below and promotion. It never waits itself, so the order
+    900_366 chain -> 900_204 look-through -> 900_365 cannot deadlock with the
+    loader's 900_363 -> 900_365 -> 900_364, which never takes 900_204.
+    """
+    conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+    freshness.lock_source(conn, "lookthrough")
+    inputs.guard(conn, source, "lookthrough", input_snapshot)
+    # The chain passes calc_date=source.as_of, which caps the cohort read; the
+    # live watermark still sees a month loaded mid-build.
+    latest = freshness.read_source_cohort(conn, cutoff=cutoff)
+    freshness.require_unchanged("lookthrough", source, latest)
+    freshness.require(latest.verdict)
+    _publish_staged(conn, run_id)
+    inputs.certify(conn, source, "lookthrough", input_snapshot)
 
 
 def ensure_schema(conn) -> None:
@@ -793,6 +908,7 @@ def ensure_schema(conn) -> None:
         ):
             with open(os.path.join(schema_dir, filename), encoding="utf-8") as fh:
                 cur.execute(fh.read())
+    inputs.ensure_schema(conn)
     conn.commit()
 
 
@@ -805,13 +921,16 @@ def _resolve_max_workers() -> int:
 
 def _process_shard(
     dsn: str, calc_date_iso: str, fund_map: dict,
-    sector_map: dict[str, str], series_ids: list[str]
+    sector_map: dict[str, str], series_ids: list[str], staging_run_id: str | None = None,
 ) -> tuple[int, int, int]:
     """Child-process entrypoint: own connection, per-series commit."""
     calc_date = _dt.date.fromisoformat(calc_date_iso)
     processed = upserted = exposure_rows = 0
     with connect(dsn) as conn:
-        get_holdings = make_db_get_holdings(conn, calc_date)
+        get_holdings = make_db_get_holdings(
+            conn, calc_date, minimum_report_date=freshness.utc_today()
+            - _dt.timedelta(days=freshness.Policy().max_chain_report_age_days),
+        )
         get_equity_inputs = make_db_get_equity_inputs(conn)
         for series_id in series_ids:
             exposures, summary = expand_series(
@@ -823,7 +942,7 @@ def _process_shard(
             )
             coverage = _coverage_pct(conn, series_id, summary["report_date"])
             exposure_rows += _upsert_series(conn, series_id, exposures, summary,
-                                            coverage)
+                                            coverage, staging_run_id)
             conn.commit()
             processed += 1
             upserted += 1
@@ -847,73 +966,95 @@ def run(
     calc_date: str | None = None,
     limit: int | None = None,
     serial: bool = False,
+    source: freshness.SourceCohort | None = None,
+    force_rebuild: bool = False,
 ) -> dict:
     """Materialize look-through exposures for every series in the data-lake.
 
-    The MAIN process takes LOCK_NPORT_LOOKTHROUGH once, ensures the schema,
-    resolves ``calc_date`` (default: max report_date in sec_nport_holdings),
-    builds the fund map and the parent list, then dispatches shards to a
-    process pool (``min(cpu_count, 24)``); children open their own connections
-    and commit per series (DELETE+INSERT atomically per parent).
+    The MAIN process holds the producer/Light-reader mutex, checks a broad
+    source cohort and its dependencies, then shards candidate writes. Serving
+    changes only after every shard and the final cohort/source checks succeed.
     """
+    force_env = os.getenv("NPORT_LOOKTHROUGH_FORCE_REBUILD", "").strip()
+    if force_env not in {"", "0", "1"}:
+        raise ValueError("NPORT_LOOKTHROUGH_FORCE_REBUILD must be 0 or 1")
+    force_rebuild = force_rebuild or force_env == "1"
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_NPORT_LOOKTHROUGH) as got:
             if not got:
-                return {"processed": 0, "upserted_series": 0,
-                        "skipped": "lock_busy"}
-
+                return {"processed": 0, "upserted_series": 0, "status": "lock_busy"}
+            cutoff = _dt.date.fromisoformat(calc_date) if calc_date else None
+            source = source or freshness.read_source_cohort(conn, cutoff=cutoff)
+            freshness.require(source.verdict)
+            freshness.require(freshness.probe_stage(conn, source, "cagg"))
+            freshness.require(freshness.probe_stage(conn, source, "characteristics"))
+            identifier = nport_identifier_coverage.probe(conn, as_of=source.as_of)
+            if identifier["state"] != "clean":
+                raise freshness.FundPipelineBlocked({
+                    "stage": "nport", "alarm": True,
+                    "breaches": ["IDENTIFIER_COVERAGE_NOT_CLEAN"], "identifier_coverage": identifier,
+                    "last_good_preserved": True,
+                })
             ensure_schema(conn)
-            if calc_date:
-                cdate = _dt.date.fromisoformat(calc_date)
-            else:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT max(report_date) FROM sec_nport_holdings")
-                    cdate = cur.fetchone()[0]
-                if cdate is None:
-                    raise RuntimeError("sec_nport_holdings is empty")
-
+            current = freshness.probe_stage(conn, source, "lookthrough")
+            if (not force_rebuild and not current["alarm"] and current.get("matched_series_count")
+                    == current.get("expected_series_count")):
+                return {"status": "current", "published": False, "processed": 0,
+                        "upserted_series": 0, "calc_date": str(source.as_of),
+                        "freshness": current, "identifier_coverage": identifier}
+            if limit is not None:
+                raise freshness.FundPipelineBlocked({
+                    "stage": "lookthrough", "alarm": True,
+                    "breaches": ["PARTIAL_COHORT_CANNOT_PUBLISH"], "last_good_preserved": True,
+                })
+            _cleanup_orphan_candidates(conn)
+            input_snapshot = inputs.snapshot(conn, source, "lookthrough")
+            cdate = source.as_of
             fund_map = build_fund_map(conn)
             sector_map = build_sector_map(conn)
-            parents = _list_parents(conn, cdate, limit)
+            parents = sorted(source.series)
             cdate_iso = cdate.isoformat()
-
+            run_id = str(uuid4())
             n_workers = 1 if serial else min(_resolve_max_workers(),
                                              len(parents) or 1)
-
-            if n_workers <= 1:
-                processed, upserted, exposure_rows = _process_shard(
-                    dsn, cdate_iso, fund_map, sector_map, parents
-                )
-            else:
-                processed = upserted = exposure_rows = 0
-                shards = _shard(parents, n_workers)
-                with ProcessPoolExecutor(max_workers=n_workers) as pool:
-                    futures = [
-                        pool.submit(_process_shard, dsn, cdate_iso, fund_map,
-                                    sector_map, shard)
-                        for shard in shards
-                    ]
-                    for fut in as_completed(futures):
-                        p, u, e = fut.result()
-                        processed += p
-                        upserted += u
-                        exposure_rows += e
-
-            # Post-verify, not a gate. sec_nport_holdings is loaded a DERA
-            # package at a time by an operator script outside this repo; a
-            # package that lost its ISIN side loads without failing anything,
-            # and this worker is the recurring job that reads the column. The
-            # verdict rides in the stats so a degraded load is legible in the
-            # run log the week it lands. It does NOT raise: the damage is to
-            # history already written, so stopping the look-through would cost
-            # a week of exposures without repairing a single row.
-            coverage = nport_identifier_coverage.probe(conn)
-
+            try:
+                if n_workers <= 1:
+                    processed, upserted, exposure_rows = _process_shard(
+                        dsn, cdate_iso, fund_map, sector_map, parents, run_id
+                    )
+                else:
+                    processed = upserted = exposure_rows = 0
+                    shards = _shard(parents, n_workers)
+                    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                        futures = [
+                            pool.submit(_process_shard, dsn, cdate_iso, fund_map,
+                                        sector_map, shard, run_id)
+                            for shard in shards
+                        ]
+                        for fut in as_completed(futures):
+                            p, u, e = fut.result()
+                            processed += p
+                            upserted += u
+                            exposure_rows += e
+                postcheck = freshness.require(_probe_staged(conn, source, run_id))
+                conn.commit()
+                _promote(conn, source, run_id, cutoff, input_snapshot)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                try:
+                    _cleanup_staged(conn, run_id)
+                    conn.commit()
+                except Exception as cleanup_error:
+                    conn.rollback()
+                    LOGGER.warning("lookthrough candidate cleanup failed: %s", type(cleanup_error).__name__)
+                raise
             return {
+                "status": "complete", "published": True, "run_id": run_id,
                 "processed": processed,
                 "upserted_series": upserted,
                 "exposure_rows": exposure_rows,
                 "calc_date": cdate_iso,
                 "workers": n_workers,
-                "identifier_coverage": coverage,
+                "identifier_coverage": identifier, "freshness": postcheck,
             }

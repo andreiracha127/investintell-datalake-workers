@@ -62,6 +62,16 @@ BEGIN
     END IF;
 END$$;
 
+-- Run-scoped candidates: shards never change the serving tables. Only a
+-- fully checked parent batch is promoted in one transaction under 900204.
+CREATE TABLE IF NOT EXISTS nport_lookthrough_candidate_exposures (
+    run_id uuid NOT NULL,
+    LIKE nport_lookthrough_exposures INCLUDING DEFAULTS,
+    UNIQUE (run_id, series_id, report_date, dimension, key)
+);
+CREATE INDEX IF NOT EXISTS nport_lookthrough_candidate_exposures_age_idx
+    ON nport_lookthrough_candidate_exposures (computed_at);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- nport_lookthrough_summary  (residual explícito + staleness em cadeia)
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +110,14 @@ ALTER TABLE nport_lookthrough_summary
 
 CREATE INDEX IF NOT EXISTS nport_lookthrough_summary_series_idx
     ON nport_lookthrough_summary USING btree (series_id, report_date DESC);
+
+CREATE TABLE IF NOT EXISTS nport_lookthrough_candidate_summary (
+    run_id uuid NOT NULL,
+    LIKE nport_lookthrough_summary INCLUDING DEFAULTS,
+    UNIQUE (run_id, series_id, report_date)
+);
+CREATE INDEX IF NOT EXISTS nport_lookthrough_candidate_summary_age_idx
+    ON nport_lookthrough_candidate_summary (computed_at);
 
 DO $$
 BEGIN

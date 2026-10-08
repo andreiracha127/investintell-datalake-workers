@@ -838,6 +838,13 @@ jobs:
         if: steps.changes.outputs.nport_changed == 'true'
         run: >-
           python -m pytest
+          tests/test_characteristics_pipeline.py
+          tests/test_ci_path_scope.py
+          tests/test_fund_pipeline_health.py
+          tests/test_nport_pipeline_dispatcher.py
+          tests/test_nport_pipeline_freshness.py
+          tests/test_nport_classification_inputs_chain.py
+          tests/test_nport_lookthrough_pipeline.py
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
           tests/test_nport_dera_tooling.py
@@ -857,6 +864,14 @@ jobs:
         if: steps.changes.outputs.nport_changed == 'true'
         run: >-
           ruff check
+          scripts/ci/classify_changes.py
+          src/db.py
+          src/run_worker.py
+          src/workers/characteristics.py
+          src/workers/_fund_pipeline_freshness.py
+          src/workers/_fund_pipeline_inputs.py
+          src/workers/fund_pipeline_health.py
+          src/workers/nport_classification_inputs_chain.py
           src/workers/nport_lookthrough.py
           src/workers/nport_identifier_coverage.py
           src/workers/nport_cusip_enrichment.py
@@ -875,6 +890,13 @@ jobs:
           tools/nport_secapi/validate.py
           tools/nport_secapi/contract.py
           src/workers/nport_secapi_monthly.py
+          tests/test_characteristics_pipeline.py
+          tests/test_ci_path_scope.py
+          tests/test_fund_pipeline_health.py
+          tests/test_nport_pipeline_dispatcher.py
+          tests/test_nport_pipeline_freshness.py
+          tests/test_nport_classification_inputs_chain.py
+          tests/test_nport_lookthrough_pipeline.py
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
           tests/test_nport_dera_tooling.py
@@ -894,6 +916,14 @@ jobs:
         if: steps.changes.outputs.nport_changed == 'true'
         run: >-
           python -m compileall -q
+          scripts/ci/classify_changes.py
+          src/db.py
+          src/run_worker.py
+          src/workers/characteristics.py
+          src/workers/_fund_pipeline_freshness.py
+          src/workers/_fund_pipeline_inputs.py
+          src/workers/fund_pipeline_health.py
+          src/workers/nport_classification_inputs_chain.py
           src/workers/nport_lookthrough.py
           src/workers/nport_identifier_coverage.py
           src/workers/nport_cusip_enrichment.py
@@ -929,11 +959,21 @@ jobs:
           docker exec nport-loader-proof psql -h 127.0.0.1 -U postgres -d nport_proof -v ON_ERROR_STOP=1 \
             -c "ALTER DATABASE nport_proof SET nport_loader_proof.disposable = 'on'"
 
+      # The two fund-pipeline contract suites start their own disposable
+      # containers with --pull=never; the step above already pulled the same
+      # timescale/timescaledb:2.27.2-pg18 image onto this runner.
       - name: Verify N-PORT atomic loader on TimescaleDB 2.27.2 / PostgreSQL 18
         if: steps.changes.outputs.nport_changed == 'true'
         env:
           NPORT_TEST_DATABASE_URL: postgresql://postgres:nport_local_proof@127.0.0.1:54329/nport_proof
-        run: python -m pytest tests/test_nport_parallel_load_timescale.py -q -rs
+          NPORT_LOOKTHROUGH_STAGING_DB_TEST: "1"
+          NPORT_CAGG_REFRESH_DB_TEST: "1"
+        run: >-
+          python -m pytest
+          tests/test_nport_parallel_load_timescale.py
+          tests/test_nport_lookthrough_staging_db.py
+          tests/test_nport_series_profile_refresh_request_db.py
+          -q -rs
 
       - name: Remove disposable N-PORT Timescale database
         if: always() && steps.changes.outputs.nport_changed == 'true'
