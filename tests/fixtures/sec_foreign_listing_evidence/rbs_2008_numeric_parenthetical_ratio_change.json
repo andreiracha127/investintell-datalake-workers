@@ -1,0 +1,51 @@
+{
+  "name": "rbs_2008_numeric_parenthetical_ratio_change",
+  "fixture": "rbs_2008_numeric_parenthetical_ratio_change.html",
+  "cik": 844150,
+  "symbol": "RBS",
+  "form_type": "6-K",
+  "accession_number": "0001191638-08-001847",
+  "filing_date": "2008-11-03",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/844150/000119163808001847/rbs200811016kbatch.htm",
+  "source_sha256": "ba0cc9e0e3a5ea73ca4edc1c8d42b43f18e71bf916dd98b8d19c27fb2501438c",
+  "sha256": "ba0cc9e0e3a5ea73ca4edc1c8d42b43f18e71bf916dd98b8d19c27fb2501438c",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF only; original byte hash retained.",
+  "original_source_bytes": 3049405,
+  "filing_date_proof": {
+    "filed": "2008-11-03",
+    "records": [
+      {
+        "cik": 844150,
+        "filed": "2008-11-03",
+        "line": "844150|ROYAL BANK OF SCOTLAND GROUP PLC|6-K|2008-11-03|edgar/data/844150/0001191638-08-001847.txt",
+        "source_sha256": "051b5b5312fc3c213d22fdaa38e182158c7a178efb5223b4856cf134f98f7d47",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2008/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "independently_verified_filing_date_records": [
+    {
+      "cik": 844150,
+      "filed": "2008-11-03",
+      "line": "844150|ROYAL BANK OF SCOTLAND GROUP PLC|6-K|2008-11-03|edgar/data/844150/0001191638-08-001847.txt",
+      "source_sha256": "051b5b5312fc3c213d22fdaa38e182158c7a178efb5223b4856cf134f98f7d47",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2008/QTR4/master.idx",
+      "original_hash_and_literal_row_verified": true,
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final\\master-2008-Q4.idx"
+    }
+  ],
+  "publication_floor_on": "2008-11-03",
+  "publication_floor_proof": {
+    "publication_floor_on": "2008-11-03",
+    "reported_dates": [
+      "2008-11-03"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "d40af6d78532b30cc86b98077bf04a27d976e6d214ee26598059344a389370d0",
+  "binding": "registrant_cik",
+  "issuer_name": "",
+  "reviewed_ratio_source_window": "The Royal Bank of Scotland Group American depositary shares (\"ADSs\") representing ordinary shares trading on the New York Stock Exchange, (NYSE Symbol: RBS), effective November 7, 2008, the ratio of one (1) ADS representing One (1) ordinary share will change to one (1) ADS representing 20 (twenty) ordinary shares. Existing ADR holders will receive one (1) \"New\" ADS for every twenty (20) \"Old\" ADSs surrendered for cancellation. This ratio change does not affect any of the RBS Preferred share ADS programmes. Contact details Richard O'Connor Head of Investor Relations +44 (0)207 672 1758 Carolyn McAdam Head of Group Communications +44 (0)131 523 2055 Signatures Pursuant to the requirements of the Securities Exchange Act of 1934, the registrant has duly caused this report to be signed on its behalf by the undersigned, thereunto duly authorized. Date: 31 October 2008 THE ROYAL BANK OF SCOTLAND GROUP plc (Registrant) By: /s/ A N Taylor Name: Title: A N Taylor Head of Group Secretariat",
+  "independent_judgment": "Ordinary RBS ADS programme changes 1/1 to 20/1 effective November 7, 2008. Numeral-first 20 (twenty) is the new side. The source expressly preserves preferred ADS programmes. Former 1/1 must not be assigned the new event date."
+}

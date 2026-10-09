@@ -1,0 +1,102 @@
+{
+  "name": "televisa_cpo_gds_deposit_definition",
+  "fixture": "televisa_cpo_gds_deposit_definition.html",
+  "cik": 912892,
+  "symbol": "TV",
+  "form_type": "F-6EF",
+  "accession_number": "0001019155-17-000217",
+  "filing_date": "2017-07-21",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/912892/000101915517000217/grupodepnrec.htm",
+  "source_sha256": "39a456c586036dd64e8b7c1423fad030f5f9098d81bf6a227d87e6e0daf67d2e",
+  "sha256": "39a456c586036dd64e8b7c1423fad030f5f9098d81bf6a227d87e6e0daf67d2e",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF only; original byte hash retained.",
+  "original_source_bytes": 273267,
+  "filing_date_proof": {
+    "filed": "2017-07-21",
+    "records": [
+      {
+        "cik": 1201935,
+        "filed": "2017-07-21",
+        "line": "1201935|BANK OF NEW YORK / ADR DIVISION|F-6EF|2017-07-21|edgar/data/1201935/0001019155-17-000217.txt",
+        "source_sha256": "82a8689817b58cf8a6bacefc3711c294817c2797e3c879372ed60090c3b7a10d",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/master.idx"
+      },
+      {
+        "cik": 912892,
+        "filed": "2017-07-21",
+        "line": "912892|GRUPO TELEVISA, S.A.B.|F-6EF|2017-07-21|edgar/data/912892/0001019155-17-000217.txt",
+        "source_sha256": "82a8689817b58cf8a6bacefc3711c294817c2797e3c879372ed60090c3b7a10d",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "independently_verified_filing_date_records": [
+    {
+      "cik": 1201935,
+      "filed": "2017-07-21",
+      "line": "1201935|BANK OF NEW YORK / ADR DIVISION|F-6EF|2017-07-21|edgar/data/1201935/0001019155-17-000217.txt",
+      "source_sha256": "82a8689817b58cf8a6bacefc3711c294817c2797e3c879372ed60090c3b7a10d",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/master.idx",
+      "original_hash_and_literal_row_verified": true,
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final\\master-2017-Q3.idx"
+    },
+    {
+      "cik": 912892,
+      "filed": "2017-07-21",
+      "line": "912892|GRUPO TELEVISA, S.A.B.|F-6EF|2017-07-21|edgar/data/912892/0001019155-17-000217.txt",
+      "source_sha256": "82a8689817b58cf8a6bacefc3711c294817c2797e3c879372ed60090c3b7a10d",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/master.idx",
+      "original_hash_and_literal_row_verified": true,
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final\\master-2017-Q3.idx"
+    }
+  ],
+  "publication_floor_on": "2017-07-21",
+  "publication_floor_proof": {
+    "publication_floor_on": "2017-07-21",
+    "reported_dates": [
+      "2017-07-21"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "d40af6d78532b30cc86b98077bf04a27d976e6d214ee26598059344a389370d0",
+  "primary_deposited_security": "Certificados de Participacion Ordinarios (CPO basket certificates)",
+  "primary_program_definitions": [
+    {
+      "source_visible_text_offset": 4133,
+      "source_visible_text_end": 5042,
+      "text": "SECTION 1.05. “ CPOs ” . The term “CPOs” shall mean the validly issued, fully paid and non-assessable Certificados de Participación Ordinarios (Ordinary Participation Certificates) issued by the CPO Trustee pursuant to the Trust and shall include evidence of rights to receive CPOs; provided, however, that if there shall occur any split-up, consolidation or any reclassification or, upon the occurrence of an event described in Section 4.09, an exchange or conversion in respect of the CPOs, the term “CPOs” shall thereafter represent the additional and/or successor securities resulting from such split-up, consolidation or reclassification or such exchange or conversion. Each CPO currently represents financial interests in, and limited voting rights with respect to, 25 Series A Shares, 22 Series B Shares, 35 Series D Shares and 35 Series L Shares of the Company which have been deposited in the Trust. "
+    },
+    {
+      "source_visible_text_offset": 8765,
+      "source_visible_text_end": 9501,
+      "text": "SECTION 1.18. “ Global Depositary Shares; GDSs ” . The term “Global Depositary Shares” or “GDSs” shall mean the rights and the interests in the Deposited Securities granted to the Holders pursuant to the terms and conditions of this Deposit Agreement. Each GDS shall represent the number of CPOs specified in Exhibit A to this Deposit Agreement until there shall occur a distribution upon Deposited Securities referred to in Section 4.03 of this Deposit Agreement or a change in Deposited Securities referred to in Section 4.09 of this Deposit Agreement with respect to which additional GDSs are not issued and delivered, and thereafter each GDS shall represent the right to receive the Deposited Securities specified in such sections. "
+    },
+    {
+      "source_visible_text_offset": 14984,
+      "source_visible_text_end": 15585,
+      "text": "i. “ Shares ” . The term “Shares” shall mean the Series A Shares, Series B Shares, Series L Shares and the Preferred Payment Shares; provided, however, that if there shall occur any change in par value, split-up or consolidation or any other reclassification or, upon the occurrence of an event described in Section 4.09, an exchange, replacement or conversion in respect of the Shares of the Company, the term “Shares” shall thereafter represent the successor securities resulting from such change in par value, split-up or consolidation or any other such reclassification or exchange or conversion. "
+    },
+    {
+      "source_visible_text_offset": 129843,
+      "source_visible_text_end": 130034,
+      "text": "(Each Global Depositary Share Representing Five Certificados de Participación Ordinarios, Each Representing 25 Series A Shares, 22 Series B Shares, 35 Series L Shares and 35 Series D Shares) "
+    },
+    {
+      "source_visible_text_offset": 131120,
+      "source_visible_text_end": 131401,
+      "text": "At the date hereof, each Global Depositary Share represents five (5) CPOs deposited under the Deposit Agreement (as hereafter defined) with the Custodian, which at the date of execution of the Deposit Agreement is Banco Inbursa, S.A., (herein collectively called the “Custodian”). "
+    }
+  ],
+  "independent_judgment": "Each GDS represents five CPOs. Each CPO is a multi-series trust basket including common, preferred-payment and limited-voting shares. Generic Shares and ordinary/common component definitions do not make the GDS unit a homogeneous ordinary share. The document also differs internally on Series B component count (22 in Section 1.05/face heading, 35 in face body); no scalar ordinary conversion is inferred.",
+  "issuer_binding_proof": {
+    "adsh": "0001019155-17-000217",
+    "cik": 912892,
+    "evidence_location": "f6/cover/exact-name-of-issuer-of-deposited-securities",
+    "issuer_name": "GRUPO TELEVISA, S.A.B.",
+    "source_sha256": "e108256de711803bf7cb6ad34b0d441fd70b34ce6aab37c47f6055c29a2bf1a5",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/912892/000101915517000217/grua927104f6.htm"
+  },
+  "issuer_binding_cover_hash_verified": true,
+  "issuer_binding_cover_header_excerpt": "F-6EF 1 grua927104f6.htm FORM F-6 - RELOAD As filed with the Securities and Exchange Commission on July 21, 2017 Registration No. 333-_________ SECURITIES AND EXCHANGE COMMISSION Washington, D.C. 20549 _______________________________ FORM F-6 REGISTRATION STATEMENT under THE SECURITIES ACT OF 1933 For Depositary Shares GRUPO TELEVISA, S.A.B. (Exact name of issuer of deposited securities as specified in its charter) N/A (Translation of issuer's name into English) United Mexican States (Jurisdiction of incorporation or organization of issuer) THE BANK OF NEW YORK MELLON (Exact name of depositary as specified in its charter) 225 Liberty Street New York, N.Y. 10286 (212) 495-1784 (Address, including zip code, and telephone number, including area code, of depositary's principal executive offices) _______________________________ The Bank of New York Mellon ADR Division 225 Liberty Street, 21st Floor New York, New York 10286 (212) 495-1784 (Address, including zip code, and telephone number, including area code, of agent for service) Copies to: Brian D. Obergfell, Esq. Emmet, Marvin & Martin, LLP 120 Broadway New York, New York 10271 (212) 238-3032 It is proposed that this filing become effective under Rule 466 ☒ immediately upon filing ☐ on ( Date ) at ( Time ). If a separate registration statement has been filed to register the deposited shares, check the following box. ☐ CALCULATION OF REGISTRATION FEE Title of each class of Securities to be registered Amount to be registered Proposed maximum offering price per unit(1) Proposed maximum aggregate offering price(1) Amount of registration fee Global Depositary Shares representing Ordinary Participation Certificates 500,000,000 Global Depositary Shares $5.00 $25,000,000 $2,897.50 Ordinary Participation Certificates representing financial interests in shares of Grupo Televisa, S.A.B. 2,500,000,000 Ordinary Participation Certificates $0(2) $0(2) $0(2) (1) For the purpose of this table only the term \"unit\" is defined as 100 Global Depositary Shares or portion thereof. (2) There ae no fees or charges in connection with the registration of Ordinary Participation Certificates The prospectus consists of the proposed form of Glo"
+}

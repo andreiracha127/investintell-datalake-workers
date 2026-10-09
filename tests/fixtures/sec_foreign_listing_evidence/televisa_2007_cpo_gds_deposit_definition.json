@@ -1,0 +1,75 @@
+{
+  "name": "televisa_2007_cpo_gds_deposit_definition",
+  "fixture": "televisa_2007_cpo_gds_deposit_definition.html",
+  "cik": 912892,
+  "symbol": "TV",
+  "form_type": "F-6",
+  "accession_number": "0001019155-07-000270",
+  "filing_date": "2007-09-17",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/912892/000101915507000270/ardepagmtbnytelevisa.htm",
+  "source_sha256": "57edab526d5b26dbf49b901e298bb148bbf8051abab6c3fd2da637181a0859c3",
+  "sha256": "57edab526d5b26dbf49b901e298bb148bbf8051abab6c3fd2da637181a0859c3",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF only; original byte hash retained.",
+  "original_source_bytes": 286817,
+  "filing_date_proof": {
+    "filed": "2007-09-17",
+    "records": [
+      {
+        "cik": 912892,
+        "filed": "2007-09-17",
+        "line": "912892|GRUPO TELEVISA, S.A.B.|F-6|2007-09-17|edgar/data/912892/0001019155-07-000270.txt",
+        "source_sha256": "c9446d73e66337617e61b13ebdbf00bef0e8f855b1a56d67b35152804f48b96e",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2007/QTR3/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "independently_verified_filing_date_records": [
+    {
+      "cik": 912892,
+      "filed": "2007-09-17",
+      "line": "912892|GRUPO TELEVISA, S.A.B.|F-6|2007-09-17|edgar/data/912892/0001019155-07-000270.txt",
+      "source_sha256": "c9446d73e66337617e61b13ebdbf00bef0e8f855b1a56d67b35152804f48b96e",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2007/QTR3/master.idx",
+      "raw_hash_and_exact_row_verified": true,
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final\\master-2007-Q3.idx"
+    }
+  ],
+  "publication_floor_on": "2007-09-17",
+  "publication_floor_proof": {
+    "publication_floor_on": "2007-09-17",
+    "reported_dates": [
+      "2007-09-17"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "d40af6d78532b30cc86b98077bf04a27d976e6d214ee26598059344a389370d0",
+  "primary_deposited_security": "CPO basket certificates",
+  "primary_program_definitions": [
+    {
+      "source_visible_text_offset": 9031,
+      "source_visible_text_end": 9524,
+      "text": "Each GDS shall represent the number of CPOs specified in Exhibit A to this Deposit Agreement until there shall occur a distribution upon Deposited Securities referred to in Section 4.03 of this Deposit Agreement or a change in Deposited Securities referred to in Section 4.09 of this Deposit Agreement with respect to which additional GDSs are not issued and delivered, and thereafter each GDS shall represent the right to receive the Deposited Securities specified in such sections. SECTION 1"
+    },
+    {
+      "source_visible_text_offset": 129976,
+      "source_visible_text_end": 130513,
+      "text": "Each Global Depositary Share Representing Five Certificados de Participación Ordinarios, Each Representing 25 Series A Shares, 22 Series B Shares, 35 Series L Shares and 35 Series D Shares) GLOBAL DEPOSITARY RECEIPT evidencing GLOBAL DEPOSITARY SHARES representing DEPOSITED CERTIFICADOS DE PARTICIPACION ORDINARIOS representing financial interests in, and limited voting rights with respect to, 25 SERIES A SHARES, 22 SERIES B SHARES, 35 SERIES L SHARES AND 35 SERIES D SHARES ONE SERIES HELD IN TRUST of GRUPO TELEVISA, S.A.B. (Incorpo"
+    },
+    {
+      "source_visible_text_offset": 131283,
+      "source_visible_text_end": 131786,
+      "text": "each Global Depositary Share represents five (5) CPOs deposited under the Deposit Agreement (as hereafter defined) with the Custodian, which at the date of execution of the Deposit Agreement is Banco Inbursa, S.A., (herein collectively called the “Custodian”). The ratio of Global Depositary Shares to CPOs is subject to amendment as provided in the Deposit Agreement. At the date hereof each CPO represents financial interests in, and limited voting rights with respect to, 25 Series A Shares, without "
+    }
+  ],
+  "issuer_binding_proof": {
+    "adsh": "0001019155-07-000270",
+    "cik": 912892,
+    "evidence_location": "f6/cover/exact-name-of-issuer-of-deposited-securities",
+    "issuer_name": "GRUPO TELEVISA, S.A.B.",
+    "source_sha256": "a6a8f392c184e4f0bee2444f7a6c226a7048c349ccecf191524150258e61ef54",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/912892/000101915507000270/f6cpobnytelevisa.htm"
+  },
+  "issuer_binding_cover_hash_verified": true,
+  "issuer_binding_cover_header_excerpt": "F-6 1 f6cpobnytelevisa.htm FORM F-6 Converted by FileMerlin As filed with the Securities and Exchange Commission on September 17, 2007. Registration No. 333- SECURITIES AND EXCHANGE COMMISSION Washington, D.C. 20549 _______________________________ FORM F-6 REGISTRATION STATEMENT under THE SECURITIES ACT OF 1933 For Depositary Shares GRUPO TELEVISA, S.A.B. (Exact name of issuer of deposited securities as specified in its charter) N/A (Translation of issuer's name into English) United Mexican States (Jurisdiction of incorporation or organization of issuer) THE BANK OF NEW YORK (Exact name of depositary as specified in its charter) One Wall Street New York, N.Y. 10286 (212) 495-1784 (Address, including zip code, and telephone number, including area code, of depositary's principal executive offices) _______________________________ The Bank of New York ADR Division One Wall Street, 29 th Floor New York, New York 10286 (212) 495-1784 (Address, including zip code, and telephone number, including area code, of agent for service) Copies to: Peter B. Tisne, Esq. Emmet, Marvin & Martin, LLP 120 Broadway New York, New York 10271 (212) 238-3010 It is proposed that this filing become effective under Rule 466 [ ] immediately upon filing [ ] on ( Date ) at ( Time ). If a separate registration statement has been filed to register the deposited shares, check the following box. [ ] CALCULATION OF REGISTRATION FEE Title of each class of Securities to be registered Amount to be registered Proposed maximum aggregate price per unit (1) Proposed maximum aggregate offering price Amount of registration fee Global Depositary Shares representing Ordinary Participation Certificates 100,000,000 Global Depositary Shares $5.00 $5,000,000 $153.50 Ordinary Participation Certificates representing financial interests in shares of Grupo Televisa, S.A.B. 500,000,000 Ordinary Participation Certificates $0 (2) $0 (2) $0 (2) (1) For the purpose of this table only the term \"unit\" is defined as 100 American "
+}

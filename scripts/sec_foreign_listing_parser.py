@@ -16,12 +16,12 @@ from html.parser import HTMLParser
 import re
 from typing import Iterable
 
-PARSER_VERSION = "foreign-listing-v4"
+PARSER_VERSION = "foreign-listing-v5"
 _SPACE = re.compile(r"\s+")
 _ADS = r"(?:(?:(?:American?|Global)\s+)?deposit[ao]ry\s+(?:shares?|receipts?)|American\s+shares?\s*\(evidenced\s+by\s+deposit[ao]ry\s+receipts\)|[AG]D[SR]s?)"
 _SHARES = r"(?:(?:(?:class|series)\s+[A-Z0-9]+\s+)?(?:ordinary|common)\s+shares?|shares?\s+of\s+common\s+stock|(?:class|series)\s+[A-Z0-9]+\s+shares?|shares?)"
 _WORDS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|half|third|quarter"
-_QUANTITY = rf"(?:\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?|(?:{_WORDS})(?:[ -]+(?:{_WORDS}|and)){{0,5}})(?:\s*\(\s*\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?\s*\))?"
+_QUANTITY = rf"(?:\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?|(?:{_WORDS})(?:[ -]+(?:{_WORDS}|and)){{0,5}})(?:\s*\(\s*(?:\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?|(?:{_WORDS})(?:[ -]+(?:{_WORDS}|and)){{0,5}})\s*\))?"
 _OF_UNIT = r"(?:\s+of(?:\s+(?:one|an?|the)(?:\s*\(\s*\d+\s*/\s*\d+\s*\))?)?)?"
 _RATIO = re.compile(
     rf"(?P<adsn>each|{_QUANTITY})\s+[\"'\u201c\u201d\u2018\u2019\ufffd]*\s*{_ADS}(?!\w)(?:[^.;]|\.(?=\d)){{0,100}}?\b"
@@ -179,9 +179,12 @@ class _Document(HTMLParser):
 
 def _number(value: str) -> Fraction:
     value = value.lower().replace(",", "").strip()
-    parenthetical = re.search(r"\(([\d./\s]+)\)", value)
+    parenthetical = re.fullmatch(r"(.+?)\s*\(([^()]*)\)", value)
     if parenthetical:
-        return Fraction(parenthetical.group(1).replace(" ", ""))
+        stated, repeated = _number(parenthetical.group(1)), _number(parenthetical.group(2))
+        if stated != repeated:
+            raise ValueError("Contradictory repeated ratio quantity")
+        return stated
     if value == "each":
         return Fraction(1)
     if re.fullmatch(r"[\d./\s]+", value):
@@ -313,8 +316,133 @@ def _defined_shares_are_ordinary(text: str) -> bool:
     )
 
 
-def _ratios(text: str):
+def _primary_share_unit(title: str) -> str | None:
+    """Classify the deposited unit, before any nested component entitlement."""
+    title = re.split(r";|\.(?!\d)|\b(?:including|provided|shall\s+include)\b", title, maxsplit=1, flags=re.I)[0]
+    first_share = re.search(r"\bshares?\b", title, re.I)
+    prefix = title[:first_share.end()] if first_share else title
+    nonordinary = r"\b(?:prefer(?:red|ed|ence)|CPOs?|units?|baskets?)\b|participation\s+certificates?|certificados\s+de\s+participaci\S*\s+ordinarios"
+    if re.search(nonordinary, prefix, re.I):
+        return "nonordinary"
+    # Registration titles can say 'one share of Series III Convertible
+    # Preferred Stock'; the qualifying noun belongs to that first share.
+    if first_share and re.match(r"\s+of\s+(?:(?:Class|Series)\s+[\w-]+\s+)?(?:convertible\s+)?(?:preferred|preference)\b",
+                                title[first_share.end():], re.I):
+        return "nonordinary"
+    if re.search(r"\b(?:ordinary|common)\b", prefix, re.I) and first_share:
+        return "ordinary"
+    return None
+
+
+def _compound_receipt_entitlement(text: str, end: int) -> bool:
+    """A common-share component of a mixed receipt is not its scalar ratio."""
+    suffix = re.split(r"\.(?!\d)|;", text[end:end + 220], maxsplit=1)[0]
+    return bool(re.match(
+        rf"\s*(?:,\s*[^.;]{{0,70}}?\s*)?\band\s+{_QUANTITY}\s+"
+        r"(?:(?:Class|Series)\s+[\w-]+\s+)?(?:preferred|preference)\s+shares?\b",
+        suffix, re.I,
+    ))
+
+
+def _ratio_primary_share_unit(text: str, match: re.Match) -> str | None:
+    receipt = re.search(_ADS, match.group(), re.I)
+    if receipt is None:
+        return None
+    if receipt.end() == len(match.group()):
+        return _primary_share_unit(match.group()[:receipt.start()])  # shares-to-ADS clause
+    tail = text[match.start() + receipt.end():match.end() + 100]
+    verb = re.search(r"\b(?:represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?|to|per|for)\b", tail, re.I)
+    return _primary_share_unit(tail[verb.end():]) if verb else None
+
+
+def _named_share_class_unit(text: str, class_text: str) -> tuple[str, str] | None:
+    """Resolve a bare named share class only from this source's exact class."""
+    named_class = _underlying_class(class_text)
+    if named_class is None:
+        return None
+    kind, name = named_class.split("_", 1)
+    label = rf"\b{kind}\s+{re.escape(name)}\b"
+    declarations = list(re.finditer(
+        rf"{label}\s+(?:non[- ]voting\s+|voting\s+)?(?P<after>preferred|preference|ordinary|common)\s+shares?\b"
+        rf"|\b(?P<before>preferred|preference|ordinary|common)\s+{label}\s+shares?\b",
+        text, re.I,
+    ))
+    units = {"nonordinary" if (d.group("after") or d.group("before")).lower() in ("preferred", "preference")
+             else "ordinary" for d in declarations}
+    if len(units) != 1:
+        return None
+    return next(iter(units)), declarations[0].group()
+
+
+def _f6_deposited_unit_declarations(text: str) -> list[tuple[int, int, str, str, str | None]]:
+    """Collect only contractual Shares definitions and receipt unit titles.
+
+    Preferred capital mentioned elsewhere does not define an ADS programme.
+    Keeping the declaration offset and receipt family lets a later ordinary
+    programme in the same source replace an earlier preferred declaration.
+    """
+    declarations = []
+    for definition in re.finditer(
+        r"\bShares\s*[\"'\u201c\u201d\u2018\u2019\ufffd]*\s+(?:mean|means|shall\s+mean)\s+(?P<title>[^.;]{1,260})",
+        text, re.I,
+    ):
+        lead = text[max(0, definition.start() - 55):definition.start()]
+        if re.search(r"\b(?:deposit[ao]ry|Class\s+[\w-]+|Series\s+[\w-]+|Preferred\s+Payment)\s+$", lead, re.I):
+            continue  # Class A Shares and American Depositary Shares are different defined terms.
+        unit = _primary_share_unit(definition.group("title"))
+        if unit:
+            declarations.append((definition.start(), definition.end(), unit, definition.group(), None))
+    for declaration in re.finditer(
+        rf"(?=(?P<full>(?P<receipt>{_ADS})(?!\w)(?:\s*\([^)]{{0,90}}\))?\s*,?\s+"
+        r"(?:shall\s+)?represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?\s+(?P<title>[^.;]{1,230})))",
+        text, re.I,
+    ):
+        unit = _primary_share_unit(declaration.group("title"))
+        if unit:
+            receipt = declaration.group("receipt")
+            family = "global" if re.search(r"\bGlobal\b|\bGDS|\bGDR", receipt, re.I) else "american"
+            declarations.append((declaration.start("full"), declaration.end("full"), unit, declaration.group("full"), family))
+    return sorted(declarations)
+
+
+def _f6_ratio_deposited_unit(text: str, match: re.Match,
+                             declarations: list[tuple[int, int, str, str, str | None]]) -> tuple[str, tuple[int, int] | None] | None:
+    """Bind an entitlement to its primary deposited security, not a component."""
+    own_unit = _ratio_primary_share_unit(text, match)
+    if own_unit == "nonordinary" or _compound_receipt_entitlement(text, match.end()):
+        return None
+    if own_unit == "ordinary":
+        return match.group(), None
+    receipt = re.search(_ADS, match.group(), re.I)
+    family = "global" if receipt and re.search(r"\bGlobal\b|\bGDS|\bGDR", receipt.group(), re.I) else "american"
+    relevant = [declaration for declaration in declarations if declaration[4] in (None, family)]
+    primary = [declaration for declaration in relevant if declaration[4] == family]
+    before = [declaration for declaration in relevant if declaration[0] <= match.start()]
+    if before:
+        governing = before[-1]
+    elif primary and len({declaration[2] for declaration in primary}) == 1:
+        governing = primary[0]
+    else:
+        definitions = [declaration for declaration in relevant if declaration[4] is None]
+        earlier = [declaration for declaration in definitions if declaration[0] <= match.start()]
+        governing = earlier[-1] if earlier else definitions[0] if definitions and len({d[2] for d in definitions}) == 1 else None
+    if governing and governing[2] == "nonordinary":
+        return None
+    if governing and _underlying_class(governing[3]):
+        primary_class = re.search(
+            r"\b(?:(?:Class|Series)\s+[\w-]+\s+(?:ordinary|common)|(?:ordinary|common)\s+(?:Class|Series)\s+[\w-]+)\s+shares?\b",
+            governing[3], re.I,
+        )
+        if primary_class:
+            # Preserve ancillary rights/other-property clauses in the proof,
+            # but classify only the literal primary deposited-share noun.
+            return primary_class.group(), (governing[0], governing[1])
+    return match.group(), None
+
+
+def _ratios(text: str, *, unit_definition_text: str | None = None):
     seen: set[tuple[int, int, int]] = set()
+    named_class_units: dict[str, tuple[str, str] | None] = {}
     reciprocal = _reciprocal_matches(text)
     former_table = _old_new_ratio_spans(text) | _transition_former_ratio_spans(text, reciprocal)
     for pattern in (_RATIO_RECIPROCAL, _RATIO_COMPACT_TRANSITION, _RATIO, _RATIO_TITLE):
@@ -339,6 +467,18 @@ def _ratios(text: str):
                 r"\s*(?:of\s+(?:(?:our|the|its)\s+)?)?(?:preferred|preference|units?)\b", text[match.end():match.end() + 80], re.I,
             ):
                 continue
+            if _compound_receipt_entitlement(text, match.end()):
+                continue
+            if _ratio_primary_share_unit(text, match) == "nonordinary":
+                continue
+            if not re.search(r"\b(?:ordinary|common)\s+shares?\b", match.group(), re.I):
+                named_class = _underlying_class(match.group())
+                if named_class:
+                    if named_class not in named_class_units:
+                        named_class_units[named_class] = _named_share_class_unit(unit_definition_text or text, match.group())
+                    unit = named_class_units[named_class]
+                    if unit and unit[0] == "nonordinary":
+                        continue
             try:
                 ordinary = _number(match.group("ordinary"))
                 ads = _number(match.groupdict().get("adsn") or "each")
@@ -1056,7 +1196,7 @@ def parse_filing(
                          f"item-9/listing-description;text-offset={offset}", "ads",
                          class_text=" ".join(associated_titles) + " " + statement)
         ratio_text = text if document_role == "securities_description" else cover
-        for match, ratio in _ratios(ratio_text):
+        for match, ratio in _ratios(ratio_text, unit_definition_text=text):
             if _superseded_ratio(ratio_text, match.start(), match.end()):
                 continue
             local_symbols = sorted(ads_symbols)
@@ -1065,11 +1205,20 @@ def parse_filing(
                 evidence = ratio_context if document_role == "securities_description" else cover
                 offset = match.start() if document_role == "securities_description" else cover_start + match.start()
                 location = f"text-offset={offset}" if document_role == "securities_description" else f"cover/section-12b;text-offset={offset}"
+                if document_role == "primary":
+                    registration = list(re.finditer(
+                        r"\bSecurities\s+(?:registered\s+(?:or\s+to\s+be\s+registered\s+)?|for\s+which\s+there\s+is\s+a\s+reporting\s+obligation\s+)"
+                        r"[^.;]{0,120}?\b(?:Section\s+)?(?P<section>12\s*\([bg]\)|15\s*\(d\))", cover[:match.start()], re.I,
+                    ))
+                    if registration and re.fullmatch(r"12\s*\(g\)", registration[-1].group("section"), re.I):
+                        # An ordinary entitlement in 12(g) corroborates its
+                        # ratio; it does not establish a 12(b) listed line.
+                        location = f"cover/section-12g;text-offset={offset}"
                 emit("ads_ratio", "cover_footnote", symbol, evidence, location, ratio=ratio, class_text=match.group(), effective=_effective_date(ratio_context))
         # Item 12.D corroboration is separate from the primary F-6 stream.
         item_sections = [] if document_role == "securities_description" else _item_12d_sections(text)
         for item_offset, item_text in item_sections:
-            for match, ratio in _ratios(item_text):
+            for match, ratio in _ratios(item_text, unit_definition_text=text):
                 if _superseded_ratio(item_text, match.start(), match.end()):
                     continue
                 context = item_text[max(0, match.start() - 300):match.end() + 300]
@@ -1088,20 +1237,30 @@ def parse_filing(
                 text, re.I,
             )
         ratio_matches = list(_ratios(text))
+        deposited_units = _f6_deposited_unit_declarations(text)
         interval_cache: dict[tuple[Fraction, str | None], tuple[str | None, str | None, str] | str | None] = {}
         for match, ratio in ratio_matches:
+            deposited_unit = _f6_ratio_deposited_unit(text, match, deposited_units)
+            if deposited_unit is None:
+                continue
+            class_text, unit_proof = deposited_unit
             context = text[max(0, match.start() - 700):match.end() + 700]
             if _superseded_ratio(text, match.start(), match.end()):
                 continue
-            interval_key = (ratio, _underlying_class(match.group()))
+            interval_key = (ratio, _underlying_class(class_text))
             if interval_key not in interval_cache:
-                interval_cache[interval_key] = _f6_ratio_interval(text, ratio, match.group(), ratio_matches)
+                interval_cache[interval_key] = _f6_ratio_interval(text, ratio, class_text, ratio_matches)
             interval = interval_cache[interval_key]
             if interval == "ambiguous":
                 continue  # Contradictory operative dates cannot become filing-date fallbacks.
             if interval and interval[1] is not None and interval[1] <= public:
                 continue  # This source first becomes public after the prior regime expired.
             location = f"f6/depositary-description;text-offset={match.start()}"
+            if unit_proof:
+                proof = text[unit_proof[0]:unit_proof[1]]
+                if proof not in context:
+                    context += " " + proof
+                location += ";deposited-share-definition-text-offset=" + str(unit_proof[0])
             if amendment_date_match and not (max(0, match.start() - 700) <= amendment_date_match.start() <= match.end() + 700):
                 context += " " + text[max(0, amendment_date_match.start() - 300):amendment_date_match.end() + 150]
                 location += f";amendment-date-text-offset={amendment_date_match.start()}"
@@ -1114,8 +1273,8 @@ def parse_filing(
                     if interval[2] not in context:
                         context += " " + interval[2]
                 emit("ads_ratio", "f6", symbol, context, location, ratio=ratio,
-                     effective=effective, until=until, class_text=match.group(),
-                     metadata=_f6_pending_effectiveness(text, ratio, match.group()))
+                     effective=effective, until=until, class_text=class_text,
+                     metadata=_f6_pending_effectiveness(text, ratio, class_text))
     elif base_form == "6-K":
         for match, ratio in _ratios(text):
             scope = _6k_ratio_context(text, match.start(), match.end())

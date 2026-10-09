@@ -1064,6 +1064,85 @@ def test_real_ante_consolidation_defers_the_pending_receipt_to_legal_effectivene
         assert old not in answer[-1] and set(new).intersection(answer[-1])
 
 
+@pytest.mark.parametrize("symbol", ["TSM", None])
+def test_nonordinary_registration_ratio_is_ineligible_even_with_an_explicit_symbol(db, symbol):
+    add(db)
+    add_ratio(db, (5, 1), source="cover_footnote")
+    nonordinary = add_ratio(db, (5, 1), ordinary_candidate=False, symbol=symbol)
+    answer = resolve(db, "2020-01-02")
+    assert answer[:6] == ("none", "ads", None, None, "resolved", "none")
+    assert nonordinary not in answer[-1]
+
+
+@pytest.mark.parametrize("symbol", ["TSM", None])
+def test_newer_nonordinary_program_does_not_replace_the_operative_ordinary_registration(db, symbol):
+    add(db)
+    ordinary = add_ratio(db, (5, 1))
+    add_ratio(db, (5, 1), source="cover_footnote")
+    preferred = add_ratio(db, (99, 1), filed="2020-06-01", ordinary_candidate=False, symbol=symbol)
+    for day in ("2020-06-01", "2020-06-02", "2025-12-31"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 5, 1)
+        assert ordinary in answer[-1] and preferred not in answer[-1]
+
+
+def test_nonordinary_change_never_ends_or_competes_with_the_ordinary_regime(db):
+    add(db)
+    add_ratio(db, (5, 1))
+    add_ratio(db, (5, 1), source="cover_footnote")
+    preferred = add_ratio(db, (10, 1), source="ratio_change_6k", filed="2020-06-01",
+                          effective="2020-07-01", ordinary_candidate=False)
+    for day in ("2020-06-02", "2020-07-01", "2025-12-31"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 5, 1) and preferred not in answer[-1]
+
+
+def test_nonordinary_notice_cannot_activate_an_ordinary_pending_registration(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (2, 1), filed="2022-01-01")
+    add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01")
+    pending = _pending_ratio_registration(db, (20, 1))
+    preferred = add_ratio(db, (20, 1), source="ratio_change_6k", filed="2022-11-18",
+                          effective="2022-11-28", ordinary_candidate=False)
+    for day in ("2022-11-19", "2022-11-28", "2025-12-31"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 2, 1)
+        assert pending not in answer[-1] and preferred not in answer[-1]
+
+
+def test_ignoring_nonordinary_program_does_not_resurrect_an_expired_ordinary_registration(db):
+    add(db)
+    add_ratio(db, (5, 1))
+    ended = add_ratio(db, (2, 1), filed="2020-02-01", until="2020-03-01")
+    add_ratio(db, (2, 1), source="cover_footnote", filed="2020-02-01")
+    add_ratio(db, (2, 1), filed="2020-04-01", ordinary_candidate=False)
+    assert resolve(db, "2020-02-29")[:4] == ("resolved", "ads", 2, 1)
+    for day in ("2020-03-01", "2020-04-02", "2025-12-31"):
+        answer = resolve(db, day)
+        assert answer[:6] == ("none", "ads", None, None, "resolved", "none")
+        assert ended not in answer[-1]
+
+
+def test_nonordinary_same_event_correction_cannot_replace_an_ordinary_notice(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (16, 1), filed="2022-01-01")
+    add_ratio(db, (16, 1), source="cover_footnote", filed="2022-01-01")
+    old = _dated_ratio_notice(db, (16, 1))
+    preferred = _dated_ratio_notice(db, (20, 1), filed="2022-11-18", ordinary_candidate=False,
+                                    adsh="0001140361-22-042119", correction=True)
+    answer = resolve(db, "2022-11-28")
+    assert answer[:4] == ("resolved", "ads", 16, 1)
+    assert old in answer[-1] and preferred not in answer[-1]
+
+
+def test_nonordinary_later_corroboration_does_not_hide_a_genuine_ordinary_conflict(db):
+    add(db)
+    add_ratio(db, (5, 1))
+    add_ratio(db, (2, 1), source="cover_footnote")
+    add_ratio(db, (5, 1), source="cover_footnote", filed="2020-06-01", ordinary_candidate=False)
+    assert resolve(db, "2020-06-02")[0] == "ambiguous"
+
+
 def test_foreign_evidence_schema_replay_is_additive_and_idempotent(sql_database):
     before = sql_database.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone()[0]
     schema = (ROOT / "schemas" / "sec_foreign_listing_evidence.sql").read_text(encoding="utf-8")
@@ -1843,3 +1922,155 @@ def test_f6_beneficial_ownership_of_nonordinary_units_does_not_emit_an_ordinary_
         "beneficial ownership interests in, five Shares that are on deposit with the Depositary."
     )
     assert not [row for row in rows if row["evidence_kind"] == "ads_ratio" and row["ordinary_candidate"]]
+
+
+@pytest.mark.parametrize("name", [
+    "pldt_preferred_gds_deposit_definition",
+    "televisa_cpo_gds_deposit_definition",
+    "televisa_2007_cpo_gds_deposit_definition",
+])
+def test_original_nonordinary_f6_deposited_units_do_not_become_ordinary_ratios(name):
+    assert _parse_independent_listing_fixture(name) == []
+
+
+def test_original_tal_f6_generic_share_alias_retains_its_class_a_common_unit():
+    rows = _parse_independent_listing_fixture("tal_class_a_f6_deposit_definition")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["underlying_class"],
+             row["ordinary_candidate"], row["effective_from"]) for row in rows} == {
+        (1, 3, "class_a", True, "2017-07-29"),
+    }
+    assert all("class a" in row["evidence_text"].lower() for row in rows)
+
+
+@pytest.mark.parametrize("entitlement", [
+    "Each ADS represents five Shares.",
+    "Each ADS represents the right to receive five Shares.",
+    "American Depositary Shares, each representing five Shares.",
+    "Five Shares to one ADS.",
+])
+def test_f6_preferred_share_definition_governs_every_entitlement_pattern(entitlement):
+    assert _parse_f6_beneficial_ownership_entitlements(
+        'Section 1.20. "Shares" shall mean the preferred shares of the Company. ' + entitlement
+    ) == []
+
+
+def test_f6_ordinary_program_survives_unrelated_preferred_capital_and_conversion_terms():
+    rows = _parse_f6_beneficial_ownership_entitlements(
+        'The Company has Class C preferred shares in its capital structure. '
+        'Section 1.20. "Shares" shall mean the Class A common shares of the Company. '
+        'Each ADS represents five Shares. '
+        'A separate conversion provision defines "Class C Shares" as preferred shares.'
+    )
+    assert {(row["ratio_numerator"], row["underlying_class"], row["ordinary_candidate"])
+            for row in rows} == {(5, "class_a", True)}
+
+
+def test_f6_qualified_class_a_definition_does_not_retype_the_class_c_preferred_receipt():
+    assert _parse_f6_beneficial_ownership_entitlements(
+        'Section 1.16. "Class A Shares" shall mean the Company\'s Class A ordinary shares. '
+        'AMERICAN DEPOSITARY RECEIPT FOR AMERICAN DEPOSITARY SHARES representing '
+        'DEPOSITED CLASS C-2 PREFERRED SHARES of the Company. Each ADS represents one Share.'
+    ) == []
+
+
+def test_source_local_new_ordinary_program_definition_replaces_earlier_preferred_program():
+    rows = _parse_f6_beneficial_ownership_entitlements(
+        'PREFERRED PROGRAM DEPOSIT AGREEMENT. "Shares" mean preferred shares of the Company. '
+        'American Depositary Shares representing DEPOSITED PREFERRED SHARES of the Company. '
+        'Each ADS represents one Share. '
+        'ORDINARY PROGRAM DEPOSIT AGREEMENT. "Shares" mean Class A common shares of the Company. '
+        'Each ADS represents five Shares.'
+    )
+    assert {(row["ratio_numerator"], row["underlying_class"], row["ordinary_candidate"])
+            for row in rows} == {(5, "class_a", True)}
+
+
+def test_preferred_global_receipt_does_not_remove_the_american_common_receipt_in_same_source():
+    rows = _parse_f6_beneficial_ownership_entitlements(
+        'Each Global Depositary Share represents one share of Series III Convertible Preferred Stock. '
+        'Each American Depositary Share represents one common share.'
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["ordinary_candidate"])
+            for row in rows} == {(1, 1, True)}
+    assert len(rows) == 1
+
+
+def test_primary_cpo_unit_does_not_borrow_its_nested_common_component_count():
+    assert _parse_f6_beneficial_ownership_entitlements(
+        'Each Global Depositary Share represents five CPOs, each representing twenty five '
+        'Series A common shares and thirty five Series D preferred shares.'
+    ) == []
+
+
+def test_mixed_common_and_preferred_receipt_is_not_a_scalar_common_share_ratio():
+    assert _parse_f6_beneficial_ownership_entitlements(
+        'Each ADS represents fifty five common shares, no par value, '
+        'and fifty preferred shares, no par value, of the Company.'
+    ) == []
+
+
+def test_named_preferred_class_definition_does_not_retype_a_separate_common_class():
+    rows = _parse_f6_beneficial_ownership_entitlements(
+        'The Company has Class B Preferred Shares and Class A Common Shares outstanding. '
+        'Each ADS represents one thousand Class B Shares. '
+        'Each ADS represents five Class A common shares.'
+    )
+    assert {(row["ratio_numerator"], row["underlying_class"], row["ordinary_candidate"])
+            for row in rows} == {(5, "class_a", True)}
+
+
+def test_item_12d_bare_class_uses_the_same_sources_governing_unit_definition():
+    rows = parse_filing(
+        'Securities registered pursuant to Section 12(b) of the Act: '
+        'American Depositary Shares New York Stock Exchange. '
+        'The outstanding capital includes Class B Preferred Shares. '
+        'TABLE OF CONTENTS. PART I. Item 12. Description of Securities Other Than Equity Securities. '
+        'D. American Depositary Shares. Each ADS represents one thousand Class B Shares. '
+        'Item 13. Defaults, Dividend Arrearages and Delinquencies.',
+        cik=1041792, form_type="20-F", accession_number="0001292814-07-002876",
+        filing_date="2007-10-15", source_url="https://www.sec.gov/Archives/test",
+    )
+    assert not [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+
+
+def test_original_copel_bare_class_b_cover_uses_its_explicit_preferred_definition():
+    rows = _parse_independent_listing_fixture("copel_2007_common_preferred_ads_cover")
+    assert any(row["evidence_kind"] == "listed_type" for row in rows)
+    assert not [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+
+
+def test_original_santander_mixed_receipt_does_not_turn_its_common_component_into_a_ratio():
+    rows = _parse_independent_listing_fixture("santander_2012_basket_unit_ads_cover")
+    assert not [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+
+
+def test_original_abbey_ordinary_ratio_retains_its_actual_12g_registration_scope():
+    rows = _parse_independent_listing_fixture("abbey_2004_12g_ordinary_ratio")
+    ratios = [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["ordinary_candidate"])
+            for row in ratios} == {(2, 1, True)}
+    assert all(row["evidence_location"].startswith("cover/section-12g;") for row in ratios)
+    assert not [row for row in rows if row["evidence_kind"] == "listed_type" and row["ordinary_candidate"]]
+
+
+def test_ratio_transition_accepts_equivalent_numeric_then_spelled_parenthetical():
+    rows = _parse_6k_transition_text(
+        "Effective November 7, 2008, the ratio of one (1) ADS representing one (1) ordinary "
+        "share will change to one (1) ADS representing 20 (twenty) ordinary shares."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(20, 1, "2008-11-07")}
+
+
+def test_ratio_transition_does_not_resolve_disagreeing_numeric_and_spelled_quantities():
+    assert _parse_6k_transition_text(
+        "Effective November 7, 2008, the ratio of one (1) ADS representing one (1) ordinary "
+        "share will change to one (1) ADS representing 20 (thirty) ordinary shares."
+    ) == []
+
+
+def test_original_rbs_numeric_parenthetical_transition_retains_only_the_new_ordinary_ratio():
+    rows = _parse_independent_listing_fixture("rbs_2008_numeric_parenthetical_ratio_change")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"],
+             row["ordinary_candidate"]) for row in rows} == {(20, 1, "2008-11-07", True)}
+    assert {row["available_on"] for row in rows} == {"2008-11-04"}

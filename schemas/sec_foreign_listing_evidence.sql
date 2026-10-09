@@ -177,6 +177,12 @@ CREATE INDEX IF NOT EXISTS sec_foreign_listing_evidence_source_idx
 -- Explicit underlying classes scope issuer-only registrations. Class A and
 -- class B registrations with equal numeric ratios are still distinct programs;
 -- they cannot collapse into one answer when the cover cannot identify a class.
+-- Ratio eligibility is restricted to ordinary deposited units before any
+-- binding, correction, announcement, pending-contract or latest-filing logic.
+-- This includes explicitly symbol-bound ratios: a preferred or CPO programme
+-- cannot displace an ordinary registration or activate its future entitlement.
+-- Nonordinary listed-type statements remain auditable, and an ended latest
+-- ordinary assertion does not resurrect an earlier ordinary registration.
 --
 -- A cover is a dated statement about its listed line. Use the latest effective
 -- cover date, retaining all ties (never a chosen accession).
@@ -252,6 +258,7 @@ WITH issuer_observed AS MATERIALIZED (
                 ELSE 'cover' END AS source_stream
     FROM public.sec_foreign_listing_evidence e
     WHERE e.cik = p_cik
+      AND (e.evidence_kind <> 'ads_ratio' OR e.ordinary_candidate)
       AND e.available_on <= p_as_of
       AND (e.retired_on IS NULL OR e.retired_on > p_as_of)
 ), issuer_known AS MATERIALIZED (

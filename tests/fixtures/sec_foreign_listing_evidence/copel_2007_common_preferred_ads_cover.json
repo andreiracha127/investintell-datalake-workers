@@ -1,0 +1,50 @@
+{
+  "name": "copel_2007_common_preferred_ads_cover",
+  "fixture": "copel_2007_common_preferred_ads_cover.html",
+  "cik": 1041792,
+  "symbol": "ELP",
+  "form_type": "20-F/A",
+  "accession_number": "0001292814-07-002876",
+  "filing_date": "2007-10-15",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1041792/000129281407002876/elp_form20fa2006.htm",
+  "source_sha256": "349609321e62717f44217e70e553e0a1d6755e10d4f5a052c7ad9d5b8f766f50",
+  "sha256": "349609321e62717f44217e70e553e0a1d6755e10d4f5a052c7ad9d5b8f766f50",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF only; original byte hash retained.",
+  "original_source_bytes": 49946,
+  "filing_date_proof": {
+    "filed": "2007-10-15",
+    "records": [
+      {
+        "cik": 1041792,
+        "filed": "2007-10-15",
+        "line": "1041792|ENERGY CO OF PARANA|20-F/A|2007-10-15|edgar/data/1041792/0001292814-07-002876.txt",
+        "source_sha256": "a80fabe5c56b968315e1d2ebe56275a7a5c81c85a460f2587ea928d8182d1e24",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2007/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "independently_verified_filing_date_records": [
+    {
+      "cik": 1041792,
+      "filed": "2007-10-15",
+      "line": "1041792|ENERGY CO OF PARANA|20-F/A|2007-10-15|edgar/data/1041792/0001292814-07-002876.txt",
+      "source_sha256": "a80fabe5c56b968315e1d2ebe56275a7a5c81c85a460f2587ea928d8182d1e24",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2007/QTR4/master.idx",
+      "original_hash_and_exact_row_verified": true,
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final\\master-2007-Q4.idx"
+    }
+  ],
+  "publication_floor_on": "2007-10-15",
+  "publication_floor_proof": {
+    "publication_floor_on": "2007-10-15",
+    "reported_dates": [
+      "2007-10-15"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "d40af6d78532b30cc86b98077bf04a27d976e6d214ee26598059344a389370d0",
+  "binding": "registrant_cik",
+  "issuer_name": "",
+  "registered_unit_cover_excerpt": "20-F/A 1 elp_form20fa2006.htm FORM 20F/A 2006 As filed with the Securities and Exchange Commission on October 15, 2007 SECURITIES AND EXCHANGE COMMISSION Washington, DC 20549 FORM 20-F/A ANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934 For the fiscal year ended December 31, 2006 Commission file number: 001-14668 COMPANHIA PARANAENSE DE ENERGIA – COPEL (Exact Name of Registrant as Specified in Its Charter) Energy Company of Paraná The Federative Republic of Brazil (Translation of Registrant’s Name into English ) (Jurisdiction of Incorporation or Organization) Rua Coronel Dulcídio, 800 80420-170 Curitiba, Paraná, Brazil (Address of Principal Executive Offices) Securities registered or to be registered pursuant to Section 12(b) of the Act : Title of Each Class Name of Each Exchange On Which Registered Class B Shares, without par value* New York Stock Exchange American Depositary Shares (as evidenced by American Depositary New York Stock Exchange Receipts), each representing 1,000 Class B Shares ___________________ * Not for trading, but only in connection with the listing of American Depositary Shares on the New York Stock Exchange. Securities registered or to be registered pursuant to Section 12(g) of the Act: None Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None Indicate the number of outstanding shares of each of the Issuer’s classes of capital or common stock as of December 31, 2006: 145,031,080,782 Common Shares, without par value 399,640,372 Class A Preferred Shares, without par value 128,224,655,116 Class B Preferred Shares, without par value Indicate by check mark if the registrant is a well-known seasoned issuer, as defined in Rule 405 of the Securities Act. Yes [ X ] No [ ] If this report is an annual or transition report, indicate by check mark if the registrant is not required to file reports pursuant to Section 13 or 15(d) of the Securities Exchange Act of 1934. Yes [ ] No [ X ] Indicate by check mark whether the registrant (1) has filed all reports required to be filed by Section 13 or 15(d) of the Securities Exchange Act of 1934 during the preceding 12 months (or for such shorter period that the registrant was required to file such reports) and (2) has been subject to such filing requirements for the past 90 days. Yes [ X ] No [ ] Indicate by check mark whether the registrant is a large accelerated filer, an accelerated filer, or a non-accelerated filer. See definition of “accelerated filer and large accelerated filer” in Rule 12b-2 of the Exchange Act. (Check one): Large accelerated filer [ X ] Accelerated filer [ ] Non-accelerated filer [ ] Indicate by check mark which financial statement item the registrant has elected to follow. Item 17 [ ] Item 18 [ X ] If this is an annual report, indicate by check mark whether the registrant is a shell company (as defined in Rule 12b-2 of the Exchange Act). Yes [ ] No [ X ] ii EXPLANATORY NOTE We are filing this amendment to our annual report on Form 20-F/A to add the inadvertently omitted conformed signatures above the signature lines at the end of the certifications set forth in Exhibits 12.1, 12.2, 13.1 and 13.2 of the annual report on Form 20-F filed on July 16, 2007. Other than the foregoing item, no part of the annual report on Form 20-F filed on July 16, 2007 is being amended, and the filing of this amended annual report on Form 20-F/A should not be understood to mean that any other statements contained therein are true or complete as of any date subsequent to July 16, 2007. EXHIBIT 12.1 Certification I, Rubens Ghilardi, certify that: 1. I have reviewed this annual report on Form 20-F of Companhia Paranaense de Energia - COPEL; 2. Based on my knowledge, this report does not contain any untrue statement of a material fact or omit to state a material fact necessary to make the statements made, in light of the circumstances under which such statements were made, not misleading with respect to the period covered by this report; 3. Based on my knowledge, the financial statements, and other financial information included in this report, fairly present in all material respects the financial condition, results of operations and cash flows of the company as of, and for, the periods presented in this report; 4. The company’s other certifying officer(s) and I are responsible for establishing and maintaining disclosure controls and procedures (as defined in the Exchange Act Rules 13a-15(e) and 15d-15(e)) and internal control over financial reporting (as defined in the Exchange Act Rules 13a-15(f) and 15d-15(f)) for the company and have: (a) Designed such disclosure controls and procedures, or caused such disclosure controls and procedures to be designed under our supervision, to ensure that material information relating to the company, including its consolidated subsidiaries, is made known to us by others within those entities, particularly during the period in which this report is being prepared; (b) Designed such internal control over financial reporting, or caused such internal control over financial reporting to be designed under our supervision, to provide reasonable assurance regarding the reliability of financial reporting and the preparation of financial statements for external purposes in accordance with generally accepted accounting principles; (c) Evaluated the effectiveness of the company’s disclosure controls and procedures and presented in this report our conclusions about the effectiveness of the disclosure controls and procedures, as of the end of the period covered by this report based on such evaluation; and (d) Disclosed in this report any change in the company’s internal control over financial reporting that occurred during the period covered by the annual report that has materially affected, or is reasonably likely to materially affect, the company’s internal control over financial reporting; and 5. The company’s other certifying officer and I have disclosed, based on our most recent evaluation of internal control over financial reporting, to the company’s auditors and the audit committee of the company’s board of directors (or persons performing the equivalent functions): (a) All significant deficiencies and material weaknesses in the design or operation of internal control over financial reporting which are reasonably likely to adversely affect the company’s ability to record, process, summarize and report financial informatio"
+}
