@@ -81,8 +81,9 @@ FIRST_INDEX_QUARTER = (2009, 1)  # the first FSN package
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 # A submission's full text in its accession folder.
 EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{folder}/{adsh}.txt"
-# SEC fair access: at most 10 requests per second.
-FILING_SPACING_S = 0.11
+# SEC fair access: at most 10 requests per second. At 0.11 s a worker run that
+# read 2,526 filings reached 10 requests in one second; 0.12 s keeps it at 9.
+FILING_SPACING_S = 0.12
 # SEC fair access allows 10 requests/s; downloads run one at a time, spaced.
 DOWNLOAD_SPACING_S = 0.5
 SCHEMA_PATHS = (ROOT / "schemas" / "sec_ticker_cik_history_v1.sql",
