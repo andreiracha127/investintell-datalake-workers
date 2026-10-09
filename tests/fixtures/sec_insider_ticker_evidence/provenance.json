@@ -1,0 +1,108 @@
+{
+  "dera": {
+    "2026q3": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2026q3_form345.zip",
+      "accessions": [
+        "0001193125-26-409183",
+        "0001225208-26-007725",
+        "0000025475-26-000080",
+        "0001628280-26-062934",
+        "0000099780-26-000121",
+        "0002151730-26-000002",
+        "0001314152-26-000191",
+        "0001728451-26-000004"
+      ],
+      "rows": 8
+    },
+    "2026q1": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2026q1_form345.zip",
+      "accessions": [
+        "0001327318-26-000010",
+        "0001193125-26-106222"
+      ],
+      "rows": 2
+    },
+    "2022q2": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2022q2_form345.zip",
+      "accessions": [
+        "0001493152-22-016490"
+      ],
+      "rows": 1
+    },
+    "2022q3": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2022q3_form345.zip",
+      "accessions": [
+        "0000107140-22-000040"
+      ],
+      "rows": 1
+    },
+    "2022q4": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2022q4_form345.zip",
+      "accessions": [
+        "0001033012-22-000101"
+      ],
+      "rows": 1
+    },
+    "2008q3": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2008q3_form345.zip",
+      "accessions": [
+        "0000933136-08-000234"
+      ],
+      "rows": 1
+    },
+    "2017q3": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2017q3_form345.zip",
+      "accessions": [
+        "0000757011-17-000056"
+      ],
+      "rows": 1
+    },
+    "2015q3": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2015q3_form345.zip",
+      "accessions": [
+        "0001225208-15-015903"
+      ],
+      "rows": 1
+    },
+    "2019q4": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2019q4_form345.zip",
+      "accessions": [
+        "0001225208-19-013728"
+      ],
+      "rows": 1
+    },
+    "2024q2": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2024q2_form345.zip",
+      "accessions": [
+        "0001258105-24-000007"
+      ],
+      "rows": 1
+    }
+  },
+  "secapi": {
+    "0000700565-03-000110": {
+      "archive": "form-3-files/2003/2003-05.zip",
+      "member": "2003-05/000070056503000110/form3_downs-052803ex.xml",
+      "xml_sha256_original": "1594fae77f208c25fe7e00eb0776eaff4200a3a29694cfadcec7ab7432d945a4",
+      "sec_link": "https://www.sec.gov/Archives/edgar/data/700565/000070056503000110/form3_downs-052803ex.xml"
+    },
+    "0001181431-03-009430": {
+      "archive": "form-5-files/2003/2003-05.zip",
+      "member": "2003-05/000118143103009430/rrd10184.xml",
+      "xml_sha256_original": "328df40ea7208c463efa1ee231fc75d4cd1308ee5fc7512e80d2984546722aec",
+      "sec_link": "https://www.sec.gov/Archives/edgar/data/1103313/000118143103009430/rrd10184.xml"
+    },
+    "0001209191-03-003774": {
+      "archive": "form-3-files/2003/2003-05.zip",
+      "member": "2003-05/000120919103003774/bos89911_bos5do.xml",
+      "xml_sha256_original": "2ceadcd010f5b96ec3f2a053a3bbce14e968af209582249d87d393f70038d1f3",
+      "sec_link": "https://www.sec.gov/Archives/edgar/data/829224/000120919103003774/bos89911_bos5do.xml"
+    },
+    "0001100885-03-000018": {
+      "archive": "form-3-files/2003/2003-05.zip",
+      "member": "2003-05/000110088503000018/edgar.xml",
+      "xml_sha256_original": "6d03d6f328a33ee62fa61f23f8c922c754d6abb972da48bd1a52ac5119a8a311",
+      "sec_link": "https://www.sec.gov/Archives/edgar/data/1100885/000110088503000018/edgar.xml"
+    }
+  }
+}

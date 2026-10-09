@@ -1,0 +1,57 @@
+{
+  "formType": "3/A",
+  "accessionNo": "0001100885-03-000018",
+  "linkToFilingDetails": "https://www.sec.gov/Archives/edgar/data/1100885/000110088503000018/xslF345X01/edgar.xml",
+  "description": "Form 3/A - Initial statement of beneficial ownership of securities: [Amend]",
+  "linkToTxt": "https://www.sec.gov/Archives/edgar/data/1100885/000110088503000018/0001100885-03-000018.txt",
+  "filedAt": "2003-05-06T18:35:35-04:00",
+  "documentFormatFiles": [
+    {
+      "sequence": "1",
+      "size": "\u00a0",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/1100885/000110088503000018/xslF345X01/edgar.xml",
+      "description": "PRIMARY DOCUMENT",
+      "type": "3/A"
+    },
+    {
+      "sequence": "1",
+      "size": "7415",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/1100885/000110088503000018/edgar.xml",
+      "description": "PRIMARY DOCUMENT",
+      "type": "3/A"
+    },
+    {
+      "sequence": "\u00a0",
+      "size": "9255",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/1100885/000110088503000018/0001100885-03-000018.txt",
+      "description": "Complete submission text file",
+      "type": "\u00a0"
+    }
+  ],
+  "periodOfReport": "2003-01-10",
+  "entities": [
+    {
+      "fiscalYearEnd": "1231",
+      "stateOfIncorporation": "DE",
+      "cik": "0001100885",
+      "irsNo": "043494311",
+      "companyName": "DIGITAS INC (Issuer)",
+      "sic": "7389 Services-Business Services, NEC",
+      "tickers": [
+        "DTAS"
+      ]
+    },
+    {
+      "act": "34",
+      "cik": "0001210881",
+      "fileNo": "000-29723",
+      "companyName": "COSINUKE ROBERT (Reporting)",
+      "type": "3/A",
+      "filmNo": "03684954"
+    }
+  ],
+  "id": "eaa2441611f50f38ea5437583052254e",
+  "linkToHtml": "https://www.sec.gov/Archives/edgar/data/1100885/0001100885-03-000018-index.htm",
+  "linkToXbrl": "",
+  "dataFiles": []
+}

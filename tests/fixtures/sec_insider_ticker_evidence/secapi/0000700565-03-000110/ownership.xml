@@ -1,0 +1,89 @@
+<?xml version="1.0"?>
+<!-- - EDGAR Ease Plus 1.0                                   04/22/03  TZ    -->
+<ownershipDocument>
+    <schemaVersion>X0101</schemaVersion>
+
+    <documentType>3</documentType>
+   <periodOfReport>2003-05-28</periodOfReport>
+    <noSecuritiesOwned>0</noSecuritiesOwned>
+
+    <issuer>
+        <issuerCik>0000700565</issuerCik>
+        <issuerName>FIRST MID ILLINOIS BANCSHARES INC</issuerName>
+        <issuerTradingSymbol>fmbh.ob</issuerTradingSymbol>
+   </issuer>
+   <reportingOwner>
+      <reportingOwnerId>
+            <rptOwnerCik>0001233427</rptOwnerCik>
+            <rptOwnerName>DOWNS KELLY A</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerStreet1>  </rptOwnerStreet1>
+            <rptOwnerStreet2>  </rptOwnerStreet2>
+            <rptOwnerCity>  </rptOwnerCity>
+            <rptOwnerState>  </rptOwnerState>
+            <rptOwnerZipCode>  </rptOwnerZipCode>
+        </reportingOwnerAddress>
+            <reportingOwnerRelationship>
+         <isDirector>0</isDirector>
+         <isOfficer>1</isOfficer>
+         <isTenPercentOwner>0</isTenPercentOwner>
+         <isOther>0</isOther>
+         <officerTitle>VP, Director of Human Resource</officerTitle>
+       </reportingOwnerRelationship>
+   </reportingOwner>
+   <nonDerivativeSecurity>
+      <securityTitle>
+         <value>Common Stock</value>
+      </securityTitle>
+      <transactionAmounts>
+         <transactionShares>
+           <value>220.5830</value>
+         </transactionShares>
+      </transactionAmounts>
+      <ownershipNature>
+         <directOrIndirectOwnership>
+            <value>I</value>
+         </directOrIndirectOwnership>
+         <natureOfOwnership>
+            <value>By 401K</value>
+         </natureOfOwnership>
+      </ownershipNature>
+   </nonDerivativeSecurity>
+   <derivativeSecurity>
+      <securityTitle>
+         <value>Stock Option</value>
+      </securityTitle>
+      <conversionOrExercisePrice>
+         <value>27.25</value>
+      </conversionOrExercisePrice>
+      <exerciseDate>
+         <value>2004-01-01</value>
+            <footnoteId id="F1"/>
+      </exerciseDate>
+      <expirationDate>
+         <value>2012-12-17</value>
+      </expirationDate>
+      <underlyingSecurity>
+         <underlyingSecurityTitle>
+           <value>Common Stock</value>
+         </underlyingSecurityTitle>
+         <underlyingSecurityShares>
+           <value>1000</value>
+         </underlyingSecurityShares>
+      </underlyingSecurity>
+      <ownershipNature>
+         <directOrIndirectOwnership>
+           <value>D</value>
+         </directOrIndirectOwnership>
+      </ownershipNature>
+   </derivativeSecurity>
+   <footnotes>
+<footnote id="F1"> Options become exercisable in 4 equal annual installments beginning January 1, 2004.</footnote>
+   </footnotes>
+   <ownerSignature>
+      <signatureName>Michael L. Taylor, Pursuant to Power of Attorney filed contemporaniously herewith</signatureName>
+      <signatureDate>2003-05-29</signatureDate>
+   </ownerSignature>
+</ownershipDocument>
+
