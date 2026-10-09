@@ -451,7 +451,9 @@ def load_package(conn, path: Path, *, source: str | None = None,
             with cur.copy(f"COPY tmp_insider_stage ({', '.join(STAGE_COLUMNS)}) FROM STDIN") as copy:
                 for filing in iterator:
                     copy.write_row(filing.stage_row())
-            if not stats["filings"]:
+            # A sec-api archive of validated metadata records without ownership
+            # XML is a real revision: its members are kept and its facts retired.
+            if not stats["filings"] and not metadata_only:
                 raise ValueError(f"{package}: no structured insider filings found")
             # Members include accessions that yielded no fact (metadata without
             # ownership XML), so a fact learned later is dated by reconciliation.

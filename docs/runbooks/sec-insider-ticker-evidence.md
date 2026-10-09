@@ -6,7 +6,8 @@ provides 2006 onward; sec-api.io's monthly original-document archives provide
 ownership XML from May 2003 through December 2005. The dataset catalogues contain
 complete container lists; the loader consumes every requested monthly archive.
 Early non-XML filings yield no fact but are recorded as package members, so XML
-learned for them later is dated by reconciliation. Unusable raw symbols are kept for audit.
+learned for them later is dated by reconciliation. An archive whose filings all lack
+XML is still reconciled. Unusable raw symbols are kept for audit.
 
 The parser imports W1's `normalize_symbol` without changing W1. Its extra rules
 unwrap filer punctuation and remove exchange, OTC, country and when-issued markers.

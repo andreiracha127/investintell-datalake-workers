@@ -905,3 +905,47 @@ def test_v4_reparse_retires_and_redates_only_changed_readings(clean_db, tmp_path
         "SELECT count(*) FILTER (WHERE retired_on IS NULL), count(*) FROM sec_insider_package_members"
     ).fetchone() == (2, 2)
     assert clean_db.execute("SELECT parser_version FROM sec_insider_packages").fetchone() == ("sec_insider_v4",)
+
+
+def _secapi_month(package, accessions, *, xml=(), metadata=None):
+    """A monthly archive in sec-api's layout: one YYYY-MM/<accession>/ per filing.
+
+    ``metadata`` maps a filing to the fixture whose metadata.json its directory
+    holds (None: no metadata record). Every filing directory keeps an XML member.
+    """
+    package.parent.mkdir(parents=True, exist_ok=True)
+    metadata = metadata if metadata is not None else {a: a for a in accessions}
+    with zipfile.ZipFile(package, "w") as archive:
+        for accession in accessions:
+            folder = f"{package.stem}/{accession.replace('-', '')}"
+            if metadata.get(accession):
+                archive.write(FIXTURE / "secapi" / metadata[accession] / "metadata.json", f"{folder}/metadata.json")
+            if accession in xml:
+                archive.write(FIXTURE / "secapi" / accession / "ownership.xml", f"{folder}/ownership.xml")
+            else:  # only an HTML rendering, no ownership XML
+                archive.writestr(f"{folder}/rendering.xml", b"<html>rendering</html>")
+
+
+KNOWN, LATE = "0000700565-03-000110", "0001181431-03-009430"
+
+
+def test_archive_of_only_metadata_records_is_reconciled(clean_db, tmp_path):
+    package = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    _secapi_month(package, (KNOWN, LATE))
+    first = insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 8))
+    assert (first.get("filings", 0), first["non_xml_filings"], first["inserted"]) == (0, 2, 0)
+    assert clean_db.execute(
+        "SELECT count(*) FROM sec_insider_package_members WHERE retired_on IS NULL").fetchone() == (2,)
+    assert clean_db.execute("SELECT filings FROM sec_insider_packages").fetchone() == (0,)
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE))
+    insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 9))
+    # XML learned after the metadata-only revision is dated by reconciliation.
+    assert dict(clean_db.execute("SELECT accession, available_on FROM sec_insider_filings").fetchall()) == {
+        KNOWN: dt.date(2026, 10, 9), LATE: dt.date(2026, 10, 9)}
+    # A republication that removes all ownership XML retires the facts.
+    _secapi_month(package, (KNOWN, LATE))
+    assert insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 10))["retired"] == 2
+    assert clean_db.execute(
+        "SELECT count(*) FROM sec_insider_filings WHERE retired_on = DATE '2026-10-10'").fetchone() == (2,)
+    assert clean_db.execute(
+        "SELECT count(*) FROM sec_insider_package_members WHERE retired_on IS NULL").fetchone() == (2,)
