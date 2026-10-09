@@ -4532,6 +4532,218 @@ def test_a_quarterly_package_supersedes_the_months_it_consolidates(
                       "skipped": "superseded by 2025q4_notes.zip"}]
 
 
+# A month and its quarterly read by an older parser: F1 (two symbols on one
+# context: two classes) is in both, read as one class; F2 (JWA/JWB, with a total)
+# is in the month only, read as one class; F3 is Outbrain's OB, in the month
+# only, rejected as a placeholder.
+F1, F2, F3 = ("0000000081-25-000001", "0000000082-25-000001", "0000000083-25-000001")
+OLD_FSN_PARSER = "sec_fsn_v1"
+
+
+def _old_fsn_parser(patch: pytest.MonkeyPatch) -> None:
+    patch.setattr(loader, "FSN_PARSER_VERSION", OLD_FSN_PARSER)
+    patch.setattr(loader, "PLACEHOLDER_KEYS", loader.PLACEHOLDER_KEYS | {"OB"})
+    patch.setattr(loader, "_filing_profiles", lambda symbols, others, counted: {
+        f: (1, f in counted) for f in set(symbols) | set(others)})
+
+
+def _superseded_month(conn, dsn: str, cache: Path) -> tuple[Path, Path]:
+    """2025_10 loaded on 2025-11-10 and superseded by 2025q4 on 2026-03-02, both
+    read by the older parser."""
+    month = _write_package(
+        cache / "2025_10_notes.zip",
+        [_sub(F1, 81, "10-Q", "20251015", "2025-10-15 16:00:00.0"),
+         _sub(F2, 82, "10-Q", "20251020", "2025-10-20 08:00:00.0"),
+         _sub(F3, 1454938, "10-Q", "20251022", "2025-10-22 16:05:00.0")],
+        [_fact(F1, "TradingSymbol", "AAA/AAB"), _fact(F2, "TradingSymbol", "JWA/JWB"),
+         _fact(F3, "TradingSymbol", "OB")],
+        [_shares(F2, "55000000", ddate="20251031")],
+    )
+    quarter = _write_package(
+        cache / "2025q4_notes.zip",
+        [_sub(F1, 81, "10-Q", "20251015", "2025-10-15 16:00:00.0")],
+        [_fact(F1, "TradingSymbol", "AAA/AAB")],
+    )
+    with pytest.MonkeyPatch.context() as old:
+        _old_fsn_parser(old)
+        loader.run([month], dsn=dsn, dry_run=False, reconciled_on=d(2025, 11, 10))
+        loader.run([quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 3, 2))
+    assert conn.execute(
+        "SELECT superseded_by, superseded_on, parser_version FROM sec_ticker_cik_packages "
+        "WHERE source_package = '2025_10_notes.zip'").fetchone() == (
+        "2025q4_notes.zip", d(2026, 3, 2), OLD_FSN_PARSER)
+    return month, quarter
+
+
+def _visible(conn, as_of: str) -> list[tuple]:
+    return conn.execute(
+        "SELECT ticker, filing_equity_classes FROM sec_observations_at(%s, false) "
+        'ORDER BY ticker COLLATE "C"', (as_of,)).fetchall()
+
+
+def test_a_parser_correction_restates_a_superseded_months_reading(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Codex thread 4225233247: a fact only the month carried retired as 'source'
+    when its quarterly superseded it. A parser change re-reads the month's bytes
+    (the SEC no longer lists it, so its digest identifies them): the old reading
+    is visible at no date, the new one from its filing's public date until the
+    supersession; a fact the quarterly carries is not duplicated."""
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    month, quarter = _superseded_month(conn, dsn, cache)
+    # The old reading answers before the supersession: F2's total sizes JWA.
+    assert _ticker_shares(conn, "JWA", 82, "2025-12-15")[0] == "resolved"
+    assert _issuer(conn, "OB", "2025-12-15")[0] == "missing"
+    assert _visible(conn, "2025-12-15") == [("AAA", 1), ("AAB", 1), ("JWA", 1), ("JWB", 1)]
+
+    # The re-derivation: --verify-cache, the SEC listing only the quarterly.
+    monkeypatch.setattr(loader, "sec_client", lambda: _fake_sec(
+        tmp_path, {"2025q4_notes.zip": quarter.read_bytes()}, {},
+        last_modified={"2025q4_notes.zip": ""})[0])
+    capsys.readouterr()
+    assert loader.main(["--verify-cache", "--no-events", "--packages-dir", str(cache),
+                        "--dsn", dsn, "--reconciled-on", "2026-09-01"]) == 0
+    out = capsys.readouterr().out
+    assert '{"ignored_unlisted_packages": ["2025_10_notes.zip"]}' in out  # not loaded ...
+    restated = [json.loads(line) for line in out.splitlines()
+                if line.startswith('{"package": "2025_10_notes.zip"')]
+    assert [(r["restated"], r["inserted"], r["retired"]) for r in restated] == [
+        ("superseded by 2025q4_notes.zip", 3, 2)]  # ... but re-read
+    rows = ("SELECT ticker, filing_equity_classes, available_on, retired_on, retired_reason "
+            'FROM sec_ticker_cik_observations ORDER BY ticker COLLATE "C", id')
+    superseded, corrected = d(2026, 3, 2), "parser_correction"
+    assert conn.execute(rows).fetchall() == [
+        # In both packages: the quarterly's own re-read restated it.
+        ("AAA", 1, d(2025, 10, 15), d(2026, 9, 1), corrected),
+        ("AAA", 2, d(2025, 10, 15), None, None),
+        ("AAB", 1, d(2025, 10, 15), d(2026, 9, 1), corrected),
+        ("AAB", 2, d(2025, 10, 15), None, None),
+        # In the month only: the old reading never true, the new one public
+        # from its filing until the supersession.
+        ("JWA", 1, d(2025, 10, 20), superseded, corrected),
+        ("JWA", 2, d(2025, 10, 20), superseded, "source"),
+        ("JWB", 1, d(2025, 10, 20), superseded, corrected),
+        ("JWB", 2, d(2025, 10, 20), superseded, "source"),
+        ("OB", 1, d(2025, 10, 22), superseded, "source"),
+    ]
+    assert _visible(conn, "2025-12-15") == [
+        ("AAA", 2), ("AAB", 2), ("JWA", 2), ("JWB", 2), ("OB", 1)]
+    assert _visible(conn, "2026-03-02") == [("AAA", 2), ("AAB", 2)]
+    assert _ticker_shares(conn, "JWA", 82, "2025-12-15")[0] == "missing"
+    assert _issuer(conn, "OB", "2025-12-15")[:2] == ("resolved", 1454938)
+    assert _issuer(conn, "OB", "2026-03-02")[0] == "missing"
+    assert conn.execute(
+        "SELECT source_package, parser_version, superseded_by FROM sec_ticker_cik_packages "
+        'ORDER BY source_package COLLATE "C"').fetchall() == [
+        ("2025_10_notes.zip", loader.FSN_PARSER_VERSION, "2025q4_notes.zip"),
+        ("2025q4_notes.zip", loader.FSN_PARSER_VERSION, None)]
+    again = loader.run([month, quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 10, 1))
+    assert again[0] == {"package": "2025_10_notes.zip",
+                        "skipped": "superseded by 2025q4_notes.zip"}
+
+    # A later parser reads the month again, differently: the version the first
+    # re-read inserted is the one it corrects.
+    monkeypatch.setattr(loader, "FSN_PARSER_VERSION", "sec_fsn_next")
+    monkeypatch.setattr(loader, "PLACEHOLDER_KEYS", loader.PLACEHOLDER_KEYS | {"JWB"})
+    stats = loader.run([month, quarter], dsn=dsn, dry_run=False,
+                       reconciled_on=d(2026, 12, 1))
+    assert [(s["package"], s.get("restated"), s["inserted"], s["retired"]) for s in stats] == [
+        ("2025q4_notes.zip", None, 0, 0),
+        ("2025_10_notes.zip", "superseded by 2025q4_notes.zip", 1, 2)]
+    assert _visible(conn, "2025-12-15") == [("AAA", 2), ("AAB", 2), ("JWA", 1), ("OB", 1)]
+    assert conn.execute(
+        "SELECT filing_equity_classes, retired_on, retired_reason, parser_version "
+        "FROM sec_ticker_cik_observations WHERE ticker = 'JWA' ORDER BY id").fetchall() == [
+        (1, superseded, corrected, OLD_FSN_PARSER),
+        (2, superseded, corrected, "sec_fsn_v3"),
+        (1, superseded, "source", "sec_fsn_next"),
+    ]
+
+
+def test_a_restated_month_whose_quarterly_was_read_otherwise(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """The old parser read the quarterly's copy of a filing otherwise than the
+    month's (as it would other bytes). F4: it misread the month only; the month's
+    new reading is the quarterly's version, which so continues the month's and is
+    known from the filing's public date, not from the quarterly's load. F5: it
+    read both alike, and the new parser reads the month otherwise: the shared
+    version stands for the quarterly, but only from the quarterly's load (a
+    version of an accession the month carried before), and the month's new
+    reading is the month's until the supersession."""
+    conn, dsn = schema_dsn
+    f4, f5 = "0000000084-25-000001", "0000000085-25-000001"
+    subs = [_sub(f4, 84, "10-Q", "20251015", "2025-10-15 16:00:00.0"),
+            _sub(f5, 85, "10-Q", "20251016", "2025-10-16 16:00:00.0")]
+    month = _write_package(
+        tmp_path / "2025_10_notes.zip", subs,
+        [_fact(f4, "TradingSymbol", "XYZ/XYW"), _fact(f5, "TradingSymbol", "ABC"),
+         _fact(f5, "TradingSymbol", "OB", dimh="0xbbb")], [], DIMS)
+    quarter = _write_package(
+        tmp_path / "2025q4_notes.zip", subs,
+        [_fact(f4, "TradingSymbol", "XYZ/XYW"), _fact(f5, "TradingSymbol", "ABC")], [], DIMS)
+    profiles = loader._filing_profiles
+    with pytest.MonkeyPatch.context() as old:
+        _old_fsn_parser(old)
+        loader.run([month], dsn=dsn, dry_run=False, reconciled_on=d(2025, 11, 10))
+        old.setattr(loader, "_filing_profiles", profiles)
+        loader.run([quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 3, 2))
+    assert _visible(conn, "2025-12-15") == [("ABC", 1), ("XYW", 1), ("XYZ", 1)]
+    assert _visible(conn, "2026-03-02") == [("ABC", 1), ("XYW", 2), ("XYZ", 2)]
+
+    stats = loader.run([month, quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 1))
+    assert [(s["package"], s["inserted"], s["retired"]) for s in stats] == [
+        ("2025q4_notes.zip", 0, 0), ("2025_10_notes.zip", 5, 5)]
+    superseded, on, corrected = d(2026, 3, 2), d(2026, 9, 1), "parser_correction"
+    assert conn.execute(
+        "SELECT ticker, filing_equity_classes, available_on, retired_on, retired_reason "
+        'FROM sec_ticker_cik_observations ORDER BY ticker COLLATE "C", id').fetchall() == [
+        ("ABC", 1, d(2025, 10, 16), on, corrected),
+        ("ABC", 1, superseded, None, None),
+        ("ABC", 2, d(2025, 10, 16), superseded, "source"),
+        ("OB", 2, d(2025, 10, 16), superseded, "source"),
+        ("XYW", 1, d(2025, 10, 15), superseded, corrected),
+        ("XYW", 2, superseded, on, corrected),
+        ("XYW", 2, d(2025, 10, 15), None, None),
+        ("XYZ", 1, d(2025, 10, 15), superseded, corrected),
+        ("XYZ", 2, superseded, on, corrected),
+        ("XYZ", 2, d(2025, 10, 15), None, None),
+    ]
+    assert _visible(conn, "2025-12-15") == [("ABC", 2), ("OB", 2), ("XYW", 2), ("XYZ", 2)]
+    assert _visible(conn, "2026-03-02") == [("ABC", 1), ("XYW", 2), ("XYZ", 2)]
+
+
+def test_a_superseded_month_is_restated_only_from_its_bytes_after_its_quarterly(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """The restatement needs the very bytes loaded (the SHA-256 recorded) and its
+    quarterly read by the same parser first; until then nothing changes."""
+    conn, dsn = schema_dsn
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    month, quarter = _superseded_month(conn, dsn, cache)
+    month_rows = ("SELECT id, ticker, available_on, retired_on, retired_reason "
+                  "FROM sec_ticker_cik_observations WHERE cik IN (82, 1454938) ORDER BY id")
+    before = conn.execute(month_rows).fetchall()
+    waiting = {"package": "2025_10_notes.zip", "skipped": "superseded by 2025q4_notes.zip",
+               "not_restated": f"2025q4_notes.zip is not read by {loader.FSN_PARSER_VERSION} yet"}
+    assert loader.run([month], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 1)) == [waiting]
+    original = month.read_bytes()
+    _write_package(month, [_sub(F3, 1454938, "10-Q", "20251022", "2025-10-22 16:05:00.0")],
+                   [_fact(F3, "TradingSymbol", "OB")])
+    stats = loader.run([quarter, month], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 1))
+    assert stats[1] == {**waiting, "not_restated": "the file is not the version loaded"}
+    assert conn.execute(month_rows).fetchall() == before
+    month.write_bytes(original)
+    stats = loader.run([month], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 2))
+    assert (stats[0]["restated"], stats[0]["inserted"], stats[0]["retired"]) == (
+        "superseded by 2025q4_notes.zip", 3, 2)
+
+
 def test_quarterly_packages_sort_after_their_months() -> None:
     names = ["2025q4_notes.zip", "2025_12_notes.zip", "2025_10_notes.zip", "2026_01_notes.zip",
              "2025q3_notes.zip"]

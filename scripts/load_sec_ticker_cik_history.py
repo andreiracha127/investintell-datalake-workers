@@ -39,6 +39,11 @@ Storage is bitemporal: one transaction per package or index reconciles its
 facts against the stored ones; a fact the source no longer carries (and no other
 loaded source does) is retired, never deleted, and a fact newly carried for an
 accession already loaded is a correction knowable from the reconciliation date.
+A package read again by another parser version (the same bytes) restates our
+reading instead: the old reading is visible at no date. That includes a monthly
+package its quarterly superseded, which the SEC no longer lists: its cached copy,
+identified by the SHA-256 recorded, is re-read after its quarterly
+(restate_superseded_package).
 ``--dry-run`` parses and reports without a database. The schema is governed: it
 is applied only with ``--apply-schema``.
 """
@@ -2095,6 +2100,192 @@ def resume_supersession(conn, *, reconciled_on: dt.date | None = None) -> list[d
     return done
 
 
+def _restate_facts(cur, *, package: str, fact_table: str, temp: str,
+                   columns: tuple[str, ...], availability: str, superseded_on: dt.date,
+                   reconciled_on: dt.date) -> dict[str, int]:
+    """Restate one fact family of a superseded package from this parser's reading
+    (``temp``) of the bytes it carried until its supersession on S.
+
+    Its last reading is the versions it carried at S that were visible then:
+    retired at S as a change of the source, or still current because a current
+    package (its quarterly) carries them too. Of these:
+
+    * a version retired at S that this parser does not read is relabelled
+      ``parser_correction`` (visible at no date; it keeps its retirement date);
+    * a current version this parser does not read in the month (the quarterly's
+      own bytes still read so) was visible from the month's load: it is retired
+      as a parser correction and inserted again from its first current
+      carrier's load, as a version of an accession the month carried before.
+
+    A version newly read is the month's from its filing's public date until S.
+    When a current package carries it since S or before, but it is known only
+    later (a correction of the month's misreading), the current row is retired as
+    a parser correction and inserted again from the filing's public date. No row
+    is inserted where a version of the same content is visible already, so no
+    date sees a fact twice. The package then records its new reading as carried
+    until S, which a later restatement compares against."""
+    table = _BITEMPORAL_TABLES[fact_table]
+    prior, fresh = f"tmp_sec_prior_{fact_table}", f"tmp_sec_fresh_{fact_table}"
+    rebased, continued = f"tmp_sec_rebased_{fact_table}", f"tmp_sec_continued_{fact_table}"
+    cols = ", ".join(columns)
+    keys = {"p": package, "ft": fact_table, "s": superseded_on, "on": reconciled_on,
+            "pc": PARSER_CORRECTION, "src": SOURCE, "parser": FSN_PARSER_VERSION}
+    cur.execute(f"CREATE TEMP TABLE {prior} (fact_hash text PRIMARY KEY) ON COMMIT DROP")
+    cur.execute(
+        f"INSERT INTO {prior} SELECT DISTINCT f.fact_hash FROM sec_ticker_cik_package_facts f "
+        f"WHERE f.source_package = %(p)s AND f.fact_table = %(ft)s AND f.retired_on = %(s)s "
+        f"AND EXISTS (SELECT 1 FROM {table} t WHERE t.fact_hash = f.fact_hash "
+        f"AND (t.retired_on IS NULL OR (t.retired_on = %(s)s "
+        f"AND t.retired_reason IS DISTINCT FROM %(pc)s)))", keys)
+    misread = (f"t.fact_hash IN (SELECT fact_hash FROM {prior}) "
+               f"AND NOT EXISTS (SELECT 1 FROM {temp} n WHERE n.fact_hash = t.fact_hash)")
+    cur.execute(
+        f"UPDATE {table} t SET retired_reason = %(pc)s WHERE t.retired_on = %(s)s "
+        f"AND t.retired_reason IS DISTINCT FROM %(pc)s AND {misread}", keys)
+    retired, inserted = cur.rowcount, 0
+    cur.execute(f"CREATE TEMP TABLE {rebased} (id bigint PRIMARY KEY, known_on date NOT NULL) "
+                f"ON COMMIT DROP")
+    cur.execute(
+        f"INSERT INTO {rebased} SELECT t.id, GREATEST(t.source_available_on, min(o.loaded_on)) "
+        f"FROM {table} t JOIN sec_ticker_cik_package_facts o ON o.fact_table = %(ft)s "
+        f"AND o.fact_hash = t.fact_hash AND o.retired_on IS NULL "
+        f"WHERE t.retired_on IS NULL AND {misread} GROUP BY t.id "
+        f"HAVING t.available_on < GREATEST(t.source_available_on, min(o.loaded_on))", keys)
+    if cur.rowcount:
+        cur.execute(f"UPDATE {table} t SET retired_on = %(on)s, retired_reason = %(pc)s "
+                    f"WHERE t.id IN (SELECT id FROM {rebased})", keys)
+        retired += cur.rowcount
+        cur.execute(
+            f"INSERT INTO {table} ({cols}, fact_hash, parser_version, available_on, loaded_on) "
+            f"SELECT {', '.join(f't.{c}' for c in columns)}, t.fact_hash, t.parser_version, "
+            f"r.known_on, %(on)s FROM {table} t JOIN {rebased} r ON r.id = t.id", keys)
+        inserted += cur.rowcount
+    cur.execute(
+        f"CREATE TEMP TABLE {fresh} ON COMMIT DROP AS "
+        f"SELECT DISTINCT ON (n.fact_hash) n.*, {availability} AS known_on FROM {temp} n "
+        f"WHERE NOT EXISTS (SELECT 1 FROM {prior} p WHERE p.fact_hash = n.fact_hash) "
+        f"ORDER BY n.fact_hash")
+    cur.execute(f"CREATE TEMP TABLE {continued} (id bigint PRIMARY KEY, fact_hash text) "
+                f"ON COMMIT DROP")
+    cur.execute(
+        f"INSERT INTO {continued} SELECT t.id, t.fact_hash FROM {table} t "
+        f"JOIN {fresh} w ON w.fact_hash = t.fact_hash WHERE t.retired_on IS NULL "
+        f"AND t.available_on > w.known_on AND t.available_on <= %(s)s", keys)
+    if cur.rowcount:
+        cur.execute(f"UPDATE {table} t SET retired_on = %(on)s, retired_reason = %(pc)s "
+                    f"WHERE t.id IN (SELECT id FROM {continued})", keys)
+        retired += cur.rowcount
+        cur.execute(
+            f"INSERT INTO {table} ({cols}, fact_hash, parser_version, available_on, loaded_on) "
+            f"SELECT {', '.join(f'w.{c}' for c in columns)}, w.fact_hash, %(parser)s, "
+            f"w.known_on, %(on)s FROM {fresh} w "
+            f"WHERE w.fact_hash IN (SELECT fact_hash FROM {continued})", keys)
+        inserted += cur.rowcount
+    # The month's alone: from the filing's public date, or the end of an earlier
+    # version of the same content, until S.
+    cur.execute(
+        f"INSERT INTO {table} ({cols}, fact_hash, parser_version, available_on, retired_on, "
+        f"retired_reason, loaded_on) "
+        f"SELECT {', '.join(f'w.{c}' for c in columns)}, w.fact_hash, %(parser)s, s.start, "
+        f"%(s)s, %(src)s, %(on)s FROM {fresh} w CROSS JOIN LATERAL ("
+        f"SELECT GREATEST(w.known_on, max(o.retired_on)) AS start FROM {table} o "
+        f"WHERE o.fact_hash = w.fact_hash AND o.retired_on <= %(s)s "
+        f"AND o.retired_reason IS DISTINCT FROM %(pc)s) s "
+        f"WHERE s.start < %(s)s AND NOT EXISTS (SELECT 1 FROM {table} o "
+        f"WHERE o.fact_hash = w.fact_hash AND o.retired_reason IS DISTINCT FROM %(pc)s "
+        f"AND o.available_on < %(s)s AND (o.retired_on IS NULL OR o.retired_on > s.start))",
+        keys)
+    inserted += cur.rowcount
+    cur.execute(
+        f"INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, fact_hash, "
+        f"loaded_on, retired_on) SELECT DISTINCT %(p)s::text, %(ft)s::text, n.fact_hash, "
+        f"LEAST(%(on)s::date, %(s)s::date), %(s)s FROM {temp} n WHERE NOT EXISTS ("
+        f"SELECT 1 FROM sec_ticker_cik_package_facts f WHERE f.source_package = %(p)s "
+        f"AND f.fact_table = %(ft)s AND f.fact_hash = n.fact_hash AND f.retired_on = %(s)s)",
+        keys)
+    return {"retired": retired, "inserted": inserted}
+
+
+def superseded_version(conn, name: str) -> tuple[str, dt.date, str, str | None] | None:
+    """(quarterly, superseded_on, the SHA-256 loaded, the quarterly's parser) of a
+    superseded package read by another FSN_PARSER_VERSION; None otherwise."""
+    return conn.execute(
+        "SELECT m.superseded_by, m.superseded_on, m.package_sha256, q.parser_version "
+        "FROM sec_ticker_cik_packages m LEFT JOIN sec_ticker_cik_packages q "
+        "ON q.source_package = m.superseded_by "
+        "WHERE m.source_package = %s AND m.superseded_by IS NOT NULL "
+        "AND m.parser_version IS DISTINCT FROM %s", (name, FSN_PARSER_VERSION),
+    ).fetchone()
+
+
+def restate_superseded_package(conn, path: Path, *,
+                               reconciled_on: dt.date | None = None) -> dict[str, object]:
+    """Re-read a superseded package with this parser and restate what it carried
+    until its supersession (_restate_facts), in one transaction.
+
+    The SEC no longer lists a superseded month, so its bytes are identified by
+    the SHA-256 recorded when it was loaded: any other file is refused. Its
+    quarterly is read by this parser first (a re-derivation re-reads it in the
+    same run), so the versions both carry are already restated and the month's
+    reading never doubles them. Until then, or without the bytes, nothing changes
+    and the package keeps its parser version, so a later run restates it."""
+    name = path.name
+    version = superseded_version(conn, name)
+    if version is None:
+        raise ValueError(f"{name} is not a superseded package read by another parser")
+    quarterly, superseded_on, sha256, quarterly_parser = version
+    skipped = {"package": name, "skipped": f"superseded by {quarterly}"}
+    if quarterly_parser != FSN_PARSER_VERSION:
+        return {**skipped, "not_restated": f"{quarterly} is not read by {FSN_PARSER_VERSION} yet"}
+    if not path.is_file():
+        return {**skipped, "not_restated": f"no copy of the version loaded at {path}"}
+    if _sha256(path) != sha256:
+        return {**skipped, "not_restated": "the file is not the version loaded"}
+    on = reconciled_on or dt.date.today()
+    started = time.monotonic()
+    result = parse_package(path)
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                f"CREATE TEMP TABLE tmp_sec_obs ON COMMIT DROP AS SELECT "
+                f"{', '.join(OBSERVATION_COLUMNS)}, fact_hash "
+                f"FROM sec_ticker_cik_observations WITH NO DATA")
+            cur.execute(
+                f"CREATE TEMP TABLE tmp_sec_shares ON COMMIT DROP AS SELECT "
+                f"{', '.join(SHARE_COLUMNS)}, fact_hash FROM sec_cover_share_counts WITH NO DATA")
+            _copy(cur, "tmp_sec_obs", (*OBSERVATION_COLUMNS, "fact_hash"),
+                  [(*o.as_tuple(), o.fact_hash) for o in result.observations])
+            _copy(cur, "tmp_sec_shares", (*SHARE_COLUMNS, "fact_hash"),
+                  [(*s.as_tuple(), s.fact_hash) for s in result.share_counts])
+            observations = _restate_facts(
+                cur, package=name, fact_table="observation", temp="tmp_sec_obs",
+                columns=OBSERVATION_COLUMNS, availability=_OBS_AVAILABILITY,
+                superseded_on=superseded_on, reconciled_on=on)
+            shares = _restate_facts(
+                cur, package=name, fact_table="share_count", temp="tmp_sec_shares",
+                columns=SHARE_COLUMNS, availability=_OBS_AVAILABILITY,
+                superseded_on=superseded_on, reconciled_on=on)
+            # The same bytes, so the validators and the supersession stand.
+            cur.execute(
+                "UPDATE sec_ticker_cik_packages SET submissions = %s, symbol_facts = %s, "
+                "observations = %s, share_counts = %s, rejected = %s::jsonb, "
+                "parser_version = %s, loaded_at = now() WHERE source_package = %s",
+                (len(result.submissions), result.symbol_facts, len(result.observations),
+                 len(result.share_counts), json.dumps(dict(sorted(result.rejected.items()))),
+                 FSN_PARSER_VERSION, name))
+    return {
+        "package": name,
+        "restated": f"superseded by {quarterly}",
+        **result.stats(),
+        "reconciled_as": PARSER_CORRECTION,
+        "inserted": observations["inserted"],
+        "retired": observations["retired"],
+        "shares_inserted": shares["inserted"],
+        "shares_retired": shares["retired"],
+        "load_seconds": round(time.monotonic() - started, 1),
+    }
+
+
 def record_remote_validators(conn, package: str, *, etag: str | None,
                              last_modified: str | None) -> None:
     """The SEC's ETag / Last-Modified of the loaded package version, when a fresh
@@ -2379,10 +2570,14 @@ def run(
     reconciled_on: dt.date | None = None,
     documents: EventDocuments | None = None,
     validators: dict[Path, tuple[str | None, str | None]] | None = None,
+    superseded_dir: Path | None = None,
 ) -> list[dict[str, object]]:
-    """Parse and reconcile packages, then indexes (reading end filings with
-    ``documents``), then re-derive end events read by another parser version;
-    ``reconciled_on`` dates every retirement and correction (default: today)."""
+    """Parse and reconcile packages, then restate the superseded ones read by
+    another FSN_PARSER_VERSION (among ``packages``, or by name in
+    ``superseded_dir``: the SEC no longer lists them), then indexes (reading end
+    filings with ``documents``), then re-derive end events read by another parser
+    version; ``reconciled_on`` dates every retirement and correction (default:
+    today)."""
     stats: list[dict[str, object]] = []
     # Autocommit: each package commits in its own explicit transaction. The
     # session lock keeps this script and the recurring worker from interleaving.
@@ -2399,9 +2594,13 @@ def run(
             for item in resume_supersession(conn, reconciled_on=reconciled_on):
                 print(json.dumps(item), flush=True)
                 stats.append(item)
+        restate: dict[str, Path] = {}
         for path in packages:
             quarterly = superseded_by(conn, path.name) if conn is not None else None
             if quarterly is not None:
+                if superseded_version(conn, path.name) is not None:
+                    restate.setdefault(path.name, path)  # after its quarterly's re-read
+                    continue
                 item = {"package": path.name, "skipped": f"superseded by {quarterly}"}
                 print(json.dumps(item), flush=True)
                 stats.append(item)
@@ -2415,6 +2614,17 @@ def run(
                 item.update(supersede_monthly_packages(conn, path.name,
                                                        reconciled_on=reconciled_on))
                 item["load_seconds"] = round(time.monotonic() - started, 1)
+            print(json.dumps(item), flush=True)
+            stats.append(item)
+        if conn is not None and superseded_dir is not None:
+            for (name,) in conn.execute(
+                "SELECT source_package FROM sec_ticker_cik_packages "
+                "WHERE superseded_by IS NOT NULL AND parser_version IS DISTINCT FROM %s",
+                (FSN_PARSER_VERSION,),
+            ).fetchall():
+                restate.setdefault(name, superseded_dir / name)
+        for name in sorted(restate, key=lambda name: package_sort_key(Path(name))):
+            item = restate_superseded_package(conn, restate[name], reconciled_on=reconciled_on)
             print(json.dumps(item), flush=True)
             stats.append(item)
         ciks = cover_ciks(conn) if conn is not None and documents is not None else None
@@ -2497,7 +2707,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         stats = run(packages, dsn=args.dsn, dry_run=args.dry_run, form_indexes=form_indexes,
                     reconciled_on=args.reconciled_on, documents=documents,
-                    validators=validators)
+                    validators=validators, superseded_dir=args.packages_dir)
     finally:
         if client is not None:
             client.close()
