@@ -371,7 +371,7 @@ of today's symbols.
    without the read-only `PGOPTIONS`, apply only the new schema:
    `psql -X -v ON_ERROR_STOP=1 -f schemas/sec_foreign_listing_evidence.sql`.
    The reviewed schema SHA-256 is
-   `{{SCHEMA_SHA}}`;
+   `f334d08d3d3b496bd613495d59ee2a3a12365f58c422b3d51bd77530e61d2957`;
    it changed from final4 (`0df7689b4fa5206d5d5b01034b423ade4b20bfae88fc0720526d43f8af842ff9`)
    and adds the operative-date-conflict and conditional-effectiveness controls.
    Supply the production connection through the operator's normal credential

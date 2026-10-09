@@ -2,7 +2,7 @@
 
 This report supersedes final4 for production artifact selection. It fixes the two production-gate P1s found in final4 and reissues the reviewed artifact as `final5`. The preserved [run1 report](sec-foreign-listing-20261009.md) and the [final4 report](sec-foreign-listing-20261009-run2.md) remain historical baselines. W1 admission, share sizing and existing refusal behavior are unchanged.
 
-Generated from artifact-pinned results at `2026-10-09T21:44:33+00:00`. Fixing head: `{{HEAD}}` (previous head `99d78516f4b4b290251fb3241af29c71cdd5ebc9`).
+Generated from artifact-pinned results at `2026-10-09T21:44:33+00:00`. Fixing head: `f028abb6e5427309f847bb111a7b0e8938d405ed` (previous head `99d78516f4b4b290251fb3241af29c71cdd5ebc9`).
 
 ## The two gate P1s and their fixes
 
@@ -58,7 +58,7 @@ Migration cycle verified live on PG18.4: schema replay is additive and idempoten
 
 | Artifact | Exact path | SHA-256 |
 | --- | --- | --- |
-| Schema (changed from final4) | `E:/investintell-datalake-workers-sep/.worktrees/w1c-foreign/schemas/sec_foreign_listing_evidence.sql` | `{{SCHEMA_SHA}}` |
+| Schema (changed from final4) | `E:/investintell-datalake-workers-sep/.worktrees/w1c-foreign/schemas/sec_foreign_listing_evidence.sql` | `f334d08d3d3b496bd613495d59ee2a3a12365f58c422b3d51bd77530e61d2957` |
 | Rollback (unchanged) | `E:/investintell-datalake-workers-sep/.worktrees/w1c-foreign/schemas/sec_foreign_listing_evidence.rollback.sql` | `bd1b954e57c5952ea5a20e483c379b0f3f4899dc3b59abe3d50a1e067b909041` |
 | Universe | `E:/investintell-data/w1c-20261009-baseline/universe.json` | `06d052a96fdc8759c6d443f67fbf20ecaacac4655dd7cb306e31f558e5c5b43b` |
 | W1 observations (collector) | `E:/investintell-data/w1c-20261009-baseline/foreign_observations.json` | `a937b8cc1d7bfdfc5812c30c1a2b2a17961995d5d350554c292f7215b59797f8` |
