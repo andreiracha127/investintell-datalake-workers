@@ -48,6 +48,8 @@ LF. They are data, never executable input. Tests make no SEC requests.
   "America Depositary Shares", and IXHL's 2022 registration places the ADS
   qualifier in the exchange cell beside an ordinary-share title. Their official
   filing dates are separately checked against cached SEC quarterly indexes.
+  Prima BioMed's 2014 cover uses only a parenthesized ADS description in that
+  exchange cell, without an "in connection with" introduction.
 
 The 2024 cover files and preflight covers are contiguous source extracts. AZN files ending in
 `combined.html` concatenate verbatim HTML elements from one source document;

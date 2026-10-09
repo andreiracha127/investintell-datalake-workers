@@ -955,7 +955,7 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
 
 FACT_COLUMNS = ("fact_hash", "cik", "symbol", "adsh", "form", "filed", "source_url", "source_sha256", "source_kind",
                 "evidence_kind", "listed_type", "underlying_class", "ordinary_candidate",
-                "ratio_numerator", "ratio_denominator", "effective_from", "effective_to",
+                "ratio_numerator", "ratio_denominator", "effective_from", "effective_to", "effective_date_explicit",
                 "evidence_text", "evidence_location", "parser_version", "publication_floor_on", "available_on", "loaded_on", "source_package")
 APPLY_BATCH_SIZE = 1000
 
@@ -1045,7 +1045,8 @@ def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observ
                 if fact.get("publication_floor_on"):
                     source_available = max(source_available, date.fromisoformat(str(fact["publication_floor_on"])))
                 available = max(source_available, observed_on) if prior_accession else source_available
-                values = {"ordinary_candidate": True, **fact, "available_on": available, "loaded_on": observed_on}
+                values = {"ordinary_candidate": True, "effective_date_explicit": False,
+                          **fact, "available_on": available, "loaded_on": observed_on}
                 insert_batch.append(tuple(values.get(column) for column in FACT_COLUMNS))
                 if len(insert_batch) >= APPLY_BATCH_SIZE:
                     flush(insert_sql, insert_batch)

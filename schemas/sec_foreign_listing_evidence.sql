@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS public.sec_foreign_listing_evidence (
     ratio_numerator numeric,
     ratio_denominator numeric,
     effective_from date NOT NULL,
+    -- True only when the document itself states the extracted effective date;
+    -- false when effective_from is the filing + 1 observation fallback.
+    effective_date_explicit boolean NOT NULL DEFAULT false,
     effective_to date,
     evidence_text text NOT NULL CHECK (length(btrim(evidence_text)) > 0),
     evidence_location text NOT NULL CHECK (length(btrim(evidence_location)) > 0),
@@ -136,6 +139,11 @@ CREATE INDEX IF NOT EXISTS sec_foreign_listing_evidence_source_idx
 -- An effective dated 6-K change can corroborate its matching F-6 registration
 -- before the next annual cover is filed. Initial ratios still require annual
 -- corroboration. A later contradicting annual assertion remains ambiguous.
+-- A fallback-dated F-6 for an already-announced future change is deferred until
+-- that change: the 6-K must already have been public by the F-6 publication,
+-- identify the same program/class and exact ratio, and supply one unique future
+-- date. This does not rewrite the source dates, move older registrations, or
+-- override an F-6's own explicit date. Deferral precedes latest-filing selection.
 CREATE OR REPLACE FUNCTION public.sec_foreign_listing_at(
     p_cik bigint, p_symbol text, p_as_of date
 )
@@ -151,7 +159,7 @@ RETURNS TABLE (
 LANGUAGE sql STABLE PARALLEL SAFE
 SET search_path = pg_catalog, public
 AS $fn$
-WITH issuer_visible AS MATERIALIZED (
+WITH issuer_known AS MATERIALIZED (
     SELECT e.*,
            CASE WHEN e.source_kind = 'f6' THEN 'f6'
                 WHEN e.source_kind = 'ratio_change_6k' THEN 'change'
@@ -160,7 +168,8 @@ WITH issuer_visible AS MATERIALIZED (
     WHERE e.cik = p_cik
       AND e.available_on <= p_as_of
       AND (e.retired_on IS NULL OR e.retired_on > p_as_of)
-      AND e.effective_from <= p_as_of
+), issuer_visible AS MATERIALIZED (
+    SELECT e.* FROM issuer_known e WHERE e.effective_from <= p_as_of
 ), issuer_cover AS MATERIALIZED (
     SELECT v.* FROM issuer_visible v
     WHERE v.evidence_kind = 'listed_type'
@@ -176,13 +185,49 @@ WITH issuer_visible AS MATERIALIZED (
            CASE WHEN count(DISTINCT c.underlying_class) FILTER (WHERE c.listed_type = 'ads' AND c.ordinary_candidate) = 1
                 THEN min(c.underlying_class) FILTER (WHERE c.listed_type = 'ads' AND c.ordinary_candidate) END AS underlying_class
     FROM issuer_cover c
-), visible AS MATERIALIZED (
+), bound_visible AS MATERIALIZED (
     SELECT v.* FROM issuer_visible v CROSS JOIN issuer_binding b
     WHERE v.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
        OR (v.symbol IS NULL AND v.ordinary_candidate AND v.source_kind IN ('f6', 'ratio_change_6k')
            AND b.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
            AND (v.underlying_class IS NULL OR b.underlying_class IS NULL
                 OR v.underlying_class = b.underlying_class))
+), announced_changes AS MATERIALIZED (
+    SELECT c.* FROM issuer_known c CROSS JOIN issuer_binding b
+    WHERE c.evidence_kind = 'ads_ratio' AND c.source_kind = 'ratio_change_6k'
+      AND c.ordinary_candidate
+      AND NOT EXISTS (
+          SELECT 1 FROM issuer_cover t
+          WHERE t.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
+            AND t.underlying_class <> c.underlying_class)
+      AND (c.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
+           OR (c.symbol IS NULL
+               AND b.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
+               AND (c.underlying_class IS NULL OR b.underlying_class IS NULL
+                    OR c.underlying_class = b.underlying_class)))
+), visible AS MATERIALIZED (
+    SELECT v.* FROM bound_visible v CROSS JOIN issuer_binding b
+    WHERE NOT (
+        v.source_kind = 'f6' AND NOT v.effective_date_explicit
+        AND v.effective_from = v.filed + 1 AND v.ordinary_candidate
+        AND (v.underlying_class IS NULL OR b.underlying_class IS NULL
+             OR v.underlying_class = b.underlying_class)
+        AND NOT EXISTS (
+            SELECT 1 FROM issuer_cover t
+            WHERE t.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
+              AND t.underlying_class <> v.underlying_class)
+        AND EXISTS (
+             SELECT 1 FROM announced_changes c
+             WHERE c.source_available_on <= v.source_available_on
+               AND c.available_on <= v.source_available_on
+               AND c.effective_from > v.source_available_on
+               AND c.ratio_numerator * v.ratio_denominator
+                   = v.ratio_numerator * c.ratio_denominator
+               AND (v.underlying_class IS NULL OR c.underlying_class IS NULL
+                    OR v.underlying_class = c.underlying_class)
+             HAVING count(DISTINCT c.effective_from) = 1
+                AND min(c.effective_from) > p_as_of)
+    )
 ), types AS (
     SELECT c.* FROM issuer_cover c
     WHERE c.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')

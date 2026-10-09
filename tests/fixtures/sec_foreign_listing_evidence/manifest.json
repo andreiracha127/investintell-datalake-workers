@@ -530,5 +530,176 @@
         }
       ]
     }
+  },
+  {
+    "name": "immp_2014_parenthesized_exchange",
+    "fixture": "immp_2014_parenthesized_exchange.html",
+    "cik": 1506184,
+    "symbol": "IMMP",
+    "accession_number": "0001193125-14-351728",
+    "filing_date": "2014-09-24",
+    "form_type": "20-F",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1506184/000119312514351728/d786369d20f.htm",
+    "sha256": "f655ab71dea5f4b9387c954a6061d72476b38f8fa7f16c2ad4e7670d1e83ba6e",
+    "source_character_start": 6256,
+    "source_character_end": 9520,
+    "extraction": "Contiguous original SEC Section 12(b) table and context; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2014-09-24",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2014/QTR3/master.idx",
+          "source_sha256": "a4012a442583dc7da381a1f5ac84e30283956300de92ea222667e72ed669f80a",
+          "line": "1506184|Prima BioMed Ltd|20-F|2014-09-24|edgar/data/1506184/0001193125-14-351728.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "anpc_2019_f6_full",
+    "fixture": "anpc_2019_f6_full.html",
+    "cik": 1786511,
+    "symbol": "ANPC",
+    "accession_number": "0001193805-19-001400",
+    "filing_date": "2019-11-07",
+    "query_accepted_on": "2019-11-06",
+    "form_type": "F-6",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1472033/000119380519001400/e619159_f6-abmscl.htm",
+    "sha256": "c9dd7e57285994ff2cad4baf6de50967e789e79b7fe0fc7a52d12af1001968ed",
+    "source_character_spans": [
+      [
+        0,
+        56501
+      ]
+    ],
+    "extraction": "Original SEC document (full contracts retain placeholder dates), or contiguous cover excerpt; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2019-11-07",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2019/QTR4/master.idx",
+          "source_sha256": "1cd516d4d8afa9755ac268107f38d471286aeeb1c2257f714a159490313e64b1",
+          "line": "1786511|AnPac Bio-Medical Science Co., Ltd.|F-6|2019-11-07|edgar/data/1786511/0001193805-19-001400.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "anpc_2022_f6_undated_amendment_full",
+    "fixture": "anpc_2022_f6_undated_amendment_full.html",
+    "cik": 1786511,
+    "symbol": "ANPC",
+    "accession_number": "0001193805-22-001449",
+    "filing_date": "2022-10-24",
+    "query_accepted_on": "2022-10-24",
+    "form_type": "F-6 POS",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1472033/000119380522001449/e622001_ex99-ai.htm",
+    "sha256": "252ad5b0d1d882d047221e7606b8b215a90f0c64a09b03f3bc72b6e998d0c2d3",
+    "source_character_spans": [
+      [
+        0,
+        203207
+      ]
+    ],
+    "extraction": "Original SEC document (full contracts retain placeholder dates), or contiguous cover excerpt; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2022-10-24",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR4/master.idx",
+          "source_sha256": "30bc8ebde79fa2bd68be8a630db67ce43949e1de0dad400a574fb48a67611c45",
+          "line": "1786511|AnPac Bio-Medical Science Co., Ltd.|F-6 POS|2022-10-24|edgar/data/1786511/0001193805-22-001449.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "anpc_2022_change_announcement",
+    "fixture": "anpc_2022_change_announcement.html",
+    "cik": 1786511,
+    "symbol": "ANPC",
+    "accession_number": "0001104659-22-109468",
+    "filing_date": "2022-10-18",
+    "query_accepted_on": "2022-10-18",
+    "form_type": "6-K",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1786511/000110465922109468/tm2228384d1_ex99-1.htm",
+    "sha256": "b1505ccd7fd0d59fafd2a370fd50b7bb291c99b09c2921c25efdfaf37a71d850",
+    "source_character_spans": [
+      [
+        0,
+        11036
+      ]
+    ],
+    "extraction": "Original SEC document (full contracts retain placeholder dates), or contiguous cover excerpt; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2022-10-18",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR4/master.idx",
+          "source_sha256": "30bc8ebde79fa2bd68be8a630db67ce43949e1de0dad400a574fb48a67611c45",
+          "line": "1786511|AnPac Bio-Medical Science Co., Ltd.|6-K|2022-10-18|edgar/data/1786511/0001104659-22-109468.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "anpc_2022_cover",
+    "fixture": "anpc_2022_cover.html",
+    "cik": 1786511,
+    "symbol": "ANPC",
+    "accession_number": "0001104659-22-061429",
+    "filing_date": "2022-05-16",
+    "query_accepted_on": "2022-05-16",
+    "form_type": "20-F",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1786511/000110465922061429/anpc-20211231x20f.htm",
+    "sha256": "3833a400ee622468ce05f26add6de1f130010856fe7ec32cd44ca8e4ae654744",
+    "source_character_spans": [
+      [
+        281544,
+        290610
+      ]
+    ],
+    "extraction": "Original SEC document (full contracts retain placeholder dates), or contiguous cover excerpt; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2022-05-16",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR2/master.idx",
+          "source_sha256": "52d7b1a7033a1e90a100568eab6990bc0545a0ecb0bf6a0ee81ca5c62aa03543",
+          "line": "1786511|AnPac Bio-Medical Science Co., Ltd.|20-F|2022-05-16|edgar/data/1786511/0001104659-22-061429.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "tour_2025_item12_crossreference",
+    "fixture": "tour_2025_item12_crossreference.html",
+    "cik": 1597095,
+    "symbol": "TOUR",
+    "accession_number": "0001410578-25-000777",
+    "filing_date": "2025-04-17",
+    "form_type": "20-F",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1597095/000141057825000777/tour-20241231x20f.htm",
+    "sha256": "a4b722806035f933279f07320c8f269a95a5bdfed121f7574f7a2782dcb75f8c",
+    "source_character_spans": [
+      [
+        225848,
+        262245
+      ],
+      [
+        2204481,
+        2212738
+      ],
+      [
+        2333221,
+        2350869
+      ]
+    ],
+    "extraction": "Three verbatim SEC spans in document order: cover, quoted Item 12 cross-reference with Item 9 Markets and Item 10 boundary, and actual Item 12 through Item 13 heading; LF normalized."
   }
 ]

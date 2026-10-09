@@ -314,6 +314,43 @@ def _f6_amendment_date(text: str) -> str | None:
     return _effective_date(body)
 
 
+def _inline_item_reference(text: str, offset: int) -> bool:
+    before = text[max(0, offset - 100):offset].rstrip()
+    return bool(before and before[-1] in {'"', "'", '\u201c', '\u2018', '\u2014', '\u2013', '-'}) or bool(re.search(
+        r"\b(?:see(?:\s+also)?|under|in|to|of|and|this|that|refer\s+to|referred\s+to|described\s+in|set\s+forth\s+in|captioned|entitled)\s*$",
+        before, re.I,
+    ))
+
+
+def _item_12d_sections(text: str):
+    """Yield actual Item 12.D spans, excluding quoted cross-references and TOCs.
+
+    A bare 'D. American Depositary Shares' is only meaningful inside an Item
+    12 section. Every span ends at the next item heading; there is no character
+    window that can spill from an inline Item 12 reference into Item 9 Markets.
+    """
+    headings = list(re.finditer(
+        r"\bItem\s+(?P<number>\d{1,2})(?P<suffix>[A-Z])?\s*\.?", text, re.I,
+    ))
+    headings = [heading for heading in headings if not _inline_item_reference(text, heading.start())]
+    for index, heading in enumerate(headings):
+        if heading.group("number") != "12":
+            continue
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        section = text[heading.end():end]
+        if not re.match(r"\s*(?:D\.?\s*)?(?:Description\s+of\s+Securities|American\s+Deposit[ao]ry\s+Shares)", section, re.I):
+            continue
+        if (heading.group("suffix") or "").upper() == "D" or re.match(r"\s*D\.?\s*Description", section, re.I):
+            start = heading.start()
+        else:
+            subsection = next((match for match in re.finditer(r"\bD\s*\.\s*(?:American|Global)\s+Deposit[ao]ry\s+Shares\b", section, re.I)
+                               if not _inline_item_reference(section, match.start())), None)
+            if not subsection:
+                continue
+            start = heading.end() + subsection.start()
+        yield start, text[start:end]
+
+
 def parse_filing(
     content: str,
     *,
@@ -370,6 +407,7 @@ def parse_filing(
             "ratio_numerator": ratio.numerator if ratio else None,
             "ratio_denominator": ratio.denominator if ratio else None,
             "effective_from": effective or public, "effective_to": None,
+            "effective_date_explicit": effective is not None,
             "available_on": public, "evidence_text": _clean(evidence),
             "evidence_location": location, "parser_version": PARSER_VERSION,
         })
@@ -451,6 +489,10 @@ def parse_filing(
                         associated_notes = " ".join(note_text for marker, note_text in depositary_notes
                                                     if marker in title_markers or (marker is None and not title_markers))
                 exchange_wrapper = bool(re.search(rf"in\s+connection\s+with\s+(?:the\s+)?(?:listing|registration).{{0,140}}?{_ADS}", row_text, re.I))
+                exchange_wrapper = exchange_wrapper or any(
+                    _EXCHANGE.search(cell) and re.search(rf"\(\s*{_ADS}\s*[,;:]?\s+(?:each\s+)?represent(?:s|ing)?\b", cell, re.I)
+                    for cell in cells
+                )
                 if re.search(_ADS, title, re.I) or re.search(_ADS, associated_notes, re.I) or exchange_wrapper:
                     kind = "ads"
                 elif footnote:
@@ -514,17 +556,15 @@ def parse_filing(
                 location = f"text-offset={offset}" if document_role == "securities_description" else f"cover/section-12b;text-offset={offset}"
                 emit("ads_ratio", "cover_footnote", symbol, evidence, location, ratio=ratio, class_text=match.group(), effective=_effective_date(ratio_context))
         # Item 12.D corroboration is separate from the primary F-6 stream.
-        item_matches = [] if document_role == "securities_description" else list(re.finditer(r"(?:Item\s+12\.?\s*D\.?|D\.\s*American\s+Depositary\s+Shares|Item\s+12\.?\s+Description\s+of\s+Securities)", text, re.I))
-        for item in item_matches:
-            end = re.search(r"\bItem\s+13\b", text[item.end():item.end() + 70000], re.I)
-            item_text = text[item.start():item.end() + (end.start() if end else 40000)]
+        item_sections = [] if document_role == "securities_description" else _item_12d_sections(text)
+        for item_offset, item_text in item_sections:
             for match, ratio in _ratios(item_text):
                 if _superseded_ratio(item_text, match.start(), match.end()):
                     continue
                 context = item_text[max(0, match.start() - 300):match.end() + 300]
                 local_symbols = [s.upper() for s in _explicit_symbols(context)] or sorted(ads_symbols)
                 for symbol in local_symbols if len(local_symbols) == 1 else [None]:
-                    emit("ads_ratio", "item_12d", symbol, context, f"item-12d;text-offset={item.start() + match.start()}", ratio=ratio, class_text=match.group(), effective=_effective_date(context))
+                    emit("ads_ratio", "item_12d", symbol, context, f"item-12d;text-offset={item_offset + match.start()}", ratio=ratio, class_text=match.group(), effective=_effective_date(context))
     elif base_form in ("F-6", "F-6EF", "F-6 POS"):
         explicit = [s.upper() for s in _explicit_symbols(text)]
         amendment_date = _f6_amendment_date(text)

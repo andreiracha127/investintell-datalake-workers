@@ -83,6 +83,26 @@ def test_real_pt_item12d_does_not_treat_the_former_ratio_as_current():
     assert {row["available_on"] for row in item12} == {"2025-04-18"}
 
 
+def test_real_tour_cross_reference_does_not_relabel_item9_as_item12d():
+    rows = parse_fixture("tour_2025_item12_crossreference")
+    assert any(row["listed_type"] == "ads" for row in rows)
+    ratios = [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+    assert ratios
+    assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in ratios} == {(3, 1)}
+    assert {row["source_kind"] for row in ratios} == {"cover_footnote"}
+    assert not any(row["source_kind"] == "item_12d" for row in rows)
+
+
+def test_real_anpc_placeholder_amendment_is_distinguished_from_explicit_announcement():
+    amendment = parse_fixture("anpc_2022_f6_undated_amendment_full")
+    announcement = parse_fixture("anpc_2022_change_announcement")
+    assert amendment and announcement
+    assert all(row["effective_date_explicit"] is False for row in amendment)
+    assert {row["effective_from"] for row in amendment} == {"2022-10-25"}
+    assert all(row["effective_date_explicit"] is True for row in announcement)
+    assert {row["effective_from"] for row in announcement} == {"2022-11-04"}
+
+
 def test_real_affirmative_ads_footnote_overrides_common_share_title():
     rows = parse_fixture("asx_2009_affirmative_ads")
     listings = [row for row in rows if row["evidence_kind"] == "listed_type"]
@@ -111,6 +131,16 @@ def test_real_exchange_cell_depositary_qualifier_overrides_ordinary_title():
     listings = [row for row in rows if row["evidence_kind"] == "listed_type"]
     assert [(row["symbol"], row["listed_type"]) for row in listings] == [("IXHL", "ads")]
     assert "in connection with the listing for trading of American Depositary Shares" in listings[0]["evidence_text"]
+    assert not any(row["evidence_kind"] == "ads_ratio" for row in rows)
+
+
+def test_real_parenthesized_exchange_depositary_description_overrides_ordinary_title():
+    rows = parse_fixture("immp_2014_parenthesized_exchange")
+    listings = [row for row in rows if row["evidence_kind"] == "listed_type"]
+    assert len(listings) == 1
+    assert listings[0]["listed_type"] == "ads"
+    assert listings[0]["symbol"] is None
+    assert "(American Depositary Shares representing Ordinary Shares)" in listings[0]["evidence_text"]
     assert not any(row["evidence_kind"] == "ads_ratio" for row in rows)
 
 
@@ -412,13 +442,14 @@ def db(sql_database):
 def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=None,
         filed="2020-01-01", effective=None, available=None, retired=None, until=None,
         symbol="TSM", underlying_class=None, ordinary_candidate=True, cik=1046179,
-        publication_floor_on=None):
+        publication_floor_on=None, effective_date_explicit=None):
     from psycopg import sql
     tomorrow = (dt.date.fromisoformat(filed) + dt.timedelta(days=1)).isoformat()
     row = dict(
         fact_hash=uuid4().hex, cik=cik, symbol=symbol, underlying_class=underlying_class,
         ordinary_candidate=ordinary_candidate,
         publication_floor_on=publication_floor_on,
+        effective_date_explicit=(effective is not None) if effective_date_explicit is None else effective_date_explicit,
         adsh="0001193125-20-000001", form="20-F", filed=filed,
         source_url="https://www.sec.gov/Archives/edgar/data/test",
         source_sha256="a" * 64, source_kind=source, evidence_kind=kind,
@@ -653,6 +684,76 @@ def test_full_real_azn_contracts_and_announcement_switch_on_effective_date(db):
     assert resolve(db, "2015-07-21", cik=901832, symbol="AZN")[:4] == ("resolved", "ads", 1, 1)
     assert resolve(db, "2015-07-26", cik=901832, symbol="AZN")[:4] == ("resolved", "ads", 1, 1)
     assert resolve(db, "2015-07-27", cik=901832, symbol="AZN")[:4] == ("resolved", "ads", 1, 2)
+
+
+def test_real_anpc_future_announcement_dates_placeholder_f6_ratio(db):
+    for name in ("anpc_2022_cover", "anpc_2019_f6_full",
+                 "anpc_2022_f6_undated_amendment_full", "anpc_2022_change_announcement"):
+        insert_real_parsed_rows(db, name)
+    for day in ("2022-10-24", "2022-10-25", "2022-11-03"):
+        assert resolve(db, day, cik=1786511, symbol="ANPC")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2022-11-04", cik=1786511, symbol="ANPC")[:4] == ("resolved", "ads", 20, 1)
+
+
+def _future_ratio_program(db, *, explicit=False):
+    add(db, filed="2022-05-16", underlying_class="class_a")
+    add_ratio(db, (1, 1), filed="2019-11-07", underlying_class="class_a")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-05-16", underlying_class="class_a")
+    add_ratio(db, (20, 1), filed="2022-10-24", underlying_class="class_a", effective_date_explicit=explicit)
+
+
+def test_explicit_f6_date_is_not_overridden_by_future_change_announcement(db):
+    _future_ratio_program(db, explicit=True)
+    add_ratio(db, (20, 1), source="ratio_change_6k", filed="2022-10-18", effective="2022-11-04", underlying_class="class_a")
+    assert resolve(db, "2022-10-25")[0] == "ambiguous"
+
+
+@pytest.mark.parametrize("filed,floor", [("2022-10-30", None), ("2022-10-18", "2022-10-30")])
+def test_future_announcement_must_already_be_public_when_f6_becomes_available(db, filed, floor):
+    _future_ratio_program(db)
+    add_ratio(db, (20, 1), source="ratio_change_6k", filed=filed, effective="2022-11-04",
+              publication_floor_on=floor, underlying_class="class_a")
+    assert resolve(db, "2022-10-25")[0] == "ambiguous"
+    assert resolve(db, "2022-11-03")[0] == "ambiguous"
+
+
+def test_corrected_announcement_learned_after_f6_cannot_retroactively_date_it(db):
+    _future_ratio_program(db)
+    add_ratio(db, (20, 1), source="ratio_change_6k", filed="2022-10-18", effective="2022-11-04",
+              available="2022-10-30", underlying_class="class_a")
+    assert resolve(db, "2022-11-03")[0] == "ambiguous"
+
+
+def test_future_announcement_for_a_different_ratio_cannot_date_f6(db):
+    _future_ratio_program(db)
+    add_ratio(db, (40, 1), source="ratio_change_6k", filed="2022-10-18", effective="2022-11-04", underlying_class="class_a")
+    assert resolve(db, "2022-10-25")[0] == "ambiguous"
+
+
+def test_only_filing_plus_one_fallback_is_eligible_for_announcement_deferral(db):
+    add(db, filed="2022-05-16", underlying_class="class_a")
+    add_ratio(db, (1, 1), filed="2019-11-07", underlying_class="class_a")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-05-16", underlying_class="class_a")
+    add_ratio(db, (20, 1), filed="2022-10-24", effective="2022-10-26", effective_date_explicit=False, underlying_class="class_a")
+    add_ratio(db, (20, 1), source="ratio_change_6k", filed="2022-10-18", effective="2022-11-04", underlying_class="class_a")
+    assert resolve(db, "2022-10-26")[0] == "ambiguous"
+
+
+@pytest.mark.parametrize("symbol,underlying_class", [("OTHER", "class_a"), ("TSM", "class_b")])
+def test_future_change_for_a_different_symbol_or_class_cannot_date_f6(db, symbol, underlying_class):
+    _future_ratio_program(db)
+    add_ratio(db, (20, 1), source="ratio_change_6k", filed="2022-10-18", effective="2022-11-04",
+              symbol=symbol, underlying_class=underlying_class)
+    assert resolve(db, "2022-10-25")[0] == "ambiguous"
+
+
+def test_multiple_announced_future_dates_never_choose_a_deferral_date(db):
+    _future_ratio_program(db)
+    add_ratio(db, (20, 1), source="ratio_change_6k", filed="2022-10-18", effective="2022-11-04", underlying_class="class_a")
+    add_ratio(db, (20, 1), source="ratio_change_6k", filed="2022-10-19", effective="2022-12-01", underlying_class="class_a")
+    assert resolve(db, "2022-10-25")[0] == "ambiguous"
+    # The later event must not cause re-deferral after the first event starts.
+    assert resolve(db, "2022-11-05")[:4] == ("resolved", "ads", 20, 1)
 
 
 def test_change_does_not_resurrect_superseded_matching_registration(db):

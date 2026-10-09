@@ -78,6 +78,15 @@ imports retain the resulting source availability. Corrections to an accession
 already loaded become available no earlier than the reconciliation date, while
 retired versions remain queryable at earlier dates. Explicit ratio effective
 dates are separate: a known future change is not in force before its stated date.
+`effective_date_explicit` distinguishes a date stated in the document from the
+filing-plus-one fallback. An F-6 using that fallback is deferred when a 6-K
+already public by the F-6's publication announces the same program, underlying
+class and exact ratio on one unique future date. Deferral happens before the
+latest-filing selection, so the previous ratio remains available until the
+announced change. It does not change stored publication dates, override an
+explicit F-6 effective date, or choose between conflicting future dates. For
+ANPC, the October 18, 2022 announcement places the October 24 F-6's new 1:20
+ratio into force on November 4, rather than on its filing-plus-one fallback.
 The original document hash, accession, source URL, source text, parser version,
 location, date authority and publication-floor evidence travel with every fact.
 

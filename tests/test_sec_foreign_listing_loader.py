@@ -65,9 +65,18 @@ def test_concurrent_checkpoint_writers_have_unique_temporary_paths(tmp_path, mon
     original_replace = Path.replace
     barrier = threading.Barrier(2)
     temporary_paths = []
+    first_attempts = set()
+    attempt_lock = threading.Lock()
     def replace(path, target):
-        temporary_paths.append(path)
-        barrier.wait(timeout=5)
+        # Windows may retry an actual replace after the competing writer exits.
+        # Synchronize the two first attempts, not a retry with no remaining peer.
+        with attempt_lock:
+            first_attempt = threading.get_ident() not in first_attempts
+            if first_attempt:
+                first_attempts.add(threading.get_ident())
+                temporary_paths.append(path)
+        if first_attempt:
+            barrier.wait(timeout=5)
         return original_replace(path, target)
     monkeypatch.setattr(Path, "replace", replace)
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -768,9 +777,11 @@ def test_unmanifested_evidence_never_reconciles():
 
 
 @pytest.mark.parametrize("metadata,expected", [
-    ({}, (None, True)),
-    ({"underlying_class": "class_a", "ordinary_candidate": True}, ("class_a", True)),
-    ({"underlying_class": "series_b", "ordinary_candidate": False}, ("series_b", False)),
+    ({}, (None, True, False)),
+    ({"underlying_class": "class_a", "ordinary_candidate": True}, ("class_a", True, False)),
+    ({"underlying_class": "series_b", "ordinary_candidate": False}, ("series_b", False, False)),
+    ({"effective_date_explicit": True}, (None, True, True)),
+    ({"effective_date_explicit": False}, (None, True, False)),
 ])
 def test_apply_preserves_class_and_ordinary_candidate_metadata(metadata, expected):
     class Cursor:
@@ -811,7 +822,7 @@ def test_apply_preserves_class_and_ordinary_candidate_metadata(metadata, expecte
     connection = Connection()
     loader.apply_evidence(connection, _manifest(source), [fact], date(2026, 10, 9))
     actual = connection.result.inserted
-    assert (actual["underlying_class"], actual["ordinary_candidate"]) == expected
+    assert (actual["underlying_class"], actual["ordinary_candidate"], actual["effective_date_explicit"]) == expected
 
 
 def test_load_key_never_needs_a_secret_cli_argument(tmp_path, monkeypatch):
