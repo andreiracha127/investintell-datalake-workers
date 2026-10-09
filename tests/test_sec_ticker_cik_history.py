@@ -1,7 +1,8 @@
 """SEC cover-page ticker -> (CIK, class) history: parser, loader and resolvers.
 
 Unit tests need no database. The DB tests run against a disposable loopback
-PostgreSQL named by ``SEC_TEST_DATABASE_URL`` (postgres:16 in CI), each inside
+PostgreSQL named by ``SEC_TEST_DATABASE_URL`` (in CI the production engine:
+TimescaleDB 2.27.2 on PostgreSQL 18, collation en_US.utf8 on musl), each inside
 its own schema, and skip when the variable is unset. Expected values are
 written out by hand from the documented rules, not computed by the code under
 test. Form 15/25 parsing is checked on real EDGAR filings
