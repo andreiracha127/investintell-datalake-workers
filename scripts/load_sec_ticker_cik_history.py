@@ -131,8 +131,9 @@ READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
 # a shareholder rights plan is no employee plan (CAE's 8-A12B of its common shares
 # "including associated ... purchase rights pursuant to the ... Rights Plan"). v6:
 # a successor's Form 8-K12B or 8-K12G3 (and its /A) is read for the classes it
-# continues (parse_successor_document).
-EVENT_PARSER_VERSION = "sec_event_class_v6"
+# continues (parse_successor_document). v7: a successor's Rule 12g-3 sentence that
+# names no equity class states no class ('unknown'), never another kind.
+EVENT_PARSER_VERSION = "sec_event_class_v7"
 # Names the package parser (symbols, classes, share counts). Recorded on each
 # package and on each fact version it inserts; not part of a fact's hash. v3: a
 # line's member refines a title that does not say what the line is (truncated or
@@ -1491,13 +1492,17 @@ def parse_successor_document(raw: str) -> EventClass:
         block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
         if _names_a_class(block):
             description = block[:500]
+    kind = event_class_kind(description)
     if description is None:
         sentence = _SUCCESSOR_SENTENCE_RE.search(body)
         if sentence:
             description = sentence.group(0).strip()[:500]
+            # the sentence registers the successor's securities: naming no equity
+            # class, it states no class (not another kind, which carries nothing on)
+            kind = "equity" if event_class_kind(description) == "equity" else "unknown"
     return EventClass(
         class_description=description,
-        class_kind=event_class_kind(description),
+        class_kind=kind,
         class_count=class_count(description),
         provision=None,
         extinguished=None,

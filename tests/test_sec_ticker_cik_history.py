@@ -2435,6 +2435,13 @@ def test_a_successor_registration_is_read_for_the_classes_it_continues(
     assert (read.class_kind, read.class_count) == ("equity", 1)
     assert read.class_description.startswith("Pursuant to Rule 12g-3(c)")
     assert "8-K12B" in loader.READ_EVENT_FORMS and "8-K12G3/A" in loader.READ_EVENT_FORMS
+    # Pentair's 2012 8-K12B names no class in its Rule 12g-3 sentence: it states
+    # no class (and so carries on a one-symbol issuer's class), never another kind
+    pentair = ("<DOCUMENT><TEXT>Item 8.01 Successor Issuer In connection with the Merger and by "
+               "operation of Rule 12g-3(a) promulgated under the Securities Exchange Act of 1934, "
+               "Pentair Ltd. is the successor issuer to Pentair, Inc. Item 9.01</TEXT></DOCUMENT>")
+    read = loader.parse_event_document(pentair, "8-K12B")
+    assert read.class_kind == "unknown" and "Rule 12g-3(a)" in read.class_description
     conn, dsn = schema_dsn
     docs = tmp_path / "docs"
     docs.mkdir()
