@@ -31,8 +31,12 @@ from scripts import load_sec_ticker_cik_history as loader
 ROOT = Path(__file__).resolve().parents[1]
 V1_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v1.sql").read_text(encoding="utf-8")
 V2_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v2.sql").read_text(encoding="utf-8")
-# A fresh installation applies v1, then v2 (production applied v1 on 2026-10-08).
-SCHEMA_SQL = V1_SQL + V2_SQL
+V3_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v3.sql").read_text(encoding="utf-8")
+# Existing behavior tests exercise the current contract; migration tests pin their version.
+SCHEMA_SQL = V1_SQL + V2_SQL + V3_SQL
+V3_ROLLBACK_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v3.rollback.sql").read_text(
+    encoding="utf-8"
+)
 ROLLBACK_SQL = (ROOT / "schemas" / "sec_ticker_cik_history_v1.rollback.sql").read_text(
     encoding="utf-8"
 )
@@ -46,6 +50,14 @@ FSN_FIXTURES = ROOT / "tests" / "fixtures" / "sec_ticker_cik_history"
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 READERS = ("app_runtime", "app_analytics_ro", "mcp_ro")
 FUNCTIONS = (
+    "sec_end_role(text[],text[],text,text[],text,text,text,text,jsonb)",
+    "sec_issuer_end_scopes(bigint,date,boolean)",
+    "sec_registration_identifies(bigint,date,boolean,date,date,text,text)",
+    "sec_instrument_label(text,text,text)",
+    "sec_issuer_lines_at(bigint,date,boolean,date)",
+    "sec_instrument_scopes(text)",
+    "sec_class_label_history(bigint,date,boolean,jsonb)",
+    "sec_named_kinds(text)",
     "sec_observations_at(date,boolean)",
     "sec_share_counts_at(date,boolean)",
     "sec_registration_end_events(bigint,date,boolean)",
@@ -1309,11 +1321,11 @@ def _ends(conn, cik: int, as_of: str) -> list[tuple]:
 
 def test_schema_reapplies_and_rolls_back_cleanly(schema_dsn) -> None:
     conn, _ = schema_dsn
-    conn.execute(V2_SQL)  # idempotent (v1 cannot replace the functions v2 reshaped)
+    conn.execute(V3_SQL)  # idempotent current contract
     _observe(conn, 732717, "T", "2024-01-10")
     assert conn.execute("SELECT ticker_key, available_on FROM sec_ticker_cik_observations"
                         ).fetchone() == ("T", d(2024, 1, 11))
-    conn.execute(V2_ROLLBACK_SQL)  # a full removal rolls v2 back first (the runbook)
+    conn.execute(V3_ROLLBACK_SQL + V2_ROLLBACK_SQL)  # roll back in reverse migration order
     conn.execute(ROLLBACK_SQL)
     leftovers = conn.execute(
         "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
@@ -2046,7 +2058,10 @@ def test_resolvers_inline_into_lateral_joins(schema_dsn) -> None:
         "LATERAL sec_cover_ticker_shares_at(t, 1, DATE '2024-01-01') i",
     ):
         plan = "\n".join(r[0] for r in conn.execute("EXPLAIN " + query).fetchall())
-        assert "Function Scan on sec_" not in plan, plan
+        # V3's bulk title-history and dated line-identity helpers are intentionally
+        # PL/pgSQL. Public resolvers and every other SEC SQL routine must inline.
+        scans = set(re.findall(r"\bFunction Scan on (sec_\w+)\b", plan))
+        assert scans <= {"sec_class_label_history", "sec_issuer_lines_at"}, plan
 
 
 def test_class_relabel_with_a_rename_closes_the_old_symbol_everywhere(schema_dsn) -> None:
@@ -2557,7 +2572,7 @@ def test_a_successor_registration_is_read_for_the_classes_it_continues(
                documents=loader.EventDocuments(docs, None), reconciled_on=d(2023, 12, 1))
     assert conn.execute(
         "SELECT filed, classes FROM sec_registration_starts(1570585, '2023-12-01') ORDER BY filed"
-    ).fetchall() == [(d(2013, 6, 7), []), (d(2023, 11, 24), ["a", "b", "c"])]
+    ).fetchall() == [(d(2013, 6, 7), []), (d(2023, 11, 24), ["class:a", "class:b", "class:c"])]
     _event(conn, 1570585, "25-NSE", "2023-11-24", kind="equity", count=3, extinguished=True,
            venue_kind="primary",
            description="Class A Ordinary Shares, Class B Ordinary Shares, Class C Ordinary Shares")
@@ -2883,7 +2898,7 @@ def test_a_registration_of_another_class_does_not_transfer_the_ended_class(
     on = d(2024, 3, 4)
     assert conn.execute(
         "SELECT r.classes FROM sec_registration_starts(100, '2024-03-04') r").fetchall() == [
-        (["a"],)]
+        (["class:a"],)]
     assert conn.execute(
         "SELECT form, effective_on, class_keys FROM sec_issuer_end_events(100, '2024-03-04')"
     ).fetchall() == [("25-NSE", d(2024, 3, 2), ["CommonClassB"])]
@@ -3199,16 +3214,16 @@ def test_production_class_label_forms_read_as_identifiers(schema_dsn) -> None:
     curated readings below."""
     conn, _ = schema_dsn
     corpus = json.loads((FSN_FIXTURES / "production_class_labels.json").read_text(encoding="utf-8"))
-    valid = re.compile(r"^(?:[a-z]{1,2}|[a-z][0-9]{1,2}|[0-9]{1,4}[a-z0-9]{0,2})$")
+    valid = re.compile(r"^(?:class|series):(?:[a-z]{1,2}|[a-z][0-9]{1,2}|[0-9]{1,4}[a-z0-9]{0,2})$")
     words = {"of", "is", "to", "in", "on", "as", "an", "or", "by", "no", "be", "it", "at"}
     bad = []
     for text in corpus["titles"] + corpus["members"]:
         label = conn.execute("SELECT sec_class_label(%s, NULL)", (text,)).fetchone()[0]
-        if label is not None and (not valid.match(label) or label in words):
+        if label is not None and (not valid.match(label) or label.split(":")[-1] in words):
             bad.append((text, label))
     for text in corpus["descriptions"]:
         for label in conn.execute("SELECT sec_named_classes(%s)", (text,)).fetchone()[0]:
-            if not valid.match(label) or label in words:
+            if not valid.match(label) or label.split(":")[-1] in words:
                 bad.append((text, label))
     spaced = re.compile(r"\bClass ([A-Z]|[0-9]{1,2}|[IVX]{1,4})\b")
     for text in corpus["titles"]:
@@ -3221,25 +3236,25 @@ def test_production_class_label_forms_read_as_identifiers(schema_dsn) -> None:
         if len(labels) != 1 or None in labels:
             bad.append((text, sorted(map(str, labels))))
     curated = {
-        ("Class A Common Stock", None): "a",
-        ("ClassA Common Stock, par value $0.0001 per share", "ClassOfStock=CommonClassB;"): "a",
-        ("Title of each classClass A Common Stock", None): "a",
-        ("CLASS A COMMON STOCK", None): "a",
-        ("Class A-1 Common Stock", None): "a1",
-        ("Class2 Common Stock, $0.0001 par value per share", None): "2",
-        ("Class ACommon Stock, par value $0.0001 per share", None): "a",
-        ("Class Acommon stock, $0.0001 par value", None): "a",
-        ("American Depositary Shares, each representing twelveSeries B", None): "b",
-        ("Series 60 units", None): "60",
-        (None, "ClassOfStock=ClassIICommonStock;"): "2",
-        ("Class II Common Stock", None): "2",
-        ("Class XIV Common Stock", None): "14",
-        (None, "ClassOfStock=Class160A160OrdinaryShares;"): "a",
-        (None, "ClassOfStock=ClassaCommonStock;"): "a",
-        (None, "ClassOfStock=SeriescGciGroupCommonStock;"): "c",
-        (None, "ClassOfStock=ClassBSeries1CommonStock;"): "b",
-        (None, "ClassOfStock=Series2019ACorporateUnits;"): "2019a",
-        (None, "ClassOfStock=ClassB2CommonStock;"): "b2",
+        ("Class A Common Stock", None): "class:a",
+        ("ClassA Common Stock, par value $0.0001 per share", "ClassOfStock=CommonClassB;"): "class:a",
+        ("Title of each classClass A Common Stock", None): "class:a",
+        ("CLASS A COMMON STOCK", None): "class:a",
+        ("Class A-1 Common Stock", None): "class:a1",
+        ("Class2 Common Stock, $0.0001 par value per share", None): "class:2",
+        ("Class ACommon Stock, par value $0.0001 per share", None): "class:a",
+        ("Class Acommon stock, $0.0001 par value", None): "class:a",
+        ("American Depositary Shares, each representing twelveSeries B", None): "series:b",
+        ("Series 60 units", None): "series:60",
+        (None, "ClassOfStock=ClassIICommonStock;"): "class:2",
+        ("Class II Common Stock", None): "class:2",
+        ("Class XIV Common Stock", None): "class:14",
+        (None, "ClassOfStock=Class160A160OrdinaryShares;"): "class:a",
+        (None, "ClassOfStock=ClassaCommonStock;"): "class:a",
+        (None, "ClassOfStock=SeriescGciGroupCommonStock;"): "series:c",
+        (None, "ClassOfStock=ClassBSeries1CommonStock;"): "class:b",
+        (None, "ClassOfStock=Series2019ACorporateUnits;"): "series:2019a",
+        (None, "ClassOfStock=ClassB2CommonStock;"): "class:b2",
         (None, "ClassOfStock=CommonStock;"): None,
         (None, "ClassOfStock=ClassOrdinaryShares;"): None,
         (None, "ClassesOfShareCapital=OrdinaryShares;"): None,
@@ -3251,16 +3266,16 @@ def test_production_class_label_forms_read_as_identifiers(schema_dsn) -> None:
         if got != want:
             bad.append(((title, key), want, got))
     named = {
-        "Class A and Class B common stock": ["a", "b"],
-        "Classes A, B and C common stock": ["a", "b", "c"],
-        "Class 2 and Class 3 shares": ["2", "3"],
-        "Class II common stock": ["2"],
-        "Class 2 and Class III common stock": ["2", "3"],
-        "Series A and Series C Common Stock": ["a", "c"],
-        "Series A Liberty Live Common Stock & Series C Liberty Live Common Stock": ["a", "c"],
-        "Class A Common Stock, Class B Common Stock, Series C Common Stock": ["a", "b", "c"],
+        "Class A and Class B common stock": ["class:a", "class:b"],
+        "Classes A, B and C common stock": ["class:a", "class:b", "class:c"],
+        "Class 2 and Class 3 shares": ["class:2", "class:3"],
+        "Class II common stock": ["class:2"],
+        "Class 2 and Class III common stock": ["class:2", "class:3"],
+        "Series A and Series C Common Stock": ["series:a", "series:c"],
+        "Series A Liberty Live Common Stock & Series C Liberty Live Common Stock": ["series:a", "series:c"],
+        "Class A Common Stock, Class B Common Stock, Series C Common Stock": ["class:a", "class:b", "series:c"],
         "Series A Preferred Stock": [],
-        "Name of exchange on which each class is to be registered Class A common stock": ["a"],
+        "Name of exchange on which each class is to be registered Class A common stock": ["class:a"],
         "Common Stock, par value $0.0001 per share (Title of class of securities)": [],
     }
     for text, want in named.items():
@@ -4014,8 +4029,8 @@ def test_readers_get_select_and_execute_only(schema_dsn) -> None:
     for role in (*created, stranger):
         conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
     try:
-        # With the roles present: back to v1, v1 again (tables), then v2 (routines).
-        conn.execute(V2_ROLLBACK_SQL + SCHEMA_SQL)
+        # With roles present: back to v1, then reinstall the governed migrations.
+        conn.execute(V3_ROLLBACK_SQL + V2_ROLLBACK_SQL + SCHEMA_SQL)
         for table in TABLES:
             relation = f"{schema}.{table}"
             assert conn.execute(

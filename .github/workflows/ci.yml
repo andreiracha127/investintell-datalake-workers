@@ -171,6 +171,7 @@ jobs:
             tests/test_sec_regulatory_serving_materializer.py
             tests/test_sec_source_manifests.py
             tests/test_sec_ticker_cik_history.py
+            tests/test_sec_ticker_cik_history_v3.py
             tests/test_sec_insider_ticker_evidence.py
             tests/test_bond_default_contracts.py
             tests/test_bond_default_edgar.py
@@ -866,6 +867,7 @@ jobs:
           set -euo pipefail
           tests=(
             tests/test_sec_ticker_cik_history.py
+            tests/test_sec_ticker_cik_history_v3.py
             tests/test_sec_insider_ticker_evidence.py
           )
           printf 'environment_mode=timescale-pg18\nselected_scope=%s\n' "${tests[*]}"
@@ -969,6 +971,7 @@ jobs:
           tests/test_backfill_nport_holding_attributes.py
           tests/test_load_nport_fund_flows.py
           tests/test_sec_ticker_cik_history.py
+          tests/test_sec_ticker_cik_history_v3.py
           tests/test_sec_insider_ticker_evidence.py
           -q
 
@@ -1028,6 +1031,7 @@ jobs:
           tests/test_backfill_nport_holding_attributes.py
           tests/test_load_nport_fund_flows.py
           tests/test_sec_ticker_cik_history.py
+          tests/test_sec_ticker_cik_history_v3.py
           tests/test_sec_insider_ticker_evidence.py
 
       - name: Compile N-PORT modules
