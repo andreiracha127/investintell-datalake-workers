@@ -1,0 +1,27 @@
+CALCULATION OF REGISTRATION FEE
+
+<TABLE>
+<CAPTION>
+------------------------------------------------------------------------------------------------------------------------------------
+                                                                         Proposed Maximum
+                                                                             Aggregate              Proposed             Amount of
+   Title of Each Class of                              Amount to be       Offering Price        Maximum Aggregate       Registration
+Securities to be Registered                             Registered*         Per Unit **         Offering Price ***           Fee
+------------------------------------------------------------------------------------------------------------------------------------
+<S>                                                     <C>                    <C>                 <C>                     <C>
+American Depositary Shares ("ADSs"), each ADS           200,000,000            $5.00               $10,000,000             $307
+representing five (5) Common Shares, par value
+NT$10 each, of Taiwan Semiconductor Manufacturing
+Company Limited.
+------------------------------------------------------------------------------------------------------------------------------------
+</TABLE>
+
+*     An additional 960,000,000 American Depositary Shares were previously
+      registered under Registration Statement Nos. 333-7610, 333-9676,
+      333-11958, 333-14230, 333-123814 and 333-126397 which are each being
+      amended hereby.
+**    Each unit represents 100 American Depositary Shares.
+***   Estimated solely for the purpose of calculating the registration fee.
+      Pursuant to Rule 457(k), such estimate is computed on the basis of the
+      maximum aggregate fees or charges to be imposed in connection with the
+      issuance of such receipts evidencing such American Depositary Shares.
