@@ -53,10 +53,11 @@ from scripts.load_sec_ticker_cik_history import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "sec_insider_ticker_evidence.sql"
-PARSER_VERSION = "sec_insider_v2"
+PARSER_VERSION = "sec_insider_v3"
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 DERA_LISTING_URL = "https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets"
 SECAPI_BASE = "https://api.sec-api.io"
+SECAPI_STREAM_RETRY = frozenset({400})
 DEFAULT_ROOT = Path("E:/investintell-data/w1b")
 DEFAULT_DOTENV = Path("E:/investintell-light/backend/.env")
 DERA_RE = re.compile(r"^(?P<year>\d{4})q(?P<quarter>[1-4])_form345\.zip$", re.I)
@@ -359,8 +360,13 @@ def _read_member(archive: zipfile.ZipFile, member: zipfile.ZipInfo, limit: int) 
     return data
 
 
-def iter_secapi_filings(path: Path, *, stats: Counter | None = None) -> Iterator[InsiderFiling]:
-    """One observation per accession, ignoring duplicate HTML/XSL renderings."""
+def iter_secapi_filings(path: Path, *, stats: Counter | None = None,
+                        metadata_only: list[str] | None = None) -> Iterator[InsiderFiling]:
+    """One observation per accession, ignoring duplicate HTML/XSL renderings.
+
+    Accessions with metadata but no ownership XML yield no fact; they are added
+    to ``metadata_only`` so the package still records them as members.
+    """
     stats = stats if stats is not None else Counter()
     package = package_name(path, "sec-api")
     with zipfile.ZipFile(path) as archive:
@@ -388,6 +394,11 @@ def iter_secapi_filings(path: Path, *, stats: Counter | None = None) -> Iterator
                 found = filing
             stats["metadata_filings"] += 1
             if found is None:
+                accession = str(metadata.get("accessionNo") or metadata.get("accessionNumber") or "")
+                if not ACCESSION_RE.fullmatch(accession):
+                    raise ValueError(f"{package}: filing metadata without a valid accession")
+                if metadata_only is not None:
+                    metadata_only.append(accession)
                 stats["non_xml_filings"] += 1
                 continue
             stats["filings"] += 1
@@ -424,12 +435,21 @@ def load_package(conn, path: Path, *, source: str | None = None,
                             (validators.get("etag"), validators.get("last_modified") or validators.get("updatedAt"), package))
                 return {"package": package, "skipped": "unchanged", "sha256": digest}
             cur.execute("CREATE TEMP TABLE tmp_insider_stage (accession text PRIMARY KEY, cik bigint NOT NULL, raw_symbol text NOT NULL, normalized_symbols text[] NOT NULL, form text NOT NULL, filed date NOT NULL, accepted timestamptz, source text NOT NULL, source_package text NOT NULL, fact_hash text NOT NULL, source_available_on date NOT NULL) ON COMMIT DROP")
-            iterator = iter_dera_filings(path, stats=stats) if source == "dera" else iter_secapi_filings(path, stats=stats)
+            metadata_only: list[str] = []
+            iterator = (iter_dera_filings(path, stats=stats) if source == "dera"
+                        else iter_secapi_filings(path, stats=stats, metadata_only=metadata_only))
             with cur.copy(f"COPY tmp_insider_stage ({', '.join(STAGE_COLUMNS)}) FROM STDIN") as copy:
                 for filing in iterator:
                     copy.write_row(filing.stage_row())
             if not stats["filings"]:
                 raise ValueError(f"{package}: no structured insider filings found")
+            # Members include accessions that yielded no fact (metadata without
+            # ownership XML), so a fact learned later is dated by reconciliation.
+            cur.execute("CREATE TEMP TABLE tmp_insider_members (accession text PRIMARY KEY) ON COMMIT DROP")
+            with cur.copy("COPY tmp_insider_members (accession) FROM STDIN") as copy:
+                for accession in sorted(set(metadata_only)):
+                    copy.write_row((accession,))
+            cur.execute("INSERT INTO tmp_insider_members SELECT accession FROM tmp_insider_stage ON CONFLICT DO NOTHING")
             cur.execute("CREATE TEMP TABLE tmp_insider_old ON COMMIT DROP AS SELECT fact_hash FROM sec_insider_package_facts WHERE source_package = %s AND retired_on IS NULL", (package,))
             # Retire only carriers that disappeared from this fully staged revision.
             cur.execute("UPDATE sec_insider_package_facts p SET retired_on = %s WHERE p.source_package = %s AND p.retired_on IS NULL AND NOT EXISTS (SELECT 1 FROM tmp_insider_stage s WHERE s.fact_hash = p.fact_hash)", (on, package))
@@ -439,14 +459,14 @@ def load_package(conn, path: Path, *, source: str | None = None,
             # The accession history is checked before new package memberships are inserted.
             cur.execute(f"INSERT INTO sec_insider_filings ({', '.join(FACT_COLUMNS)}, source_package, fact_hash, source_version, available_on, loaded_on) SELECT {', '.join('s.' + c for c in FACT_COLUMNS)}, s.source_package, s.fact_hash, %s, CASE WHEN EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.accession = s.accession) THEN GREATEST(s.source_available_on, %s) ELSE s.source_available_on END, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_filings f WHERE f.fact_hash = s.fact_hash AND f.retired_on IS NULL)", (digest, on, on))
             inserted = cur.rowcount
-            cur.execute("UPDATE sec_insider_package_members m SET retired_on = %s WHERE m.source_package = %s AND m.retired_on IS NULL AND NOT EXISTS (SELECT 1 FROM tmp_insider_stage s WHERE s.accession = m.accession)", (on, package))
-            cur.execute("INSERT INTO sec_insider_package_members (source_package, accession, loaded_on) SELECT %s, s.accession, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.source_package = %s AND m.accession = s.accession AND m.retired_on IS NULL)", (package, on, package))
+            cur.execute("UPDATE sec_insider_package_members m SET retired_on = %s WHERE m.source_package = %s AND m.retired_on IS NULL AND NOT EXISTS (SELECT 1 FROM tmp_insider_members s WHERE s.accession = m.accession)", (on, package))
+            cur.execute("INSERT INTO sec_insider_package_members (source_package, accession, loaded_on) SELECT %s, s.accession, %s FROM tmp_insider_members s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.source_package = %s AND m.accession = s.accession AND m.retired_on IS NULL)", (package, on, package))
             rejected = {key: value for key, value in stats.items() if key not in ("filings", "symbol_facts", "metadata_filings")}
             cur.execute("INSERT INTO sec_insider_packages (source_package, source, source_version, package_sha256, package_bytes, parser_version, filings, rejected, remote_etag, remote_last_modified) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s) ON CONFLICT (source_package) DO UPDATE SET source = EXCLUDED.source, source_version = EXCLUDED.source_version, package_sha256 = EXCLUDED.package_sha256, package_bytes = EXCLUDED.package_bytes, parser_version = EXCLUDED.parser_version, filings = EXCLUDED.filings, rejected = EXCLUDED.rejected, loaded_at = now(), remote_etag = EXCLUDED.remote_etag, remote_last_modified = EXCLUDED.remote_last_modified",
                         (package, source, digest, digest, size, PARSER_VERSION, stats["filings"], json.dumps(rejected), validators.get("etag"), validators.get("last_modified") or validators.get("updatedAt")))
             # A caller may wrap several packages in its own transaction. ON
             # COMMIT DROP alone would retain these names until that outer commit.
-            cur.execute("DROP TABLE tmp_insider_stage, tmp_insider_old")
+            cur.execute("DROP TABLE tmp_insider_stage, tmp_insider_old, tmp_insider_members")
     return {"package": package, "sha256": digest, **dict(stats), "inserted": inserted, "retired": retired}
 
 
@@ -466,7 +486,9 @@ class HttpClient:
         if api_key:
             _SECRETS.add(api_key)
 
-    def request(self, url: str, *, method: str = "GET", authenticated: bool = False):
+    def request(self, url: str, *, method: str = "GET", authenticated: bool = False,
+                retry_statuses: frozenset[int] = frozenset()):
+        """429 and 5xx are retried; ``retry_statuses`` adds provider-specific ones."""
         parsed = urllib.parse.urlsplit(url)
         if authenticated and (parsed.hostname != "api.sec-api.io" or parsed.scheme != "https"):
             raise ValueError("refusing to send sec-api credentials to another host")
@@ -486,7 +508,7 @@ class HttpClient:
                 return urllib.request.urlopen(request, timeout=90)
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
                 status = getattr(exc, "code", None)
-                if attempt == 3 or (status and status != 429 and status < 500):
+                if attempt == 3 or (status and status != 429 and status < 500 and status not in retry_statuses):
                     raise RuntimeError(f"HTTP request failed for {urllib.parse.urlsplit(url).path}: {scrub(exc)}") from None
                 time.sleep(min(2**attempt, 10))
         raise AssertionError("unreachable")
@@ -498,9 +520,12 @@ class HttpClient:
     def download(self, url: str, path: Path, *, expected_size: int | None = None,
                  authenticated: bool = False) -> dict:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # sec-api's Bulk Datasets API answers 400 when streaming an archive fails
+        # and documents it as retryable; SEC and DERA keep the default policy.
+        retry = SECAPI_STREAM_RETRY if authenticated else frozenset()
         with tempfile.TemporaryDirectory(dir=path.parent, prefix=".insider-download-") as directory:
             staged = Path(directory) / "package.zip"
-            with self.request(url, authenticated=authenticated) as response, staged.open("wb") as output:
+            with self.request(url, authenticated=authenticated, retry_statuses=retry) as response, staged.open("wb") as output:
                 headers = dict(response.headers)
                 for chunk in iter(lambda: response.read(1024 * 1024), b""):
                     output.write(chunk)

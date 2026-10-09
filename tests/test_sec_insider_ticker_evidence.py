@@ -393,6 +393,37 @@ def test_http_client_preserves_user_agent_and_request_spacing_without_network(mo
         client.request("https://example.invalid/archive.zip", authenticated=True)
 
 
+def test_secapi_archive_streaming_400_is_retried_but_sec_400_is_not(tmp_path, monkeypatch):
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("2003-05/metadata.json", b"{}")
+    data = archive_bytes.getvalue()
+    hosts = []
+
+    class Response(io.BytesIO):
+        headers = {"Content-Length": str(len(data))}
+
+    def open_url(request, timeout):
+        hosts.append(insider.urllib.parse.urlsplit(request.full_url).hostname)
+        if len(hosts) < 3:  # sec-api's documented archive streaming failure
+            raise insider.urllib.error.HTTPError(request.full_url, 400, "Bad Request", {}, None)
+        return Response(data)
+
+    monkeypatch.setattr(insider.urllib.request, "build_opener", lambda *args: SimpleNamespace(open=open_url))
+    monkeypatch.setattr(insider.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(insider.time, "sleep", lambda seconds: None)
+    client = insider.HttpClient("fixture-test-key", spacing=0)
+    target = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    client.download("https://api.sec-api.io/datasets/form-4-files/2003/2003-05.zip", target,
+                    expected_size=len(data), authenticated=True)
+    assert hosts == ["api.sec-api.io"] * 3
+    assert target.read_bytes() == data
+    hosts.clear()
+    with pytest.raises(RuntimeError, match="HTTP request failed"):
+        client.download("https://www.sec.gov/files/2006q1_form345.zip", tmp_path / "2006q1_form345.zip")
+    assert hosts == ["www.sec.gov"]
+
+
 def test_safe_error_output_redacts_registered_key_and_postgres_password():
     insider.HttpClient("fixture-sensitive-api-key")
     text = insider.scrub(
@@ -787,3 +818,29 @@ def test_bad_republication_cannot_retire_last_good_package(clean_db, tmp_path):
     with pytest.raises((ValueError, RuntimeError)):
         insider.load_package(clean_db, package, source="dera", reconciled_on=dt.date(2026, 10, 9))
     assert _table_snapshot(clean_db) == before
+
+
+def test_metadata_only_accession_learned_later_is_dated_by_reconciliation(clean_db, tmp_path):
+    known, late = "0000700565-03-000110", "0001181431-03-009430"
+    package = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    package.parent.mkdir(parents=True)
+
+    def publish(late_has_xml):
+        with zipfile.ZipFile(package, "w") as archive:
+            for accession in (known, late):
+                fixture = FIXTURE / "secapi" / accession
+                folder = f"2003-05/{accession.replace('-', '')}"
+                archive.write(fixture / "metadata.json", f"{folder}/metadata.json")
+                if accession == known or late_has_xml:
+                    archive.write(fixture / "ownership.xml", f"{folder}/ownership.xml")
+                else:  # metadata with only an HTML rendering, no ownership XML
+                    archive.writestr(f"{folder}/rendering.xml", b"<html>rendering</html>")
+
+    publish(late_has_xml=False)
+    first = insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 8))
+    assert (first["filings"], first["non_xml_filings"]) == (1, 1)
+    publish(late_has_xml=True)
+    insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 9))
+    available = dict(clean_db.execute("SELECT accession, available_on FROM sec_insider_filings").fetchall())
+    # The republished XML is new knowledge, not a fact backdated to the 2003 filing.
+    assert available == {known: dt.date(2003, 5, 30), late: dt.date(2026, 10, 9)}
