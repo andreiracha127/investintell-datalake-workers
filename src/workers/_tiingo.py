@@ -180,6 +180,12 @@ def parse_supported_tickers(content: bytes) -> dict[str, str]:
     the security ``GET /tiingo/daily/{ticker}`` describes. A full tie falls to the
     larger ``assetType`` string, so the result does not depend on row order.
 
+    The file also carries reserved symbols for planned coverage, with no dates. An
+    empty ``endDate`` means open only on a row with a ``startDate``: a row without
+    one never outranks a dated listing, or a reservation for a future ETF would
+    retype the stock still trading on that ticker (and the reverse). A ticker with
+    only undated rows takes the type of its reservation.
+
     A file without the expected columns or rows raises ``ValueError``: an empty
     map would silently classify every ticker as unlisted."""
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -191,19 +197,20 @@ def parse_supported_tickers(content: bytes) -> dict[str, str]:
             missing = _SUPPORTED_COLUMNS - set(reader.fieldnames or ())
             if missing:
                 raise ValueError(f"supported_tickers.csv: missing columns {sorted(missing)}")
-            current: dict[str, tuple[str, str, str]] = {}
+            current: dict[str, tuple[bool, str, str, str]] = {}
             for row in reader:
                 ticker = (row["ticker"] or "").strip().upper()
                 asset_type = (row["assetType"] or "").strip()
                 if not ticker or not asset_type:
                     continue
-                key = ((row["endDate"] or "").strip() or "9999-12-31",
-                       (row["startDate"] or "").strip(), asset_type)
-                if key > current.get(ticker, ("", "", "")):
+                start = (row["startDate"] or "").strip()
+                key = (bool(start), (row["endDate"] or "").strip() or "9999-12-31",
+                       start, asset_type)
+                if ticker not in current or key > current[ticker]:
                     current[ticker] = key
     if not current:
         raise ValueError("supported_tickers.csv: no rows")
-    return {ticker: key[2] for ticker, key in current.items()}
+    return {ticker: key[3] for ticker, key in current.items()}
 
 
 class TiingoClient:

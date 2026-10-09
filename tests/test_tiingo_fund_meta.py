@@ -433,6 +433,27 @@ def test_parse_supported_tickers_types_each_ticker_by_its_current_listing():
     }
 
 
+def test_parse_supported_tickers_never_lets_an_undated_reservation_outrank_a_listing():
+    content = _supported_zip([
+        # A reservation for a future ETF on a ticker whose priced listing is a stock.
+        ("OLDS", "NYSE", "ETF", "USD", "", ""),
+        ("OLDS", "NYSE", "Stock", "USD", "1990-01-02", "2015-06-30"),
+        # The reverse, with the reservation first and an open-ended ETF listing:
+        # an empty endDate is open only on a row that has a startDate.
+        ("OPEN", "NASDAQ", "Mutual Fund", "USD", "", ""),
+        ("OPEN", "NASDAQ", "ETF", "USD", "2020-03-02", ""),
+        # An endDate without a startDate is still not a dated listing.
+        ("HALF", "NYSE", "ETF", "USD", "", "2026-10-08"),
+        ("HALF", "NYSE", "Stock", "USD", "2001-05-01", "2019-12-31"),
+        # Only a reservation: the ticker takes the reservation's type.
+        ("NEWF", "NYSE", "ETF", "USD", "", ""),
+    ])
+
+    types = parse_supported_tickers(content)
+
+    assert types == {"OLDS": "Stock", "OPEN": "ETF", "HALF": "Stock", "NEWF": "ETF"}
+
+
 def test_parse_supported_tickers_rejects_an_unusable_file():
     with pytest.raises(ValueError, match="missing columns"):
         parse_supported_tickers(_supported_zip([("AGG", "ETF")], header=("ticker", "type")))
