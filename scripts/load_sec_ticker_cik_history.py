@@ -150,8 +150,16 @@ EVENT_PARSER_VERSION = "sec_event_class_v8"
 # line's member refines a title that does not say what the line is (truncated or
 # run together: "Series B", "Depositary Shares, Each Representing a 1/400th
 # Interest in", "7.875% Senior Notesdue 2025"); Corporate Units and Tangible
-# Equity Units are units.
-FSN_PARSER_VERSION = "sec_fsn_v3"
+# Equity Units are units. v4: a line whose title does not say it is common,
+# ordinary or depositary stock but states a coupon, a fraction of a share or a
+# preferred's terms ("8.250% Series B Fixed-to-Floating Rate Cumulative
+# Redeemable", "Depositary Shares, each representing a 1/40th", "7.875% FXD / FRN
+# TruPS"), or whose symbol carries a preferred series suffix (CHMI-PB, VOYA-PB),
+# is preferred, as are a domestic issuer's plain "Depositary Shares" (MainStreet's
+# MNSBP); "Perferred" is preferred; a title opening with warrants ("Redeemable
+# warrants included as part of the units") or stating an exercise price is a
+# warrant's; notes run together with "due" ("1.750% Notesdue 2031") are debt.
+FSN_PARSER_VERSION = "sec_fsn_v4"
 # Why a fact version was retired (sec_*.retired_reason). SOURCE: the public record
 # changed (a republished package, an index that dropped or reassigned a row, a
 # monthly package superseded by its quarter): the old version stays visible before
@@ -276,11 +284,24 @@ _ATTACHED_RIGHTS_RE = re.compile(
     r".*?purchase\s+rights?.*$)",
     re.IGNORECASE,
 )
+# A title that opens with the class it is, whatever another row run into it adds
+# ("ClassA ordinary shares, par value $0.0001 per share Redeemable warrants, each
+# whole warrant ..."; "Common Stock, $0.001 par value per share Preferred Stock
+# Purchase Rights"); not "Common Stock Purchase Rights".
+_LEADING_EQUITY_RE = re.compile(
+    r"^\s*(?:class\s*[a-z0-9]{1,2}\s+)?(?:common|ordinary)\s+(?:stock|shares?)\b"
+    r"(?!\s*(?:purchase\b|rights?\b|warrants?\b))", re.IGNORECASE)
+# Symbols of a warrant, unit or right line (ACHR-WS, HAACW, CCHU-U, ...R).
+_INSTRUMENT_SYMBOL_RE = re.compile(r"-(?:WS|WT|W|U|UN|R|RT)$|^[A-Z]{4}[WUR]$")
 _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # "Redeemable warrants included as part of the units, each whole warrant ..."
+    ("warrant", re.compile(r"^\s*(?:redeemable\s+|public\s+)?warrants?\b", re.IGNORECASE)),
     ("debt", re.compile(
-        r"\bnotes?\b|debentures?|\bbonds?\b|\bdue\s+(?:19|20)\d\d\b|senior\s+(?:un)?secured"
+        r"\bnotes?(?:\b|(?=due))|debentures?|\bbonds?\b|\bdue\s*(?:19|20)\d\d\b"
+        r"|senior\s+(?:un)?secured"
         r"|subordinated|medium[-\s]term|\bloan\b", re.IGNORECASE)),
-    ("preferred", re.compile(r"preferred|preference|\bperpetual\b|\bpref\b", re.IGNORECASE)),
+    ("preferred", re.compile(r"p(?:re|er)fer+ed|preference|\bperpetual\b|\bpref\b",
+                             re.IGNORECASE)),
     # SPAC units, and the mandatory-convertible equity units (Corporate Units,
     # Tangible Equity Units: a purchase contract and a note), not common stock
     ("unit", re.compile(r"^\s*units?\b|\bunits?,?\s+each\b|\beach\s+unit\b"
@@ -289,6 +310,8 @@ _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("warrant", re.compile(r"warrant", re.IGNORECASE)),
     ("right", re.compile(r"^\s*rights?\b|\brights?,?\s+each\b|\bcontingent\s+value\b",
                          re.IGNORECASE)),
+    # "Class A ordinary share at an exercise price of $11.50 per share" (truncated)
+    ("warrant", re.compile(r"\bexercise\s+price\b", re.IGNORECASE)),
     ("depositary", re.compile(
         r"american\s*deposit[ao]ry|deposit[ao]ry\s*(?:shares|receipts)|\bADSs?\b|\bADRs?\b",
         re.IGNORECASE)),
@@ -308,6 +331,13 @@ _EQUITY_SEGMENT_RE = re.compile(r"Ordinary|Common(?:Stock|Shares?|Class)", re.IG
 # Cumulative Redeemable", "Depositary Shares, Each Representing a 1/400th Interest
 # in", "7.875% Senior Notesdue 2025") yields to a member naming debt or preferred
 # stock (IBKC's and US Bancorp's depositary preferreds, General Finance's notes).
+# What only a preferred line's title states when it does not say what the line is:
+# a coupon, a depositary share's fraction of a share, trust preferred securities,
+# a fixed-to-floating rate.
+_PREFERRED_TERMS_RE = re.compile(
+    r"\d+(?:\.\d+)?\s*%|\btrups\b|\bfixed[-\s]+to[-\s]+floating\b"
+    r"|deposit[ao]ry\b[^;]{0,80}?\b(?:1\s*/\s*[\d,]+(?:st|nd|rd|th)?|one[-\s]?(?:\w+th|hundredth"
+    r"|thousandth))\b", re.IGNORECASE)
 _EQUITY_TITLE_RE = re.compile(
     r"common|ordinary|american\s*deposit[ao]ry|\bADSs?\b|\bADRs?\b|capital\s+stock"
     r"|beneficial\s+interest|partnership", re.IGNORECASE)
@@ -602,10 +632,18 @@ def security_kind(title: str | None, ticker: str, segments: str, *,
     if title:
         text = _ATTACHED_RIGHTS_RE.sub("", title)
         kind = next((kind for kind, pattern in _KIND_RULES if pattern.search(text)), "equity")
+        if (kind not in EQUITY_KINDS and _LEADING_EQUITY_RE.search(text)
+                and not re.search(r"deposit[ao]ry|\bADS|\bADR", text, re.IGNORECASE)
+                and not _INSTRUMENT_SYMBOL_RE.search(ticker)
+                and not any(pattern.search(segments) for _, pattern in _SEGMENT_KIND_RULES)):
+            return "equity"
         if kind in EQUITY_KINDS and not _EQUITY_TITLE_RE.search(text):
             for refined, pattern in _SEGMENT_KIND_RULES[:2]:  # debt, preferred
                 if pattern.search(segments):
                     return refined
+            if (_PREFERRED_TERMS_RE.search(text) or re.search(r"-P[A-Z]$", ticker)
+                    or (kind == "depositary" and not foreign)):
+                return "preferred"
         return kind
     for kind, pattern in _SEGMENT_KIND_RULES:
         if pattern.search(segments):

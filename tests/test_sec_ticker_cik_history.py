@@ -1876,6 +1876,47 @@ def _fsn_fixture(name: str, target: Path) -> Path:
     return target
 
 
+@pytest.mark.parametrize(("fixture", "expected"), [
+    # Package parser v4 (W1 v3 handoff audit). Titles that do not say what a line
+    # is: Cherry Hill's truncated "8.250% Series B Fixed-to-Floating Rate
+    # Cumulative Redeemable" under a member without "Preferred" (v3: equity).
+    ("fsn_2026_08_chmi", {"CHMI": "equity", "CHMI-PA": "preferred", "CHMI-PB": "preferred"}),
+    # Voya's "Depositary Shares, each representing a 1/40th" (v3: depositary).
+    ("fsn_2026_08_voya", {"VOYA": "equity", "VOYA-PB": "preferred"}),
+    # Citigroup's trust preferred securities "7.875% FXD / FRN TruPS of Cap XIII"
+    # and "7.625% TRUPs of Cap III" (v3: equity).
+    ("fsn_2026_09_citi", {"C": "equity", "C-N": "preferred", "C-36Y": "preferred",
+                          "C-PR": "preferred", "C-26": "debt", "C-28": "debt", "C-28A": "debt",
+                          "C-28B": "debt", "C-29A": "debt"}),
+    # IBM's notes run together with "due" ("1.750% Notesdue 2031", v3: equity, and
+    # counted among the filing's equity classes).
+    ("fsn_2023q2_ibm", {"IBM": "equity", **{t: "debt" for t in (
+        "IBM-23A", "IBM-24A", "IBM-25", "IBM-25A", "IBM-25B", "IBM-25C", "IBM-26B", "IBM-27",
+        "IBM-27B", "IBM-27F", "IBM-28", "IBM-28A", "IBM-28B", "IBM-29", "IBM-30", "IBM-31",
+        "IBM-31B", "IBM-32A", "IBM-32D", "IBM-34", "IBM-35", "IBM-38", "IBM-40", "IBM-43",
+        "IBM-45", "IBM-96")}}),
+    # MainStreet's plain "Depositary Shares" on a domestic 8-K (v3: depositary).
+    ("fsn_2026_08_mnsb", {"MNSB": "equity", "MNSBP": "preferred"}),
+    # EVgo's "Redeemable warrants included as part of the units, each whole
+    # warrant ..." (v3: unit); its Class B common stock is counted, not listed.
+    ("fsn_2026_05_evgo", {"EVGO": "equity", "EVGOW": "warrant"}),
+    # TLGY Acquisition: the shares' title runs into the warrants' ("ClassA
+    # ordinary shares, par value $0.0001 per share Redeemable warrants, each
+    # whole warrant ...", v3: warrant), and the warrants' is cut to "Class A
+    # ordinary share at an exercise price of $11.50 per share" (v3: equity).
+    ("fsn_2023q1_tlgy", {"TLGY": "equity", "TLGYU": "unit", "TLGYW": "warrant"}),
+])
+def test_lines_a_title_does_not_name_read_as_what_they_are(
+    fixture: str, expected: dict[str, str], tmp_path: Path,
+) -> None:
+    result = loader.parse_package(_fsn_fixture(fixture, tmp_path / "2026_08_notes.zip"))
+    assert {o.ticker: o.security_kind for o in result.observations} == expected
+    # The equity classes each filing shows: its listed line, EVgo's Class B
+    # (counted, not listed), and TLGY's Class B and the "CommonStock" it counted.
+    assert {o.filing_equity_classes for o in result.observations} == {
+        "fsn_2026_05_evgo": {2}, "fsn_2023q1_tlgy": {3}}.get(fixture, {1})
+
+
 UNVERIFIED = "foreign_issuer_listing_unverified"
 
 
@@ -4761,6 +4802,7 @@ def test_a_parser_correction_restates_a_superseded_months_reading(
 
     # A later parser reads the month again, differently: the version the first
     # re-read inserted is the one it corrects.
+    first = loader.FSN_PARSER_VERSION
     monkeypatch.setattr(loader, "FSN_PARSER_VERSION", "sec_fsn_next")
     monkeypatch.setattr(loader, "PLACEHOLDER_KEYS", loader.PLACEHOLDER_KEYS | {"JWB"})
     stats = loader.run([month, quarter], dsn=dsn, dry_run=False,
@@ -4773,7 +4815,7 @@ def test_a_parser_correction_restates_a_superseded_months_reading(
         "SELECT filing_equity_classes, retired_on, retired_reason, parser_version "
         "FROM sec_ticker_cik_observations WHERE ticker = 'JWA' ORDER BY id").fetchall() == [
         (1, superseded, corrected, OLD_FSN_PARSER),
-        (2, superseded, corrected, "sec_fsn_v3"),
+        (2, superseded, corrected, first),
         (1, superseded, "source", "sec_fsn_next"),
     ]
 
