@@ -552,3 +552,270 @@ Railway service first. `schemas/sec_ticker_cik_history_v1.rollback.sql` removes
 the whole schema and its history (the tables are dropped); it is not part of
 this upgrade, and on a v2 database it runs after the v2 rollback (which drops
 v2's helper functions).
+
+## V3 contract follow-up
+
+`schemas/sec_ticker_cik_history_v3.sql` applies after the unchanged v1 and v2
+files. This section supersedes the v2 descriptions above where they differ.
+The admission rule and the parser-correction/source-change distinction remain
+the contract: visibility and the ordering of a statement are separate.
+
+- A label is unique when one **class key** carries it. A ticker change on an
+  incomplete cover does not turn that class into two classes or downgrade its
+  extinguishing end to a tentative closure.
+- Labels carry their namespace (`class:a`, `series:a`); Roman/Arabic equivalence
+  remains within that namespace. `Class II` and `Class 2` identify the same
+  class, while `Class A` and `Series A` never do. When a listed observation has
+  no explicit title label, the latest earlier explicit listed title for that
+  same CIK and raw class key remains authoritative over a member-name fallback.
+  A generic `CommonClassA` member cannot erase a previously stated `Series A`
+  legal title merely because a later cover omits its title. Both public
+  visibility and filing/acceptance order constrain this lookup; future titles
+  and non-listed instrument titles cannot supply the label.
+- Read successor amendments (`8-K12B/A`, `8-K12G3/A`) and equity-registering
+  `8-A12B/A`/`8-A12G/A` amendments contribute registration evidence at their
+  own filing date, subject to their public visibility date. A cancellation
+  removes the associated registration; an unread amendment cannot relist an
+  extinguished class. Restatements do not backdate newly named classes.
+- An end naming only preferred stock, warrants, units, rights or debt closes
+  its named instrument kinds. It does not close common stock merely because
+  its parser classification is `other`. Dependent purchase-right attachments
+  are removed before matching instrument kinds, in both “purchase rights” and
+  “rights ... to purchase” word orders. Each candidate statement supplies its
+  own instrument kind: a preferred/debt row elsewhere in a class's history,
+  including a future row, cannot make a named non-equity end close its common
+  stock statements. Listed aliases retain their existing class continuity.
+- An end amendment retains the original effective date for retained class
+  scope and dates newly added scope from the amendment's filing. The engines
+  preserve those separate scopes even when they share the original accession.
+- `available_on` and `retired_on` decide whether a fact is visible at D;
+  `source_available_on` orders its statement against other filings and ends.
+  Republishing an old cover after an end does not turn it into a later cover.
+- Text tie-breaks, class-key ordering and line linking use `COLLATE "C"`,
+  including text comparisons used to orient linking edges and choose labels.
+  The answers therefore do not depend on glibc versus Alpine libc text order.
+
+The migration replaces functions and a view, changes no table rows and runs in
+one transaction with `SET LOCAL lock_timeout = '5s'`. It is safe to re-apply.
+`schemas/sec_ticker_cik_history_v3.rollback.sql` restores the v2 definitions and
+removes only v3 helpers, preserving the fact history and parser-correction
+visibility. Ownership is `worker_writer`; PUBLIC access is revoked and the
+three reader roles retain EXECUTE/SELECT privileges as in v2.
+
+### Filing evidence and loader handoff
+
+The schema consumes the recorded registration reading; it cannot turn an
+unread filing into positive class evidence. The loader implementation belongs
+to the companion change and is not modified by this migration.
+
+The reported Arlington Asset 2023 relisting is not supported by its amendment.
+Its [8-A12B/A, accession 0001104659-23-126435](https://www.sec.gov/Archives/edgar/data/1209028/000110465923126435/tm2333039d2_8a12ba.htm),
+filed 2023-12-15, describes the expiration of rights to purchase Series A Junior
+Preferred Stock. It must not reopen the AAIC common line. Keep this as a negative
+registration regression when re-reading amendments.
+
+Liberty's [8-A12B, accession 0001104659-23-086344](https://www.sec.gov/Archives/edgar/data/1560385/000110465923086344/tm2320270d11_8a12b.htm),
+filed 2023-08-01, names Series B Liberty SiriusXM Common Stock. It precedes the
+2023-08-03 25-NSE by two days. The production-state `sec_event_class_v7` reading
+has an empty description and `class_kind = 'unknown'`; that reading is not
+positive evidence of the reissued class. The companion loader must capture the
+8-A's Section 12(b) table and re-derive this reading as a parser correction.
+
+For a same-symbol reclassification, v3 retains the end date but removes its
+permanent effect only for a class uniquely identified by a positively read
+equity 8-A registration filed in the preceding 30 days. A subsequent cover must
+positively state the class again before its line reopens. This does not erase
+the intervening gap or assume trading began on the registration date. A
+registration filed after the end uses the existing relisting rule: it must be
+public by the candidate cover. A sibling-class, ambiguous-label or unread
+registration cannot defeat a definitive end. This rule handles Liberty's
+actual filing sequence once the loader records its positive class evidence.
+
+Carlyle's [8-A12B/A, accession 0001193125-20-000229](https://www.sec.gov/Archives/edgar/data/1527166/000119312520000229/d650751d8a12ba.htm),
+filed 2020-01-02, is a positive amendment case: it registers the corporation's
+common stock after the conversion and continues the CG symbol. Its v7 event is
+unread. The companion loader must:
+
+1. Parse `8-A12B/A` and `8-A12G/A`, preserving the amendment's own filing date,
+   registered class and `restates`/`cancels` effect. Unread and non-equity
+   amendments cannot relist common stock.
+2. Populate amendment effects on the already selected `8-K12B/A` and
+   `8-K12G3/A` readings. Scope must come from their registration table or
+   successor sentence, not other classes mentioned in body prose.
+3. Fix the interleaved 8-A table header above, bump the event parser version and
+   re-derive changed readings with `parser_correction` retirements and the
+   filing's original public date.
+
+The full-load v2-to-v3 measurement uses unchanged production-state v7 facts.
+Any local experiment supplying corrected registration readings is separate
+from that migration-only impact. Applying SQL alone does not complete the
+Carlyle or Liberty data repair.
+
+### Local acceptance procedure
+
+Use a disposable loopback database on `timescale/timescaledb:2.27.2-pg18`
+(PostgreSQL 18.4, Alpine gcc 15.2.0), with `temp_buffers = 8MB`,
+`work_mem = 16MB`, `jit = off` and `en_US.utf8`. Run one file at a time with
+`PYTEST_WORKERS=2` and `SEC_TEST_DATABASE_URL` pointing to that local database:
+
+```powershell
+$env:PYTEST_WORKERS = '2'
+python -m pytest tests/test_sec_ticker_cik_history_v3.py -q
+python -m pytest tests/test_sec_ticker_cik_history.py -q
+```
+
+The new file also accepts `SEC_TEST_SCHEMA_VERSION=2` to run the same contract
+assertions on v2. The issue regressions must fail there; negative controls and
+the already-correct lifecycle invariants may pass. The original suite now
+installs v3, uses namespaced label expectations, and rolls v3 back before full
+schema removal. Its privilege check includes both new helpers, and its inlining
+check permits only the intentionally procedural `sec_class_label_history`
+helper while continuing to forbid other SEC function scans. Its explicitly
+versioned v2 migration test stays on v2.
+
+The invariant helper inspects every generated non-listed observation, including
+CIKs with listed history. It independently queries `sec_ticker_holds`,
+`sec_issuer_line_at`, `sec_ticker_line_runs` and `sec_line_alive_runs`; a run
+check is never skipped because a hold is inactive. Cases include the common T
+end/stale-cover/preferred T sequence under one CIK and the historical A-to-B
+ticker movement with matching, unrelated and absent registrations.
+
+Migration acceptance runs v2 -> v3 -> v3 again -> v3 rollback -> v3 on a full
+local copy, comparing relation filenodes and restored v2 routine definitions,
+with reader roles present for ownership/privilege checks. Light's two probes
+are copied from `cee5b0ab` outside the Light checkout. Their v2 fixture path may
+point to a local v2+v3 SQL bundle, and the edge probe's hash pin is changed to
+that bundle's hash; its assertions and query logic remain unchanged.
+
+Impact compares the same production-state v7 facts before and after migration:
+all end rows (including multiple scope rows for one accession), all class-to-line
+assignments, issuer answers for every ticker at five explicit dates, and the
+admission intervals of current listed ticker/class pairs. An admitted calendar
+day is in the union of `alive` intervals and outside the union of
+`other_holder` intervals. These are calendar-day counts, not a claim about
+available vendor price rows or exchange trading days. Performance samples use
+identical inputs and settings on both versions, in a quiet local database window.
+
+### V3 acceptance evidence (2026-10-09)
+
+Migration hashes:
+
+```text
+v3        f7475e53c8267100521fe4ae0dccfb8a937ad9b9a24890914e204df2169f1b0a
+rollback  4b9c5e68341eaa16b96fe69fec9f9661487df2c959bec5a447b5d0034bec627c
+```
+
+The existing full local reload was preserved as the v2 baseline and cloned for
+v3. It contains 859,210 current observations, 483,745 share counts and 80,824
+current events (28,564 read with `sec_event_class_v7`, 52,260 unread). The
+container image digest is
+`sha256:4051ec6e2c6c5b31fe789cf2cd87991ee1490b312b77fe02efaf51bec84b89b7`.
+Its build string is `PostgreSQL 18.4 on x86_64-pc-linux-musl, compiled by gcc
+(Alpine 15.2.0) 15.2.0, 64-bit`; TimescaleDB reports 2.27.2.
+
+| Migration operation | Time | Rewritten relations |
+|---|---:|---:|
+| v2 -> v3 | 20.33 ms | 0 |
+| Re-apply v3 | 22.42 ms | 0 |
+| Roll back to v2 | 18.36 ms | 0 |
+| Re-apply after rollback | 21.93 ms | 0 |
+
+All 43 physical relations, including dependent TOAST relations, retained their
+filenodes; all six fact/package tables retained their row counts. Rollback
+restored the exact identities and definitions of all 25 v2 routines. With the
+four roles present, all 27 v3 functions are owned by `worker_writer`, grant
+EXECUTE to the three readers and grant none to PUBLIC; all seven tables/views
+retain the expected reader SELECT privileges.
+
+Both unmodified Light probe assertion sets at `cee5b0ab` pass through the local
+v1+v2+v3 fixture bundle: the contract probe's four cases and the edge probe's
+nine cases, exit 0. Independent SQL review found no remaining concrete blocker
+within this change's scope; its final internal-array ordering recommendation
+is included.
+
+The expanded invariant checks cover 100 scenarios, 316 observations and 1,264
+independent engine evaluations, with zero violations. The new regression file
+passes all 50 cases in 36.88 seconds on the frozen v3 SQL. The existing file
+passes all 376 cases in 267.27 seconds: 426 passing tests in total. Running the
+same new suite on v2 produces 36 expected regression failures and 14 passing
+controls in 20.82 seconds. Ruff, whitespace and LF checks pass on both files.
+
+The real residuals were also exercised in rollback-only local transactions,
+supplying the class reading from each actual SEC filing without changing the
+committed v7 facts used for impact:
+
+- Liberty's pre-end evidence has exactly one `series:b` class key,
+  `LibertySiriusXmGroupCommonClassB`, under LSXMB. Supplying the seven registered
+  8-A title cells changes LSXMB from ended/not alive to resolved/alive on
+  2023-08-05, 2023-08-15 and 2023-09-01.
+- Supplying Carlyle's `Common Stock`, equity, one-class, restating amendment
+  changes CG to resolved/alive on 2020-02-15 and 2020-03-01. It remains ended
+  on January 2 (before public availability) and January 3 (no fresh cover).
+- Supplying Arlington's expired purchase-rights reading leaves AAIC ended on
+  2023-12-16 and 2023-12-20.
+
+Each experiment was rolled back and the original event reading checked again.
+These establish the schema behavior with the required source reading; they do
+not claim that a new loader parser was implemented or deployed in this change.
+
+On unchanged v7 facts, all 12,541 CIKs' ends and line maps were compared. End
+rows increase from 8,489 to 13,574, with 2,617 CIKs changing: 5,084 named
+non-equity scope rows are newly retained, equity rows increase from 8,432 to
+8,433 and unknown rows remain 57. All 35,788 class-to-line assignments are
+unchanged on the production image, whose ordering already agrees with C.
+
+| Admission population | Matched targets | Lines losing days | Days lost | Lines gaining days | Days gained | Lines changing both ways |
+|---|---:|---:|---:|---:|---:|---:|
+| Latest listed-kind-selected ticker/class targets | 14,928 | 64 | 13,883 | 64 | 13,862 | 3 |
+| Latest targets across all kinds | 21,680 | 2,798 | 1,488,172 | 357 | 52,729 | 126 |
+
+The second population uses exactly one latest target per ticker. It is not the
+sum of the first population and the 6,890 extra triples measured: 138 tickers
+have a latest all-kind target different from their latest listed-kind target.
+Both rows count calendar days from 2009-01-01 through 2026-10-09 inclusive.
+
+Large core losses have concrete scope causes: DCP/DPM's late preferred episode
+ends on 2023-10-17 with its Series C preferred-unit 25-NSE; DTLAP's Series A
+preferred Form 25 ends it on 2023-04-11; NGLS's Series A preferred-unit 25-NSE
+ends it on 2020-12-22. CNOBP and XFLTPRA lose days because preferred competing
+holder intervals, incorrectly suppressed in v2 across mixed-kind histories,
+are retained. The largest gains shorten/remove stale preferred competing runs
+(CHMIPB, CN/C36Y, VOYAPB). Their pinned v7 inputs contain mixed
+equity/depositary/preferred classifications across keys: these deltas describe
+the contract's answers on those facts, not an independent certification of the
+loader's economic classification.
+
+Every one of the 21,680 ticker keys was queried at each of five dates (108,400
+answers per version). There were no SQL errors, duplicate inputs or missing
+records. Full returned-row changes, including audit metadata, were:
+
+| Date | Changed answers | Changed status/identity/kind |
+|---|---:|---:|
+| 2010-12-31 | 0 | 0 |
+| 2015-12-31 | 15 | 13 |
+| 2020-12-31 | 617 | 594 |
+| 2023-12-31 | 1,631 | 1,540 |
+| 2026-10-09 | 2,157 | 2,010 |
+
+Bulk PIT queries were checked against individual calls, including 55 populated
+2026 inputs on both versions, with zero full-row mismatches. The final
+ordering-only internal request-array change was also checked against all
+12,541 CIK end outputs: zero differences.
+
+The final quiet benchmark used 60 systematically selected listed-kind targets
+plus T, three calls per target in persistent psycopg sessions, with no pytest
+or snapshot work running. The headline median is the median of those 61
+per-target medians. Both databases used the same production image and settings.
+
+| `sec_line_price_evidence` | v2 | v3 | Change |
+|---|---:|---:|---:|
+| Sample median | 15.416 ms | 22.411 ms | +45.4% |
+| T median | 685.784 ms | 265.454 ms | -61.3% (2.583x faster) |
+
+Registration and closure lookups are hoisted, unused historical label parsing
+is avoided, and named-kind parsing is cached. T improves substantially, but
+the added scope/lifecycle checks increase typical small-call overhead in this
+sample; this is not a general latency improvement. The older reported 128 ms
+median was not reproduced with this population/session methodology and must
+not be used as the before value for this comparison. Further median-latency
+optimization remains a follow-up, alongside the separately owned loader work.
