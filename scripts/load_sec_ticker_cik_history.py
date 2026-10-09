@@ -2735,6 +2735,19 @@ def discover_packages(packages_dir: Path) -> list[Path]:
     return sorted(found, key=package_sort_key)
 
 
+def superseded_package_names(dsn: str | None) -> set[str]:
+    """The packages recorded as superseded, read before --verify-cache drops the
+    files the SEC no longer lists: a superseded month's file, named on the command
+    line or found in --packages-dir, is kept for its restatement (its recorded
+    SHA-256 identifies it), not ignored."""
+    with connect(dsn, autocommit=True) as conn:
+        if conn.execute("SELECT to_regclass('sec_ticker_cik_packages') IS NULL").fetchone()[0]:
+            return set()
+        return {name for (name,) in conn.execute(
+            "SELECT source_package FROM sec_ticker_cik_packages WHERE superseded_by IS NOT NULL"
+        ).fetchall()}
+
+
 def listed_packages(packages: Iterable[Path], validators: dict[Path, object]) -> list[Path]:
     """After --verify-cache: only the package files the SEC lists and that were
     just verified, by path, load. Any other zip, such as a package the SEC no
@@ -2756,13 +2769,15 @@ def run(
     documents: EventDocuments | None = None,
     validators: dict[Path, tuple[str | None, str | None]] | None = None,
     superseded_dir: Path | None = None,
+    superseded_paths: Iterable[Path] = (),
 ) -> list[dict[str, object]]:
     """Parse and reconcile packages, then restate the superseded ones read by
-    another FSN_PARSER_VERSION (among ``packages``, or by name in
+    another FSN_PARSER_VERSION (``superseded_paths``, the files of superseded
+    packages --verify-cache could not verify; among ``packages``; or by name in
     ``superseded_dir``: the SEC no longer lists them), then indexes (reading end
     filings with ``documents``), then re-derive end events read by another parser
     version; ``reconciled_on`` dates every retirement and correction (default:
-    today)."""
+    today). A file of ``superseded_paths`` is only ever restated, never loaded."""
     stats: list[dict[str, object]] = []
     # Autocommit: each package commits in its own explicit transaction. The
     # session lock keeps this script and the recurring worker from interleaving.
@@ -2799,6 +2814,14 @@ def run(
                 item.update(supersede_monthly_packages(conn, path.name,
                                                        reconciled_on=reconciled_on))
                 item["load_seconds"] = round(time.monotonic() - started, 1)
+            print(json.dumps(item), flush=True)
+            stats.append(item)
+        for path in superseded_paths if conn is not None else ():
+            if superseded_version(conn, path.name) is not None:
+                restate[path.name] = path  # the caller's copy
+                continue
+            item = {"package": path.name,
+                    "skipped": f"superseded by {superseded_by(conn, path.name)}"}
             print(json.dumps(item), flush=True)
             stats.append(item)
         if conn is not None and superseded_dir is not None:
@@ -2875,9 +2898,15 @@ def main(argv: list[str] | None = None) -> int:
         sorted(args.packages, key=package_sort_key)
         if args.packages else discover_packages(args.packages_dir)
     )
+    superseded_paths: list[Path] = []
     if validators is not None:
-        packages = listed_packages(packages, validators)
-    if not packages:
+        unverified = [path for path in packages if path.resolve() not in validators]
+        if unverified and not args.dry_run:
+            names = superseded_package_names(args.dsn)
+            superseded_paths = [path for path in unverified if path.name in names]
+        packages = listed_packages([path for path in packages if path not in superseded_paths],
+                                   validators)
+    if not packages and not superseded_paths:
         parser.error(f"no FSN packages found in {args.packages_dir}")
     form_indexes = (
         [] if args.no_events
@@ -2892,7 +2921,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         stats = run(packages, dsn=args.dsn, dry_run=args.dry_run, form_indexes=form_indexes,
                     reconciled_on=args.reconciled_on, documents=documents,
-                    validators=validators, superseded_dir=args.packages_dir)
+                    validators=validators, superseded_dir=args.packages_dir,
+                    superseded_paths=superseded_paths)
     finally:
         if client is not None:
             client.close()

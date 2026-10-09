@@ -4763,11 +4763,11 @@ def test_a_parser_correction_restates_a_superseded_months_reading(
     assert loader.main(["--verify-cache", "--no-events", "--packages-dir", str(cache),
                         "--dsn", dsn, "--reconciled-on", "2026-09-01"]) == 0
     out = capsys.readouterr().out
-    assert '{"ignored_unlisted_packages": ["2025_10_notes.zip"]}' in out  # not loaded ...
+    assert "ignored_unlisted_packages" not in out  # not loaded, but re-read
     restated = [json.loads(line) for line in out.splitlines()
                 if line.startswith('{"package": "2025_10_notes.zip"')]
     assert [(r["restated"], r["inserted"], r["retired"]) for r in restated] == [
-        ("superseded by 2025q4_notes.zip", 3, 2)]  # ... but re-read
+        ("superseded by 2025q4_notes.zip", 3, 2)]
     rows = ("SELECT ticker, filing_equity_classes, available_on, retired_on, retired_reason "
             'FROM sec_ticker_cik_observations ORDER BY ticker COLLATE "C", id')
     superseded, corrected = d(2026, 3, 2), "parser_correction"
@@ -4871,6 +4871,36 @@ def test_a_restated_month_whose_quarterly_was_read_otherwise(
     ]
     assert _visible(conn, "2025-12-15") == [("ABC", 2), ("OB", 2), ("XYW", 2), ("XYZ", 2)]
     assert _visible(conn, "2026-03-02") == [("ABC", 1), ("XYW", 2), ("XYZ", 2)]
+
+
+def test_a_superseded_month_named_outside_the_packages_dir_is_restated_from_it(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Codex thread 4228621226: with --verify-cache, a superseded month named on
+    the command line from another directory is restated from that file. The SEC
+    no longer lists it, so verification alone would drop it, and the packages
+    directory has no copy of it."""
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    cache, elsewhere = tmp_path / "cache", tmp_path / "elsewhere"
+    cache.mkdir()
+    elsewhere.mkdir()
+    month, quarter = _superseded_month(conn, dsn, cache)
+    loader.run([quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 1))  # re-read
+    named = elsewhere / month.name
+    month.replace(named)
+    monkeypatch.setattr(loader, "sec_client", lambda: _fake_sec(
+        tmp_path, {"2025q4_notes.zip": quarter.read_bytes()}, {},
+        last_modified={"2025q4_notes.zip": ""})[0])
+    capsys.readouterr()
+    assert loader.main([str(named), "--verify-cache", "--no-events", "--packages-dir",
+                        str(cache), "--dsn", dsn, "--reconciled-on", "2026-09-01"]) == 0
+    restated = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                if line.startswith('{"package": "2025_10_notes.zip"')]
+    assert [(r.get("restated"), r.get("inserted"), r.get("retired")) for r in restated] == [
+        ("superseded by 2025q4_notes.zip", 3, 2)]
+    assert _issuer(conn, "OB", "2025-12-15")[:2] == ("resolved", 1454938)
 
 
 def test_a_superseded_month_is_restated_only_from_its_bytes_after_its_quarterly(
