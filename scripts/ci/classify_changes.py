@@ -63,6 +63,15 @@ NPORT_PATTERNS = (
     "tests/fixtures/sec_ticker_cik_history/*/*.txt",
     "tests/fixtures/sec_ticker_cik_history/*/*.tsv",
     "tests/fixtures/sec_ticker_cik_history/*.json",
+    # Section 16 insider ticker -> CIK evidence (W1b): DERA and sec-api loaders.
+    "scripts/load_sec_insider_filings.py",
+    "scripts/validate_sec_insider_ticker_evidence.py",
+    "schemas/sec_insider_ticker_evidence*.sql",
+    "tests/test_sec_insider_ticker_evidence.py",
+    "tests/fixtures/sec_insider_ticker_evidence/*.json",
+    "tests/fixtures/sec_insider_ticker_evidence/dera/*/*.tsv",
+    "tests/fixtures/sec_insider_ticker_evidence/secapi/*/*.json",
+    "tests/fixtures/sec_insider_ticker_evidence/secapi/*/*.xml",
 )
 SHARED_PATHS = {
     "src/db.py",

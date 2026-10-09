@@ -171,6 +171,7 @@ jobs:
             tests/test_sec_regulatory_serving_materializer.py
             tests/test_sec_source_manifests.py
             tests/test_sec_ticker_cik_history.py
+            tests/test_sec_insider_ticker_evidence.py
             tests/test_bond_default_contracts.py
             tests/test_bond_default_edgar.py
             tests/test_bond_default_ncen.py
@@ -300,6 +301,7 @@ jobs:
       PYTHONPATH: .
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
       SEC_TEST_DATABASE_URL: host=127.0.0.1 port=65431 dbname=postgres user=postgres
+      SEC_INSIDER_TEST_DSN: host=127.0.0.1 port=65431 dbname=postgres user=postgres
       # Loopback + a database name containing 'disposable' + an explicit password satisfy the bond default-event
       # DB-suite guard (the service uses trust auth, so the password value is ignored).
       BOND_DEFAULT_TEST_DATABASE_URL: host=127.0.0.1 port=65431 dbname=bdefault_disposable_ci user=postgres password=postgres
@@ -501,6 +503,7 @@ jobs:
             tests/test_nport_fixed_income_secapi_schema.py
             tests/test_nport_fixed_income_secapi_fallback_schema.py
             tests/test_sec_ticker_cik_history.py
+            tests/test_sec_insider_ticker_evidence.py
           )
           db_tests=(
             tests/test_fomc_sep_ingestion.py
@@ -539,6 +542,7 @@ jobs:
             tests/test_nport_fixed_income_secapi_schema.py
             tests/test_nport_fixed_income_secapi_fallback_schema.py
             tests/test_sec_ticker_cik_history.py
+            tests/test_sec_insider_ticker_evidence.py
           )
           printf 'environment_mode=postgres\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
@@ -862,6 +866,7 @@ jobs:
           tests/test_backfill_nport_holding_attributes.py
           tests/test_load_nport_fund_flows.py
           tests/test_sec_ticker_cik_history.py
+          tests/test_sec_insider_ticker_evidence.py
           -q
 
       - name: Lint N-PORT modules
@@ -885,6 +890,8 @@ jobs:
           scripts/load_nport_fund_flows.py
           scripts/load_sec_ticker_cik_history.py
           src/workers/sec_ticker_cik_history.py
+          scripts/load_sec_insider_filings.py
+          scripts/validate_sec_insider_ticker_evidence.py
           tools/nport_dera/__init__.py
           tools/nport_dera/nport_bulk_parse.py
           tools/nport_dera/nport_merge.py
@@ -918,6 +925,7 @@ jobs:
           tests/test_backfill_nport_holding_attributes.py
           tests/test_load_nport_fund_flows.py
           tests/test_sec_ticker_cik_history.py
+          tests/test_sec_insider_ticker_evidence.py
 
       - name: Compile N-PORT modules
         if: steps.changes.outputs.nport_changed == 'true'
@@ -940,6 +948,8 @@ jobs:
           scripts/load_nport_fund_flows.py
           scripts/load_sec_ticker_cik_history.py
           src/workers/sec_ticker_cik_history.py
+          scripts/load_sec_insider_filings.py
+          scripts/validate_sec_insider_ticker_evidence.py
           tools/nport_dera/__init__.py
           tools/nport_dera/nport_bulk_parse.py
           tools/nport_dera/nport_merge.py

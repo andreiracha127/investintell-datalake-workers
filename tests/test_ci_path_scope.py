@@ -90,6 +90,24 @@ def test_sec_ticker_history_loader_selects_only_nport(path: str) -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        "scripts/load_sec_insider_filings.py",
+        "scripts/validate_sec_insider_ticker_evidence.py",
+        "schemas/sec_insider_ticker_evidence.sql",
+        "schemas/sec_insider_ticker_evidence.rollback.sql",
+        "tests/test_sec_insider_ticker_evidence.py",
+        "tests/fixtures/sec_insider_ticker_evidence/provenance.json",
+        "tests/fixtures/sec_insider_ticker_evidence/dera/2026q3/SUBMISSION.tsv",
+        "tests/fixtures/sec_insider_ticker_evidence/secapi/0000700565-03-000110/metadata.json",
+        "tests/fixtures/sec_insider_ticker_evidence/secapi/0000700565-03-000110/ownership.xml",
+    ],
+)
+def test_sec_insider_evidence_selects_only_nport(path: str) -> None:
+    assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=False)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "src/workers/characteristics.py",
         "schemas/characteristics.sql",
         "src/run_worker.py",

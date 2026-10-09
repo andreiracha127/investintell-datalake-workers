@@ -1,0 +1,55 @@
+{
+  "formType": "5",
+  "accessionNo": "0001181431-03-009430",
+  "effectivenessDate": "2002-12-31",
+  "linkToFilingDetails": "https://www.sec.gov/Archives/edgar/data/1103313/000118143103009430/xslF345X01/rrd10184.xml",
+  "description": "Form 5 - Annual statement of changes in beneficial ownership of securities",
+  "linkToTxt": "https://www.sec.gov/Archives/edgar/data/1221796/000118143103009430/0001181431-03-009430.txt",
+  "filedAt": "2003-05-30T15:02:36-04:00",
+  "documentFormatFiles": [
+    {
+      "sequence": "1",
+      "size": "\u00a0",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/1103313/000118143103009430/xslF345X01/rrd10184.xml",
+      "description": "FORM 5",
+      "type": "5"
+    },
+    {
+      "sequence": "1",
+      "size": "5329",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/1103313/000118143103009430/rrd10184.xml",
+      "description": "FORM 5",
+      "type": "5"
+    },
+    {
+      "sequence": "\u00a0",
+      "size": "7149",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/1103313/000118143103009430/0001181431-03-009430.txt",
+      "description": "Complete submission text file",
+      "type": "\u00a0"
+    }
+  ],
+  "periodOfReport": "2002-12-31",
+  "entities": [
+    {
+      "stateOfIncorporation": "DE",
+      "cik": "1103313",
+      "irsNo": "330851387",
+      "companyName": "EDUCATION LENDING GROUP INC (Issuer)",
+      "sic": "6141 Personal Credit Institutions"
+    },
+    {
+      "act": "34",
+      "cik": "1221796",
+      "fileNo": "000-29995",
+      "companyName": "DEROSE ROBERT (Reporting)",
+      "type": "5",
+      "filmNo": "03725661"
+    }
+  ],
+  "id": "ab35c4c21af45a5800410e67377d62c7",
+  "seriesAndClassesContractsInformation": [],
+  "linkToHtml": "https://www.sec.gov/Archives/edgar/data/1221796/0001181431-03-009430-index.htm",
+  "linkToXbrl": "",
+  "dataFiles": []
+}
