@@ -1,10 +1,13 @@
--- tiingo_fund_meta worker — Tiingo end-of-day metadata for the fund catalog.
+-- tiingo_fund_meta worker — Tiingo end-of-day metadata for the fund catalog and
+-- for every ticker in eod_prices / universe_constituents that Tiingo's
+-- supported_tickers.csv lists as an ETF or a mutual fund.
 --
 -- Source: GET https://api.tiingo.com/tiingo/daily/{ticker}, which returns a
 -- single JSON object {ticker, name, description, startDate, endDate,
 -- exchangeCode} per ticker. The Investintell-Light fund dossier needs (a) a
 -- per-fund descriptive paragraph (``description``) and (b) an inception date
--- (``startDate``); nothing persisted this today.
+-- (``startDate``); the Light walk-forward bounds each fund or ETF line by the
+-- start_date..end_date span and refuses a line with no row.
 --
 -- SCOPE: this table is PURELY the Tiingo descriptive prose + startDate. The
 -- legacy allocation repo deliberately sources fund *attributes* (category,

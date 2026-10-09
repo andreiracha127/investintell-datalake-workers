@@ -1,35 +1,47 @@
-"""tiingo_fund_meta worker — persist Tiingo fund metadata for the fund catalog.
+"""tiingo_fund_meta worker — persist Tiingo metadata for every fund and ETF we price.
 
 The Investintell-Light fund dossier needs (a) a per-fund descriptive paragraph
-and (b) inception dates. Tiingo's end-of-day metadata endpoint
-``GET https://api.tiingo.com/tiingo/daily/{ticker}`` returns a single JSON object
-``{ticker, name, description, startDate, endDate, exchangeCode}``. Nothing in the
-data lake persisted that today, so this worker caches it in ``tiingo_fund_meta``.
+and (b) inception dates, and the Light walk-forward bounds every fund or ETF line
+by its Tiingo span (``startDate``..``endDate``), refusing a line with no row.
+Tiingo's end-of-day metadata endpoint ``GET https://api.tiingo.com/tiingo/daily/{ticker}``
+returns a single JSON object ``{ticker, name, description, startDate, endDate,
+exchangeCode}``; this worker caches it in ``tiingo_fund_meta``.
 
-SCOPE: descriptive prose (``description``) + ``startDate`` (inception) only. The
-legacy allocation repo deliberately sources fund *attributes* from SEC filings —
-that decision stands (see schemas/tiingo_fund_meta.sql). Downstream inception
-back-fill of ``sec_registered_funds`` / ``sec_etfs`` is proposed as a manual,
-NULL-only enrichment in ``schemas/enrichment/tiingo_fund_meta_inception.sql`` —
-this worker never writes those catalog tables.
+SCOPE: descriptive prose (``description``) + the ``startDate``/``endDate`` span
+only. The legacy allocation repo deliberately sources fund *attributes* from SEC
+filings — that decision stands (see schemas/tiingo_fund_meta.sql). Downstream
+inception back-fill of ``sec_registered_funds`` / ``sec_etfs`` is proposed as a
+manual, NULL-only enrichment in ``schemas/enrichment/tiingo_fund_meta_inception.sql``
+— this worker never writes those catalog tables.
 
-Universe = distinct non-null tickers from the fund catalog tables
-(``sec_fund_classes``, ``sec_etfs``, ``sec_registered_funds``); the source list
-``CATALOG_TICKER_SOURCES`` is a module constant so it is trivial to extend.
+Universe = the fund catalog (``CATALOG_TICKER_SOURCES``) ∪ every ticker in
+``eod_prices`` or ``universe_constituents`` that Tiingo lists as an ETF or a
+mutual fund. The catalog alone missed priced funds: AGG is in ``eod_prices`` and
+Light resolves it as a fund, but it is in none of the SEC catalog tables. Neither
+price table carries an asset type and the meta endpoint returns none, so the type
+comes from the price source itself: Tiingo's ``supported_tickers.csv``
+(``assetType``), read once per run. A reused ticker takes the type of its current
+listing, the security the meta endpoint describes. A ticker Tiingo does not list
+gets no row. Catalog tickers bypass the type filter and refresh as before.
 
-Incremental / resumable: each run skips tickers whose row is younger than
-``refresh_days`` (skip-when-fresh) and re-fetches the rest; an unknown ticker
-(Tiingo 404) is recorded once as ``source_status='not_found'`` so it is not
-re-queried every cycle. Idempotent upsert keyed by ticker; a run aborts cleanly
-(and resumes next cycle) if Tiingo trips the shared 30×429 breaker.
+Incremental / resumable: a ticker is due when it has no row or its row is older
+than ``refresh_days``. Missing rows go first (a backfill is not queued behind a
+refresh wave), then stale rows, stalest first. ``limit`` caps the due fetches of
+one run, so ``WORKER_LIMIT`` plus a multi-hour cron spreads a sweep over several
+runs and each run resumes where the last stopped; ``fetched_at`` is the cursor.
+An unknown ticker (Tiingo 404) is recorded once as ``source_status='not_found'``
+so it is not re-queried every cycle. Idempotent upsert keyed by ticker; a run
+aborts cleanly (and resumes next cycle) if Tiingo trips the shared 30×429 breaker.
 
-Contract:  run(dsn=None, *, refresh_days=30, limit=None) -> {"universe",
-"fetched", "upserted", "not_found", "skipped_fresh", ...}. Env: TIINGO_API_KEY.
+Contract:  run(dsn=None, *, refresh_days=30, limit=None) -> {"universe", "catalog",
+"extension", "supported_tickers", "due", "deferred", "fetched", "upserted",
+"changed", "not_found", "skipped_fresh"[, "aborted"]}. Env: TIINGO_API_KEY.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from src.db import LOCK_TIINGO_FUND_META, advisory_lock, connect, resolve_dsn
@@ -59,6 +71,18 @@ CATALOG_TICKER_SOURCES: tuple[str, ...] = (
     "sec_etfs",
     "sec_registered_funds",
 )
+
+# Tiingo ``assetType`` values (supported_tickers.csv) that make a priced ticker a
+# fund line. The third value, ``Stock``, is excluded.
+FUND_ASSET_TYPES: frozenset[str] = frozenset({"ETF", "Mutual Fund"})
+
+# Every ticker we hold prices for or screen: the same union eod_prices_warmer
+# sweeps, without its ``status = 'active'`` filter on the screener universe.
+PRICED_TICKERS_SQL = """
+    SELECT DISTINCT ticker FROM eod_prices
+    UNION
+    SELECT ticker FROM universe_constituents
+"""
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS tiingo_fund_meta (
@@ -97,6 +121,8 @@ _CONTENT_COLUMNS: tuple[str, ...] = (
     "name", "description", "exchange_code", "start_date", "end_date", "source_status",
 )
 
+_NEVER = _dt.datetime.min.replace(tzinfo=_dt.timezone.utc)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pure helpers (no network, no DB)
@@ -116,6 +142,41 @@ def universe_sql(sources: tuple[str, ...] = CATALOG_TICKER_SOURCES) -> str:
         for table in sources
     ]
     return "\nUNION\n".join(selects) + "\nORDER BY ticker"
+
+
+def select_extension(priced: Iterable[str | None], asset_types: Mapping[str, str]) -> list[str]:
+    """Priced tickers whose current Tiingo listing is an ETF or a mutual fund.
+
+    ``asset_types`` is ``parse_supported_tickers`` output (upper-cased keys). A
+    ticker Tiingo does not list is left out: no signal is not a fund. Returns
+    upper-cased, de-duplicated, sorted tickers."""
+    selected = set()
+    for raw in priced:
+        ticker = (raw or "").strip().upper()
+        if ticker and asset_types.get(ticker) in FUND_ASSET_TYPES:
+            selected.add(ticker)
+    return sorted(selected)
+
+
+def due_tickers(
+    universe: Iterable[str],
+    existing: Mapping[str, dict[str, Any]],
+    now: _dt.datetime,
+    refresh_days: int,
+) -> list[str]:
+    """Tickers to fetch: no row first (sorted), then stale rows, stalest first.
+
+    Ordering the stale tail by ``fetched_at`` is what lets a capped run resume:
+    each fetch moves its ticker to the back, so the next run starts where this
+    one stopped without a cursor table."""
+    ordered = sorted(set(universe))
+    missing = [t for t in ordered if t not in existing]
+    stale = sorted(
+        (t for t in ordered
+         if t in existing and not is_fresh(existing[t], now, refresh_days)),
+        key=lambda t: (existing[t].get("fetched_at") or _NEVER, t),
+    )
+    return missing + stale
 
 
 def _parse_date(value: Any) -> _dt.date | None:
@@ -193,6 +254,13 @@ def select_universe(conn, *, sources: tuple[str, ...] = CATALOG_TICKER_SOURCES) 
         return [r[0] for r in cur.fetchall()]
 
 
+def select_priced_tickers(conn) -> list[str]:
+    """Tickers present in ``eod_prices`` or ``universe_constituents`` (raw case)."""
+    with conn.cursor() as cur:
+        cur.execute(PRICED_TICKERS_SQL)
+        return [r[0] for r in cur.fetchall()]
+
+
 def existing_meta(conn) -> dict[str, dict[str, Any]]:
     """Current ``tiingo_fund_meta`` rows keyed by ticker (for freshness/diff)."""
     cols = ("ticker", *_CONTENT_COLUMNS, "fetched_at")
@@ -220,10 +288,10 @@ def run(
     refresh_days: int = DEFAULT_REFRESH_DAYS,
     limit: int | None = None,
 ) -> dict:
-    """Refresh ``tiingo_fund_meta`` from Tiingo for the fund-catalog universe."""
+    """Refresh ``tiingo_fund_meta`` for the catalog and every priced ETF/fund."""
     now = _dt.datetime.now(_dt.timezone.utc)
-    fetched = upserted = changed = not_found = skipped_fresh = 0
-    aborted: str | None = None
+    fetched = upserted = changed = not_found = 0
+    aborted: list[str] = []
 
     with connect(resolve_dsn(dsn)) as conn:
         with advisory_lock(conn, LOCK_TIINGO_FUND_META) as got:
@@ -231,27 +299,40 @@ def run(
                 return {"skipped": "lock_busy"}
 
             ensure_schema(conn)
-            tickers = select_universe(conn)
-            if limit:
-                tickers = tickers[:limit]
-            existing = existing_meta(conn)
-            print(
-                f"tiingo_fund_meta: {len(tickers)} catalog tickers, "
-                f"{len(existing)} cached, refresh_days={refresh_days}",
-                flush=True,
-            )
-
+            catalog = set(select_universe(conn))
             bucket = TokenBucket(max_tokens=FETCH_BURST, refill_rate=FETCH_RATE_PER_S)
             with TiingoClient(bucket=bucket) as tiingo:
-                for i, ticker in enumerate(tickers, start=1):
+                # Without Tiingo's listing nothing can be typed, so only the
+                # catalog refreshes and the run reports itself aborted (exit 1).
+                try:
+                    asset_types = tiingo.fetch_supported_asset_types()
+                except Exception as exc:  # transport error or unusable file
+                    asset_types = {}
+                    aborted.append(
+                        f"supported_tickers unavailable ({type(exc).__name__}: {exc}); "
+                        "refreshed the catalog only"
+                    )
+                extension: set[str] = set()
+                if asset_types:
+                    extension = set(select_extension(select_priced_tickers(conn), asset_types))
+                extension -= catalog
+                universe = catalog | extension
+                existing = existing_meta(conn)
+                due = due_tickers(universe, existing, now, refresh_days)
+                batch = due[:limit] if limit else due
+                print(
+                    f"tiingo_fund_meta: {len(catalog)} catalog + {len(extension)} priced "
+                    f"ETF/fund tickers, {len(existing)} cached, {len(due)} due, "
+                    f"fetching {len(batch)}, refresh_days={refresh_days}",
+                    flush=True,
+                )
+
+                for i, ticker in enumerate(batch, start=1):
                     prior = existing.get(ticker)
-                    if is_fresh(prior, now, refresh_days):
-                        skipped_fresh += 1
-                        continue
                     try:
                         payload = tiingo.fetch_meta(ticker)
                     except TiingoBudgetExceeded as exc:
-                        aborted = str(exc)
+                        aborted.append(str(exc))
                         break
                     fetched += 1
                     row = build_meta_row(ticker, payload)
@@ -267,19 +348,24 @@ def run(
                     upserted += 1
                     if i % PROGRESS_EVERY == 0:
                         print(
-                            f"tiingo_fund_meta: {i}/{len(tickers)} tickers, "
+                            f"tiingo_fund_meta: {i}/{len(batch)} tickers, "
                             f"upserted={upserted}, not_found={not_found}",
                             flush=True,
                         )
 
     stats: dict[str, Any] = {
-        "universe": len(tickers),
+        "universe": len(universe),
+        "catalog": len(catalog),
+        "extension": len(extension),
+        "supported_tickers": len(asset_types),
+        "due": len(due),
+        "deferred": len(due) - fetched,
         "fetched": fetched,
         "upserted": upserted,
         "changed": changed,
         "not_found": not_found,
-        "skipped_fresh": skipped_fresh,
+        "skipped_fresh": len(universe) - len(due),
     }
     if aborted:
-        stats["aborted"] = aborted
+        stats["aborted"] = "; ".join(aborted)
     return stats
