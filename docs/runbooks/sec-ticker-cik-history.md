@@ -143,8 +143,9 @@ holds T (an other holder of a later issuer's line meanwhile).
 registers (v2; a Form 10 is not read), and each successor's Form 8-K12B or
 8-K12G3 (and its /A) for the classes it continues: the Section 12(b) table of its
 cover from 2019 (Liberty Global's 2023 Class A, B and C), else the sentence that
-registers the successor's securities under Rule 12g-3 (parser v6; the /A
-readings are recorded, the originals used). A Form 15F (15F-12B, 15F-12G, 15F-15D: a
+registers the successor's securities under Rule 12g-3 (parser v6; since v7 a
+sentence that names no class states none; the /A readings are recorded, the
+originals used). A Form 15F (15F-12B, 15F-12G, 15F-15D: a
 foreign private issuer's termination under Rule 12h-6, such as PetroChina's
 15F-12B of 2024-02-05) counts as the Form 15 it stands for. A class count reads
 Class/Series enumerations and, since parser v4, classes named without a label
@@ -358,7 +359,7 @@ The end filings and Forms 8-A of CIKs with cover data are read from
 missing (`--no-fetch` reads only the cache); an event already read by the current
 parser version is carried without a read. A run ends by re-deriving the class of
 current end and 8-A events read by another parser version (`EVENT_PARSER_VERSION`,
-now `sec_event_class_v6`) or not read yet, as corrections; the packages read by
+now `sec_event_class_v7`) or not read yet, as corrections; the packages read by
 another `FSN_PARSER_VERSION` (now `sec_fsn_v3`) are re-read with `--verify-cache`. With `--verify-cache`
 the file verified is the one loaded, by path (a package named on the command line
 included), and its validators are recorded in the package's own transaction; a
@@ -400,8 +401,8 @@ not say which new class continues the old one (a class C line is not alive under
 GOOG before class C existed). An end closes only the lines of the classes it
 closes (tentatively those it may concern without saying so). `sec_ticker_price_span` remains the
 run-and-neighbour view of the same engine (`sec_ticker_line_runs`). On the full
-load `sec_line_price_evidence` takes a median 41 ms per ticker (467 ms for the
-most reused symbols, such as AT&T's T), `sec_ticker_issuer_at` 7 ms (JIT is off
+load `sec_line_price_evidence` takes a median 48 ms per ticker (648 ms for the
+most reused symbols, such as AT&T's T), `sec_ticker_issuer_at` 9 ms (JIT is off
 for them; it cost 1.5 s per call).
 
 ## Known residuals
@@ -494,7 +495,7 @@ For the follow-up (v2), in this order:
    about 12,000 filings, already cached on this workstation since the 2026-10-08
    measurement, else fetched at most 10 per second; the 8-K12B and 8-K12G3 rows
    are added) and re-derives the end events read by `sec_event_class_v3`
-   (production) with `sec_event_class_v6`. Expect
+   (production) with `sec_event_class_v7`. Expect
    (measured on a full local reload in the production state, 2026-10-09, about
    12 minutes from the caches):
    - observations: 13,057 versions retired as `parser_correction` and 13,373
@@ -505,21 +506,26 @@ For the follow-up (v2), in this order:
      filing profiles they belong to;
    - share counts: none;
    - registration events: 28,067 retired as `parser_correction` (every event read
-     by `sec_event_class_v3`, read again by v5: 12,187 Forms 8-A read for the
-     first time, 37 class counts changed) and 28,666 inserted; 80,824 current
-     (80,225 before: 599 Forms 8-K12B, 8-K12G3 and their amendments);
+     by `sec_event_class_v3`, read again by v7: 12,184 Forms 8-A read for the
+     first time, 37 class counts changed, 3 other events read for the first time)
+     and 28,666 inserted; 80,824 current (80,225 before: 599 Forms 8-K12B, 8-K12G3
+     and their amendments, 497 of them read: 259 as equity, 230 as stating no
+     class, 8 as another kind);
    - no `source` retirement.
    On the current lines of 14,871 tickers matched between the v1 answers and the
-   re-derived v2 answers, 487 lines lose 127,143 admitted price days (the
-   admission rule refuses them) and 127 lines gain 17,691; 54 tickers' lines
-   change, and 176 tickers leave the listed kinds (re-read as preferred, debt or
-   units).
+   re-derived v2 answers, 497 lines lose 126,006 admitted price days (the
+   admission rule refuses them) and 122 lines gain 16,620; 54 tickers' lines
+   change, 176 tickers leave the listed kinds (re-read as preferred, debt or
+   units) and 3 join them.
 3. **Check**:
    - `SELECT retired_reason, count(*) FROM sec_ticker_cik_observations WHERE
      retired_on IS NOT NULL GROUP BY 1` (only `parser_correction` after the
      re-derivation);
+   - `SELECT parser_version, count(*) FROM sec_registration_events WHERE
+     retired_on IS NULL GROUP BY 1` (28,564 `sec_event_class_v7`, 52,260 unread:
+     CIKs without cover data);
    - `SELECT count(*) FROM sec_registration_events WHERE retired_on IS NULL AND
-     form IN ('8-K12B', '8-K12G3')` (about 590);
+     form IN ('8-K12B', '8-K12G3')` (543);
    - `SELECT * FROM sec_ticker_issuer_at('KKR', '2022-12-31')` (resolved, CIK
      1404912: its 2022 reorganization is no end);
    - `SELECT * FROM sec_ticker_issuer_at('BRK-B', current_date)` (resolved, CIK
