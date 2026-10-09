@@ -1,0 +1,812 @@
+<SEC-DOCUMENT>0001104659-20-079062.txt : 20200630
+<SEC-HEADER>0001104659-20-079062.hdr.sgml : 20200630
+<ACCEPTANCE-DATETIME>20200630165706
+ACCESSION NUMBER:		0001104659-20-079062
+CONFORMED SUBMISSION TYPE:	8-K12B/A
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20200624
+ITEM INFORMATION:		Creation of a Direct Financial Obligation or an Obligation under an Off-Balance Sheet Arrangement of a Registrant
+ITEM INFORMATION:		Changes in Registrant's Certifying Accountant
+ITEM INFORMATION:		Amendments to the Registrant's Code of Ethics, or Waiver of a Provision of the Code of Ethics
+ITEM INFORMATION:		Change in Shell Company Status
+ITEM INFORMATION:		Regulation FD Disclosure
+ITEM INFORMATION:		Other Events
+ITEM INFORMATION:		Financial Statements and Exhibits
+FILED AS OF DATE:		20200630
+DATE AS OF CHANGE:		20200630
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Whole Earth Brands, Inc.
+		CENTRAL INDEX KEY:			0001753706
+		STANDARD INDUSTRIAL CLASSIFICATION:	SUGAR & CONFECTIONERY PRODUCTS [2060]
+		IRS NUMBER:				000000000
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		8-K12B/A
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-38880
+		FILM NUMBER:		201002896
+
+	BUSINESS ADDRESS:	
+		STREET 1:		125 S. WACKER DRIVE
+		STREET 2:		SUITE 3150
+		CITY:			CHICAGO
+		STATE:			IL
+		ZIP:			60606
+		BUSINESS PHONE:		312.8403005
+
+	MAIL ADDRESS:	
+		STREET 1:		125 S. WACKER DRIVE
+		STREET 2:		SUITE 3150
+		CITY:			CHICAGO
+		STATE:			IL
+		ZIP:			60606
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	Act II Global Acquisition Corp.
+		DATE OF NAME CHANGE:	20190321
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	ELLENOFF GROSSMAN & SCHOLE
+		DATE OF NAME CHANGE:	20190321
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	Act II Global Acquisition Corp.
+		DATE OF NAME CHANGE:	20180920
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-K12B/A
+<SEQUENCE>1
+<FILENAME>tm2023499-2_8k12ba.htm
+<DESCRIPTION>8-K12B/A
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 12pt; margin-bottom: 3pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 2pt solid; border-bottom: Black 1pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<P STYLE="text-align: center; margin-top: 0pt; margin-bottom: 0pt"><B>UNITED STATES<BR>
+SECURITIES AND EXCHANGE COMMISSION<BR>
+Washington, D.C. 20549</B></P>
+
+<P STYLE="text-align: center; margin-top: 0pt; margin-bottom: 0pt"><B>&nbsp;</B></P>
+
+<P STYLE="text-align: center; margin-top: 0pt; margin-bottom: 0pt"><B>FORM 8-K/A</B></P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">(Amendment No.1)<BR>
+CURRENT REPORT<BR>
+<BR>
+</P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">PURSUANT TO SECTION 13 OR 15(d) OF
+THE<BR>
+SECURITIES EXCHANGE ACT OF 1934</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">Date of Report (Date of earliest event reported):
+<B>June 24, 2020</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 14pt">WHOLE
+EARTH BRANDS, INC.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">(Exact name of registrant as specified in
+its charter)</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; border-collapse: collapse; width: 100%">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="border-bottom: Black 1pt solid; width: 32%; font: bold 10pt Times New Roman, Times, Serif; text-align: center; padding-left: 5.75pt">Delaware</TD><TD STYLE="font: bold 10pt Times New Roman, Times, Serif; width: 2%; padding-bottom: 1pt">&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; width: 32%; font: bold 10pt Times New Roman, Times, Serif; text-align: center; padding-left: 5.75pt">001-38880</TD><TD STYLE="font: bold 10pt Times New Roman, Times, Serif; width: 2%; padding-bottom: 1pt">&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; width: 32%; font: bold 10pt Times New Roman, Times, Serif; text-align: center; padding-left: 5.75pt">38-4101973</TD></TR>
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center; padding-left: 5.75pt">(State or other jurisdiction<BR> of incorporation)</TD><TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center; padding-left: 5.75pt">(Commission File Number)</TD><TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center; padding-left: 5.75pt">(IRS Employer <BR> Identification No.)</TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">125 S. Wacker Drive</P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">Suite 3150<BR>
+Chicago, IL 60606</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">(Address of principal executive offices,
+including zip code)<BR>
+<BR>
+Registrant&rsquo;s telephone number, including area code: <B>(312) 840-6000</B></P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">Act II Global Acquisition Corp.<BR>
+745 5th Avenue<BR>
+New York, NY 10151</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">(Former name or former address, if changed
+since last report)</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">Check the appropriate box below if the
+Form 8-K filing is intended to simultaneously satisfy the filing obligation of the registrant under any of the following provisions:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 0.25in; text-align: left"><FONT STYLE="font-family: Wingdings">&#168;</FONT></TD><TD STYLE="text-align: justify">Written communications pursuant to Rule 425 under the
+Securities Act (17 CFR 230.425)</TD>
+</TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 0.25in; text-align: left"><FONT STYLE="font-family: Wingdings">&#168;</FONT></TD><TD STYLE="text-align: justify">Soliciting material pursuant to Rule 14a-12 under the
+Exchange Act (17 CFR 240.14a-12)</TD>
+</TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 0.25in; text-align: left"><FONT STYLE="font-family: Wingdings">&#168;</FONT></TD><TD STYLE="text-align: justify">Pre-commencement communications pursuant to Rule 14d-2(b)
+under the Exchange Act (17 CFR 240.14d-2(b))</TD>
+</TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 0.25in; text-align: left"><FONT STYLE="font-family: Wingdings">&#168;</FONT></TD><TD STYLE="text-align: justify">Pre-commencement communications pursuant to Rule 13e-4(c)
+under the Exchange Act (17 CFR 240.13e-4(c))</TD>
+</TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">Indicate by check mark whether the registrant
+is an emerging growth company as defined in Rule 405 of the Securities Act of 1933 (&sect;&nbsp;230.405 of this chapter) or Rule
+12b-2 of the Securities Exchange Act of 1934 (&sect; 240.12b-2 of this chapter).</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">Emerging growth company <FONT STYLE="font-family: Wingdings">&#120;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">If an emerging growth company, indicate
+by check mark if the registrant has elected not to use the extended transition period for complying with any new or revised financial
+accounting standards provided pursuant to Section 13(a) of the Exchange Act. <FONT STYLE="font-family: Wingdings">&#168;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">Securities registered pursuant to Section
+12(b) of the Act:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; border-collapse: collapse; width: 100%">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="border-bottom: Black 1pt solid; width: 32%; font: bold 10pt Times New Roman, Times, Serif; text-align: left; padding-left: 5.4pt">Title of each class</TD><TD STYLE="font: bold 10pt Times New Roman, Times, Serif; width: 2%; padding-bottom: 1pt">&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; width: 32%; font: bold 10pt Times New Roman, Times, Serif; text-align: center; padding-left: 5.4pt">Trading Symbol(s)</TD><TD STYLE="font: bold 10pt Times New Roman, Times, Serif; width: 2%; padding-bottom: 1pt">&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; width: 32%; font: bold 10pt Times New Roman, Times, Serif; text-align: center; padding-left: 5.4pt">Name of each exchange on which registered</TD></TR>
+<TR STYLE="vertical-align: bottom; background-color: rgb(204,238,255)">
+    <TD STYLE="font-size: 10pt; padding-left: 5.4pt">Common stock, par value $0.0001 per share</TD><TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="font-size: 10pt; text-align: center; padding-left: 5.4pt">FREE</TD><TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="font-size: 10pt; text-align: center; padding-left: 5.4pt">The NASDAQ Stock Market LLC</TD></TR>
+<TR STYLE="vertical-align: bottom; background-color: White">
+    <TD STYLE="font-size: 10pt; text-align: justify; padding-left: 5.4pt">Warrants to purchase one-half of one share of common stock</TD><TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center; padding-left: 5.4pt">FREEW</TD><TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center; padding-left: 5.4pt">The NASDAQ Stock Market LLC</TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 3pt; margin-bottom: 12pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; border-bottom: Black 2pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+
+<!-- Field: Page; Sequence: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt">&nbsp;</P><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="text-transform: uppercase">&nbsp;</FONT></P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="text-transform: uppercase">Introductory
+Note</FONT></P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">On June 30, 2020, Whole
+Earth Brands, Inc. (the &ldquo;<B>Company</B>&rdquo; or &ldquo;<B>Whole Earth Brands</B>&rdquo;) filed a Current Report on Form
+8-K (the &ldquo;<B>Original Report</B>&rdquo;) to report the closing of the Business Combination and related matters under Items
+1.01, 2.01, 3.02, 3.03, 5.01, 5.02, 5.03, 5.07, and 9.01 of Form 8-K. Due to the large number of events to be reported under the
+specified items of Form 8-K, this Form 8-K/A is being filed to amend the Original Report to include additional matters related
+to the closing of the Business Combination under Items 2.03, 4.01, 5.05, 5.06, 7.01,  8.01 and 9.01.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">Capitalized terms used
+herein but not defined herein have the meanings given to such terms in the Original Report.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; color: #4E586A">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: bold 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 1in; text-align: left">Item 2.03</TD><TD STYLE="text-align: justify">Creation of a Direct Financial Obligation or an Obligation
+Under an Off-Balance Sheet Arrangement of a &#9;Registrant</TD>
+</TR></TABLE>
+
+
+
+<P STYLE="margin-top: 0pt; margin-bottom: 0pt; font: 10pt Times New Roman, Times, Serif">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">Reference is made
+to the disclosure set forth under Item 1.01 of the Original Report on Form 8-K concerning the Credit Agreement,
+which is incorporated by reference into this Item 2.03.</P>
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0"></TD><TD STYLE="width: 1in"><B>Item&nbsp;4.01.</B></TD><TD><B>Changes in Registrant&rsquo;s Certifying Accountant. </B></TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">On June 30, 2020,
+the board of directors of the Company approved the engagement of Ernst &amp; Young LLP (&ldquo;<B>EY</B>&rdquo;) as the
+Company&rsquo;s independent registered public accounting firm to audit the Company&rsquo;s consolidated financial statements
+for the year ended December 31, 2020. EY served as independent registered public accounting firm of Merisant and MAFCO prior
+to the Business Combination. Accordingly, Marcum LLP (&ldquo;<B>Marcum</B>&rdquo;), Act II&rsquo;s independent registered
+public accounting firm prior to the Business Combination, was informed that it would be dismissed as the
+Company&rsquo;s independent registered public accounting firm.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">The report of
+Marcum on Act II&rsquo;s, the Company&rsquo;s legal predecessor, consolidated balance sheet as of December 31, 2019 and the
+related statements of operations, changes in shareholders&rsquo; equity and cash flows for the year ended December 31, 2019,
+did not contain an adverse opinion or a disclaimer of opinion, and were not qualified or modified as to uncertainties, audit
+scope or accounting principles.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">For the year ended
+December 31, 2019, there were no disagreements between the Company and Marcum on any matter of accounting principles or practices,
+financial disclosure or auditing scope or procedure, which disagreements, if not resolved to the satisfaction of Marcum would have
+caused it to make reference to the subject matter of the disagreements in its report on the Company&rsquo;s financial statements
+for such period.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">For the year ended
+December 31, 2019, there were no &ldquo;reportable events&rdquo; (as defined in Item 304(a)(1)(v) of Regulation S-K under the Exchange
+Act).</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">The Company has provided
+Marcum with a copy of the foregoing disclosures and has requested that Marcum furnish the Company with a letter addressed to the
+SEC stating whether it agrees with the statements made by the Company set forth above.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0 0pt 0.5in; text-align: justify">A copy of Marcum&rsquo;s letter
+dated June 30, 2020, is filed as Exhibit 16.1 to the Original Report on Form 8-K.</P>
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 24.5pt">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0"></TD><TD STYLE="width: 1in"><B>Item 5.05.</B></TD><TD><B>Amendments to the Registrant&rsquo;s Code of Ethics, or Waiver of a Provision of the Code of Ethics.</B></TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">On June 24, 2020, in
+connection with the closing of the Business Combination, the board of directors of the Company approved and adopted a Code of Ethics
+(the &ldquo;<B>Code of Ethics</B>&rdquo;). The Code of Ethics applies to the Company&rsquo;s employees, officers, and members of
+the Board of Directors of the Company (the &ldquo;<B>Covered Individuals</B>&rdquo;). The Code of Ethics replaced the Code of Ethics
+of Act II (the &ldquo;<B>Act II Code of Ethics</B>&rdquo;), which was previously adopted by Act II in connection with its initial
+public offering in April 2019.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">The Code of Ethics
+reflects (among other matters) amendments, clarifications, revisions and updates in relation to&nbsp;(i) the general principles
+and standards of ethical conduct of the Covered Individuals designed to deter wrongdoing, (ii)&nbsp;the specific provisions for
+the chief executive officer and senior financial officers of the Company, (iii)&nbsp;the internal procedures for reporting and
+enforcing violations of the Code of Ethics, and (iv)&nbsp;requests for waivers and amendments of the Code of Ethics. The amendments,
+clarifications, revisions and updates reflected in the Code of Ethics did not relate to or result in any waiver, explicit or implicit,
+of any provision of the Act II Code of Ethics.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">The foregoing description
+of the updates to the Company&rsquo;s Code of Ethics does not purport to be complete and is qualified in its entirety by reference
+to the Code of Ethics, attached  as Exhibit&nbsp;14.1 to the Original Report and incorporated herein by reference.</P>
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in"></P>
+
+<!-- Field: Page; Sequence: 2; Options: NewSection; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->1<!-- Field: /Sequence --></P><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: bold 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 1in; text-align: left">Item 5.06.</TD><TD STYLE="text-align: justify">Change in Shell Company Status.</TD>
+</TR></TABLE>
+
+
+
+<P STYLE="margin-top: 0pt; margin-bottom: 0pt; font: 10pt Times New Roman, Times, Serif">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">As a result of
+the Business Combination, Act II ceased being a shell company. Reference is made to the disclosure in the Proxy
+Statement/Prospectus in the section titled &ldquo;<I>Shareholder Proposal 1: The Business Combination Proposal</I>,&rdquo;
+and in the Supplement in the section titled &ldquo;<I>Supplemental Information to Proposal No. 1 &mdash; Business Combination
+Proposal</I>,&rdquo; each of which is incorporated herein by reference. The information contained in Item 2.01 of the
+Original Report on Form 8-K is incorporated by reference into this Item 5.06.</P>
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: bold 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 1in; text-align: left">Item 7.01.</TD><TD STYLE="text-align: justify">Regulation FD Disclosure</TD>
+</TR></TABLE>
+
+
+
+<P STYLE="margin-top: 0pt; margin-bottom: 0pt; font: 10pt Times New Roman, Times, Serif">&nbsp;&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">On June 25, 2020, the
+Company issued a press release announcing the closing of the Business Combination. The press release is attached  as Exhibit
+99.1 to the Original Report.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">The information
+in this Item 7.01 and Exhibit 99.1 attached to the Original Report shall not be deemed &ldquo;filed&rdquo; for purposes of
+Section 18 of the Exchange Act of 1934, as amended (the &ldquo;<B>Exchange Act</B>&rdquo;), or otherwise subject to the
+liabilities of that section, nor shall it be deemed incorporated by reference in any filing under the Securities Act or the
+Exchange Act, except as expressly set forth by specific reference in such filing.</P>
+
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: bold 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 1in; text-align: left">Item 8.01.</TD><TD STYLE="text-align: justify">Other Events</TD>
+</TR></TABLE>
+
+
+
+<P STYLE="margin-top: 0pt; margin-bottom: 0pt; font: 10pt Times New Roman, Times, Serif">&nbsp;&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">As a result of the
+Business Combination and by operation of Rule 12g-3(a) promulgated under the Exchange Act, the Company is a successor issuer to
+Act II. The Company hereby reports this succession in accordance with Rule 12g-3(f) under the Exchange Act.</P>
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: bold 10pt Times New Roman, Times, Serif; width: 100%; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 1in">Item 9.01.</TD><TD>Financial Statements and Exhibits.</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt">&nbsp;&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt">(d) Exhibits</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0in"></P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; background-color: white; border-collapse: collapse">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="border-bottom: Black 1pt solid; white-space: nowrap; width: 8%; padding-top: 0.25pt"><B>Exhibit<BR>
+    No.</B></TD>
+    <TD STYLE="width: 2%">&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; width: 90%; padding-top: 0.25pt; text-align: center"><B>Description</B></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD>&nbsp;</TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="text-align: justify">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465919075218/tv535070_ex2-1.htm" STYLE="-sec-extract: exhibit">2.1&dagger;</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465919075218/tv535070_ex2-1.htm" STYLE="-sec-extract: exhibit">Purchase
+    Agreement dated as of December 19, 2019, by and among Act II Global Acquisition Corp., Flavors Holdings Inc., MW Holdings
+    I LLC, MW Holdings III LLC and Mafco Foreign Holdings, Inc. (incorporated by reference to Exhibit 2.1 of Act II&rsquo;s Current
+    Report on Form 8-K/425 (File No. 001-38880), filed with the SEC on December 23, 2019).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920019756/tv538156_ex2-1.htm" STYLE="-sec-extract: exhibit">2.2&dagger;</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920019756/tv538156_ex2-1.htm" STYLE="-sec-extract: exhibit">Amendment
+    No. 1 to Purchase Agreement dated as of February 12, 2020 by and among Act II Global Acquisition Corp., Flavors Holdings Inc.,
+    MW Holdings I LLC, MW Holdings III LLC and Mafco Foreign Holdings, Inc. (incorporated by reference to Exhibit 2.1 of Act II&rsquo;s
+    Current Report on Form 8-K/425 (File No. 001-38880), filed with the SEC on February 13, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920059035/tm2019220d1_ex2-1.htm" STYLE="-sec-extract: exhibit">2.3&dagger;</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920059035/tm2019220d1_ex2-1.htm" STYLE="-sec-extract: exhibit">Amendment
+    No. 2 to Purchase Agreement dated as of May 8, 2020, by and among Act II Global Acquisition Corp., Project Taste Intermediate
+    LLC, Flavors Holdings Inc., MW Holdings I LLC, MW Holdings III LLC and Mafco Foreign Holdings, Inc. (incorporated by reference
+    to Exhibit 2.1 of Act II&rsquo;s Current Report on Form 8-K/425 (File No. 001-38880), filed with the SEC on May 11, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920073592/tm2022707d1_ex2-1.htm" STYLE="-sec-extract: exhibit">2.4&dagger;</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920073592/tm2022707d1_ex2-1.htm" STYLE="-sec-extract: exhibit">Amendment
+    No. 3 to Purchase Agreement dated as of June 15, 2020, by and among Act II Global Acquisition Corp., Project Taste Intermediate
+    LLC, Flavors Holdings Inc., MW Holdings I LLC, MW Holdings III LLC and Mafco Foreign Holdings, Inc. (incorporated by reference
+    to Exhibit 2.1 of Act II&rsquo;s Current Report on Form 8-K/425 (File No. 001-38880), filed with the SEC on June 16, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex3-1.htm" STYLE="-sec-extract: exhibit">3.1</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex3-1.htm" STYLE="-sec-extract: exhibit">Certificate
+    of Incorporation of Whole Earth Brands, Inc. (incorporated by reference to Exhibit 3.1 of Whole Earth Brands, Inc.&rsquo;s
+    Current Report on Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex3-2.htm" STYLE="-sec-extract: exhibit">3.2</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex3-2.htm" STYLE="-sec-extract: exhibit">Bylaws
+    of Whole Earth Brands, Inc. (incorporated by reference to Exhibit 3.2 of Whole Earth Brands, Inc.&rsquo;s Current Report on
+    Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex3-3.htm" STYLE="-sec-extract: exhibit">3.3</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex3-3.htm" STYLE="-sec-extract: exhibit">Certificate
+    of Domestication of Act II (incorporated by reference to Exhibit 3.3 of Whole Earth Brands, Inc.&rsquo;s Current Report on
+    Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920058995/tm2016133d2_ex4-5.htm" STYLE="-sec-extract: exhibit">4.1</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920058995/tm2016133d2_ex4-5.htm" STYLE="-sec-extract: exhibit">Specimen
+    Common Stock Certificate of Whole Earth Brands, Inc. (incorporated by reference to Exhibit 4.5 of Act II&rsquo;s Form S-4/A
+    (File No. 333-236459), filed with the SEC on May 11, 2020).</A></TD></TR>
+</TABLE>
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<P STYLE="margin: 0"></P>
+
+<!-- Field: Page; Sequence: 3; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->2<!-- Field: /Sequence --></P><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; background-color: white; border-collapse: collapse">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="border-bottom: Black 1pt solid; white-space: nowrap; padding-top: 0.25pt; width: 8%"><B>Exhibit<BR>
+ No.</B></TD>
+    <TD STYLE="width: 2%">&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; padding-top: 0.25pt; text-align: center; width: 90%"><B>Description</B></TD></TR>
+</TABLE>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; background-color: white; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex4-2.htm" STYLE="-sec-extract: exhibit">4.2</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex4-2.htm" STYLE="-sec-extract: exhibit">Amended
+    and Restated Warrant Agreement dated as of June 25, 2020, by and between Whole Earth Brands, Inc. and Continental Stock
+    Transfer &amp; Trust Company (incorporated by reference to Exhibit 4.2 of Whole Earth Brands, Inc.&rsquo;s Current Report on
+    Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020)<FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">.</FONT></A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex10-1.htm" STYLE="-sec-extract: exhibit">10.1#&Dagger;</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex10-1.htm" STYLE="-sec-extract: exhibit">Loan
+    Agreement dated June 25, 2020, by and among Whole Earth Brands, Inc., Toronto Dominion (Texas) LLC, as administrative agent,
+    and certain lenders signatory thereto (incorporated by reference to Exhibit 10.1 of Whole Earth Brands, Inc.&rsquo;s Current
+    Report on Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020)<FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">.</FONT></A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465919075218/tv535070_ex10-1.htm" STYLE="-sec-extract: exhibit">10.2</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465919075218/tv535070_ex10-1.htm" STYLE="-sec-extract: exhibit">Sponsor Support Agreement dated as of December 19, 2019, by and among Act II Global LLC, Act II Global Acquisition Corp., Flavors Holdings Inc., MW Holdings I LLC, MW Holdings III LLC and Mafco Foreign Holdings, Inc. (incorporated by reference to Exhibit 10.1 of Act II&rsquo;s Current Report on Form 8-K/425 (File No. 001-38880), filed with the SEC on December 23, 2019).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920019756/tv538156_ex10-1.htm">10.3</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920019756/tv538156_ex10-1.htm">Amendment No. 1 to Sponsor Support Agreement dated as of February 12, 2020, by and among Act II Global LLC, Act II Global Acquisition Corp., Flavors Holdings Inc., MW Holdings I LLC, MW Holdings III LLC and Mafco Foreign Holdings, Inc. (incorporated by reference to Exhibit 10.1 of Act II&rsquo;s Current Report on Form 8-K/425 (File No. 001-38880), filed with the SEC on February 13, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920073592/tm2022707d1_ex10-1.htm" STYLE="-sec-extract: exhibit">10.4</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920073592/tm2022707d1_ex10-1.htm" STYLE="-sec-extract: exhibit">Amendment No. 2 to Sponsor Support Agreement dated as of June 15, by and among Act II Global LLC, Act II Global Acquisition Corp., Flavors Holdings Inc., MW Holdings I LLC, MW Holdings III LLC and Mafco Foreign Holdings, Inc. (incorporated by reference to Exhibit 10.1 of Act II&rsquo;s Current Report on Form 8-K/425 (File No. 001-38880), filed with the SEC on June 16, 2020).</A></TD></TR>
+
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt; width: 8%"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex10-5.htm" STYLE="-sec-extract: exhibit">10.5+</A></TD>
+    <TD STYLE="width: 2%">&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify; width: 90%"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex10-5.htm" STYLE="-sec-extract: exhibit">Whole
+    Earth Brands, Inc. 2020 Long-Term Incentive Award Plan (incorporated by reference to Exhibit 10.5 of Whole Earth Brands,
+    Inc.&rsquo;s Current Report on Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020)<FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">.</FONT></A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920058995/tm2016133d2_ex10-11.htm" STYLE="-sec-extract: exhibit">10.6+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920058995/tm2016133d2_ex10-11.htm" STYLE="-sec-extract: exhibit">Form of Indemnity Agreement, between Whole Earth
+    Brands, Inc. and its directors and officers (incorporated by reference to Exhibit 10.11 of Act II&rsquo;s Form S-4/A (File
+    No. 333-236459), filed with the SEC on May 11, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000121390019007607/f8k042519ex10-4_act2global.htm" STYLE="-sec-extract: exhibit">10.7</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000121390019007607/f8k042519ex10-4_act2global.htm" STYLE="-sec-extract: exhibit">Registration Rights Agreement dated April 25, 2019, among Act II Global Acquisition Corp., Act II Global LLC and certain other security holders named therein (incorporated by reference to Exhibit&nbsp;10.4 to Act II&rsquo;s Current Report on Form 8-K (File No. 333-236459) filed with the SEC on May&nbsp;1, 2019).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-13.htm" STYLE="-sec-extract: exhibit">10.8+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-13.htm" STYLE="-sec-extract: exhibit">Letter Agreement dated November 16, 2019, by and among Merisant Company, Flavors Holdings Inc. and Andy Rusie (incorporated by reference to Exhibit 10.13 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-14.htm" STYLE="-sec-extract: exhibit">10.9+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-14.htm" STYLE="-sec-extract: exhibit">Offer Letter, dated as of January 25, 2016, by and between Merisant Company 2 SARL and Albert Manzone (incorporated by reference to Exhibit 10.14 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-15.htm" STYLE="-sec-extract: exhibit">10.10+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-15.htm" STYLE="-sec-extract: exhibit">Amendment to Offer Letter dated as of July 1, 2017, by and between Merisant Company 2 SARL and Albert Manzone (incorporated by reference to Exhibit 10.15 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-16.htm" STYLE="-sec-extract: exhibit">10.11+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-16.htm" STYLE="-sec-extract: exhibit">2018 Amendment to Offer Letter dated as of November 4, 2018, by and between Merisant Company 2 SARL and Albert Manzone (incorporated by reference to Exhibit 10.16 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-17.htm" STYLE="-sec-extract: exhibit">10.12+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-17.htm" STYLE="-sec-extract: exhibit">3rd Amendment to Offer Letter dated as of June 10, 2019, by and between Merisant Company 2 SARL and Albert Manzone (incorporated by reference to Exhibit 10.17 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+</TABLE>
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<P STYLE="margin: 0"></P>
+
+<!-- Field: Page; Sequence: 4; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->3<!-- Field: /Sequence --></P><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="margin: 0"></P>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; background-color: white; border-collapse: collapse">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="border-bottom: Black 1pt solid; white-space: nowrap; padding-top: 0.25pt; width: 8%"><B>Exhibit<BR>
+ No.</B></TD>
+    <TD STYLE="width: 2%">&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; padding-top: 0.25pt; text-align: center; width: 90%"><B>Description</B></TD></TR>
+</TABLE>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; background-color: white; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt; width: 8%"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-18.htm" STYLE="-sec-extract: exhibit">10.13+</A></TD>
+    <TD STYLE="width: 2%">&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify; width: 90%"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-18.htm" STYLE="-sec-extract: exhibit">4th
+    Amendment to Offer Letter dated as of July 23, 2019, by and between Merisant Company 2 SARL and Albert Manzone (incorporated
+    by reference to Exhibit 10.18 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-19.htm" STYLE="-sec-extract: exhibit">10.14+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-19.htm" STYLE="-sec-extract: exhibit">5th
+    Amendment to Offer Letter dated as of September 9, 2019, by and between Merisant Company 2 SARL and Albert Manzone (incorporated
+    by reference to Exhibit 10.19 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-20.htm" STYLE="-sec-extract: exhibit">10.15+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-20.htm" STYLE="-sec-extract: exhibit">Executive
+    Employment Agreement dated as of January 1, 2014, by and between MacAndrews &amp; Forbes Holdings Inc. and Lucas Bailey (incorporated
+    by reference to Exhibit 10.20 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-21.htm" STYLE="-sec-extract: exhibit">10.16+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-21.htm" STYLE="-sec-extract: exhibit">First
+    Amendment to Executive Employment Agreement dated as of May 13, 2015, by and between Mafco Worldwide Corporation and Lucas
+    Bailey (incorporated by reference to Exhibit 10.21 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC
+    on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-22.htm" STYLE="-sec-extract: exhibit">10.17+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-22.htm" STYLE="-sec-extract: exhibit">Second
+    Amendment to Executive Employment Agreement dated as of February 11, 2017, by and between Mafco Worldwide Corporation and
+    Lucas Bailey (incorporated by reference to Exhibit 10.22 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the
+    SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-23.htm" STYLE="-sec-extract: exhibit">10.18+</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-23.htm" STYLE="-sec-extract: exhibit">Fourth
+    Amendment to Executive Employment Agreement dated as of May 8, 2018, by and between Mafco Worldwide LLC and Lucas Bailey (incorporated
+    by reference to Exhibit 10.23 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the SEC on April 10, 2020).</A></TD></TR>
+
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt; width: 8%"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-24.htm" STYLE="-sec-extract: exhibit">10.19+</A></TD>
+    <TD STYLE="width: 2%">&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify; width: 90%"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920045600/tv538254_ex10-24.htm" STYLE="-sec-extract: exhibit">Fifth
+    Amendment to Executive Employment Agreement dated as of December 19, 2019, by and between Mafco Worldwide Corporation and
+    Lucas Bailey (incorporated by reference to Exhibit 10.24 of Act II&rsquo;s Form S-4/A (File No. 333-236459), filed with the
+    SEC on April 10, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920019756/tv538156_ex10-3.htm" STYLE="-sec-extract: exhibit">10.20</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920019756/tv538156_ex10-3.htm" STYLE="-sec-extract: exhibit">Form
+    of Subscription Agreement by and between Act II Global Acquisition Corp. and the subscribers signatory thereto (incorporated
+    by reference to Exhibit 10.3 of Act II&rsquo;s Current Report on Form 8-K/425 (File No. 001-38880), filed with the SEC on
+    February 13, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex10-21.htm" STYLE="-sec-extract: exhibit">10.21</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex10-21.htm" STYLE="-sec-extract: exhibit">Escrow
+    Agreement dated as of June 25, 2020, by and among Act II Sponsor LLC, Whole Earth Brands, Inc. and Continental Stock Transfer&nbsp;&amp;
+    Trust Company (incorporated by reference to Exhibit 10.21 of Whole Earth Brands, Inc.&rsquo;s Current Report on Form 8-K (File
+    Number 001-38880), filed with the SEC on June 30, 2020)<FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">.</FONT></A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex14-1.htm" STYLE="-sec-extract: exhibit">14.1</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex14-1.htm" STYLE="-sec-extract: exhibit">Whole
+    Earth Brands, Inc. Code of Ethics, as adopted on June 24, 2020 (incorporated by reference to Exhibit 14.1 of Whole Earth Brands,
+    Inc.&rsquo;s Current Report on Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020)<FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">.</FONT></A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex16-1.htm" STYLE="-sec-extract: exhibit">16.1</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex16-1.htm" STYLE="-sec-extract: exhibit">Letter
+    from Marcum LLP to the SEC dated June 30, 2020 (incorporated by reference to Exhibit 16.1 of Whole Earth Brands, Inc.&rsquo;s
+    Current Report on Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020)<FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">.</FONT></A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex21-1.htm" STYLE="-sec-extract: exhibit">21.1</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex21-1.htm" STYLE="-sec-extract: exhibit">List
+    of Subsidiaries (incorporated by reference to Exhibit 21.1 of Whole Earth Brands, Inc.&rsquo;s Current Report on Form 8-K
+    (File Number 001-38880), filed with the SEC on June 30, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex99-1.htm" STYLE="-sec-extract: exhibit">99.1</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex99-1.htm" STYLE="-sec-extract: exhibit">Press
+    Release dated June 25, 2020 (incorporated by reference to Exhibit 99.1 of Whole Earth Brands, Inc.&rsquo;s Current Report
+    on Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020).</A></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 0.25pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex99-2.htm" STYLE="-sec-extract: exhibit">99.2</A></TD>
+    <TD>&nbsp;</TD>
+    <TD STYLE="padding-top: 0.25pt; padding-bottom: 10pt; text-align: justify"><A HREF="https://www.sec.gov/Archives/edgar/data/1753706/000110465920079050/tm2023499d1_ex99-2.htm" STYLE="-sec-extract: exhibit">Unaudited
+    Pro Forma Condensed Combined Financial Information of the Company for the year ended December&nbsp;31, 2019 and as of and
+    for the three&nbsp;months ended March&nbsp;31, 2020 2020 (incorporated by reference to Exhibit 99.2 of Whole Earth Brands,
+    Inc.&rsquo;s Current Report on Form 8-K (File Number 001-38880), filed with the SEC on June 30, 2020).</A></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV STYLE="width: 2in"><DIV STYLE="border-top: Black 1pt solid; font-size: 1pt">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"></P>
+
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 0.25in; text-align: left">+</TD><TD STYLE="text-align: justify">Indicates a management or compensatory plan.</TD>
+</TR></TABLE>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%"><TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 0.25in; text-align: left">&dagger;</TD><TD STYLE="text-align: justify">Schedules to this exhibit have been omitted pursuant
+to Item 601(b)(2) of Registration S-K. The Registrant hereby agrees to furnish a copy of any omitted schedules to the SEC upon
+request.</TD>
+</TR></TABLE>
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%">
+<TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="text-align: left; width: 0.25in">#</TD><TD STYLE="text-align: justify">Certain schedules and exhibits to this agreement
+have been omitted pursuant to Item 601(a)(5) of Regulation S-K. A copy of any omitted schedule and/or exhibit will be furnished
+supplementally to the SEC upon request.</TD>
+</TR>
+</TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; width: 100%">
+<TR STYLE="vertical-align: top; text-align: justify">
+<TD STYLE="width: 0in"></TD><TD STYLE="text-align: left; width: 0.25in"><P STYLE="margin: 0pt 0; font: 10pt Times New Roman, Times, Serif">&Dagger;</P></TD><TD STYLE="text-align: justify"><P STYLE="margin: 0pt 0; font: 10pt Times New Roman, Times, Serif">Certain portions of this exhibit (indicated by &ldquo;[***]&rdquo;)
+have been omitted pursuant to Regulation S-K, Item 601(b)(10).</P></TD>
+</TR>
+</TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+
+
+
+<!-- Field: Page; Sequence: 5; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->4<!-- Field: /Sequence --></P><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">SIGNATURES</P>
+
+<P STYLE="font: bold 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in">Pursuant to the requirements
+of the Securities Exchange Act of 1934, the Registrant has duly caused this report to be signed on its behalf by the undersigned
+hereunto duly authorized.&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD COLSPAN="3"><FONT STYLE="font-size: 10pt"><B>Whole Earth Brands, Inc.</B></FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD COLSPAN="3"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD COLSPAN="3"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt 0.25pt 1pt; width: 50%"><FONT STYLE="font-size: 10pt">Dated: June 30, 2020</FONT></TD>
+    <TD STYLE="padding-bottom: 1pt; width: 4%"><FONT STYLE="font-size: 10pt">By:</FONT></TD>
+    <TD STYLE="padding-bottom: 1pt; width: 1%"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD STYLE="border-bottom: Black 1pt solid; padding-top: 0.25pt; padding-right: 0.25pt; padding-left: 0.25pt; width: 45%"><FONT STYLE="font-size: 10pt">/s/ Andrew Rusie</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">Andrew Rusie</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">Chief Financial Officer</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD>
+    <TD STYLE="padding: 0.25pt"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 6; Options: Last -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->5<!-- Field: /Sequence --></P><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

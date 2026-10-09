@@ -18,9 +18,10 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
    trusted), and recorded with the validators of that download in the load's
    own transaction. Each package is reconciled in its own transaction: facts it
    no longer carries (and no other package does) are retired, never deleted.
-   The zip is deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it, so a run
-   never needs more than one package of disk. ``WORKER_LIMIT`` caps the
-   packages per run (the backlog resumes next run). DERA consolidates the
+   The zip is deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it, and so is
+   every download of the republication check (a republished package is fetched
+   again when it loads), so a run never needs more than one package of disk.
+   ``WORKER_LIMIT`` caps the packages per run (the backlog resumes next run). DERA consolidates the
    monthly packages of a quarter into ``YYYYqN`` after about a year: loading the
    quarterly supersedes them (their facts retire unless a current package
    carries them), and a listed monthly package whose quarterly is loaded is
@@ -33,7 +34,10 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
    an event already read by the current parser version is carried, not fetched.
 4. Re-derive the class of end and 8-A events read by another parser version, or
    not read yet, as parser corrections (dated by the filing, the old reading
-   retired as never true).
+   retired as never true). Steps 3 and 4 share one budget of
+   ``EVENT_REDERIVE_LIMIT`` filings fetched a run: the index pass reads what it
+   can (an event it cannot read keeps its earlier reading), the latest filed
+   events of the backlog use the rest, and the remainder waits for later runs.
 
 A change of the package parser (``FSN_PARSER_VERSION``) is not applied by this
 worker, which reloads a package only when the SEC republishes it: the operator
@@ -60,6 +64,16 @@ from pathlib import Path
 
 from scripts import load_sec_ticker_cik_history as history
 from src.db import LOCK_SEC_TICKER_CIK_HISTORY, advisory_lock, connect
+
+
+# Filings one run fetches, for the index pass and the backlog of events read by
+# another parser version together (about ten minutes of requests at most 10 per
+# second, and of the order of 150 MB of filings in the run's temporary
+# directory). An event parser
+# change is re-derived by the operator from the workstation cache before the
+# worker runs (docs/runbooks/sec-ticker-cik-history.md); without that, the
+# backlog drains over later runs instead of one run fetching every filing.
+EVENT_REDERIVE_LIMIT = 2000
 
 
 def _quarters(calc_date: dt.date) -> list[tuple[int, int]]:
@@ -109,10 +123,11 @@ def _packages_to_load(
     conn, client, urls: list[str], workdir: Path, *, keep: bool = True,
 ) -> tuple[list[tuple[str, bool]], dict[str, Validators]]:
     """(url, republished) of every package to load, oldest first, and the
-    validators of the republished packages this check downloaded into
-    ``workdir`` (they are loaded from there). Without ``keep`` (no persistent
-    cache) a download whose digest matches the loaded version is deleted at once,
-    so checking every loaded package never holds them all on disk.
+    validators of the republished packages this check downloaded into the
+    persistent cache ``workdir`` (they are loaded from there). Without ``keep``
+    (no persistent cache) every digest-check download is deleted at once, whatever
+    it shows: the run holds one package at a time, and a republished package is
+    downloaded again when it loads, within WORKER_LIMIT.
     New: listed and not loaded. Republished: loaded, current (not superseded) and
     listed, and different from the loaded version (every such package is
     checked, not only the newest). A monthly package whose quarterly is loaded
@@ -137,13 +152,12 @@ def _packages_to_load(
         if name not in current or history.covering_quarter(name) in quarters:
             continue  # not loaded, or about to be superseded by its quarterly
         target = workdir / name
-        downloaded = not target.exists()
         republished, validators = _republished(conn, client, url, target, current[name])
         if republished:
             todo.append((url, True))
-            if validators is not None:
+            if keep and validators is not None:
                 fetched[name] = validators
-        elif not keep and downloaded:
+        if not keep:
             target.unlink(missing_ok=True)
     todo.sort(key=lambda item: history.package_sort_key(Path(names[item[0]])))
     return todo, fetched
@@ -166,7 +180,8 @@ def run(
     owns_client = client is None
     client = client or history.sec_client()
     stats: dict = {"calc_date": as_of.isoformat(), "packages": [], "form_indexes": []}
-    documents = history.EventDocuments(workdir / "event-docs", client)
+    documents = history.EventDocuments(workdir / "event-docs", client,
+                                       budget=EVENT_REDERIVE_LIMIT)
     try:
         with connect(dsn, autocommit=True) as conn, advisory_lock(
             conn, LOCK_SEC_TICKER_CIK_HISTORY
@@ -205,10 +220,12 @@ def run(
                     history.load_form_index(conn, target, documents=documents))
                 if cache is None:
                     target.unlink()
-            stats["event_classes"] = history.derive_event_classes(conn, documents)
+            stats["event_classes"] = history.derive_event_classes(
+                conn, documents, limit=documents.remaining)
             stats["filings_fetched"] = documents.fetched
             stats["filings_failed"] = documents.failed
             stats["filings_rejected"] = documents.rejected
+            stats["filings_deferred"] = documents.deferred
     finally:
         if owns_client:
             client.close()

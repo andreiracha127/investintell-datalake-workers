@@ -1,0 +1,346 @@
+<SEC-DOCUMENT>0001144204-14-059666.txt : 20141006
+<SEC-HEADER>0001144204-14-059666.hdr.sgml : 20141006
+<ACCEPTANCE-DATETIME>20141006150057
+ACCESSION NUMBER:		0001144204-14-059666
+CONFORMED SUBMISSION TYPE:	8-A12B
+PUBLIC DOCUMENT COUNT:		1
+FILED AS OF DATE:		20141006
+DATE AS OF CHANGE:		20141006
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			MMA CAPITAL MANAGEMENT, LLC
+		CENTRAL INDEX KEY:			0001003201
+		STANDARD INDUSTRIAL CLASSIFICATION:	REAL ESTATE [6500]
+		IRS NUMBER:				521449733
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		8-A12B
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-11981
+		FILM NUMBER:		141142641
+
+	BUSINESS ADDRESS:	
+		STREET 1:		621 E PRATT STREET
+		STREET 2:		SUITE 300
+		CITY:			BALTIMORE
+		STATE:			MD
+		ZIP:			21202
+		BUSINESS PHONE:		(443) 263-2900
+
+	MAIL ADDRESS:	
+		STREET 1:		621 E PRATT STREET
+		STREET 2:		SUITE 300
+		CITY:			BALTIMORE
+		STATE:			MD
+		ZIP:			21202
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	MUNICIPAL MORTGAGE & EQUITY LLC
+		DATE OF NAME CHANGE:	19951108
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-A12B
+<SEQUENCE>1
+<FILENAME>v390796_8a12b.htm
+<DESCRIPTION>FORM 8-A
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+<P STYLE="margin: 0"></P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>UNITED STATES </B></P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>SECURITIES AND EXCHANGE COMMISSION </B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>Washington, D.C. 20549 </B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="LEFT" STYLE="margin-top: 1pt; margin-bottom: 1pt"><DIV STYLE="font-size: 1pt; border-top: black 1pt solid; width: 100%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>FORM 8-A </B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>FOR REGISTRATION OF CERTAIN CLASSES OF
+SECURITIES </B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>PURSUANT TO SECTION 12(b) OR (g) OF THE
+</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>SECURITIES EXCHANGE ACT OF 1934 </B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 24pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>MMA CAPITAL MANAGEMENT, LLC</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>(Exact name of Registrant as Specified
+in its Charter) </B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="LEFT" STYLE="margin-top: 1pt; margin-bottom: 1pt"><DIV STYLE="font-size: 1pt; border-top: black 1pt solid; width: 100%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%">
+<TR>
+    <TD STYLE="width: 49%">&nbsp;</TD>
+    <TD STYLE="vertical-align: bottom; width: 2%">&nbsp;</TD>
+    <TD STYLE="width: 49%">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: bottom">
+    <TD NOWRAP STYLE="border-bottom: black 1pt solid; padding-bottom: 0.75pt; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>Delaware</B></FONT></TD>
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="border-bottom: black 1pt solid; padding-bottom: 0.75pt; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>52-1449733</B></FONT></TD></TR>
+<TR>
+    <TD STYLE="vertical-align: top; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>(State or other jurisdiction&nbsp;of incorporation or organization)</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>(I.R.S. Employer Identification No.)</B></FONT></TD></TR>
+<TR>
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="2">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: bottom">
+    <TD NOWRAP STYLE="border-bottom: black 1pt solid">
+        <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>621 East Pratt Street, Suite 600 </B></P>
+        <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"></P>
+        <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>Baltimore, Maryland</B></P>
+        <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"></P></TD>
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="border-bottom: black 1pt solid; padding-bottom: 0.75pt; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>21202</B></FONT></TD></TR>
+<TR>
+    <TD STYLE="vertical-align: top; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>(Address of Principal Executive Offices)</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>(Zip Code)</B></FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Securities to be registered pursuant to Section&nbsp;12(b) of
+the Act: None</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="width: 49%; border-bottom: Black 1pt solid; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif">(Title of each class to be so registered)</FONT></TD>
+    <TD STYLE="width: 2%">&nbsp;</TD>
+    <TD STYLE="width: 49%; border-bottom: Black 1pt solid; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif">(Name of each exchange on which each class is to be registered)</FONT></TD></TR>
+<TR STYLE="vertical-align: bottom">
+    <TD NOWRAP STYLE="padding-bottom: 0.75pt; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif">Common Shares, no par value</FONT></TD>
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="padding-bottom: 0.75pt; text-align: center; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif">The NASDAQ Stock Market LLC</FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-family: Times New Roman, Times, Serif">If
+this form relates to the registration of a class of securities pursuant to Section&nbsp;12(b) of the Exchange Act and is effective
+pursuant to General Instruction A.(c), check the following box. </FONT><FONT STYLE="font-family: Wingdings">x</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-family: Times New Roman, Times, Serif">If
+this form relates to the registration of a class of securities pursuant to Section&nbsp;12(g) of the Exchange Act and is effective
+pursuant to General Instruction A.(d), check the following box. </FONT><FONT STYLE="font-family: Wingdings">&uml;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Securities Act registration statement file number to which this
+form relates: Not Applicable</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Securities to be registered pursuant to Section&nbsp;12(g) of
+the Act: None</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="width: 100%; font-size: 10pt"><TR><TD STYLE="text-align: center; width: 100%">&nbsp;</TD></TR></TABLE></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 12pt"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="width: 100%"><TR><TD STYLE="text-align: center; width: 100%">&nbsp;</TD></TR></TABLE></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="width: 9%; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>Item&nbsp;1.</B></FONT></TD>
+    <TD STYLE="font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>Description of Registrant&rsquo;s Securities to be Registered. </B></FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">The following brief description of our common
+shares does not purport to be complete and is subject in all respects to applicable Delaware law and to the provisions of our Amended
+and Restated Certificate of Formation and Operating Agreement (our &ldquo;Operating Agreement&rdquo;) and By-laws, copies of which
+are exhibits to prior filings of the registrant and incorporated herein by reference.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">Our Operating Agreement does not limit the
+number of common shares that our board of directors may cause us to issue. We had 7,279,689 common shares outstanding at September
+30, 2014. We may pay distributions to holders of our common shares on a pro rata basis when declared by our board of directors
+out of funds legally available therefor. Distributions to the holders of common shares are subject to preferences on the distributions
+on any preferred securities that we may issue in the future.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">Upon our dissolution, liquidation or winding
+up, the holders of our common shares are entitled to share, on a pro rata basis, all assets remaining after payment to creditors
+and subject to prior distribution rights of any preferred securities that we may issue in the future. All of our outstanding common
+shares are fully paid and non-assessable. Holders of our common shares have no preemptive, conversion, sinking fund or cumulative
+voting rights. Our common shares are not redeemable, except pursuant to certain anti-takeover provisions we have adopted. The rights,
+preferences and privileges of holders of common shares are subject to the rights of the holders of any series of preferred securities
+that we may issue in the future.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">The holders of our common shares are entitled
+to one vote per share. Except as provided below with respect to certain anti-takeover provisions, in order for holders of our common
+shares to approve a matter on which they are voting, the matter must receive the vote of more than 50% in interest of the common
+shares which are voted at a meeting at which a quorum of common shares is present.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">Our Operating Agreement and By-laws set forth
+the relationship of the shareholders to the Registrant and to one another and the manner in which we will conduct our operations,
+much like the articles and bylaws of a Delaware corporation or the partnership agreement of a Delaware general or limited partnership.
+While, as a limited liability company, we are not subject to the Delaware General Corporation Law, the Delaware Limited Liability
+Company Act permits a limited liability company agreement to provide, and our Operating Agreement and By-laws do provide, that
+the management of a limited liability company shall be conducted by a board of directors and officers designated by the board and
+that the holders of shares in such limited liability company (as is the case with the holders of our common shares) be afforded
+rights that are substantially similar to those afforded holders of the common shares issued by a corporation organized under Delaware
+law.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">Our Operating Agreement contains at least
+three groups of provisions that could have the effect of discouraging people from trying to acquire control of us. Those provisions
+are:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&bull;If any person or group acquires 10%
+or more of our shares, that person or group cannot, with a very limited exception, (1) engage in a business combination with us
+(including an acquisition from us of more than 10% of our assets or more than 5% of our shares) within five years after the person
+or group acquires the 10% or greater interest, unless our Board approved the business combination or approved the acquisition of
+a 10% or greater interest in us before it took place, or the business combination is approved by two-thirds of the members of our
+Board and holders of two-thirds of the shares that are not owned by the person or group that owns the 10% or greater interest;
+or (2) engage in a business combination with us until more than five years after the person or group acquires the 10% or greater
+interest, unless the business combination is recommended by our Board and approved by holders of 80% of our shares or of two-thirds
+of the shares that are not owned by the person or group that owns the 10% or greater interest.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt"></P>
+
+<!-- Field: Page; Sequence: 2 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="width: 100%; font-size: 10pt"><TR><TD STYLE="text-align: center; width: 100%">&nbsp;</TD></TR></TABLE></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 12pt"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="width: 100%"><TR><TD STYLE="text-align: center; width: 100%">&nbsp;</TD></TR></TABLE></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&bull;If any person or group makes an acquisition
+of our shares that causes the person or group to be able to exercise one-fifth or more but less than one-third of all voting power
+of our shares, one-third or more but less than a majority of all voting power of our shares, or a majority or more of all voting
+power of our shares, the acquired shares will lose their voting power, except to the extent approved at a meeting by the vote of
+two-thirds of the shares not owned by the person or group, and we will have the right to redeem, for their fair market value, any
+of the acquired shares for which the shareholders do not approve voting rights.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&bull;One third of our directors are elected
+each year to three-year terms.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">TRANSFER AGENT AND REGISTRAR</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">The transfer agent and registrar for our
+common shares is Broadridge Corporate Issuer Solutions, Inc., PO Box 1342, Bentwood, NY 11717.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 27pt">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="width: 9%; font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>Item&nbsp;2.</B></FONT></TD>
+    <TD STYLE="font-size: 10pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif"><B>Exhibits. </B></FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 24.5pt">Under the Instructions as to Exhibits with
+respect to Form 8-A, no exhibits are filed herewith or incorporated by reference because no other securities of the registrant
+are registered on The NASDAQ Stock Market LLC and the securities registered hereby are not being registered pursuant to Section
+12(g) of the Securities Exchange Act of 1934, as amended.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0.5in"><B>&nbsp;</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0.5in"><B>Signature</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 24.5pt">Pursuant to the requirements of Section&nbsp;12
+of the Securities Exchange Act of 1934, the registrant has duly caused this registration statement to be signed on its behalf by
+the undersigned, thereto duly authorized.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Date: October 6, 2014</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; font: 10pt Times New Roman, Times, Serif; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="3"><FONT STYLE="font-size: 10pt">MMA CAPITAL MANAGEMENT, LLC</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD>&nbsp;</TD>
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="2">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="width: 50%">&nbsp;</TD>
+    <TD STYLE="width: 3%"><FONT STYLE="font-size: 10pt">By:</FONT></TD>
+    <TD STYLE="width: 32%; border-bottom: Black 1pt solid"><FONT STYLE="font-size: 10pt"><I>/s/ Michael L. Falcone</I></FONT></TD>
+    <TD STYLE="width: 15%">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD>&nbsp;</TD>
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="padding-left: 0.125in"><FONT STYLE="font-size: 10pt">Michael L. Falcone</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD>&nbsp;</TD>
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="padding-left: 0.125in"><FONT STYLE="font-size: 10pt">Chief Executive Officer and President</FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0 0pt 3.75in">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0 0pt 3.75in">&nbsp;</P>
+
+
+
+<P STYLE="margin: 0"></P>
+
+<!-- Field: Page; Sequence: 3; Options: Last -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="width: 100%; font-size: 10pt"><TR><TD STYLE="text-align: center; width: 100%">&nbsp;</TD></TR></TABLE></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="margin: 0"></P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

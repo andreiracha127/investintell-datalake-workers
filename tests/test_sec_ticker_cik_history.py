@@ -1,7 +1,8 @@
 """SEC cover-page ticker -> (CIK, class) history: parser, loader and resolvers.
 
 Unit tests need no database. The DB tests run against a disposable loopback
-PostgreSQL named by ``SEC_TEST_DATABASE_URL`` (postgres:16 in CI), each inside
+PostgreSQL named by ``SEC_TEST_DATABASE_URL`` (in CI the production engine:
+TimescaleDB 2.27.2 on PostgreSQL 18, collation en_US.utf8 on musl), each inside
 its own schema, and skip when the variable is unset. Expected values are
 written out by hand from the documented rules, not computed by the code under
 test. Form 15/25 parsing is checked on real EDGAR filings
@@ -463,12 +464,68 @@ def _filing(adsh: str) -> str:
           "equity", 1, None, None, None, "unknown", None)),
         ("0000950103-18-014472", "8-A12B",
          ("2.500% Senior Notes due 2022 1.750% Senior Notes due 2021 2.625% Senior Notes due "
-          "2026 0.875% Senior Notes due 2028 The Nasdaq Stock Market LLC The Nasdaq Stock "
-          "Market LLC The Nasdaq Stock Market LLC The Nasdaq Stock Market LLC", "other", 1,
+          "2026 0.875% Senior Notes due 2028 The Nasdaq Stock Market LLC; The Nasdaq Stock "
+          "Market LLC; The Nasdaq Stock Market LLC; The Nasdaq Stock Market LLC", "other", 1,
           None, None, None, "unknown", None)),
         ("0001437749-23-002250", "8-A12G",
          ("Series B Preferred Stock, par value $0.005 per share", "other", 1, None, None, None,
           "unknown", None)),
+        # Parser v8 (W1 v3 handoff). Liberty Media's 8-A12B of 2023-08-01 interleaves
+        # its table header ("Title of each class Name of each exchange on which to
+        # be so registered each class is to be registered"), which v7 read as no
+        # class: seven tracking stocks, Series B Liberty SiriusXM (LSXMB) among them.
+        ("0001104659-23-086344", "8-A12B",
+         ("Series A Liberty SiriusXM Common Stock, par value $0.01 per share The Nasdaq Stock "
+          "Market LLC; Series B Liberty SiriusXM Common Stock, par value $0.01 per share The "
+          "Nasdaq Stock Market LLC; Series C Liberty SiriusXM Common Stock, par value $0.01 "
+          "per share The Nasdaq Stock Market LLC; Series A Liberty Live Common Stock, par "
+          "value $0.01 per share The Nasdaq Stock Market LLC; Series C Liberty Live Common "
+          "Stock, par value $0.01 per share The Nasdaq Stock Market LLC; Series A Liberty "
+          "Formula One Common Stock, par value $0.01 per share The Nasdaq Stock Market LLC; "
+          "Series C Liberty Formula One Common Stock, par value $0.01 per share The Nasdaq "
+          "Stock Market LLC", "equity", 7, None, None, None, "unknown", None)),
+        # Carlyle's 8-A12B/A of 2020-01-02: the corporation it converted into
+        # registers its common stock, which continues CG.
+        ("0001193125-20-000229", "8-A12B/A",
+         ("Common Stock The Nasdaq Global Select Market", "equity", 1, None, None, None,
+          "unknown", "restates")),
+        # Arlington Asset's 8-A12B/A of 2023-12-15, after its merger, "to reflect the
+        # expiration of the preferred share purchase rights": no common stock.
+        ("0001104659-23-126435", "8-A12B/A",
+         ("Rights to Purchase Series A Junior Preferred Stock New York Stock Exchange", "other",
+          1, None, None, None, "unknown", "cancels")),
+        # A SPAC's units, Class A common stock and warrants: each row ends with its
+        # exchange, so the units' "each consisting of" does not swallow the stock
+        # (v7 read it as another kind).
+        ("0001193125-21-081112", "8-A12B",
+         ("Units, each consisting of one share of Class A common stock and one-eighth of one "
+          "Warrant The New York Stock Exchange; Class A common stock, par value $0.0001 per "
+          "share The New York Stock Exchange; Warrants, each whole warrant exercisable for one "
+          "share of Class A common stock at an exercise price of $11.50 per share The New York "
+          "Stock Exchange", "equity", 1, None, None, None, "unknown", None)),
+        # "Title of each class to be registered" (no "so"): notes.
+        ("0000004962-25-000064", "8-A12B",
+         ("3.433% Fixed-to-Floating Rate Notes due May 20, 2032 The New York Stock Exchange",
+          "other", 1, None, None, None, "unknown", None)),
+        # Labels in parentheses below the row, and above it.
+        ("0000943374-21-000383", "8-A12B",
+         ("Common Stock, $0.50 par value per share The Nasdaq Stock Market, LLC", "equity", 1,
+          None, None, None, "unknown", None)),
+        ("0001144204-14-059666", "8-A12B",
+         ("Common Shares, no par value The NASDAQ Stock Market LLC", "equity", 1, None, None,
+          None, "unknown", None)),
+        # A 12(g) line without its "(Title of class)" label.
+        ("0001144204-09-010310", "8-A12G",
+         ("Common stock, par value $0.001 per share", "equity", 1, None, None, None, "unknown",
+          None)),
+        # A successor's amendment restating its cover table; another filing only
+        # exhibits, with no table and no Rule 12g-3 sentence, states nothing.
+        ("0001104659-20-079062", "8-K12B/A",
+         ("Common stock, par value $0.0001 per share FREE The NASDAQ Stock Market LLC; Warrants "
+          "to purchase one-half of one share of common stock FREEW The NASDAQ Stock Market LLC",
+          "equity", 1, None, None, None, "unknown", "restates")),
+        ("0000897101-16-002761", "8-K12G3/A",
+         (None, "unknown", 1, None, None, None, "unknown", None)),
     ],
 )
 def test_end_filings_state_their_class_provision_and_exchange(
@@ -1829,6 +1886,47 @@ def _fsn_fixture(name: str, target: Path) -> Path:
             archive.write(FSN_FIXTURES / name / member, member)
         archive.writestr("pre.tsv", "adsh\treport\n")  # never read
     return target
+
+
+@pytest.mark.parametrize(("fixture", "expected"), [
+    # Package parser v4 (W1 v3 handoff audit). Titles that do not say what a line
+    # is: Cherry Hill's truncated "8.250% Series B Fixed-to-Floating Rate
+    # Cumulative Redeemable" under a member without "Preferred" (v3: equity).
+    ("fsn_2026_08_chmi", {"CHMI": "equity", "CHMI-PA": "preferred", "CHMI-PB": "preferred"}),
+    # Voya's "Depositary Shares, each representing a 1/40th" (v3: depositary).
+    ("fsn_2026_08_voya", {"VOYA": "equity", "VOYA-PB": "preferred"}),
+    # Citigroup's trust preferred securities "7.875% FXD / FRN TruPS of Cap XIII"
+    # and "7.625% TRUPs of Cap III" (v3: equity).
+    ("fsn_2026_09_citi", {"C": "equity", "C-N": "preferred", "C-36Y": "preferred",
+                          "C-PR": "preferred", "C-26": "debt", "C-28": "debt", "C-28A": "debt",
+                          "C-28B": "debt", "C-29A": "debt"}),
+    # IBM's notes run together with "due" ("1.750% Notesdue 2031", v3: equity, and
+    # counted among the filing's equity classes).
+    ("fsn_2023q2_ibm", {"IBM": "equity", **{t: "debt" for t in (
+        "IBM-23A", "IBM-24A", "IBM-25", "IBM-25A", "IBM-25B", "IBM-25C", "IBM-26B", "IBM-27",
+        "IBM-27B", "IBM-27F", "IBM-28", "IBM-28A", "IBM-28B", "IBM-29", "IBM-30", "IBM-31",
+        "IBM-31B", "IBM-32A", "IBM-32D", "IBM-34", "IBM-35", "IBM-38", "IBM-40", "IBM-43",
+        "IBM-45", "IBM-96")}}),
+    # MainStreet's plain "Depositary Shares" on a domestic 8-K (v3: depositary).
+    ("fsn_2026_08_mnsb", {"MNSB": "equity", "MNSBP": "preferred"}),
+    # EVgo's "Redeemable warrants included as part of the units, each whole
+    # warrant ..." (v3: unit); its Class B common stock is counted, not listed.
+    ("fsn_2026_05_evgo", {"EVGO": "equity", "EVGOW": "warrant"}),
+    # TLGY Acquisition: the shares' title runs into the warrants' ("ClassA
+    # ordinary shares, par value $0.0001 per share Redeemable warrants, each
+    # whole warrant ...", v3: warrant), and the warrants' is cut to "Class A
+    # ordinary share at an exercise price of $11.50 per share" (v3: equity).
+    ("fsn_2023q1_tlgy", {"TLGY": "equity", "TLGYU": "unit", "TLGYW": "warrant"}),
+])
+def test_lines_a_title_does_not_name_read_as_what_they_are(
+    fixture: str, expected: dict[str, str], tmp_path: Path,
+) -> None:
+    result = loader.parse_package(_fsn_fixture(fixture, tmp_path / "2026_08_notes.zip"))
+    assert {o.ticker: o.security_kind for o in result.observations} == expected
+    # The equity classes each filing shows: its listed line, EVgo's Class B
+    # (counted, not listed), and TLGY's Class B and the "CommonStock" it counted.
+    assert {o.filing_equity_classes for o in result.observations} == {
+        "fsn_2026_05_evgo": {2}, "fsn_2023q1_tlgy": {3}}.get(fixture, {1})
 
 
 UNVERIFIED = "foreign_issuer_listing_unverified"
@@ -4358,6 +4456,63 @@ def test_a_parser_change_re_derives_events_as_corrections(
     assert (stats[0]["inserted"], stats[0]["retired"], stats[1]["derived"]) == (0, 0, 0)
 
 
+V7 = "sec_event_class_v7"
+
+
+def test_parser_v8_restates_the_registrations_v7_misread_or_skipped(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """W1 v3 handoff: as production holds them after the v7 re-derivation, Liberty
+    Media's 8-A12B of 2023-08-01 read as stating no class, and the 8-A amendments
+    of Carlyle (2020) and Arlington Asset (2023) never read. Parser v8 re-reads
+    them as corrections: each old version is visible at no date, each new one from
+    its filing's public date, and the indexes that carried the old carry the new."""
+    conn, _ = schema_dsn
+    rows = {  # adsh: (cik, form, filed, the v7 reading)
+        "0001104659-23-086344": (1560385, "8-A12B", "2023-08-01", ("unknown", 1, V7)),
+        "0001193125-20-000229": (1527166, "8-A12B/A", "2020-01-02", (None, None, None)),
+        "0001104659-23-126435": (1209028, "8-A12B/A", "2023-12-15", (None, None, None)),
+    }
+    for adsh, (cik, form, filed, (kind, count, parser)) in rows.items():
+        _observe(conn, cik, f"T{cik}", "2019-05-01")
+        old_hash = uuid4().hex
+        conn.execute(
+            "INSERT INTO sec_registration_events (fact_hash, adsh, cik, form, filed, class_kind, "
+            "class_count, parser_version, available_on, loaded_on, source_package) VALUES "
+            "(%s, %s, %s, %s, %s, %s, %s, %s, %s::date + 1, '2026-10-09', 'index')",
+            (old_hash, adsh, cik, form, filed, kind, count, parser, filed))
+        conn.execute("INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, "
+                     "fact_hash, loaded_on) VALUES ('index', 'event', %s, '2026-10-09')",
+                     (old_hash,))
+    documents = loader.EventDocuments(FILINGS, None)
+    stats = loader.derive_event_classes(conn, documents, reconciled_on=d(2026, 10, 12))
+    assert (stats["derived"], stats["class_equity"], stats["class_other"]) == (3, 2, 1)
+    assert conn.execute(
+        "SELECT form, class_kind, class_count, amendment_effect, parser_version, available_on, "
+        "retired_on, retired_reason FROM sec_registration_events ORDER BY filed, id"
+    ).fetchall() == [
+        ("8-A12B/A", None, None, None, None, d(2020, 1, 3), d(2026, 10, 12), "parser_correction"),
+        ("8-A12B/A", "equity", 1, "restates", loader.EVENT_PARSER_VERSION, d(2020, 1, 3), None,
+         None),
+        ("8-A12B", "unknown", 1, None, V7, d(2023, 8, 2), d(2026, 10, 12), "parser_correction"),
+        ("8-A12B", "equity", 7, None, loader.EVENT_PARSER_VERSION, d(2023, 8, 2), None, None),
+        ("8-A12B/A", None, None, None, None, d(2023, 12, 16), d(2026, 10, 12),
+         "parser_correction"),
+        ("8-A12B/A", "other", 1, "cancels", loader.EVENT_PARSER_VERSION, d(2023, 12, 16), None,
+         None),
+    ]
+    assert "Series B Liberty SiriusXM Common Stock" in conn.execute(
+        "SELECT class_description FROM sec_registration_events WHERE retired_on IS NULL "
+        "AND cik = 1560385").fetchone()[0]
+    assert conn.execute(
+        "SELECT count(*) FROM sec_ticker_cik_package_facts f JOIN sec_registration_events e "
+        "ON e.fact_hash = f.fact_hash WHERE f.retired_on IS NULL AND e.retired_on IS NULL"
+    ).fetchone() == (3,)
+    # Read by v8, nothing changes on the next run.
+    assert loader.derive_event_classes(conn, documents, reconciled_on=d(2026, 10, 19))[
+        "derived"] == 0
+
+
 def test_an_end_re_derived_years_later_takes_effect_at_its_filing(
     schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4545,6 +4700,249 @@ def test_a_quarterly_package_supersedes_the_months_it_consolidates(
     again = loader.run([m11], dsn=dsn, dry_run=False, reconciled_on=d(2027, 1, 1))
     assert again == [{"package": "2025_11_notes.zip",
                       "skipped": "superseded by 2025q4_notes.zip"}]
+
+
+# A month and its quarterly read by an older parser: F1 (two symbols on one
+# context: two classes) is in both, read as one class; F2 (JWA/JWB, with a total)
+# is in the month only, read as one class; F3 is Outbrain's OB, in the month
+# only, rejected as a placeholder.
+F1, F2, F3 = ("0000000081-25-000001", "0000000082-25-000001", "0000000083-25-000001")
+OLD_FSN_PARSER = "sec_fsn_v1"
+
+
+def _old_fsn_parser(patch: pytest.MonkeyPatch) -> None:
+    patch.setattr(loader, "FSN_PARSER_VERSION", OLD_FSN_PARSER)
+    patch.setattr(loader, "PLACEHOLDER_KEYS", loader.PLACEHOLDER_KEYS | {"OB"})
+    patch.setattr(loader, "_filing_profiles", lambda symbols, others, counted: {
+        f: (1, f in counted) for f in set(symbols) | set(others)})
+
+
+def _superseded_month(conn, dsn: str, cache: Path) -> tuple[Path, Path]:
+    """2025_10 loaded on 2025-11-10 and superseded by 2025q4 on 2026-03-02, both
+    read by the older parser."""
+    month = _write_package(
+        cache / "2025_10_notes.zip",
+        [_sub(F1, 81, "10-Q", "20251015", "2025-10-15 16:00:00.0"),
+         _sub(F2, 82, "10-Q", "20251020", "2025-10-20 08:00:00.0"),
+         _sub(F3, 1454938, "10-Q", "20251022", "2025-10-22 16:05:00.0")],
+        [_fact(F1, "TradingSymbol", "AAA/AAB"), _fact(F2, "TradingSymbol", "JWA/JWB"),
+         _fact(F3, "TradingSymbol", "OB")],
+        [_shares(F2, "55000000", ddate="20251031")],
+    )
+    quarter = _write_package(
+        cache / "2025q4_notes.zip",
+        [_sub(F1, 81, "10-Q", "20251015", "2025-10-15 16:00:00.0")],
+        [_fact(F1, "TradingSymbol", "AAA/AAB")],
+    )
+    with pytest.MonkeyPatch.context() as old:
+        _old_fsn_parser(old)
+        loader.run([month], dsn=dsn, dry_run=False, reconciled_on=d(2025, 11, 10))
+        loader.run([quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 3, 2))
+    assert conn.execute(
+        "SELECT superseded_by, superseded_on, parser_version FROM sec_ticker_cik_packages "
+        "WHERE source_package = '2025_10_notes.zip'").fetchone() == (
+        "2025q4_notes.zip", d(2026, 3, 2), OLD_FSN_PARSER)
+    return month, quarter
+
+
+def _visible(conn, as_of: str) -> list[tuple]:
+    return conn.execute(
+        "SELECT ticker, filing_equity_classes FROM sec_observations_at(%s, false) "
+        'ORDER BY ticker COLLATE "C"', (as_of,)).fetchall()
+
+
+def test_a_parser_correction_restates_a_superseded_months_reading(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Codex thread 4225233247: a fact only the month carried retired as 'source'
+    when its quarterly superseded it. A parser change re-reads the month's bytes
+    (the SEC no longer lists it, so its digest identifies them): the old reading
+    is visible at no date, the new one from its filing's public date until the
+    supersession; a fact the quarterly carries is not duplicated."""
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    month, quarter = _superseded_month(conn, dsn, cache)
+    # The old reading answers before the supersession: F2's total sizes JWA.
+    assert _ticker_shares(conn, "JWA", 82, "2025-12-15")[0] == "resolved"
+    assert _issuer(conn, "OB", "2025-12-15")[0] == "missing"
+    assert _visible(conn, "2025-12-15") == [("AAA", 1), ("AAB", 1), ("JWA", 1), ("JWB", 1)]
+
+    # The re-derivation: --verify-cache, the SEC listing only the quarterly.
+    monkeypatch.setattr(loader, "sec_client", lambda: _fake_sec(
+        tmp_path, {"2025q4_notes.zip": quarter.read_bytes()}, {},
+        last_modified={"2025q4_notes.zip": ""})[0])
+    capsys.readouterr()
+    assert loader.main(["--verify-cache", "--no-events", "--packages-dir", str(cache),
+                        "--dsn", dsn, "--reconciled-on", "2026-09-01"]) == 0
+    out = capsys.readouterr().out
+    assert "ignored_unlisted_packages" not in out  # not loaded, but re-read
+    restated = [json.loads(line) for line in out.splitlines()
+                if line.startswith('{"package": "2025_10_notes.zip"')]
+    assert [(r["restated"], r["inserted"], r["retired"]) for r in restated] == [
+        ("superseded by 2025q4_notes.zip", 3, 2)]
+    rows = ("SELECT ticker, filing_equity_classes, available_on, retired_on, retired_reason "
+            'FROM sec_ticker_cik_observations ORDER BY ticker COLLATE "C", id')
+    superseded, corrected = d(2026, 3, 2), "parser_correction"
+    assert conn.execute(rows).fetchall() == [
+        # In both packages: the quarterly's own re-read restated it.
+        ("AAA", 1, d(2025, 10, 15), d(2026, 9, 1), corrected),
+        ("AAA", 2, d(2025, 10, 15), None, None),
+        ("AAB", 1, d(2025, 10, 15), d(2026, 9, 1), corrected),
+        ("AAB", 2, d(2025, 10, 15), None, None),
+        # In the month only: the old reading never true, the new one public
+        # from its filing until the supersession.
+        ("JWA", 1, d(2025, 10, 20), superseded, corrected),
+        ("JWA", 2, d(2025, 10, 20), superseded, "source"),
+        ("JWB", 1, d(2025, 10, 20), superseded, corrected),
+        ("JWB", 2, d(2025, 10, 20), superseded, "source"),
+        ("OB", 1, d(2025, 10, 22), superseded, "source"),
+    ]
+    assert _visible(conn, "2025-12-15") == [
+        ("AAA", 2), ("AAB", 2), ("JWA", 2), ("JWB", 2), ("OB", 1)]
+    assert _visible(conn, "2026-03-02") == [("AAA", 2), ("AAB", 2)]
+    assert _ticker_shares(conn, "JWA", 82, "2025-12-15")[0] == "missing"
+    assert _issuer(conn, "OB", "2025-12-15")[:2] == ("resolved", 1454938)
+    assert _issuer(conn, "OB", "2026-03-02")[0] == "missing"
+    assert conn.execute(
+        "SELECT source_package, parser_version, superseded_by FROM sec_ticker_cik_packages "
+        'ORDER BY source_package COLLATE "C"').fetchall() == [
+        ("2025_10_notes.zip", loader.FSN_PARSER_VERSION, "2025q4_notes.zip"),
+        ("2025q4_notes.zip", loader.FSN_PARSER_VERSION, None)]
+    again = loader.run([month, quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 10, 1))
+    assert again[0] == {"package": "2025_10_notes.zip",
+                        "skipped": "superseded by 2025q4_notes.zip"}
+
+    # A later parser reads the month again, differently: the version the first
+    # re-read inserted is the one it corrects.
+    first = loader.FSN_PARSER_VERSION
+    monkeypatch.setattr(loader, "FSN_PARSER_VERSION", "sec_fsn_next")
+    monkeypatch.setattr(loader, "PLACEHOLDER_KEYS", loader.PLACEHOLDER_KEYS | {"JWB"})
+    stats = loader.run([month, quarter], dsn=dsn, dry_run=False,
+                       reconciled_on=d(2026, 12, 1))
+    assert [(s["package"], s.get("restated"), s["inserted"], s["retired"]) for s in stats] == [
+        ("2025q4_notes.zip", None, 0, 0),
+        ("2025_10_notes.zip", "superseded by 2025q4_notes.zip", 1, 2)]
+    assert _visible(conn, "2025-12-15") == [("AAA", 2), ("AAB", 2), ("JWA", 1), ("OB", 1)]
+    assert conn.execute(
+        "SELECT filing_equity_classes, retired_on, retired_reason, parser_version "
+        "FROM sec_ticker_cik_observations WHERE ticker = 'JWA' ORDER BY id").fetchall() == [
+        (1, superseded, corrected, OLD_FSN_PARSER),
+        (2, superseded, corrected, first),
+        (1, superseded, "source", "sec_fsn_next"),
+    ]
+
+
+def test_a_restated_month_whose_quarterly_was_read_otherwise(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """The old parser read the quarterly's copy of a filing otherwise than the
+    month's (as it would other bytes). F4: it misread the month only; the month's
+    new reading is the quarterly's version, which so continues the month's and is
+    known from the filing's public date, not from the quarterly's load. F5: it
+    read both alike, and the new parser reads the month otherwise: the shared
+    version stands for the quarterly, but only from the quarterly's load (a
+    version of an accession the month carried before), and the month's new
+    reading is the month's until the supersession."""
+    conn, dsn = schema_dsn
+    f4, f5 = "0000000084-25-000001", "0000000085-25-000001"
+    subs = [_sub(f4, 84, "10-Q", "20251015", "2025-10-15 16:00:00.0"),
+            _sub(f5, 85, "10-Q", "20251016", "2025-10-16 16:00:00.0")]
+    month = _write_package(
+        tmp_path / "2025_10_notes.zip", subs,
+        [_fact(f4, "TradingSymbol", "XYZ/XYW"), _fact(f5, "TradingSymbol", "ABC"),
+         _fact(f5, "TradingSymbol", "OB", dimh="0xbbb")], [], DIMS)
+    quarter = _write_package(
+        tmp_path / "2025q4_notes.zip", subs,
+        [_fact(f4, "TradingSymbol", "XYZ/XYW"), _fact(f5, "TradingSymbol", "ABC")], [], DIMS)
+    profiles = loader._filing_profiles
+    with pytest.MonkeyPatch.context() as old:
+        _old_fsn_parser(old)
+        loader.run([month], dsn=dsn, dry_run=False, reconciled_on=d(2025, 11, 10))
+        old.setattr(loader, "_filing_profiles", profiles)
+        loader.run([quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 3, 2))
+    assert _visible(conn, "2025-12-15") == [("ABC", 1), ("XYW", 1), ("XYZ", 1)]
+    assert _visible(conn, "2026-03-02") == [("ABC", 1), ("XYW", 2), ("XYZ", 2)]
+
+    stats = loader.run([month, quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 1))
+    assert [(s["package"], s["inserted"], s["retired"]) for s in stats] == [
+        ("2025q4_notes.zip", 0, 0), ("2025_10_notes.zip", 5, 5)]
+    superseded, on, corrected = d(2026, 3, 2), d(2026, 9, 1), "parser_correction"
+    assert conn.execute(
+        "SELECT ticker, filing_equity_classes, available_on, retired_on, retired_reason "
+        'FROM sec_ticker_cik_observations ORDER BY ticker COLLATE "C", id').fetchall() == [
+        ("ABC", 1, d(2025, 10, 16), on, corrected),
+        ("ABC", 1, superseded, None, None),
+        ("ABC", 2, d(2025, 10, 16), superseded, "source"),
+        ("OB", 2, d(2025, 10, 16), superseded, "source"),
+        ("XYW", 1, d(2025, 10, 15), superseded, corrected),
+        ("XYW", 2, superseded, on, corrected),
+        ("XYW", 2, d(2025, 10, 15), None, None),
+        ("XYZ", 1, d(2025, 10, 15), superseded, corrected),
+        ("XYZ", 2, superseded, on, corrected),
+        ("XYZ", 2, d(2025, 10, 15), None, None),
+    ]
+    assert _visible(conn, "2025-12-15") == [("ABC", 2), ("OB", 2), ("XYW", 2), ("XYZ", 2)]
+    assert _visible(conn, "2026-03-02") == [("ABC", 1), ("XYW", 2), ("XYZ", 2)]
+
+
+def test_a_superseded_month_named_outside_the_packages_dir_is_restated_from_it(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Codex thread 4228621226: with --verify-cache, a superseded month named on
+    the command line from another directory is restated from that file. The SEC
+    no longer lists it, so verification alone would drop it, and the packages
+    directory has no copy of it."""
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    conn, dsn = schema_dsn
+    cache, elsewhere = tmp_path / "cache", tmp_path / "elsewhere"
+    cache.mkdir()
+    elsewhere.mkdir()
+    month, quarter = _superseded_month(conn, dsn, cache)
+    loader.run([quarter], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 1))  # re-read
+    named = elsewhere / month.name
+    month.replace(named)
+    monkeypatch.setattr(loader, "sec_client", lambda: _fake_sec(
+        tmp_path, {"2025q4_notes.zip": quarter.read_bytes()}, {},
+        last_modified={"2025q4_notes.zip": ""})[0])
+    capsys.readouterr()
+    assert loader.main([str(named), "--verify-cache", "--no-events", "--packages-dir",
+                        str(cache), "--dsn", dsn, "--reconciled-on", "2026-09-01"]) == 0
+    restated = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                if line.startswith('{"package": "2025_10_notes.zip"')]
+    assert [(r.get("restated"), r.get("inserted"), r.get("retired")) for r in restated] == [
+        ("superseded by 2025q4_notes.zip", 3, 2)]
+    assert _issuer(conn, "OB", "2025-12-15")[:2] == ("resolved", 1454938)
+
+
+def test_a_superseded_month_is_restated_only_from_its_bytes_after_its_quarterly(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """The restatement needs the very bytes loaded (the SHA-256 recorded) and its
+    quarterly read by the same parser first; until then nothing changes."""
+    conn, dsn = schema_dsn
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    month, quarter = _superseded_month(conn, dsn, cache)
+    month_rows = ("SELECT id, ticker, available_on, retired_on, retired_reason "
+                  "FROM sec_ticker_cik_observations WHERE cik IN (82, 1454938) ORDER BY id")
+    before = conn.execute(month_rows).fetchall()
+    waiting = {"package": "2025_10_notes.zip", "skipped": "superseded by 2025q4_notes.zip",
+               "not_restated": f"2025q4_notes.zip is not read by {loader.FSN_PARSER_VERSION} yet"}
+    assert loader.run([month], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 1)) == [waiting]
+    original = month.read_bytes()
+    _write_package(month, [_sub(F3, 1454938, "10-Q", "20251022", "2025-10-22 16:05:00.0")],
+                   [_fact(F3, "TradingSymbol", "OB")])
+    stats = loader.run([quarter, month], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 1))
+    assert stats[1] == {**waiting, "not_restated": "the file is not the version loaded"}
+    assert conn.execute(month_rows).fetchall() == before
+    month.write_bytes(original)
+    stats = loader.run([month], dsn=dsn, dry_run=False, reconciled_on=d(2026, 9, 2))
+    assert (stats[0]["restated"], stats[0]["inserted"], stats[0]["retired"]) == (
+        "superseded by 2025q4_notes.zip", 3, 2)
 
 
 def test_quarterly_packages_sort_after_their_months() -> None:
@@ -4927,7 +5325,9 @@ def test_worker_detects_a_same_size_republication_by_its_validator_or_digest(
     calls.clear()
     stats = worker.run(dsn, calc_date="2024-11-15", client=client)
     assert [(p["inserted"], p["retired"]) for p in stats["packages"]] == [(1, 1)]
-    assert calls.count(("GET", FSN_BASE + "2024_10_notes.zip")) == 1  # fetched once
+    # Without a persistent cache the check's download is deleted at once and the
+    # load fetches the package again (Codex thread 4225169074).
+    assert calls.count(("GET", FSN_BASE + "2024_10_notes.zip")) == 2
     calls.clear()
     assert worker.run(dsn, calc_date="2024-11-15", client=client)["state"] == "noop"
     assert conn.execute(
@@ -5216,6 +5616,54 @@ def test_a_check_without_a_cache_holds_no_download(
     assert sizes == [1, 1] and list(work.glob("*.zip")) == []
 
 
+def test_a_batch_republication_without_a_cache_holds_one_download_at_a_time(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4225169074: three loaded packages, recorded without validators,
+    republished at the same size without validators, and WORKER_LIMIT=1. Without a
+    persistent cache the run never holds more than the one package it loads: a
+    digest check's download is deleted whatever it shows, and a republished
+    package is downloaded again when it loads."""
+    import tempfile
+
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    names = ("2024q1_notes.zip", "2024q2_notes.zip", "2024q3_notes.zip")
+    for number, name in enumerate(names, start=1):
+        _stored_month(build, name, "AA", f"000000000{number}-24-000001", "20240305")
+        loader.load_package(conn, loader.parse_package(build / name),
+                            reconciled_on=d(2024, 11, 1))
+    remote = {name: _stored_month(build, name, "BB", f"000000000{number}-24-000001",
+                                  "20240305") for number, name in enumerate(names, start=1)}
+    client, calls = _fake_sec(tmp_path, remote, {}, last_modified={name: "" for name in names})
+    held = []
+    real_fetch = loader.fetch_package
+
+    def fetch(*args, **kwargs):
+        validators = real_fetch(*args, **kwargs)
+        held.append(len(list(scratch.rglob("*.zip"))))
+        return validators
+
+    monkeypatch.setattr(loader, "fetch_package", fetch)
+    stats = worker.run(dsn, calc_date="2024-11-15", limit=1, client=client)
+    assert (stats["backlog"], stats["republished"]) == (3, list(names))
+    assert [(p["package"], p["inserted"], p["retired"]) for p in stats["packages"]] == [
+        ("2024q1_notes.zip", 1, 1)]
+    # Three digest checks, then the one load: each download alone on disk.
+    assert held == [1, 1, 1, 1]
+    assert calls.count(("GET", FSN_BASE + "2024q1_notes.zip")) == 2
+    assert list(scratch.iterdir()) == []
+
+
 def test_a_cached_copy_of_an_unrecorded_package_is_never_loaded(
     schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5271,6 +5719,94 @@ def test_verify_cache_checks_the_package_file_named_on_the_command_line(
     assert (other / "2024_10_notes.zip").read_bytes() == remote
     assert conn.execute("SELECT DISTINCT ticker FROM sec_ticker_cik_observations"
                         ).fetchall() == [("BB",)]
+
+
+def test_worker_re_derives_a_bounded_number_of_events_per_run(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After an event parser change the operator re-derives from the workstation
+    cache; a worker that runs first reads at most EVENT_REDERIVE_LIMIT filings a
+    run, the latest filed first, instead of fetching every filing again."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    monkeypatch.setattr(worker, "EVENT_REDERIVE_LIMIT", 2)
+    conn, dsn = schema_dsn
+    _observe(conn, 5133, "AM", "2013-07-10")
+    filings = {}
+    for adsh, form, filed in (("0000876661-13-000657", "25-NSE", "2013-08-12"),
+                              ("0001193125-13-343607", "15-12B", "2013-08-22"),
+                              ("0001078782-11-001558", "15-12G", "2011-03-01")):
+        _event(conn, 5133, form, filed, kind="unknown", adsh=adsh)  # read by "test"
+        filings[adsh] = (FILINGS / f"{adsh}.txt").read_bytes()
+    build = tmp_path / "build"
+    build.mkdir()
+    packages = {"2024_10_notes.zip": _stored_month(build, "2024_10_notes.zip", "TT")}
+    client, calls = _fake_sec(tmp_path, packages, {}, filings)
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert ({k: stats["event_classes"][k] for k in ("derived", "deferred")},
+            stats["filings_fetched"]) == ({"derived": 2, "deferred": 1}, 2)
+    fetched = [url.rsplit("/", 1)[1] for method, url in calls if url.startswith(FILING_BASE)]
+    assert fetched == ["0001193125-13-343607.txt", "0000876661-13-000657.txt"]
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert {k: stats["event_classes"][k] for k in ("derived", "deferred")} == {
+        "derived": 1, "deferred": 0}
+    assert conn.execute(
+        "SELECT count(*) FROM sec_registration_events WHERE retired_on IS NULL "
+        "AND parser_version = %s", (loader.EVENT_PARSER_VERSION,)).fetchone() == (3,)
+
+
+def test_the_index_pass_and_the_backlog_share_one_filing_budget(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4228621218: after a parser change the open quarter's index
+    lists events read by the old parser, and the backlog holds more. One run
+    fetches at most EVENT_REDERIVE_LIMIT filings for both passes together; an
+    index event it cannot read keeps its earlier reading until a later run."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [(2024, 4)])
+    monkeypatch.setattr(worker, "EVENT_REDERIVE_LIMIT", 2)
+    conn, dsn = schema_dsn
+    _observe(conn, 5133, "AM", "2013-07-10")
+    listed = (("25-NSE", "2024-10-01", "0000876661-13-000657"),
+              ("15-12B", "2024-10-02", "0001193125-13-343607"),
+              ("15-12G", "2024-10-03", "0001078782-11-001558"))
+    backlog = ("25", "2017-08-01", "0000950103-17-012553")
+    filings = {adsh: (FILINGS / f"{adsh}.txt").read_bytes() for _, _, adsh in (*listed, backlog)}
+    index = {"2024/QTR4/form.gz": _index_bytes(
+        *((form, 5133, filed, adsh) for form, filed, adsh in listed))}
+    with pytest.MonkeyPatch.context() as old:  # loaded and read by an older parser
+        old.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_old")
+        (tmp_path / "2024QTR4.form.gz").write_bytes(index["2024/QTR4/form.gz"])
+        _index(tmp_path / "2017QTR3.form.gz", (backlog[0], 5133, backlog[1], backlog[2]))
+        loader.run([], dsn=dsn, dry_run=False, reconciled_on=d(2024, 11, 1),
+                   form_indexes=[tmp_path / "2017QTR3.form.gz", tmp_path / "2024QTR4.form.gz"],
+                   documents=loader.EventDocuments(FILINGS, None))
+    build = tmp_path / "build"
+    build.mkdir()
+    packages = {"2024_10_notes.zip": _stored_month(build, "2024_10_notes.zip", "TT")}
+    client, calls = _fake_sec(tmp_path, packages, index, filings)
+
+    def run() -> tuple[dict, int]:
+        calls.clear()
+        stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+        return stats, sum(1 for _, url in calls if url.startswith(FILING_BASE))
+
+    stats, fetched = run()
+    assert (fetched, stats["filings_deferred"], stats["event_classes"]["derived"],
+            stats["event_classes"]["deferred"]) == (2, 1, 0, 2)
+    stats, fetched = run()
+    assert (fetched, stats["filings_deferred"], stats["event_classes"]["derived"],
+            stats["event_classes"]["deferred"]) == (2, 0, 1, 0)
+    assert run()[1] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM sec_registration_events WHERE retired_on IS NULL "
+        "AND parser_version = %s", (loader.EVENT_PARSER_VERSION,)).fetchone() == (4,)
 
 
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:

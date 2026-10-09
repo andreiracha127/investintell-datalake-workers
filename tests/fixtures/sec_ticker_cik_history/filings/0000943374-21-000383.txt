@@ -1,0 +1,291 @@
+<SEC-DOCUMENT>0000943374-21-000383.txt : 20210804
+<SEC-HEADER>0000943374-21-000383.hdr.sgml : 20210804
+<ACCEPTANCE-DATETIME>20210804170030
+ACCESSION NUMBER:		0000943374-21-000383
+CONFORMED SUBMISSION TYPE:	8-A12B
+PUBLIC DOCUMENT COUNT:		1
+FILED AS OF DATE:		20210804
+DATE AS OF CHANGE:		20210804
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Orange County Bancorp, Inc. /DE/
+		CENTRAL INDEX KEY:			0001754226
+		STANDARD INDUSTRIAL CLASSIFICATION:	STATE COMMERCIAL BANKS [6022]
+		IRS NUMBER:				261135778
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		8-A12B
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-40711
+		FILM NUMBER:		211144960
+
+	BUSINESS ADDRESS:	
+		STREET 1:		212 DOLSON AVENUE
+		CITY:			MIDDLETOWN
+		STATE:			NY
+		ZIP:			10940
+		BUSINESS PHONE:		(845) 341-5000
+
+	MAIL ADDRESS:	
+		STREET 1:		212 DOLSON AVENUE
+		CITY:			MIDDLETOWN
+		STATE:			NY
+		ZIP:			10940
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-A12B
+<SEQUENCE>1
+<FILENAME>form8a_080421.htm
+<DESCRIPTION>ORANGE COUNTY BANCORP, INC. FORM 8-A AUGUST 4, 2021
+<TEXT>
+<html>
+  <head>
+    <title></title>
+    <!-- Licensed to: Luse Gorman
+         Document created using EDGARfilings PROfile 7.5.0.0
+         Copyright 1995 - 2021 Broadridge -->
+  </head>
+<body bgcolor="#ffffff" style="font-family: 'Times New Roman', Times, serif; font-size: 10pt; text-align: left; color: #000000;">
+  <div>
+    <div style="text-align: center; font-size: 12pt; font-weight: bold;">UNITED STATES</div>
+    <div style="text-align: center; font-size: 12pt; font-weight: bold;">SECURITIES AND EXCHANGE COMMISSION</div>
+    <div style="text-align: center; font-size: 12pt; font-weight: bold;">Washington, D.C.&#160; 20549</div>
+    <div><br>
+    </div>
+    <div style="text-align: center; font-size: 12pt; font-weight: bold;">FORM 8-A</div>
+    <div><br>
+    </div>
+    <div style="text-align: center; font-size: 12pt; font-weight: bold;">FOR REGISTRATION OF CERTAIN CLASSES OF SECURITIES</div>
+    <div style="text-align: center; font-size: 12pt; font-weight: bold;">PURSUANT TO SECTION 12(b) OR (g) OF THE</div>
+    <div style="text-align: center; font-size: 12pt; font-weight: bold;">SECURITIES EXCHANGE ACT OF 1934</div>
+    <div><br>
+    </div>
+    <div style="text-align: center; font-size: 12pt;"><u>Orange County Bancorp, Inc.</u></div>
+    <div style="text-align: center; font-size: 12pt;">(Exact Name of Registrant as Specified in Its Charter)</div>
+    <div><br>
+    </div>
+    <table cellspacing="0" cellpadding="0" id="ze7b22181f5d04a1f8efd9323e2b00010" style="font-family: 'Times New Roman', Times, serif; font-size: 10pt; width: 100%; text-align: left; color: #000000;">
+
+        <tr>
+          <td style="width: 43.94%; vertical-align: top; border-bottom: 2px solid #000000;">
+            <div>
+              <div style="text-align: center; font-size: 12pt;">Delaware</div>
+            </div>
+          </td>
+          <td style="width: 11.26%; vertical-align: top;">&#160;</td>
+          <td style="width: 44.8%; vertical-align: top; border-bottom: 2px solid #000000;">
+            <div>
+              <div style="text-align: center; font-size: 12pt;">26-1135778</div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="width: 43.94%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">(State or other jurisdiction of incorporation or organization)</div>
+          </td>
+          <td style="width: 11.26%; vertical-align: top;">&#160;</td>
+          <td style="width: 44.8%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">(I.R.S. Employer Identification No.)</div>
+          </td>
+        </tr>
+
+    </table>
+    <div><br>
+    </div>
+    <table cellspacing="0" cellpadding="0" id="z30881edb0039411caecc92974811e9ca" style="font-family: 'Times New Roman', Times, serif; font-size: 10pt; width: 100%; text-align: left; color: #000000;">
+
+        <tr>
+          <td style="width: 50.02%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">12 Dolson Avenue</div>
+          </td>
+          <td style="width: 8.29%; vertical-align: top;">&#160;</td>
+          <td style="width: 41.69%; vertical-align: top;">&#160;</td>
+        </tr>
+        <tr>
+          <td style="width: 50.02%; vertical-align: top; border-bottom: 2px solid #000000;">
+            <div>
+              <div style="text-align: center; font-size: 12pt;">Middletown, New York</div>
+            </div>
+          </td>
+          <td style="width: 8.29%; vertical-align: top;">&#160;</td>
+          <td style="width: 41.69%; vertical-align: top; border-bottom: 2px solid #000000;">
+            <div>
+              <div style="text-align: center; font-size: 12pt;">10940</div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="width: 50.02%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">(Address of principal executive offices)</div>
+          </td>
+          <td style="width: 8.29%; vertical-align: top;">&#160;</td>
+          <td style="width: 41.69%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">(Zip Code)</div>
+          </td>
+        </tr>
+
+    </table>
+    <div><br>
+    </div>
+    <div style="text-indent: 36pt; font-size: 12pt;">Securities to be registered pursuant to Section 12(b) of the Act:</div>
+    <div><br>
+    </div>
+    <table cellspacing="0" cellpadding="0" id="z5b7f137f9f1d47969c8c4d894ee698c6" style="font-family: 'Times New Roman', Times, serif; font-size: 10pt; width: 100%; text-align: left; color: #000000;">
+
+        <tr>
+          <td style="width: 50%; vertical-align: top; border-bottom: 2px solid #000000;">
+            <div>
+              <div style="text-align: center; font-size: 12pt;">Common Stock, $0.50 par value per share</div>
+            </div>
+          </td>
+          <td style="width: 50%; vertical-align: top; border-bottom: 2px solid #000000;">
+            <div>
+              <div style="text-align: center; font-size: 12pt;">The Nasdaq Stock Market, LLC</div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="width: 50%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">(Title of each class to be so registered)</div>
+          </td>
+          <td style="width: 50%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">(Name of each exchange on which</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="width: 50%; vertical-align: top;">&#160;</td>
+          <td style="width: 50%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">each class is to be registered)</div>
+          </td>
+        </tr>
+
+    </table>
+    <div><br>
+    </div>
+    <div style="text-indent: 36pt; font-size: 12pt;">If this form relates to the registration of a class of securities pursuant to Section 12(b) of the Exchange Act and is effective pursuant
+      to General Instruction A.(c) or (e), check the following box.&#160; &#8999;</div>
+    <div><br>
+    </div>
+    <div style="text-indent: 36pt; font-size: 12pt;">If this form relates to the registration of a class of securities pursuant to Section 12(g) of the Exchange Act and is effective pursuant
+      to General Instruction A.(d) or (e), check the following box.&#160; &#9723;</div>
+    <div><br>
+    </div>
+    <div style="text-indent: 36pt; font-size: 12pt;">If this form relates to the registration of a class of securities concurrently with a Regulation A offering, check the following box.&#160; &#9723;</div>
+    <div><br>
+    </div>
+    <div style="text-indent: 36pt; font-size: 12pt;">Securities Act registration statement or Regulation A offering statement file number to which this form relates (if applicable):&#160; <u>333-257781</u></div>
+    <div><br>
+    </div>
+    <div style="text-indent: 36pt; font-size: 12pt;">Securities to be registered pursuant to Section 12(g) of the Act:</div>
+    <div><br>
+    </div>
+    <table cellspacing="0" cellpadding="0" id="z03b317be35ee4693a177de0abc25cff6" style="font-family: 'Times New Roman', Times, serif; font-size: 10pt; width: 100%; text-align: left; color: #000000;">
+
+        <tr>
+          <td style="width: 28.88%; vertical-align: top;">&#160;</td>
+          <td style="width: 45.24%; vertical-align: top; border-bottom: 2px solid #000000;">
+            <div>
+              <div style="text-align: center; font-size: 12pt;">N/A</div>
+            </div>
+          </td>
+          <td style="width: 25.88%; vertical-align: top;">&#160;</td>
+        </tr>
+        <tr>
+          <td style="width: 28.88%; vertical-align: top;">&#160;</td>
+          <td style="width: 45.24%; vertical-align: top;">
+            <div style="text-align: center; font-size: 12pt;">(Title of class)</div>
+          </td>
+          <td style="width: 25.88%; vertical-align: top;">&#160;</td>
+        </tr>
+
+    </table>
+    <div><br>
+    </div>
+    <div id="DSPFPageBreakArea" style="clear: both; margin-top: 10pt; margin-bottom: 10pt;">
+      <div id="DSPFPageBreak" style="page-break-after:always;">
+        <hr noshade="noshade" style="margin: 4px 0px; width: 100%; border-width: 0; height: 2px; color: #000000; background-color: #000000; clear: both;"></div>
+    </div>
+    <div style="text-align: justify; font-size: 12pt; font-weight: bold;">Item 1.&#160; Description of Registrant&#8217;s Securities to be Registered.</div>
+    <div><br>
+    </div>
+    <div style="text-align: justify; text-indent: 36pt; font-size: 12pt;">Orange County Bancorp, Inc. (the &#8220;Registrant&#8221;) hereby incorporates by reference the description of its common stock, $0.50 par value per
+      share, to be registered hereunder contained under the heading &#8220;Description of Capital Stock&#8221; in the Registrant&#8217;s <a href="https://www.sec.gov/Archives/edgar/data/0001754226/000110465921090389/tm2116829-3_s1.htm">Registration Statement on Form S-1</a>
+      (No. 333-257781) as originally filed publicly with the Securities and Exchange Commission (the &#8220;Commission&#8221;) on July 9, 2021, as subsequently amended on <a href="https://www.sec.gov/Archives/edgar/data/0001754226/000110465921094974/tm2116829-6_s1a.htm">July 22, 2021</a> and <a href="https://www.sec.gov/Archives/edgar/data/0001754226/000110465921097270/tm2116829-9_s1a.htm">July 29, 2021</a> (the
+      &#8220;Registration Statement&#8221;), and in the prospectus, included in the Registration Statement to be filed separately by the Registrant with the Commission pursuant to Rule 424(b) under the Securities Act of 1933, as amended, which prospectus will be
+      deemed to be incorporated by reference herein.</div>
+    <div><br>
+    </div>
+    <div style="font-size: 12pt; font-weight: bold;">Item 2.&#160; Exhibits.</div>
+    <div><br>
+    </div>
+    <div style="text-indent: 36pt; font-size: 12pt;">In accordance with the &#8220;Instructions as to Exhibits&#8221; for Form 8-A, no exhibits are required to be filed because no other securities of the
+      Registrant are registered on the Nasdaq Stock Market LLC, and the securities registered hereby are not being registered pursuant to Section 12(g) of the Securities Exchange Act of 1934, as amended.</div>
+    <div id="DSPFPageBreakArea" style="clear: both; margin-top: 10pt; margin-bottom: 10pt;">
+      <div id="DSPFPageBreak" style="page-break-after:always;">
+        <hr noshade="noshade" style="margin: 4px 0px; width: 100%; border-width: 0; height: 2px; color: #000000; background-color: #000000; clear: both;"></div>
+    </div>
+    <div style="text-align: center; font-family: 'Times New Roman',Times,serif; font-size: 12pt; font-weight: bold;">SIGNATURE</div>
+    <div><br>
+    </div>
+    <div style="text-indent: 36pt; font-size: 12pt;">Pursuant to the requirements of Section 12 of the Securities Exchange Act of 1934, the registrant has duly caused this registration
+      statement to be signed on its behalf by the undersigned, thereto duly authorized.</div>
+    <div><br>
+    </div>
+    <div><br>
+    </div>
+    <table cellspacing="0" cellpadding="0" id="z6b34529493414a15a75c36b2f7e45f32" style="font-family: 'Times New Roman', Times, serif; font-size: 10pt; width: 100%; text-align: left; color: #000000;">
+
+        <tr>
+          <td style="width: 45.3%; vertical-align: top;">&#160;</td>
+          <td style="width: 6.58%; vertical-align: top;">&#160;</td>
+          <td style="width: 48.12%; vertical-align: top;">
+            <div style="text-align: justify; font-size: 12pt; font-weight: bold;">ORANGE COUNTY BANCORP, INC.</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="width: 45.3%; vertical-align: top;">&#160;</td>
+          <td style="width: 6.58%; vertical-align: top;">&#160;</td>
+          <td style="width: 48.12%; vertical-align: top;">&#160;</td>
+        </tr>
+        <tr>
+          <td style="width: 45.3%; vertical-align: top;">&#160;</td>
+          <td style="width: 6.58%; vertical-align: top;">&#160;</td>
+          <td style="width: 48.12%; vertical-align: top;">&#160;</td>
+        </tr>
+        <tr>
+          <td style="width: 45.3%; vertical-align: top;">
+            <div style="text-align: justify; font-size: 12pt;">DATE: August 4, 2021</div>
+          </td>
+          <td style="width: 6.58%; vertical-align: top;">
+            <div style="text-align: right; font-family: 'Times New Roman',Times,serif; font-size: 12pt;">By:&#160;&#160; <br>
+            </div>
+          </td>
+          <td style="width: 48.12%; vertical-align: top; border-bottom: #000000 2px solid;">
+            <div style="text-align: justify; font-size: 12pt;">&#160;/s/ Michael J. Gilfeather</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="width: 45.3%; vertical-align: top;">&#160;</td>
+          <td style="width: 6.58%; vertical-align: top;">&#160;</td>
+          <td style="width: 48.12%; vertical-align: top;">
+            <div style="font-size: 12pt;">Michael J. Gilfeather</div>
+            <div style="text-align: justify; font-size: 12pt;">President and Chief Executive Officer</div>
+            <div>&#160;</div>
+          </td>
+        </tr>
+
+    </table>
+    <div><br>
+    </div>
+    <div><br>
+    </div>
+  </div>
+</body>
+</html>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

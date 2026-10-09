@@ -1,0 +1,8 @@
+adsh	tag	version	ddate	qtrs	iprx	lang	dcml	durp	datp	dimh	dimn	coreg	escaped	srclen	txtlen	footnote	footlen	context	value
+0001437749-26-028687	EntityCentralIndexKey	dei/2024	20260831	0	0	en-US	32767	0.0	10.0	0x00000000	0		0	10	10		0	d20268K	0001693577
+0001437749-26-028687	Security12bTitle	dei/2024	20260831	0	0	en-US	32767	0.0	10.0	0x01354d6d9b1cd782d0dc32ac5abff769	1		0	17	17		0	d20268K_StatementClassOfStockAxis_DepositaryShares	Depositary Shares
+0001437749-26-028687	Security12bTitle	dei/2024	20260831	0	0	en-US	32767	0.0	10.0	0x389813a5dc0e28ac4ddd4de2b9d83ed3	1		0	12	12		0	d20268K_StatementClassOfStockAxis_CommonStock	Common Stock
+0001437749-26-028687	SecurityExchangeName	dei/2024	20260831	0	0	en-US	32767	0.0	10.0	0x01354d6d9b1cd782d0dc32ac5abff769	1		0	6	6		0	d20268K_StatementClassOfStockAxis_DepositaryShares	NASDAQ
+0001437749-26-028687	SecurityExchangeName	dei/2024	20260831	0	0	en-US	32767	0.0	10.0	0x389813a5dc0e28ac4ddd4de2b9d83ed3	1		0	6	6		0	d20268K_StatementClassOfStockAxis_CommonStock	NASDAQ
+0001437749-26-028687	TradingSymbol	dei/2024	20260831	0	0	en-US	32767	0.0	10.0	0x01354d6d9b1cd782d0dc32ac5abff769	1		0	5	5		0	d20268K_StatementClassOfStockAxis_DepositaryShares	MNSBP
+0001437749-26-028687	TradingSymbol	dei/2024	20260831	0	0	en-US	32767	0.0	10.0	0x389813a5dc0e28ac4ddd4de2b9d83ed3	1		0	4	4		0	d20268K_StatementClassOfStockAxis_CommonStock	MNSB

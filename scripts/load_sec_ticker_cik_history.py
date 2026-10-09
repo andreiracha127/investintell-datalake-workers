@@ -39,6 +39,11 @@ Storage is bitemporal: one transaction per package or index reconciles its
 facts against the stored ones; a fact the source no longer carries (and no other
 loaded source does) is retired, never deleted, and a fact newly carried for an
 accession already loaded is a correction knowable from the reconciliation date.
+A package read again by another parser version (the same bytes) restates our
+reading instead: the old reading is visible at no date. That includes a monthly
+package its quarterly superseded, which the SEC no longer lists: its cached copy,
+identified by the SHA-256 recorded, is re-read after its quarterly
+(restate_superseded_package).
 ``--dry-run`` parses and reports without a database. The schema is governed: it
 is applied only with ``--apply-schema``.
 """
@@ -76,8 +81,9 @@ FIRST_INDEX_QUARTER = (2009, 1)  # the first FSN package
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 # A submission's full text in its accession folder.
 EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{folder}/{adsh}.txt"
-# SEC fair access: at most 10 requests per second.
-FILING_SPACING_S = 0.11
+# SEC fair access: at most 10 requests per second. At 0.11 s a worker run that
+# read 2,526 filings reached 10 requests in one second; 0.12 s keeps it at 9.
+FILING_SPACING_S = 0.12
 # SEC fair access allows 10 requests/s; downloads run one at a time, spaced.
 DOWNLOAD_SPACING_S = 0.5
 SCHEMA_PATHS = (ROOT / "schemas" / "sec_ticker_cik_history_v1.sql",
@@ -123,7 +129,7 @@ END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS)
 # common stock), not of notes or preferred. A Form 10 (a spin-off's registration
 # statement) is not read: its class stays unknown.
 READ_REGISTRATION_FORMS = frozenset({"8-A12B", "8-A12G", "8-K12B", "8-K12G3",
-                                     "8-K12B/A", "8-K12G3/A"})
+                                     "8-A12B/A", "8-A12G/A", "8-K12B/A", "8-K12G3/A"})
 READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
 # Names the parser of the end and registration filings; a new version re-derives
 # every such event as a correction (derive_event_classes). v4: equity classes named
@@ -132,15 +138,29 @@ READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
 # "including associated ... purchase rights pursuant to the ... Rights Plan"). v6:
 # a successor's Form 8-K12B or 8-K12G3 (and its /A) is read for the classes it
 # continues (parse_successor_document). v7: a successor's Rule 12g-3 sentence that
-# names no equity class states no class ('unknown'), never another kind.
-EVENT_PARSER_VERSION = "sec_event_class_v7"
+# names no equity class states no class ('unknown'), never another kind. v8: the
+# Section 12(b) table of a Form 8-A or a successor's cover is found under any
+# spelling of its header (interleaved columns, as Liberty Media's 2023 8-A12B;
+# "to be registered"; words split by markup), a Form 8-A12G's class without its
+# "(Title of class)" label, and up to 2,000 characters of either; the amendments
+# of a Form 8-A or a successor's 8-K12B/8-K12G3 are read like their originals and
+# say whether they restate the registration or cancel it.
+EVENT_PARSER_VERSION = "sec_event_class_v8"
 # Names the package parser (symbols, classes, share counts). Recorded on each
 # package and on each fact version it inserts; not part of a fact's hash. v3: a
 # line's member refines a title that does not say what the line is (truncated or
 # run together: "Series B", "Depositary Shares, Each Representing a 1/400th
 # Interest in", "7.875% Senior Notesdue 2025"); Corporate Units and Tangible
-# Equity Units are units.
-FSN_PARSER_VERSION = "sec_fsn_v3"
+# Equity Units are units. v4: a line whose title does not say it is common,
+# ordinary or depositary stock but states a coupon, a fraction of a share or a
+# preferred's terms ("8.250% Series B Fixed-to-Floating Rate Cumulative
+# Redeemable", "Depositary Shares, each representing a 1/40th", "7.875% FXD / FRN
+# TruPS"), or whose symbol carries a preferred series suffix (CHMI-PB, VOYA-PB),
+# is preferred, as are a domestic issuer's plain "Depositary Shares" (MainStreet's
+# MNSBP; not New England Realty's "Depositary Receipts" of its units); "Perferred" is preferred; a title opening with warrants ("Redeemable
+# warrants included as part of the units") or stating an exercise price is a
+# warrant's; notes run together with "due" ("1.750% Notesdue 2031") are debt.
+FSN_PARSER_VERSION = "sec_fsn_v4"
 # Why a fact version was retired (sec_*.retired_reason). SOURCE: the public record
 # changed (a republished package, an index that dropped or reassigned a row, a
 # monthly package superseded by its quarter): the old version stays visible before
@@ -265,11 +285,24 @@ _ATTACHED_RIGHTS_RE = re.compile(
     r".*?purchase\s+rights?.*$)",
     re.IGNORECASE,
 )
+# A title that opens with the class it is, whatever another row run into it adds
+# ("ClassA ordinary shares, par value $0.0001 per share Redeemable warrants, each
+# whole warrant ..."; "Common Stock, $0.001 par value per share Preferred Stock
+# Purchase Rights"); not "Common Stock Purchase Rights".
+_LEADING_EQUITY_RE = re.compile(
+    r"^\s*(?:class\s*[a-z0-9]{1,2}\s+)?(?:common|ordinary)\s+(?:stock|shares?)\b"
+    r"(?!\s*(?:purchase\b|rights?\b|warrants?\b))", re.IGNORECASE)
+# Symbols of a warrant, unit or right line (ACHR-WS, HAACW, CCHU-U, ...R).
+_INSTRUMENT_SYMBOL_RE = re.compile(r"-(?:WS|WT|W|U|UN|R|RT)$|^[A-Z]{4}[WUR]$")
 _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # "Redeemable warrants included as part of the units, each whole warrant ..."
+    ("warrant", re.compile(r"^\s*(?:redeemable\s+|public\s+)?warrants?\b", re.IGNORECASE)),
     ("debt", re.compile(
-        r"\bnotes?\b|debentures?|\bbonds?\b|\bdue\s+(?:19|20)\d\d\b|senior\s+(?:un)?secured"
+        r"\bnotes?(?:\b|(?=due))|debentures?|\bbonds?\b|\bdue\s*(?:19|20)\d\d\b"
+        r"|senior\s+(?:un)?secured"
         r"|subordinated|medium[-\s]term|\bloan\b", re.IGNORECASE)),
-    ("preferred", re.compile(r"preferred|preference|\bperpetual\b|\bpref\b", re.IGNORECASE)),
+    ("preferred", re.compile(r"p(?:re|er)fer+ed|preference|\bperpetual\b|\bpref\b",
+                             re.IGNORECASE)),
     # SPAC units, and the mandatory-convertible equity units (Corporate Units,
     # Tangible Equity Units: a purchase contract and a note), not common stock
     ("unit", re.compile(r"^\s*units?\b|\bunits?,?\s+each\b|\beach\s+unit\b"
@@ -278,6 +311,8 @@ _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("warrant", re.compile(r"warrant", re.IGNORECASE)),
     ("right", re.compile(r"^\s*rights?\b|\brights?,?\s+each\b|\bcontingent\s+value\b",
                          re.IGNORECASE)),
+    # "Class A ordinary share at an exercise price of $11.50 per share" (truncated)
+    ("warrant", re.compile(r"\bexercise\s+price\b", re.IGNORECASE)),
     ("depositary", re.compile(
         r"american\s*deposit[ao]ry|deposit[ao]ry\s*(?:shares|receipts)|\bADSs?\b|\bADRs?\b",
         re.IGNORECASE)),
@@ -297,6 +332,13 @@ _EQUITY_SEGMENT_RE = re.compile(r"Ordinary|Common(?:Stock|Shares?|Class)", re.IG
 # Cumulative Redeemable", "Depositary Shares, Each Representing a 1/400th Interest
 # in", "7.875% Senior Notesdue 2025") yields to a member naming debt or preferred
 # stock (IBKC's and US Bancorp's depositary preferreds, General Finance's notes).
+# What only a preferred line's title states when it does not say what the line is:
+# a coupon, a depositary share's fraction of a share, trust preferred securities,
+# a fixed-to-floating rate.
+_PREFERRED_TERMS_RE = re.compile(
+    r"\d+(?:\.\d+)?\s*%|\btrups\b|\bfixed[-\s]+to[-\s]+floating\b"
+    r"|deposit[ao]ry\b[^;]{0,80}?\b(?:1\s*/\s*[\d,]+(?:st|nd|rd|th)?|one[-\s]?(?:\w+th|hundredth"
+    r"|thousandth))\b", re.IGNORECASE)
 _EQUITY_TITLE_RE = re.compile(
     r"common|ordinary|american\s*deposit[ao]ry|\bADSs?\b|\bADRs?\b|capital\s+stock"
     r"|beneficial\s+interest|partnership", re.IGNORECASE)
@@ -591,10 +633,19 @@ def security_kind(title: str | None, ticker: str, segments: str, *,
     if title:
         text = _ATTACHED_RIGHTS_RE.sub("", title)
         kind = next((kind for kind, pattern in _KIND_RULES if pattern.search(text)), "equity")
+        if (kind not in EQUITY_KINDS and _LEADING_EQUITY_RE.search(text)
+                and not re.search(r"deposit[ao]ry|\bADS|\bADR", text, re.IGNORECASE)
+                and not _INSTRUMENT_SYMBOL_RE.search(ticker)
+                and not any(pattern.search(segments) for _, pattern in _SEGMENT_KIND_RULES)):
+            return "equity"
         if kind in EQUITY_KINDS and not _EQUITY_TITLE_RE.search(text):
             for refined, pattern in _SEGMENT_KIND_RULES[:2]:  # debt, preferred
                 if pattern.search(segments):
                     return refined
+            if (_PREFERRED_TERMS_RE.search(text) or re.search(r"-P[A-Z]$", ticker)
+                    or (kind == "depositary" and not foreign
+                        and re.search(r"deposit[ao]ry\s+shares?", text, re.IGNORECASE))):
+                return "preferred"
         return kind
     for kind, pattern in _SEGMENT_KIND_RULES:
         if pattern.search(segments):
@@ -1249,7 +1300,7 @@ _DEPENDENT_RES = (
     re.compile(r"\bguarantee[sd]?\b[^;]*", re.I),
 )
 _EQUITY_CLASS_RE = re.compile(
-    r"\b(?:common|ordinary|capital)\s+(?:stock|shares?|units?)\b"
+    r"\b(?:comm?on|ordinary|capital)\s+(?:stock|shares?|units?)\b"
     r"|\bshares?\s+of\s+beneficial\s+interest\b"
     r"|\b(?:american\s+)?depositary\s+(?:shares?|receipts?)\b|\bADSs?\b|\bADRs?\b"
     r"|\b(?:limited\s+)?partnership\s+(?:units|interests)\b|\btracking\s+stock\b"
@@ -1297,6 +1348,10 @@ _NAME_STOP_WORDS = frozenset({
     "market", "exchange", "nasdaq", "nyse", "llc", "inc", "corporation", "corp", "plc", "ltd",
     "limited", "company", "co",
 })
+_NUMBER_WORDS = frozenset({
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+    "twelve", "twenty", "hundred", "thousand",
+})
 
 
 def equity_class_names(description: str | None) -> set[str]:
@@ -1321,9 +1376,14 @@ def equity_class_names(description: str | None) -> set[str]:
         for i in range(len(tokens) - 1, -1, -1):
             token = tokens[i]
             labelled = i > 0 and tokens[i - 1].lower() in ("class", "series", "ser")
+            # a capitalized number inside a name ("Liberty Formula One Common
+            # Stock"), not a count ("one share of", "ten Ordinary Shares")
+            named = (token.lower() in _NUMBER_WORDS and token[0].isupper() and i > 0
+                     and tokens[i - 1][0].isupper()
+                     and tokens[i - 1].lower() not in _NAME_STOP_WORDS)
             if (not token[0].isalnum() or len(words) == 4
-                    or (not labelled and (token[0].isdigit()
-                                          or token.lower() in _NAME_STOP_WORDS))):
+                    or (not labelled and not named
+                        and (token[0].isdigit() or token.lower() in _NAME_STOP_WORDS))):
                 break
             words.append(token.lower().replace("-", ""))
         names.add(" ".join([*reversed(words), match.group(1).lower()]))
@@ -1405,19 +1465,85 @@ def venue_kind(venue: str | None) -> str:
     return "unknown"
 
 
-_REGISTERED_12B_RE = re.compile(
-    r"title\s+of\s+each\s+class\s+to\s+be\s+so\s+registered"
-    r"(?:\s+name\s+of\s+each\s+exchange\s+on\s+which\s+each\s+class\s+is\s+to\s+be\s+registered)?",
+# A Section 12(b) table: "Title of each class [to be so registered] / [Trading
+# Symbol(s)] / Name of each exchange on which [each class is to be] registered".
+# Filers interleave the two columns' lines ("Title of each class Name of each
+# exchange on which to be so registered each class is to be registered": Liberty
+# Media's 8-A12B of 2023), drop words ("to be registered"), or split them with
+# markup ("Title of e ach c lass"), so the header is matched as letters: it runs
+# from "title of each class" to the last "registered" or "symbol(s)" before which
+# every letter spells header words.
+_TABLE_TITLE_RE = re.compile(r"t\s*i\s*t\s*l\s*e\s*(?:o\s*f|f\s*o\s*r)\s*(?:e\s*a\s*c\s*h\s*)?"
+                             r"c\s*l\s*a\s*s\s*s(?:\s*e\s*s)?", re.I)
+_TABLE_HEADER_END_RE = re.compile(
+    r"r\s*e\s*g\s*i\s*s\s*t\s*e\s*r\s*e\s*d|s\s*y\s*m\s*b\s*o\s*l\s*(?:\(\s*s\s*\)|s)?", re.I)
+_TABLE_HEADER_WORDS = (
+    "title", "of", "for", "each", "class", "classes", "to", "be", "so", "registered", "name",
+    "names",
+    "exchange", "exchanges", "on", "which", "is", "are", "it", "securities", "security",
+    "trading", "symbol", "symbols", "s", "the", "and", "where", "stock", "in", "at",
+)
+# A second column label left inside the block of a label: value table ("Title of
+# each class to be registered: Common Stock ... Name of each exchange on which
+# each class is to be registered: The NASDAQ Stock Market LLC").
+_TABLE_EXCHANGE_LABEL_RE = re.compile(
+    r"\(?\s*names?\s+of\s+(?:each\s+)?exchanges?\s+(?:on|of|in|at)\s+which\s+"
+    r"(?:[a-z]+\s+){0,8}?registered\s*\)?\s*:?", re.I)
+_REGISTERED_12B_END_RE = re.compile(
+    r"if\s+this\s+form\s+relates|securities\s+(?:to\s+be\s+)?registered\s+pursuant\s+to\s+section"
+    r"\s+12\s*\(\s*g\s*\)|\bitem\s+1\b|\b(?:explanatory|introductory)\s+note\b|\btable\s+of\s+contents\b"
+    r"|\bdescription\s+of\s+(?:the\s+)?registrant", re.I)
+_REGISTERED_12B_LINE_RE = re.compile(
+    r"securities\s+(?:to\s+be\s+)?registered\s+pursuant\s+to\s+section\s+12\s*\(\s*b\s*\)\s+of\s+"
+    r"the\s+(?:exchange\s+)?act\s*:?", re.I)
+_REGISTERED_12G_RE = re.compile(
+    r"securities\s+(?:to\s+be\s+)?registered\s+pursuant\s+to\s+section\s+12\s*\(\s*g\s*\)\s+of\s+"
+    r"the\s+(?:exchange\s+)?act\s*:?", re.I)
+_TITLE_OF_CLASS_RE = re.compile(r"\(\s*title\s+of\s+(?:each\s+)?class(?:es)?\s*\)", re.I)
+# Where a 12(g) line ends without its "(Title of class)" label: the next item,
+# note or box, or a 12(b) table a filer put under a 12(g) caption.
+_REGISTERED_12G_END_RE = re.compile(
+    r"\bitem\s+1\b|\bexplanatory\s+note\b|\bdescription\s+of\s+(?:the\s+)?registrant"
+    r"|\bif\s+this\s+form\s+relates|\btitle\s+of\s+each\s+class", re.I)
+_NO_CLASS_WORDS = frozenset({"NOT", "APPLICABLE", "NONE", "N", "A", "NA"})
+# A registration's description keeps up to this many characters: Liberty Media's
+# 2023 table names seven classes in about 630.
+_REGISTRATION_TEXT_LIMIT = 2000
+# An amendment that cancels the registration of the class it concerns rather
+# than restating it: Arlington Asset's 8-A12B/A of 2023 "to reflect the
+# expiration of the preferred share purchase rights", a withdrawal, a termination.
+_REGISTRATION_CANCELS_RE = re.compile(
+    r"\b(?:reflect|give\s+effect\s+to)\s+(?:the\s+)?(?:expiration|termination|redemption"
+    r"|cancell?ation|withdrawal)\s+of\s+[\w\s'’,-]{0,80}?\b(?:rights|warrants"
+    r"|registration\s+(?:of|under)|form\s*8-?a)\b"
+    r"|\b(?:the\s+)?rights\s+(?:have|had)\s+(?:expired|terminated|been\s+redeemed)\b"
+    r"|\bwithdraw(?:s|n|ing)?\s+(?:the\s+|its\s+|this\s+)?(?:registration\s+(?:of|under)"
+    r"|form\s*8-?a)\b"
+    r"|\bterminat(?:e|es|ed|ing)\s+(?:the\s+|its\s+)?registration\s+(?:of|under)\b",
     re.I,
 )
-_REGISTERED_12B_END_RE = re.compile(
-    r"if\s+this\s+form\s+relates|securities\s+to\s+be\s+registered\s+pursuant\s+to\s+section"
-    r"\s+12\s*\(\s*g\s*\)", re.I)
-_REGISTERED_12G_RE = re.compile(
-    r"securities\s+to\s+be\s+registered\s+pursuant\s+to\s+section\s+12\s*\(\s*g\s*\)\s+of\s+"
-    r"the\s+act\s*:?", re.I)
-_TITLE_OF_CLASS_RE = re.compile(r"\(\s*title\s+of\s+(?:each\s+)?class(?:es)?\s*\)", re.I)
-_NO_CLASS_WORDS = frozenset({"NOT", "APPLICABLE", "NONE", "N", "A", "NA"})
+# Each row of a 12(b) table ends with its exchange; a separator after it keeps one
+# row's dependent instrument ("Units, each consisting of one share of Class A
+# common stock and one-half of one Warrant") from swallowing the next rows (the
+# Class A common stock itself), as the "; " between a Form 25's classes does.
+_EXCHANGE_NAME_RE = re.compile(
+    r"\b(?:the\s+)?(?:nasdaq|new\s+york|american|chicago|boston|philadelphia|pacific|toronto"
+    r"|cboe|bats|investors|long[-\s]term|miami|national|nyse)\b[\w\s.,&-]{0,40}?"
+    r"\b(?:market|exchange)\b(?:\s*,?\s*(?:llc|l\.l\.c\.|inc\.?|incorporated))?"
+    r"|\bnyse(?:\s+(?:american|mkt|amex|arca|texas|chicago))?\b(?:\s*,?\s*(?:llc|inc\.?))?"
+    r"|\bnasdaq\b(?:\s*,?\s*(?:llc|inc\.?))?",
+    re.I,
+)
+
+
+def _header_words_only(text: str) -> bool:
+    """Whether every letter of ``text`` spells a sequence of table header words."""
+    letters = re.sub(r"[^a-z]", "", text.lower())
+    spelled = [True] + [False] * len(letters)
+    for i in range(1, len(letters) + 1):
+        spelled[i] = any(len(word) <= i and spelled[i - len(word)]
+                         and letters[i - len(word): i] == word for word in _TABLE_HEADER_WORDS)
+    return spelled[-1]
 
 
 def _names_a_class(block: str) -> bool:
@@ -1427,48 +1553,109 @@ def _names_a_class(block: str) -> bool:
     return bool(words) and not words <= _NO_CLASS_WORDS
 
 
-def parse_registration_document(raw: str) -> EventClass:
-    """The class a Form 8-A registers: the 12(b) table ("Title of each class to be
-    so registered" / "Name of each exchange ...": PepsiCo's common stock on Nasdaq
-    in 2017, its notes in 2018), else the 12(g) line above "(Title of class)"
-    (Statera's Series B Preferred Stock of 2023). No class -> 'unknown'."""
+def _registration_table(body: str, end_re: re.Pattern[str]) -> str | None:
+    """The rows of the first Section 12(b) table in ``body``, up to ``end_re``;
+    None when there is no such table or it names no class ("None", "N/A"). A
+    table whose labels are printed in parentheses below its rows ("Common Stock
+    ... (Title of each class to be so registered) (Name of each exchange ...)")
+    has its rows between the Section 12(b) line and the labels."""
+    title = _TABLE_TITLE_RE.search(body)
+    if not title:
+        return None
+    if body[:title.start()].rstrip().endswith("("):
+        line = None
+        for line in _REGISTERED_12B_LINE_RE.finditer(body, max(0, title.start() - 3000),
+                                                     title.start()):
+            pass
+        if line is None:
+            return None
+        if end_re.search(body, line.end(), title.start()):
+            return None  # the label of a later part ("(Title of class)" of a 12(g) line)
+        block = re.sub(r"\s+", " ", body[line.end(): title.start()]).strip(" :;,.-_(")
+        if _names_a_class(block):
+            return block[:_REGISTRATION_TEXT_LIMIT]
+        labels = re.match(r"(?:\s*\([^()]{0,200}\))+", body[title.start() - 1:])
+        if labels is None or not _header_words_only(labels.group(0)):
+            return None
+        start = title.start() - 1 + labels.end()
+        end = end_re.search(body, start)
+        block = body[start: end.start() if end else start + _REGISTRATION_TEXT_LIMIT]
+        block = re.sub(r"\s+", " ", _TABLE_EXCHANGE_LABEL_RE.sub(" ", block)).strip(" :;,.-_")
+        return block[:_REGISTRATION_TEXT_LIMIT] if _names_a_class(block) else None
+    stop = end_re.search(body, title.end())
+    limit = min(title.end() + 300, stop.start() if stop else len(body))
+    header_end = None
+    for terminal in _TABLE_HEADER_END_RE.finditer(body, title.end(), limit):
+        if _header_words_only(body[title.end(): terminal.start()]):
+            header_end = terminal.end()
+    if header_end is None:
+        return None
+    end = end_re.search(body, header_end)
+    block = body[header_end: end.start() if end else header_end + _REGISTRATION_TEXT_LIMIT]
+    block = _TABLE_EXCHANGE_LABEL_RE.sub(" ", block)
+    block = re.sub(r"\s+", " ", _EXCHANGE_NAME_RE.sub(lambda m: m.group(0) + ";", block))
+    block = re.sub(r"(?:\s*;)+", ";", block).strip(" :;,.-_")
+    return block[:_REGISTRATION_TEXT_LIMIT] if _names_a_class(block) else None
+
+
+def _registration_effect(body: str, form: str, kind: str) -> str | None:
+    """An amendment of a Form 8-A 'cancels' its registration when it reflects the
+    expiration, redemption or withdrawal of what was registered (rights expiring
+    after the issuer's merger must not reopen its common stock); an amendment of
+    a registration 'restates' it when it states a class, and states nothing
+    otherwise (an amendment filing only exhibits is not read). A successor's
+    8-K12B/A or 8-K12G3/A never cancels: its delisting or termination language
+    concerns the predecessor's securities (Primo Brands 2024, Avadel 2017)."""
+    if not form.endswith("/A"):
+        return None
+    if form.removesuffix("/A") in REGISTRATION_FORMS and _REGISTRATION_CANCELS_RE.search(body):
+        return "cancels"
+    return "restates" if kind != "unknown" else None
+
+
+def parse_registration_document(raw: str, form: str = "8-A12B") -> EventClass:
+    """The class a Form 8-A (or its amendment) registers: its 12(b) table
+    (PepsiCo's common stock on Nasdaq in 2017, its notes in 2018; Liberty Media's
+    seven tracking stocks in 2023), else its 12(g) line, up to "(Title of class)"
+    or the next item (Statera's Series B Preferred Stock of 2023). No class ->
+    'unknown'. An amendment restates or cancels the registration
+    (_registration_effect: Carlyle's 8-A12B/A of 2020 registers the common stock
+    of the corporation it converted into; Arlington Asset's of 2023 reflects the
+    expiration of its preferred share purchase rights)."""
     documents = _DOCUMENT_RE.findall(raw)
     body = _plain(documents[0] if documents else raw)
-    description = None
-    table = _REGISTERED_12B_RE.search(body)
-    if table:
-        end = _REGISTERED_12B_END_RE.search(body, table.end())
-        block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
+    description = _registration_table(body, _REGISTERED_12B_END_RE)
+    for section in [] if description is not None else _REGISTERED_12G_RE.finditer(body):
+        rest = body[section.end():]
+        if _TABLE_TITLE_RE.match(rest.lstrip()):
+            description = _registration_table(rest, _REGISTERED_12B_END_RE)
+            if description is not None:
+                break
+            continue
+        ends = [m for m in (_TITLE_OF_CLASS_RE.search(body, section.end()),
+                            _REGISTERED_12G_END_RE.search(body, section.end())) if m]
+        stop = min(m.start() for m in ends) if ends else section.end() + 300
+        block = re.sub(r"\s+", " ", body[section.end(): stop]).strip(" :;,.-_")
         if _names_a_class(block):
-            description = block[:500]
-    if description is None:
-        section = _REGISTERED_12G_RE.search(body)
-        label = _TITLE_OF_CLASS_RE.search(body, section.end()) if section else None
-        if label:
-            block = body[section.end(): label.start()].strip(" :;,.-")
-            if _names_a_class(block):
-                description = block[-500:]
+            description = block[-_REGISTRATION_TEXT_LIMIT:]
+            break
+    kind = event_class_kind(description)
     return EventClass(
         class_description=description,
-        class_kind=event_class_kind(description),
+        class_kind=kind,
         class_count=class_count(description),
         provision=None,
         extinguished=None,
         venue=None,
         venue_kind="unknown",
-        amendment_effect=None,
+        amendment_effect=_registration_effect(body, form, kind),
     )
 
 
-# The Section 12(b) table of an 8-K cover (2019 on): "Title of each class /
-# Trading Symbol(s) / Name of each exchange on which registered", up to the
-# emerging-growth or Form 8-K checkboxes.
-_COVER_12B_RE = re.compile(
-    r"title\s+of\s+each\s+class\s+trading\s+symbols?(?:\s*\(\s*s\s*\))?\s+name\s+of\s+each\s+"
-    r"exchange\s+on\s+which\s+(?:it\s+is\s+|each\s+is\s+)?registered\s*:?", re.I)
 _COVER_12B_END_RE = re.compile(
     r"indicate\s+by\s+check\s+mark|check\s+the\s+appropriate\s+box|securities\s+registered"
-    r"\s+pursuant\s+to\s+section\s+12\s*\(\s*g|emerging\s+growth", re.I)
+    r"\s+pursuant\s+to\s+section\s+12\s*\(\s*g|emerging\s+growth|\b(?:explanatory|introductory)\s+note\b"
+    r"|\bitem\s+\d+\.\d+\b|\btable\s+of\s+contents\b", re.I)
 # Before the cover table, the successor language: "Pursuant to Rule 12g-3(c) ...
 # the ordinary shares of the Company are deemed to be registered under Section
 # 12(b) ... (as the successor issuer to Liberty Global)".
@@ -1476,22 +1663,17 @@ _SUCCESSOR_SENTENCE_RE = re.compile(
     r"[^.]{0,500}?(?:\brule\s+12g-?3\b|\bsuccessor\s+issuer\b)[^.]{0,500}\.", re.I)
 
 
-def parse_successor_document(raw: str) -> EventClass:
-    """The classes a successor's Form 8-K12B or 8-K12G3 continues: the Section
-    12(b) table of its cover (2019 on: KKR's 2022 common stock, Liberty Global's
-    2023 Class A, B and C common shares), else the sentence that registers the
-    successor's securities under Rule 12g-3 ("the ordinary shares of the Company
-    are deemed to be registered under Section 12(b)", Liberty Global 2013). No
-    such text -> 'unknown'."""
+def parse_successor_document(raw: str, form: str = "8-K12B") -> EventClass:
+    """The classes a successor's Form 8-K12B or 8-K12G3 (or its amendment)
+    continues: the Section 12(b) table of its cover (2019 on: KKR's 2022 common
+    stock, Liberty Global's 2023 Class A, B and C common shares), else the
+    sentence that registers the successor's securities under Rule 12g-3 ("the
+    ordinary shares of the Company are deemed to be registered under Section
+    12(b)", Liberty Global 2013). No such text -> 'unknown'. An amendment
+    restates or cancels the registration as a Form 8-A's does."""
     documents = _DOCUMENT_RE.findall(raw)
     body = _plain(documents[0] if documents else raw)
-    description = None
-    table = _COVER_12B_RE.search(body)
-    if table:
-        end = _COVER_12B_END_RE.search(body, table.end())
-        block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
-        if _names_a_class(block):
-            description = block[:500]
+    description = _registration_table(body, _COVER_12B_END_RE)
     kind = event_class_kind(description)
     if description is None:
         sentence = _SUCCESSOR_SENTENCE_RE.search(body)
@@ -1508,7 +1690,7 @@ def parse_successor_document(raw: str) -> EventClass:
         extinguished=None,
         venue=None,
         venue_kind="unknown",
-        amendment_effect=None,
+        amendment_effect=_registration_effect(body, form, kind),
     )
 
 
@@ -1524,9 +1706,9 @@ def parse_event_document(raw: str, form: str) -> EventClass:
     read by parse_registration_document.
     """
     if form.removesuffix("/A") in REGISTRATION_FORMS:
-        return parse_registration_document(raw)
+        return parse_registration_document(raw, form)
     if form.removesuffix("/A") in SUCCESSOR_FORMS:
-        return parse_successor_document(raw)
+        return parse_successor_document(raw, form)
     amendment_effect = None
     if form.endswith("/A"):
         amendment_effect = "cancels" if _CANCELS_RE.search(_plain(raw)) else "restates"
@@ -1588,15 +1770,26 @@ class EventDocuments:
     file that is not the submission is ignored and fetched again."""
 
     def __init__(self, cache_dir: Path, client=None, *, spacing: float | None = None,
-                 retries: int = 6) -> None:
+                 retries: int = 6, budget: int | None = None) -> None:
         self.cache_dir = cache_dir
         self.client = client
         self.spacing = FILING_SPACING_S if spacing is None else spacing
         self.retries = retries
+        # At most ``budget`` filings fetched (fetched, failed or rejected); past
+        # it, a filing not cached is not read now (``deferred``).
+        self.budget = budget
         self.fetched = 0
         self.failed = 0
         self.rejected = 0
+        self.deferred = 0
         self._last = 0.0
+
+    @property
+    def remaining(self) -> int | None:
+        """Filings this object may still fetch; None without a budget."""
+        if self.budget is None:
+            return None
+        return max(0, self.budget - self.fetched - self.failed - self.rejected)
 
     def text(self, cik: int, adsh: str) -> str | None:
         """The filing's full text, or None when it is not cached and cannot be
@@ -1610,6 +1803,9 @@ class EventDocuments:
                 self.rejected += 1
                 return None
         if self.client is None:
+            return None
+        if self.remaining == 0:
+            self.deferred += 1
             return None
         try:
             import httpx
@@ -2095,6 +2291,195 @@ def resume_supersession(conn, *, reconciled_on: dt.date | None = None) -> list[d
     return done
 
 
+def _restate_facts(cur, *, package: str, fact_table: str, temp: str,
+                   columns: tuple[str, ...], availability: str, superseded_on: dt.date,
+                   reconciled_on: dt.date) -> dict[str, int]:
+    """Restate one fact family of a superseded package from this parser's reading
+    (``temp``) of the bytes it carried until its supersession on S.
+
+    Its last reading is the versions it carried at S that were visible then:
+    retired at S as a change of the source, or still current because a current
+    package (its quarterly) carries them too. Of these:
+
+    * a version retired at S that this parser does not read is relabelled
+      ``parser_correction`` (visible at no date; it keeps its retirement date);
+    * a current version this parser does not read in the month (the quarterly's
+      own bytes still read so) was visible from the month's load: it is retired
+      as a parser correction and inserted again from its first current
+      carrier's load, as a version of an accession the month carried before.
+
+    A version newly read is the month's from its filing's public date until S.
+    When a current package carries it since S or before, but it is known only
+    later (a correction of the month's misreading), the current row is retired as
+    a parser correction and inserted again from the filing's public date. No row
+    is inserted where a version of the same content is visible already, so no
+    date sees a fact twice. The package then records its new reading as carried
+    until S, which a later restatement compares against."""
+    table = _BITEMPORAL_TABLES[fact_table]
+    prior, fresh = f"tmp_sec_prior_{fact_table}", f"tmp_sec_fresh_{fact_table}"
+    rebased, continued = f"tmp_sec_rebased_{fact_table}", f"tmp_sec_continued_{fact_table}"
+    cols = ", ".join(columns)
+    keys = {"p": package, "ft": fact_table, "s": superseded_on, "on": reconciled_on,
+            "pc": PARSER_CORRECTION, "src": SOURCE, "parser": FSN_PARSER_VERSION}
+    cur.execute(f"CREATE TEMP TABLE {prior} (fact_hash text PRIMARY KEY) ON COMMIT DROP")
+    cur.execute(
+        f"INSERT INTO {prior} SELECT DISTINCT f.fact_hash FROM sec_ticker_cik_package_facts f "
+        f"WHERE f.source_package = %(p)s AND f.fact_table = %(ft)s AND f.retired_on = %(s)s "
+        f"AND EXISTS (SELECT 1 FROM {table} t WHERE t.fact_hash = f.fact_hash "
+        f"AND (t.retired_on IS NULL OR (t.retired_on = %(s)s "
+        f"AND t.retired_reason IS DISTINCT FROM %(pc)s)))", keys)
+    misread = (f"t.fact_hash IN (SELECT fact_hash FROM {prior}) "
+               f"AND NOT EXISTS (SELECT 1 FROM {temp} n WHERE n.fact_hash = t.fact_hash)")
+    cur.execute(
+        f"UPDATE {table} t SET retired_reason = %(pc)s WHERE t.retired_on = %(s)s "
+        f"AND t.retired_reason IS DISTINCT FROM %(pc)s AND {misread}", keys)
+    retired, inserted = cur.rowcount, 0
+    cur.execute(f"CREATE TEMP TABLE {rebased} (id bigint PRIMARY KEY, known_on date NOT NULL) "
+                f"ON COMMIT DROP")
+    cur.execute(
+        f"INSERT INTO {rebased} SELECT t.id, GREATEST(t.source_available_on, min(o.loaded_on)) "
+        f"FROM {table} t JOIN sec_ticker_cik_package_facts o ON o.fact_table = %(ft)s "
+        f"AND o.fact_hash = t.fact_hash AND o.retired_on IS NULL "
+        f"WHERE t.retired_on IS NULL AND {misread} GROUP BY t.id "
+        f"HAVING t.available_on < GREATEST(t.source_available_on, min(o.loaded_on))", keys)
+    if cur.rowcount:
+        cur.execute(f"UPDATE {table} t SET retired_on = %(on)s, retired_reason = %(pc)s "
+                    f"WHERE t.id IN (SELECT id FROM {rebased})", keys)
+        retired += cur.rowcount
+        cur.execute(
+            f"INSERT INTO {table} ({cols}, fact_hash, parser_version, available_on, loaded_on) "
+            f"SELECT {', '.join(f't.{c}' for c in columns)}, t.fact_hash, t.parser_version, "
+            f"r.known_on, %(on)s FROM {table} t JOIN {rebased} r ON r.id = t.id", keys)
+        inserted += cur.rowcount
+    cur.execute(
+        f"CREATE TEMP TABLE {fresh} ON COMMIT DROP AS "
+        f"SELECT DISTINCT ON (n.fact_hash) n.*, {availability} AS known_on FROM {temp} n "
+        f"WHERE NOT EXISTS (SELECT 1 FROM {prior} p WHERE p.fact_hash = n.fact_hash) "
+        f"ORDER BY n.fact_hash")
+    cur.execute(f"CREATE TEMP TABLE {continued} (id bigint PRIMARY KEY, fact_hash text) "
+                f"ON COMMIT DROP")
+    cur.execute(
+        f"INSERT INTO {continued} SELECT t.id, t.fact_hash FROM {table} t "
+        f"JOIN {fresh} w ON w.fact_hash = t.fact_hash WHERE t.retired_on IS NULL "
+        f"AND t.available_on > w.known_on AND t.available_on <= %(s)s", keys)
+    if cur.rowcount:
+        cur.execute(f"UPDATE {table} t SET retired_on = %(on)s, retired_reason = %(pc)s "
+                    f"WHERE t.id IN (SELECT id FROM {continued})", keys)
+        retired += cur.rowcount
+        cur.execute(
+            f"INSERT INTO {table} ({cols}, fact_hash, parser_version, available_on, loaded_on) "
+            f"SELECT {', '.join(f'w.{c}' for c in columns)}, w.fact_hash, %(parser)s, "
+            f"w.known_on, %(on)s FROM {fresh} w "
+            f"WHERE w.fact_hash IN (SELECT fact_hash FROM {continued})", keys)
+        inserted += cur.rowcount
+    # The month's alone: from the filing's public date, or the end of an earlier
+    # version of the same content, until S. A version's rows share its accession
+    # and CIK, so (adsh, cik) narrows every lookup to its filing.
+    same = "o.adsh = w.adsh AND o.cik = w.cik AND o.fact_hash = w.fact_hash"
+    cur.execute(
+        f"INSERT INTO {table} ({cols}, fact_hash, parser_version, available_on, retired_on, "
+        f"retired_reason, loaded_on) "
+        f"SELECT {', '.join(f'w.{c}' for c in columns)}, w.fact_hash, %(parser)s, "
+        f"GREATEST(w.known_on, e.ended), %(s)s, %(src)s, %(on)s FROM {fresh} w "
+        f"LEFT JOIN (SELECT w.fact_hash, max(o.retired_on) AS ended FROM {fresh} w "
+        f"JOIN {table} o ON {same} WHERE o.retired_on <= %(s)s "
+        f"AND o.retired_reason IS DISTINCT FROM %(pc)s GROUP BY w.fact_hash) e "
+        f"ON e.fact_hash = w.fact_hash "
+        f"WHERE GREATEST(w.known_on, e.ended) < %(s)s AND NOT EXISTS ("
+        f"SELECT 1 FROM {table} o WHERE {same} AND o.retired_reason IS DISTINCT FROM %(pc)s "
+        f"AND o.available_on < %(s)s "
+        f"AND (o.retired_on IS NULL OR o.retired_on > GREATEST(w.known_on, e.ended)))", keys)
+    inserted += cur.rowcount
+    cur.execute(
+        f"INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, fact_hash, "
+        f"loaded_on, retired_on) SELECT DISTINCT %(p)s::text, %(ft)s::text, n.fact_hash, "
+        f"LEAST(%(on)s::date, %(s)s::date), %(s)s FROM {temp} n WHERE NOT EXISTS ("
+        f"SELECT 1 FROM sec_ticker_cik_package_facts f WHERE f.source_package = %(p)s "
+        f"AND f.fact_table = %(ft)s AND f.fact_hash = n.fact_hash AND f.retired_on = %(s)s)",
+        keys)
+    return {"retired": retired, "inserted": inserted}
+
+
+def superseded_version(conn, name: str) -> tuple[str, dt.date, str, str | None] | None:
+    """(quarterly, superseded_on, the SHA-256 loaded, the quarterly's parser) of a
+    superseded package read by another FSN_PARSER_VERSION; None otherwise."""
+    return conn.execute(
+        "SELECT m.superseded_by, m.superseded_on, m.package_sha256, q.parser_version "
+        "FROM sec_ticker_cik_packages m LEFT JOIN sec_ticker_cik_packages q "
+        "ON q.source_package = m.superseded_by "
+        "WHERE m.source_package = %s AND m.superseded_by IS NOT NULL "
+        "AND m.parser_version IS DISTINCT FROM %s", (name, FSN_PARSER_VERSION),
+    ).fetchone()
+
+
+def restate_superseded_package(conn, path: Path, *,
+                               reconciled_on: dt.date | None = None) -> dict[str, object]:
+    """Re-read a superseded package with this parser and restate what it carried
+    until its supersession (_restate_facts), in one transaction.
+
+    The SEC no longer lists a superseded month, so its bytes are identified by
+    the SHA-256 recorded when it was loaded: any other file is refused. Its
+    quarterly is read by this parser first (a re-derivation re-reads it in the
+    same run), so the versions both carry are already restated and the month's
+    reading never doubles them. Until then, or without the bytes, nothing changes
+    and the package keeps its parser version, so a later run restates it."""
+    name = path.name
+    version = superseded_version(conn, name)
+    if version is None:
+        raise ValueError(f"{name} is not a superseded package read by another parser")
+    quarterly, superseded_on, sha256, quarterly_parser = version
+    skipped = {"package": name, "skipped": f"superseded by {quarterly}"}
+    if quarterly_parser != FSN_PARSER_VERSION:
+        return {**skipped, "not_restated": f"{quarterly} is not read by {FSN_PARSER_VERSION} yet"}
+    if not path.is_file():
+        return {**skipped, "not_restated": f"no copy of the version loaded at {path}"}
+    if _sha256(path) != sha256:
+        return {**skipped, "not_restated": "the file is not the version loaded"}
+    on = reconciled_on or dt.date.today()
+    started = time.monotonic()
+    result = parse_package(path)
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                f"CREATE TEMP TABLE tmp_sec_obs ON COMMIT DROP AS SELECT "
+                f"{', '.join(OBSERVATION_COLUMNS)}, fact_hash "
+                f"FROM sec_ticker_cik_observations WITH NO DATA")
+            cur.execute(
+                f"CREATE TEMP TABLE tmp_sec_shares ON COMMIT DROP AS SELECT "
+                f"{', '.join(SHARE_COLUMNS)}, fact_hash FROM sec_cover_share_counts WITH NO DATA")
+            _copy(cur, "tmp_sec_obs", (*OBSERVATION_COLUMNS, "fact_hash"),
+                  [(*o.as_tuple(), o.fact_hash) for o in result.observations])
+            _copy(cur, "tmp_sec_shares", (*SHARE_COLUMNS, "fact_hash"),
+                  [(*s.as_tuple(), s.fact_hash) for s in result.share_counts])
+            observations = _restate_facts(
+                cur, package=name, fact_table="observation", temp="tmp_sec_obs",
+                columns=OBSERVATION_COLUMNS, availability=_OBS_AVAILABILITY,
+                superseded_on=superseded_on, reconciled_on=on)
+            shares = _restate_facts(
+                cur, package=name, fact_table="share_count", temp="tmp_sec_shares",
+                columns=SHARE_COLUMNS, availability=_OBS_AVAILABILITY,
+                superseded_on=superseded_on, reconciled_on=on)
+            # The same bytes, so the validators and the supersession stand.
+            cur.execute(
+                "UPDATE sec_ticker_cik_packages SET submissions = %s, symbol_facts = %s, "
+                "observations = %s, share_counts = %s, rejected = %s::jsonb, "
+                "parser_version = %s, loaded_at = now() WHERE source_package = %s",
+                (len(result.submissions), result.symbol_facts, len(result.observations),
+                 len(result.share_counts), json.dumps(dict(sorted(result.rejected.items()))),
+                 FSN_PARSER_VERSION, name))
+    return {
+        "package": name,
+        "restated": f"superseded by {quarterly}",
+        **result.stats(),
+        "reconciled_as": PARSER_CORRECTION,
+        "inserted": observations["inserted"],
+        "retired": observations["retired"],
+        "shares_inserted": shares["inserted"],
+        "shares_retired": shares["retired"],
+        "load_seconds": round(time.monotonic() - started, 1),
+    }
+
+
 def record_remote_validators(conn, package: str, *, etag: str | None,
                              last_modified: str | None) -> None:
     """The SEC's ETag / Last-Modified of the loaded package version, when a fresh
@@ -2165,28 +2550,32 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
 
 def derive_event_classes(conn, documents: EventDocuments, *,
                          reconciled_on: dt.date | None = None,
-                         ciks: set[int] | None = None) -> dict[str, int]:
+                         ciks: set[int] | None = None,
+                         limit: int | None = None) -> dict[str, int]:
     """Re-derive the class of current end and 8-A events of CIKs with cover data
     whose filing was not read, or was read by another parser version.
 
     A changed event is a parser correction (the filing did not change, our
     reading did): its version is retired as such (visible at no date) and the
     re-derived one is knowable from the filing date + 1; the indexes that carried
-    the old version carry the new one.
+    the old version carry the new one. With ``limit`` (the recurring worker) at
+    most that many events are read, the latest filed first, and the rest are
+    counted as ``deferred`` for a later run: a parser change is re-derived by the
+    operator from the workstation cache, not by fetching every filing again.
     """
     on = reconciled_on or dt.date.today()
     ciks = cover_ciks(conn) if ciks is None else ciks
-    rows = conn.execute(
+    rows = [row for row in conn.execute(
         f"SELECT {', '.join(EVENT_COLUMNS)}, fact_hash FROM sec_registration_events "
-        "WHERE retired_on IS NULL AND form = ANY(%s) AND parser_version IS DISTINCT FROM %s",
+        "WHERE retired_on IS NULL AND form = ANY(%s) AND parser_version IS DISTINCT FROM %s "
+        "ORDER BY filed DESC, adsh DESC",
         (sorted(READ_EVENT_FORMS), EVENT_PARSER_VERSION),
-    ).fetchall()
+    ).fetchall() if row[EVENT_COLUMNS.index("cik")] in ciks]
+    deferred = rows[limit:] if limit is not None else []
     stats: Counter = Counter()
     changed: list[tuple[str, RegistrationEvent]] = []
-    for row in rows:
+    for row in rows[:limit] if limit is not None else rows:
         event = RegistrationEvent(**dict(zip(EVENT_COLUMNS, row[:-1])))
-        if event.cik not in ciks:
-            continue
         (derived,), classes = describe_events([event], documents, ciks)
         stats.update(classes)
         if (derived.parser_version is not None and classes.get("filings_missing", 0) == 0
@@ -2226,6 +2615,7 @@ def derive_event_classes(conn, documents: EventDocuments, *,
     return {
         "derived": len(changed),
         **{key: stats.get(key, 0) for key in CLASS_STAT_KEYS},
+        **({"deferred": len(deferred)} if limit is not None else {}),
     }
 
 
@@ -2359,6 +2749,19 @@ def discover_packages(packages_dir: Path) -> list[Path]:
     return sorted(found, key=package_sort_key)
 
 
+def superseded_package_names(dsn: str | None) -> set[str]:
+    """The packages recorded as superseded, read before --verify-cache drops the
+    files the SEC no longer lists: a superseded month's file, named on the command
+    line or found in --packages-dir, is kept for its restatement (its recorded
+    SHA-256 identifies it), not ignored."""
+    with connect(dsn, autocommit=True) as conn:
+        if conn.execute("SELECT to_regclass('sec_ticker_cik_packages') IS NULL").fetchone()[0]:
+            return set()
+        return {name for (name,) in conn.execute(
+            "SELECT source_package FROM sec_ticker_cik_packages WHERE superseded_by IS NOT NULL"
+        ).fetchall()}
+
+
 def listed_packages(packages: Iterable[Path], validators: dict[Path, object]) -> list[Path]:
     """After --verify-cache: only the package files the SEC lists and that were
     just verified, by path, load. Any other zip, such as a package the SEC no
@@ -2379,10 +2782,16 @@ def run(
     reconciled_on: dt.date | None = None,
     documents: EventDocuments | None = None,
     validators: dict[Path, tuple[str | None, str | None]] | None = None,
+    superseded_dir: Path | None = None,
+    superseded_paths: Iterable[Path] = (),
 ) -> list[dict[str, object]]:
-    """Parse and reconcile packages, then indexes (reading end filings with
-    ``documents``), then re-derive end events read by another parser version;
-    ``reconciled_on`` dates every retirement and correction (default: today)."""
+    """Parse and reconcile packages, then restate the superseded ones read by
+    another FSN_PARSER_VERSION (``superseded_paths``, the files of superseded
+    packages --verify-cache could not verify; among ``packages``; or by name in
+    ``superseded_dir``: the SEC no longer lists them), then indexes (reading end
+    filings with ``documents``), then re-derive end events read by another parser
+    version; ``reconciled_on`` dates every retirement and correction (default:
+    today). A file of ``superseded_paths`` is only ever restated, never loaded."""
     stats: list[dict[str, object]] = []
     # Autocommit: each package commits in its own explicit transaction. The
     # session lock keeps this script and the recurring worker from interleaving.
@@ -2399,9 +2808,13 @@ def run(
             for item in resume_supersession(conn, reconciled_on=reconciled_on):
                 print(json.dumps(item), flush=True)
                 stats.append(item)
+        restate: dict[str, Path] = {}
         for path in packages:
             quarterly = superseded_by(conn, path.name) if conn is not None else None
             if quarterly is not None:
+                if superseded_version(conn, path.name) is not None:
+                    restate.setdefault(path.name, path)  # after its quarterly's re-read
+                    continue
                 item = {"package": path.name, "skipped": f"superseded by {quarterly}"}
                 print(json.dumps(item), flush=True)
                 stats.append(item)
@@ -2415,6 +2828,25 @@ def run(
                 item.update(supersede_monthly_packages(conn, path.name,
                                                        reconciled_on=reconciled_on))
                 item["load_seconds"] = round(time.monotonic() - started, 1)
+            print(json.dumps(item), flush=True)
+            stats.append(item)
+        for path in superseded_paths if conn is not None else ():
+            if superseded_version(conn, path.name) is not None:
+                restate[path.name] = path  # the caller's copy
+                continue
+            item = {"package": path.name,
+                    "skipped": f"superseded by {superseded_by(conn, path.name)}"}
+            print(json.dumps(item), flush=True)
+            stats.append(item)
+        if conn is not None and superseded_dir is not None:
+            for (name,) in conn.execute(
+                "SELECT source_package FROM sec_ticker_cik_packages "
+                "WHERE superseded_by IS NOT NULL AND parser_version IS DISTINCT FROM %s",
+                (FSN_PARSER_VERSION,),
+            ).fetchall():
+                restate.setdefault(name, superseded_dir / name)
+        for name in sorted(restate, key=lambda name: package_sort_key(Path(name))):
+            item = restate_superseded_package(conn, restate[name], reconciled_on=reconciled_on)
             print(json.dumps(item), flush=True)
             stats.append(item)
         ciks = cover_ciks(conn) if conn is not None and documents is not None else None
@@ -2480,9 +2912,15 @@ def main(argv: list[str] | None = None) -> int:
         sorted(args.packages, key=package_sort_key)
         if args.packages else discover_packages(args.packages_dir)
     )
+    superseded_paths: list[Path] = []
     if validators is not None:
-        packages = listed_packages(packages, validators)
-    if not packages:
+        unverified = [path for path in packages if path.resolve() not in validators]
+        if unverified and not args.dry_run:
+            names = superseded_package_names(args.dsn)
+            superseded_paths = [path for path in unverified if path.name in names]
+        packages = listed_packages([path for path in packages if path not in superseded_paths],
+                                   validators)
+    if not packages and not superseded_paths:
         parser.error(f"no FSN packages found in {args.packages_dir}")
     form_indexes = (
         [] if args.no_events
@@ -2497,7 +2935,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         stats = run(packages, dsn=args.dsn, dry_run=args.dry_run, form_indexes=form_indexes,
                     reconciled_on=args.reconciled_on, documents=documents,
-                    validators=validators)
+                    validators=validators, superseded_dir=args.packages_dir,
+                    superseded_paths=superseded_paths)
     finally:
         if client is not None:
             client.close()
