@@ -1,0 +1,28 @@
+{
+  "name": "bidu_2021_subdivision_completed_ratio",
+  "fixture": "bidu_2021_subdivision_completed_ratio.html",
+  "cik": 1329099,
+  "form_type": "6-K",
+  "accession_number": "0001193125-21-062361",
+  "filing_date": "2021-03-01",
+  "available_on": "2021-03-02",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1329099/000119312521062361/d215876d6k.htm",
+  "source_sha256": "090c6093bf7e019e337183b1263203acad0c09bf213f0eb80de69c449f4912f0",
+  "sha256": "090c6093bf7e019e337183b1263203acad0c09bf213f0eb80de69c449f4912f0",
+  "original_source_bytes": 14343,
+  "derivation": "Original cached SEC HTML bytes, retained as LF-only source bytes; the source and fixture SHA-256 values are identical.",
+  "filing_date_proof": {
+    "filed": "2021-03-01",
+    "records": [
+      {
+        "cik": 1329099,
+        "filed": "2021-03-01",
+        "line": "1329099|Baidu, Inc.|6-K|2021-03-01|edgar/data/1329099/0001193125-21-062361.txt",
+        "source_sha256": "d7149baacef9ee893eddfa2e353bcff909c25552c3f422d1bc2b7a7542392b5d",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2021/QTR1/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "source_confirmation_clause": "The one-to-eighty subdivision of shares has become effective on March 1, 2021, immediately upon approval by the Company's shareholders. Concurrently on the same day, a change in the American depositary share ratio proportionate to the share subdivision from ten ADSs representing one Class A ordinary share to one ADS representing eight Class A ordinary shares has taken effect."
+}

@@ -26,3 +26,6 @@ yfinance>=0.2.40
 curl_cffi>=0.7
 # SEC Form N-PORT recovery uses FormNportApi; pin the provider SDK API surface.
 sec-api==1.0.36
+# SEC foreign-listing evidence includes PDF 6-K exhibits; Poppler is preferred
+# when installed, with this pure-Python extractor available on worker images.
+pypdf>=6,<7

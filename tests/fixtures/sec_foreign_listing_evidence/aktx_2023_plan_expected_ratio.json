@@ -1,0 +1,28 @@
+{
+  "name": "aktx_2023_plan_expected_ratio",
+  "fixture": "aktx_2023_plan_expected_ratio.html",
+  "cik": 1541157,
+  "form_type": "6-K",
+  "accession_number": "0001104659-23-091710",
+  "filing_date": "2023-08-15",
+  "available_on": "2023-08-16",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1541157/000110465923091710/tm2323788d1_6k.htm",
+  "source_sha256": "8ff50441f900ea8c02f5c253310cd0711e09a183b55d7c8c386dd7d49e50133c",
+  "sha256": "8ff50441f900ea8c02f5c253310cd0711e09a183b55d7c8c386dd7d49e50133c",
+  "original_source_bytes": 10465,
+  "derivation": "Original cached SEC HTML bytes, retained as LF-only source bytes; the source and fixture SHA-256 values are identical.",
+  "filing_date_proof": {
+    "filed": "2023-08-15",
+    "records": [
+      {
+        "cik": 1541157,
+        "filed": "2023-08-15",
+        "line": "1541157|Akari Therapeutics Plc|6-K|2023-08-15|edgar/data/1541157/0001104659-23-091710.txt",
+        "source_sha256": "6a5d8394a0cc5c41ada86d74df95a2cad5d01205e4cf3d070004a27c543b6cdd",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2023/QTR3/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "source_plan_clause": "The Company will change the ratio of its ADSs to ordinary shares from one ADS representing 100 ordinary shares to one ADS representing 2,000 ordinary shares. The ratio change is expected to be effective on August 17, 2023."
+}

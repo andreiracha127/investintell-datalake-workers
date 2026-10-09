@@ -1,0 +1,39 @@
+{
+  "name": "dq_2020_completed_ratio_change",
+  "fixture": "dq_2020_completed_ratio_change.txt",
+  "cik": 1477641,
+  "symbol": "DQ",
+  "form_type": "6-K",
+  "accession_number": "0001104659-20-128241",
+  "filing_date": "2020-11-23",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1477641/000110465920128241/tm2036915d1_ex99-1.htm",
+  "source_sha256": "cfad6b6b8fc375f07574df7d1d8ceadb0b45d1f3849764aa753794fab28ccad9",
+  "sha256": "b7835053c0f68bb1f3a6376e60b75b2817846ab77cc6094eb2934cead0f7f595",
+  "derivation": "Independent HTMLParser visible text, whitespace normalized; contiguous prefix from hash-verified original bytes, retaining issuer/date header and complete dated old/new ADS ratio-change confirmation.",
+  "source_visible_text_offset": 0,
+  "source_visible_text_end": 3991,
+  "source_visible_text_sha256": "d6ba963bb602f1993ed1f629058c1ea4e97537793ab3c552ee90785df4980229",
+  "original_source_bytes": 321731,
+  "filing_date_proof": {
+    "filed": "2020-11-23",
+    "records": [
+      {
+        "cik": 1477641,
+        "filed": "2020-11-23",
+        "line": "1477641|DAQO NEW ENERGY CORP.|6-K|2020-11-23|edgar/data/1477641/0001104659-20-128241.txt",
+        "source_sha256": "5aac625a8b8354ae9dfee4748a7afc16388d40325821aeba8ee9392b9ef69845",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "publication_floor_on": "2020-11-23",
+  "publication_floor_proof": {
+    "publication_floor_on": "2020-11-23",
+    "reported_dates": [
+      "2020-11-23"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "a4a4e6430fabb2159a7366338de121c1d2f1a05e7953c2876e04a7d4ede91c05"
+}

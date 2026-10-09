@@ -1,0 +1,28 @@
+{
+  "name": "tcom_2021_subdivision_completed_ratio",
+  "fixture": "tcom_2021_subdivision_completed_ratio.html",
+  "cik": 1269238,
+  "form_type": "6-K",
+  "accession_number": "0001193125-21-085779",
+  "filing_date": "2021-03-18",
+  "available_on": "2021-03-19",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1269238/000119312521085779/d884543dex991.htm",
+  "source_sha256": "9cdcb504f77bf7092415d10cd5668b847363e8fe7dec59dd955039b98b02c8c5",
+  "sha256": "9cdcb504f77bf7092415d10cd5668b847363e8fe7dec59dd955039b98b02c8c5",
+  "original_source_bytes": 4039,
+  "derivation": "Original cached SEC HTML bytes, retained as LF-only source bytes; the source and fixture SHA-256 values are identical.",
+  "filing_date_proof": {
+    "filed": "2021-03-18",
+    "records": [
+      {
+        "cik": 1269238,
+        "filed": "2021-03-18",
+        "line": "1269238|Trip.com Group Ltd|6-K|2021-03-18|edgar/data/1269238/0001193125-21-085779.txt",
+        "source_sha256": "d7149baacef9ee893eddfa2e353bcff909c25552c3f422d1bc2b7a7542392b5d",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2021/QTR1/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "source_confirmation_clause": "The proposed resolutions submitted for shareholder approval were adopted at the extraordinary general meeting. The Share Subdivision is effective from March 18, 2021, and concurrently with that subdivision the ADS ratio is adjusted from eight ADSs representing one ordinary share to one ADS representing one ordinary share."
+}

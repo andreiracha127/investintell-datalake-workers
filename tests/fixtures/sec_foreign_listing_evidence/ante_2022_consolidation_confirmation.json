@@ -1,0 +1,27 @@
+{
+  "name": "ante_2022_consolidation_confirmation",
+  "fixture": "ante_2022_consolidation_confirmation.html",
+  "cik": 1413745,
+  "form_type": "6-K",
+  "accession_number": "0001104659-22-123013",
+  "filing_date": "2022-11-30",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1413745/000110465922123013/tm2231625d1_ex99-1.htm",
+  "source_sha256": "d9af043415b2bbd3c80b4a40402287d7c57d8cd07c6f04f687e9f1fec164ff80",
+  "sha256": "d9af043415b2bbd3c80b4a40402287d7c57d8cd07c6f04f687e9f1fec164ff80",
+  "derivation": "Original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained.",
+  "original_source_bytes": 6205,
+  "filing_date_proof": {
+    "filed": "2022-11-30",
+    "records": [
+      {
+        "cik": 1413745,
+        "filed": "2022-11-30",
+        "line": "1413745|AIRNET TECHNOLOGY INC.|6-K|2022-11-30|edgar/data/1413745/0001104659-22-123013.txt",
+        "source_sha256": "30bc8ebde79fa2bd68be8a630db67ce43949e1de0dad400a574fb48a67611c45",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "parent_manifest_sha256": "a8b046fbd976f28d12231956f9d2217e70ed95ea391aab80badc065228d3c38b"
+}

@@ -1,0 +1,36 @@
+{
+  "name": "nndm_2020_reverse_split_notice",
+  "fixture": "nndm_2020_reverse_split_notice.html",
+  "cik": 1643303,
+  "symbol": "NNDM",
+  "form_type": "6-K",
+  "accession_number": "0001213900-20-015116",
+  "filing_date": "2020-06-16",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1643303/000121390020015116/ea123108ex991_nanodimension.htm",
+  "source_sha256": "c7c1752d3f6e138fdf34bd31e36d088e4082ae4c164becd1dbff26497c166aa9",
+  "sha256": "c7c1752d3f6e138fdf34bd31e36d088e4082ae4c164becd1dbff26497c166aa9",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained.",
+  "original_source_bytes": 9754,
+  "filing_date_proof": {
+    "filed": "2020-06-16",
+    "records": [
+      {
+        "cik": 1643303,
+        "filed": "2020-06-16",
+        "line": "1643303|Nano Dimension Ltd.|6-K|2020-06-16|edgar/data/1643303/0001213900-20-015116.txt",
+        "source_sha256": "d9db1ed44390f3e041796a5e2d970c931e84b3220d6e4838f082a7bd24006db8",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR2/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "publication_floor_on": "2020-06-16",
+  "publication_floor_proof": {
+    "publication_floor_on": "2020-06-16",
+    "reported_dates": [
+      "2020-06-16"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "a4a4e6430fabb2159a7366338de121c1d2f1a05e7953c2876e04a7d4ede91c05"
+}

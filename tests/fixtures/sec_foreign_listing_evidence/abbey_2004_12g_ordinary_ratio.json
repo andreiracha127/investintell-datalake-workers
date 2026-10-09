@@ -1,0 +1,36 @@
+{
+  "name": "abbey_2004_12g_ordinary_ratio",
+  "fixture": "abbey_2004_12g_ordinary_ratio.html",
+  "cik": 1087711,
+  "form_type": "20-F",
+  "accession_number": "0001021231-04-000153",
+  "filing_date": "2004-03-10",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1087711/000102123104000153/b741829-20f.htm",
+  "source_sha256": "aeb5dd7808be9f029b1d5a189f0deebd9fce4b2f6e92e0eed8b86f0fbf9571fd",
+  "sha256": "aeb5dd7808be9f029b1d5a189f0deebd9fce4b2f6e92e0eed8b86f0fbf9571fd",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained.",
+  "original_source_bytes": 6812728,
+  "filing_date_proof": {
+    "filed": "2004-03-10",
+    "records": [
+      {
+        "cik": 1087711,
+        "filed": "2004-03-10",
+        "line": "1087711|ABBEY NATIONAL PLC|20-F|2004-03-10|edgar/data/1087711/0001021231-04-000153.txt",
+        "source_sha256": "3da925f72d9f7cb831d6c58b719f8fa091a8e4d35025cd26b372dfabe6365cdb",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2004/QTR1/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "publication_floor_on": "2004-03-10",
+  "publication_floor_proof": {
+    "publication_floor_on": "2004-03-10",
+    "reported_dates": [
+      "2004-03-10"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "primary_deposited_security": "Section12(g) ordinary shares; Section12(b) separately preferred Series B",
+  "independent_judgment": "The Section12(g) ADS ordinary2/1 entitlement is genuine ratio corroboration; it must not claim Section12(b) listing provenance."
+}

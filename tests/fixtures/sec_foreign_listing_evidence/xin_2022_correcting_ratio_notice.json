@@ -1,0 +1,27 @@
+{
+  "name": "xin_2022_correcting_ratio_notice",
+  "fixture": "xin_2022_correcting_ratio_notice.html",
+  "cik": 1398453,
+  "form_type": "6-K/A",
+  "accession_number": "0001140361-22-042119",
+  "filing_date": "2022-11-18",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1398453/000114036122042119/brhc10044395_ex99-1.htm",
+  "source_sha256": "e4e70a76b0dcd3d9d1c820f77007c698c2a19e4931c894261ebf007cd2f8b268",
+  "sha256": "e4e70a76b0dcd3d9d1c820f77007c698c2a19e4931c894261ebf007cd2f8b268",
+  "derivation": "Original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained.",
+  "original_source_bytes": 7351,
+  "filing_date_proof": {
+    "filed": "2022-11-18",
+    "records": [
+      {
+        "cik": 1398453,
+        "filed": "2022-11-18",
+        "line": "1398453|Xinyuan Real Estate Co., Ltd.|6-K/A|2022-11-18|edgar/data/1398453/0001140361-22-042119.txt",
+        "source_sha256": "30bc8ebde79fa2bd68be8a630db67ce43949e1de0dad400a574fb48a67611c45",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "parent_manifest_sha256": "a8b046fbd976f28d12231956f9d2217e70ed95ea391aab80badc065228d3c38b"
+}

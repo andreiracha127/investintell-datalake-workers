@@ -1,0 +1,13 @@
+{
+  "name": "stn_2005_40fr12b",
+  "fixture": "stn_2005_40fr12b.txt",
+  "cik": 1131383,
+  "symbol": "STN",
+  "accession_number": "0000909567-05-001221",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1131383/000090956705001221/t17577e40fr12b.txt",
+  "filing_date": "2005-08-03",
+  "form_type": "40FR12B",
+  "sha256": "38890881d27d340e8c3d31dab26b4e1a6b15df5e94ee9ce7a8d8ed5679b7a131",
+  "original_source_sha256": "38890881d27d340e8c3d31dab26b4e1a6b15df5e94ee9ce7a8d8ed5679b7a131",
+  "excerpt": "Full original SEC filing, CRLF normalized to LF only"
+}

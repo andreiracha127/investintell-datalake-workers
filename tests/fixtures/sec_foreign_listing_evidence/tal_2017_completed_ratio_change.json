@@ -1,0 +1,103 @@
+{
+  "accession_number": "0001144204-17-054518",
+  "available_on": "2017-10-28",
+  "cik": 1499620,
+  "derivation": "Full original HTML decoded UTF-8 with replacement, then normalized to LF only. Original byte hash and a separate exact raw byte copy are preserved; fixture hash is separately pinned.",
+  "filing_date": "2017-10-27",
+  "filing_date_proof": {
+    "filed": "2017-10-27",
+    "records": [
+      {
+        "cik": 1499620,
+        "filed": "2017-10-27",
+        "line": "1499620|TAL Education Group|6-K|2017-10-27|edgar/data/1499620/0001144204-17-054518.txt",
+        "source_sha256": "c4ac8c2a1f34071f3ab5b119ef0d27199b51865757b538d9c36295e03389ef57",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "fixture": "tal_2017_completed_ratio_change.html",
+  "fixture_sha256": "8baf1a950c59c2a9e8dc1561dd3eebcdbbb1f6a53e7cb7b39fe4b9b3b48354c8",
+  "form_type": "6-K",
+  "independent_judgment": "Past-tense adjusted and actual financial figures giving effect to the changed ADS entitlement prove later completed ClassA 2/1 to1/3 change. The October27 public source is available October28, so it confirms prospectively and does not infer SEC condition fulfillment at the July notice date.",
+  "independently_verified_filing_date_records": [
+    {
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\master-2017-Q4.idx",
+      "cik": 1499620,
+      "filed": "2017-10-27",
+      "line": "1499620|TAL Education Group|6-K|2017-10-27|edgar/data/1499620/0001144204-17-054518.txt",
+      "original_hash_and_literal_row_verified": true,
+      "source_sha256": "c4ac8c2a1f34071f3ab5b119ef0d27199b51865757b538d9c36295e03389ef57",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR4/master.idx"
+    }
+  ],
+  "name": "tal_2017_completed_ratio_change",
+  "original_raw_copy": "E:\\investintell-data\\w1c-20261009-run2\\audit\\gate-fix\\tal_2017_completed_ratio_change.raw.bin",
+  "original_raw_copy_sha256": "8baf1a950c59c2a9e8dc1561dd3eebcdbbb1f6a53e7cb7b39fe4b9b3b48354c8",
+  "original_source_bytes": 241112,
+  "original_source_cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\documents\\c37fbc83f24fd3164968f15a95d69d442ce93f1923251af9df9e600524b0037e.bin.xz",
+  "parent_document_metadata": {
+    "adsh": "0001144204-17-054518",
+    "binding": "registrant_cik",
+    "cik": 1499620,
+    "evidence_count": 1,
+    "filed": "2017-10-27",
+    "filing_date_proof": {
+      "filed": "2017-10-27",
+      "records": [
+        {
+          "cik": 1499620,
+          "filed": "2017-10-27",
+          "line": "1499620|TAL Education Group|6-K|2017-10-27|edgar/data/1499620/0001144204-17-054518.txt",
+          "source_sha256": "c4ac8c2a1f34071f3ab5b119ef0d27199b51865757b538d9c36295e03389ef57",
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR4/master.idx"
+        }
+      ],
+      "source": "sec_quarter_master_index"
+    },
+    "filing_date_status": "resolved",
+    "form": "6-K",
+    "issuer_name": "",
+    "parser_version": "foreign-listing-v5",
+    "publication_floor_on": "2017-10-27",
+    "publication_floor_proof": {
+      "publication_floor_on": "2017-10-27",
+      "reported_dates": [
+        "2017-10-27"
+      ],
+      "source": "discovery_reported_publication_floor"
+    },
+    "query_accepted_on": "2017-10-27",
+    "query_filed_at": "2017-10-27",
+    "registrant_cik": "1499620",
+    "source_package": "e17f1fdd0f17568c020350e59711276ade4ec7e2a7017852ea3bb158fcfa371f",
+    "source_sha256": "8baf1a950c59c2a9e8dc1561dd3eebcdbbb1f6a53e7cb7b39fe4b9b3b48354c8",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1499620/000114420417054518/tv477793_ex99-1.htm",
+    "status": "parsed",
+    "symbols": [
+      "TAL",
+      "XRS"
+    ]
+  },
+  "parent_manifest_sha256": "5a7667cd5679bb99400b1113abcdf3b260ddb831cab12c6942c540f118f3d283",
+  "publication_floor_on": "2017-10-27",
+  "publication_floor_proof": {
+    "publication_floor_on": "2017-10-27",
+    "reported_dates": [
+      "2017-10-27"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "ratio_denominator": 3,
+  "ratio_event_effective_date": "2017-08-16",
+  "ratio_numerator": 1,
+  "sha256": "8baf1a950c59c2a9e8dc1561dd3eebcdbbb1f6a53e7cb7b39fe4b9b3b48354c8",
+  "source_confirmation_clause": "Effective on August 16, 2017, the Company adjusted the ratio of its American depositary shares (\"ADSs\") to Class A common shares (“Shares”) from one (1) ADS representing two (2) Shares to three (3) ADSs representing one (1) Share. All earnings per ADS figures in this announcement give effect to the foregoing ADS to share ratio change.",
+  "source_confirmation_clause_original_bytes_verified": true,
+  "source_confirmation_clause_visible_offset": 2507,
+  "source_sha256": "8baf1a950c59c2a9e8dc1561dd3eebcdbbb1f6a53e7cb7b39fe4b9b3b48354c8",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1499620/000114420417054518/tv477793_ex99-1.htm",
+  "symbol": "TAL",
+  "underlying_class": "class_a"
+}

@@ -1,0 +1,28 @@
+{
+  "name": "anpc_2022_ratio_completion",
+  "fixture": "anpc_2022_ratio_completion.html",
+  "cik": 1786511,
+  "form_type": "6-K",
+  "accession_number": "0001104659-22-127907",
+  "filing_date": "2022-12-16",
+  "available_on": "2022-12-17",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1786511/000110465922127907/tm2232861d1_ex99-1.htm",
+  "source_sha256": "c4c716faa0d714d9c7d8eb98fc428ee4ecc2840cde7cc397e9639e4aed82f52f",
+  "sha256": "c4c716faa0d714d9c7d8eb98fc428ee4ecc2840cde7cc397e9639e4aed82f52f",
+  "original_source_bytes": 168692,
+  "derivation": "Original cached SEC HTML bytes, retained as LF-only source bytes; the source and fixture SHA-256 values are identical.",
+  "filing_date_proof": {
+    "filed": "2022-12-16",
+    "records": [
+      {
+        "cik": 1786511,
+        "filed": "2022-12-16",
+        "line": "1786511|AnPac Bio-Medical Science Co., Ltd.|6-K|2022-12-16|edgar/data/1786511/0001104659-22-127907.txt",
+        "source_sha256": "30bc8ebde79fa2bd68be8a630db67ce43949e1de0dad400a574fb48a67611c45",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "source_confirmation_clause": "On October 18, 2022, the Company announced that its Board of Directors authorized the change from one ADS representing one Class A ordinary share to one ADS representing twenty Class A ordinary shares. The change in the ADS ratio became effective on November 4, 2022."
+}

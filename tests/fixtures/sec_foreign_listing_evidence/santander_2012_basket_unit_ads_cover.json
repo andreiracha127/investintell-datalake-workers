@@ -1,0 +1,50 @@
+{
+  "name": "santander_2012_basket_unit_ads_cover",
+  "fixture": "santander_2012_basket_unit_ads_cover.html",
+  "cik": 1471055,
+  "symbol": "BSBR",
+  "form_type": "20-F",
+  "accession_number": "0000950103-12-001646",
+  "filing_date": "2012-03-30",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1471055/000095010312001646/dp29493_20f.htm",
+  "source_sha256": "9a6748aeb4667da7dae8af84a2c0a329fb9897a84924971d49c91444e113f5a0",
+  "sha256": "9a6748aeb4667da7dae8af84a2c0a329fb9897a84924971d49c91444e113f5a0",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF only; original byte hash retained.",
+  "original_source_bytes": 8866890,
+  "filing_date_proof": {
+    "filed": "2012-03-30",
+    "records": [
+      {
+        "cik": 1471055,
+        "filed": "2012-03-30",
+        "line": "1471055|Banco Santander (Brasil) S.A.|20-F|2012-03-30|edgar/data/1471055/0000950103-12-001646.txt",
+        "source_sha256": "8a1f6ad4f077b0fb8ce12b37684e101a4ff73605a0e57ec7f5eac69c57077d3c",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2012/QTR1/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "independently_verified_filing_date_records": [
+    {
+      "cik": 1471055,
+      "filed": "2012-03-30",
+      "line": "1471055|Banco Santander (Brasil) S.A.|20-F|2012-03-30|edgar/data/1471055/0000950103-12-001646.txt",
+      "source_sha256": "8a1f6ad4f077b0fb8ce12b37684e101a4ff73605a0e57ec7f5eac69c57077d3c",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2012/QTR1/master.idx",
+      "original_hash_and_exact_row_verified": true,
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final\\master-2012-Q1.idx"
+    }
+  ],
+  "publication_floor_on": "2012-03-30",
+  "publication_floor_proof": {
+    "publication_floor_on": "2012-03-30",
+    "reported_dates": [
+      "2012-03-30"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "d40af6d78532b30cc86b98077bf04a27d976e6d214ee26598059344a389370d0",
+  "binding": "registrant_cik",
+  "issuer_name": "",
+  "registered_unit_cover_excerpt": "20-F 1 dp29493_20f.htm FORM 20-F UNITED STATES SECURITIES AND EXCHANGE COMMISSION Washington, D.C. 20549 FORM 20-F (Mark One) o REGISTRATION STATEMENT PURSUANT TO SECTION 12(b) OR (g) OF THE SECURITIES EXCHANGE ACT OF 1934 OR x ANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934 for the fiscal year ended December 31, 2011 OR o TRANSITION REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934 for the transition period from ________________ to ________________ OR o SHELL COMPANY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934 Date of event requiring this shell company report Commission file number: 011-34476 BANCO SANTANDER (Brasil) S.A. (Exact name of Registrant as specified in its charter) Federative Republic of Brazil (Jurisdiction of incorporation) Avenida Presidente Juscelino Kubitschek, 2,041 and 2,235 – Bloco A Vila Olímpia São Paulo, SP 04543-011 Federative Republic of Brazil (Address of principal executive offices) James H. Bathon, Managing Director - Legal and Compliance Banco Santander, S.A. New York Branch 45 E. 53rd Street New York, New York 10022 (212) 350-3500 (Name, Telephone, E-mail and/or Facsimile number and Address of Company Contact Person) Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Name of each exchange on which registered American Depositary Shares, each representing the right to receive 55 common shares, no par value, and 50 preferred shares, no par value, of Banco Santander (Brasil) S.A. New York Stock Exchange Securities registered or to be registered pursuant to Section 12(g) of the Act: None (Title of Class) Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None (Title of Class) Indicate the number of outstanding shares of each of the issuer’s classes of capital stock or common stock as of the close of business covered by the annual report. 212,450,478,000 common shares 185,846,700,000 preferred shares Indicate by check mark if the registrant is a well-known seasoned issuer, as defined in Rule 405 of the Securities Act. x Yes o No If this report is an annual or transition report, indicate by check mark if the registrant is not required to file reports pursuant to Section 13 or 15(d) of the Securities Exchange Act of 1934. o Yes x No Indicate by check mark whether the registrant (1) has filed all reports required to be filed by Section 13 or 15(d) of the Securities Exchange Act of 1934 during the preceding 12 months (or for such shorter period that the registrant was required to file such reports), and (2) has been subject to such filing requirements for the past 90 days. x Yes o No Indicate by check mark whether the registrant has submitted electronically and posted on its corporate Web site, if any, every Interactive Data File required to be submitted and posted pursuant to Rule 405 of Regulation S-T during the preceding 12 months (or for such shorter period that the registrant was required to submit and post such files). o Yes o No Indicate by check mark whether the registrant is a large accelerated filer, an accelerated filer, or a non-accelerated filer. See definition of “accelerated filer and large accelerated filer” in Rule 12b-2 of the Exchange Act. (Check one): Large accelerated filer x Accelerated filer o Non-accelerated filer o Indicate by check mark which basis of accounting the registrant has used to prepare the financial statements included in this filing: US GAAP o International Financial Reporting Standards as issued by the International Accounting Standards Board x Other o If “Other” has been checked in response to the previous question indicate by check mark which financial statement item the registrant has elected to follow. o Item 17 o Item 18 If this is an annual report, indicate by check mark whether the registrant is a shell company (as defined in Rule 12b-2 of the Exchange Act). o Yes x No Table of Contents BANCO SANTANDER (BRASIL) S.A. TABLE OF CONTENTS __________________ Page PRESENTATION OF FINANCIAL AND OTHER INFORMATION 1 FORWARD-LOOKING STATEMENTS 2 PART I 3 ITEM 1. IDENTITY OF DIRECTORS, SENIOR MANAGEMENT AND ADVISERS 3 A. Directors and Senior Management 3 B. Advisers 3 C. Auditors 3 ITEM 2. OFFER STATISTICS AND EXPECTED TIMETABLE 3 A. Offer Statistics 3 B. Method and Expected Timetable 3 ITEM 3. KEY INFORMATION 4 A. Selected Financial Data 4 B. Capitalization and Indebtedness 10 C. Reasons for the Offer and Use of Proceeds 10 D. Risk Factors 10 ITEM 4. INFORMATION ON THE COMPANY 21 A. History and Development of the Company 21 B. Business Overview 26 C. Organizational Structure 107 D. Property, Plant and Equipment 108 ITEM 4A. UNRESOLVED STAFF COMMENTS 108 ITEM 5. OPERATING AND FINANCIAL REVIEW AND PROSPECTS 109 A. Operating Results 109 B. Liquidity and Capital Resources 147 C. Research and Development, Patents and Licenses, etc. 151 D. Trend Information 151 E. Off-Balance Sheet Arrangements 151 F. Contractual Obligations 152 ITEM 6. DIRECTORS, SENIOR MANAGEMENT AND EMPLOYEES 153 A. Management 153 B. Compensation 166 C. Board Practices 172 D. Employees 176 E. Share Ownership 177 ITEM 7. MAJOR SHAREHOLDERS AND RELATED PARTY TRANSACTIONS 178 A. Major Shareholders 178 B. Related Party Transactions 180 C. Interests of Experts and Counsel 185 ITEM 8. FINANCIAL INFORMATION 185 A. Consolidated Statements and Other Financial Information 185 B. Significant Changes 193 ITEM 9. THE OFFER AND LISTING 193 A. Offering and Listing Details 193 B. Plan of Distribution 196 C. Markets 196 D. Selling Shareholders 198 E. Dilution 199 F. Expenses of the Issue 199 i Table of Contents ITEM 10. ADDITIONAL INFORMATION 199 A. Share Capital 199 B. Memorandum and Articles of Association 199 C. Material Contracts 212 D. Exchange Controls 212 E. Taxation 213 F. Dividends and Paying Agents 221 G. Statement by Experts 221 H. Documents on Display 221 I. Subsidiary Information 221 ITEM 11. QUANTITATIVE AND QUALITATIVE DISCLOSURES ABOUT RISK 221 ITEM 12. DESCRIPTION OF SECURITIES OTHER THAN EQUITY SECURITIES 237 A. Debt Securities 237 B. Warrants and Rights 237 C. Other Securities 237 D. American Depositary Shares 237 PART II 238 ITEM 13. DEFAULTS, DIVIDEND ARREARAGES AND DELINQUENCIES 238 A. Defaults 238 B. Arrears and Delinquencies 239 ITEM 14. MATERIAL MODIFICATIONS TO THE RIGHTS OF SECURITY HOLDERS AND USE OF PROCEEDS 239 ITEM 15. CONTROLS AND PROCEDURES 239 A. Disclosure C"
+}

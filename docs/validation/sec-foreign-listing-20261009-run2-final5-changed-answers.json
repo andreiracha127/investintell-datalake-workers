@@ -1,0 +1,321 @@
+{
+  "generated_at_utc": "2026-10-09T21:44:33.744064+00:00",
+  "total_changed_answers": 9,
+  "changed_distinct_lines": 9,
+  "changed_counts_by_date": {
+    "2010-12-31": 0,
+    "2015-12-31": 0,
+    "2020-12-31": 0,
+    "2025-12-31": 9
+  },
+  "cases": [
+    {
+      "cik": 1472072,
+      "symbol": "CCM",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "after": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "before_evidence_ids": [
+        14878,
+        24461,
+        24462,
+        24463
+      ],
+      "after_evidence_ids": [
+        5796,
+        11809,
+        14893,
+        24485,
+        24486,
+        24487
+      ]
+    },
+    {
+      "cik": 1534248,
+      "symbol": "CMMB",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "after": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "before_evidence_ids": [
+        5510,
+        17512,
+        17513,
+        17514,
+        22143,
+        26026
+      ],
+      "after_evidence_ids": [
+        5514,
+        17528,
+        17529,
+        17530,
+        22166,
+        26057
+      ]
+    },
+    {
+      "cik": 1572621,
+      "symbol": "AENZ",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "after": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "before_evidence_ids": [
+        2963,
+        6041,
+        6042,
+        6043,
+        6044
+      ],
+      "after_evidence_ids": [
+        2967,
+        6047,
+        6048,
+        6049,
+        6050,
+        14976
+      ]
+    },
+    {
+      "cik": 1592560,
+      "symbol": "TEDU",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "none",
+        "listed_type": null,
+        "listing_status": "none",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "after": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "none",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "before_evidence_ids": [
+        23830,
+        27931
+      ],
+      "after_evidence_ids": [
+        23853,
+        27963
+      ]
+    },
+    {
+      "cik": 1697818,
+      "symbol": "AMBR",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "after": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "5/1"
+      },
+      "before_evidence_ids": [
+        20488,
+        28870
+      ],
+      "after_evidence_ids": [
+        16858,
+        19621,
+        20506,
+        28902
+      ]
+    },
+    {
+      "cik": 1737450,
+      "symbol": "OPRA",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "after": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "before_evidence_ids": [
+        11803,
+        15835,
+        17878,
+        17879,
+        17880,
+        17881
+      ],
+      "after_evidence_ids": [
+        11817,
+        15850,
+        17894,
+        17895,
+        17896,
+        17897
+      ]
+    },
+    {
+      "cik": 1810031,
+      "symbol": "FRLN",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "after": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "15/1"
+      },
+      "before_evidence_ids": [
+        2898,
+        2899,
+        2900,
+        2901,
+        11499,
+        11500,
+        11501,
+        11502,
+        11503,
+        11504,
+        11505
+      ],
+      "after_evidence_ids": [
+        2902,
+        2903,
+        2904,
+        11384,
+        11385,
+        11511,
+        11512,
+        11513,
+        11514,
+        11515,
+        11516,
+        11517,
+        11568,
+        11569,
+        20653,
+        20654,
+        24354
+      ]
+    },
+    {
+      "cik": 1828098,
+      "symbol": "STKH",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "after": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "before_evidence_ids": [
+        611,
+        10031,
+        10032,
+        10033
+      ],
+      "after_evidence_ids": [
+        612,
+        2567,
+        10039,
+        10040,
+        10041,
+        14044,
+        25523
+      ]
+    },
+    {
+      "cik": 1872812,
+      "symbol": "TCBP",
+      "as_of": "2025-12-31",
+      "before": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "after": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "before_evidence_ids": [
+        911,
+        23172,
+        28794
+      ],
+      "after_evidence_ids": [
+        912,
+        6105,
+        20706,
+        28826
+      ]
+    }
+  ]
+}

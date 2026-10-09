@@ -1,0 +1,1266 @@
+{
+  "as_of": "2025-12-31",
+  "selection": {
+    "seed": 173,
+    "method": "Frozen stratified cohort of 15 ADS and 15 ordinary-direct lines drawn from the fully replayed reviewed snapshot; preserve the cohort through subsequent source-audit fixes and recheck every answer against the final artifact.",
+    "manifest_sha256": "4d3708936d643e99a9be85c9f42d0548c6be76194e1dc87a7d983027140bc759",
+    "packet_sha256": "e861fcbb1692dfcf412184267bee029874611e653d90960d44f48e3e6404b99c"
+  },
+  "review_inputs": [
+    {
+      "path": "verified/validation/manual-ads.json",
+      "sha256": "51c3038f2267df55785adeecafbc64da5d211e968318c3485b2c9da567a9613a"
+    },
+    {
+      "path": "verified/validation/manual-direct.json",
+      "sha256": "03a53777d9f1808af99dd089511b0de1de3d8b64fd9b1ca752bf6157e26a9b43"
+    },
+    {
+      "path": "reviewed/validation/manual-ads-part0.json",
+      "sha256": "3b041eb841780b6bd2467dfabef371d99a93522d56b77e9fb8de5f372a929fde"
+    },
+    {
+      "path": "reviewed/validation/manual-ads-part1.json",
+      "sha256": "3cce35995343822441f9f999ffd07fd614c29a7d26777e1ae0aa4cb40f08c4d5"
+    }
+  ],
+  "source_review_correct": 30,
+  "source_review_total": 30,
+  "final_answer_verification": {
+    "verified_at": "2026-10-09T06:35:10.716863+00:00",
+    "passed": 30,
+    "total": 30,
+    "precision": 1.0,
+    "manifest_sha256": "c7bc46335e024377309ada19940400480b524559cb259f4df1004719a62481cb",
+    "evidence_sha256": "c607fd3b15be11c42a7fe649f0ed1c32422982b69a91678066a0267d32ebdd12",
+    "all_reviewed_source_url_hash_pairs_present_in_documents_or_date_proofs": true
+  },
+  "post_review_fixes": [
+    "TOUR Item9 text no longer labeled Item12D.",
+    "ANPC fallback-dated F6 respects the already-public November4 change.",
+    "OTLY market-opening effective date now explicit February18,2025; its 2024 cover/Item9 contradiction remains ambiguous."
+  ],
+  "cases": [
+    {
+      "cik": 1611820,
+      "symbol": "LN",
+      "listed_type": "ads",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The NYSE cover binds LN to ADSs representing one share of common stock. The LINE Corporation F-6 fee table independently states one common share per ADS. The reviewed annual amendment was filed in 2020; this verdict establishes sourced type and ratio known by the audit date, not an active NYSE listing in 2025. Raw-byte hashes and SEC quarterly-index filing-date rows were independently verified. F-6 filed 2016-07-06, available 2016-07-07; 20-F/A filed 2020-09-28, available 2020-09-29.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000119312516641936/d221536df6.htm",
+          "source_sha256": "b19163aee3b272e340ac3bcca7e7f237779243e98887f692a078d158b49a1f9d",
+          "adsh": "0001193125-16-641936",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=1693",
+          "checked_text": "can Depositary Shares evidenced by American Depositary Receipts, each American Depositary Share representing one share of common stock, no par value, of LINE Corporation 100,000,000 American Depositary Shares $0.05 $5,000,000 $503.50 (1) Each unit represents one American Depositary Share. (2) Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Receipts evidencing American Depositary Shares. The Registrant"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1611820/000119312520255118/d29244d20fa.htm",
+          "source_sha256": "ce957f24e9b678d1a9b6403c2801be725f11808ab7627f4c7eeb8cadff93b01b",
+          "adsh": "0001193125-20-255118",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1283",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act. Title of Each Class Trading Symbol(s) Name of Each Exchange on Which Registered American Depositary Shares, each representing one share of common stock LN New York Stock Exchange, Inc. Common Stock* New York Stock Exchange, Inc.* Securities registered or to be registered pursuant to Section 12(g) of the Act. None Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act. None As of December 31, 2019, there were 241,133,142 shares of common stock outstanding Indicate by check mark if the registrant is a well-known seasoned issuer, as defined in Rule 405 of the Securities Act. Yes ☒ No ☐ If this report is an annual or transition report, indicate by check mark if the registrant is not required to file reports pursuant to Section 13 or 15(d) of the Securities Exchange Act of 1934. Yes ☐ No ☒ Indicate by check mark whether the registrant (1) has filed all reports required to be fi"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "1.00000000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1742770,
+      "symbol": "VIOT",
+      "listed_type": "ads",
+      "ratio_numerator": 3,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The 2025 Nasdaq cover binds VIOT to three Class A ordinary shares per ADS and marks the separate ordinary row not for trading. The Viomi F-6 fee table, deposit agreement ADR form and counsel opinion independently agree on three Class A ordinary shares. Class B ordinary shares are not the deposited class. Raw-byte hashes and SEC quarterly-index filing-date rows were independently verified. 20-F filed 2025-09-30, available 2025-10-01; F-6 filed 2018-09-11, available 2018-09-12.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1742770/000110465925094717/viot-20241231x20f.htm",
+          "source_sha256": "1ac27035d77151878fb3ef62aa818eed0e145e3b42d6f89470a7e893d7109fae",
+          "adsh": "0001104659-25-094717",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1413",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: ​ Title of Each Class ​ Trading Symbol ​ Name of Each Exchange On Which Registered American depositary shares, each representing three Class A ordinary shares ​ VIOT ​ The Nasdaq Stock Market LLC (The Nasdaq Global Select Market) Class A ordinary shares, par value US$0.00001 per share * ​ ​ ​ The Nasdaq Stock Market LLC (The Nasdaq Global Select Market) ​ * Not for trading , but only in connection with the listing on the Nasdaq Stock Market of American depositary shares. Securities registered or to be registered pursuant to Section 12(g) of the Act: None (Title of Class) Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None (Title of Class) ​ Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report. As of December 31, 2024, there were 203,824,094 ordinary shares is"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1471515/000120864618000080/ex4.htm",
+          "source_sha256": "b43237bc80a04a89129700346b64722520fe2ed4bd1a1c0b91096ec45e41208e",
+          "adsh": "0001208646-18-000080",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=144956",
+          "checked_text": ": 39 EXHIBIT A CUSIP________ ISIN________ American Depositary Shares (Each American Depositary Share representing three Fully Paid Class A Ordinary Shares) [FORM OF FACE OF RECEIPT] AMERICAN DEPOSITARY RECEIPT for AMERICAN DEPOSITARY SHARES representing DEPOSITED CLASS A ORDINARY SHARES of VIOMI TECHNOLOGY CO., LTD (Incorporated under the laws of the Cayman Islands) DEUTSCHE BANK TRUST COMPANY AMERICAS, as depositary (herein called the “ Depositary ”), hereby certifies that ________________ is the owner of ______________ American Depositary Shares (hereinafter “ ADS ”), representing deposited "
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1471515/000120864618000080/ex5.htm",
+          "source_sha256": "8cdbb65591b1c992adf623133342881f02e7222a2e80a3f368dcdb3b600f8303",
+          "adsh": "0001208646-18-000080",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=461",
+          "checked_text": "ares (“ ADSs ”) evidenced by American Depositary Receipts (“ ADRs ”), each ADS representing three Class A ordinary shares of Viomi Technology Co., Ltd (the “ Company ”). Unless otherwise defined herein, capitalized terms defined in the Deposit Agreement appearing as Exhibit (a) to the Registration Statement (the “ Deposit Agreement ”), among the Company, the Depositary and all Holders and Beneficial Owners of American Depositary Shares evidenced by American Depositary Receipts issued thereunder, and used herein shall have the meanings ascribed to them in the Deposit Agreement. In giving this o"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1471515/000120864618000080/c114704.htm",
+          "source_sha256": "ed8b70b88ef9f84259ff2593426176b5041fad4a13cf3868e26fabcf6ebaac23",
+          "adsh": "0001208646-18-000080",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=1835",
+          "checked_text": "posed maximum aggregate offering price (2) Amount of registration fee American Depositary Shares, each representing three Class A ordinary shares of Viomi Technology Co., Ltd 50,000,000 American Depositary Shares $0.05 $2,500,000 $311.25 1 For the purpose of this table only the term \"unit\" is defined as one American Depositary Share. 2 Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Shares. The regist"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "3.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1829118,
+      "symbol": "TUYA",
+      "listed_type": "ads",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The NYSE cover binds TUYA to one Class A ordinary share per ADS. The separate Hong Kong 2391 ordinary listing is not the US ADS. Exhibit A to the Tuya F-6 deposit agreement states one deposited share and explicitly identifies Class A ordinary shares. Raw-byte hashes and SEC quarterly-index filing-date rows were independently verified. 20-F filed 2025-04-24, available 2025-04-25; F-6/A filed 2021-03-16, available 2021-03-17.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1829118/000141057825000850/tuya-20241231x20f.htm",
+          "source_sha256": "d0c1c63c10f3d7a931c81eba174b40274f28844a3f7f72e43dfdca12aa035b65",
+          "adsh": "0001410578-25-000850",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1300",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: ​ Title of each class Trading Symbol Name of each exchange on which registered American depositary shares, each representing one Class A ordinary share, par value US$0.00005 per share ​ TUYA ​ The New York Stock Exchange Class A ordinary shares, par value US$0.00005 per share ​ 2391 ​ The Stock Exchange of Hong Kong Limited ​ Securities registered or to be registered pursuant to Section 12(g) of the Act : None (Title of Class) Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None (Title of Class) Indicate the number of outstanding shares of each of the issuer ’ s classes of capital or common stock as of the close of the period covered by the annual report. 574,592,599 ordinary shares, comprising 504,387,299 Class A ordinary shares, par value US$0.00005 per share (including 5,433,895 Class A ordinary shares issued to the depositary bank for bulk issuance of ADSs rese"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1201935/000101915521000092/tuyadepnrecamend.htm",
+          "source_sha256": "e392013abf9c4b0c31b716f1d8596b3f119df91a550727ab84cd9d51e60f3efb",
+          "adsh": "0001019155-21-000092",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=108227",
+          "checked_text": ". Goad Title: Managing Director EXHIBIT A AMERICAN DEPOSITARY SHARES (Each American Depositary Share represents One deposited Share) THE BANK OF NEW YORK MELLON AMERICAN DEPOSITARY RECEIPT FOR CLASS A ORDINARY SHARES OF TUYA INC. (INCORPORATED UNDER THE LAWS OF THE CAYMAN ISLANDS) The Bank of New York Mellon, as depositary (hereinafter called the “Depositary”), hereby certifies that_________________________________________, or registered assigns IS THE OWNER OF _____________________________ AMERICAN DEPOSITARY SHARES representing deposited Class A ordinary shares (herein called “Shares”) of Tu"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "1.00000000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1999860,
+      "symbol": "WYHG",
+      "listed_type": "ads",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The Nasdaq cover binds WYHG to one ordinary share per ADS. The Wing Yip Food Holdings Group F-6 fee table independently states one ordinary share per ADS. The adjacent ordinary row has no competing trading symbol. Raw-byte hashes and SEC quarterly-index filing-date rows were independently verified. F-6 filed 2024-08-02, available 2024-08-03; 20-F filed 2025-04-30, available 2025-05-01.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1471515/000095012724000040/f-6.htm",
+          "source_sha256": "5557c8974e32074a645731f4437859a79a25f5ba8b92f0ded675a467da111917",
+          "adsh": "0000950127-24-000040",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=1827",
+          "checked_text": "posed maximum aggregate offering price (2) Amount of registration fee American Depositary Shares, each representing one ordinary share of Wing Yip Food Holdings Group Limited 200,000,000 American Depositary Shares $0.05 $10,000,000 $1,476 1 For the purpose of this table only the term “unit” is defined as one American Depositary Share. 2 Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Shares. The regis"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1999860/000121390025037724/ea0239480-20f_wingyip.htm",
+          "source_sha256": "0d1d3962c81f807640b0108468633a9e41950b36269c87777b2ae647b0e0358e",
+          "adsh": "0001213900-25-037724",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1204",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act. Title of each class Trading Symbol(s) Name of each exchange on which registered American depositary shares, each representing one ordinary share WYHG The Nasdaq Stock Market LLC Ordinary shares The Nasdaq Stock Market LLC Securities registered or to be registered pursuant to Section 12(g) of the Act. None (Title of Class) Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act. None (Title of Class) Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report. An aggregate of 50,023,428 ordinary shares, no par value, were issued and outstanding as of December 31, 2024. Indicate by check mark if the registrant is a well-known seasoned issuer, as defined in Rule 405 of the Securities Act. Yes ☐ No ☒ If this report is an annual or transition report, indicate by check mark if the "
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "1.00000000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1957146,
+      "symbol": "EXTO",
+      "listed_type": "ads",
+      "ratio_numerator": 8,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The NYSE cover binds EXTO to eight common shares per ADS and marks common shares not for trading. The Almacenes Exito F-6 fee table, counsel opinion and ADR form independently agree on eight common shares. IMPORTANT: the same annual report states NYSE delisting became effective January 21, 2025. This verdict concerns correctly sourced security type and ratio, not survival or active-listing admission. Raw-byte hashes and SEC quarterly-index filing-date rows were independently verified. F-6 filed 2023-07-26, available 2023-07-27; 20-F filed 2025-04-30, available 2025-05-01.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000119380523001019/e618798_ex99-d.htm",
+          "source_sha256": "2fa6524dbedd93f71a1ac9e22eeb70cfcffb72664d510978829255b7058df9b6",
+          "adsh": "0001193805-23-001019",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=556",
+          "checked_text": "y Shares (\"ADSs\") evidenced by American Depositary Receipts (\"ADRs\"), each ADS representing eight common shares of Almacenes Exito, S.A. (the \"Company\"), a corporation organized under the laws of Colombia. Capitalized terms used herein that are not herein defined shall have the meanings assigned to them in the Deposit Agreement (the \"Deposit Agreement\") appearing, or incorporated by reference, in exhibit (a) to the Registration Statement. In connection with this opinion, we have examined originals or copies, certified or otherwise identified to our satisfaction, of such documents as we conside"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1957146/000121390025037091/ea0239628-20f_almacenes.htm",
+          "source_sha256": "ff9d38d9d69f837e49e0ec9a51a0c4c81b47d6f6510c83306d6b827f14806b30",
+          "adsh": "0001213900-25-037091",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1102",
+          "checked_text": "Securities registered or to be registered pursuant to section 12(b) of the Act: Title of Each Class Trading Symbol Name of Each Exchange on which Registered Common Shares, par value of COP 3.33 per common share -- New York Stock Exchange 1 American Depositary Share, each representing eight common shares EXTO New York Stock Exchange 1 Not for trading, but only in connection with the listing of the American Depositary Shares on the New York Stock Exchange. Securities registered or to be registered pursuant to Section 12(g) of the Act: None Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report: As of December 31, 2024, the registrant had outstanding 1,297,864,359 common shares with a par value of COP 3.33 per common share. Indicate by check mark if the registrant is a well-known seasoned is"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1957146/000121390025037091/ea0239628-20f_almacenes.htm",
+          "source_sha256": "ff9d38d9d69f837e49e0ec9a51a0c4c81b47d6f6510c83306d6b827f14806b30",
+          "adsh": "0001213900-25-037091",
+          "location": "Business section delisting disclosure; independent visible-text offset=143545",
+          "checked_text": "In December 30, 2024 we filed a Form 25 with the U.S. Securities and Exchange Commission stating our intention to delist our American Depositary Shares from the New York Stock Exchange. The delisting became effective on January 21, 2025. Stoc"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000119380523001019/e618798_ex99-a.htm",
+          "source_sha256": "3c3f9663ca9e72aee3d5f1dac957a33667057f2283bd535f184ddd146b65a337",
+          "adsh": "0001193805-23-001019",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=49001",
+          "checked_text": "ORATED IN DEPOSIT AGREEMENT [FORM OF FACE OF ADR] No. of ADSs: Number Each ADS represents Eight Shares CUSIP: AMERICAN DEPOSITARY RECEIPT evidencing AMERICAN DEPOSITARY SHARES representing COMMON SHARES of ALMACENES EXITO, S.A. (Incorporated under the laws of the Republic of Colombia) JPMORGAN CHASE BANK, N.A., a national banking association organized under the laws of the United States of America, as depositary hereunder (the \" Depositary \"), hereby certifies that _________________ is the registered owner (a \" Holder \") of ________________ American Depositary Shares (\" ADSs \"), each (subject "
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000119380523001019/e618798_f6-exito.htm",
+          "source_sha256": "5adaea57afed9468413eda81d5d3a7645fdf24203b5a50f722984a6dd653b5a4",
+          "adsh": "0001193805-23-001019",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=1640",
+          "checked_text": "can Depositary Shares evidenced by American Depositary Receipts, each American Depositary Share representing eight common shares of Almacenes Exito, S.A. 500,000,000 American Depositary Shares $0.05 $25,000,000 $2755 (1) Each unit represents one American Depositary Share. (2) Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Receipts evidencing American Depositary Shares. The Registrant hereby amends th"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "8.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1978867,
+      "symbol": "CDLR",
+      "listed_type": "ads",
+      "ratio_numerator": 4,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The NYSE cover binds CDLR to four ordinary shares per ADS. The Cadeler F-6 fee table and attached ADR form independently state four shares per ADS. The ordinary shares are separately marked not for trading. Official SEC master-index dates and raw source SHA256 were independently verified. F-6 filed 2023-10-19, available 2023-10-20; 20-F filed 2025-03-25, available 2025-03-26.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000110465923110164/tm2323833d10_f6.htm",
+          "source_sha256": "2e03e668be13893818f12dc6982bc57c27e3124967acc2a7fd32758c1c148405",
+          "adsh": "0001104659-23-110164",
+          "location": "F-6 fee table, signature assertion or attached deposit agreement / ADR form; independent visible-text offset=1705",
+          "checked_text": "an Depositary Shares, evidenced by American Depositary Receipts, each American Depositary Share representing four (4) shares of Cadeler A/S. 200,000,000 American Depositary Shares $0.05 $10,000,000 $1,476.00 (1) Each unit represents one American Depositary Share. (2) Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Receipts evidencin"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1978867/000110465925027667/cdlr-20241231x20f.htm",
+          "source_sha256": "19452a6369b7cc54693f6cea911814b5c18bc33a0626333f619d8f15cbe229ad",
+          "adsh": "0001104659-25-027667",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1197",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: ​ ​ ​ ​ ​ Title of each class Trading Symbol(s): Name of each exchange on which registered Cadeler ordinary shares, with a nominal value of DKK 1.00 per share ​ ​ ​ New York Stock Exchange (1) American Depositary Shares, each representing four (4) ordinary shares ​ CDLR ​ New York Stock Exchange ​ (1) Not for trading, but only in connection with the registration of American Depositary Shares, pursuant to the requirements of the Securities and Exchange Commission. Securities registered or to be registered pursuant to Section 12(g) of the Act: None Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None ​ Table of Contents Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report. The number of outstanding shares as of December 31, 2024 was: ​ ​ ​ Title of Class Number of Shares Outstanding Ordinary shares, with a nomi"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000110465923110164/tm2323833d10_ex-99a.htm",
+          "source_sha256": "da5e82e5bb32fb9ba5c24b5491da458b729d957a665f8227081fe5119c519574",
+          "adsh": "0001104659-23-110164",
+          "location": "F-6 fee table, signature assertion or attached deposit agreement / ADR form; independent visible-text offset=51924",
+          "checked_text": "ORATED IN DEPOSIT AGREEMENT [FORM OF FACE OF ADR] No. of ADSs: Number Each ADS represents Four (4) Shares CUSIP: AMERICAN DEPOSITARY RECEIPT evidencing AMERICAN DEPOSITARY SHARES representing SHARES of CADELER A/S (Incorporated under the laws of Denmark) JPMORGAN CHASE BANK, N.A., a national banking association organized under the laws of the United States of America, as depositary hereunder (in such capacity, the \" Depositary \"), hereby certifies that is the registered owner (a \" Holder \") of American depositary shares (\" A"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "4.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1843586,
+      "symbol": "OTLY",
+      "listed_type": "ads",
+      "ratio_numerator": 20,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The Nasdaq cover binds OTLY to twenty ordinary shares per ADS. The Oatly F-6 fee table and attached amendment agree on twenty ordinary shares. Amendment Section 2.02 explicitly makes the change effective at the open of trading on February 18, 2025, and the annual report confirms the completed 1:1 to 1:20 change on that date. The packet stores February 13 filing-plus-one fallback for the F-6 evidence; that pre-event effective-date extraction issue was reported to the root. It does not alter the correct 20:1 ratio at December 31, 2025. Raw-byte hashes and SEC quarterly-index filing-date rows were independently verified. F-6 POS filed 2025-02-12, available 2025-02-13; 20-F filed 2025-03-13, available 2025-03-14.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000110465925012180/tm254974d1_f6pos.htm",
+          "source_sha256": "69465d42cdf85a2a4bb886b7a370189d4aefedb38a9aa73207841c6e32af44bd",
+          "adsh": "0001104659-25-012180",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=1791",
+          "checked_text": "can Depositary Shares evidenced by American Depositary Receipts, each American Depositary Share representing twenty (20) ordinary shares, par value $0.00017 per share, of Oatly Group AB N/A N/A N/A N/A (1) Each unit represents one American Depositary Share. (2) Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Receipts evidencing American Depositary Shares. Pursuant to Rule 429, the Prospectus contained"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1843586/000095017025038739/otly-20241231.htm",
+          "source_sha256": "bb26370e59e3e113b901b7d4a5489beb55fc0f130aa43437be2f8a3cb8c2e429",
+          "adsh": "0000950170-25-038739",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1148",
+          "checked_text": "Securities registered or to be registered, pursuant to Section 12(b) of the Act Title of each class Trading Symbol(s) Name of each exchange on which registered American Depositary Shares, each representing twenty ordinary shares OTLY The Nasdaq Global Select Market Ordinary shares, par value $0.00018 per share * N/A *Not for trading, but only in connection with the registration of American Depositary Shares on the Nasdaq Global Select Market representing such Ordinary shares pursuant to requirements of the U.S. Securities and Exchange Commission. Securities registered or to be registered pursuant to Section 12(g) of the Act: None Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None Indicate the number of outstanding shares of each of the issuer’s classes of capital stock or common stock as of the close of the period covered by the annual report. 598,559,840 ordinary shares Indicate by check mark if the registrant is a well-known seasoned issue"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000110465925012180/tm254974d1_ex-a2.htm",
+          "source_sha256": "ca91c5dffd8679c32fd69c8ecdb31f5d286b384a4fee7d3fec28f80105375b25",
+          "adsh": "0001104659-25-012180",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=1561",
+          "checked_text": " refer to the Deposit Agreement as further amended by this Amendment. SECTION 2.02. Each ADS shall represent twenty (20) Shares, effective as of the open of trading of the ADSs on The Nasdaq Global Select Market on February 18, 2025 (the “ Effective Time ”). SECTION 2.03. The form of ADR, reflecting the amendment set forth in this Article II, is amended and restated to read as set forth in Exhibit A hereto. 2 ARTICLE III REPRESENTATIONS AND WARRANTIES SECTION 3.01. Representations and Warranties of the Company . The Company represents and warrants to, and agrees with, the Depositary that: (a) "
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "20.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1753268,
+      "symbol": "RUHN",
+      "listed_type": "ads",
+      "ratio_numerator": 5,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The Nasdaq cover binds RUHN to five Class A ordinary shares per ADS and marks the separate Class A ordinary row not for trading. The Ruhnn F-6 fee table independently states five Class A ordinary shares per ADS; Class B is not the deposited class. The reviewed annual was filed in 2020, and the verdict does not establish listing survival in 2025. Raw-byte hashes and SEC quarterly-index filing-date rows were independently verified. F-6 filed 2019-03-25, available 2019-03-26; 20-F filed 2020-08-14, available 2020-08-15.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1472033/000119380519000319/e618292_f6-ruhnn.htm",
+          "source_sha256": "c870b3e7e887dd84116937fd42582ce42f6a45114c87ca0ed17785e092a7b548",
+          "adsh": "0001193805-19-000319",
+          "location": "F-6 registration-fee table or attached deposit agreement / ADR form / counsel opinion; independent visible-text offset=1662",
+          "checked_text": "e** Amount of Registration Fee American Depositary Shares ( ADS(s) ), each ADS representing the right to receive five (5) Class A Ordinary Shares of Ruhnn Holding Limited (the “Company”) 100,000,000 ADSs $5.00 $5,000,000 $606.00 * Each unit represents 100 ADSs. ** Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of ADSs. The Registrant hereby amends this Registration Statement on such date or dates as may be necessary to del"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1753268/000156459020040293/ruhn-20f_20200331.htm",
+          "source_sha256": "a7067bedfbc4686e2d6c466fdc8be913064b65a8e6e34c394ed76ece33b34e39",
+          "adsh": "0001564590-20-040293",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1214",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol(s) Name of each exchange on which registered American Depositary Shares, each representing five Class A ordinary shares RUHN The Nasdaq Stock Market LLC Class A ordinary shares, par value US$0.000000001 per share * N/A The Nasdaq Stock Market LLC * Not for trading, but only in connection with the listing on The Nasdaq Stock Market of American depositary shares. Securities registered or to be registered pursuant to Section 12(g) of the Act: None (Title of Class) Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None (Title of Class) Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report. 246,122,394 Class A ordinary shares were outstanding as of March 31, 2020 174,834,250 Class B ordinary shares were outstanding as of March 31, 20"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "5.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1801198,
+      "symbol": "LEGN",
+      "listed_type": "ads",
+      "ratio_numerator": 2,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Nasdaq cover explicitly names LEGN ADSs, two ordinary shares per ADS; underlying ordinary-share row is not for trading. The F-6/A issuer field identifies Legend Biotech Corporation and its registration table specifies the same 2:1 ratio. Item 12.D independently repeats two ordinary shares. Date proofs checked: 0001193125-20-155321: filed 2020-05-29, floor 2020-05-29, available 2020-05-30; 0001801198-25-000012: filed 2025-03-11, floor 2025-03-11, available 2025-03-12.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000119312520155321/d930407df6a.htm",
+          "source_sha256": "57e6d67911e75addc5252882bb904fb3204cccad11ebc73d64e90f8ebfba7f72",
+          "adsh": "0001193125-20-155321",
+          "location": "f6/depositary-description;text-offset=1882; independently decoded original document",
+          "checked_text": "RE-EFFECTIVE AMENDMENT NO. 1 TO REGISTRATION STATEMENT UNDER THE SECURITIES ACT OF 1933 For Depositary Shares Evidenced by American Depositary Receipts LEGEND BIOTECH CORPORATION (Exact name of issuer of deposited securities as specified in its charter) N/A (Translation of issuer’s name into English) Ca American Depositary Shares evidenced by American Depositary Receipts, each American Depositary Share representing two (2) ordinary shares, par value US$0.0001 per share, of Legend Biotech Corporation. 100,000,000.00 American Depositary Shares $0.05 $5,000,000.00 $649.00 (1) Each unit represents o"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR2/master.idx",
+          "source_sha256": "d9db1ed44390f3e041796a5e2d970c931e84b3220d6e4838f082a7bd24006db8",
+          "adsh": "0001193125-20-155321",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1474274|JPMorgan Chase Bank, N.A. - ADR Depositary|F-6/A|2020-05-29|edgar/data/1474274/0001193125-20-155321.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR2/master.idx",
+          "source_sha256": "d9db1ed44390f3e041796a5e2d970c931e84b3220d6e4838f082a7bd24006db8",
+          "adsh": "0001193125-20-155321",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1801198|Legend Biotech Corp|F-6/A|2020-05-29|edgar/data/1801198/0001193125-20-155321.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1801198/000180119825000012/legn-20241231.htm",
+          "source_sha256": "f57811dda656ba8ef57589a0499d52f3c3d12e3096bd18bf4744fa7d479fb3a1",
+          "adsh": "0001801198-25-000012",
+          "location": "cover/section-12b/table[5]/row[3];html-line=8; independently decoded original document",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol(s) Name of each exchange on which registered American depositary shares, each representing two ordinary shares, par value $0.0001 per share LEGN Nasdaq Global Select Market Ordinary shares, par value $0.0001 per share* Nasdaq Global Select Market * Not for trading, but only in connection with the registration of the American depositary shares. "
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "adsh": "0001801198-25-000012",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1801198|Legend Biotech Corp|20-F|2025-03-11|edgar/data/1801198/0001801198-25-000012.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "2.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1648257,
+      "symbol": "HCM",
+      "listed_type": "ads",
+      "ratio_numerator": 5,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Nasdaq cover identifies HCM ADSs and five ordinary shares per ADS; underlying ordinary shares are not for trading. F-6 POS identifies Hutchison China MediTech Limited and five ordinary shares. The 2025 annual explicitly identifies HUTCHMED as the renamed Hutchison China MediTech, linking the historical issuer name. Date proofs checked: 0001410578-25-000377: filed 2025-03-19, floor 2025-03-19, available 2025-03-20; 0000950127-19-000048: filed 2019-05-29, floor 2019-05-29, available 2019-05-30.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1648257/000141057825000377/hcm-20241231x20f.htm",
+          "source_sha256": "e5c80866f595e4e88c5fa01ae1d71c1b962a39a72f63b07c03bbc1ba6adccc7a",
+          "adsh": "0001410578-25-000377",
+          "location": "cover/section-12b/table[5]/row[3];html-line=7; independently decoded original document",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol(s) Name of each exchange on which registered American depositary shares, each representing five ordinary shares, par value $0.10 per share ​ HCM ​ Nasdaq Global Select Market Ordinary shares, par value $0.10 per share * ​ ​ ​ Nasdaq Global Select Market* ​ *Not for trading, but only in connection with the listing of American depositary shares on the Nasdaq Global Select Market ​  HUTCHMED (China) Limited (formerly known as Hutchison China MediTech Limited) was incorporated in the Cayman Islands on December 18, 2000 as an exempted company with limited liability under the Companies Act (As Revised) of the Cayman Islan"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "adsh": "0001410578-25-000377",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1648257|HUTCHMED (China) Ltd|20-F|2025-03-19|edgar/data/1648257/0001410578-25-000377.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1471515/000095012719000048/f-6.htm",
+          "source_sha256": "55a4909ffe0b53eb90b1ff7d29f1ece08a6d30db3e250399beab2ec700918173",
+          "adsh": "0000950127-19-000048",
+          "location": "f6/depositary-description;text-offset=1784; independently decoded original document",
+          "checked_text": "o. 1 to FORM F-6 REGISTRATION STATEMENT UNDER THE SECURITIES ACT OF 1933 FOR AMERICAN DEPOSITARY SHARES EVIDENCED BY AMERICAN DEPOSITARY RECEIPTS Hutchison China MediTech Limited (Exact name of issuer of deposited securities as specified in its charter) Not Applicable (Translation of issuer’s name into  d maximum aggregate offering price (2) Amount of registration fee (3) American Depositary Shares, each representing five (5) ordinary shares of Hutchison China MediTech Limited N/A N/A N/A N/A 1 For the purpose of this table only the term \"unit\" is defined as one American Depositary Share. 2 Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum a"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2019/QTR2/master.idx",
+          "source_sha256": "43abca946a5710cb16799e752b7744c1e0b2f705c3903739e3468e22f67decd6",
+          "adsh": "0000950127-19-000048",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1471515|Deutsche Bank Trust Co Americas/ ADR Group|F-6 POS|2019-05-29|edgar/data/1471515/0000950127-19-000048.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2019/QTR2/master.idx",
+          "source_sha256": "43abca946a5710cb16799e752b7744c1e0b2f705c3903739e3468e22f67decd6",
+          "adsh": "0000950127-19-000048",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1648257|Hutchison China MediTech Ltd|F-6 POS|2019-05-29|edgar/data/1648257/0000950127-19-000048.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "5.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1445930,
+      "symbol": "KB",
+      "listed_type": "ads",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "NYSE cover identifies KB ADSs and one common share per ADS. The underlying common-share row also uses KB, but its asterisk is explicitly not for trading; it does not establish a competing direct listing. Primary F-6 and its deposit agreement identify KB Financial Group common stock and 1:1. Date proofs checked: 0001193805-15-001876: filed 2015-11-13, floor 2015-11-13, available 2015-11-14; 0001193125-25-094961: filed 2025-04-25, floor 2025-04-25, available 2025-04-26.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1445930/000119380515001876/e614274_f6-kb.htm",
+          "source_sha256": "13f00b6605333c0c8f7367f30df03d17073bf80518625bf2794515f483e2607f",
+          "adsh": "0001193805-15-001876",
+          "location": "f6/depositary-description;text-offset=1693; independently decoded original document",
+          "checked_text": "_____ FORM F-6 REGISTRATION STATEMENT UNDER THE SECURITIES ACT OF 1933 For Depositary Shares Evidenced by American Depositary Receipts ___________________ KB Financial Group Inc. (Exact name of issuer of deposited securities as specified in its charter) n/a (Translation of issuer's name into English) Th posed maximum aggregate offering price (2) Amount of registration fee American Depositary Shares, each representing one share of common stock of KB Financial Group Inc. 50,000,000 American Depositary Shares $0.05 $2,500,000 $251.75 (1) Each unit represents one American Depositary Share. (2) Estimat"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2015/QTR4/master.idx",
+          "source_sha256": "e0e4604664595a4a17208a803515d87de16c8c66c8c90bb6401c5ce2ff779ac2",
+          "adsh": "0001193805-15-001876",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1445930|KB Financial Group Inc.|F-6|2015-11-13|edgar/data/1445930/0001193805-15-001876.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2015/QTR4/master.idx",
+          "source_sha256": "e0e4604664595a4a17208a803515d87de16c8c66c8c90bb6401c5ce2ff779ac2",
+          "adsh": "0001193805-15-001876",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1474274|JPMorgan Chase Bank, N.A. - ADR Depositary|F-6|2015-11-13|edgar/data/1474274/0001193805-15-001876.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1445930/000119380515001876/e614274_ex99-a.htm",
+          "source_sha256": "10b8764d2d20812645fd3cf134cc525ac78e7ee5415dc8f9e4aa5843606d7e60",
+          "adsh": "0001193805-15-001876",
+          "location": "f6/depositary-description;text-offset=132000; independently decoded original document",
+          "checked_text": "MAY BE RESTRICTED. SEE ARTICLE 16 HEREOF. AMERICAN DEPOSITARY SHARES (Each American Depositary Share represents one deposited Share) JPMORGAN CHASE BANK, N.A. AMERICAN DEPOSITARY RECEIPT FOR COMMON SHARES OF KB FINANCIAL GROUP INC. (INCORPORATED UNDER THE LAWS OF KOREA) JPMorgan Chase Bank, N.A  Republic of Korea (herein called the “Company”). At the date hereof, each American Depositary Share represents one Share deposited or subject to deposit under the Deposit Agreement (as such term is hereinafter defined) at the principal Seoul office of Korea Securities Depository (herein called"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1445930/000119312525094961/d906154d20f.htm",
+          "source_sha256": "e1e5ddaa112a3ff2638dfc2467788cdeb36a5fcf1564957c51e2ab7d2cc794d8",
+          "adsh": "0001193125-25-094961",
+          "location": "cover/section-12b/table[5]/row[3];html-line=26; independently decoded original document",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act. Title of each class Trading Symbol(s) Name of each exchange on which registered American Depositary Shares , each representing one share of Common Stock KB New York Stock Exchange Common Stock, par value ￦5,000 per share KB New York Stock Exchange *  Not for trading, but only in connection with the registration of the American Depositary Shares. Table of Contents TABLE OF CONTENTS PRESENT"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx",
+          "source_sha256": "673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068",
+          "adsh": "0001193125-25-094961",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1445930|KB Financial Group Inc.|20-F|2025-04-25|edgar/data/1445930/0001193125-25-094961.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "1.00000000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1698287,
+      "symbol": "BSMX",
+      "listed_type": "ads",
+      "ratio_numerator": 5,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "NYSE cover identifies BSMX ADSs over five Series B common shares and states the Series B row is not listed for trading. The F-6 identifies the same Banco Santander Mexico issuer and five Series B shares, so other Series F capital is not conflated. The annual discusses tender offers and shareholder-approved conditional ADS delisting; this verdict establishes historical program type and ratio, not active listing survival at 2025 year-end. Date proofs checked: 0001193805-22-001243: filed 2022-09-09, floor 2022-09-09, available 2022-09-10; 0001558370-23-002342: filed 2023-02-28, floor 2023-02-28, available 2023-03-01.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1472033/000119380522001243/e621914_f6-banco.htm",
+          "source_sha256": "1453a9ece876b43bece67bd5b9aa4dd2629dc2b1944be6336c120dcbbc033414",
+          "adsh": "0001193805-22-001243",
+          "location": "f6/depositary-description;text-offset=1791; independently decoded original document",
+          "checked_text": "CT OF 1933 FOR AMERICAN DEPOSITARY SHARES EVIDENCED BY AMERICAN DEPOSITARY RECEIPTS BANCO SANTANDER MÉXICO, S.A., INSTITUCIÓN DE BANCA MÚLTIPLE, GRUPO FINANCIERO SANTANDER MÉXICO (Exact name of issuer of deposited securities as specified in its charter) N/A (Translation of issuer’s name into English) Un e** Amount of Registration Fee American Depositary Shares ( ADS(s) ), each ADS representing the right to receive five (5) Series B shares of Banco Santander México, S.A., Institución de Banca Múltiple, Grupo Financiero Santander México (the “Company”) 700,000,000 ADSs $5.00 $35,000,000.00 $3,244.50 * Each uni the American Depositary Shares registered hereunder are to be issued, each American Depositary Share representing the right to receive five (5) Series B shares of Banco Santander México, S.A., Institución de Banca Múltiple, Grupo Financiero Santander México. CITIBANK, N.A., solely in its capacity as Depositary By: /s/ Leslie DeLuc"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR3/master.idx",
+          "source_sha256": "c5936e4001288a1cd327a5641df76c3be500bdbad8d1eb3eb12757fe927159be",
+          "adsh": "0001193805-22-001243",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1472033|Citibank,N.A./ADR|F-6|2022-09-09|edgar/data/1472033/0001193805-22-001243.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR3/master.idx",
+          "source_sha256": "c5936e4001288a1cd327a5641df76c3be500bdbad8d1eb3eb12757fe927159be",
+          "adsh": "0001193805-22-001243",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1698287|Banco Santander Mexico S.A., Institucion de Banca Multiple, Grupo Financiero Santander Mexico|F-6|2022-09-09|edgar/data/1698287/0001193805-22-001243.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1698287/000155837023002342/bsmx-20221231x20f.htm",
+          "source_sha256": "5ba60b0c9a3ff1fe84495734d79c0b6b996e1f4179e301b585999660a80ffc81",
+          "adsh": "0001558370-23-002342",
+          "location": "cover/section-12b/table[5]/row[2];html-line=3; independently decoded original document",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol Name of each exchange on which registered American Depositary Shares, each representing five shares of the Series B common stock of Banco Santander México, S.A., Institución de Banca Múltiple, Grupo Financiero Santander México, par value of Ps.3.780782962 BSMX New York Stock Exchange Series B shares, par value of Ps.3.780782962 BSMX New York Stock Exchange * ​ * Banco Santander México, S.A., Institución de Banca Múltiple, Grupo Financiero Santander México’s Series B shares are not listed for trading, but are only listed in connection with the registration of the American Depositary Shares, pursuant to the requirements of the New York Stock Exchange.  In November 2022, our shareholders approved the deregistration of our shares from the Mexican National Securities Registry and the delisting of the ADSs from the NYSE, subject to completion of the tender offers. There can be no guarantee that an active trading market for the ADSs will exist following such deregistration and delisting. A limited trading market in general and our concentrated ownership in particular may impair the ability of an ADS holder to sell in the Mexican"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2023/QTR1/master.idx",
+          "source_sha256": "ac27f20d337fe26f9f87c1fe4f8be707bfc5d2464214182345f448e51312618a",
+          "adsh": "0001558370-23-002342",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1698287|Banco Santander Mexico S.A., Institucion de Banca Multiple, Grupo Financiero Santander Mexico|20-F|2023-02-28|edgar/data/1698287/0001558370-23-002342.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "5.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1841675,
+      "symbol": "ARBK",
+      "listed_type": "ads",
+      "ratio_numerator": 2160,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Annual cover establishes ARBK ADS type and the earlier 10:1 ratio; ARBKL senior notes and nontrading ordinary shares are separate. The November 2025 F-6 and deposit agreement establish 2,160 ordinary shares per ADS. November 24 and December 10 6-Ks explicitly date the change from 10:1 to 2,160:1 to December 12, 2025, before the as-of date. The December release separately describes LSE ordinary-share delisting on December 12; that is not evidence that the ADS is an ordinary-direct line. Current listing survival is outside this precision verdict. Date proofs checked: 0001104659-25-116524: filed 2025-11-28, floor 2025-11-26, available 2025-11-29; 0001654954-25-013403: filed 2025-11-24, floor 2025-11-24, available 2025-11-25; 0001104659-25-049311: filed 2025-05-15, floor 2025-05-15, available 2025-05-16; 0001654954-25-013813: filed 2025-12-10, floor 2025-12-10, available 2025-12-11.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000110465925116524/tm2532323d1_ex99-a.htm",
+          "source_sha256": "d48c2fab06152e88c370ba501c2c9c444a277d14f750c2d8971cc19a8d5b5a16",
+          "adsh": "0001104659-25-116524",
+          "location": "f6/depositary-description;text-offset=50865; independently decoded original document",
+          "checked_text": "ORATED IN DEPOSIT AGREEMENT [FORM OF FACE OF ADR] No. of ADSs: Number Each ADS represents Two Thousand One Hundred Sixty (2,160) Shares CUSIP: AMERICAN DEPOSITARY RECEIPT evidencing AMERICAN DEPOSITARY SHARES representing ORDINARY SHARES of ARGO BLOCKCHAIN PLC (Incorporated under the laws of England and Wa"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR4/master.idx",
+          "source_sha256": "7f430dc4f33f9930b872753d9b469da1cb55e1382d8ec1076299e151734e8d85",
+          "adsh": "0001104659-25-116524",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1474274|JPMorgan Chase Bank, N.A. - ADR Depositary|F-6|2025-11-28|edgar/data/1474274/0001104659-25-116524.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR4/master.idx",
+          "source_sha256": "7f430dc4f33f9930b872753d9b469da1cb55e1382d8ec1076299e151734e8d85",
+          "adsh": "0001104659-25-116524",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1841675|Argo Blockchain Plc|F-6|2025-11-28|edgar/data/1841675/0001104659-25-116524.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000110465925116524/tm2532323d1_f6.htm",
+          "source_sha256": "dbb76d40c447aa96f6592801503fd2c6695769ea61799772e64fdf74fbf6b973",
+          "adsh": "0001104659-25-116524",
+          "location": "f6/depositary-description;text-offset=1793; independently decoded original document",
+          "checked_text": "ISSION Washington, D.C. 20549 FORM F-6 REGISTRATION STATEMENT UNDER THE SECURITIES ACT OF 1933 FOR DEPOSITARY SHARES EVIDENCED BY AMERICAN DEPOSITARY RECEIPTS ARGO BLOCKCHAIN PLC (Exact name of issuer of deposited securities as specified in its charter) N/A (Translation of issuer's name into English) En merican Depositary Shares, evidenced by American Depositary Receipts, each American Depositary Share representing two-thousand one-hundred and sixty (2,160) ordinary shares of Argo Blockchain plc 50,000,000 American Depositary Shares $0.05 $2,500,000 $345.25 (1) Each unit represents one American Depositary Share. (2) Estimated solely"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1841675/000165495425013403/a6995i.htm",
+          "source_sha256": "50308d9c29eeefc93487d9dab18f760adbf391fed24c201edb27ac0704152840",
+          "adsh": "0001654954-25-013403",
+          "location": "6k/ratio-change;text-offset=1456; independently decoded original document",
+          "checked_text": "Argo will adjust the ratio of its American Depositary Shares (\" ADSs \") to its ordinary shares so that one ADS will represent 2,160 ordinary shares instead of ten ordinary shares. The Company anticipates that the ratio change will be effective as of 12 December 2025. Enquiries: ARGO Email: ir@argoblockchain.com About Argo: Argo Blockchain plc is a dual-listed (LSE: ARB; NASDAQ: ARBK) blockchain technology company focused on large-scale cryptocurrency mining. With a mining facility in Quebec and offices in the US, Canada, and the UK, Argo's global, sustainable operation"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR4/master.idx",
+          "source_sha256": "7f430dc4f33f9930b872753d9b469da1cb55e1382d8ec1076299e151734e8d85",
+          "adsh": "0001654954-25-013403",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1841675|Argo Blockchain Plc|6-K|2025-11-24|edgar/data/1841675/0001654954-25-013403.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1841675/000110465925049311/arbk-20241231x20f.htm",
+          "source_sha256": "88f518c38a61c38cb40d559cd18f2225d8bdfb44bdde34cc7ee4d02004ef1e59",
+          "adsh": "0001104659-25-049311",
+          "location": "cover/section-12b/table[3]/row[4];html-line=7; independently decoded original document",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act. ​ Title of each class: Trading Symbol(s) Name of each exchange on which registered: Ordinary shares, nominal value of £ 0.001 per share * ​ ​ ​ The Nasdaq Stock Market LLC* American Depository Shares, each representing ten ordinary shares ARBK The Nasdaq Stock Market LLC 8.75% Senior Notes due 2026 ARBKL The Nasdaq Stock Market LLC ​ * The ordinary shares are not for trading, but only in connection with the listing of the American depositary shares on the Nasdaq Stock Market LLC. ​ "
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx",
+          "source_sha256": "673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068",
+          "adsh": "0001104659-25-049311",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1841675|Argo Blockchain Plc|20-F|2025-05-15|edgar/data/1841675/0001104659-25-049311.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1841675/000165495425013813/a0899l.htm",
+          "source_sha256": "ab7964b4f3951da03e38bde4ca1adf108a6bc23288259193e28a8ae4fb2bd544",
+          "adsh": "0001654954-25-013813",
+          "location": "6k/ratio-change;text-offset=2974; independently decoded original document",
+          "checked_text": "on 12 December 2025, the ratio of Shares to ADSs will change from 10:1 to 2,160:1, so that one ADS will represent 2,160 Shares. Further information regarding the ratio change and fractional entitlements is contained in the Company's announcement dated 21 November 2025; ● the UK Takeover Code will continue to apply to the Company for a period of two years after the Delisting, following which the UK Takeover Code will cease to apply to the Company. the last day of trading of the Company's shares on the Main Market of the London Stock Exchange will now be 11 December 2025 and delisting will be effective from 7 a.m. on 12 December 2025 (the \"Delisting\"); ● the Company has established a matched bargain share dealing facility with JP Jenkins, which will be operational from 12 December 2"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR4/master.idx",
+          "source_sha256": "7f430dc4f33f9930b872753d9b469da1cb55e1382d8ec1076299e151734e8d85",
+          "adsh": "0001654954-25-013813",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1841675|Argo Blockchain Plc|6-K|2025-12-10|edgar/data/1841675/0001654954-25-013813.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "2160.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 16988,
+      "symbol": "CAJ",
+      "listed_type": "ads",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The cover binds CAJ to ADSs representing one common share; Canon F-6 and ADR form independently confirm one common share per ADS. IMPORTANT: the same cover explicitly says NYSE delisted on March 6, 2023. This verdict confirms sourced security type and ratio known by the audit date, not that CAJ was actively listed on December 31, 2025; listing survival/admission belongs to W1. Official SEC master-index dates and raw source SHA256 were independently verified. F-6 POS filed 2023-03-06, available 2023-03-07; 20-F filed 2023-03-30, available 2023-03-31.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/16988/000119380523000278/e618319_f6pos-canon.htm",
+          "source_sha256": "0d509a0522da215c3caf8714c00ae29b39ec68be0861eaf6055673328f3ce2ea",
+          "adsh": "0001193805-23-000278",
+          "location": "F-6 fee table, signature assertion or attached deposit agreement / ADR form; independent visible-text offset=1685",
+          "checked_text": "can Depositary Shares evidenced by American Depositary Receipts, each American Depositary Share representing one share of common stock of Canon Inc. (Canon Kabushiki Kaisha) n/a n/a n/a n/a (1) Each unit represents one American Depositary Share. (2) Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Receipts evidencing American Deposit"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/16988/000119380523000278/e618319_ex99-a.htm",
+          "source_sha256": "e6c94277b8cd18e8c8d18dd8bf48abeb78ec0c82224684eff751b9c59f6e5318",
+          "adsh": "0001193805-23-000278",
+          "location": "F-6 fee table, signature assertion or attached deposit agreement / ADR form; independent visible-text offset=50229",
+          "checked_text": "INTEGRAL MULTIPLES THEREOF. [FORM OF FACE OF ADR] No. of ADSs: Number Each ADS represents One Share CUSIP: AMERICAN DEPOSITARY RECEIPT evidencing AMERICAN DEPOSITARY SHARES representing SHARES OF COMMON STOCK of CANON INC. (Canon Kabushiki Kaisha) (Incorporated under the laws of Japan) JPMORGAN CHASE BANK, N.A., a national banking association organized under the laws of the United States of America, as depositary hereunder (the \" Depositary \"), hereby certifies that ___________________ is the registered owner (a \" Holder \") "
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/16988/000119312523084415/d394490d20f.htm",
+          "source_sha256": "ea80be5dcb04547fc90dd3a727dfb556dd469a856eb183f6184e2af02274b1b8",
+          "adsh": "0001193125-23-084415",
+          "location": "Section 12(b) cover table and adjacent notes; independent visible-text offset=1164",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act. Title of each class Trading Symbol(s) Name of each exchange on which registered (1) American Depositary Shares (“ADSs”), each of which represents one share CAJ New York Stock Exchange (delisted on March 6, 2023) (2) Common Stock (the “shares”) * Securities registered or to be registered pursuant to Section 12(g) of the Act. None (Title of Class) Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act. None (Title of Class) * Not for trading, but only for technical purposes in connection with the registration of ADSs. Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report. As of December 31, 2022, 1,015,513,368 shares of common stock, including 17,371,450 ADSs, were outstanding. Indicate by check mark if the registrant is a well-known seasoned issuer, as defined in Rule 405 of the Securities Act. Yes ☑ No ☐ If this repor"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "1.00000000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1631761,
+      "symbol": "YRD",
+      "listed_type": "ads",
+      "ratio_numerator": 2,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "NYSE cover identifies YRD ADSs over two ordinary shares and the underlying ordinary-share row as not for trading. F-6 primary and deposit agreement specify two ordinary shares of Yirendai Ltd.; the 2025 annual explicitly documents the 2019 rename to Yiren Digital Ltd. The name change does not create a different issuer or class. Date proofs checked: 0000950127-15-000051: filed 2015-12-10, floor 2015-12-10, available 2015-12-11; 0001410578-25-000931: filed 2025-04-28, floor 2025-04-28, available 2025-04-29.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1471515/000095012715000051/a15-25_f6.htm",
+          "source_sha256": "8785dedb5050dec3f1ffced547b03515bd7bb35334e8323f2d8004df9bdb4e96",
+          "adsh": "0000950127-15-000051",
+          "location": "f6/depositary-description;text-offset=1796; independently decoded original document",
+          "checked_text": "ION Washington, D.C. 20549 FORM F-6 REGISTRATION STATEMENT UNDER THE SECURITIES ACT OF 1933 FOR AMERICAN DEPOSITARY SHARES EVIDENCED BY AMERICAN DEPOSITARY RECEIPTS Yirendai Ltd. (Exact name of issuer of deposited securities as specified in its charter) Not Applicable (Translation of issuer’s name into  posed maximum aggregate offering price (2) Amount of registration fee American Depositary Shares, each representing 2 ordinary shares of Yirendai Ltd. 200,000,000 American Depositary Shares $0.05 $10,000,000 $1,007.00 1 For the purpose of this table only the term \"unit\" is defined as one American Deposita"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2015/QTR4/master.idx",
+          "source_sha256": "e0e4604664595a4a17208a803515d87de16c8c66c8c90bb6401c5ce2ff779ac2",
+          "adsh": "0000950127-15-000051",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1471515|Deutsche Bank Trust Co Americas/ ADR Group|F-6|2015-12-10|edgar/data/1471515/0000950127-15-000051.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2015/QTR4/master.idx",
+          "source_sha256": "e0e4604664595a4a17208a803515d87de16c8c66c8c90bb6401c5ce2ff779ac2",
+          "adsh": "0000950127-15-000051",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1631761|Yirendai Ltd.|F-6|2015-12-10|edgar/data/1631761/0000950127-15-000051.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1631761/000141057825000931/yrd-20241231x20f.htm",
+          "source_sha256": "2ac754f5c82d486424068e932b503ff1a21a756164070c3558ba2317040c6a3f",
+          "adsh": "0001410578-25-000931",
+          "location": "cover/section-12b/table[6]/row[2];html-line=7; independently decoded original document",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: ​ Title of each class Trading Symbol Name of each exchange on which registered American depositary shares (one American depositary share representing two ordinary shares, par value US$0.0001 per share) YRD ​ New York Stock Exchange ​ ​ Ordinary shares, par value US$0.0001 per share* ​ New York Stock Exchange * Not for trading, but only in connection with the listing on the New York Stock Exchange of American depositary shares. ​  On September 30, 2019, with the approval of our shareholders, we changed our name from “Yirendai Ltd.” to “Yiren Digital Ltd.” In November 2019, Yiren Financial Information established a wholly owned subsi"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx",
+          "source_sha256": "673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068",
+          "adsh": "0001410578-25-000931",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1631761|Yiren Digital Ltd.|20-F|2025-04-28|edgar/data/1631761/0001410578-25-000931.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1471515/000095012715000051/a15-25_ex4.htm",
+          "source_sha256": "3b46afed0c5535a7060dd5cd3fa12cd0eed2493113454df48ea2402f98906489",
+          "adsh": "0000950127-15-000051",
+          "location": "f6/depositary-description;text-offset=3457; independently decoded original document",
+          "checked_text": "t and evidenced by the American Depositary Receipts issued hereunder. Each American Depositary Share shall represent the right to receive 2 Shares, until there shall occur a distribution upon Deposited Securities referred to in Section 4.2 hereof or a change in Deposited Securities referred to in Section 4.9 hereof with resp ). As of the date of the Deposit Agreement (hereinafter referred to), each ADS represents 2 Shares deposited under the Deposit Agreement with the Custodian which at the date of execution of the Deposit Agreement is Deutsche Bank AG, Hong Kong Branch (the “ Custodian ”). The rat"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "ratio_numerator": "2.0000000000000000",
+        "ratio_denominator": "1.00000000000000000000",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1932737,
+      "symbol": "NWTN",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists Class B ordinary shares as NWTN on Nasdaq; Class A outstanding shares and NWTNW warrants are separate. Item 12.D says ADSs are not applicable. Official filed 2025-06-10; publication floor 2025-06-10; available 2025-06-11, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1932737/000121390025052905/ea0245063-20f_nwtninc.htm",
+          "source_sha256": "8d3f49a67ef3376645dd79979d231ac122b76489277ff4d8f523347b3a1c7975",
+          "adsh": "0001213900-25-052905",
+          "location": "cover/section-12b/table[1]/row[2];html-line=128; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol(s) Name of each exchange on which registered Class B Ordinary Shares, with par value $0.0001 per share NWTN The Nasdaq Stock Market LLC Warrants, each exercisable for one-half (1/2) of one Class B Ordinary Share at an exercise price of $11.50 per full share NWTNW The Nasdaq Stock Market LLC"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx",
+          "source_sha256": "673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068",
+          "adsh": "0001213900-25-052905",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1932737|NWTN, Inc.|20-F|2025-06-10|edgar/data/1932737/0001213900-25-052905.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 313216,
+      "symbol": "PHG",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover lists common shares as PHG on NYSE. Reviewed the New York Registry Share discussion and section 10.7.4: the NYSE line is common shares registered through the New York registry, with Deutsche Bank described as registrar/transfer agent. No ADS or not-for-trading qualifier changes the cover class. Official filed 2025-02-21; publication floor 2025-02-21; available 2025-02-22, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/313216/000031321625000009/phg-20241231.htm",
+          "source_sha256": "58ca8480d75c4d8cabd6c16afb0469e106203df134a11c37bdf259c9abcff89d",
+          "adsh": "0000313216-25-000009",
+          "location": "cover/section-12b/table[3]/row[3];html-line=8; independently decoded original cover; section 10.7.4 New York Registry Shares",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act. Title of each class Trading Symbol(s) Name of each exchange on which registered Common Shares - par value EURO (EUR) 0.20 per share PHG New York Stock Exchange  10.7.4 New York Registry Shares Fees and Charges Payable by a Holder of New York Registry Shares Deutsche Bank Trust Company Americas (“Deutsche Bank”), as the US registrar, transfer, dividend disbursement and shareholder servicing agent (“Agent”) under Philips’ New York Registry Share program (the “Program”), collects fees for the issuance, cancellation and/or transfer of New York Registry Shares directly from investors depositing ordinary shares or surrenderi"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "adsh": "0000313216-25-000009",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "313216|KONINKLIJKE PHILIPS NV|20-F|2025-02-21|edgar/data/313216/0000313216-25-000009.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1323404,
+      "symbol": "WPM",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Canadian 40-F cover explicitly lists common shares as WPM on NYSE, without a depositary qualifier. Official filed 2025-03-31; publication floor 2025-03-31; available 2025-04-01, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1323404/000119312525068900/d893628d40f.htm",
+          "source_sha256": "2b46a809c550c4a36aa1fa25dff8d6f7e0ce6eda1d8a0422d3da8c873dc855f2",
+          "adsh": "0001193125-25-068900",
+          "location": "cover/section-12b/table[4]/row[3];html-line=51; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class: Trading Symbol(s): Name of each exchange on which registered: Common Shares , no par value WPM New York Stock Exchange"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "adsh": "0001193125-25-068900",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1323404|Wheaton Precious Metals Corp.|40-F|2025-03-31|edgar/data/1323404/0001193125-25-068900.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1953021,
+      "symbol": "MPU",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists Class A ordinary shares as MPU on NYSE American. Item 12.D says ADSs are not applicable. Official filed 2025-03-28; publication floor 2025-03-28; available 2025-03-29, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1953021/000101376225003608/ea0234425-20f_mega.htm",
+          "source_sha256": "99ba9a9b50be00b84c7cc96925a1aee18cfe478627294be0df701fce037abe56",
+          "adsh": "0001013762-25-003608",
+          "location": "cover/section-12b/table[1]/row[2];html-line=130; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol(s) Exchange on which registered Class A Ordinary Shares, par value $0.001 per share MPU NYSE American"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "adsh": "0001013762-25-003608",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1953021|Mega Matrix Inc|20-F|2025-03-28|edgar/data/1953021/0001013762-25-003608.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1782037,
+      "symbol": "YGMZ",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists ordinary shares as YGMZ on Nasdaq Capital Market, without a depositary qualifier. Official filed 2025-05-15; publication floor 2025-05-15; available 2025-05-16, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1782037/000121390025044189/ea0239799-20f_mingzhu.htm",
+          "source_sha256": "05fe17f0603c5fd232b43b09af4995893c330994159af36b7bee523ba89ae155",
+          "adsh": "0001213900-25-044189",
+          "location": "cover/section-12b/table[1]/row[2];html-line=121; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol Name of each exchange on which registered Ordinary shares, par value US$0.008 per share YGMZ Nasdaq Capital Market"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx",
+          "source_sha256": "673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068",
+          "adsh": "0001213900-25-044189",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1782037|MingZhu Logistics Holdings Ltd|20-F|2025-05-15|edgar/data/1782037/0001213900-25-044189.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1329365,
+      "symbol": "EFUT",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Legacy cover identifies the sole listed ordinary-share class on Nasdaq Capital Market. Independently checked Item 9, which explicitly says the ordinary shares trade as EFUT, and the same-accession W1 symbol binding. The legal filing date is May 2, 2016, not the April 29 discovery date. This verifies the historical line type, not continuing listing survival in 2025. Official filed 2016-05-02; publication floor 2016-04-29; available 2016-05-03, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1329365/000117184316009561/f20f_042916p.htm",
+          "source_sha256": "65bfd7519df082d33ed25741546a19044de9e03b363f0a2f6e35cab5fb34c105",
+          "adsh": "0001171843-16-009561",
+          "location": "cover/section-12b/table[5]/row[1];html-line=135; W1 same-accession cover symbol EFUT; independently decoded original cover; Item 9, Offer and Listing",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Ordinary shares, par value $0.0756 per share Name of each exchange on which registered NASDAQ Capital Market  Our ordinary shares are listed on the NASDAQ Capital Market under the symbol “EFUT.” The following table sets forth the high and low market"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2016/QTR2/master.idx",
+          "source_sha256": "a9be706b290c7c4737b0c0c739dda7933980ba9f91449bdebb6e4a273350892b",
+          "adsh": "0001171843-16-009561",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1329365|eFuture Holding Inc.|20-F|2016-05-02|edgar/data/1329365/0001171843-16-009561.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1782941,
+      "symbol": "TIRX",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists Class A ordinary shares as TIRX on Nasdaq; the outstanding Class B shares are a separate class. Item 12.D says ADSs are not applicable. Official filed 2025-01-31; publication floor 2025-01-31; available 2025-02-01, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1782941/000141057825000068/tirx-20241031x20f.htm",
+          "source_sha256": "4b1cf7e9600f0c3a33fd516dc5ce3bfa7b41c7083e0fa35610318c150c5aa0ae",
+          "adsh": "0001410578-25-000068",
+          "location": "cover/section-12b/table[9]/row[3];html-line=7; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: ​ Title of each class Trading Symbol(s) Name of each exchange on which registered Class A Ordinary Shares TIRX The Nasdaq Stock Market LLC ​"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "adsh": "0001410578-25-000068",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1782941|TIAN RUIXIANG HOLDINGS LTD|20-F|2025-01-31|edgar/data/1782941/0001410578-25-000068.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1997637,
+      "symbol": "IOTR",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "The 20-F/A cover explicitly lists ordinary shares as IOTR on Nasdaq; the amendment is public before the as-of date. No depositary qualifier changes the cover class. Official filed 2025-08-06; publication floor 2025-08-06; available 2025-08-07, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1997637/000121390025072615/ea0252015-20fa1_iothree.htm",
+          "source_sha256": "9672f1e6bceedb31070050a80127b53bf0e830d37e4299b22e447f4439a4e2f5",
+          "adsh": "0001213900-25-072615",
+          "location": "cover/section-12b/table[6]/row[2];html-line=134; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol Name of each exchange on which registered Ordinary Shares, par value $0.00625 per share IOTR The Nasdaq Stock Market LLC"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR3/master.idx",
+          "source_sha256": "593b69116a04cb7a0b155a4eeec7ba7ca1fb6c560fc9936639227254afce96db",
+          "adsh": "0001213900-25-072615",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1997637|iOThree Ltd|20-F/A|2025-08-06|edgar/data/1997637/0001213900-25-072615.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1878057,
+      "symbol": "SGHC",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists ordinary shares as SGHC on NYSE. Item 12.D says ADSs are not applicable. Official filed 2025-04-03; publication floor 2025-04-03; available 2025-04-04, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1878057/000162828025016393/sghc-20241231.htm",
+          "source_sha256": "cf6de80cfe6ddb6a3a35f26db0ed34dc86153e4b8cd061b031e35550b5d26e24",
+          "adsh": "0001628280-25-016393",
+          "location": "cover/section-12b/table[13]/row[3];html-line=8; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol(s) Name of each exchange on which registered Ordinary shares SGHC New York Stock Exchange"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx",
+          "source_sha256": "673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068",
+          "adsh": "0001628280-25-016393",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1878057|Super Group (SGHC) Ltd|20-F|2025-04-03|edgar/data/1878057/0001628280-25-016393.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1921158,
+      "symbol": "FUFU",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists Class A ordinary shares as FUFU on Nasdaq; FUFUW is a separate warrant line and its three-fourths exercise entitlement is not an ADS ratio. Item 12.D says ADSs are not applicable. Official filed 2025-04-21; publication floor 2025-04-21; available 2025-04-22, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1921158/000121390025033733/ea0238119-20f_bitfu.htm",
+          "source_sha256": "15d0730de5ef5ad229b43bab4545c028ee282dab563cb46db78f12992cf20515",
+          "adsh": "0001213900-25-033733",
+          "location": "cover/section-12b/table[2]/row[2];html-line=123; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol(s) Name of exchange on which registered Class A ordinary shares, par value US$0.0001 per share FUFU Nasdaq Capital Market (The Nasdaq Stock Market LLC) Warrants, each exercisable for three fourths (3/4) of Class A ordinary share FUFUW Nasdaq Capital Market (The Nasdaq Stock Market LLC)"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx",
+          "source_sha256": "673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068",
+          "adsh": "0001213900-25-033733",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1921158|Bitfufu Inc.|20-F|2025-04-21|edgar/data/1921158/0001213900-25-033733.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1474835,
+      "symbol": "IPCI",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Legacy cover identifies common shares listed on Nasdaq and TSX. Original business/listing prose explicitly states the common shares trade under IPCI, and the same-accession W1 binding agrees. Item 12.D says ADSs are none. This verifies historical line type, not continuing listing survival in 2025. Official filed 2019-03-04; publication floor 2019-03-04; available 2019-03-05, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1474835/000165495419002210/a20-FA.htm",
+          "source_sha256": "69468b9bc783e8be3079a6118cac9f9407af424ce8b186aadf87d12669911b2b",
+          "adsh": "0001654954-19-002210",
+          "location": "cover/section-12b/table[1]/row[2];html-line=118; W1 same-accession cover symbol IPCI; independently decoded original cover; business/listing description; Item 12.D ADS None",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Name of each exchange on which registered Common shares, no par value NASDAQ TSX  Our common shares are listed on the TSX and on Nasdaq under the symbol “IPCI”. During the last and current financial year, we have not been"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2019/QTR1/master.idx",
+          "source_sha256": "51ed5a547ab5bf3375307a80cac243d9f8e3c18ca0e0863134ac82c77b729760",
+          "adsh": "0001654954-19-002210",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1474835|Intellipharmaceutics International Inc.|20-F/A|2019-03-04|edgar/data/1474835/0001654954-19-002210.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1950246,
+      "symbol": "MTAL",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists ordinary shares as MTAL on NYSE, without a depositary qualifier. Official filed 2025-03-28; publication floor 2025-03-28; available 2025-03-29, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1950246/000110465925029012/mtal-20241231x20f.htm",
+          "source_sha256": "c98d888dc80c889969e5dc54999748384557321fd471d272d92fe41a5234e2dd",
+          "adsh": "0001104659-25-029012",
+          "location": "cover/section-12b/table[5]/row[3];html-line=7; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: ​ Title of each class Trading Symbol(s) Name of each exchange on which registered Ordinary Shares, $0.0001 par value per share ​ MTAL ​ New York Stock Exchange ​"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "adsh": "0001104659-25-029012",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1950246|MAC Copper Ltd|20-F|2025-03-28|edgar/data/1950246/0001104659-25-029012.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1413159,
+      "symbol": "TGH",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists common shares as TGH on NYSE, separately from Series A/B preference shares. The checked source establishes historical common-share type, not continuing listing survival in 2025. Official filed 2023-02-14; publication floor 2023-02-14; available 2023-02-15, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1413159/000095017023002788/tgh-20221231.htm",
+          "source_sha256": "fc528009117c55aa881fb0891b44088b80c5c8077a8e158b37df666957a30eb4",
+          "adsh": "0000950170-23-002788",
+          "location": "cover/section-12b/table[1]/row[3];html-line=38; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act. Title of each class Trading Symbol(s) Name of each exchange on which registered Common Shares, $0.01 par value TGH New York Stock Exchange 7.00% Series A Fixed-to-Floating Rate Cumulative Redeemable Perpetual Preference Shares, $0.01 par value TGH PRA New York Stock Exchange 6.25% Series B Fixed Rate Cumulative Redeemable Perpetual Preference Shares, $0.01 par value TGH PRB New York Stock Exchange"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2023/QTR1/master.idx",
+          "source_sha256": "ac27f20d337fe26f9f87c1fe4f8be707bfc5d2464214182345f448e51312618a",
+          "adsh": "0000950170-23-002788",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1413159|TEXTAINER GROUP HOLDINGS LTD|20-F|2023-02-14|edgar/data/1413159/0000950170-23-002788.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1029145,
+      "symbol": "GOGL",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Cover explicitly lists common shares as GOGL on Nasdaq Global Select Market, without a depositary qualifier. Official filed 2025-03-20; publication floor 2025-03-20; available 2025-03-21, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1029145/000102914525000012/gogl-20241231.htm",
+          "source_sha256": "f2bcf797b662388bbc45256e194c27ce43ab4b9f97077015f097298103d56732",
+          "adsh": "0001029145-25-000012",
+          "location": "cover/section-12b/table[4]/row[3];html-line=8; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act Title of each class Trading Symbol Name of each exchange on which registered Common Shares, Par Value $0.05 Per Share GOGL NASDAQ Global Select Market"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "adsh": "0001029145-25-000012",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1029145|Golden Ocean Group Ltd|20-F|2025-03-20|edgar/data/1029145/0001029145-25-000012.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    },
+    {
+      "cik": 1861233,
+      "symbol": "ATY",
+      "listed_type": "ordinary_direct",
+      "ratio_numerator": 1,
+      "ratio_denominator": 1,
+      "correct": true,
+      "notes": "Canadian 40-F cover explicitly lists common shares as ATY on Nasdaq. This verifies the historical line type, not continuing listing survival in 2025. Official filed 2023-03-09; publication floor 2023-03-09; available 2023-03-10, all checked for 2025-12-31. Ratio 1/1 is the identity for this direct ordinary line.",
+      "sources": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1861233/000117184323001562/aty20221231_40f.htm",
+          "source_sha256": "dc48b9369241f17ef87402039f6ee103bece2100f9d8fd4d7872e90b03fcce68",
+          "adsh": "0001171843-23-001562",
+          "location": "cover/section-12b/table[7]/row[2];html-line=193; independently decoded original cover",
+          "checked_text": "Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of each class Trading Symbol(s) Name of each exchange on which registered Common Shares ATY The Nasdaq Stock Market LLC"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2023/QTR1/master.idx",
+          "source_sha256": "ac27f20d337fe26f9f87c1fe4f8be707bfc5d2464214182345f448e51312618a",
+          "adsh": "0001171843-23-001562",
+          "location": "Official quarterly master index: exact accession row",
+          "checked_text": "1861233|AcuityAds Holdings Inc.|40-F|2023-03-09|edgar/data/1861233/0001171843-23-001562.txt"
+        }
+      ],
+      "final_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "ratio_numerator": "1",
+        "ratio_denominator": "1",
+        "listing_status": "resolved",
+        "ratio_status": "resolved"
+      }
+    }
+  ]
+}

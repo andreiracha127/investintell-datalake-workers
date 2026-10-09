@@ -1,0 +1,27 @@
+{
+  "name": "drd_2007_ratio_for_transition",
+  "fixture": "drd_2007_ratio_for_transition.html",
+  "cik": 1023512,
+  "form_type": "6-K",
+  "accession_number": "0001205613-07-000092",
+  "filing_date": "2007-07-20",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1023512/000120561307000092/drd_notice.htm",
+  "source_sha256": "85d1d407d24f0d59a7e71d71952bc99683c00737c4c11937c8308bb642abc013",
+  "sha256": "85d1d407d24f0d59a7e71d71952bc99683c00737c4c11937c8308bb642abc013",
+  "derivation": "Original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained.",
+  "original_source_bytes": 11856,
+  "filing_date_proof": {
+    "filed": "2007-07-20",
+    "records": [
+      {
+        "cik": 1023512,
+        "filed": "2007-07-20",
+        "line": "1023512|DRDGOLD LTD|6-K|2007-07-20|edgar/data/1023512/0001205613-07-000092.txt",
+        "source_sha256": "c9446d73e66337617e61b13ebdbf00bef0e8f855b1a56d67b35152804f48b96e",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2007/QTR3/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "parent_manifest_sha256": "a8b046fbd976f28d12231956f9d2217e70ed95ea391aab80badc065228d3c38b"
+}

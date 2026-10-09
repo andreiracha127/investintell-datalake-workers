@@ -1,0 +1,92 @@
+{
+  "name": "tal_class_a_f6_deposit_definition",
+  "fixture": "tal_class_a_f6_deposit_definition.html",
+  "cik": 1499620,
+  "symbol": "TAL",
+  "form_type": "F-6",
+  "accession_number": "0001144204-17-038831",
+  "filing_date": "2017-07-28",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000114420417038831/v471581_ex99-a.htm",
+  "source_sha256": "31042795777ce2afbafd8b3b8c74791ff50fc36540529b57e3d44430c66ce5f7",
+  "sha256": "31042795777ce2afbafd8b3b8c74791ff50fc36540529b57e3d44430c66ce5f7",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF only; original byte hash retained.",
+  "original_source_bytes": 174498,
+  "filing_date_proof": {
+    "filed": "2017-07-28",
+    "records": [
+      {
+        "cik": 1474274,
+        "filed": "2017-07-28",
+        "line": "1474274|JPMorgan Chase Bank, N.A. - ADR Depositary|F-6|2017-07-28|edgar/data/1474274/0001144204-17-038831.txt",
+        "source_sha256": "82a8689817b58cf8a6bacefc3711c294817c2797e3c879372ed60090c3b7a10d",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/master.idx"
+      },
+      {
+        "cik": 1499620,
+        "filed": "2017-07-28",
+        "line": "1499620|TAL Education Group|F-6|2017-07-28|edgar/data/1499620/0001144204-17-038831.txt",
+        "source_sha256": "82a8689817b58cf8a6bacefc3711c294817c2797e3c879372ed60090c3b7a10d",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "independently_verified_filing_date_records": [
+    {
+      "cik": 1474274,
+      "filed": "2017-07-28",
+      "line": "1474274|JPMorgan Chase Bank, N.A. - ADR Depositary|F-6|2017-07-28|edgar/data/1474274/0001144204-17-038831.txt",
+      "source_sha256": "82a8689817b58cf8a6bacefc3711c294817c2797e3c879372ed60090c3b7a10d",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/master.idx",
+      "original_hash_and_literal_row_verified": true,
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final\\master-2017-Q3.idx"
+    },
+    {
+      "cik": 1499620,
+      "filed": "2017-07-28",
+      "line": "1499620|TAL Education Group|F-6|2017-07-28|edgar/data/1499620/0001144204-17-038831.txt",
+      "source_sha256": "82a8689817b58cf8a6bacefc3711c294817c2797e3c879372ed60090c3b7a10d",
+      "source_url": "https://www.sec.gov/Archives/edgar/full-index/2017/QTR3/master.idx",
+      "original_hash_and_literal_row_verified": true,
+      "cache_path": "E:\\investintell-data\\w1c-20261009-run2\\final\\master-2017-Q3.idx"
+    }
+  ],
+  "publication_floor_on": "2017-07-28",
+  "publication_floor_proof": {
+    "publication_floor_on": "2017-07-28",
+    "reported_dates": [
+      "2017-07-28"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "d40af6d78532b30cc86b98077bf04a27d976e6d214ee26598059344a389370d0",
+  "issuer_binding_proof": {
+    "adsh": "0001144204-17-038831",
+    "cik": 1499620,
+    "evidence_location": "f6/cover/exact-name-of-issuer-of-deposited-securities",
+    "issuer_name": "TAL Education Group",
+    "source_sha256": "d2a8bdb8b6d050345b7e7a493c2810dbc5cce88177ffb4987e35e1ed61c32fda",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000114420417038831/v471581_f6.htm"
+  },
+  "issuer_binding_cover_hash_verified": true,
+  "issuer_binding_cover_header_excerpt": "F-6 1 v471581_f6.htm F-6 As filed with the U.S. Securities and Exchange Commission on July 28, 2017 Registration No. 333- SECURITIES AND EXCHANGE COMMISSION Washington, D.C. 20549 ____________________ FORM F-6 REGISTRATION STATEMENT UNDER THE SECURITIES ACT OF 1933 For Depositary Shares Evidenced by American Depositary Receipts ___________________ TAL Education Group (Exact name of issuer of deposited securities as specified in its charter) N/A (Translation of issuer’s name into English) The Cayman Islands (Jurisdiction of incorporation or organization of issuer) JPMORGAN CHASE BANK, N.A. (Exact name of depositary as specified in its charter) 4 New York Plaza, Floor 12, New York, NY, 10004 Telephone (800) 990-1135 (Address, including zip code, and telephone number, including area code, of depositary’s principal executive offices) ____________________ Law Debenture Corporate Services Inc. 801 2nd Avenue, Suite 403 New York, New York 10017 Telephone: (212) 750-6474 (Address, including zip code, and telephone number, including area code, of agent for service) Copy to: JPMorgan Chase Bank, N.A. 4 New York Plaza, Floor 12 New York, NY, 10004 Tel. No.: (800) 990-1135 It is proposed that this filing become effective under Rule 466 ¨ immediately upon filing ¨ on (Date) at (Time) If a separate registration statement has been filed to register the deposited shares, check the following box. ¨ CALCULATION OF REGISTRATION FEE Title of each class of Securities to be registered Amount to be registered Proposed maximum aggregate price per unit (1) Proposed maximum aggregate offering price (2) Amount of registration fee American Depositary Shares evidenced by American Depositary Receipts, each American Depositary Share representing one third (1/3) class A common shares of TAL Education Group 250,000,000 $ 0.05 $ 12,500,000 $ 1,448.75 (1) Each unit represents one American Depositary Share. (2) Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Receipts evidencing American Depositary Shares. The Registrant hereby amends this Registration Statement on such date or dates as may be necessary to delay its effective date until the Registrant shall file a further amendment which specifically s",
+  "primary_deposited_security": "Class A common shares",
+  "primary_program_definitions": [
+    {
+      "source_visible_text_offset": 4702,
+      "source_visible_text_end": 4900,
+      "text": "(c) Subject to paragraph (13) of the form of ADR, each \" ADS \" evidenced by an ADR represents the right to receive one-third (1/3) of a Share and a pro rata share in any other Deposited Securities. "
+    },
+    {
+      "source_visible_text_offset": 6909,
+      "source_visible_text_end": 7065,
+      "text": "(l) \" Shares \" mean the class A common shares of the Company, and shall include the rights to receive Shares specified in paragraph (1) of the form of ADR. "
+    },
+    {
+      "source_visible_text_offset": 40632,
+      "source_visible_text_end": 40810,
+      "text": "Each ADS represents One-Third (1/3) of a Share CUSIP: AMERICAN DEPOSITARY RECEIPT evidencing AMERICAN DEPOSITARY SHARES representing CLASS A COMMON SHARES of TAL EDUCATION GROUP "
+    }
+  ],
+  "independent_judgment": "The primary Share alias means Class A common shares. Both the deposit entitlement and ADR face state one-third of that homogeneous ordinary/common share per ADS. This genuine F-6 Class A program must remain eligible when excluding preferred-stock and CPO-basket programs."
+}

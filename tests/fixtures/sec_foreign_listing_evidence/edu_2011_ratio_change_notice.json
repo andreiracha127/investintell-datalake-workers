@@ -1,0 +1,36 @@
+{
+  "name": "edu_2011_ratio_change_notice",
+  "fixture": "edu_2011_ratio_change_notice.html",
+  "cik": 1372920,
+  "symbol": "EDU",
+  "form_type": "6-K",
+  "accession_number": "0001193125-11-191418",
+  "filing_date": "2011-07-19",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1372920/000119312511191418/d6k.htm",
+  "source_sha256": "88009bb1bde7e529db80ba18c485eccadb79d4422a935c9f810d5ccd0c38a08c",
+  "sha256": "88009bb1bde7e529db80ba18c485eccadb79d4422a935c9f810d5ccd0c38a08c",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained.",
+  "original_source_bytes": 245366,
+  "filing_date_proof": {
+    "filed": "2011-07-19",
+    "records": [
+      {
+        "cik": 1372920,
+        "filed": "2011-07-19",
+        "line": "1372920|New Oriental Education & Technology Group Inc.|6-K|2011-07-19|edgar/data/1372920/0001193125-11-191418.txt",
+        "source_sha256": "aa15f0842cf12f924d2145e3f5bbd47389ca1f23872994e30c452d9b96dbbd81",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2011/QTR3/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "publication_floor_on": "2011-07-19",
+  "publication_floor_proof": {
+    "publication_floor_on": "2011-07-19",
+    "reported_dates": [
+      "2011-07-19"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "a4a4e6430fabb2159a7366338de121c1d2f1a05e7953c2876e04a7d4ede91c05"
+}
