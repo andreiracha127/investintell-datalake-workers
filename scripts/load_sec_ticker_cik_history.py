@@ -2182,19 +2182,22 @@ def _restate_facts(cur, *, package: str, fact_table: str, temp: str,
             f"WHERE w.fact_hash IN (SELECT fact_hash FROM {continued})", keys)
         inserted += cur.rowcount
     # The month's alone: from the filing's public date, or the end of an earlier
-    # version of the same content, until S.
+    # version of the same content, until S. A version's rows share its accession
+    # and CIK, so (adsh, cik) narrows every lookup to its filing.
+    same = "o.adsh = w.adsh AND o.cik = w.cik AND o.fact_hash = w.fact_hash"
     cur.execute(
         f"INSERT INTO {table} ({cols}, fact_hash, parser_version, available_on, retired_on, "
         f"retired_reason, loaded_on) "
-        f"SELECT {', '.join(f'w.{c}' for c in columns)}, w.fact_hash, %(parser)s, s.start, "
-        f"%(s)s, %(src)s, %(on)s FROM {fresh} w CROSS JOIN LATERAL ("
-        f"SELECT GREATEST(w.known_on, max(o.retired_on)) AS start FROM {table} o "
-        f"WHERE o.fact_hash = w.fact_hash AND o.retired_on <= %(s)s "
-        f"AND o.retired_reason IS DISTINCT FROM %(pc)s) s "
-        f"WHERE s.start < %(s)s AND NOT EXISTS (SELECT 1 FROM {table} o "
-        f"WHERE o.fact_hash = w.fact_hash AND o.retired_reason IS DISTINCT FROM %(pc)s "
-        f"AND o.available_on < %(s)s AND (o.retired_on IS NULL OR o.retired_on > s.start))",
-        keys)
+        f"SELECT {', '.join(f'w.{c}' for c in columns)}, w.fact_hash, %(parser)s, "
+        f"GREATEST(w.known_on, e.ended), %(s)s, %(src)s, %(on)s FROM {fresh} w "
+        f"LEFT JOIN (SELECT w.fact_hash, max(o.retired_on) AS ended FROM {fresh} w "
+        f"JOIN {table} o ON {same} WHERE o.retired_on <= %(s)s "
+        f"AND o.retired_reason IS DISTINCT FROM %(pc)s GROUP BY w.fact_hash) e "
+        f"ON e.fact_hash = w.fact_hash "
+        f"WHERE GREATEST(w.known_on, e.ended) < %(s)s AND NOT EXISTS ("
+        f"SELECT 1 FROM {table} o WHERE {same} AND o.retired_reason IS DISTINCT FROM %(pc)s "
+        f"AND o.available_on < %(s)s "
+        f"AND (o.retired_on IS NULL OR o.retired_on > GREATEST(w.known_on, e.ended)))", keys)
     inserted += cur.rowcount
     cur.execute(
         f"INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, fact_hash, "
