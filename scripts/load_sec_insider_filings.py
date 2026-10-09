@@ -6,9 +6,12 @@ sec-api.io form-3/4/5-files monthly archives supply ownership XML from May
 are read; archive members are never extracted or executed.
 
 Each package is reconciled in one transaction. Republication retires facts
-and their package carriers; corrections become available on the reconciliation
-date. An unchanged fact retains its original availability. No outside CIK
-mapping is consulted. Schema application is an explicit operator action.
+and their package carriers as a source change; corrections become available on
+the reconciliation date. The same bytes read by a new parser version retire the
+changed readings as a parser correction (visible at no date); the new reading
+is knowable when the reading it replaces was. An unchanged fact retains its
+original availability. No outside CIK mapping is consulted. Schema application
+(v1, then v2) is an explicit operator action.
 
 Examples (run from the repository root):
   py -3.13 -m scripts.load_sec_insider_filings --packages-dir E:/investintell-data/w1b/dera --download-dera --verify-cache
@@ -52,8 +55,15 @@ from scripts.load_sec_ticker_cik_history import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "schemas" / "sec_insider_ticker_evidence.sql"
+SCHEMA_PATHS = (ROOT / "schemas" / "sec_insider_ticker_evidence.sql",
+                ROOT / "schemas" / "sec_insider_ticker_evidence_v2.sql")
 PARSER_VERSION = "sec_insider_v4"
+# Why a filing version was retired (sec_insider_filings.retired_reason, schema v2).
+# SOURCE: the public record changed (a republished package): the old version stays
+# visible before its retirement. PARSER_CORRECTION: the same package bytes read by
+# another parser version: the old reading was never true and is visible at no date.
+SOURCE = "source"
+PARSER_CORRECTION = "parser_correction"
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 DERA_LISTING_URL = "https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets"
 SECAPI_BASE = "https://api.sec-api.io"
@@ -455,6 +465,29 @@ def prepare_session(conn) -> None:
     conn.execute(f"SET temp_buffers = '{TEMP_BUFFERS}'")
 
 
+def require_schema(conn) -> None:
+    """Refuse a database without the insider tables (v1) or without v2, whose
+    resolver hides a parser correction's old reading and whose filings record
+    why a version was retired."""
+    present, v2 = conn.execute(
+        "SELECT to_regclass('sec_insider_filings') IS NOT NULL "
+        "AND to_regclass('sec_insider_packages') IS NOT NULL "
+        "AND to_regclass('sec_insider_package_facts') IS NOT NULL "
+        "AND to_regclass('sec_insider_package_members') IS NOT NULL, "
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a "
+        "WHERE a.attrelid = to_regclass('sec_insider_filings') "
+        "AND a.attname = 'retired_reason' AND NOT a.attisdropped) "
+        "AND COALESCE((SELECT p.prosrc LIKE '%parser_correction%' FROM pg_catalog.pg_proc p "
+        "WHERE p.oid = to_regprocedure('sec_insider_ticker_issuer_at(text,date)')), false)"
+    ).fetchone()
+    if not present:
+        raise RuntimeError("insider schema is missing: apply schemas/sec_insider_ticker_evidence.sql, "
+                           "then schemas/sec_insider_ticker_evidence_v2.sql, as the database owner")
+    if not v2:
+        raise RuntimeError("the insider schema is v1: apply schemas/sec_insider_ticker_evidence_v2.sql "
+                           "as the database owner first")
+
+
 def load_package(conn, path: Path, *, source: str | None = None,
                  reconciled_on: dt.date | None = None, validators: dict | None = None) -> dict:
     """Atomically stage, validate and reconcile one package, keeping old versions."""
@@ -469,6 +502,9 @@ def load_package(conn, path: Path, *, source: str | None = None,
             cur.execute("SELECT pg_advisory_xact_lock(900, 345)")
             cur.execute("SELECT package_sha256, parser_version FROM sec_insider_packages WHERE source_package = %s", (package,))
             previous = cur.fetchone()
+            # The same bytes as the version loaded before: whatever differs is
+            # this parser's reading, not the SEC's data.
+            reason = PARSER_CORRECTION if previous is not None and previous[0] == digest else SOURCE
             if previous == (digest, PARSER_VERSION):
                 cur.execute("UPDATE sec_insider_packages SET remote_etag = COALESCE(%s, remote_etag), remote_last_modified = COALESCE(%s, remote_last_modified) WHERE source_package = %s",
                             (validators.get("etag"), validators.get("last_modified") or validators.get("updatedAt"), package))
@@ -497,10 +533,17 @@ def load_package(conn, path: Path, *, source: str | None = None,
             # Retire only carriers that disappeared from this fully staged revision.
             cur.execute("UPDATE sec_insider_package_facts p SET retired_on = %s WHERE p.source_package = %s AND p.retired_on IS NULL AND NOT EXISTS (SELECT 1 FROM tmp_insider_stage s WHERE s.fact_hash = p.fact_hash)", (on, package))
             cur.execute("INSERT INTO sec_insider_package_facts (source_package, fact_hash, loaded_on) SELECT %s, s.fact_hash, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_package_facts p WHERE p.source_package = %s AND p.fact_hash = s.fact_hash AND p.retired_on IS NULL)", (package, on, package))
-            cur.execute("UPDATE sec_insider_filings f SET retired_on = %s WHERE f.retired_on IS NULL AND EXISTS (SELECT 1 FROM tmp_insider_old o WHERE o.fact_hash = f.fact_hash) AND NOT EXISTS (SELECT 1 FROM sec_insider_package_facts p WHERE p.fact_hash = f.fact_hash AND p.retired_on IS NULL)", (on,))
+            # Retired readings are kept with their availability: a parser correction's
+            # new reading is knowable when the reading it replaces was.
+            cur.execute("CREATE TEMP TABLE tmp_insider_replaced (accession text NOT NULL, available_on date NOT NULL) ON COMMIT DROP")
+            cur.execute("WITH retired AS (UPDATE sec_insider_filings f SET retired_on = %s, retired_reason = %s WHERE f.retired_on IS NULL AND EXISTS (SELECT 1 FROM tmp_insider_old o WHERE o.fact_hash = f.fact_hash) AND NOT EXISTS (SELECT 1 FROM sec_insider_package_facts p WHERE p.fact_hash = f.fact_hash AND p.retired_on IS NULL) RETURNING f.accession, f.available_on) INSERT INTO tmp_insider_replaced SELECT accession, available_on FROM retired", (on, reason))
             retired = cur.rowcount
             # The accession history is checked before new package memberships are inserted.
-            cur.execute(f"INSERT INTO sec_insider_filings ({', '.join(FACT_COLUMNS)}, source_package, fact_hash, source_version, available_on, loaded_on) SELECT {', '.join('s.' + c for c in FACT_COLUMNS)}, s.source_package, s.fact_hash, %s, CASE WHEN EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.accession = s.accession) THEN GREATEST(s.source_available_on, %s) ELSE s.source_available_on END, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_filings f WHERE f.fact_hash = s.fact_hash AND f.retired_on IS NULL)", (digest, on, on))
+            # A source change of a known accession is knowable from reconciliation. A
+            # parser correction's reading is knowable when the reading it replaces
+            # was: from the filing's public date for a filing first loaded with its
+            # package, and never before a republication that brought the content.
+            cur.execute(f"INSERT INTO sec_insider_filings ({', '.join(FACT_COLUMNS)}, source_package, fact_hash, source_version, available_on, loaded_on) SELECT {', '.join('s.' + c for c in FACT_COLUMNS)}, s.source_package, s.fact_hash, %s, CASE WHEN %s THEN COALESCE((SELECT max(r.available_on) FROM tmp_insider_replaced r WHERE r.accession = s.accession), s.source_available_on) WHEN EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.accession = s.accession) THEN GREATEST(s.source_available_on, %s) ELSE s.source_available_on END, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_filings f WHERE f.fact_hash = s.fact_hash AND f.retired_on IS NULL)", (digest, reason == PARSER_CORRECTION, on, on))
             inserted = cur.rowcount
             cur.execute("UPDATE sec_insider_package_members m SET retired_on = %s WHERE m.source_package = %s AND m.retired_on IS NULL AND NOT EXISTS (SELECT 1 FROM tmp_insider_members s WHERE s.accession = m.accession)", (on, package))
             cur.execute("INSERT INTO sec_insider_package_members (source_package, accession, loaded_on) SELECT %s, s.accession, %s FROM tmp_insider_members s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.source_package = %s AND m.accession = s.accession AND m.retired_on IS NULL)", (package, on, package))
@@ -509,8 +552,9 @@ def load_package(conn, path: Path, *, source: str | None = None,
                         (package, source, digest, digest, size, PARSER_VERSION, stats["filings"], json.dumps(rejected), validators.get("etag"), validators.get("last_modified") or validators.get("updatedAt")))
             # A caller may wrap several packages in its own transaction. ON
             # COMMIT DROP alone would retain these names until that outer commit.
-            cur.execute("DROP TABLE tmp_insider_stage, tmp_insider_old, tmp_insider_members")
-    return {"package": package, "sha256": digest, **dict(stats), "inserted": inserted, "retired": retired}
+            cur.execute("DROP TABLE tmp_insider_stage, tmp_insider_old, tmp_insider_members, tmp_insider_replaced")
+    return {"package": package, "sha256": digest, **dict(stats), "inserted": inserted, "retired": retired,
+            "retired_reason": reason}
 
 
 class _SecApiRedirect(urllib.request.HTTPRedirectHandler):
@@ -796,10 +840,9 @@ def main(argv: list[str] | None = None) -> int:
         with psycopg.connect(args.dsn or "", autocommit=True) as conn:
             prepare_session(conn)
             if args.apply_schema:
-                conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
-            row = conn.execute("SELECT to_regclass('sec_insider_filings'), to_regclass('sec_insider_packages'), to_regclass('sec_insider_package_facts'), to_regclass('sec_insider_package_members')").fetchone()
-            if not all(row):
-                raise ValueError("insider schema is missing; apply it as the database owner")
+                for schema in SCHEMA_PATHS:
+                    conn.execute(schema.read_text(encoding="utf-8"))
+            require_schema(conn)
             for path in paths:
                 log(load_package(conn, path, reconciled_on=args.reconciled_on, validators=_read_meta(path)))
         return 0

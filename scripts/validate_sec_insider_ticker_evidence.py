@@ -155,7 +155,8 @@ def validate(local_dsn: str, target: Path) -> dict:
             agreement.append(dict(zip(("year", "cover_resolved", "insider_resolved", "agrees", "disagrees"),
                                       (y, *row))))
             # Validate clean, non-overlapping CIK runs against cover evidence.
-            # Select content versions before the final symbol check, as in the resolver.
+            # Select content versions before the final symbol check, with the
+            # resolver's v2 visibility (a parser correction's old reading never shows).
             grouped = defaultdict(list)
             rows = conn.execute("""WITH targets AS (
                 SELECT ticker, cover_cik FROM validation_cover WHERE year=%s AND status='resolved'
@@ -163,17 +164,20 @@ def validate(local_dsn: str, target: Path) -> dict:
                 SELECT DISTINCT c.ticker, c.cover_cik, f.accession
                 FROM targets c CROSS JOIN LATERAL (
                     WITH key_versions AS MATERIALIZED (
-                        SELECT accession, filed, available_on, retired_on FROM sec_insider_filings
+                        SELECT accession, filed, available_on, retired_on, retired_reason
+                        FROM sec_insider_filings
                         WHERE ticker_keys @> ARRAY[regexp_replace(upper(c.ticker), '[^A-Z0-9]', '', 'g')]
                     ) SELECT accession FROM key_versions
                     WHERE filed >= %s::date - 365 AND filed < %s
-                      AND available_on <= %s AND (retired_on IS NULL OR retired_on > %s)
+                      AND available_on <= %s AND (retired_on IS NULL OR (retired_on > %s
+                          AND retired_reason IS DISTINCT FROM 'parser_correction'))
                 ) f
             ), visible AS (
                 SELECT c.ticker, c.cover_cik, f.accession, f.cik, f.filed
                 FROM matching c CROSS JOIN LATERAL (
                     SELECT v.* FROM sec_insider_filings v WHERE v.accession=c.accession
-                      AND v.available_on <= %s AND (v.retired_on IS NULL OR v.retired_on > %s)
+                      AND v.available_on <= %s AND (v.retired_on IS NULL OR (v.retired_on > %s
+                          AND v.retired_reason IS DISTINCT FROM 'parser_correction'))
                     ORDER BY v.available_on DESC, v.loaded_on DESC, v.id DESC LIMIT 1
                 ) f WHERE f.ticker_keys @> ARRAY[regexp_replace(upper(c.ticker), '[^A-Z0-9]', '', 'g')]
                   AND f.filed >= %s::date - 365 AND f.filed < %s

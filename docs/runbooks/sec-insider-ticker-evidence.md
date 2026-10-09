@@ -33,10 +33,20 @@ SELECT * FROM sec_insider_ticker_issuer_at('BRK-A', DATE '2010-12-31');
 
 The window is `[D - 365, D)`. Evidence must also be known by D and not retired at
 D. Initial DERA facts become known at `filed + 1`; XML uses the acceptance date
-in New York. A correction to a previously seen accession becomes known no
-earlier than reconciliation. A package is staged completely before one atomic
-transaction updates its facts and validators. Withdrawn versions are retired,
-not deleted, and unchanged content keeps its original availability.
+in New York. A package is staged completely before one atomic transaction
+updates its facts and validators. Withdrawn versions are retired, not deleted,
+and unchanged content keeps its original availability. `retired_reason` (schema
+v2) says why a version was retired:
+
+- `source` (or NULL, before v2): a republished package carries other content or
+  drops the filing. The old version stays visible before its retirement, and a
+  correction to a previously seen accession becomes known no earlier than
+  reconciliation.
+- `parser_correction`: the same package bytes read by another parser version.
+  The old reading was never true and is visible at no date. The new reading is
+  known when the reading it replaces was: from the filing's public date for a
+  filing first loaded with its package, never before a republication that
+  brought the content. This is the project's restatement rule, as in W1.
 
 The resolver counts distinct accessions per CIK, with separator-free ticker
 matching. It needs at least two filings on two dates. A sole candidate resolves;
@@ -59,18 +69,20 @@ Run these exact commands from the repository root in PowerShell:
 
 ```powershell
 psql -X -v ON_ERROR_STOP=1 --dbname=$env:DATABASE_URL --file=schemas/sec_insider_ticker_evidence.sql
+psql -X -v ON_ERROR_STOP=1 --dbname=$env:DATABASE_URL --file=schemas/sec_insider_ticker_evidence_v2.sql
 python -m scripts.load_sec_insider_filings --dsn $env:DATABASE_URL --packages-dir E:/investintell-data/w1b/dera --secapi-dir E:/investintell-data/w1b/secapi --download-dera --verify-cache --download-secapi
 ```
 
-The migration is idempotent and assigns ownership to `worker_writer` where that
-role exists. Runtime and read-only roles receive only read/function access. The
-loader requires the schema to exist and does not apply it implicitly. For a Linux
+The migrations are idempotent and assign ownership to `worker_writer` where that
+role exists. Runtime and read-only roles receive only read/function access. v2 adds
+a nullable column with a CHECK `NOT VALID` (no rewrite, no row written) and replaces
+the resolver. The loader requires both and does not apply them implicitly. For a Linux
 worker, replace both cache paths with persistent paths mounted for that worker.
 
 Use the same load command for incremental runs: package hashes and parser
 versions skip unchanged parses; remote validators detect republication. A new parser
-version re-parses every package. Only readings that change are retired and inserted
-again, available from the reconciliation date; unchanged facts keep their rows. The
+version re-parses every package. Only readings that change are retired, as parser
+corrections, and inserted again; unchanged facts keep their rows. The
 loader sets `temp_buffers` to 128 MB at connect, before the session's first temporary
 table. PostgreSQL 18 fails the largest DERA quarter's staging COPY (2006q1, 83,657
 filings) at the 8 MB default with "no empty local buffer available". Downloads
@@ -78,16 +90,19 @@ stage to temporary files before replacing the cache. sec-api credentials travel
 in an Authorization header; console errors scrub secrets. SEC requests use
 `InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)` and are sequential.
 
-An owner-authorized rollback is:
+An owner-authorized rollback of v2 restores the v1 resolver and keeps every row and
+`retired_reason`; the v4 loader then refuses the database. The second command
+removes the whole schema:
 
 ```powershell
+psql -X -v ON_ERROR_STOP=1 --dbname=$env:DATABASE_URL --file=schemas/sec_insider_ticker_evidence_v2.rollback.sql
 psql -X -v ON_ERROR_STOP=1 --dbname=$env:DATABASE_URL --file=schemas/sec_insider_ticker_evidence.rollback.sql
 ```
 
 ## Local reproduction
 
 Create a uniquely named `timescale/timescaledb:2.27.2-pg18` container/database (the
-production PostgreSQL 18.4 and TimescaleDB 2.27.2), apply the schema, and
+production PostgreSQL 18.4 and TimescaleDB 2.27.2), apply both migrations, and
 point the same loader at the task's local DERA and sec-api cache directories.
 The loader can also download without connecting (`--download-only`) or parse
 without loading (`--dry-run`).
