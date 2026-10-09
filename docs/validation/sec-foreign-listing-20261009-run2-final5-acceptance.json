@@ -1,0 +1,466 @@
+{
+  "generated_at_utc": "2026-10-09T21:44:33.776296+00:00",
+  "passed": 14,
+  "total": 17,
+  "cases": [
+    {
+      "cik": 901832,
+      "symbol": "AZN",
+      "as_of": "2025-12-31",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/2"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/2"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/2"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1015820,
+      "symbol": "QGEN",
+      "as_of": "2025-12-31",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1017413,
+      "symbol": "CNQ",
+      "as_of": "2025-12-31",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1046179,
+      "symbol": "TSM",
+      "as_of": "2025-12-31",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "5/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "5/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "5/1"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1654126,
+      "symbol": "ZIM",
+      "as_of": "2025-12-31",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1786511,
+      "symbol": "ANPC",
+      "as_of": "2022-10-24",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1786511,
+      "symbol": "ANPC",
+      "as_of": "2022-10-25",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1786511,
+      "symbol": "ANPC",
+      "as_of": "2022-11-03",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1786511,
+      "symbol": "ANPC",
+      "as_of": "2022-11-04",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "20/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "20/1"
+      },
+      "final5_answer": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "matches_expected": false
+    },
+    {
+      "cik": 1541157,
+      "symbol": "AKTX",
+      "as_of": "2023-08-16",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "100/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "100/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "100/1"
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1541157,
+      "symbol": "AKTX",
+      "as_of": "2023-08-17",
+      "expected": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final4_answer": {
+        "status": "none",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final5_answer": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "matches_expected": false
+    },
+    {
+      "cik": 1541157,
+      "symbol": "AKTX",
+      "as_of": "2023-08-18",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "2000/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "2000/1"
+      },
+      "final5_answer": {
+        "status": "ambiguous",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "ambiguous",
+        "ratio": null
+      },
+      "matches_expected": false
+    },
+    {
+      "cik": 1843586,
+      "symbol": "OTLY",
+      "as_of": "2025-02-12",
+      "expected": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final4_answer": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final5_answer": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1843586,
+      "symbol": "OTLY",
+      "as_of": "2025-02-13",
+      "expected": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final4_answer": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final5_answer": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1843586,
+      "symbol": "OTLY",
+      "as_of": "2025-02-17",
+      "expected": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final4_answer": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final5_answer": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1843586,
+      "symbol": "OTLY",
+      "as_of": "2025-02-18",
+      "expected": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final4_answer": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "final5_answer": {
+        "status": "ambiguous",
+        "listed_type": null,
+        "listing_status": "ambiguous",
+        "ratio_status": "none",
+        "ratio": null
+      },
+      "matches_expected": true
+    },
+    {
+      "cik": 1843586,
+      "symbol": "OTLY",
+      "as_of": "2025-12-31",
+      "expected": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "20/1"
+      },
+      "final4_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "20/1"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "20/1"
+      },
+      "matches_expected": true
+    }
+  ]
+}

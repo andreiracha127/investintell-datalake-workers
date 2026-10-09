@@ -1,0 +1,12 @@
+{
+  "name": "tal_2017_class_a_ratio_change",
+  "fixture": "tal_2017_class_a_ratio_change.html",
+  "cik": 1499620,
+  "form_type": "6-K",
+  "accession_number": "0001144204-17-038823",
+  "filing_date": "2017-07-28",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1499620/000114420417038823/v471662_ex99-2.htm",
+  "source_sha256": "286263459135c750132e0d64582f1b4bba6d826dd38cce725e5c7c6dcb924abc",
+  "sha256": "286263459135c750132e0d64582f1b4bba6d826dd38cce725e5c7c6dcb924abc",
+  "derivation": "Original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained."
+}

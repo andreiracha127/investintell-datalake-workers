@@ -1,0 +1,207 @@
+{
+  "generated_at_utc": "2026-10-09T21:44:33.854859+00:00",
+  "passed": 10,
+  "total": 10,
+  "cases": [
+    {
+      "cik": 1127248,
+      "symbol": "EMA",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio": "1/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 1791703,
+      "symbol": "TII",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio": "1/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ordinary_direct",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/1"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 756620,
+      "symbol": "BT",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio": "5/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "5/1"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 845982,
+      "symbol": "SNN",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio": "2/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "2/1"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 1115837,
+      "symbol": "MBT",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio": "2/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "2/1"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 1302362,
+      "symbol": "MTL",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio": "2/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "2/1"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 1477641,
+      "symbol": "DQ",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio": "5/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "5/1"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 1499620,
+      "symbol": "TAL",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio": "1/3",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "1/3"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 1594124,
+      "symbol": "SKYS",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio": "20/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "20/1"
+      },
+      "matches_final4_review": true
+    },
+    {
+      "cik": 1643918,
+      "symbol": "BDRX",
+      "as_of": "2025-12-31",
+      "final4_reviewed_answer": {
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio": "100000/1",
+        "ratio_status": "resolved",
+        "status": "resolved"
+      },
+      "final5_answer": {
+        "status": "resolved",
+        "listed_type": "ads",
+        "listing_status": "resolved",
+        "ratio_status": "resolved",
+        "ratio": "100000/1"
+      },
+      "matches_final4_review": true
+    }
+  ]
+}

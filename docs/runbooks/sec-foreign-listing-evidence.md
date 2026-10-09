@@ -116,6 +116,29 @@ fee-table or counsel facts from the same registration. A later announcement
 changes knowledge prospectively; a later annual history cannot backfill the
 announcement into an earlier query date.
 
+A 6-K ratio announcement that remains subject to approval or another stated
+condition is pending evidence. It cannot activate a registration on its own.
+Once its proposed date and public availability have arrived, the unresolved
+condition makes the ratio `ambiguous`, including when older sources agree on a
+different ratio. A later public completion, definitive Depositary notice or
+actual approval result must establish the same program, underlying class and
+event. The proof must address the outstanding conditions; shareholder approval
+does not establish a separate regulatory approval. Unknown conditions require
+affirmative operative evidence. ANTE's conditional consolidation notices are
+settled by its later public shareholder result, with the new ratio still
+deferred until the established December 9 date.
+
+Contradictory operative dates are retained with their literal proof and all
+candidate dates. They never become an empty parse or a filing-plus-one start.
+The uncertainty controls the ratio from the later of the earliest stated date
+and the source's availability. It cannot disappear through latest-filing
+selection or an unflagged fee statement in the same registration. A later
+authoritative single-date source can settle the clock prospectively; the
+original conflict metadata remains immutable and the resolver includes the
+confirming source. A confirmed future date defers the new number until that
+date, and a retrospective confirmation cannot change answers before it was
+public. Independent ratio corroboration is still required.
+
 An explicit correcting-and-replacing 6-K preserves its literal correction
 headline and exact source old CUSIP. Once public, it replaces an older claim
 only for that same issuer, event date, program, symbol and underlying class,
@@ -317,7 +340,10 @@ of today's symbols.
 ## Exact production procedure (not executed by this PR)
 
 1. Review this evidence PR and the superseding
-   [run2 validation report](../validation/sec-foreign-listing-20261009-run2.md).
+   [run2 final5 validation report](../validation/sec-foreign-listing-20261009-run2-final5.md),
+   which replaces the earlier
+   [run2 final4 report](../validation/sec-foreign-listing-20261009-run2.md)
+   for production artifact selection.
    Keep admission/sizing integration in its separately reviewed PR after
    Workers #173. No scheduled worker is installed by this change.
 2. Outside 06:00-08:30 UTC, take fresh read-only W1 exports with `mcp_ro`, host
@@ -325,27 +351,29 @@ of today's symbols.
    `PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=30000'`.
    Keep the query text, extraction timestamp and JSON hashes with the run.
 3. Use the reviewed owner-load artifact at
-   `E:/investintell-data/w1c-20261009-run2/final4`, preserving run1. Verify
-   `SHA256SUMS` and these exact SHA-256 values before loading:
+   `E:/investintell-data/w1c-20261009-run2/final5`, preserving final4 and run1.
+   Verify `SHA256SUMS` and these exact SHA-256 values before loading:
 
    - `manifest.json`:
-     `5a7667cd5679bb99400b1113abcdf3b260ddb831cab12c6942c540f118f3d283`
+     `793cc435a00d41309a5b1b72724eb940ae43b8c86b97e2d7412d5fe0439a5646`
    - `evidence.jsonl`:
-     `3850894d58fbff69e8e243b6361a18f86f79f1000e5fe405bb00bbfbadc9ec45`
+     `9ca17573dd649db4075a7eb40065274e7e0b1d536649b553c4b790c3dfc1accc`
 
    The complete manifest contains 47,329 source entries and the JSONL contains
-   29,676 evidence rows. Its fixed universe is the preserved
+   29,709 evidence rows. Its fixed universe is the preserved
    `E:/investintell-data/w1c-20261009-baseline/universe.json`, SHA-256
    `06d052a96fdc8759c6d443f67fbf20ecaacac4655dd7cb306e31f558e5c5b43b`.
-   Review the run2 coverage, source audits and 30+10 precision results. Fresh
-   read-only W1 exports are reconciliation evidence; a changed universe requires
-   a new reviewed collection rather than replacing this artifact's pinned input.
+   Review the run2 final5 coverage, source audits and the 30+10 precision
+   results. Fresh read-only W1 exports are reconciliation evidence; a changed
+   universe requires a new reviewed collection rather than replacing this
+   artifact's pinned input.
 4. In a separate shell with an explicitly authorized production writer and
    without the read-only `PGOPTIONS`, apply only the new schema:
    `psql -X -v ON_ERROR_STOP=1 -f schemas/sec_foreign_listing_evidence.sql`.
    The reviewed schema SHA-256 is
-   `0df7689b4fa5206d5d5b01034b423ade4b20bfae88fc0720526d43f8af842ff9`;
-   it changed from run1 and includes the ordinary-security eligibility fence.
+   `{{SCHEMA_SHA}}`;
+   it changed from final4 (`0df7689b4fa5206d5d5b01034b423ade4b20bfae88fc0720526d43f8af842ff9`)
+   and adds the operative-date-conflict and conditional-effectiveness controls.
    Supply the production connection through the operator's normal credential
    mechanism. Do not use the read-only `mcp_ro` role for this step.
 5. Set `FOREIGN_EVIDENCE_DATABASE_URL` securely to that authorized writer.
@@ -357,14 +385,14 @@ of today's symbols.
    ```powershell
    python scripts/load_sec_foreign_listing_evidence.py `
      --universe E:/investintell-data/w1c-20261009-baseline/universe.json `
-     --cache-dir E:/investintell-data/w1c-20261009-run2/final4 `
-     --output E:/investintell-data/w1c-20261009-run2/final4/evidence.jsonl --apply
+     --cache-dir E:/investintell-data/w1c-20261009-run2/final5 `
+     --output E:/investintell-data/w1c-20261009-run2/final5/evidence.jsonl --apply
    ```
 
 6. With `mcp_ro`, read back source/fact counts and execute the dated resolver
    checks and year-end report. Confirm existing W1 refusal behavior is unchanged.
-   The fresh local initial-import result was 47,329 sources and 29,676 facts;
-   both-resolved year-end counts were 2, 83, 513 and 1,149 for 2010, 2015, 2020
+   The fresh local initial-import result was 47,329 sources and 29,709 facts;
+   both-resolved year-end counts were 2, 83, 513 and 1,151 for 2010, 2015, 2020
    and 2025. The 2025 overlap was 819 of the preserved 1,373 refusals. Production
    reconciliation must account for existing versions and the actual load date;
    these local results do not assert production acceptance.

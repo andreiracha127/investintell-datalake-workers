@@ -73,6 +73,18 @@ CREATE TABLE IF NOT EXISTS public.sec_foreign_listing_evidence (
     -- operative merely because the amended registration was filed.
     ratio_effectiveness_pending boolean DEFAULT false,
     ratio_effectiveness_pending_text text,
+    ratio_effectiveness_conditions text[],
+    -- Conflicting operative dates remain visible controls. Their numeric
+    -- entitlement is not operative until a later authoritative source settles
+    -- its clock; effective_from is the earliest disputed date.
+    operative_date_conflict boolean DEFAULT false,
+    operative_date_candidates date[],
+    operative_date_conflict_text text,
+    -- A completion, definitive depositary notice or actual approval result,
+    -- rather than an unfulfilled conditional plan. Preserve the literal proof.
+    ratio_effectiveness_confirmed boolean DEFAULT false,
+    ratio_effectiveness_confirmation_text text,
+    ratio_effectiveness_confirmed_conditions text[],
     effective_to date,
     evidence_text text NOT NULL CHECK (length(btrim(evidence_text)) > 0),
     evidence_location text NOT NULL CHECK (length(btrim(evidence_location)) > 0),
@@ -110,7 +122,14 @@ ALTER TABLE public.sec_foreign_listing_evidence
     ADD COLUMN IF NOT EXISTS ratio_change_correction_kind text,
     ADD COLUMN IF NOT EXISTS ratio_change_correction_text text,
     ADD COLUMN IF NOT EXISTS ratio_effectiveness_pending boolean DEFAULT false,
-    ADD COLUMN IF NOT EXISTS ratio_effectiveness_pending_text text;
+    ADD COLUMN IF NOT EXISTS ratio_effectiveness_pending_text text,
+    ADD COLUMN IF NOT EXISTS ratio_effectiveness_conditions text[],
+    ADD COLUMN IF NOT EXISTS operative_date_conflict boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS operative_date_candidates date[],
+    ADD COLUMN IF NOT EXISTS operative_date_conflict_text text,
+    ADD COLUMN IF NOT EXISTS ratio_effectiveness_confirmed boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS ratio_effectiveness_confirmation_text text,
+    ADD COLUMN IF NOT EXISTS ratio_effectiveness_confirmed_conditions text[];
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -141,19 +160,83 @@ BEGIN
                     AND length(btrim(ratio_change_correction_text)) > 0)
             );
     END IF;
+    -- Replace the previous F-6-only check on replay: conditional 6-K notices
+    -- use the same pending-effectiveness representation.
+    ALTER TABLE public.sec_foreign_listing_evidence
+        DROP CONSTRAINT IF EXISTS sec_foreign_listing_ratio_pending_ck;
+    ALTER TABLE public.sec_foreign_listing_evidence
+        ADD CONSTRAINT sec_foreign_listing_ratio_pending_ck CHECK (
+            (NOT coalesce(ratio_effectiveness_pending, false)
+                AND ratio_effectiveness_pending_text IS NULL
+                AND ratio_effectiveness_conditions IS NULL)
+            OR (ratio_effectiveness_pending IS TRUE
+                AND ratio_effectiveness_pending_text IS NOT NULL
+                AND length(btrim(ratio_effectiveness_pending_text)) > 0
+                AND evidence_kind = 'ads_ratio'
+                AND source_kind IN ('f6', 'ratio_change_6k')
+                AND (source_kind = 'f6' OR (
+                    effective_date_explicit
+                    AND ratio_effectiveness_conditions IS NOT NULL
+                    AND cardinality(ratio_effectiveness_conditions) > 0))
+                AND (ratio_effectiveness_conditions IS NULL OR (
+                    array_ndims(ratio_effectiveness_conditions) = 1
+                    AND cardinality(ratio_effectiveness_conditions) > 0
+                    AND array_position(ratio_effectiveness_conditions, NULL) IS NULL
+                    AND ratio_effectiveness_conditions <@ ARRAY[
+                        'shareholder_approval', 'consolidation', 'regulatory_approval',
+                        'depositary_notice', 'other_approval', 'unknown_condition']::text[])))
+        );
     IF NOT EXISTS (
         SELECT 1 FROM pg_catalog.pg_constraint
         WHERE conrelid = 'public.sec_foreign_listing_evidence'::regclass
-          AND conname = 'sec_foreign_listing_ratio_pending_ck'
+          AND conname = 'sec_foreign_listing_operative_date_conflict_ck'
     ) THEN
         ALTER TABLE public.sec_foreign_listing_evidence
-            ADD CONSTRAINT sec_foreign_listing_ratio_pending_ck CHECK (
-                (NOT coalesce(ratio_effectiveness_pending, false)
-                    AND ratio_effectiveness_pending_text IS NULL)
-                OR (ratio_effectiveness_pending IS TRUE
-                    AND ratio_effectiveness_pending_text IS NOT NULL
-                    AND length(btrim(ratio_effectiveness_pending_text)) > 0
-                    AND evidence_kind = 'ads_ratio' AND source_kind = 'f6')
+            ADD CONSTRAINT sec_foreign_listing_operative_date_conflict_ck CHECK (
+                (NOT coalesce(operative_date_conflict, false)
+                    AND operative_date_candidates IS NULL
+                    AND operative_date_conflict_text IS NULL)
+                OR (operative_date_conflict IS TRUE
+                    AND evidence_kind = 'ads_ratio'
+                    AND source_kind <> 'listing_description'
+                    AND operative_date_candidates IS NOT NULL
+                    AND array_ndims(operative_date_candidates) = 1
+                    AND array_lower(operative_date_candidates, 1) = 1
+                    AND cardinality(operative_date_candidates) >= 2
+                    AND array_position(operative_date_candidates, NULL) IS NULL
+                    AND operative_date_candidates[1] = effective_from
+                    AND operative_date_candidates[1]
+                        < operative_date_candidates[cardinality(operative_date_candidates)]
+                    AND effective_date_explicit
+                    AND operative_date_conflict_text IS NOT NULL
+                    AND length(btrim(operative_date_conflict_text)) > 0)
+            );
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conrelid = 'public.sec_foreign_listing_evidence'::regclass
+          AND conname = 'sec_foreign_listing_ratio_confirmation_ck'
+    ) THEN
+        ALTER TABLE public.sec_foreign_listing_evidence
+            ADD CONSTRAINT sec_foreign_listing_ratio_confirmation_ck CHECK (
+                (NOT coalesce(ratio_effectiveness_confirmed, false)
+                    AND ratio_effectiveness_confirmation_text IS NULL
+                    AND ratio_effectiveness_confirmed_conditions IS NULL)
+                OR (ratio_effectiveness_confirmed IS TRUE
+                    AND evidence_kind = 'ads_ratio'
+                    AND source_kind IN ('f6', 'ratio_change_6k')
+                    AND effective_date_explicit
+                    AND NOT coalesce(ratio_effectiveness_pending, false)
+                    AND NOT coalesce(operative_date_conflict, false)
+                    AND ratio_effectiveness_confirmation_text IS NOT NULL
+                    AND length(btrim(ratio_effectiveness_confirmation_text)) > 0
+                    AND ratio_effectiveness_confirmed_conditions IS NOT NULL
+                    AND array_ndims(ratio_effectiveness_confirmed_conditions) = 1
+                    AND cardinality(ratio_effectiveness_confirmed_conditions) > 0
+                    AND array_position(ratio_effectiveness_confirmed_conditions, NULL) IS NULL
+                    AND ratio_effectiveness_confirmed_conditions <@ ARRAY[
+                        'shareholder_approval', 'consolidation', 'regulatory_approval',
+                        'depositary_notice', 'other_approval', 'ratio_effective']::text[])
             );
     END IF;
 END;
@@ -236,6 +319,29 @@ CREATE INDEX IF NOT EXISTS sec_foreign_listing_evidence_source_idx
 -- A literal pending condition in the operative contract governs matching ratio
 -- facts throughout that same issuer/accession/class/symbol registration family;
 -- its fee table or counsel opinion cannot bypass the contract's effective clause.
+-- Contradictory operative dates and conditional 6-K changes remain source
+-- controls, rather than disappearing or becoming filing-date entitlements.
+-- Once their earliest stated date and public availability have arrived, an
+-- unresolved control makes the ratio ambiguous, including against older
+-- agreeing registration and annual streams. Conditional changes never activate
+-- a pending contract. A later public definitive dated registration or confirmed
+-- 6-K can settle only the same bound line, exact class and compatible program.
+-- Legal assertion order and publication order must both advance; an old report
+-- republished later cannot settle the uncertainty. Independent current settling
+-- assertions retain ties and must agree on both operative date and exact ratio.
+-- Conditional changes additionally require affirmative confirmation of every
+-- named prerequisite, or explicit completion of the ratio itself. A merely
+-- dated registration cannot prove shareholder, regulatory or depositary approval;
+-- unnamed conditions require actual completion, not another generic approval.
+-- A public conditional announcement still supplies a conservative future bound
+-- for its matching fallback-dated registration. This deferral uses the same
+-- public-by-registration binding, class and exact-ratio fences, and never makes
+-- the conditional announcement an operative event or an activating notice.
+-- A definitive future notice can settle uncertainty prospectively, while its
+-- number still waits for that operative date. An exact-ratio confirmation can
+-- establish the clock of a date-conflicted registration's existing numeric
+-- entitlement; both source IDs remain visible. A later actual different-ratio
+-- event may end an obsolete control without reusing its former proposed number.
 CREATE OR REPLACE FUNCTION public.sec_foreign_listing_at(
     p_cik bigint, p_symbol text, p_as_of date
 )
@@ -295,17 +401,190 @@ WITH issuer_observed AS MATERIALIZED (
            CASE WHEN count(DISTINCT c.underlying_class) FILTER (WHERE c.listed_type = 'ads' AND c.ordinary_candidate) = 1
                 THEN min(c.underlying_class) FILTER (WHERE c.listed_type = 'ads' AND c.ordinary_candidate) END AS underlying_class
     FROM issuer_cover c
-), bound_visible AS MATERIALIZED (
-    SELECT v.* FROM issuer_visible v CROSS JOIN issuer_binding b
+), bound_known AS MATERIALIZED (
+    SELECT v.* FROM issuer_known v CROSS JOIN issuer_binding b
     WHERE v.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
        OR (v.symbol IS NULL AND v.ordinary_candidate AND v.source_kind IN ('f6', 'ratio_change_6k')
            AND b.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
            AND (v.underlying_class IS NULL OR b.underlying_class IS NULL
                 OR v.underlying_class = b.underlying_class))
+), ratio_families AS MATERIALIZED (
+    -- Every row has already proved its binding to the queried line. Literal
+    -- issuer-only and explicit spellings therefore share one source family.
+    -- Separate 6-K event dates remain independent within one accession.
+    SELECT source_kind, adsh, filed, underlying_class, ratio_change_program_key,
+           CASE WHEN source_kind = 'ratio_change_6k' THEN effective_from END AS event_from,
+           ratio_numerator / gcd(ratio_numerator, ratio_denominator) AS num,
+           ratio_denominator / gcd(ratio_numerator, ratio_denominator) AS den,
+           bool_or(coalesce(operative_date_conflict, false)) AS date_conflict,
+           bool_or(coalesce(ratio_effectiveness_pending, false)) AS pending
+    FROM bound_known
+    WHERE evidence_kind = 'ads_ratio'
+    GROUP BY source_kind, adsh, filed, underlying_class, ratio_change_program_key,
+             CASE WHEN source_kind = 'ratio_change_6k' THEN effective_from END,
+             ratio_numerator / gcd(ratio_numerator, ratio_denominator),
+             ratio_denominator / gcd(ratio_numerator, ratio_denominator)
+), bound_facts AS MATERIALIZED (
+    SELECT v.*, coalesce(f.date_conflict, false) AS family_date_conflict,
+           coalesce(f.pending, false) AS family_pending,
+           f.num AS family_num, f.den AS family_den
+    FROM bound_known v CROSS JOIN LATERAL (
+        SELECT bool_or(f.date_conflict) AS date_conflict, bool_or(f.pending) AS pending,
+               min(f.num) AS num, min(f.den) AS den
+        FROM ratio_families f
+        WHERE f.source_kind = v.source_kind AND f.adsh = v.adsh AND f.filed = v.filed
+          AND f.underlying_class IS NOT DISTINCT FROM v.underlying_class
+          AND f.event_from IS NOT DISTINCT FROM (
+              CASE WHEN v.source_kind = 'ratio_change_6k' THEN v.effective_from END)
+          AND f.num * v.ratio_denominator = v.ratio_numerator * f.den
+          AND (f.ratio_change_program_key IS NOT DISTINCT FROM v.ratio_change_program_key
+               OR ((f.ratio_change_program_key IS NULL OR v.ratio_change_program_key IS NULL)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ratio_families p
+                       WHERE p.source_kind = v.source_kind AND p.adsh = v.adsh AND p.filed = v.filed
+                         AND p.underlying_class IS NOT DISTINCT FROM v.underlying_class
+                         AND p.event_from IS NOT DISTINCT FROM (
+                             CASE WHEN v.source_kind = 'ratio_change_6k' THEN v.effective_from END)
+                         AND p.num * v.ratio_denominator = v.ratio_numerator * p.den
+                       HAVING count(DISTINCT p.ratio_change_program_key) > 1)))
+    ) f
+), controls AS MATERIALIZED (
+    SELECT v.* FROM bound_facts v
+    WHERE v.evidence_kind = 'ads_ratio'
+      AND (v.operative_date_conflict IS TRUE
+           OR (v.source_kind = 'ratio_change_6k' AND v.ratio_effectiveness_pending IS TRUE))
+      AND NOT EXISTS (
+          SELECT 1 FROM issuer_cover t
+          WHERE t.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
+            AND t.underlying_class <> v.underlying_class)
+), authorities AS MATERIALIZED (
+    SELECT v.* FROM bound_facts v
+    WHERE v.evidence_kind = 'ads_ratio' AND v.effective_date_explicit
+      AND NOT v.family_date_conflict AND NOT v.family_pending
+      AND (v.source_kind = 'f6'
+           OR (v.source_kind = 'ratio_change_6k'
+               AND v.ratio_effectiveness_confirmed IS TRUE
+               AND v.ratio_effectiveness_confirmation_text IS NOT NULL))
+), settling_options AS MATERIALIZED (
+    SELECT m.id AS control_id, a.*
+    FROM controls m JOIN authorities a
+      ON a.adsh <> m.adsh AND a.filed > m.filed AND a.available_on > m.available_on
+     AND a.underlying_class IS NOT DISTINCT FROM m.underlying_class
+     AND (a.effective_from >= m.effective_from
+          OR (m.operative_date_conflict IS TRUE
+              AND a.ratio_numerator * m.ratio_denominator = m.ratio_numerator * a.ratio_denominator
+              AND (a.source_kind = 'f6'
+                   OR 'ratio_effective' = ANY(a.ratio_effectiveness_confirmed_conditions))))
+     -- Approval of one prerequisite cannot discharge a different outstanding
+     -- condition. Explicit completion establishes the entitlement itself;
+     -- unknown approval identities require that stronger source proof.
+     AND (NOT (m.source_kind = 'ratio_change_6k' AND m.ratio_effectiveness_pending IS TRUE)
+          OR (a.ratio_effectiveness_confirmed IS TRUE
+              AND a.ratio_effectiveness_confirmation_text IS NOT NULL
+              AND ('ratio_effective' = ANY(a.ratio_effectiveness_confirmed_conditions)
+                   OR (cardinality(m.ratio_effectiveness_conditions) > 0
+                       AND NOT ('other_approval' = ANY(m.ratio_effectiveness_conditions))
+                       AND NOT ('unknown_condition' = ANY(m.ratio_effectiveness_conditions))
+                       AND a.ratio_effectiveness_confirmed_conditions @> m.ratio_effectiveness_conditions))))
+     -- A different number must belong to an actual later event, not a
+     -- contradictory proposed entitlement for this same event date.
+     AND (a.ratio_numerator * m.ratio_denominator = m.ratio_numerator * a.ratio_denominator
+          OR (a.effective_from <= p_as_of
+              AND a.effective_from > coalesce(
+                  m.operative_date_candidates[cardinality(m.operative_date_candidates)], m.effective_from)))
+     -- A future exact-ratio authority can establish a conflicted contract's
+     -- clock. A conditional notice already pins its proposed event date;
+     -- an unrelated future event cannot satisfy that outstanding condition.
+     AND (a.effective_from <= p_as_of
+          OR (a.ratio_numerator * m.ratio_denominator = m.ratio_numerator * a.ratio_denominator
+              AND (m.operative_date_conflict IS TRUE OR a.effective_from = m.effective_from)))
+     AND (
+         (a.ratio_change_program_key IS NOT NULL AND m.ratio_change_program_key IS NOT NULL
+          AND a.ratio_change_program_key = m.ratio_change_program_key)
+         OR ((a.ratio_change_program_key IS NULL OR m.ratio_change_program_key IS NULL)
+             AND NOT EXISTS (
+                 SELECT 1 FROM bound_facts p
+                 WHERE p.evidence_kind = 'ads_ratio'
+                   AND p.underlying_class IS NOT DISTINCT FROM m.underlying_class
+                   AND p.effective_from >= least(m.effective_from, a.effective_from)
+                   AND p.effective_from <= greatest(a.effective_from, coalesce(
+                       m.operative_date_candidates[cardinality(m.operative_date_candidates)], m.effective_from))
+                   AND p.ratio_change_program_key IS NOT NULL
+                 HAVING count(DISTINCT p.ratio_change_program_key) > 1))
+     )
+), settling_clock_options AS MATERIALIZED (
+    -- A later notice of a future event cannot roll an already-established
+    -- operative entitlement back into the former regime. Apply this across
+    -- both authority streams, before their independent latest selection.
+    -- Expiry remains after latest selection; an ended operative assertion
+    -- cannot resurrect either an older authority or its former ratio.
+    SELECT a.* FROM settling_options a
+    WHERE a.effective_from <= p_as_of
+       OR NOT EXISTS (
+           SELECT 1 FROM settling_options s
+           WHERE s.control_id = a.control_id AND s.effective_from <= p_as_of)
+), current_settling_options AS MATERIALIZED (
+    SELECT a.* FROM settling_clock_options a
+    WHERE CASE WHEN a.source_stream = 'change' THEN a.effective_from ELSE a.filed + 1 END = (
+        SELECT max(CASE WHEN s.source_stream = 'change' THEN s.effective_from ELSE s.filed + 1 END)
+        FROM settling_clock_options s
+        WHERE s.control_id = a.control_id AND s.source_stream = a.source_stream)
+), current_settling_assertions AS MATERIALIZED (
+    SELECT a.* FROM current_settling_options a
+    WHERE a.source_stream = 'change'
+       OR NOT EXISTS (
+           SELECT 1 FROM current_settling_options c
+           WHERE c.control_id = a.control_id AND c.source_stream = 'change')
+       OR a.effective_from >= (
+           SELECT max(c.effective_from) FROM current_settling_options c
+           WHERE c.control_id = a.control_id AND c.source_stream = 'change')
+       OR a.filed + 1 >= (
+           SELECT max(c.effective_from) FROM current_settling_options c
+           WHERE c.control_id = a.control_id AND c.source_stream = 'change')
+       OR EXISTS (
+           SELECT 1 FROM current_settling_options c
+           WHERE c.control_id = a.control_id AND c.source_stream = 'change'
+             AND a.ratio_numerator * c.ratio_denominator = c.ratio_numerator * a.ratio_denominator)
+), control_settlement AS MATERIALIZED (
+    SELECT m.*, s.settlement_count, s.settled_from, s.settled_num, s.settled_den,
+           coalesce(s.settlement_ids, ARRAY[]::bigint[]) AS settlement_ids
+    FROM controls m CROSS JOIN LATERAL (
+        -- Multiple later sources that independently repeat the same ratio
+        -- do not reopen an already established clock merely because one
+        -- registration starts that same ratio again at a later date.
+        SELECT count(DISTINCT (a.family_num, a.family_den)) AS settlement_count,
+               min(a.effective_from) AS settled_from,
+               min(a.family_num) AS settled_num, min(a.family_den) AS settled_den,
+               array_agg(DISTINCT a.id) AS settlement_ids
+        FROM current_settling_assertions a
+        WHERE a.control_id = m.id AND (a.effective_to IS NULL OR a.effective_to > p_as_of)
+    ) s
+), active_controls AS MATERIALIZED (
+    SELECT c.* FROM control_settlement c
+    WHERE c.effective_from <= p_as_of
+      AND (c.settlement_count <> 1 OR c.settled_from > p_as_of)
+), settled_registrations AS MATERIALIZED (
+    SELECT c.adsh, c.filed, c.underlying_class, c.family_num, c.family_den,
+           min(c.settled_from) AS operative_from
+    FROM control_settlement c
+    WHERE c.source_kind = 'f6' AND c.operative_date_conflict IS TRUE
+    GROUP BY c.adsh, c.filed, c.underlying_class, c.family_num, c.family_den
+    HAVING bool_and(c.settlement_count = 1
+                    AND c.settled_num * c.ratio_denominator = c.ratio_numerator * c.settled_den)
+       AND count(DISTINCT c.settled_from) = 1
+), operative_facts AS MATERIALIZED (
+    SELECT v.*, CASE WHEN v.family_date_conflict THEN s.operative_from
+                    ELSE v.effective_from END AS operative_from
+    FROM bound_facts v LEFT JOIN settled_registrations s
+      ON s.adsh = v.adsh AND s.filed = v.filed
+     AND s.underlying_class IS NOT DISTINCT FROM v.underlying_class
+     AND s.family_num * v.ratio_denominator = v.ratio_numerator * s.family_den
+    WHERE NOT (v.source_kind = 'ratio_change_6k' AND (v.family_pending OR v.family_date_conflict))
+      AND (NOT v.family_date_conflict OR (v.source_kind = 'f6' AND s.operative_from IS NOT NULL))
 ), announced_changes AS MATERIALIZED (
-    SELECT c.* FROM issuer_known c CROSS JOIN issuer_binding b
+    SELECT c.* FROM bound_facts c CROSS JOIN issuer_binding b
     WHERE c.evidence_kind = 'ads_ratio' AND c.source_kind = 'ratio_change_6k'
-      AND c.ordinary_candidate
+      AND c.ordinary_candidate AND NOT c.family_pending AND NOT c.family_date_conflict
       AND NOT EXISTS (
           SELECT 1 FROM issuer_cover t
           WHERE t.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
@@ -315,29 +594,68 @@ WITH issuer_observed AS MATERIALIZED (
                AND b.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
                AND (c.underlying_class IS NULL OR b.underlying_class IS NULL
                     OR c.underlying_class = b.underlying_class)))
+      -- A generic later plan cannot bypass an outstanding conditional event.
+      AND NOT EXISTS (
+          SELECT 1 FROM control_settlement m
+          WHERE m.source_kind = 'ratio_change_6k' AND m.ratio_effectiveness_pending IS TRUE
+            AND c.effective_from >= m.effective_from
+            AND m.underlying_class IS NOT DISTINCT FROM c.underlying_class
+            AND m.ratio_numerator * c.ratio_denominator = c.ratio_numerator * m.ratio_denominator
+            AND (m.ratio_change_program_key IS NULL OR c.ratio_change_program_key IS NULL
+                 OR m.ratio_change_program_key = c.ratio_change_program_key)
+            AND (m.settlement_count <> 1 OR m.settled_from <> c.effective_from
+                 OR m.settled_num * c.ratio_denominator <> c.ratio_numerator * m.settled_den))
+), future_date_bounds AS MATERIALIZED (
+    SELECT c.*, false AS conservative_only FROM announced_changes c
+    UNION ALL
+    SELECT c.*, true AS conservative_only FROM bound_facts c
+    WHERE c.evidence_kind = 'ads_ratio' AND c.source_kind = 'ratio_change_6k'
+      AND c.ordinary_candidate AND c.effective_date_explicit AND c.family_pending
+      AND NOT EXISTS (
+          SELECT 1 FROM issuer_cover t
+          WHERE t.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
+            AND t.underlying_class <> c.underlying_class)
 ), visible AS MATERIALIZED (
-    SELECT v.* FROM bound_visible v CROSS JOIN issuer_binding b
-    WHERE NOT (
+    SELECT v.* FROM operative_facts v CROSS JOIN issuer_binding b
+    WHERE v.operative_from <= p_as_of AND NOT (
         v.source_kind = 'f6'
-        AND (coalesce(v.ratio_effectiveness_pending, false)
-             OR EXISTS (
-                 SELECT 1 FROM issuer_known p
-                 WHERE p.source_kind = 'f6' AND p.ratio_effectiveness_pending IS TRUE
-                   AND p.adsh = v.adsh AND p.filed = v.filed
-                   AND p.symbol_key IS NOT DISTINCT FROM v.symbol_key
-                   AND p.underlying_class IS NOT DISTINCT FROM v.underlying_class
-                   AND p.ratio_numerator * v.ratio_denominator
-                       = v.ratio_numerator * p.ratio_denominator
-             ))
+        AND v.family_pending
         AND NOT EXISTS (
             SELECT 1 FROM announced_changes c
-            WHERE c.effective_from >= v.filed + 1
-              AND c.effective_from <= p_as_of
+            WHERE c.effective_from <= p_as_of
+              -- Normally an announcement date must be on/after filing+1.
+              -- A later affirmative completion may instead confirm an event
+              -- dated on the F-6 filing day; it becomes usable only once that
+              -- completion is public. An older matching ratio cannot activate
+              -- a distinct pending registration.
+              AND (c.effective_from >= v.filed + 1
+                   OR (c.effective_from = v.filed AND c.filed > v.filed
+                       AND c.available_on > v.available_on
+                       AND c.ratio_effectiveness_confirmed IS TRUE
+                       AND c.ratio_effectiveness_confirmation_text IS NOT NULL
+                       AND 'ratio_effective' = ANY(c.ratio_effectiveness_confirmed_conditions)))
               AND c.underlying_class IS NOT DISTINCT FROM v.underlying_class
               AND c.ratio_numerator * v.ratio_denominator
                   = v.ratio_numerator * c.ratio_denominator
+              AND (
+                  (v.ratio_change_program_key IS NOT NULL AND c.ratio_change_program_key IS NOT NULL
+                   AND v.ratio_change_program_key = c.ratio_change_program_key)
+                  OR ((v.ratio_change_program_key IS NULL OR c.ratio_change_program_key IS NULL)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM bound_facts p
+                          WHERE p.evidence_kind = 'ads_ratio'
+                            AND p.underlying_class IS NOT DISTINCT FROM v.underlying_class
+                            AND p.effective_from >= CASE WHEN c.effective_from = v.filed
+                                                         THEN v.filed ELSE v.filed + 1 END
+                            AND p.effective_from <= c.effective_from
+                            AND p.ratio_change_program_key IS NOT NULL
+                          HAVING count(DISTINCT p.ratio_change_program_key) > 1
+                             OR (v.ratio_change_program_key IS NOT NULL
+                                 AND coalesce(bool_or(p.ratio_change_program_key <> v.ratio_change_program_key), false))
+                             OR (c.ratio_change_program_key IS NOT NULL
+                                 AND coalesce(bool_or(p.ratio_change_program_key <> c.ratio_change_program_key), false))))
         )
-    ) AND NOT (
+    )) AND NOT (
         v.source_kind = 'f6' AND NOT v.effective_date_explicit
         AND v.effective_from = v.filed + 1 AND v.ordinary_candidate
         AND (v.underlying_class IS NULL OR b.underlying_class IS NULL
@@ -347,7 +665,7 @@ WITH issuer_observed AS MATERIALIZED (
             WHERE t.symbol_key = regexp_replace(upper(p_symbol), '[^A-Z0-9]', '', 'g')
               AND t.underlying_class <> v.underlying_class)
         AND EXISTS (
-             SELECT 1 FROM announced_changes c
+             SELECT 1 FROM future_date_bounds c
              WHERE c.source_available_on <= v.source_available_on
                AND c.available_on <= v.source_available_on
                AND c.effective_from > v.source_available_on
@@ -355,7 +673,7 @@ WITH issuer_observed AS MATERIALIZED (
                    = v.ratio_numerator * c.ratio_denominator
                AND (v.underlying_class IS NULL OR c.underlying_class IS NULL
                     OR v.underlying_class = c.underlying_class)
-             HAVING count(DISTINCT c.effective_from) = 1
+             HAVING (count(DISTINCT c.effective_from) = 1 OR bool_or(c.conservative_only))
                 AND min(c.effective_from) > p_as_of)
     )
 ), types AS (
@@ -374,24 +692,24 @@ WITH issuer_observed AS MATERIALIZED (
 ), changes AS (
     SELECT v.* FROM visible v
     WHERE v.evidence_kind = 'ads_ratio' AND v.source_stream = 'change'
-      AND v.effective_from = (
-          SELECT max(c.effective_from) FROM visible c
+      AND v.operative_from = (
+          SELECT max(c.operative_from) FROM visible c
           WHERE c.evidence_kind = 'ads_ratio' AND c.source_stream = 'change')
 ), latest_ratios AS (
     SELECT v.* FROM visible v
     WHERE v.evidence_kind = 'ads_ratio'
-      AND CASE WHEN v.source_stream = 'change' THEN v.effective_from
+      AND CASE WHEN v.source_stream = 'change' THEN v.operative_from
                ELSE v.filed + 1 END = (
-          SELECT max(CASE WHEN s.source_stream = 'change' THEN s.effective_from
+          SELECT max(CASE WHEN s.source_stream = 'change' THEN s.operative_from
                           ELSE s.filed + 1 END) FROM visible s
           WHERE s.evidence_kind = 'ads_ratio' AND s.source_stream = v.source_stream)
 ), ratio_candidates AS (
     SELECT v.* FROM latest_ratios v
     WHERE (
           NOT EXISTS (SELECT 1 FROM changes)
-          OR v.effective_from >= (SELECT max(c.effective_from) FROM changes c)
+          OR v.operative_from >= (SELECT max(c.operative_from) FROM changes c)
           OR (v.source_stream <> 'change'
-              AND v.filed + 1 >= (SELECT max(c.effective_from) FROM changes c))
+              AND v.filed + 1 >= (SELECT max(c.operative_from) FROM changes c))
           OR EXISTS (
               SELECT 1 FROM changes c
               WHERE v.ratio_numerator * c.ratio_denominator
@@ -404,7 +722,8 @@ WITH issuer_observed AS MATERIALIZED (
     FROM ratio_candidates r
     WHERE r.effective_to IS NULL OR r.effective_to > p_as_of
 ), ratio_state AS (
-    SELECT CASE WHEN count(DISTINCT (r.num, r.den)) > 1
+    SELECT CASE WHEN EXISTS (SELECT 1 FROM active_controls) THEN 'ambiguous'
+                WHEN count(DISTINCT (r.num, r.den)) > 1
                      OR count(DISTINCT r.underlying_class) > 1
                      OR bool_or(r.underlying_class <> (
                          SELECT t.underlying_class FROM type_state t)) THEN 'ambiguous'
@@ -438,6 +757,16 @@ SELECT CASE WHEN x.listing_state = 'ambiguous' OR x.ratio_state = 'ambiguous'
            UNION ALL
            SELECT r.id FROM ratios r
            WHERE x.kind IS DISTINCT FROM 'ordinary_direct'
+           UNION ALL
+           SELECT c.id FROM active_controls c
+           WHERE x.kind IS DISTINCT FROM 'ordinary_direct'
+           UNION ALL
+           SELECT c.id FROM control_settlement c
+           WHERE c.settlement_count = 1 AND c.effective_from <= p_as_of
+             AND x.kind IS DISTINCT FROM 'ordinary_direct'
+           UNION ALL
+           SELECT unnest(c.settlement_ids) FROM control_settlement c
+           WHERE c.effective_from <= p_as_of AND x.kind IS DISTINCT FROM 'ordinary_direct'
        ) q ORDER BY q.id)
 FROM result x
 $fn$;

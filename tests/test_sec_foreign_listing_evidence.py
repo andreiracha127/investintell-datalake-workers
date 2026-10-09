@@ -131,6 +131,8 @@ def test_real_anpc_placeholder_amendment_is_distinguished_from_explicit_announce
     assert {row["effective_from"] for row in amendment} == {"2022-10-25"}
     assert all(row["effective_date_explicit"] is True for row in announcement)
     assert {row["effective_from"] for row in announcement} == {"2022-11-04"}
+    assert all(row.get("ratio_effectiveness_pending") is True for row in announcement)
+    assert all(row["ratio_effectiveness_conditions"] == ["unknown_condition"] for row in announcement)
 
 
 def test_real_otly_market_open_amendment_has_an_explicit_later_effective_date():
@@ -211,8 +213,12 @@ def test_conflicting_market_session_effective_dates_do_not_choose_one():
         filing_date="2025-02-12", source_url="https://www.sec.gov/Archives/test",
     )
     assert rows
-    assert all(row["effective_date_explicit"] is False for row in rows)
-    assert not any(row["effective_from"] in {"2025-02-18", "2025-02-19"} for row in rows)
+    assert all(row["effective_date_explicit"] is True for row in rows)
+    assert {row["effective_from"] for row in rows} == {"2025-02-18"}
+    assert all(row["operative_date_conflict"] is True for row in rows)
+    assert {tuple(row["operative_date_candidates"]) for row in rows} == {("2025-02-18", "2025-02-19")}
+    assert all("February 18" in row["operative_date_conflict_text"]
+               and "February 19" in row["operative_date_conflict_text"] for row in rows)
 
 
 def test_real_affirmative_ads_footnote_overrides_common_share_title():
@@ -641,7 +647,10 @@ def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=
         adsh="0001193125-20-000001", form="20-F",
         ratio_change_program_key=None, ratio_change_correction_kind=None,
         ratio_change_correction_text=None, ratio_effectiveness_pending=None,
-        ratio_effectiveness_pending_text=None):
+        ratio_effectiveness_pending_text=None, operative_date_conflict=None,
+        operative_date_candidates=None, operative_date_conflict_text=None,
+        ratio_effectiveness_confirmed=None, ratio_effectiveness_confirmation_text=None,
+        ratio_effectiveness_conditions=None, ratio_effectiveness_confirmed_conditions=None):
     from psycopg import sql
     tomorrow = (dt.date.fromisoformat(filed) + dt.timedelta(days=1)).isoformat()
     row = dict(
@@ -655,6 +664,13 @@ def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=
         ratio_change_correction_text=ratio_change_correction_text,
         ratio_effectiveness_pending=ratio_effectiveness_pending,
         ratio_effectiveness_pending_text=ratio_effectiveness_pending_text,
+        operative_date_conflict=operative_date_conflict,
+        operative_date_candidates=operative_date_candidates,
+        operative_date_conflict_text=operative_date_conflict_text,
+        ratio_effectiveness_confirmed=ratio_effectiveness_confirmed,
+        ratio_effectiveness_confirmation_text=ratio_effectiveness_confirmation_text,
+        ratio_effectiveness_conditions=ratio_effectiveness_conditions,
+        ratio_effectiveness_confirmed_conditions=ratio_effectiveness_confirmed_conditions,
         source_url="https://www.sec.gov/Archives/edgar/data/test",
         source_sha256="a" * 64, source_kind=source, evidence_kind=kind,
         listed_type=listed_type if kind == "listed_type" else None,
@@ -990,9 +1006,41 @@ def test_pending_f6_requires_its_own_dated_ratio_class_and_program(
     add_ratio(db, (2, 1), filed="2022-01-01")
     add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01")
     pending = _pending_ratio_registration(db, (20, 1))
+    confirmed = ({"ratio_effectiveness_confirmed": True,
+                  "ratio_effectiveness_confirmation_text": "A different change was completed on July 1, 2020.",
+                  "ratio_effectiveness_confirmed_conditions": ["ratio_effective"]}
+                 if effective == "2020-07-01" else {})
     add_ratio(db, ratio, source="ratio_change_6k", filed="2022-11-18", effective=effective,
-              symbol=symbol, underlying_class=underlying_class)
+              symbol=symbol, underlying_class=underlying_class, **confirmed)
     answer = resolve(db, "2022-11-28")
+    assert pending not in answer[-1]
+
+
+def test_same_day_f6_completion_cannot_borrow_a_different_known_program(db):
+    add(db, filed="2022-01-01", underlying_class="class_a")
+    add_ratio(db, (2, 1), filed="2022-01-01", underlying_class="class_a")
+    add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01", underlying_class="class_a")
+    pending = _pending_ratio_registration(
+        db, (20, 1), filed="2022-11-28", adsh="0001193805-22-001555",
+        underlying_class="class_a",
+    )
+    add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-30",
+        effective="2022-11-28", symbol="TSM", underlying_class="class_a",
+        adsh="0001234567-22-000101", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="This ratio change was completed on November 28.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+        ratio_change_program_key="old_cusip:111111111",
+    )
+    add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-30",
+        effective="2022-11-28", symbol=None, underlying_class="class_a",
+        adsh="0001234567-22-000102", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="A different program completed its ratio change on November 28.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+        ratio_change_program_key="old_cusip:222222222",
+    )
+    answer = resolve(db, "2022-12-01")
     assert pending not in answer[-1]
 
 
@@ -1153,9 +1201,25 @@ def test_foreign_evidence_schema_replay_is_additive_and_idempotent(sql_database)
         "SELECT conname FROM pg_catalog.pg_constraint "
         "WHERE conrelid = 'public.sec_foreign_listing_evidence'::regclass "
         "AND conname IN ('sec_foreign_listing_ratio_program_ck', "
-        "'sec_foreign_listing_ratio_correction_ck', 'sec_foreign_listing_ratio_pending_ck')"
+        "'sec_foreign_listing_ratio_correction_ck', 'sec_foreign_listing_ratio_pending_ck', "
+        "'sec_foreign_listing_operative_date_conflict_ck', 'sec_foreign_listing_ratio_confirmation_ck')"
     ).fetchall()
-    assert len(constraints) == 3
+    assert len(constraints) == 5
+    columns = dict(sql_database.execute(
+        "SELECT attname, format_type(atttypid, atttypmod) FROM pg_catalog.pg_attribute "
+        "WHERE attrelid = 'public.sec_foreign_listing_evidence'::regclass AND NOT attisdropped "
+        "AND attname IN ('operative_date_conflict', 'operative_date_candidates', "
+        "'operative_date_conflict_text', 'ratio_effectiveness_confirmed', "
+        "'ratio_effectiveness_confirmation_text', 'ratio_effectiveness_conditions', "
+        "'ratio_effectiveness_confirmed_conditions')"
+    ).fetchall())
+    assert columns == {
+        "operative_date_conflict": "boolean", "operative_date_candidates": "date[]",
+        "operative_date_conflict_text": "text", "ratio_effectiveness_confirmed": "boolean",
+        "ratio_effectiveness_confirmation_text": "text",
+        "ratio_effectiveness_conditions": "text[]",
+        "ratio_effectiveness_confirmed_conditions": "text[]",
+    }
 
 
 def test_future_ratio_change_does_not_leak_then_supersedes_old_regime(db):
@@ -1238,12 +1302,20 @@ def test_full_real_azn_contracts_and_announcement_switch_on_effective_date(db):
 
 
 def test_real_anpc_future_announcement_dates_placeholder_f6_ratio(db):
-    for name in ("anpc_2022_cover", "anpc_2019_f6_full",
-                 "anpc_2022_f6_undated_amendment_full", "anpc_2022_change_announcement"):
+    for name in ("anpc_2022_cover", "anpc_2019_f6_full", "anpc_2022_f6_undated_amendment_full"):
         insert_real_parsed_rows(db, name)
+    plan = _parse_independent_listing_fixture("anpc_2022_plan_expected_ratio")
+    _insert_gate_parsed_rows(db, plan, "anpc-2022-plan-expected-ratio")
     for day in ("2022-10-24", "2022-10-25", "2022-11-03"):
         assert resolve(db, day, cik=1786511, symbol="ANPC")[:4] == ("resolved", "ads", 1, 1)
-    assert resolve(db, "2022-11-04", cik=1786511, symbol="ANPC")[:4] == ("resolved", "ads", 20, 1)
+    for day in ("2022-11-04", "2022-12-16"):
+        answer = resolve(db, day, cik=1786511, symbol="ANPC")
+        assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+    completion = _parse_independent_listing_fixture("anpc_2022_ratio_completion")
+    assert completion and all(row.get("ratio_effectiveness_confirmed") is True for row in completion)
+    _insert_gate_parsed_rows(db, completion, "anpc-2022-ratio-completion")
+    assert resolve(db, "2022-12-16", cik=1786511, symbol="ANPC")[0] == "ambiguous"
+    assert resolve(db, "2022-12-17", cik=1786511, symbol="ANPC")[:4] == ("resolved", "ads", 20, 1)
 
 
 def _future_ratio_program(db, *, explicit=False):
@@ -1722,12 +1794,16 @@ def test_unlinked_consolidation_does_not_supply_a_ratio_effective_date():
 
 
 def test_conflicting_named_consolidation_dates_do_not_choose_one():
-    assert _parse_6k_transition_text(
+    rows = _parse_6k_transition_text(
         "The Share Consolidation will be effective at 5:00 P.M., on December 9, 2022. "
         "The Share Consolidation will be effective at 5:00 P.M., on December 10, 2022. "
         "Upon the Share Consolidation, the ADS ratio will change from one ADS for ten ordinary shares "
         "to one ADS for one ordinary share."
-    ) == []
+    )
+    assert rows and all(row["operative_date_conflict"] is True for row in rows)
+    assert {tuple(row["operative_date_candidates"]) for row in rows} == {("2022-12-09", "2022-12-10")}
+    assert {(row["ratio_numerator"], row["effective_from"]) for row in rows} == {(1, "2022-12-09")}
+    assert all(row["effective_date_explicit"] for row in rows)
 
 
 @pytest.mark.parametrize("name,available", [
@@ -1840,12 +1916,16 @@ def test_a_different_class_reverse_split_does_not_supply_the_ads_event_date():
 
 
 def test_conflicting_reverse_split_effective_dates_do_not_pick_the_nearest_date():
-    assert _parse_6k_transition_text(
+    rows = _parse_6k_transition_text(
         "The reverse split of ordinary shares will be effective July 23, 2020. "
         "The same reverse split of ordinary shares will be effective July 24, 2020. "
         "Concurrently with the reverse split, the ADS ratio will change from one ADS "
         "representing one ordinary share to one ADS representing five ordinary shares."
-    ) == []
+    )
+    assert rows and all(row["operative_date_conflict"] is True for row in rows)
+    assert {tuple(row["operative_date_candidates"]) for row in rows} == {("2020-07-23", "2020-07-24")}
+    assert {(row["ratio_numerator"], row["effective_from"]) for row in rows} == {(5, "2020-07-23")}
+    assert all(row["effective_date_explicit"] for row in rows)
 
 
 def test_completed_on_date_ratio_uses_the_event_date_instead_of_the_announcement_date():
@@ -1891,22 +1971,18 @@ def test_expired_f6_prior_entitlement_is_not_revived_at_later_publication():
 
 
 def test_conflicting_f6_commencing_dates_do_not_fall_back_to_publication():
-    contract = (
-        '"Shares" mean the ordinary shares of the Company. '
-        'Prior to November 17, 2020 each "ADS" evidenced by an ADR represents the right to receive, '
-        "and to exercise the beneficial ownership interests in, twenty five Shares that are on "
-        "deposit with the Depositary and commencing on November 17, 2020 each ADS evidenced by "
-        "an ADR represents the right to receive, and to exercise the beneficial ownership "
-        "interests in, five Shares that are on deposit with the Depositary. "
-        "Commencing on November 18, 2020 each ADS evidenced by an ADR represents the right to receive, "
-        "and to exercise the beneficial ownership interests in, five Shares that are on deposit "
-        "with the Depositary."
-    )
-    rows = _parse_f6_beneficial_ownership_entitlements(contract)
-    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"],
-             row["effective_to"]) for row in rows} == {(25, 1, "2020-10-27", "2020-11-17")}
-    assert not any(row["ratio_numerator"] == 5 for row in rows)
-    assert _parse_f6_beneficial_ownership_entitlements(contract, filing_date="2020-11-23") == []
+    rows = _parse_f6_beneficial_ownership_entitlements(_GATE_CONFLICTING_F6_INTERVALS)
+    former = [row for row in rows if row["ratio_numerator"] == 25]
+    assert {(row["effective_from"], row["effective_to"]) for row in former} == {
+        ("2020-10-27", "2020-11-17"),
+    }
+    conflict = [row for row in rows if row["ratio_numerator"] == 5]
+    assert conflict and all(row["operative_date_conflict"] is True for row in conflict)
+    assert {tuple(row["operative_date_candidates"]) for row in conflict} == {("2020-11-17", "2020-11-18")}
+    assert all(row["effective_from"] == "2020-11-17" and row["effective_date_explicit"] for row in conflict)
+    late = _parse_f6_beneficial_ownership_entitlements(_GATE_CONFLICTING_F6_INTERVALS, filing_date="2020-11-23")
+    assert late and all(row["ratio_numerator"] == 5 and row["operative_date_conflict"] for row in late)
+    assert {row["available_on"] for row in late} == {"2020-11-24"}
 
 
 @pytest.mark.parametrize("share_definition", [
@@ -2074,3 +2150,823 @@ def test_original_rbs_numeric_parenthetical_transition_retains_only_the_new_ordi
     assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"],
              row["ordinary_candidate"]) for row in rows} == {(20, 1, "2008-11-07", True)}
     assert {row["available_on"] for row in rows} == {"2008-11-04"}
+
+
+# Gate regressions exercise parsed sources through SQL rather than silently
+# accepting a dropped entitlement or an invented filing-plus-one start date.
+_GATE_CONFLICTING_F6_INTERVALS = (
+    '"Shares" mean the ordinary shares of the Company. '
+    'Prior to November 17, 2020 each "ADS" evidenced by an ADR represents the right to receive, '
+    "and to exercise the beneficial ownership interests in, twenty five Shares that are on "
+    "deposit with the Depositary and commencing on November 17, 2020 each ADS evidenced by "
+    "an ADR represents the right to receive, and to exercise the beneficial ownership "
+    "interests in, five Shares that are on deposit with the Depositary. "
+    "Commencing on November 18, 2020 each ADS evidenced by an ADR represents the right to receive, "
+    "and to exercise the beneficial ownership interests in, five Shares that are on deposit "
+    "with the Depositary."
+)
+_GATE_CONDITIONAL_NOTICE = (
+    "The Company will change the ratio of its American Depositary Shares to ordinary shares "
+    "from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, "
+    "effective on November 4, 2022, subject to shareholder approval which has not yet been obtained."
+)
+_GATE_PENDING_F6 = (
+    "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares."
+)
+
+
+def _parse_gate_source(text, *, form, filed, adsh="0001193125-22-000123"):
+    return parse_filing(
+        text, cik=1046179, form_type=form, accession_number=adsh,
+        filing_date=filed, source_url="https://www.sec.gov/Archives/edgar/data/1046179/" + adsh.replace("-", "") + "/gate.htm",
+        symbols=["TSM"],
+    )
+
+
+def _insert_gate_parsed_rows(db, rows, package):
+    from psycopg import sql
+    ids = []
+    for parsed in rows:
+        row = {**parsed, "fact_hash": uuid4().hex, "loaded_on": "2026-10-09", "source_package": package}
+        statement = sql.SQL("INSERT INTO public.sec_foreign_listing_evidence ({}) VALUES ({}) RETURNING id").format(
+            sql.SQL(",").join(map(sql.Identifier, row)),
+            sql.SQL(",").join(sql.Placeholder() for _ in row),
+        )
+        ids.append(db.execute(statement, list(row.values())).fetchone()[0])
+    return ids
+
+
+def test_gate_contradictory_operative_dates_preserve_new_source_ambiguity(db):
+    add(db, filed="2020-01-01")
+    add_ratio(db, (25, 1), filed="2019-01-01")
+    add_ratio(db, (25, 1), source="cover_footnote", filed="2020-01-01")
+    rows = _parse_gate_source(_GATE_CONFLICTING_F6_INTERVALS, form="F-6 POS", filed="2020-11-23",
+                              adsh="0001193125-20-000123")
+    ids = _insert_gate_parsed_rows(db, rows, "conflicting-new-registration")
+    assert resolve(db, "2020-11-23")[:4] == ("resolved", "ads", 25, 1)
+    for day in ("2020-11-24", "2020-12-01", "2025-12-31"):
+        answer = resolve(db, day)
+        assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+        assert set(ids).intersection(answer[-1])
+    conflict = [row for row in rows if row.get("operative_date_conflict")]
+    assert conflict
+    assert {tuple(row["operative_date_candidates"]) for row in conflict} == {("2020-11-17", "2020-11-18")}
+    assert all(row["effective_date_explicit"] and row["effective_from"] == "2020-11-17" for row in conflict)
+
+
+@pytest.mark.parametrize("new_annual_corroboration", [False, True])
+def test_gate_conflicting_february_dates_never_activate_on_filing_plus_one(db, new_annual_corroboration):
+    add(db, filed="2024-01-01")
+    add_ratio(db, (1, 1), filed="2023-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2024-01-01")
+    if new_annual_corroboration:
+        add(db, filed="2025-02-12")
+        add_ratio(db, (20, 1), source="cover_footnote", filed="2025-02-12")
+    rows = _parse_gate_source(
+        "Each ADS represents twenty ordinary shares, effective as of the open of trading on February 18, 2025. "
+        "The ratio change is effective at the close of trading on February 19, 2025.",
+        form="F-6 POS", filed="2025-02-12", adsh="0001193125-25-000123",
+    )
+    ids = _insert_gate_parsed_rows(db, rows, "conflicting-market-session-registration")
+    assert resolve(db, "2025-02-12")[:4] == ("resolved", "ads", 1, 1)
+    for day in ("2025-02-13", "2025-02-17"):
+        answer = resolve(db, day)
+        expected = (("ambiguous", "ads", None, None, "resolved", "ambiguous")
+                    if new_annual_corroboration else ("resolved", "ads", 1, 1, "resolved", "resolved"))
+        assert answer[:6] == expected
+    for day in ("2025-02-18", "2025-02-19", "2025-02-20"):
+        assert resolve(db, day)[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+    assert ids
+    assert all(row.get("operative_date_conflict") is True for row in rows)
+    assert {tuple(row["operative_date_candidates"]) for row in rows} == {("2025-02-18", "2025-02-19")}
+    assert {row["effective_from"] for row in rows} == {"2025-02-18"}
+
+
+def test_gate_conditional_notice_cannot_activate_pending_f6_without_public_confirmation(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    conditional_rows = _parse_gate_source(_GATE_CONDITIONAL_NOTICE, form="6-K", filed="2022-10-18")
+    conditional = _insert_gate_parsed_rows(db, conditional_rows, "conditional-ratio-announcement")
+    pending_rows = _parse_gate_source(_GATE_PENDING_F6, form="F-6 POS", filed="2022-10-24",
+                                     adsh="0001193125-22-000124")
+    pending = _insert_gate_parsed_rows(db, pending_rows, "pending-ratio-registration")
+    assert conditional and pending
+    for day in ("2022-10-19", "2022-10-25", "2022-11-03"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 1, 1)
+        assert not set(pending).intersection(answer[-1])
+    for day in ("2022-11-04", "2022-11-10"):
+        answer = resolve(db, day)
+        assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+        assert not set(pending).intersection(answer[-1])
+    confirmation_rows = _parse_gate_source(
+        "The shareholders approved the proposed ADS ratio change. On November 4, 2022, the Company "
+        "completed the change of the ratio of its ADSs to ordinary shares from one ADS representing "
+        "one ordinary share to one ADS representing twenty ordinary shares.",
+        form="6-K", filed="2022-11-10", adsh="0001193125-22-000125",
+    )
+    confirmation = _insert_gate_parsed_rows(db, confirmation_rows, "public-ratio-confirmation")
+    assert confirmation
+    assert resolve(db, "2022-11-10")[0] == "ambiguous"
+    answer = resolve(db, "2022-11-11")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert set(pending).intersection(answer[-1]) and set(confirmation).intersection(answer[-1])
+    assert all(row.get("ratio_effectiveness_pending") is True for row in conditional_rows)
+    assert all(row.get("ratio_effectiveness_confirmed") is True for row in confirmation_rows)
+
+
+def test_gate_ante_conditional_meeting_notice_needs_confirmation_and_keeps_valid_event(db):
+    add(db, cik=1413745, symbol="ANTE", filed="2022-05-01")
+    add_ratio(db, (10, 1), cik=1413745, symbol="ANTE", filed="2019-01-01")
+    add_ratio(db, (10, 1), cik=1413745, symbol="ANTE", source="cover_footnote", filed="2022-05-01")
+    _insert_dated_ratio_source_fixture(db, "ante_2022_pending_f6_ratio")
+    _insert_dated_ratio_source_fixture(db, "ante_2022_consolidation_notice")
+    _insert_dated_ratio_source_fixture(db, "ante_2022_consolidation_meeting_notice")
+    assert resolve(db, "2022-12-08", cik=1413745, symbol="ANTE")[:4] == ("resolved", "ads", 10, 1)
+    assert resolve(db, "2022-12-09", cik=1413745, symbol="ANTE")[0] == "ambiguous"
+    confirmation = _insert_dated_ratio_source_fixture(db, "ante_2022_consolidation_confirmation")
+    assert resolve(db, "2022-11-30", cik=1413745, symbol="ANTE")[:4] == ("resolved", "ads", 10, 1)
+    assert resolve(db, "2022-12-08", cik=1413745, symbol="ANTE")[:4] == ("resolved", "ads", 10, 1)
+    for day in ("2022-12-09", "2022-12-12", "2025-12-31"):
+        answer = resolve(db, day, cik=1413745, symbol="ANTE")
+        assert answer[:4] == ("resolved", "ads", 1, 1)
+        assert set(confirmation).intersection(answer[-1])
+
+
+@pytest.mark.parametrize("unrelated_statement", [
+    "The shareholders approved an acquisition of a subsidiary.",
+    "The Board approved the Company's annual dividend.",
+    "The ADS trading price is expected to change on November 4, 2022.",
+])
+def test_gate_unrelated_approval_or_trading_expectation_does_not_confirm_ratio(unrelated_statement):
+    rows = _parse_gate_source(unrelated_statement + " " + _GATE_CONDITIONAL_NOTICE,
+                              form="6-K", filed="2022-10-18")
+    assert rows
+    assert all(row.get("ratio_effectiveness_pending") is True for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+def test_gate_later_proposal_remains_conditional_instead_of_becoming_confirmation():
+    rows = _parse_gate_source(
+        "On November 10, 2022, the Company announced that it still proposes to change the ADS "
+        "ratio from one ADS representing one ordinary share to one ADS representing twenty "
+        "ordinary shares, effective November 4, 2022, subject to shareholder approval.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") is True for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("symbol", "OTHER"), ("underlying_class", "class_b"),
+    ("ratio_change_program_key", "old_cusip:987654321"),
+    ("effective", "2022-12-01"), ("ratio", (40, 1)),
+])
+def test_gate_unrelated_confirmation_cannot_clear_conditional_program(db, field, value):
+    add(db, filed="2022-01-01", underlying_class="class_a")
+    add_ratio(db, (1, 1), filed="2021-01-01", underlying_class="class_a")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01", underlying_class="class_a")
+    pending = add_ratio(db, (20, 1), filed="2022-10-24", symbol=None, underlying_class="class_a",
+                        ratio_effectiveness_pending=True,
+                        ratio_effectiveness_pending_text="Effective on the date announced by the Depositary.")
+    conditional = add_ratio(db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-10-18",
+                            effective="2022-11-04", symbol="TSM", underlying_class="class_a",
+                            ratio_change_program_key="old_cusip:123456789",
+                            ratio_effectiveness_pending=True,
+                            ratio_effectiveness_pending_text="Subject to shareholder approval.",
+                            ratio_effectiveness_conditions=["shareholder_approval"])
+    kwargs = {"ratio": (20, 1), "source": "ratio_change_6k", "form": "6-K", "filed": "2022-11-10",
+              "effective": "2022-11-04", "symbol": "TSM", "underlying_class": "class_a",
+              "ratio_change_program_key": "old_cusip:123456789",
+              "adsh": "0001193125-22-000110", "ratio_effectiveness_confirmed": True,
+              "ratio_effectiveness_confirmation_text": "The shareholders approved and completed this ADS ratio change.",
+              "ratio_effectiveness_confirmed_conditions": ["ratio_effective"]}
+    kwargs[field] = value
+    add_ratio(db, **kwargs)
+    answer = resolve(db, "2022-11-11")
+    assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+    assert conditional in answer[-1] and pending not in answer[-1]
+
+
+@pytest.mark.parametrize("metadata", [
+    {"operative_date_candidates": ["2020-11-17"]},
+    {"operative_date_candidates": ["2020-11-17", "2020-11-17"]},
+    {"operative_date_candidates": ["2020-11-17", None]},
+    {"operative_date_conflict_text": ""},
+    {"effective_date_explicit": False},
+    {"operative_date_conflict": False},
+])
+def test_gate_schema_rejects_incomplete_conflicting_date_metadata(db, metadata):
+    import psycopg
+    kwargs = {"operative_date_conflict": True,
+              "operative_date_candidates": ["2020-11-17", "2020-11-18"],
+              "operative_date_conflict_text": "Commencing November 17; commencing November 18.",
+              "effective_date_explicit": True}
+    kwargs.update(metadata)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db.transaction():
+            add_ratio(db, (5, 1), effective="2020-11-17", **kwargs)
+
+
+@pytest.mark.parametrize("metadata", [
+    {"ratio_effectiveness_confirmation_text": ""},
+    {"ratio_effectiveness_confirmed": False},
+    {"effective_date_explicit": False},
+    {"ratio_effectiveness_pending": True, "ratio_effectiveness_pending_text": "Subject to approval."},
+    {"operative_date_conflict": True, "operative_date_candidates": ["2022-11-04", "2022-11-05"],
+     "operative_date_conflict_text": "Effective November 4; effective November 5."},
+])
+def test_gate_schema_rejects_unproved_or_unsettled_confirmation_metadata(db, metadata):
+    import psycopg
+    kwargs = {"ratio_effectiveness_confirmed": True,
+              "ratio_effectiveness_confirmation_text": "The ADS ratio change was completed on November 4.",
+              "effective_date_explicit": True,
+              "ratio_effectiveness_confirmed_conditions": ["ratio_effective"]}
+    kwargs.update(metadata)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db.transaction():
+            add_ratio(db, (20, 1), source="ratio_change_6k", form="6-K", effective="2022-11-04", **kwargs)
+
+
+
+def _gate_conflicted_f6_registration(db):
+    return add_ratio(
+        db, (20, 1), filed="2025-02-12", form="F-6 POS", effective="2025-02-18",
+        symbol=None, adsh="0001193125-25-000123", operative_date_conflict=True,
+        operative_date_candidates=["2025-02-18", "2025-02-19"],
+        operative_date_conflict_text="This ADS ratio is effective February 18 and effective February 19.",
+    )
+
+
+def _gate_old_ratio_pair(db):
+    add(db, filed="2024-01-01")
+    add_ratio(db, (1, 1), filed="2023-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2024-01-01")
+
+
+def test_gate_later_single_date_confirmation_recovers_only_conflicted_f6_entitlement(db):
+    _gate_old_ratio_pair(db)
+    conflict = _gate_conflicted_f6_registration(db)
+    assert resolve(db, "2025-02-17")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2025-02-18")[0] == "ambiguous"
+    confirmation = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2025-02-21",
+        effective="2025-02-19", symbol="TSM", adsh="0001193125-25-000456", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="The Company completed this ADS ratio change on February 19.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+    )
+    assert resolve(db, "2025-02-21")[0] == "ambiguous"
+    answer = resolve(db, "2025-02-22")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert conflict in answer[-1] and confirmation in answer[-1]
+    original = db.execute(
+        "SELECT operative_date_conflict,operative_date_candidates,effective_from "
+        "FROM public.sec_foreign_listing_evidence WHERE id=%s", [conflict],
+    ).fetchone()
+    assert original == (True, [dt.date(2025, 2, 18), dt.date(2025, 2, 19)], dt.date(2025, 2, 18))
+
+
+def test_gate_definitive_future_confirmation_respects_publication_and_actual_date(db):
+    _gate_old_ratio_pair(db)
+    conflict = _gate_conflicted_f6_registration(db)
+    confirmation = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2025-02-21",
+        publication_floor_on="2025-02-25", effective="2025-03-01", symbol="TSM", adsh="0001193125-25-000789",
+        ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="The Depositary definitively announced this ADS ratio effective March 1.",
+        ratio_effectiveness_confirmed_conditions=["depositary_notice"],
+    )
+    for day in ("2025-02-18", "2025-02-22", "2025-02-24"):
+        assert resolve(db, day)[0] == "ambiguous"
+    for day in ("2025-02-25", "2025-02-28"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("ambiguous", "ads", None, None)
+        assert conflict in answer[-1] and confirmation in answer[-1]
+    answer = resolve(db, "2025-03-01")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert conflict in answer[-1] and confirmation in answer[-1]
+
+
+
+def test_gate_unflagged_fee_in_same_registration_cannot_bypass_date_conflict(db):
+    _gate_old_ratio_pair(db)
+    conflict = _gate_conflicted_f6_registration(db)
+    fee = add_ratio(db, (20, 1), filed="2025-02-12", form="F-6 POS", symbol=None,
+                    adsh="0001193125-25-000123")
+    for day in ("2025-02-13", "2025-02-17"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 1, 1)
+        assert fee not in answer[-1]
+    for day in ("2025-02-18", "2025-02-19"):
+        answer = resolve(db, day)
+        assert answer[0] == "ambiguous" and conflict in answer[-1]
+
+
+@pytest.mark.parametrize("end_field", ["until", "retired"])
+def test_gate_expired_or_retired_confirmation_cannot_clear_conditional_notice(db, end_field):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    pending = add_ratio(db, (20, 1), filed="2022-10-24", symbol=None,
+                        ratio_effectiveness_pending=True,
+                        ratio_effectiveness_pending_text="Effective on the date announced by the Depositary.")
+    conditional = add_ratio(db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-10-18",
+                            effective="2022-11-04", ratio_effectiveness_pending=True,
+                            ratio_effectiveness_pending_text="Subject to shareholder approval.",
+                            ratio_effectiveness_conditions=["shareholder_approval"])
+    confirmation = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-10", effective="2022-11-04",
+        adsh="0001193125-22-000110", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="This ADS ratio change was completed on November 4.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+        **{end_field: "2022-11-12"},
+    )
+    answer = resolve(db, "2022-11-13")
+    assert answer[0] == "ambiguous" and conditional in answer[-1]
+    assert pending not in answer[-1] and confirmation not in answer[-1]
+
+
+
+def test_gate_shareholder_approval_cannot_clear_outstanding_regulatory_condition(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    pending = add_ratio(db, (20, 1), filed="2022-10-24", symbol=None,
+                        ratio_effectiveness_pending=True,
+                        ratio_effectiveness_pending_text="Effective on the date announced by the Depositary.",
+                        ratio_effectiveness_conditions=["depositary_notice"])
+    conditional = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-10-18", effective="2022-11-04",
+        ratio_effectiveness_pending=True, ratio_effectiveness_pending_text="Subject to SEC approval.",
+        ratio_effectiveness_conditions=["regulatory_approval"],
+    )
+    add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-10", effective="2022-11-04",
+        adsh="0001193125-22-000110", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="The shareholders approved the proposed ADS ratio change.",
+        ratio_effectiveness_confirmed_conditions=["shareholder_approval"],
+    )
+    answer = resolve(db, "2022-11-11")
+    assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+    assert conditional in answer[-1] and pending not in answer[-1]
+    completed = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-12", effective="2022-11-04",
+        adsh="0001193125-22-000112", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="The Company completed this ADS ratio change on November 4.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+    )
+    assert resolve(db, "2022-11-12")[0] == "ambiguous"
+    answer = resolve(db, "2022-11-13")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert pending in answer[-1] and completed in answer[-1]
+
+
+
+def test_gate_explicitly_bound_fee_cannot_bypass_issuer_scoped_same_registration_conflict(db):
+    add(db, symbol="XYZ", filed="2024-01-01")
+    add_ratio(db, (1, 1), symbol=None, filed="2023-01-01")
+    add_ratio(db, (1, 1), symbol="XYZ", source="cover_footnote", filed="2024-01-01")
+    add(db, symbol="XYZ", filed="2025-02-12")
+    add_ratio(db, (20, 1), symbol="XYZ", source="cover_footnote", filed="2025-02-12")
+    conflict = _gate_conflicted_f6_registration(db)
+    fee = add_ratio(db, (20, 1), filed="2025-02-12", form="F-6 POS", symbol="XYZ",
+                    adsh="0001193125-25-000123")
+    assert resolve(db, "2025-02-12", symbol="XYZ")[:4] == ("resolved", "ads", 1, 1)
+    for day in ("2025-02-13", "2025-02-17", "2025-02-18", "2025-02-19"):
+        answer = resolve(db, day, symbol="XYZ")
+        assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+        if day < "2025-02-18":
+            assert fee not in answer[-1]
+        else:
+            assert conflict in answer[-1]
+
+
+@pytest.mark.parametrize("same_accession", [False, True])
+def test_gate_future_conditional_event_does_not_suppress_completed_same_ratio_regime(db, same_accession):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    pending = add_ratio(db, (20, 1), filed="2022-10-24", symbol=None,
+                        ratio_effectiveness_pending=True,
+                        ratio_effectiveness_pending_text="Effective on the date announced by the Depositary.")
+    completed = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-10", effective="2022-11-04",
+        adsh="0001193125-22-000111", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="This ADS ratio change was completed on November 4.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+    )
+    future = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-10" if same_accession else "2022-11-18",
+        effective="2022-12-01", adsh="0001193125-22-000111" if same_accession else "0001193125-22-000222",
+        ratio_effectiveness_pending=True, ratio_effectiveness_pending_text="The later ADS event remains subject to SEC approval.",
+        ratio_effectiveness_conditions=["regulatory_approval"],
+    )
+    for day in ("2022-11-11", "2022-11-19", "2022-11-30"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 20, 1)
+        assert pending in answer[-1] and completed in answer[-1] and future not in answer[-1]
+    answer = resolve(db, "2022-12-01")
+    assert answer[0] == "ambiguous" and future in answer[-1]
+
+
+
+@pytest.mark.parametrize("source", ["f6", "ratio_change_6k"])
+def test_gate_later_authoritative_earlier_date_settles_conflict_without_history_backfill(db, source):
+    _gate_old_ratio_pair(db)
+    conflict = _gate_conflicted_f6_registration(db)
+    kwargs = {}
+    if source == "f6":
+        # Another registration settles its source clock but still needs an
+        # independent matching annual/change stream to resolve the ratio.
+        add(db, filed="2025-02-23")
+        add_ratio(db, (20, 1), source="cover_footnote", filed="2025-02-23")
+    if source == "ratio_change_6k":
+        kwargs = {"ratio_effectiveness_confirmed": True,
+                  "ratio_effectiveness_confirmation_text": "This ADS ratio change was actually completed on February 17.",
+                  "ratio_effectiveness_confirmed_conditions": ["ratio_effective"]}
+    settled = add_ratio(
+        db, (20, 1), source=source, form="F-6 POS" if source == "f6" else "6-K",
+        filed="2025-02-21", publication_floor_on="2025-02-24", effective="2025-02-17",
+        adsh="0001193125-25-000456", symbol="TSM", **kwargs,
+    )
+    assert resolve(db, "2025-02-17")[:4] == ("resolved", "ads", 1, 1)
+    for day in ("2025-02-18", "2025-02-22", "2025-02-23"):
+        assert resolve(db, day)[0] == "ambiguous"
+    answer = resolve(db, "2025-02-24")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert conflict in answer[-1] and settled in answer[-1]
+    assert resolve(db, "2025-02-17")[:4] == ("resolved", "ads", 1, 1)
+    original = db.execute("SELECT operative_date_candidates,effective_from FROM public.sec_foreign_listing_evidence WHERE id=%s", [conflict]).fetchone()
+    assert original == ([dt.date(2025, 2, 18), dt.date(2025, 2, 19)], dt.date(2025, 2, 18))
+
+
+def test_gate_current_cover_ratio_does_not_borrow_conflicting_historical_transition_dates():
+    content = """<p>Securities registered pursuant to Section 12(b) of the Act:</p>
+    <table><tr><th>Title of each class</th><th>Trading symbol</th><th>Exchange</th></tr>
+    <tr><td>American Depositary Shares, each representing ten common shares</td>
+    <td>EDU</td><td>New York Stock Exchange</td></tr></table>
+    <p>Effective on August 18, 2011, the Company changed the ADS ratio from one ADS representing
+    four common shares to one ADS representing one common share.</p>
+    <p>Effective on April 8, 2022, the Company changed the ADS ratio from one ADS representing
+    one common share to one ADS representing ten common shares.</p>"""
+    rows = parse_filing(content, cik=1372920, form_type="20-F", accession_number="0001193125-23-000123",
+                        filing_date="2023-09-29", source_url="https://www.sec.gov/Archives/test", symbols=["EDU"])
+    ratios = [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in ratios} == {(10, 1, "2023-09-30"), (1, 1, "2011-08-18"), (10, 1, "2022-04-08")}
+    assert not any(row.get("operative_date_conflict") for row in ratios)
+
+
+
+def test_gate_plain_later_registration_cannot_prove_conditional_announcement_approval(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    pending = add_ratio(db, (20, 1), filed="2022-10-24", symbol=None,
+                        ratio_effectiveness_pending=True,
+                        ratio_effectiveness_pending_text="Effective on the date announced by the Depositary.")
+    conditional = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-10-18", effective="2022-11-04",
+        ratio_effectiveness_pending=True, ratio_effectiveness_pending_text="Subject to SEC approval.",
+        ratio_effectiveness_conditions=["regulatory_approval"],
+    )
+    add_ratio(db, (20, 1), filed="2022-11-10", effective="2022-11-04", form="F-6 POS",
+              adsh="0001193125-22-000999")
+    answer = resolve(db, "2022-11-11")
+    assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+    assert conditional in answer[-1] and pending not in answer[-1]
+
+
+
+@pytest.mark.parametrize("clause,category", [
+    ("If approved,", "other_approval"),
+    ("When shareholders approve the proposed change,", "shareholder_approval"),
+    ("Once shareholder approval is obtained,", "shareholder_approval"),
+])
+def test_gate_future_approval_grammar_marks_ratio_pending(clause, category):
+    rows = _parse_gate_source(
+        clause + " the Company will change the ADS ratio from one ADS representing one ordinary "
+        "share to one ADS representing twenty ordinary shares effective November 4, 2022.",
+        form="6-K", filed="2022-10-18",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") is True for row in rows)
+    assert all(category in row["ratio_effectiveness_conditions"] for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+def test_gate_if_approved_announcement_stays_ambiguous_until_actual_public_completion(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    conditional_rows = _parse_gate_source(
+        "If approved, the Company will change the ADS ratio from one ADS representing one "
+        "ordinary share to one ADS representing twenty ordinary shares effective November 4, 2022.",
+        form="6-K", filed="2022-10-18",
+    )
+    _insert_gate_parsed_rows(db, conditional_rows, "unknown-approval-notice")
+    pending_rows = _parse_gate_source(_GATE_PENDING_F6, form="F-6 POS", filed="2022-10-24",
+                                     adsh="0001193125-22-000124")
+    pending = _insert_gate_parsed_rows(db, pending_rows, "unknown-approval-pending-receipt")
+    assert conditional_rows and pending
+    assert all(row.get("ratio_effectiveness_pending") is True for row in conditional_rows)
+    assert resolve(db, "2022-11-03")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2022-11-04")[0] == "ambiguous"
+    completed_rows = _parse_gate_source(
+        "The Company completed the change of the ADS ratio from one ADS representing one ordinary "
+        "share to one ADS representing twenty ordinary shares on November 4, 2022.",
+        form="6-K", filed="2022-11-10", adsh="0001193125-22-000125",
+    )
+    assert completed_rows and all(row.get("ratio_effectiveness_confirmed") is True for row in completed_rows)
+    assert all("ratio_effective" in row["ratio_effectiveness_confirmed_conditions"] for row in completed_rows)
+    completed = _insert_gate_parsed_rows(db, completed_rows, "unknown-approval-actual-completion")
+    assert resolve(db, "2022-11-10")[0] == "ambiguous"
+    answer = resolve(db, "2022-11-11")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert set(pending).intersection(answer[-1]) and set(completed).intersection(answer[-1])
+
+
+def test_gate_actual_depositary_notice_fulfills_the_matching_f6_notice_condition():
+    rows = _parse_gate_source(
+        "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. "
+        "The Depositary has announced that this ratio change is effective on November 4, 2022.",
+        form="F-6 POS", filed="2022-11-10",
+    )
+    assert rows
+    assert all(row.get("ratio_effectiveness_confirmed") is True for row in rows)
+    assert all("depositary_notice" in row["ratio_effectiveness_confirmed_conditions"] for row in rows)
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+    assert {row["effective_from"] for row in rows} == {"2022-11-04"}
+
+
+def test_gate_same_accession_cannot_self_clear_its_own_unmet_condition(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    conditional = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-10-18", effective="2022-11-04",
+        adsh="0001193125-22-000123", ratio_effectiveness_pending=True,
+        ratio_effectiveness_pending_text="This change remains subject to SEC approval.",
+        ratio_effectiveness_conditions=["regulatory_approval"],
+    )
+    add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-10", effective="2022-11-04",
+        adsh="0001193125-22-000123", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="This change was completed on November 4.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+    )
+    answer = resolve(db, "2022-11-11")
+    assert answer[0] == "ambiguous" and conditional in answer[-1]
+
+
+
+def test_gate_plain_dated_f6_does_not_claim_depositary_notice_or_approval_confirmation():
+    rows = _parse_gate_source("Each ADS represents twenty ordinary shares, effective on November 4, 2022.",
+                              form="F-6 POS", filed="2022-11-10")
+    assert rows and not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed_conditions") for row in rows)
+
+
+def test_gate_actual_shareholder_approval_result_is_not_a_future_approval_condition():
+    rows = _parse_gate_source(
+        "The shareholders have approved the proposed change of the ADS ratio from one ADS representing "
+        "one ordinary share to one ADS representing twenty ordinary shares, effective November 4, 2022.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert rows and all(row.get("ratio_effectiveness_confirmed") is True for row in rows)
+    assert all("shareholder_approval" in row["ratio_effectiveness_confirmed_conditions"] for row in rows)
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+
+def test_gate_conditional_notice_bounds_fallback_registration_without_activating_it(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-10-18", effective="2022-11-04",
+        adsh="0001193125-22-000018", ratio_effectiveness_pending=True,
+        ratio_effectiveness_pending_text="This dated change is subject to shareholder approval.",
+        ratio_effectiveness_conditions=["shareholder_approval"],
+    )
+    registration = add_ratio(db, (20, 1), filed="2022-10-24", form="F-6 POS", symbol=None,
+                             adsh="0001193125-22-000024", effective_date_explicit=False)
+    add(db, filed="2022-10-24")
+    add_ratio(db, (20, 1), source="cover_footnote", filed="2022-10-24")
+    assert resolve(db, "2022-10-24")[:4] == ("resolved", "ads", 1, 1)
+    for day in ("2022-10-25", "2022-11-03"):
+        answer = resolve(db, day)
+        assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+        assert registration not in answer[-1]
+    for day in ("2022-11-04", "2022-12-01"):
+        assert resolve(db, day)[0] == "ambiguous"
+
+
+@pytest.mark.parametrize("action", ["has not adjusted", "expects to adjust", "will adjust"])
+def test_gate_negated_or_future_ratio_adjustment_is_not_actual_completion(action):
+    rows = _parse_gate_source(
+        f"Effective on November 4, 2022, the Company {action} the ratio of its ADSs to ordinary shares "
+        "from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+
+def test_gate_actual_tal_adjustment_confirms_ratio_only_at_later_publication():
+    rows = _parse_independent_listing_fixture("tal_2017_completed_ratio_change")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["underlying_class"],
+             row["effective_from"], row["available_on"]) for row in rows} == {
+        (1, 3, "class_a", "2017-08-16", "2017-10-28"),
+    }
+    assert all(row.get("ratio_effectiveness_confirmed") is True for row in rows)
+    assert all("ratio_effective" in row["ratio_effectiveness_confirmed_conditions"] for row in rows)
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+    assert all("adjusted the ratio" in row["ratio_effectiveness_confirmation_text"] for row in rows)
+
+
+def test_gate_actual_tal_proposal_stays_uncertain_until_completed_ratio_is_public(db):
+    add(db, cik=1499620, symbol="TAL", filed="2017-05-01", underlying_class="class_a")
+    add_ratio(db, (2, 1), cik=1499620, symbol="TAL", filed="2016-01-01", underlying_class="class_a")
+    add_ratio(db, (2, 1), cik=1499620, symbol="TAL", source="cover_footnote", filed="2017-05-01",
+              underlying_class="class_a")
+    _insert_gate_parsed_rows(db, _parse_independent_listing_fixture("tal_class_a_f6_deposit_definition"),
+                             "tal-original-f6-registration")
+    proposal_rows = _parse_independent_listing_fixture("tal_2017_class_a_ratio_change")
+    assert proposal_rows and all(row.get("ratio_effectiveness_pending") for row in proposal_rows)
+    _insert_gate_parsed_rows(db, proposal_rows, "tal-conditional-regulatory-proposal")
+    assert resolve(db, "2017-08-15", cik=1499620, symbol="TAL")[:4] == ("resolved", "ads", 2, 1)
+    for day in ("2017-08-16", "2017-10-27"):
+        assert resolve(db, day, cik=1499620, symbol="TAL")[0] == "ambiguous"
+    completed = _insert_gate_parsed_rows(db, _parse_independent_listing_fixture("tal_2017_completed_ratio_change"),
+                                         "tal-actual-completed-ratio-publication")
+    assert resolve(db, "2017-10-27", cik=1499620, symbol="TAL")[0] == "ambiguous"
+    answer = resolve(db, "2017-10-28", cik=1499620, symbol="TAL")
+    assert answer[:4] == ("resolved", "ads", 1, 3)
+    assert set(completed).intersection(answer[-1])
+    assert resolve(db, "2017-08-16", cik=1499620, symbol="TAL")[0] == "ambiguous"
+
+
+@pytest.mark.parametrize("future_authority", ["f6", "ratio_change_6k"])
+def test_gate_later_future_authority_does_not_undo_an_established_operative_clock(db, future_authority):
+    _gate_old_ratio_pair(db)
+    conflict = _gate_conflicted_f6_registration(db)
+    completed = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2025-02-21", effective="2025-02-19",
+        symbol="TSM", adsh="0001193125-25-000456", ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="This ADS ratio change was completed on February 19.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+    )
+    kwargs = {}
+    if future_authority == "ratio_change_6k":
+        kwargs = {"ratio_effectiveness_confirmed": True,
+                  "ratio_effectiveness_confirmation_text": "The Depositary announced this exact ratio effective March 1.",
+                  "ratio_effectiveness_confirmed_conditions": ["depositary_notice"]}
+    future = add_ratio(
+        db, (20, 1), source=future_authority, form="F-6 POS" if future_authority == "f6" else "6-K",
+        filed="2025-02-24", effective="2025-03-01", symbol="TSM", adsh="0001193125-25-000789", **kwargs,
+    )
+    for day in ("2025-02-22", "2025-02-24", "2025-02-25", "2025-02-28"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 20, 1)
+        assert conflict in answer[-1] and completed in answer[-1]
+        assert future not in answer[-1]
+    answer = resolve(db, "2025-03-01")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert conflict in answer[-1] and future in answer[-1]
+
+
+@pytest.mark.parametrize("fixture,ratio,underlying_class,effective,available,conditions,proof_phrase", [
+    ("bidu_2021_subdivision_completed_ratio", (8, 1), "class_a", "2021-03-01", "2021-03-02",
+     {"ratio_effective"}, "has taken effect"),
+    ("tcom_2021_subdivision_completed_ratio", (1, 1), None, "2021-03-18", "2021-03-19",
+     {"shareholder_approval", "consolidation"}, "proposed resolutions submitted for shareholder approval"),
+])
+def test_gate_actual_subdivision_results_confirm_the_linked_ratio(
+    fixture, ratio, underlying_class, effective, available, conditions, proof_phrase,
+):
+    rows = _parse_independent_listing_fixture(fixture)
+    ratio_rows = [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+    assert ratio_rows
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["underlying_class"],
+             row["effective_from"], row["available_on"]) for row in ratio_rows} == {
+        (*ratio, underlying_class, effective, available),
+    }
+    assert all(row.get("ratio_effectiveness_confirmed") is True for row in ratio_rows)
+    assert all(conditions.issubset(set(row["ratio_effectiveness_confirmed_conditions"])) for row in ratio_rows)
+    assert not any(row.get("ratio_effectiveness_pending") for row in ratio_rows)
+    assert all(proof_phrase.lower() in row["ratio_effectiveness_confirmation_text"].lower() for row in ratio_rows)
+
+
+@pytest.mark.parametrize("fixture,ratio,underlying_class,effective,available,pending_phrase", [
+    ("anpc_2022_plan_expected_ratio", (20, 1), "class_a", "2022-11-04", "2022-10-19", "plans to change"),
+    ("aktx_2023_plan_expected_ratio", (2000, 1), None, "2023-08-17", "2023-08-16", "expected to be effective"),
+])
+def test_gate_actual_expected_ratio_plans_remain_pending_until_completion(
+    fixture, ratio, underlying_class, effective, available, pending_phrase,
+):
+    rows = _parse_independent_listing_fixture(fixture)
+    ratio_rows = [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+    assert ratio_rows
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["underlying_class"],
+             row["effective_from"], row["available_on"]) for row in ratio_rows} == {
+        (*ratio, underlying_class, effective, available),
+    }
+    assert all(row.get("ratio_effectiveness_pending") is True for row in ratio_rows)
+    assert all(row["ratio_effectiveness_conditions"] == ["unknown_condition"] for row in ratio_rows)
+    assert all(pending_phrase in row["ratio_effectiveness_pending_text"].lower() for row in ratio_rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in ratio_rows)
+
+
+def test_gate_aktx_actual_plan_stays_ambiguous_until_completion_is_public(db):
+    add(db, cik=1541157, symbol="AKTX", filed="2023-05-01")
+    add_ratio(db, (100, 1), cik=1541157, symbol="AKTX", filed="2022-12-29", form="F-6 POS")
+    add_ratio(db, (100, 1), source="cover_footnote", cik=1541157, symbol="AKTX",
+              filed="2023-05-01", underlying_class=None)
+    add_ratio(db, (2000, 1), cik=1541157, symbol=None, filed="2023-08-17", form="F-6 POS",
+              effective="2023-08-18", effective_date_explicit=False, underlying_class=None,
+              adsh="0000000000-23-000001", ratio_effectiveness_pending=True,
+              ratio_effectiveness_pending_text="Effective on the date announced by the Depositary.")
+    plan = _parse_independent_listing_fixture("aktx_2023_plan_expected_ratio")
+    assert plan and all(row.get("ratio_effectiveness_pending") is True for row in plan)
+    _insert_gate_parsed_rows(db, plan, "aktx-2023-plan-expected-ratio")
+    assert resolve(db, "2023-08-16", cik=1541157, symbol="AKTX")[:4] == ("resolved", "ads", 100, 1)
+    for day in ("2023-08-17", "2023-09-29"):
+        answer = resolve(db, day, cik=1541157, symbol="AKTX")
+        assert answer[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+    completion = _parse_independent_listing_fixture("aktx_2023_ratio_completion")
+    assert completion and all(row.get("ratio_effectiveness_confirmed") is True for row in completion)
+    _insert_gate_parsed_rows(db, completion, "aktx-2023-ratio-completion")
+    assert resolve(db, "2023-09-29", cik=1541157, symbol="AKTX")[0] == "ambiguous"
+    assert resolve(db, "2023-09-30", cik=1541157, symbol="AKTX")[:4] == ("resolved", "ads", 2000, 1)
+
+
+def test_gate_contract_boilerplate_is_not_an_outstanding_condition():
+    rows = _parse_gate_source(
+        "The Company will change the ratio of its American Depositary Shares to ordinary shares "
+        "from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, "
+        "effective on November 4, 2022, subject to the terms and conditions of the Deposit Agreement.",
+        form="6-K", filed="2022-10-18",
+    )
+    assert rows
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert {row["effective_from"] for row in rows} == {"2022-11-04"}
+    assert all(row["effective_date_explicit"] for row in rows)
+
+
+def test_gate_unknown_closing_condition_still_marks_pending():
+    rows = _parse_gate_source(
+        "The Company will change the ratio of its American Depositary Shares to ordinary shares "
+        "from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, "
+        "effective on November 4, 2022, subject to customary closing conditions.",
+        form="6-K", filed="2022-10-18",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") is True for row in rows)
+    assert all(row["ratio_effectiveness_conditions"] == ["unknown_condition"] for row in rows)
+
+
+def test_gate_pro_forma_retroactive_assumption_does_not_defer_the_announced_change():
+    rows = _parse_gate_source(
+        "On November 30, 2022, the Company announced its plans to change the ADS ratio from one ADS "
+        "to three ordinary shares to a new ADS ratio of one ADS to thirty ordinary shares. "
+        "The change in the ADS Ratio became effective on December 12, 2022. For all the periods "
+        "presented, basic and diluted loss per ADS have been revised assuming the change of ADS ratio "
+        "from a ratio of one ADS to three ordinary shares to a new ratio of one ADS to thirty ordinary "
+        "shares occurred at the beginning of the earliest period presented.",
+        form="6-K", filed="2025-03-18",
+    )
+    assert rows
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+    assert any(row.get("ratio_effectiveness_confirmed") is True for row in rows)
+    assert {row["effective_from"] for row in rows} == {"2022-12-12"}
+
+
+def test_gate_completed_change_date_does_not_conflict_with_its_effective_date():
+    rows = _parse_gate_source(
+        "As previously announced, on July 31, 2024, the Company changed its ratio of its American "
+        "Depositary Shares to ordinary shares from one ADS representing twenty ordinary shares to one "
+        "ADS representing two hundred ordinary shares (the ADS Ratio Change). The ADS Ratio Change "
+        "became effective on August 5th, 2024 (the Effective Date).",
+        form="6-K", filed="2024-08-08",
+    )
+    assert rows
+    assert not any(row.get("operative_date_conflict") for row in rows)
+    assert {row["effective_from"] for row in rows} == {"2024-08-05"}
+    assert all(row["effective_date_explicit"] for row in rows)
+    assert all(row.get("ratio_effectiveness_confirmed") is True for row in rows)
+
+
+def test_gate_conflicting_operative_dates_still_conflict_when_completion_dates_exist():
+    rows = _parse_gate_source(
+        "On July 31, 2024, the Company changed the ratio of its ADSs to ordinary shares from one ADS "
+        "representing twenty ordinary shares to one ADS representing two hundred ordinary shares. "
+        "The ADS ratio change became effective on August 5th, 2024. "
+        "The ADS ratio change became effective on August 6th, 2024.",
+        form="6-K", filed="2024-08-08",
+    )
+    assert rows
+    assert all(row.get("operative_date_conflict") is True for row in rows)
+    assert {tuple(row["operative_date_candidates"]) for row in rows} == {("2024-08-05", "2024-08-06")}
+
+

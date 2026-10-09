@@ -1362,3 +1362,60 @@ def test_offline_index_recovery_preserves_identity_and_binding_provenance(tmp_pa
     assert parent_proof["discovery_source_url"] == primary
     assert parent_proof["source_sha256"] == loader.digest(raw)
     assert parent_proof["source_recovery_proof"]["recovery_index_line"].startswith("456|ACME")
+
+
+
+def _gate_ratio_fact(source, *, ratio, effective, **metadata):
+    fact = {**_fact(source), "form": "F-6 POS", "source_kind": "f6", "evidence_kind": "ads_ratio",
+            "listed_type": None, "ratio_numerator": ratio, "ratio_denominator": 1,
+            "effective_from": effective, "effective_date_explicit": True, **metadata}
+    fact.pop("fact_hash")
+    fact["fact_hash"] = loader.hashlib.md5(loader.canonical_json(fact).encode(), usedforsecurity=False).hexdigest()
+    return fact
+
+
+def test_gate_apply_preserves_conflicting_operative_date_proof(db):
+    source = _source("date-conflicted-registration", filed="2020-11-23")
+    proof = "Commencing November 17, 2020 each ADS represents five ordinary shares; commencing November 18, 2020."
+    fact = _gate_ratio_fact(source, ratio=5, effective="2020-11-17", operative_date_conflict=True,
+                            operative_date_candidates=["2020-11-17", "2020-11-18"],
+                            operative_date_conflict_text=proof)
+    result = loader.apply_evidence(db, _manifest(source), [fact], date(2026, 10, 9))
+    assert result["inserted"] == 1
+    saved = db.execute(
+        "SELECT operative_date_conflict,operative_date_candidates,operative_date_conflict_text,"
+        "ratio_numerator,ratio_denominator,effective_from,available_on "
+        "FROM public.sec_foreign_listing_evidence"
+    ).fetchone()
+    assert saved == (True, [date(2020, 11, 17), date(2020, 11, 18)], proof,
+                     5, 1, date(2020, 11, 17), date(2020, 11, 24))
+    assert loader.apply_evidence(db, _manifest(source), [fact], date(2026, 10, 10))["unchanged"] == 1
+
+
+def test_gate_apply_preserves_conditional_notice_and_later_confirmation_proofs(db):
+    conditional = _source("conditional-announcement", filed="2022-10-18")
+    confirmed = _source("completed-announcement", adsh="0001234567-22-000002", filed="2022-11-10")
+    pending_proof = "Effective November 4 subject to shareholder approval which remains outstanding."
+    confirmed_proof = "The shareholders approved and the Company completed the ADS ratio change on November 4."
+    pending = _gate_ratio_fact(conditional, ratio=20, effective="2022-11-04", form="6-K",
+                              source_kind="ratio_change_6k", ratio_effectiveness_pending=True,
+                              ratio_effectiveness_pending_text=pending_proof,
+                              ratio_effectiveness_conditions=["shareholder_approval"])
+    completion = _gate_ratio_fact(confirmed, ratio=20, effective="2022-11-04", form="6-K",
+                                 source_kind="ratio_change_6k", ratio_effectiveness_confirmed=True,
+                                 ratio_effectiveness_confirmation_text=confirmed_proof,
+                                 ratio_effectiveness_confirmed_conditions=["ratio_effective"])
+    result = loader.apply_evidence(db, _manifest(conditional, confirmed), [pending, completion], date(2026, 10, 9))
+    assert result["inserted"] == 2
+    saved = db.execute(
+        "SELECT source_package,ratio_effectiveness_pending,ratio_effectiveness_pending_text,"
+        "ratio_effectiveness_confirmed,ratio_effectiveness_confirmation_text,available_on,"
+        "ratio_effectiveness_conditions,ratio_effectiveness_confirmed_conditions "
+        "FROM public.sec_foreign_listing_evidence ORDER BY available_on"
+    ).fetchall()
+    assert saved == [
+        ("conditional-announcement", True, pending_proof, None, None, date(2022, 10, 19),
+         ["shareholder_approval"], None),
+        ("completed-announcement", None, None, True, confirmed_proof, date(2022, 11, 11),
+         None, ["ratio_effective"]),
+    ]

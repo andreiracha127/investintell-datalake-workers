@@ -1,5 +1,7 @@
 # W1c PR #176: run2 validation, 2026-10-09
 
+> **Superseded for production artifact selection by the [run2 final5 gate-fix report](sec-foreign-listing-20261009-run2-final5.md).** Final4 remains a preserved historical baseline; final5 fixes the two production-gate P1s found in final4 and reissues the artifact.
+
 This report supersedes run1 for production artifact selection. The preserved [run1 report](sec-foreign-listing-20261009.md) remains the historical baseline. This work concerns sourced security type and exact ordinary shares per ADS; W1 admission, share sizing and existing refusal behavior are unchanged.
 
 Generated from final artifact-pinned results at `2026-10-09T15:08:04.023714+00:00`. Fixing commit: `37e3756fd63638652e67ef7da0831f6d9203205a`
