@@ -28,6 +28,8 @@ def main() -> int:
     parser.add_argument("--observations", type=Path, required=True)
     parser.add_argument("--current-statuses", type=Path,
                         help="Saved read-only production W1 status results for the same universe")
+    parser.add_argument("--manifest", type=Path,
+                        help="Completed collection manifest, included as report provenance")
     parser.add_argument("--database-url-env", default="SEC_FOREIGN_TEST_DATABASE_URL")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sample-size", type=int, default=30)
@@ -39,6 +41,7 @@ def main() -> int:
     universe = read_json(args.universe)
     observations = read_json(args.observations)
     current_statuses = read_json(args.current_statuses) if args.current_statuses else []
+    manifest = read_json(args.manifest) if args.manifest else None
     refused_today = {(int(r["cik"]), r["symbol"]) for r in current_statuses
                      if r["status"] == "refused"}
     lines = sorted({(int(row["cik"]), row["symbol"]) for row in universe})
@@ -103,6 +106,27 @@ def main() -> int:
         "sample_seed": args.sample_seed, "sample_size": len(sample),
         "sample_method": "Seeded sample without replacement from resolved 2025 lines, half ADS and half direct where available; spare slots filled from the other group",
         "sample_types": dict(Counter(r["listed_type"] for r in sample)),
+    }
+    if manifest is not None:
+        summary["collection"] = {
+            "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
+            "discovery_complete": manifest.get("complete"),
+            "parse_complete": manifest.get("parse_complete"),
+            "source_documents": len(manifest["documents"]),
+            "unique_urls": len({d["source_url"] for d in manifest["documents"]}),
+            "source_statuses": dict(Counter(d.get("status", "unprocessed")
+                                             for d in manifest["documents"])),
+            "evidence_rows": manifest.get("evidence_count"),
+            "evidence_sha256": manifest.get("evidence_sha256"),
+        }
+    repo = Path(__file__).resolve().parents[1]
+    summary["implementation_sha256"] = {
+        name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
+        for name in ("schemas/sec_foreign_listing_evidence.sql",
+                     "scripts/sec_foreign_listing_parser.py",
+                     "scripts/load_sec_foreign_listing_evidence.py",
+                     "scripts/run_sec_foreign_listing_evidence_shards.py",
+                     "scripts/validate_sec_foreign_listing_evidence.py")
     }
     for name, data in (("coverage.json", summary), ("resolutions.json", all_results),
                        ("manual_review_packet.json", sample)):

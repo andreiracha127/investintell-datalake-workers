@@ -82,6 +82,25 @@ computed over the original uncompressed bytes. The manifest records unsuccessful
 bindings separately. A complete manifest is required for database application.
 The loader does not install the schema.
 
+For a large collection, complete discovery first, then use the two-process
+wrapper below. Run the two `collect` commands in separate terminals. Each
+process is fixed at four requests per second, so their combined limit is eight.
+They share original documents, partition by URL, and cannot load their partial
+manifests into a database. `combine` verifies exact coverage of the immutable
+parent discovery, source identities, observation hashes, fact hashes and counts
+before publishing the complete evidence artifact.
+
+```powershell
+python scripts/run_sec_foreign_listing_evidence_shards.py prepare --cache-dir <cache>
+python scripts/run_sec_foreign_listing_evidence_shards.py collect --cache-dir <cache> --part 0 --observations <observations.json>
+python scripts/run_sec_foreign_listing_evidence_shards.py collect --cache-dir <cache> --part 1 --observations <observations.json>
+python scripts/run_sec_foreign_listing_evidence_shards.py combine --cache-dir <cache> --output <evidence.jsonl>
+```
+
+On Windows, preparation reports any shared-document directory links that need
+to be created as junctions before collection. The wrapper has no database
+operation; use the main loader's explicit `--apply` only after combination.
+
 In a separate writer shell without the production read-only `PGOPTIONS`, apply
 the additive schema to a disposable PostgreSQL 16 database, then set
 `FOREIGN_EVIDENCE_DATABASE_URL` to that local database and run the same command

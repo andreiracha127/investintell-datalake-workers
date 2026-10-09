@@ -685,3 +685,92 @@ def test_late_validation_failure_rolls_back_already_flushed_batches(db, monkeypa
             loader.apply_evidence(db, _manifest(first, bad), [_fact(first), _fact(bad)], date(2026, 10, 9))
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone()[0] == 0
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_sources").fetchone()[0] == 0
+
+
+def _completed_shard_artifacts(tmp_path):
+    from scripts import run_sec_foreign_listing_evidence_shards as shards
+    documents = []
+    for number in range(6):
+        source = {**_source(), "source_url": f"https://www.sec.gov/Archives/edgar/data/123/report-{number}.htm",
+                  "form": "20-F", "filed": "2020-03-01", "binding": "registrant_cik", "symbols": ["ABC"]}
+        documents.append(loader.canonical_document(source))
+    assert {shards.partition(document) for document in documents} == {0, 1}
+    parent = {"complete": True, "universe_sha256": "a" * 64, "documents": documents}
+    loader.write_json(tmp_path / "manifest.json", parent)
+    result = shards.prepare(tmp_path)
+    for part in range(2):
+        directory = tmp_path / "parts" / str(part)
+        child = json.loads((directory / "input-manifest.json").read_text())
+        child["parse_complete"] = True
+        child["observations_sha256"] = "b" * 64
+        rows = []
+        for document in child["documents"]:
+            document["status"] = "parsed"
+            rows.append(_fact(document))
+        rows.sort(key=lambda row: row["source_package"])
+        artifact = directory / "evidence.jsonl"
+        loader.write_bytes(artifact, "".join(loader.canonical_json(row) + "\n" for row in rows).encode())
+        child["evidence_count"] = len(rows)
+        child["evidence_sha256"] = shards.file_sha256(artifact)
+        loader.write_json(directory / "manifest.json", child)
+    return shards, parent, result
+
+
+def test_shard_combine_exact_coverage_and_deterministic_order(tmp_path):
+    shards, parent, preparation = _completed_shard_artifacts(tmp_path)
+    output = tmp_path / "combined.jsonl"
+    summary = shards.combine(tmp_path, output)
+    first = output.read_bytes()
+    assert summary["documents"] == summary["evidence_rows"] == len(parent["documents"])
+    rows = [json.loads(line) for line in first.splitlines()]
+    assert [row["source_package"] for row in rows] == sorted(document["source_package"] for document in parent["documents"])
+    combined = json.loads((tmp_path / "manifest.json").read_text())
+    assert combined["complete"] and combined["parse_complete"]
+    assert combined["universe_sha256"] == parent["universe_sha256"]
+    assert combined["observations_sha256"] == "b" * 64
+    assert combined["shard_provenance"]["parent_manifest_sha256"] == preparation["parent_manifest_sha256"]
+    shards.combine(tmp_path, output)
+    assert output.read_bytes() == first
+    for part in range(2):
+        child = json.loads((tmp_path / "parts" / str(part) / "manifest.json").read_text())
+        assert child["complete"] is False
+        with pytest.raises(ValueError, match="complete discovery"):
+            loader.apply_evidence(None, child, [], date.today())
+
+
+@pytest.mark.parametrize("mutation,match", [
+    ("missing", "coverage"), ("duplicate", "coverage"), ("hash", "artifact hash"),
+    ("parent", "parent identity"), ("count", "per-document counts"),
+    ("incomplete", "incomplete"), ("observations", "observation hashes"),
+])
+def test_shard_combine_rejects_incomplete_or_changed_artifacts(tmp_path, mutation, match):
+    shards, _, _ = _completed_shard_artifacts(tmp_path)
+    child_path = tmp_path / "parts" / "0" / "manifest.json"
+    child = json.loads(child_path.read_text())
+    if mutation == "missing":
+        child["documents"].pop()
+    elif mutation == "duplicate":
+        child["documents"].append(child["documents"][0])
+    elif mutation == "hash":
+        with (child_path.parent / "evidence.jsonl").open("ab") as handle:
+            handle.write(b" ")
+    elif mutation == "parent":
+        child["shard"]["parent_manifest_sha256"] = "c" * 64
+    elif mutation == "count":
+        child["documents"][0]["evidence_count"] += 1
+    elif mutation == "incomplete":
+        child["parse_complete"] = False
+    elif mutation == "observations":
+        child["observations_sha256"] = "d" * 64
+    loader.write_json(child_path, child)
+    output = tmp_path / "combined.jsonl"
+    output.write_bytes(b"previous-artifact\n")
+    with pytest.raises(ValueError, match=match):
+        shards.combine(tmp_path, output)
+    assert output.read_bytes() == b"previous-artifact\n"
+
+
+def test_shard_partition_keeps_all_issuer_bindings_of_same_url_together():
+    from scripts import run_sec_foreign_listing_evidence_shards as shards
+    source = {"source_url": "https://www.sec.gov/Archives/edgar/data/123/report.htm", "cik": 123}
+    assert shards.partition(source) == shards.partition({**source, "cik": 456})
