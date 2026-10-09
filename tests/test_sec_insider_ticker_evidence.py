@@ -949,3 +949,29 @@ def test_archive_of_only_metadata_records_is_reconciled(clean_db, tmp_path):
         "SELECT count(*) FROM sec_insider_filings WHERE retired_on = DATE '2026-10-10'").fetchone() == (2,)
     assert clean_db.execute(
         "SELECT count(*) FROM sec_insider_package_members WHERE retired_on IS NULL").fetchone() == (2,)
+
+
+@pytest.mark.parametrize("defect", ["directory_without_metadata", "metadata_of_another_filing",
+                                    "metadata_outside_filing_directory"])
+def test_secapi_parse_refuses_metadata_that_disagrees_with_filing_directories(tmp_path, defect):
+    package = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    metadata = {KNOWN: KNOWN, LATE: {"directory_without_metadata": None,
+                                     "metadata_of_another_filing": KNOWN}.get(defect, LATE)}
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE), metadata=metadata)
+    if defect == "metadata_outside_filing_directory":
+        with zipfile.ZipFile(package, "a") as archive:
+            archive.write(FIXTURE / "secapi" / LATE / "metadata.json", "2003-05/metadata.json")
+    with pytest.raises(ValueError, match="filing director"):
+        list(insider.iter_secapi_filings(package))
+
+
+def test_incomplete_secapi_parse_is_refused_before_any_retirement(clean_db, tmp_path):
+    package = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE))
+    insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 8))
+    before = _table_snapshot(clean_db)
+    # The late filing's directory keeps its XML, but its metadata record is gone.
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE), metadata={KNOWN: KNOWN})
+    with pytest.raises(ValueError, match="2 filing directories"):
+        insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 9))
+    assert _table_snapshot(clean_db) == before

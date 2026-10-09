@@ -62,6 +62,7 @@ DEFAULT_ROOT = Path("E:/investintell-data/w1b")
 DEFAULT_DOTENV = Path("E:/investintell-light/backend/.env")
 DERA_RE = re.compile(r"^(?P<year>\d{4})q(?P<quarter>[1-4])_form345\.zip$", re.I)
 ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+FILING_DIRECTORY_RE = re.compile(r"\d{4}-\d{2}/\d{18}")  # sec-api archive: YYYY-MM/<accession>/
 FORMS = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
 DATASETS = ("form-3-files", "form-4-files", "form-5-files")
 _MONTHS = {name: n for n, name in enumerate(
@@ -376,23 +377,40 @@ def iter_secapi_filings(path: Path, *, stats: Counter | None = None,
 
     Accessions with metadata but no ownership XML yield no fact; they are added
     to ``metadata_only`` so the package still records them as members.
+
+    The archive's own filing directories (``YYYY-MM/<accession>/``) are its true
+    filing count; the catalogue's ``records`` counts other things. Exhausting
+    the iterator checks that each directory produced exactly one metadata record
+    for its own accession, so an incomplete parse is refused before
+    ``load_package`` reconciles anything.
     """
     stats = stats if stats is not None else Counter()
     package = package_name(path, "sec-api")
     with zipfile.ZipFile(path) as archive:
         by_directory: dict[str, list[zipfile.ZipInfo]] = {}
         metadata_members: list[zipfile.ZipInfo] = []
+        filing_directories: set[str] = set()
         for member in archive.infolist():
             name = PurePosixPath(member.filename)
+            if len(name.parts) > 2 and FILING_DIRECTORY_RE.fullmatch("/".join(name.parts[:2])):
+                filing_directories.add("/".join(name.parts[:2]))
             if name.name == "metadata.json":
                 metadata_members.append(member)
             elif name.suffix.lower() == ".xml" and not any(p.lower().startswith("xslf345") for p in name.parts):
                 by_directory.setdefault(str(name.parent), []).append(member)
         if not metadata_members:
             raise ValueError(f"{package}: no filing metadata found")
+        described: set[str] = set()
         for member in metadata_members:
             metadata = json.loads(_read_member(archive, member, MAX_XML_BYTES))
             directory = str(PurePosixPath(member.filename).parent)
+            accession = str(metadata.get("accessionNo") or metadata.get("accessionNumber") or "")
+            if not ACCESSION_RE.fullmatch(accession):
+                raise ValueError(f"{package}: filing metadata without a valid accession")
+            if (directory not in filing_directories or directory in described
+                    or PurePosixPath(directory).name != accession.replace("-", "")):
+                raise ValueError(f"{package}: {member.filename} is not the one metadata record of its filing directory")
+            described.add(directory)
             found: InsiderFiling | None = None
             for xml_member in by_directory.get(directory, []):
                 filing = parse_ownership_xml(_read_member(archive, xml_member, MAX_XML_BYTES), metadata,
@@ -404,9 +422,6 @@ def iter_secapi_filings(path: Path, *, stats: Counter | None = None,
                 found = filing
             stats["metadata_filings"] += 1
             if found is None:
-                accession = str(metadata.get("accessionNo") or metadata.get("accessionNumber") or "")
-                if not ACCESSION_RE.fullmatch(accession):
-                    raise ValueError(f"{package}: filing metadata without a valid accession")
                 if metadata_only is not None:
                     metadata_only.append(accession)
                 stats["non_xml_filings"] += 1
@@ -416,6 +431,9 @@ def iter_secapi_filings(path: Path, *, stats: Counter | None = None,
             if not found.normalized_symbols:
                 stats["no_usable_symbol"] += 1
             yield found
+        if stats["metadata_filings"] != len(filing_directories):
+            raise ValueError(f"{package}: parsed {stats['metadata_filings']} filing metadata records, "
+                             f"but the archive has {len(filing_directories)} filing directories")
 
 
 def sha256_file(path: Path) -> str:
@@ -448,6 +466,8 @@ def load_package(conn, path: Path, *, source: str | None = None,
             metadata_only: list[str] = []
             iterator = (iter_dera_filings(path, stats=stats) if source == "dera"
                         else iter_secapi_filings(path, stats=stats, metadata_only=metadata_only))
+            # The iterator's own checks (a sec-api archive's filing count) run as
+            # it is exhausted here, before anything below retires or inserts.
             with cur.copy(f"COPY tmp_insider_stage ({', '.join(STAGE_COLUMNS)}) FROM STDIN") as copy:
                 for filing in iterator:
                     copy.write_row(filing.stage_row())

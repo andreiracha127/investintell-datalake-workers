@@ -9,6 +9,11 @@ Early non-XML filings yield no fact but are recorded as package members, so XML
 learned for them later is dated by reconciliation. An archive whose filings all lack
 XML is still reconciled. Unusable raw symbols are kept for audit.
 
+Each archive holds one `YYYY-MM/<accession>/` directory per filing, and each directory
+must yield exactly one metadata record for its own accession. Otherwise the package is
+refused before anything is retired. The catalogue's `records` field is not a filing
+count (1,458,595 records against 697,814 filings).
+
 The parser imports W1's `normalize_symbol` without changing W1. Its extra rules
 unwrap filer punctuation and remove exchange, OTC, country and when-issued markers.
 Placeholders and prose (`NOT LISTED`, `SEE REMARK`, `LEE ENT`, `XPEL, INC.`) are
