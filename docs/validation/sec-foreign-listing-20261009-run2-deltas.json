@@ -1,0 +1,206 @@
+{
+  "run1_manifest_sha256": "c7bc46335e024377309ada19940400480b524559cb259f4df1004719a62481cb",
+  "run2_manifest_sha256": "5a7667cd5679bb99400b1113abcdf3b260ddb831cab12c6942c540f118f3d283",
+  "source_documents": {
+    "run1": 31573,
+    "run2": 47329,
+    "delta": 15756
+  },
+  "unique_urls": {
+    "run1": 31294,
+    "run2": 47050
+  },
+  "evidence_rows": {
+    "run1": 28639,
+    "run2": 29676,
+    "delta": 1037
+  },
+  "coverage": [
+    {
+      "as_of": "2010-12-31",
+      "run1": {
+        "as_of": "2010-12-31",
+        "foreign_lines": 3036,
+        "w1_evidenced_lines": 20,
+        "resolved_both": 2,
+        "resolved_type": 17,
+        "resolved_among_w1_evidenced": 2,
+        "resolved_among_current_refused": 1,
+        "ambiguous": 0,
+        "none": 3034,
+        "resolved_types": {
+          "ads": 1,
+          "ordinary_direct": 1
+        }
+      },
+      "run2": {
+        "as_of": "2010-12-31",
+        "foreign_lines": 3036,
+        "w1_evidenced_lines": 20,
+        "resolved_both": 2,
+        "resolved_type": 17,
+        "resolved_among_w1_evidenced": 2,
+        "resolved_among_current_refused": 1,
+        "ambiguous": 0,
+        "none": 3034,
+        "resolved_types": {
+          "ads": 1,
+          "ordinary_direct": 1
+        }
+      },
+      "delta": {
+        "foreign_lines": 0,
+        "w1_evidenced_lines": 0,
+        "resolved_both": 0,
+        "resolved_type": 0,
+        "resolved_among_w1_evidenced": 0,
+        "resolved_among_current_refused": 0,
+        "ambiguous": 0,
+        "none": 0
+      }
+    },
+    {
+      "as_of": "2015-12-31",
+      "run1": {
+        "as_of": "2015-12-31",
+        "foreign_lines": 3036,
+        "w1_evidenced_lines": 272,
+        "resolved_both": 79,
+        "resolved_type": 154,
+        "resolved_among_w1_evidenced": 79,
+        "resolved_among_current_refused": 70,
+        "ambiguous": 1,
+        "none": 2956,
+        "resolved_types": {
+          "ordinary_direct": 79
+        }
+      },
+      "run2": {
+        "as_of": "2015-12-31",
+        "foreign_lines": 3036,
+        "w1_evidenced_lines": 272,
+        "resolved_both": 83,
+        "resolved_type": 156,
+        "resolved_among_w1_evidenced": 83,
+        "resolved_among_current_refused": 74,
+        "ambiguous": 1,
+        "none": 2952,
+        "resolved_types": {
+          "ordinary_direct": 82,
+          "ads": 1
+        }
+      },
+      "delta": {
+        "foreign_lines": 0,
+        "w1_evidenced_lines": 0,
+        "resolved_both": 4,
+        "resolved_type": 2,
+        "resolved_among_w1_evidenced": 4,
+        "resolved_among_current_refused": 4,
+        "ambiguous": 0,
+        "none": -4
+      }
+    },
+    {
+      "as_of": "2020-12-31",
+      "run1": {
+        "as_of": "2020-12-31",
+        "foreign_lines": 3036,
+        "w1_evidenced_lines": 964,
+        "resolved_both": 497,
+        "resolved_type": 736,
+        "resolved_among_w1_evidenced": 358,
+        "resolved_among_current_refused": 346,
+        "ambiguous": 32,
+        "none": 2507,
+        "resolved_types": {
+          "ordinary_direct": 345,
+          "ads": 152
+        }
+      },
+      "run2": {
+        "as_of": "2020-12-31",
+        "foreign_lines": 3036,
+        "w1_evidenced_lines": 964,
+        "resolved_both": 513,
+        "resolved_type": 746,
+        "resolved_among_w1_evidenced": 365,
+        "resolved_among_current_refused": 358,
+        "ambiguous": 26,
+        "none": 2497,
+        "resolved_types": {
+          "ordinary_direct": 355,
+          "ads": 158
+        }
+      },
+      "delta": {
+        "foreign_lines": 0,
+        "w1_evidenced_lines": 0,
+        "resolved_both": 16,
+        "resolved_type": 10,
+        "resolved_among_w1_evidenced": 7,
+        "resolved_among_current_refused": 12,
+        "ambiguous": -6,
+        "none": -10
+      }
+    },
+    {
+      "as_of": "2025-12-31",
+      "run1": {
+        "as_of": "2025-12-31",
+        "foreign_lines": 3036,
+        "w1_evidenced_lines": 2799,
+        "resolved_both": 1127,
+        "resolved_type": 1461,
+        "resolved_among_w1_evidenced": 1111,
+        "resolved_among_current_refused": 806,
+        "ambiguous": 85,
+        "none": 1824,
+        "resolved_types": {
+          "ordinary_direct": 912,
+          "ads": 215
+        }
+      },
+      "run2": {
+        "as_of": "2025-12-31",
+        "foreign_lines": 3036,
+        "w1_evidenced_lines": 2799,
+        "resolved_both": 1149,
+        "resolved_type": 1471,
+        "resolved_among_w1_evidenced": 1128,
+        "resolved_among_current_refused": 819,
+        "ambiguous": 75,
+        "none": 1812,
+        "resolved_types": {
+          "ordinary_direct": 922,
+          "ads": 227
+        }
+      },
+      "delta": {
+        "foreign_lines": 0,
+        "w1_evidenced_lines": 0,
+        "resolved_both": 22,
+        "resolved_type": 10,
+        "resolved_among_w1_evidenced": 17,
+        "resolved_among_current_refused": 13,
+        "ambiguous": -10,
+        "none": -12
+      }
+    }
+  ],
+  "changed_answers": 72,
+  "changed_distinct_lines": 59,
+  "changed_answer_counts_by_date": {
+    "2010-12-31": 0,
+    "2015-12-31": 5,
+    "2020-12-31": 28,
+    "2025-12-31": 39
+  },
+  "selection_method": "10 distinct changed lines across four requested year-ends: prioritize up to 2 supported by new 40FR12B, then up to 8 ratio-answer changes supported by new 6-K evidence, then fill remaining slots from other changed lines. Prefer 2025 within each pool; preserve a line only once.",
+  "selected_category_counts": {
+    "new_40fr12b": 2,
+    "new_6k_ratio": 8,
+    "remaining_changed_line": 0
+  },
+  "manual_precision_status": "Pending source review; no automatic precision claim"
+}

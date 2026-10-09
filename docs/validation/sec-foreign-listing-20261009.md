@@ -1,5 +1,10 @@
 # W1c foreign listing evidence: 2026-10-09 validation
 
+**Archived run1 baseline.** The [run2 validation report](sec-foreign-listing-20261009-run2.md)
+supersedes this report for production artifact selection after the PR #176
+review fixes. Keep this report and its original artifact for comparison; use
+the exact paths and hashes in the run2 report for the owner's load.
+
 This report covers evidence collection and the dated resolver only. W1 admission,
 share sizing, and the two existing refusal codes remain unchanged. Production
 access for this run was read-only; no production evidence was loaded.

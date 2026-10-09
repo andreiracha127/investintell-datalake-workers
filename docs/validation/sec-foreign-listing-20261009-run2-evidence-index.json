@@ -1,0 +1,91 @@
+{
+  "summary_schema_version": 2,
+  "generated_at_utc": "2026-10-09T15:11:18.393087+00:00",
+  "scope": "Repository evidence summaries; full immutable external reports remain authoritative and are not replaced.",
+  "collection_manifest_sha256": "5a7667cd5679bb99400b1113abcdf3b260ddb831cab12c6942c540f118f3d283",
+  "collection_evidence_sha256": "3850894d58fbff69e8e243b6361a18f86f79f1000e5fe405bb00bbfbadc9ec45",
+  "files": [
+    {
+      "kind": "coverage",
+      "path": "sec-foreign-listing-20261009-run2-coverage.json",
+      "sha256": "0d538879a5bfa5932de430cdb58e7cbe5abe97e4388c49ee171cb1e03f20b38a",
+      "bytes": 3473,
+      "copy_mode": "exact full-file byte copy",
+      "full_external_evidence": {
+        "path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\validation\\coverage.json",
+        "sha256": "0d538879a5bfa5932de430cdb58e7cbe5abe97e4388c49ee171cb1e03f20b38a"
+      },
+      "staging_path": "E:\\investintell-data\\w1c-20261009-run2\\validation-tools\\repository-evidence-final4\\sec-foreign-listing-20261009-run2-coverage.json"
+    },
+    {
+      "kind": "deltas",
+      "path": "sec-foreign-listing-20261009-run2-deltas.json",
+      "sha256": "53321e028beea540df23d6031ea3e778032596c04e447999dc91cba137075479",
+      "bytes": 5644,
+      "copy_mode": "exact full-file byte copy",
+      "full_external_evidence": {
+        "path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\validation\\run1-run2-deltas.json",
+        "sha256": "53321e028beea540df23d6031ea3e778032596c04e447999dc91cba137075479"
+      },
+      "staging_path": "E:\\investintell-data\\w1c-20261009-run2\\validation-tools\\repository-evidence-final4\\sec-foreign-listing-20261009-run2-deltas.json"
+    },
+    {
+      "kind": "acceptance",
+      "path": "sec-foreign-listing-20261009-run2-acceptance.json",
+      "sha256": "fafc4287aa8151ca6800eb819eb72cdd9866eadb697db77680715ddb7c34e1ec",
+      "bytes": 267619,
+      "copy_mode": "clearly derived compact summary",
+      "full_external_evidence": {
+        "path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\validation\\acceptance-run2.json",
+        "sha256": "4f506445669650b2a1d4988c0abe6943675c4b106bf38a4145168d62ba884619"
+      },
+      "staging_path": "E:\\investintell-data\\w1c-20261009-run2\\validation-tools\\repository-evidence-final4\\sec-foreign-listing-20261009-run2-acceptance.json"
+    },
+    {
+      "kind": "manual30",
+      "path": "sec-foreign-listing-20261009-run2-manual30.json",
+      "sha256": "aef8709b29f3cad410a554a034aa303ecfe4dea95c3f0b87e9321b8ed1582a57",
+      "bytes": 407331,
+      "copy_mode": "clearly derived compact summary",
+      "full_external_evidence": {
+        "path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\validation\\manual-frozen30-run2.json",
+        "sha256": "ea6dcafbb1237511a7ba9eda908b132570765f9a4c2e70263afb47a90cd3d11c"
+      },
+      "staging_path": "E:\\investintell-data\\w1c-20261009-run2\\validation-tools\\repository-evidence-final4\\sec-foreign-listing-20261009-run2-manual30.json"
+    },
+    {
+      "kind": "manual10",
+      "path": "sec-foreign-listing-20261009-run2-manual10.json",
+      "sha256": "6277e4235a97da5e7397b0cbfa4f4c32d1263a352e46e6da867d05246aac9475",
+      "bytes": 525960,
+      "copy_mode": "clearly derived compact summary",
+      "full_external_evidence": {
+        "path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\validation\\manual-changed10-run2.json",
+        "sha256": "b852d3ec43699316890249e2b4cad1084d025c053b8f8fd6d942429f5d4800b3"
+      },
+      "staging_path": "E:\\investintell-data\\w1c-20261009-run2\\validation-tools\\repository-evidence-final4\\sec-foreign-listing-20261009-run2-manual10.json"
+    }
+  ],
+  "delta_export_time_status_note": "The exact delta file retains its original pending manual_precision_status because it was exported before manual40 assembly. Final actual pinned manual30/manual10 summaries and full reports record completed30/30 and10/10 and supersede only that review status, not immutable counts or export content.",
+  "immutable_delivery_snapshot_note": "Original final4-delivery-verification.json remains unchanged; its manual-review pending hold was an export-time state. Root delivery review/publication is separate.",
+  "final_manual_evidence": {
+    "frozen30": {
+      "cases": 30,
+      "source_review_correct": 30,
+      "full_path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\validation\\manual-frozen30-run2.json",
+      "full_sha256": "ea6dcafbb1237511a7ba9eda908b132570765f9a4c2e70263afb47a90cd3d11c"
+    },
+    "changed10": {
+      "cases": 10,
+      "source_review_correct": 10,
+      "full_path": "E:\\investintell-data\\w1c-20261009-run2\\final4\\validation\\manual-changed10-run2.json",
+      "full_sha256": "b852d3ec43699316890249e2b4cad1084d025c053b8f8fd6d942429f5d4800b3"
+    }
+  },
+  "total_payload_bytes_excluding_index": 1210027,
+  "source_reference_schema": "manual cases source_evidence_refs resolve to source_evidence; acceptance source_check_refs resolve to source_checks. Exact projected records are content-addressed. All independently checked excerpt strings are retained without truncation.",
+  "staging_export_index": {
+    "path": "E:\\investintell-data\\w1c-20261009-run2\\validation-tools\\repository-evidence-final4\\sec-foreign-listing-20261009-run2-evidence-index.json",
+    "sha256": "d96023044e75e613b53bf812e15186fc5ee886a202731be085d076d6faac9df3"
+  }
+}
