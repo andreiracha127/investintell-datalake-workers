@@ -122,14 +122,17 @@ END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS)
 # when a registration of the same class is filed near it (PepsiCo's 8-A12B of its
 # common stock), not of notes or preferred. A Form 10 (a spin-off's registration
 # statement) is not read: its class stays unknown.
-READ_REGISTRATION_FORMS = frozenset({"8-A12B", "8-A12G"})
+READ_REGISTRATION_FORMS = frozenset({"8-A12B", "8-A12G", "8-K12B", "8-K12G3",
+                                     "8-K12B/A", "8-K12G3/A"})
 READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
 # Names the parser of the end and registration filings; a new version re-derives
 # every such event as a correction (derive_event_classes). v4: equity classes named
 # without a Class/Series label count (equity_class_names); Forms 8-A are read. v5:
 # a shareholder rights plan is no employee plan (CAE's 8-A12B of its common shares
-# "including associated ... purchase rights pursuant to the ... Rights Plan").
-EVENT_PARSER_VERSION = "sec_event_class_v5"
+# "including associated ... purchase rights pursuant to the ... Rights Plan"). v6:
+# a successor's Form 8-K12B or 8-K12G3 (and its /A) is read for the classes it
+# continues (parse_successor_document).
+EVENT_PARSER_VERSION = "sec_event_class_v6"
 # Names the package parser (symbols, classes, share counts). Recorded on each
 # package and on each fact version it inserts; not part of a fact's hash. v3: a
 # line's member refines a title that does not say what the line is (truncated or
@@ -1456,6 +1459,54 @@ def parse_registration_document(raw: str) -> EventClass:
     )
 
 
+# The Section 12(b) table of an 8-K cover (2019 on): "Title of each class /
+# Trading Symbol(s) / Name of each exchange on which registered", up to the
+# emerging-growth or Form 8-K checkboxes.
+_COVER_12B_RE = re.compile(
+    r"title\s+of\s+each\s+class\s+trading\s+symbols?(?:\s*\(\s*s\s*\))?\s+name\s+of\s+each\s+"
+    r"exchange\s+on\s+which\s+(?:it\s+is\s+|each\s+is\s+)?registered\s*:?", re.I)
+_COVER_12B_END_RE = re.compile(
+    r"indicate\s+by\s+check\s+mark|check\s+the\s+appropriate\s+box|securities\s+registered"
+    r"\s+pursuant\s+to\s+section\s+12\s*\(\s*g|emerging\s+growth", re.I)
+# Before the cover table, the successor language: "Pursuant to Rule 12g-3(c) ...
+# the ordinary shares of the Company are deemed to be registered under Section
+# 12(b) ... (as the successor issuer to Liberty Global)".
+_SUCCESSOR_SENTENCE_RE = re.compile(
+    r"[^.]{0,500}?(?:\brule\s+12g-?3\b|\bsuccessor\s+issuer\b)[^.]{0,500}\.", re.I)
+
+
+def parse_successor_document(raw: str) -> EventClass:
+    """The classes a successor's Form 8-K12B or 8-K12G3 continues: the Section
+    12(b) table of its cover (2019 on: KKR's 2022 common stock, Liberty Global's
+    2023 Class A, B and C common shares), else the sentence that registers the
+    successor's securities under Rule 12g-3 ("the ordinary shares of the Company
+    are deemed to be registered under Section 12(b)", Liberty Global 2013). No
+    such text -> 'unknown'."""
+    documents = _DOCUMENT_RE.findall(raw)
+    body = _plain(documents[0] if documents else raw)
+    description = None
+    table = _COVER_12B_RE.search(body)
+    if table:
+        end = _COVER_12B_END_RE.search(body, table.end())
+        block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
+        if _names_a_class(block):
+            description = block[:500]
+    if description is None:
+        sentence = _SUCCESSOR_SENTENCE_RE.search(body)
+        if sentence:
+            description = sentence.group(0).strip()[:500]
+    return EventClass(
+        class_description=description,
+        class_kind=event_class_kind(description),
+        class_count=class_count(description),
+        provision=None,
+        extinguished=None,
+        venue=None,
+        venue_kind="unknown",
+        amendment_effect=None,
+    )
+
+
 def parse_event_document(raw: str, form: str) -> EventClass:
     """The class, rule provision and exchange a Form 15/25 filing states.
 
@@ -1469,6 +1520,8 @@ def parse_event_document(raw: str, form: str) -> EventClass:
     """
     if form.removesuffix("/A") in REGISTRATION_FORMS:
         return parse_registration_document(raw)
+    if form.removesuffix("/A") in SUCCESSOR_FORMS:
+        return parse_successor_document(raw)
     amendment_effect = None
     if form.endswith("/A"):
         amendment_effect = "cancels" if _CANCELS_RE.search(_plain(raw)) else "restates"

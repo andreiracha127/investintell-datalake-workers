@@ -16,6 +16,9 @@ SET LOCAL lock_timeout = '5s';
 DROP FUNCTION IF EXISTS sec_issuer_end_events(bigint, date, boolean);
 DROP FUNCTION IF EXISTS sec_registration_end_events(bigint, date, boolean);
 DROP FUNCTION IF EXISTS sec_registration_starts(bigint, date, boolean);
+DROP FUNCTION IF EXISTS sec_ticker_holds_at(text, date, date[], integer, boolean);
+DROP FUNCTION IF EXISTS sec_ticker_listed_holds_at(text, date, integer, boolean);
+DROP FUNCTION IF EXISTS sec_ticker_line_runs_from(text, integer, boolean);
 
 -- Visible rows. p_current = false: what was known at D (available_on <= D, not
 -- yet retired at D). p_current = true: today's truth up to D (current rows whose

@@ -127,21 +127,24 @@ statement closes every class the statement shows T on (an end of another class
 leaves the hold, v2); it is **stale** when the statement is older than 400 days;
 else **active**. Listed rows (equity, depositary or unknown) decide: a non-listed
 row showing T (filers also tag their common symbol on notes lines) does not count
-while a listed hold of T was positively active when it was shown, by the hold
-and run engines' own lifecycle: a listed row showing T within the 400 days
-before, of a class (in lineage, a line) no end closed since, and no later
-statement the engine follows the hold through that no longer shows T (the class
-or line under another symbol only, or a complete cover without T: a sole class
-renamed, or dimensioned as class A under a new symbol), of any CIK (v2).
-Otherwise it is a competing holder. A ticker only ever shown on preferred lines resolves through
+while a listed hold of T was active when it was shown, as the engines themselves
+compute it: `sec_ticker_listed_holds_at` (the hold engine, text for text) and
+`sec_ticker_line_runs_from` first run on the listed rows alone, with the full
+lifecycle (ends, definitive ends that later covers do not reopen, other symbols,
+staleness), and a non-listed row is hidden only while such a hold or run of any
+CIK is active at its date (two passes, v2). Otherwise it is a competing holder. A ticker only ever shown on preferred lines resolves through
 them; an earlier holder that showed T only on rows read as debt keeps its run when
 another issuer lists T years later; an issuer that shows T only on a preferred row
 after the previous listed holder's class ended or was renamed, the same CIK too,
 holds T (an other holder of a later issuer's line meanwhile).
 
 **End filings.** For CIKs with cover data the loader reads each Form 15, 15F or
-25 for the class it concerns, and each Form 8-A12B or 8-A12G for the class it
-registers (v2; a Form 10 is not read). A Form 15F (15F-12B, 15F-12G, 15F-15D: a
+25 for the class it concerns, each Form 8-A12B or 8-A12G for the class it
+registers (v2; a Form 10 is not read), and each successor's Form 8-K12B or
+8-K12G3 (and its /A) for the classes it continues: the Section 12(b) table of its
+cover from 2019 (Liberty Global's 2023 Class A, B and C), else the sentence that
+registers the successor's securities under Rule 12g-3 (parser v6; the /A
+readings are recorded, the originals used). A Form 15F (15F-12B, 15F-12G, 15F-15D: a
 foreign private issuer's termination under Rule 12h-6, such as PetroChina's
 15F-12B of 2024-02-05) counts as the Form 15 it stands for. A class count reads
 Class/Series enumerations and, since parser v4, classes named without a label
@@ -227,9 +230,10 @@ continued: the first cover count filed after the end and stated on or after it
 nothing) is within 0.8-1.25 times the last one before it. After a definitive end
 a later statement does not reopen the hold, even with a 12(b) title (v2); only a
 registration filed after the end (an 8-A, a Form 10 or a successor's 8-K12B),
-public by then, that identifies the line does: one naming its class by the
-cover's label, or naming none when the issuer listed one symbol (an unlabelled
-line beside other classes is identified by none), or T first appearing after
+public by then, that identifies the rows it reopens does: one naming the class
+of those rows (the candidate statement's own labels, never another class the
+ticker once showed on), or naming none when the issuer listed one symbol (an
+unlabelled line beside other classes is identified by none), or T first appearing after
 the end (Swift's SWFT ended in
 the merger and the same CIK traded as KNX).
 
@@ -354,7 +358,7 @@ The end filings and Forms 8-A of CIKs with cover data are read from
 missing (`--no-fetch` reads only the cache); an event already read by the current
 parser version is carried without a read. A run ends by re-deriving the class of
 current end and 8-A events read by another parser version (`EVENT_PARSER_VERSION`,
-now `sec_event_class_v5`) or not read yet, as corrections; the packages read by
+now `sec_event_class_v6`) or not read yet, as corrections; the packages read by
 another `FSN_PARSER_VERSION` (now `sec_fsn_v3`) are re-read with `--verify-cache`. With `--verify-cache`
 the file verified is the one loaded, by path (a package named on the command line
 included), and its validators are recorded in the package's own transaction; a
@@ -490,7 +494,7 @@ For the follow-up (v2), in this order:
    about 12,000 filings, already cached on this workstation since the 2026-10-08
    measurement, else fetched at most 10 per second; the 8-K12B and 8-K12G3 rows
    are added) and re-derives the end events read by `sec_event_class_v3`
-   (production) with `sec_event_class_v5`. Expect
+   (production) with `sec_event_class_v6`. Expect
    (measured on a full local reload in the production state, 2026-10-09, about
    12 minutes from the caches):
    - observations: 13,057 versions retired as `parser_correction` and 13,373

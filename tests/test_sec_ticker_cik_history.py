@@ -2418,6 +2418,49 @@ def test_a_registration_of_another_class_is_no_transfer(schema_dsn, tmp_path: Pa
     assert _issuer(conn, "TENX", "2021-03-01")[:2] == ("resolved", 4343)
 
 
+def test_a_successor_registration_is_read_for_the_classes_it_continues(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """Codex thread 4226135135: a successor's Form 8-K12B is read (event parser
+    v6). Liberty Global's of 2023-11-24 names its classes on the 8-K cover's
+    Section 12(b) table (Class A, B and C common shares); its 2013 one registers
+    "the ordinary shares of the Company" under Rule 12g-3 in prose, naming no
+    class. The named successor carries on each class it names across an end of
+    the three classes; the unnamed one, on a three-symbol issuer, carries none."""
+    table, prose = "0001570585-23-000478", "0001193125-13-251863"
+    read = loader.parse_event_document(_filing(table), "8-K12B")
+    assert (read.class_kind, read.class_count) == ("equity", 3)
+    assert read.class_description.startswith("Class A Common Shares LBTYA Nasdaq")
+    read = loader.parse_event_document(_filing(prose), "8-K12B")
+    assert (read.class_kind, read.class_count) == ("equity", 1)
+    assert read.class_description.startswith("Pursuant to Rule 12g-3(c)")
+    assert "8-K12B" in loader.READ_EVENT_FORMS and "8-K12G3/A" in loader.READ_EVENT_FORMS
+    conn, dsn = schema_dsn
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for adsh in (table, prose):
+        (docs / f"{adsh}.txt").write_bytes((FILINGS / f"{adsh}.txt").read_bytes())
+    q = _observe(conn, 1570585, "LBTYA", "2023-11-01", class_key="ClassOfStock=CommonClassA;",
+                 title="Class A ordinary shares")
+    for x in "BC":
+        _observe(conn, 1570585, f"LBTY{x}", "2023-11-01",
+                 class_key=f"ClassOfStock=CommonClass{x};", title=f"Class {x} ordinary shares",
+                 adsh=q)
+    index = _index(tmp_path / "2023QTR4.form.gz", ("8-K12B", 1570585, "2023-11-24", table),
+                   ("8-K12B", 1570585, "2013-06-07", prose))
+    loader.run([], dsn=dsn, dry_run=False, form_indexes=[index],
+               documents=loader.EventDocuments(docs, None), reconciled_on=d(2023, 12, 1))
+    assert conn.execute(
+        "SELECT filed, classes FROM sec_registration_starts(1570585, '2023-12-01') ORDER BY filed"
+    ).fetchall() == [(d(2013, 6, 7), []), (d(2023, 11, 24), ["a", "b", "c"])]
+    _event(conn, 1570585, "25-NSE", "2023-11-24", kind="equity", count=3, extinguished=True,
+           venue_kind="primary",
+           description="Class A Ordinary Shares, Class B Ordinary Shares, Class C Ordinary Shares")
+    assert _ends(conn, 1570585, "2023-12-01") == []
+    assert [_issuer(conn, f"LBTY{x}", "2023-12-01")[:2] for x in "ABC"] == [
+        ("resolved", 1570585)] * 3
+
+
 def test_a_later_holder_seen_only_on_preferred_rows_is_not_hidden(schema_dsn) -> None:
     """Codex thread 4224967437: an issuer listed T years before; a later issuer
     shows T only on a preferred row. Another CIK's listed row hides a non-listed
@@ -3134,6 +3177,10 @@ REGISTRATIONS = {
     "successor names the last class": ("8-K12B", "equity"),
     "successor names the first class": ("8-K12B", "equity"),
     "successor unread": ("8-K12B", None),
+    # as the successor reader records them (Codex thread 4226135135): the 8-K
+    # cover's Section 12(b) table, or the Rule 12g-3 prose
+    "successor cover table names every class": ("8-K12B", "equity"),
+    "successor prose names the last class": ("8-K12B", "equity"),
 }
 WINDOW_OFFSETS = (-40, -31, -30, -10, 0, 5, 10, 11, 20)
 
@@ -3167,12 +3214,16 @@ def test_generated_registrations_carry_on_the_classes_they_name(schema_dsn, shap
              "names the first class": {labels[0]} if len(labels) > 1 else {"z"},
              "names every class": set(labels),
              "successor names the last class": {labels[-1]},
-             "successor names the first class": {labels[0]} if len(labels) > 1 else {"z"}}
+             "successor names the first class": {labels[0]} if len(labels) > 1 else {"z"},
+             "successor cover table names every class": set(labels),
+             "successor prose names the last class": {labels[-1]}}
     cases = [("none", 0)] + [(r, o) for r in ("names the last class", "unread")
                              for o in WINDOW_OFFSETS]
     cases += [(r, o) for r in ("names the first class", "names every class", "names no class",
                                "another kind", "successor names the last class",
-                               "successor names the first class", "successor unread")
+                               "successor names the first class", "successor unread",
+                               "successor cover table names every class",
+                               "successor prose names the last class")
               for o in (0, 5)]
     ciks = itertools.count(20_000)
     failures = []
@@ -3194,6 +3245,12 @@ def test_generated_registrations_carry_on_the_classes_they_name(schema_dsn, shap
             text = ({"names no class": "Common stock", "another kind": "Series A Preferred Stock",
                      "unread": None, "successor unread": None}[reg]
                     if not reg_names else _classes_text(sorted(reg_names)))
+            if reg == "successor cover table names every class":
+                text = " ".join(f"Class {x.upper()} Common Shares R{cik}{x.upper()} "
+                                "Nasdaq Global Select Market" for x in sorted(reg_names))
+            elif reg == "successor prose names the last class":
+                text = (f"Pursuant to Rule 12g-3(a), the Class {labels[-1].upper()} common stock "
+                        "of the successor issuer is deemed registered under Section 12(b)")
             _event(conn, cik, reg_form, reg_filed, kind=reg_kind,
                    venue_kind="primary" if reg_kind else None, description=text)
         in_scope = {key for key, _, label in classes
@@ -3282,7 +3339,7 @@ def test_generated_holders_by_lifecycle_kind_gap_and_cik(schema_dsn) -> None:
     failures = []
     lifecycles = ("active", "end before M", "end after M", "rename before M",
                   "rename after M", "alias rename before M", "alias rename after M",
-                  "member rename before M")
+                  "member rename before M", "end and a stale cover before M")
     p_classes = {"class A": ("CommonClassA", "Class A common stock"),
                  "undimensioned": ("", "Common stock")}
     for lifecycle, gap, kind, same_cik, p_class in itertools.product(
@@ -3291,6 +3348,8 @@ def test_generated_holders_by_lifecycle_kind_gap_and_cik(schema_dsn) -> None:
             continue  # P's own listed row of another class: a class question, above
         if p_class == "undimensioned" and lifecycle.startswith("end"):
             continue  # an end of an undimensioned sole class: as for class A
+        if lifecycle == "end and a stale cover before M" and gap < 100:
+            continue
         p = next(ciks)
         m, q = (p if same_cik else p + 1), p + 2
         ticker = f"H{p}"
@@ -3310,6 +3369,11 @@ def test_generated_holders_by_lifecycle_kind_gap_and_cik(schema_dsn) -> None:
                 change_on = filed + dt.timedelta(days=1)
                 _event(conn, p, "25-NSE", filed.isoformat(), kind="equity", extinguished=True,
                        venue_kind="primary", description="Class A common stock")
+                if lifecycle == "end and a stale cover before M":
+                    # a cover repeating the ticker after the definitive end, with no
+                    # registration: the hold stays ended (production re-gate P1-2)
+                    _cover(conn, p, (filed + dt.timedelta(days=10)).isoformat(),
+                           [(ticker, p_key, p_title, "equity")], complete=False)
             elif lifecycle.startswith("rename"):
                 change_on = filed + dt.timedelta(days=1)
                 _cover(conn, p, filed.isoformat(), [(f"N{p}", p_key, p_title, "equity")],
@@ -3357,6 +3421,181 @@ def test_generated_holders_by_lifecycle_kind_gap_and_cik(schema_dsn) -> None:
             if _issuer(conn, ticker, before.isoformat())[:2] != want:
                 failures.append((cell, before, want, _issuer(conn, ticker, before.isoformat())))
     assert failures == []
+
+
+def _admission_invariant_failures(conn, tickers) -> list:
+    """The admission invariant, judged from the engines' outputs only.
+
+    Suppression: a non-listed row of a CIK that shows the ticker on no listed row
+    is hidden (its CIK holds nothing at the row's date, and no run of its line
+    covers that date) only while a listed hold of another CIK is active then
+    (sec_ticker_holds) and a run of a listed line is alive then
+    (sec_ticker_line_runs, 400 days).
+    Reopening: a hold active again, at any of its statement dates, after a
+    definitive end that closes every row the statement shows the ticker on (the
+    ticker showed before the end) has a registration after the end that names a
+    class of those rows, or names none on a one-symbol issuer."""
+    listed = ("equity", "depositary", "unknown")
+    failures = []
+    for ticker in tickers:
+        rows = conn.execute(
+            "SELECT cik, class_key, security_kind, available_on, adsh, security_title "
+            "FROM sec_ticker_cik_observations WHERE ticker_key = %s AND retired_on IS NULL",
+            (ticker,)).fetchall()
+        listed_ciks = {r[0] for r in rows if r[2] in listed}
+        runs = conn.execute(
+            "SELECT cik, line_key, class_key, valid_from, valid_to "
+            "FROM sec_ticker_line_runs(%s, 400)", (ticker,)).fetchall()
+        listed_keys = {(r[0], r[1]) for r in rows if r[2] in listed}
+        for cik, class_key, kind, on, _, _ in rows:
+            if kind in listed or cik in listed_ciks:
+                continue
+            holders = {h[0]: h[1] for h in conn.execute(
+                "SELECT cik, state FROM sec_ticker_holds(%s, %s)", (ticker, on)).fetchall()}
+            if cik not in holders:  # hidden in the holds
+                if not any(state == "active" for c, state in holders.items() if c in listed_ciks):
+                    failures.append(("hidden with no active listed hold", ticker, cik, on))
+            covered = any(r[0] == cik and r[3] <= on and (r[4] is None or on < r[4]) for r in runs)
+            if not covered:  # hidden in the runs
+                if not any((r[0], r[2]) in listed_keys and r[3] <= on
+                           and (r[4] is None or on < r[4]) for r in runs):
+                    failures.append(("hidden with no alive listed run", ticker, cik, on))
+        for cik in listed_ciks:
+            ends = conn.execute(
+                "SELECT filed, effective_on, issuer_symbols, class_keys, tentative_keys, "
+                "class_kind, named_kinds FROM sec_issuer_end_events(%s, %s) "
+                "WHERE definitive", (cik, "2026-10-08")).fetchall()
+            first = min(r[3] for r in rows if r[0] == cik)
+            for on in sorted({r[3] for r in rows if r[0] == cik}):
+                hold = conn.execute(
+                    "SELECT state, statement_on, statement_adsh FROM sec_ticker_holds(%s, %s) "
+                    "WHERE cik = %s", (ticker, on, cik)).fetchone()
+                if not hold or hold[0] != "active":
+                    continue
+                shown_rows = [r for r in rows if r[0] == cik and r[4] == hold[2]]
+                labels = {conn.execute("SELECT sec_class_label(%s, %s)", (r[5], r[1])).fetchone()[0]
+                          for r in shown_rows} - {None}
+                for end_filed, effective, symbols, keys, tentative, kind, named in ends:
+                    if not (first < effective <= hold[1]):
+                        continue
+                    # a reopening of what the end closed: every row the statement
+                    # shows the ticker on is of a class (kind) the end closes
+                    if not all(conn.execute(
+                            "SELECT sec_end_role(%s, %s, %s, %s, %s, %s) IS NOT NULL",
+                            (keys, tentative, kind, named, r[1], r[2])).fetchone()[0]
+                            for r in shown_rows):
+                        continue
+                    regs = conn.execute(
+                        "SELECT classes FROM sec_registration_starts(%s, %s) "
+                        "WHERE filed > %s AND available_on <= %s",
+                        (cik, "2026-10-08", end_filed, hold[1])).fetchall()
+                    if not any(set(c) & labels or (not c and symbols == 1) for (c,) in regs):
+                        failures.append(("reopened by no registration of its class", ticker, cik,
+                                         hold[1], sorted(labels), regs))
+    return failures
+
+
+def test_generated_admission_invariants(schema_dsn) -> None:
+    """Production re-gate: suppression and rescue consult the engines' own
+    lifecycle. Over the holder-lifecycle and registration scenario spaces and the
+    re-gate's two scenarios, every hidden non-listed row falls while a listed hold
+    and run are active, and every reopened hold has a registration of its own
+    class (_admission_invariant_failures)."""
+    conn, _ = schema_dsn
+    tickers = []
+    # re-gate P1-1: T moves from class A to class B; B ends definitively; an 8-A
+    # registers A; an 8-K shows B as T again. B stays ended.
+    q = _cover(conn, 9001, "2024-01-01", [("GT", "CommonClassA", "Class A common stock", "equity"),
+                                          ("GTB", "CommonClassB", "Class B common stock", "equity")],
+               complete=True)
+    _cover(conn, 9001, "2024-02-01", [("GAA", "CommonClassA", "Class A common stock", "equity"),
+                                      ("GT", "CommonClassB", "Class B common stock", "equity")],
+           complete=True)
+    _event(conn, 9001, "25-NSE", "2024-03-01", kind="equity", extinguished=True,
+           venue_kind="primary", description="Class B common stock")
+    _event(conn, 9001, "8-A12B", "2024-04-01", kind="equity", venue_kind="primary",
+           description="Class A common stock")
+    _cover(conn, 9001, "2024-05-01", [("GT", "CommonClassB", "Class B common stock", "equity")],
+           complete=False)
+    tickers.append("GT")
+    # re-gate P1-2: P's definitive end, then a cover repeating T; M shows T on a
+    # preferred row; Q alive as PRIOR takes T in July. M is another holder.
+    _cover(conn, 9002, "2024-01-01", [("ST", "CommonClassA", "Class A common stock", "equity")],
+           complete=True)
+    _event(conn, 9002, "25-NSE", "2024-03-01", kind="equity", extinguished=True,
+           venue_kind="primary", description="Class A common stock")
+    _cover(conn, 9002, "2024-04-01", [("ST", "CommonClassA", "Class A common stock", "equity")],
+           complete=False)
+    _observe(conn, 9003, "ST", "2024-05-01", kind="preferred", class_key="SeriesAPreferred",
+             title="Series A preferred stock")
+    _cover(conn, 9004, "2024-02-01", [("PRIORX", "Common", "Common stock", "equity")],
+           complete=True)
+    _cover(conn, 9004, "2024-07-01", [("ST", "Common", "Common stock", "equity")], complete=True)
+    tickers.append("ST")
+    # the holder-lifecycle space (sec_ticker_holds, line runs)
+    ciks = itertools.count(70_000, 3)
+    lifecycles = ("active", "end", "end and a stale cover", "rename", "alias rename")
+    for lifecycle, gap, kind, same_cik in itertools.product(
+            lifecycles, (100, 300, 500), ("equity", "preferred", "debt"), (False, True)):
+        if same_cik and kind == "equity":
+            continue
+        p = next(ciks)
+        m, q = (p if same_cik else p + 1), p + 2
+        ticker = f"I{p}"
+        p_known = dt.date(2022, 1, 2)
+        m_known = p_known + dt.timedelta(days=gap)
+        _cover(conn, p, "2022-01-01", [(ticker, "CommonClassA", "Class A common stock", "equity")],
+               complete=True)
+        filed = (p_known + dt.timedelta(days=30)).isoformat()
+        if lifecycle.startswith("end"):
+            _event(conn, p, "25-NSE", filed, kind="equity", extinguished=True,
+                   venue_kind="primary", description="Class A common stock")
+            if lifecycle == "end and a stale cover":
+                _cover(conn, p, _day(filed, 10), [(ticker, "CommonClassA", "Class A common stock",
+                                                   "equity")], complete=False)
+        elif lifecycle == "rename":
+            _cover(conn, p, filed, [(f"N{p}", "CommonClassA", "Class A common stock", "equity")],
+                   complete=True)
+        elif lifecycle == "alias rename":
+            _cover(conn, p, filed, [(f"N{p}", "ClassOfStock=ClassACommonStock;",
+                                     "Class A common stock", "equity")], complete=True)
+        class_key, title = KIND_ROWS[kind]
+        _observe(conn, m, ticker, _day(m_known.isoformat(), -1), kind=kind, class_key=class_key,
+                 title=title)
+        _cover(conn, q, _day(m_known.isoformat(), -60), [(f"Q{q}", "Common", "Common stock",
+                                                          "equity")], complete=True)
+        _cover(conn, q, _day(m_known.isoformat(), 120), [(ticker, "Common", "Common stock",
+                                                          "equity")], complete=True)
+        tickers.append(ticker)
+    # the class-move registration space: T on A then B; an end of either; an 8-A
+    # of either, of none or unread after it; a later cover showing T on B
+    for ended, registered, extinguished in itertools.product(
+            ("a", "b"), ("a", "b", "none", "unread"), (True, False)):
+        cik = next(ciks)
+        ticker = f"J{cik}"
+        _cover(conn, cik, "2024-01-01", [(ticker, "CommonClassA", "Class A common stock", "equity"),
+                                         (f"{ticker}B", "CommonClassB", "Class B common stock",
+                                          "equity")], complete=True)
+        _cover(conn, cik, "2024-02-01", [(f"{ticker}A", "CommonClassA", "Class A common stock",
+                                          "equity"),
+                                         (ticker, "CommonClassB", "Class B common stock",
+                                          "equity")], complete=True)
+        _event(conn, cik, "25-NSE", "2024-03-01", kind="equity", extinguished=extinguished,
+               venue_kind="primary", description=f"Class {ended.upper()} common stock")
+        if registered == "unread":
+            _event(conn, cik, "10-12B", "2024-04-01")
+        else:
+            _event(conn, cik, "8-A12B", "2024-04-01", kind="equity", venue_kind="primary",
+                   description="Common stock" if registered == "none"
+                   else f"Class {registered.upper()} common stock")
+        _cover(conn, cik, "2024-05-01", [(ticker, "CommonClassB", "Class B common stock", "equity")],
+               complete=False)
+        tickers.append(ticker)
+    assert _admission_invariant_failures(conn, tickers) == []
+    # and the re-gate's answers themselves
+    assert _issuer(conn, "GT", "2024-05-05")[:2] == ("ended", None)
+    assert _issuer(conn, "ST", "2024-05-15")[:2] == ("resolved", 9003)
+    assert _holders_on(conn, "ST", 9004, "Common", d(2024, 5, 15)) == {9003}
 
 
 def test_generated_line_linkage_and_sole_class_by_cover_completeness(schema_dsn) -> None:

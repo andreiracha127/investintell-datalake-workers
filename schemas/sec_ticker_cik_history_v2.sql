@@ -60,13 +60,15 @@
 --   sole-class line is followed through the issuer's later complete filings, so
 --   the recapitalization ends its run.
 -- * A non-listed row (debt, preferred...) showing a ticker is a competing holder
---   unless a listed hold of the ticker was positively active when it was shown, by
---   the hold and run engines' own lifecycle: a listed row showing it within the
---   400 days before, of a class (line) that no end closed since, and no later
---   statement the engine follows the hold through that no longer shows it (the
---   class or line under another symbol only, or a complete cover without the
---   ticker: a sole class renamed or dimensioned under a new symbol), of any CIK,
---   the same one too. An earlier holder that tagged its ticker only on
+--   unless a listed hold of the ticker was active when it was shown, as the
+--   engines themselves compute it: sec_ticker_listed_holds_at (the hold engine,
+--   text for text) and sec_ticker_line_runs_from first run on the listed rows
+--   alone (pass 1, the full lifecycle: ends,
+--   definitive ends that later covers do not reopen, other symbols, staleness),
+--   and a non-listed row is hidden only while a pass-1 hold or run of any CIK, the
+--   same one too, is active at its date (pass 2).
+-- * A registration rescues or reopens only the classes of the rows it carries on
+--   (the candidate's own labels), never another class the ticker once showed on. An earlier holder that tagged its ticker only on
 --   non-listed rows keeps its run when a later issuer reuses it; a later holder
 --   seen only on a preferred row (another CIK, or the same one after its common
 --   ended or was renamed) is another holder.
@@ -829,11 +831,15 @@ $fn$;
 -- first and last knowledge dates of rows showing the ticker; class_key and
 -- security_kind come from the latest of those rows. Ordering within a day is by
 -- acceptance time, then accession.
-CREATE OR REPLACE FUNCTION sec_ticker_holds(
-    p_ticker text, p_as_of date, p_max_age_days integer DEFAULT 400,
-    p_current boolean DEFAULT false
+-- Pass 1 of sec_ticker_holds_at: the same engine, text for text, on the listed
+-- rows alone (equity, depositary, unknown), evaluated at each date a non-listed
+-- row showed the ticker. Kept as its own function, taking plain arguments, so
+-- that neither calls itself and both inline into their callers.
+CREATE OR REPLACE FUNCTION sec_ticker_listed_holds_at(
+    p_ticker text, p_as_of date, p_max_age_days integer, p_current boolean
 )
 RETURNS TABLE (
+    on_date date,
     cik bigint,
     state text,
     class_key text,
@@ -853,63 +859,10 @@ WITH shown AS (
            o.filing_equity_classes, o.filing_complete
     FROM sec_observations_at(p_as_of, p_current) o
     WHERE o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
-), listed_shown AS (
-    SELECT s.* FROM shown s WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
-), listed_ends AS MATERIALIZED (
-    -- the ends of every CIK that showed the ticker on a listed row
-    SELECT c.cik, x.effective_on, x.class_keys, x.tentative_keys, x.class_kind, x.named_kinds
-    FROM (SELECT DISTINCT l.cik FROM listed_shown l) c
-    CROSS JOIN LATERAL sec_issuer_end_events(c.cik, p_as_of, p_current) x
-), listed_filings AS MATERIALIZED (
-    -- the filings of those CIKs as the hold engine reads them when it follows a
-    -- listed hold (candidates, 'stated' below): the classes each shows the ticker
-    -- on and those it shows under another symbol, whether it is complete, and
-    -- whether it lists one equity class
-    SELECT o.cik, o.adsh,
-           max(CASE WHEN p_current THEN o.source_available_on ELSE o.available_on END)
-               AS known_on,
-           bool_or(o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'))
-               AS shows,
-           bool_or(o.filing_complete) AS complete,
-           bool_or(o.filing_complete AND o.filing_equity_classes = 1
-                   AND o.security_kind IN ('equity', 'depositary', 'unknown')) AS one_class,
-           COALESCE(array_agg(DISTINCT o.class_key) FILTER (
-               WHERE o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')),
-               '{}') AS t_classes,
-           COALESCE(array_agg(DISTINCT o.class_key) FILTER (
-               WHERE o.ticker_key <> regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')),
-               '{}') AS other_classes
-    FROM sec_observations_at(p_as_of, p_current) o
-    WHERE o.cik IN (SELECT l.cik FROM listed_shown l)
-    GROUP BY o.cik, o.adsh
 ), relevant AS (
-    -- a non-listed row showing the ticker is a competing holder unless a listed
-    -- hold of it was positively active then (the admission rule), by the hold
-    -- engine's own lifecycle: a listed row showing it within the 400 days before,
-    -- of a class no end closed since, and no later statement of that hold that no
-    -- longer shows it: a filing showing the class under another symbol only, or a
-    -- complete cover not showing the ticker that the engine follows the hold
-    -- through (a one-class cover, or any complete cover after a sole-class
-    -- statement: a sole class renamed or dimensioned under a new symbol)
+    -- pass 1: the listed rows alone (equity, depositary, unknown)
     SELECT s.* FROM shown s
     WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
-       OR NOT EXISTS (
-           SELECT 1 FROM listed_shown e
-           WHERE e.known_on <= s.known_on AND e.known_on > s.known_on - 400
-             AND NOT EXISTS (
-                 SELECT 1 FROM listed_ends x
-                 WHERE x.cik = e.cik AND x.effective_on > e.known_on
-                   AND x.effective_on <= s.known_on
-                   AND sec_end_role(x.class_keys, x.tentative_keys, x.class_kind, x.named_kinds,
-                                    e.class_key, e.security_kind) IS NOT NULL)
-             AND NOT EXISTS (
-                 SELECT 1 FROM listed_filings f
-                 WHERE f.cik = e.cik AND f.known_on > e.known_on AND f.known_on <= s.known_on
-                   AND NOT e.class_key = ANY(f.t_classes)
-                   AND (e.class_key = ANY(f.other_classes)
-                        OR (f.complete AND NOT f.shows
-                            AND (f.one_class
-                                 OR (e.filing_complete AND e.filing_equity_classes = 1))))))
 ), per_cik AS (
     SELECT r.cik,
            min(r.known_on) AS first_on,
@@ -930,7 +883,7 @@ WITH shown AS (
     GROUP BY r.cik
 ), candidate_rows AS MATERIALIZED (
     SELECT p.cik, f.adsh, f.class_key, f.security_kind, f.accepted, f.filing_complete,
-           f.filing_equity_classes,
+           f.filing_equity_classes, f.security_title,
            CASE WHEN p_current THEN f.source_available_on ELSE f.available_on END AS known_on,
            f.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g') AS shows
     FROM per_cik p
@@ -940,8 +893,17 @@ WITH shown AS (
           OR (f.filing_complete AND f.security_kind IN ('equity', 'depositary', 'unknown')
               AND (p.sole OR f.filing_equity_classes = 1)))
 ), candidates AS (
+    -- labels: the classes of the rows by which the candidate states the hold (its
+    -- rows showing the ticker, else its rows): only a registration naming one of
+    -- them, never another class the ticker once showed on, reopens it
     SELECT r.cik, r.adsh, max(r.known_on) AS known_on, max(r.accepted) AS accepted,
-           bool_or(r.shows) AS shows
+           bool_or(r.shows) AS shows,
+           CASE WHEN bool_or(r.shows)
+                THEN array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key))
+                                  FILTER (WHERE r.shows), NULL)
+                ELSE array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key)),
+                                  NULL)
+           END AS labels
     FROM candidate_rows r
     GROUP BY r.cik, r.adsh
 ), stated AS (
@@ -984,9 +946,15 @@ WITH shown AS (
     JOIN candidates c ON c.cik = e.cik
     JOIN candidate_rows r ON r.cik = c.cik AND r.adsh = c.adsh AND (r.shows OR NOT c.shows)
     GROUP BY e.cik, e.adsh, c.adsh
+), dates AS (
+    -- the dates a non-listed row showed the ticker
+    SELECT DISTINCT s.known_on AS on_date FROM shown s
+    WHERE s.security_kind NOT IN ('equity', 'depositary', 'unknown')
 ), statement AS (
-    SELECT DISTINCT ON (c.cik) c.*
-    FROM stated c
+    -- at each date, the latest statement known by then that no end blocks
+    SELECT DISTINCT ON (d.on_date, c.cik) d.on_date, c.*
+    FROM dates d
+    JOIN stated c ON c.known_on <= d.on_date
     JOIN per_cik p ON p.cik = c.cik
     WHERE NOT EXISTS (
         SELECT 1 FROM ends e
@@ -1003,24 +971,24 @@ WITH shown AS (
               -- symbol
               SELECT 1 FROM sec_registration_starts(c.cik, p_as_of, p_current) r
               WHERE r.filed > e.filed AND r.available_on <= c.known_on
-                AND (r.classes && p.labels
+                AND (r.classes && c.labels
                      OR (cardinality(r.classes) = 0 AND e.issuer_symbols = 1))))
-    ORDER BY c.cik, c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
+    ORDER BY d.on_date, c.cik, c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
 ), last_end AS (
-    -- the latest end after the statement that closes every class it shows the
-    -- ticker on (an end of another class leaves the hold)
-    SELECT DISTINCT ON (e.cik) e.*
+    -- the latest end, effective by the date, after the statement that closes every
+    -- class it shows the ticker on (an end of another class leaves the hold)
+    SELECT DISTINCT ON (s.on_date, e.cik) s.on_date, e.*
     FROM ends e
     JOIN statement s ON s.cik = e.cik
     JOIN closes k ON k.cik = e.cik AND k.end_adsh = e.adsh AND k.adsh = s.adsh
-    WHERE e.effective_on > s.known_on AND k.closed
-    ORDER BY e.cik, e.effective_on DESC, k.identified DESC, e.adsh DESC
+    WHERE e.effective_on > s.known_on AND e.effective_on <= s.on_date AND k.closed
+    ORDER BY s.on_date, e.cik, e.effective_on DESC, k.identified DESC, e.adsh DESC
 )
-SELECT p.cik,
+SELECT s.on_date, p.cik,
        CASE
            WHEN l.effective_on > s.known_on THEN 'ended'
            WHEN NOT s.shows THEN 'ended'
-           WHEN p_as_of - s.known_on > p_max_age_days THEN 'stale'
+           WHEN s.on_date - s.known_on > p_max_age_days THEN 'stale'
            ELSE 'active'
        END AS state,
        p.class_key, p.security_kind, s.known_on AS statement_on,
@@ -1032,7 +1000,211 @@ SELECT p.cik,
        END AS end_reason
 FROM per_cik p
 JOIN statement s ON s.cik = p.cik
-LEFT JOIN last_end l ON l.cik = p.cik
+LEFT JOIN last_end l ON l.cik = p.cik AND l.on_date = s.on_date
+$fn$;
+
+-- Each CIK's hold of a ticker, evaluated at each date of p_on with what was known
+-- at p_as_of (pass 2): a non-listed row counts only while no listed hold of the
+-- ticker, as pass 1 (sec_ticker_listed_holds_at) computes it with this same
+-- engine, is active at the row's date.
+CREATE OR REPLACE FUNCTION sec_ticker_holds_at(
+    p_ticker text, p_as_of date, p_on date[], p_max_age_days integer, p_current boolean
+)
+RETURNS TABLE (
+    on_date date,
+    cik bigint,
+    state text,
+    class_key text,
+    security_kind text,
+    statement_on date,
+    statement_accepted timestamp,
+    statement_adsh text,
+    first_on date,
+    confirmed_on date,
+    end_reason text
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+WITH shown AS (
+    SELECT o.cik, o.class_key, o.security_kind, o.adsh, o.accepted, o.security_title,
+           CASE WHEN p_current THEN o.source_available_on ELSE o.available_on END AS known_on,
+           o.filing_equity_classes, o.filing_complete
+    FROM sec_observations_at(p_as_of, p_current) o
+    WHERE o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
+), listed_active AS MATERIALIZED (
+    -- pass 1: the same engine on the listed rows alone (sec_ticker_listed_holds_at),
+    -- evaluated at each date a non-listed row showed the ticker
+    SELECT DISTINCT h.on_date
+    FROM sec_ticker_listed_holds_at(p_ticker, p_as_of, 400, p_current) h
+    WHERE h.state = 'active'
+), relevant AS (
+    -- pass 2: a non-listed row showing the ticker is a competing holder unless a
+    -- listed hold of it, as pass 1 computed it with this engine's full lifecycle,
+    -- was active at that row's date (the admission rule)
+    SELECT s.* FROM shown s
+    WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
+       OR NOT EXISTS (SELECT 1 FROM listed_active a WHERE a.on_date = s.known_on)
+), per_cik AS (
+    SELECT r.cik,
+           min(r.known_on) AS first_on,
+           max(r.known_on) AS confirmed_on,
+           (array_agg(r.class_key ORDER BY r.known_on DESC, r.accepted DESC NULLS LAST,
+                      r.adsh DESC, r.class_key))[1] AS class_key,
+           (array_agg(r.security_kind ORDER BY r.known_on DESC, r.accepted DESC NULLS LAST,
+                      r.adsh DESC, r.class_key))[1] AS security_kind,
+           array_agg(DISTINCT r.class_key) AS classes,
+           array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key)),
+                        NULL) AS labels,
+           bool_or(r.security_kind IN ('equity', 'depositary', 'unknown')) AS listed,
+           array_agg(DISTINCT r.security_kind) AS kinds,
+           COALESCE((array_agg(r.filing_equity_classes = 1 ORDER BY r.known_on DESC,
+                               r.accepted DESC NULLS LAST, r.adsh DESC)
+                     FILTER (WHERE r.filing_complete))[1], false) AS sole
+    FROM relevant r
+    GROUP BY r.cik
+), candidate_rows AS MATERIALIZED (
+    SELECT p.cik, f.adsh, f.class_key, f.security_kind, f.accepted, f.filing_complete,
+           f.filing_equity_classes, f.security_title,
+           CASE WHEN p_current THEN f.source_available_on ELSE f.available_on END AS known_on,
+           f.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g') AS shows
+    FROM per_cik p
+    JOIN sec_observations_at(p_as_of, p_current) f
+      ON f.cik = p.cik
+     AND (f.class_key = ANY(p.classes)
+          OR (f.filing_complete AND f.security_kind IN ('equity', 'depositary', 'unknown')
+              AND (p.sole OR f.filing_equity_classes = 1)))
+), candidates AS (
+    -- labels: the classes of the rows by which the candidate states the hold (its
+    -- rows showing the ticker, else its rows): only a registration naming one of
+    -- them, never another class the ticker once showed on, reopens it
+    SELECT r.cik, r.adsh, max(r.known_on) AS known_on, max(r.accepted) AS accepted,
+           bool_or(r.shows) AS shows,
+           CASE WHEN bool_or(r.shows)
+                THEN array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key))
+                                  FILTER (WHERE r.shows), NULL)
+                ELSE array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key)),
+                                  NULL)
+           END AS labels
+    FROM candidate_rows r
+    GROUP BY r.cik, r.adsh
+), stated AS (
+    -- a filing that does not show the ticker states the hold (ending it as
+    -- 'other_symbol') when it is complete (a 10-K/10-Q-type cover lists every
+    -- class: the ticker is no longer listed), or when it shows every class that
+    -- showed the ticker in the latest filing before it that did: an 8-K showing
+    -- one class under another symbol leaves the ticker to the others
+    SELECT c.* FROM candidates c
+    WHERE c.shows
+       OR EXISTS (SELECT 1 FROM candidate_rows z
+                  WHERE z.cik = c.cik AND z.adsh = c.adsh AND z.filing_complete)
+       OR NOT EXISTS (
+        SELECT 1 FROM candidate_rows t
+        WHERE t.cik = c.cik AND t.shows
+          AND t.adsh = (SELECT x.adsh FROM candidates x
+                        WHERE x.cik = c.cik AND x.shows AND x.known_on <= c.known_on
+                          AND x.adsh <> c.adsh
+                        ORDER BY x.known_on DESC, x.accepted DESC NULLS LAST, x.adsh DESC
+                        LIMIT 1)
+          AND NOT EXISTS (SELECT 1 FROM candidate_rows y
+                          WHERE y.cik = c.cik AND y.adsh = c.adsh AND y.class_key = t.class_key))
+), ends AS MATERIALIZED (
+    SELECT p.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive, e.class_keys,
+           e.tentative_keys, e.class_kind, e.named_kinds, e.issuer_symbols,
+           (SELECT min(c.known_on) FROM candidates c
+            WHERE c.cik = p.cik AND c.shows AND c.known_on >= e.effective_on) AS first_post_on
+    FROM per_cik p
+    CROSS JOIN LATERAL sec_issuer_end_events(p.cik, p_as_of, p_current) e
+), closes AS MATERIALIZED (
+    -- each end against each statement, per class: whether it closes every row by
+    -- which the statement states the hold (its rows showing the ticker, else its
+    -- rows), and whether it identifies them all (else it closes them tentatively)
+    SELECT e.cik, e.adsh AS end_adsh, c.adsh,
+           bool_and(sec_end_role(e.class_keys, e.tentative_keys, e.class_kind, e.named_kinds,
+                                 r.class_key, r.security_kind) IS NOT NULL) AS closed,
+           bool_and(sec_end_role(e.class_keys, e.tentative_keys, e.class_kind, e.named_kinds,
+                                 r.class_key, r.security_kind) = 'identified') AS identified
+    FROM ends e
+    JOIN candidates c ON c.cik = e.cik
+    JOIN candidate_rows r ON r.cik = c.cik AND r.adsh = c.adsh AND (r.shows OR NOT c.shows)
+    GROUP BY e.cik, e.adsh, c.adsh
+), dates AS (
+    SELECT DISTINCT d.on_date FROM unnest(p_on) d(on_date)
+), statement AS (
+    -- at each date, the latest statement known by then that no end blocks
+    SELECT DISTINCT ON (d.on_date, c.cik) d.on_date, c.*
+    FROM dates d
+    JOIN stated c ON c.known_on <= d.on_date
+    JOIN per_cik p ON p.cik = c.cik
+    WHERE NOT EXISTS (
+        SELECT 1 FROM ends e
+        JOIN closes k ON k.cik = e.cik AND k.end_adsh = e.adsh AND k.adsh = c.adsh
+        WHERE e.cik = c.cik AND e.effective_on <= c.known_on AND k.closed
+          AND ((e.definitive AND k.identified AND p.first_on < e.effective_on)
+               OR EXISTS (
+                   SELECT 1 FROM per_cik o
+                   WHERE o.cik <> c.cik
+                     AND o.first_on BETWEEN e.effective_on - 30 AND e.first_post_on))
+          AND NOT EXISTS (
+              -- a registration after the end that identifies the class relists it:
+              -- one naming its class, or naming none when the issuer listed one
+              -- symbol
+              SELECT 1 FROM sec_registration_starts(c.cik, p_as_of, p_current) r
+              WHERE r.filed > e.filed AND r.available_on <= c.known_on
+                AND (r.classes && c.labels
+                     OR (cardinality(r.classes) = 0 AND e.issuer_symbols = 1))))
+    ORDER BY d.on_date, c.cik, c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
+), last_end AS (
+    -- the latest end, effective by the date, after the statement that closes every
+    -- class it shows the ticker on (an end of another class leaves the hold)
+    SELECT DISTINCT ON (s.on_date, e.cik) s.on_date, e.*
+    FROM ends e
+    JOIN statement s ON s.cik = e.cik
+    JOIN closes k ON k.cik = e.cik AND k.end_adsh = e.adsh AND k.adsh = s.adsh
+    WHERE e.effective_on > s.known_on AND e.effective_on <= s.on_date AND k.closed
+    ORDER BY s.on_date, e.cik, e.effective_on DESC, k.identified DESC, e.adsh DESC
+)
+SELECT s.on_date, p.cik,
+       CASE
+           WHEN l.effective_on > s.known_on THEN 'ended'
+           WHEN NOT s.shows THEN 'ended'
+           WHEN s.on_date - s.known_on > p_max_age_days THEN 'stale'
+           ELSE 'active'
+       END AS state,
+       p.class_key, p.security_kind, s.known_on AS statement_on,
+       s.accepted AS statement_accepted, s.adsh AS statement_adsh,
+       p.first_on, p.confirmed_on,
+       CASE
+           WHEN l.effective_on > s.known_on THEN l.form
+           WHEN NOT s.shows THEN 'other_symbol'
+       END AS end_reason
+FROM per_cik p
+JOIN statement s ON s.cik = p.cik
+LEFT JOIN last_end l ON l.cik = p.cik AND l.on_date = s.on_date
+$fn$;
+
+-- Each CIK's hold of a ticker at D: sec_ticker_holds_at evaluated at D (pass 2,
+-- non-listed rows judged against the listed holds of pass 1).
+CREATE OR REPLACE FUNCTION sec_ticker_holds(
+    p_ticker text, p_as_of date, p_max_age_days integer DEFAULT 400,
+    p_current boolean DEFAULT false
+)
+RETURNS TABLE (
+    cik bigint,
+    state text,
+    class_key text,
+    security_kind text,
+    statement_on date,
+    statement_accepted timestamp,
+    statement_adsh text,
+    first_on date,
+    confirmed_on date,
+    end_reason text
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+SELECT h.cik, h.state, h.class_key, h.security_kind, h.statement_on, h.statement_accepted,
+       h.statement_adsh, h.first_on, h.confirmed_on, h.end_reason
+FROM sec_ticker_holds_at(p_ticker, p_as_of, ARRAY[p_as_of], p_max_age_days, p_current) h
 $fn$;
 
 -- What a class (cik, class_key) traded as at D, from what was known at D. Used
@@ -1111,16 +1283,16 @@ WITH own AS (
 ), last_end AS (
     SELECT e.* FROM ends e ORDER BY e.effective_on DESC, e.role = 'identified' DESC, e.adsh DESC LIMIT 1
 ), candidates AS (
+    -- labels: the classes of the candidate's own rows (only a registration naming
+    -- one of them reopens the line)
     SELECT r.adsh, max(r.available_on) AS known_on, max(r.accepted) AS accepted,
-           array_agg(DISTINCT r.ticker_key) AS keys
+           array_agg(DISTINCT r.ticker_key) AS keys,
+           COALESCE(array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key)),
+                                 NULL), '{}') AS labels
     FROM rows r
     GROUP BY r.adsh
-), line_labels AS (
-    SELECT array_remove(array_agg(DISTINCT sec_class_label(r.security_title, r.class_key)),
-                        NULL) AS labels
-    FROM rows r
 ), chosen AS (
-    SELECT c.* FROM candidates c, line_labels l
+    SELECT c.* FROM candidates c
     WHERE NOT EXISTS (
         SELECT 1 FROM ends d
         WHERE d.definitive AND d.role = 'identified' AND d.effective_on <= c.known_on
@@ -1131,7 +1303,7 @@ WITH own AS (
           AND NOT EXISTS (
               SELECT 1 FROM sec_registration_starts(p_cik, p_as_of, false) r
               WHERE r.filed > d.filed AND r.available_on <= c.known_on
-                AND (r.classes && l.labels
+                AND (r.classes && c.labels
                      OR (cardinality(r.classes) = 0 AND d.issuer_symbols = 1))))
     ORDER BY c.known_on DESC, c.accepted DESC NULLS LAST, c.adsh DESC
     LIMIT 1
@@ -1343,7 +1515,9 @@ $fn$;
 -- 'other_symbol', the end form, or 'stale' (no confirmation within
 -- p_max_age_days; NULL p_max_age_days never goes stale); first/last_confirmed_on:
 -- the run's first and last statements showing the ticker.
-CREATE OR REPLACE FUNCTION sec_ticker_line_runs(p_ticker text, p_max_age_days integer DEFAULT NULL)
+CREATE OR REPLACE FUNCTION sec_ticker_line_runs_from(
+    p_ticker text, p_max_age_days integer, p_listed_only boolean
+)
 RETURNS TABLE (
     cik bigint,
     line_key text,
@@ -1355,7 +1529,8 @@ RETURNS TABLE (
     last_confirmed_on date
 )
 LANGUAGE sql STABLE PARALLEL SAFE
--- Planned once per call; JIT compilation would cost more than the query.
+-- Planned once per call, never inlined (it calls itself for its first pass); JIT
+-- compilation would cost more than the query.
 SET jit = off
 AS $fn$
 WITH key AS (
@@ -1365,64 +1540,24 @@ WITH key AS (
            o.filing_complete, o.filing_equity_classes
     FROM sec_observations_at('infinity'::date, true) o, key
     WHERE o.ticker_key = key.k
-), listed_shown AS (
-    SELECT s.* FROM shown s WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
-), listed_ends AS MATERIALIZED (
-    SELECT c.cik, x.effective_on, x.class_keys, x.tentative_keys, x.class_kind, x.named_kinds
-    FROM (SELECT DISTINCT l.cik FROM listed_shown l) c
-    CROSS JOIN LATERAL sec_issuer_end_events(c.cik, 'infinity'::date, true) x
-), listed_lines AS MATERIALIZED (
-    -- the lines of those CIKs (aliases of one class are one line)
-    SELECT c.cik, l.class_key, l.line_key
-    FROM (SELECT DISTINCT l.cik FROM listed_shown l) c
-    CROSS JOIN LATERAL sec_issuer_lines(c.cik) l
-), listed_filings AS MATERIALIZED (
-    -- the filings of those CIKs as the run engine reads them when it follows a
-    -- listed line (its candidates): the lines each shows the ticker on and those
-    -- it shows under another symbol, whether it is complete, and whether it lists
-    -- one equity class
-    SELECT o.cik, o.adsh, max(o.source_available_on) AS known_on,
-           bool_or(o.ticker_key = key.k) AS shows,
-           bool_or(o.filing_complete) AS complete,
-           bool_or(o.filing_complete AND o.filing_equity_classes = 1
-                   AND o.security_kind IN ('equity', 'depositary', 'unknown')) AS one_class,
-           COALESCE(array_agg(DISTINCT l.line_key) FILTER (WHERE o.ticker_key = key.k),
-                    '{}') AS t_lines,
-           COALESCE(array_agg(DISTINCT l.line_key) FILTER (WHERE o.ticker_key <> key.k),
-                    '{}') AS other_lines
-    FROM sec_observations_at('infinity'::date, true) o
-    CROSS JOIN key
-    LEFT JOIN listed_lines l ON l.cik = o.cik AND l.class_key = o.class_key
-    WHERE o.cik IN (SELECT l.cik FROM listed_shown l)
-    GROUP BY o.cik, o.adsh
+), listed_runs AS MATERIALIZED (
+    -- pass 1: this engine on the listed rows alone (equity, depositary, unknown),
+    -- each run going stale 400 days after its last statement; scanned only by
+    -- pass 2, so a listed-only call never calls itself again
+    SELECT r.valid_from, r.valid_to
+    FROM sec_ticker_line_runs_from(p_ticker, 400, true) r
 ), relevant AS (
-    -- as in sec_ticker_holds, by the run engine's lifecycle of the listed line: a
-    -- non-listed row is a competing holder unless a listed line showed the ticker
-    -- within the 400 days before, no end closed a class of that line since, and no
-    -- later candidate of the line no longer shows it (a filing showing the line
-    -- under another symbol only, or a complete cover not showing the ticker that
-    -- the engine follows the line through)
+    -- pass 2: a non-listed row showing the ticker is a competing holder unless a
+    -- listed run of it, as pass 1 computed it with this engine's full lifecycle,
+    -- was alive at that row's date (the admission rule)
     SELECT s.* FROM shown s
     WHERE s.security_kind IN ('equity', 'depositary', 'unknown')
-       OR NOT EXISTS (
-           SELECT 1 FROM listed_shown e
-           JOIN listed_lines el ON el.cik = e.cik AND el.class_key = e.class_key
-           WHERE e.known_on <= s.known_on AND e.known_on > s.known_on - 400
-             AND NOT EXISTS (
-                 SELECT 1 FROM listed_ends x
-                 JOIN listed_lines xl ON xl.cik = x.cik AND xl.line_key = el.line_key
-                 WHERE x.cik = e.cik AND x.effective_on > e.known_on
-                   AND x.effective_on <= s.known_on
-                   AND sec_end_role(x.class_keys, x.tentative_keys, x.class_kind, x.named_kinds,
-                                    xl.class_key, e.security_kind) IS NOT NULL)
-             AND NOT EXISTS (
-                 SELECT 1 FROM listed_filings f
-                 WHERE f.cik = e.cik AND f.known_on > e.known_on AND f.known_on <= s.known_on
-                   AND NOT el.line_key = ANY(f.t_lines)
-                   AND (el.line_key = ANY(f.other_lines)
-                        OR (f.complete AND NOT f.shows
-                            AND (f.one_class
-                                 OR (e.filing_complete AND e.filing_equity_classes = 1))))))
+       OR CASE WHEN p_listed_only THEN false
+               ELSE NOT EXISTS (
+                   SELECT 1 FROM listed_runs r
+                   WHERE r.valid_from <= s.known_on
+                     AND (r.valid_to IS NULL OR s.known_on < r.valid_to))
+          END
 ), holder_ciks AS (
     SELECT DISTINCT r.cik FROM relevant r
 ), lines AS MATERIALIZED (
@@ -1436,16 +1571,6 @@ WITH key AS (
     GROUP BY r.cik, l.line_key
 ), cik_first AS (
     SELECT r.cik, min(r.known_on) AS first_on FROM relevant r GROUP BY r.cik
-), line_labels AS MATERIALIZED (
-    -- the classes each held line names (titles, members), for registrations
-    SELECT h.cik, h.line_key,
-           array_remove(array_agg(DISTINCT sec_class_label(o.security_title, o.class_key)),
-                        NULL) AS labels
-    FROM held h
-    JOIN lines l ON l.cik = h.cik AND l.line_key = h.line_key
-    JOIN sec_observations_at('infinity'::date, true) o
-      ON o.cik = l.cik AND o.class_key = l.class_key
-    GROUP BY h.cik, h.line_key
 ), sole_lines AS (
     -- a line whose complete filings all listed one equity class is the issuer's
     -- sole security: every later complete filing of the CIK is one of its
@@ -1465,7 +1590,11 @@ WITH key AS (
            max(o.accepted) AS accepted,
            bool_or(l.line_key = h.line_key AND o.ticker_key = key.k) AS shows,
            (array_agg(o.class_key ORDER BY o.class_key)
-               FILTER (WHERE l.line_key = h.line_key AND o.ticker_key = key.k))[1] AS class_key
+               FILTER (WHERE l.line_key = h.line_key AND o.ticker_key = key.k))[1] AS class_key,
+           -- the classes of the candidate's own rows of the line: only a
+           -- registration naming one of them reopens the line
+           COALESCE(array_remove(array_agg(DISTINCT sec_class_label(o.security_title, o.class_key))
+                                 FILTER (WHERE l.line_key = h.line_key), NULL), '{}') AS labels
     FROM held h
     CROSS JOIN key
     JOIN sec_observations_at('infinity'::date, true) o ON o.cik = h.cik
@@ -1524,9 +1653,8 @@ WITH key AS (
         WHERE b.cik = c.cik AND b.line_key = c.line_key AND b.effective_on <= c.known_on
           AND NOT EXISTS (
               SELECT 1 FROM starts r
-              JOIN line_labels ll ON ll.cik = c.cik AND ll.line_key = c.line_key
               WHERE r.cik = c.cik AND r.filed > b.filed AND r.available_on <= c.known_on
-                AND (r.classes && ll.labels
+                AND (r.classes && c.labels
                      OR (cardinality(r.classes) = 0 AND b.issuer_symbols = 1))))
 ), bounds AS (
     SELECT DISTINCT h.cik, h.line_key, x.on_date
@@ -1606,6 +1734,25 @@ FROM runs r
 LEFT JOIN run_ends e ON e.cik = r.cik AND e.line_key = r.line_key AND e.run_no = r.run_no
 $fn$;
 
+-- Each line's runs under a ticker, with every non-listed row judged against the
+-- listed runs (sec_ticker_line_runs_from, pass 2).
+CREATE OR REPLACE FUNCTION sec_ticker_line_runs(p_ticker text, p_max_age_days integer DEFAULT NULL)
+RETURNS TABLE (
+    cik bigint,
+    line_key text,
+    class_key text,
+    valid_from date,
+    valid_to date,
+    end_reason text,
+    first_confirmed_on date,
+    last_confirmed_on date
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+SET jit = off
+AS $fn$
+SELECT * FROM sec_ticker_line_runs_from(p_ticker, p_max_age_days, false)
+$fn$;
+
 -- Lineage engine: when a line (p_cik, p_line_key) of an issuer was evidenced
 -- alive, under any symbol (Meta's line is alive through its FB years). The line
 -- is followed through its candidate filings (filings tagging one of its
@@ -1634,12 +1781,6 @@ SET jit = off
 AS $fn$
 WITH lines AS MATERIALIZED (
     SELECT l.class_key, l.line_key FROM sec_issuer_lines(p_cik) l
-), line_labels AS (
-    SELECT array_remove(array_agg(DISTINCT sec_class_label(o.security_title, o.class_key)),
-                        NULL) AS labels
-    FROM sec_observations_at('infinity'::date, true) o
-    JOIN lines l ON l.class_key = o.class_key
-    WHERE o.cik = p_cik AND l.line_key = p_line_key
 ), sole AS (
     -- the line is the issuer's sole security until its last one-class complete
     -- filing when all its complete filings listed one class (see sec_ticker_line_runs)
@@ -1656,7 +1797,11 @@ WITH lines AS MATERIALIZED (
            bool_or(l.line_key = p_line_key) AS has_line,
            array_agg(DISTINCT o.ticker_key) FILTER (WHERE l.line_key = p_line_key) AS keys,
            array_agg(DISTINCT o.ticker ORDER BY o.ticker)
-               FILTER (WHERE l.line_key = p_line_key) AS tickers
+               FILTER (WHERE l.line_key = p_line_key) AS tickers,
+           -- the classes of the candidate's own rows of the line: only a
+           -- registration naming one of them reopens the line
+           COALESCE(array_remove(array_agg(DISTINCT sec_class_label(o.security_title, o.class_key))
+                                 FILTER (WHERE l.line_key = p_line_key), NULL), '{}') AS labels
     FROM sec_observations_at('infinity'::date, true) o
     LEFT JOIN lines l ON l.class_key = o.class_key
     WHERE o.cik = p_cik
@@ -1693,10 +1838,9 @@ WITH lines AS MATERIALIZED (
               SELECT 1 FROM candidates x
               WHERE x.has_line AND x.known_on < d.effective_on AND x.keys && c.keys)
           AND NOT EXISTS (
-              SELECT 1 FROM sec_registration_starts(p_cik, 'infinity'::date, true) r,
-                            line_labels ll
+              SELECT 1 FROM sec_registration_starts(p_cik, 'infinity'::date, true) r
               WHERE r.filed > d.filed AND r.available_on <= c.known_on
-                AND (r.classes && ll.labels
+                AND (r.classes && c.labels
                      OR (cardinality(r.classes) = 0 AND d.issuer_symbols = 1))))
 ), bounds AS (
     SELECT c.known_on AS on_date FROM counted c
@@ -1775,12 +1919,15 @@ REVOKE ALL ON FUNCTION sec_label_text(text), sec_label_norm(text), sec_label_id_
     sec_registration_starts(bigint, date, boolean),
     sec_issuer_end_events(bigint, date, boolean),
     sec_ticker_holds(text, date, integer, boolean),
+    sec_ticker_holds_at(text, date, date[], integer, boolean),
+    sec_ticker_listed_holds_at(text, date, integer, boolean),
     sec_ticker_issuer_at(text, date, integer),
     sec_issuer_line_at(bigint, text, date, integer),
     sec_cover_class_shares_at(bigint, text, date, integer),
     sec_cover_ticker_shares_at(text, bigint, date, integer),
     sec_issuer_lines(bigint),
     sec_ticker_line_runs(text, integer),
+    sec_ticker_line_runs_from(text, integer, boolean),
     sec_line_alive_runs(bigint, text, integer),
     sec_line_price_evidence(text, bigint, text),
     sec_ticker_price_span(text, bigint, text) FROM PUBLIC;
@@ -1800,12 +1947,15 @@ DECLARE
         'sec_registration_starts(bigint, date, boolean)',
         'sec_issuer_end_events(bigint, date, boolean)',
         'sec_ticker_holds(text, date, integer, boolean)',
+        'sec_ticker_holds_at(text, date, date[], integer, boolean)',
+        'sec_ticker_listed_holds_at(text, date, integer, boolean)',
         'sec_ticker_issuer_at(text, date, integer)',
         'sec_issuer_line_at(bigint, text, date, integer)',
         'sec_cover_class_shares_at(bigint, text, date, integer)',
         'sec_cover_ticker_shares_at(text, bigint, date, integer)',
         'sec_issuer_lines(bigint)',
         'sec_ticker_line_runs(text, integer)',
+        'sec_ticker_line_runs_from(text, integer, boolean)',
         'sec_line_alive_runs(bigint, text, integer)',
         'sec_line_price_evidence(text, bigint, text)',
         'sec_ticker_price_span(text, bigint, text)'];
