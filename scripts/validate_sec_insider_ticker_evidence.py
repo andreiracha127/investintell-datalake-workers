@@ -86,7 +86,31 @@ def export_production(psql: str, target: Path) -> None:
         "sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}, indent=2) + "\n")
 
 
+def verify_snapshot(target: Path) -> dict:
+    """The manifest export_production wrote must list exactly this validator's
+    exports, from the read-only identity, and every file must match its hash."""
+    try:
+        manifest = json.loads((target / "production_snapshot.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Snapshot manifest is missing or unreadable: {exc}") from None
+    expected = {"first_prices.csv", *(f"cover_{y}.csv" for y in YEARS)}
+    hashes = manifest.get("sha256") if isinstance(manifest, dict) else None
+    if not isinstance(hashes, dict) or set(hashes) != expected:
+        raise RuntimeError("Snapshot manifest does not list exactly the expected exports")
+    if manifest.get("identity") != "mcp_ro,on,30s" or manifest.get("years") != list(YEARS):
+        raise RuntimeError("Snapshot manifest identity or years differ from this validator's")
+    for name in sorted(expected):
+        try:
+            digest = hashlib.sha256((target / name).read_bytes()).hexdigest()
+        except OSError:
+            digest = None
+        if digest != hashes[name]:
+            raise RuntimeError(f"Snapshot file {name} does not match its manifest hash")
+    return manifest
+
+
 def validate(local_dsn: str, target: Path) -> dict:
+    verify_snapshot(target)  # before any export is read or imported
     import psycopg
     with (target / "first_prices.csv").open(encoding="utf-8", newline="") as fh:
         prices = {r["ticker"]: r["first_price"] or None for r in csv.DictReader(fh)}

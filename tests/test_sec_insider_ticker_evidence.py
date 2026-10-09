@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 import uuid
 import zipfile
 from pathlib import Path
@@ -591,6 +592,53 @@ def test_resumed_production_export_reexports_interrupted_files(tmp_path, monkeyp
     manifest = json.loads((tmp_path / "production_snapshot.json").read_text(encoding="utf-8"))
     assert manifest["sha256"]["first_prices.csv"] == hashlib.sha256(
         (tmp_path / "first_prices.csv").read_bytes()).hexdigest()
+
+
+def _exported_snapshot(tmp_path, monkeypatch):
+    from scripts import validate_sec_insider_ticker_evidence as validation
+
+    monkeypatch.setattr(validation, "_check_query_window", lambda: None)
+
+    def psql(args, **kwargs):
+        query = args[-1]
+        if "current_user" in query:
+            return SimpleNamespace(returncode=0, stdout="mcp_ro,on,30s\n", stderr="")
+        body = ("ticker,first_price\nAAPL,1980-12-31\nMSFT,1986-03-13\n" if "first_price" in query
+                else "ticker,status,cover_cik\nAAPL,resolved,320193\nMSFT,missing,\n")
+        return SimpleNamespace(returncode=0, stdout=body, stderr="")
+
+    monkeypatch.setattr(validation.subprocess, "run", psql)
+    validation.export_production("psql", tmp_path)
+    # The import that follows verification must never be reached by a bad snapshot.
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(
+        connect=lambda *args, **kwargs: pytest.fail("validation connected before verifying")))
+    return validation
+
+
+@pytest.mark.parametrize("defect", ["truncated", "edited", "missing_file", "missing_manifest",
+                                    "unlisted_file", "other_identity"])
+def test_validation_verifies_snapshot_manifest_and_hashes_before_importing(tmp_path, monkeypatch, defect):
+    validation = _exported_snapshot(tmp_path, monkeypatch)
+    assert validation.verify_snapshot(tmp_path)["sha256"].keys() == {
+        "first_prices.csv", *(f"cover_{y}.csv" for y in validation.YEARS)}
+    manifest_path = tmp_path / "production_snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if defect == "truncated":  # still a complete, parseable CSV with fewer rows
+        (tmp_path / "cover_2010.csv").write_bytes(b"ticker,status,cover_cik\nAAPL,resolved,320193\n")
+    elif defect == "edited":  # same size, different CIK
+        (tmp_path / "cover_2013.csv").write_bytes(b"ticker,status,cover_cik\nAAPL,resolved,320194\nMSFT,missing,\n")
+    elif defect == "missing_file":
+        (tmp_path / "first_prices.csv").unlink()
+    elif defect == "missing_manifest":
+        manifest_path.unlink()
+    elif defect == "unlisted_file":
+        del manifest["sha256"]["cover_2018.csv"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    else:
+        manifest["identity"] = "postgres,off,0"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="[Ss]napshot"):
+        validation.validate("postgresql://never-connected.invalid/w1b", tmp_path)
 
 
 @pytest.fixture(scope="module")

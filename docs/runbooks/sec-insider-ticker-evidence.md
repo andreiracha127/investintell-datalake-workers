@@ -100,7 +100,9 @@ python -m scripts.validate_sec_insider_ticker_evidence --local-dsn postgresql://
 
 Exports are written atomically. An interrupted export resumes only complete CSVs
 (psql header and final newline) and re-exports the rest; use a new empty snapshots directory
-for a new production snapshot. Validation writes `coverage.json`, including the
+for a new production snapshot. Validation first checks that `production_snapshot.json`
+lists exactly the expected exports from `mcp_ro` and that every file matches its SHA-256.
+It then writes `coverage.json`, including the
 coverage table, cover agreement and numerical clean-handover evaluation.
 
 Run the focused SQL/parse/downloader regressions one file at a time:
