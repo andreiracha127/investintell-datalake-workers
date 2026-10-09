@@ -1,0 +1,612 @@
+<SEC-DOCUMENT>0001104659-23-126435.txt : 20231215
+<SEC-HEADER>0001104659-23-126435.hdr.sgml : 20231215
+<ACCEPTANCE-DATETIME>20231215164136
+ACCESSION NUMBER:		0001104659-23-126435
+CONFORMED SUBMISSION TYPE:	8-A12B/A
+PUBLIC DOCUMENT COUNT:		2
+FILED AS OF DATE:		20231215
+DATE AS OF CHANGE:		20231215
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Arlington Asset Investment Corp.
+		CENTRAL INDEX KEY:			0001209028
+		STANDARD INDUSTRIAL CLASSIFICATION:	REAL ESTATE INVESTMENT TRUSTS [6798]
+		IRS NUMBER:				541873198
+		STATE OF INCORPORATION:			VA
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		8-A12B/A
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-34374
+		FILM NUMBER:		231490976
+
+	BUSINESS ADDRESS:	
+		STREET 1:		6862 ELM STREET
+		STREET 2:		SUITE 320
+		CITY:			MCLEAN
+		STATE:			VA
+		ZIP:			22101
+		BUSINESS PHONE:		7033730200
+
+	MAIL ADDRESS:	
+		STREET 1:		6862 ELM STREET
+		STREET 2:		SUITE 320
+		CITY:			MCLEAN
+		STATE:			VA
+		ZIP:			22101
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	FRIEDMAN BILLINGS RAMSEY GROUP INC
+		DATE OF NAME CHANGE:	20030331
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	FOREST MERGER CORP
+		DATE OF NAME CHANGE:	20021205
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-A12B/A
+<SEQUENCE>1
+<FILENAME>tm2333039d2_8a12ba.htm
+<DESCRIPTION>FORM 8-A12B/A
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"></P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 0pt; margin-bottom: 0pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 2pt solid; border-bottom: Black 1pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>UNITED STATES</B></P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>SECURITIES AND EXCHANGE COMMISSION</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>Washington, D.C. 20549</B></P>
+
+<P STYLE="border-bottom: Black 1pt solid; font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>FORM&nbsp;8-A/A</B></P>
+
+<P STYLE="border-bottom: Black 1pt solid; font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>FOR REGISTRATION OF CERTAIN CLASSES OF SECURITIES</B></P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>PURSUANT TO SECTION&nbsp;12(b)&nbsp;OR (g)&nbsp;OF</B></P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>THE SECURITIES EXCHANGE ACT OF 1934</B></P>
+
+<P STYLE="border-bottom: Black 1pt solid; font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>ARLINGTON ASSET INVESTMENT CORP.</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B><I>(EF Merger Sub Inc., as successor by merger
+to Arlington Asset Investment Corp.)</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>(Exact name of registrant as specified in its
+charter)</B></P>
+
+<P STYLE="border-bottom: Black 1pt solid; font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+  <TR>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Virginia</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>54-1873198</B></FONT></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>(State or other jurisdiction of incorporation or organization)</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>(I.R.S. Employer Identification No.)</B></FONT></TD></TR>
+  <TR>
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="2">&nbsp;</TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top">
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>53 Forest Avenue</B></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>Old Greenwich, Connecticut</B></P></TD>
+    <TD STYLE="vertical-align: bottom; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>06870</B></FONT></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>(Address of principal executive offices)</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>(Zip code)</B></FONT></TD></TR>
+  <TR>
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="2">&nbsp;</TD></TR>
+  <TR STYLE="vertical-align: bottom">
+    <TD STYLE="white-space: nowrap">
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B>Securities to be registered pursuant to Section&nbsp;12(b)&nbsp;of
+    the Act:</B></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B>&nbsp;</B></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>Title of each class</B></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>to be so registered</B></P></TD>
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="white-space: nowrap">
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>Name of each exchange on which</B></P>
+    <P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>each class is to be registered</B></P></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Rights to Purchase Series&nbsp;A Junior Preferred Stock</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>New York Stock Exchange</B></FONT></TD></TR>
+  </TABLE>
+
+
+<P STYLE="border-bottom: Black 1pt solid; font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">If this form relates to the registration
+of a class of securities pursuant to Section&nbsp;12(b)&nbsp;of the Exchange Act and is effective pursuant to General Instruction A.(c)&nbsp;or
+(e), check the following box. </FONT><FONT STYLE="font-family: Wingdings">&#120;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">If this form relates to the registration
+of a class of securities pursuant to Section&nbsp;12(g)&nbsp;of the Exchange Act and is effective pursuant to General Instruction A.(d)&nbsp;or
+(e), check the following box. </FONT><FONT STYLE="font-family: Wingdings">&#168;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">If this form relates to the registration
+of a class of securities concurrently with a Regulation A offering, check the following box. </FONT><FONT STYLE="font-family: Wingdings">&#168;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Securities Act registration statement or Regulation A offering statement
+file number to which this form relates (if applicable): Not Applicable</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Securities to be registered pursuant to Section&nbsp;12(g)&nbsp;of
+the Act: None</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 0pt; margin-bottom: 0pt; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; border-bottom: Black 2pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>EXPLANATORY NOTE</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">This Form&nbsp;8-A/A amends and supplements the Form&nbsp;8-A filed
+by the registrant, dated June&nbsp;5, 2009 (the &ldquo;<U>Original 8-A</U>&rdquo;), as amended by the Form&nbsp;8-A/A filed by the registrant,
+dated April&nbsp;13, 2018, and the Form&nbsp;8-A/A filed by the registrant, dated April&nbsp;11, 2022, to reflect the expiration of the
+preferred share purchase rights of the registrant registered on the Original 8-A.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B>Item 1. Description of Registrant&rsquo;s Securities to be Registered.</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Item 1 of the Original 8-A is amended by substituting the following:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in">On June&nbsp;1, 2009, the Board of Directors (the
+ &ldquo;<U>Board</U>&rdquo;) of Arlington Asset Investment Corp., a Virginia corporation, formerly known as Friedman, Billings, Ramsey
+Group,&nbsp;Inc. (the &ldquo;<U>Company</U>&rdquo;), adopted a rights agreement and declared a dividend, payable to shareholders of record
+as of the close of business on June&nbsp;5, 2009, of one preferred share purchase right (&ldquo;<U>Right</U>&rdquo;) for each outstanding
+share of the Company&rsquo;s Class&nbsp;A common stock, par value $0.01 per share (<U>&ldquo;Class&nbsp;A common stock</U>&rdquo;), and
+Class&nbsp;B common stock, par value $0.01 per share (&ldquo;<U>Class&nbsp;B common stock</U>&rdquo;), with such Rights originally to
+expire on June&nbsp;4, 2019. The description and terms of the Rights are set forth in a Rights Agreement, dated as of June&nbsp;5, 2009
+(the &ldquo;<U>Original Rights Agreement</U>&rdquo;), by and between the Company and American Stock Transfer&nbsp;&amp; Trust Company,
+LLC, as rights agent. On April&nbsp;9, 2018, the Board approved and the Company adopted a First Amendment to the Original Rights Agreement
+(the &ldquo;<U>First Amendment</U>&rdquo;). The First Amendment extended the expiration date of the Rights until June&nbsp;4, 2022. No
+shareholder approval was required for adoption of the First Amendment and the Company&rsquo;s shareholders approved the First Amendment
+at the 2018 annual meeting of shareholders. On April&nbsp;11, 2022, the Board approved and the Company adopted a Second Amendment (the
+ &ldquo;<U>Second Amendmen</U>t&rdquo;) to the Original Rights Agreement. The Second Amendment extended the expiration date of the Rights
+until June&nbsp;4, 2025. No shareholder approval was required for adoption of the Second Amendment and the Company&rsquo;s shareholders
+approved the Second Amendment at the 2022 annual meeting of shareholders.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">On December&nbsp;14, 2023, the Company entered
+into the Third Amendment (the &ldquo;<U>Third Amendment</U>&rdquo;) to the Original Rights Agreement (as amended by the First Amendment,
+the Second Amendment and the Third Amendment, together, the &ldquo;<U>Rights Agreement</U>&rdquo;), with Equiniti Trust Company, LLC (f/k/a
+American Stock Transfer&nbsp;&amp; Trust Company, LLC), as rights agent. The Third Amendment accelerates the expiration of the Rights
+under the Rights Agreement by amending the definition of &ldquo;Final Expiration Date&rdquo; to mean 9:00 a.m., Eastern Time, on December&nbsp;14,
+2023. Consequently, the Rights Agreement terminated at that time. At the time of the termination of the Rights Agreement, all Rights distributed
+to holders of the Company&rsquo;s Class&nbsp;A common stock and Class&nbsp;B common stock pursuant to the Rights Agreement expired. No
+shareholder approval is required for adoption of the Third Amendment.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in">The foregoing description does not purport to
+be complete and is qualified in its entirety by reference to the full text of the Original Rights Agreement, the First Amendment, the
+Second Amendment and the Third Amendment, which are filed as Exhibits 4.1, 4.2, 4.3 and 4.4, respectively, to this registration statement.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B>Item 2. Exhibits.</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; font: 10pt Times New Roman, Times, Serif; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+<TD STYLE="width: 8%; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1209028/000119312509126242/dex41.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.1</FONT></A></TD>
+<TD STYLE="width: 92%"><A HREF="https://www.sec.gov/Archives/edgar/data/1209028/000119312509126242/dex41.htm" STYLE="-sec-extract: exhibit">Rights Agreement, dated as of June&nbsp;5, 2009, between the Company and American Stock Transfer&nbsp;&amp; Trust Company, LLC (incorporated herein by reference to Exhibit&nbsp;4.1 to the Company&rsquo;s Current Report on Form&nbsp;8-K filed on June&nbsp;5, 2009). &nbsp;</A></TD></TR>
+<TR STYLE="vertical-align: top">
+<TD STYLE="font-size: 10pt">&nbsp;</TD>
+<TD>&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+<TD STYLE="font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1209028/000119312518116952/d566957dex42.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.2</FONT></A></TD>
+<TD><A HREF="https://www.sec.gov/Archives/edgar/data/1209028/000119312518116952/d566957dex42.htm" STYLE="-sec-extract: exhibit">First Amendment to Rights Agreement, dated as of April&nbsp;13, 2018, between the Company and American Stock Transfer&nbsp;&amp; Trust Company, LLC (incorporated by reference to Exhibit&nbsp;4.2 to the Company&rsquo;s Current Report on Form&nbsp;8-K, filed on April&nbsp;13, 2018). &nbsp;</A></TD></TR>
+<TR STYLE="vertical-align: top">
+<TD STYLE="font-size: 10pt">&nbsp;</TD>
+<TD>&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+<TD STYLE="font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1209028/000156459022014249/ai-ex43_25.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.3</FONT></A></TD>
+<TD><A HREF="https://www.sec.gov/Archives/edgar/data/1209028/000156459022014249/ai-ex43_25.htm" STYLE="-sec-extract: exhibit">Second Amendment to Rights Agreement, dated as of April&nbsp;11, 2022, between the Company and American Stock Transfer&nbsp;&amp; Trust Company, LLC (incorporated by reference to Exhibit&nbsp;4.3 to the Company&rsquo;s Current Report on Form&nbsp;8-K, filed on April&nbsp;12, 2022). &nbsp;</A></TD></TR>
+<TR STYLE="vertical-align: top">
+<TD STYLE="font-size: 10pt">&nbsp;</TD>
+<TD>&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+<TD STYLE="font-size: 10pt"><A HREF="tm2333039d2_ex4-4.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.4</FONT></A></TD>
+<TD STYLE="font-size: 10pt"><A HREF="tm2333039d2_ex4-4.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Third Amendment to Rights Agreement, dated as of December&nbsp;14, 2023, between the Company and Equiniti Trust Company, LLC (f/k/a American Stock Transfer&nbsp;&amp; Trust Company, LLC).*</FONT></A></TD></TR>
+</TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">*Filed herewith.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 2 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>SIGNATURE</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in">Pursuant to the requirements of Section&nbsp;12
+of the Securities Exchange Act of 1934, the registrant has duly caused this registration statement to be signed on its behalf by the undersigned,
+thereto duly authorized.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+<TR>
+<TD STYLE="vertical-align: bottom"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>&nbsp;</B></FONT></TD>
+<TD STYLE="vertical-align: top">&nbsp;</TD>
+<TD STYLE="vertical-align: bottom"><B>EF MERGER SUB INC.</B> </TD></TR>
+<TR>
+<TD STYLE="vertical-align: bottom; width: 50%">&nbsp;</TD>
+<TD STYLE="vertical-align: bottom; width: 5%">&nbsp;</TD>
+<TD STYLE="vertical-align: bottom; width: 45%">(as successor by merger to Arlington Asset Investment Corp.)</TD></TR>
+<TR>
+<TD STYLE="vertical-align: bottom"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Date:&nbsp;&nbsp;December&nbsp;15, 2023</FONT></TD>
+<TD STYLE="vertical-align: bottom">&nbsp;</TD>
+<TD STYLE="vertical-align: bottom">&nbsp;</TD></TR>
+<TR>
+<TD STYLE="vertical-align: bottom">&nbsp;</TD>
+<TD STYLE="vertical-align: bottom"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">By:</FONT></TD>
+<TD STYLE="vertical-align: bottom; border-bottom: black 1pt solid"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">/s/ Laurence Penn </FONT></TD></TR>
+<TR>
+<TD STYLE="vertical-align: bottom">&nbsp;</TD>
+<TD STYLE="vertical-align: bottom"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Name:</FONT></TD>
+<TD STYLE="vertical-align: bottom"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Laurence Penn</FONT></TD></TR>
+<TR>
+<TD STYLE="vertical-align: bottom">&nbsp;</TD>
+<TD STYLE="vertical-align: top"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Title:</FONT></TD>
+<TD STYLE="vertical-align: bottom"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Chief Executive Officer and President</FONT></TD></TR>
+</TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 3; Options: Last -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>EX-4.4
+<SEQUENCE>2
+<FILENAME>tm2333039d2_ex4-4.htm
+<DESCRIPTION>EXHIBIT 4.4
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: right"><B>Exhibit 4.4</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>THIRD AMENDMENT</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>TO</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>RIGHTS AGREEMENT</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">THIS THIRD AMENDMENT TO RIGHTS AGREEMENT (this
+ &ldquo;<B>Third Amendment</B>&rdquo;), is made as of this 14<SUP>th</SUP> day of December, 2023 between <B>ARLINGTON ASSET INVESTMENT
+CORP.</B>, a Virginia corporation formerly known as Friedman, Billings, Ramsey Group,&nbsp;Inc. (the &ldquo;<B>Company</B>&rdquo;), and
+<B>EQUINITI TRUST COMPANY, LLC</B>, a New York limited liability company formerly known as American Stock Transfer&nbsp;&amp; Trust Company,
+LLC (the &ldquo;<B>Rights Agent</B>&rdquo;).</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>RECITALS</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">A.</FONT>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt">The
+Company and the Rights Agent are parties to that certain Rights Agreement, dated as of June&nbsp;5, 2009, as amended by that certain First
+Amendment to the Rights Agreement, between the Company and the Rights Agent, dated as of April&nbsp;13, 2018, and that certain Second
+Amendment to the Rights Agreement, dated as of April&nbsp;11, 2022 (as so amended, the &ldquo;<B>Rights Agreement</B>&rdquo;).</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">B.</FONT>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt">Pursuant
+to Section&nbsp;26 of the Rights Agreement, prior to the Distribution Date, the Company may, in its sole and absolute discretion, and
+the Rights Agent shall, if the Company so directs, supplement or amend any provision of the Rights Agreement in any respect without the
+approval of any holders of Rights, with any such supplement or amendment to be evidenced by a writing signed by the Company and the Rights
+Agent. The Distribution Date has not yet occurred.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">C.</FONT>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt">This
+Third Amendment is being adopted substantially concurrently with the completion of the transactions (the &ldquo;<B>Merger</B>&rdquo;)
+contemplated by the Agreement and Plan of Merger, dated May&nbsp;29, 2023, by and among the Company, Ellington Financial Inc., a Delaware
+corporation, EF Merger Sub Inc., a Virginia corporation, and, solely for the limited purposes set forth therein, Ellington Financial Management
+LLC, a Delaware limited liability company.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">D.</FONT>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt">In
+connection with the Merger, the Board of Directors of the Company has determined that it is in the best interest of the Company to amend
+the Rights Agreement as provided in this Third Amendment.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">E.</FONT>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt">The
+Company has delivered to the Rights Agent a certificate from an appropriate officer of the Company stating that this Third Amendment complies
+with Section&nbsp;26 of the Rights Agreement.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">F.</FONT>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt">The
+Company and the Rights Agent desire to amend the Rights Agreement to accelerate the expiration date of the Rights.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><B>NOW THEREFORE</B>, for good and valuable consideration,
+the receipt and sufficiency of which are hereby acknowledged, the Company and the Rights Agent hereby agree as follows:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"><B>1.</B></FONT><B>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt"><U>Definitions</U></FONT></B><FONT STYLE="font-size: 10pt">.
+Except as otherwise set forth in this Third Amendment, each capitalized term used in this Third Amendment shall have the meaning for such
+term set forth in the Rights Agreement.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"><B>2.</B></FONT><B>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt"><U>Definition
+of &ldquo;Agreement&rdquo;</U></FONT></B><FONT STYLE="font-size: 10pt">. From and after the date hereof all references in the Rights Agreement
+to the &ldquo;Agreement&rdquo; shall mean and refer to the Rights Agreement as modified by this Third Amendment.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"><B>3.</B></FONT><B>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt"><U>Definition
+of &ldquo;Expiration Date&rdquo;</U></FONT></B><FONT STYLE="font-size: 10pt">. Section&nbsp;1(x)&nbsp;of the Rights Agreement is hereby
+amended by deleting the reference to &ldquo;the final date of the Company&rsquo;s 2022 annual meeting of shareholders&rdquo; and replacing
+it with a reference to &ldquo;9:00 a.m., New York City time, on December&nbsp;14, 2023, to coincide with the closing of the Merger.&rdquo;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"><B>4.</B></FONT><B>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt"><U>Definition
+of &ldquo;Final Expiration Date&rdquo;</U></FONT></B><FONT STYLE="font-size: 10pt">. Section&nbsp;1(y)&nbsp;of the Rights Agreement is
+hereby amended by deleting the reference to &ldquo;June&nbsp;4, 2025&rdquo; and replacing it with a reference to &ldquo;9:00 a.m., New
+York City time, on December&nbsp;14, 2023, to coincide with the closing of the Merger.&rdquo;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"><B>5.</B></FONT><B>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt"><U>Form&nbsp;of
+Rights Certificate</U></FONT></B><FONT STYLE="font-size: 10pt">. Exhibit&nbsp;B to the Rights Agreement is hereby amended as follows:</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 1in"></TD><TD STYLE="width: 0.25in">a.</TD><TD>By deleting each reference to &ldquo;June&nbsp;4, 2025&rdquo; included in Exhibit&nbsp;B and replacing it with reference to &ldquo;December&nbsp;14,
+2023.&rdquo;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"><B>6.</B></FONT><B>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt"><U>Summary
+of Rights</U></FONT></B><FONT STYLE="font-size: 10pt">. Exhibit&nbsp;C to the Rights Agreement is hereby amended as follows:</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 1in"></TD><TD STYLE="width: 0.25in">a.</TD><TD>By deleting the reference to &ldquo;June&nbsp;4, 2025&rdquo; and replacing it with a reference to &ldquo;December&nbsp;14, 2023.&rdquo;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 1in"></TD><TD STYLE="width: 0.25in">b.</TD><TD>By deleting reference to &ldquo;June&nbsp;4, 2022&rdquo; and replacing it with reference to &ldquo;December&nbsp;14, 2023.&rdquo;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"><B>7.</B></FONT><B>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt"><U>Ratification
+of Agreement</U></FONT></B><FONT STYLE="font-size: 10pt">. Except as specifically modified by this Third Amendment, the Rights Agreement
+remains in full force and effect and is hereby ratified, confirmed and reaffirmed for all purposes and in all respects.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"><B>8.</B></FONT><B>&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;&#8239;<FONT STYLE="font-size: 10pt"><U>Counterparts</U></FONT></B><FONT STYLE="font-size: 10pt">.
+This Third Amendment may be executed in one or more counterparts, each of which shall constitute an original and all of which together
+shall constitute but one original; provided, however, this Third Amendment shall not be effective unless and until signed by the Company
+and the Rights Agent.</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">[<I>Signature Page&nbsp;Follows</I>]</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 2; Options: NewSection; Value: 2 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->2<!-- Field: /Sequence --></P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">IN WITNESS WHEREOF, the parties hereto have caused
+this Third Amendment to be duly executed, all as of the day and year first above written.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font-size: 10pt; border-collapse: collapse; width: 100%">
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="font: bold 10pt Times New Roman, Times, Serif"><U>Company:</U></TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="font: 10pt Times New Roman, Times, Serif">&nbsp;</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="font: 10pt Times New Roman, Times, Serif">ARLINGTON ASSET INVESTMENT CORP.</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="font: 10pt Times New Roman, Times, Serif">&nbsp;</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt; width: 50%">&nbsp;</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif; width: 5%">By:&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; font: 10pt Times New Roman, Times, Serif; width: 45%">/s/ Richard E. Konzmann</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif">Name:</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif">Richard E. Konzmann</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif">Title:</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif">Executive Vice President, Chief Financial Officer and Treasurer</TD></TR>
+  </TABLE>
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="text-align: center; font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt">[Signature Page&nbsp;to Third Amendment to the
+Rights Agreement]</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 3 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font-size: 10pt; border-collapse: collapse; width: 100%">
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="font: bold 10pt Times New Roman, Times, Serif"><U>Rights Agent:</U></TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="font: 10pt Times New Roman, Times, Serif">&nbsp;</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="font: 10pt Times New Roman, Times, Serif">EQUINITI TRUST COMPANY, LLC</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="font: 10pt Times New Roman, Times, Serif">&nbsp;</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt; width: 50%">&nbsp;</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif; width: 5%">By:&nbsp;</TD>
+    <TD STYLE="border-bottom: Black 1pt solid; font: 10pt Times New Roman, Times, Serif; width: 45%">/s/ Adam E. Burke</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif">Name:</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif">Adam E. Burke</TD></TR>
+  <TR STYLE="font-size: 10pt; vertical-align: bottom">
+    <TD STYLE="font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif">Title:</TD>
+    <TD STYLE="font: 10pt Times New Roman, Times, Serif">EVP, Chief Customer Officer</TD></TR>
+  </TABLE>
+
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">[Signature Page&nbsp;to Third Amendment to the
+Rights Agreement]</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 4; Options: Last -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

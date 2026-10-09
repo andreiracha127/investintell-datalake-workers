@@ -128,7 +128,7 @@ END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS)
 # common stock), not of notes or preferred. A Form 10 (a spin-off's registration
 # statement) is not read: its class stays unknown.
 READ_REGISTRATION_FORMS = frozenset({"8-A12B", "8-A12G", "8-K12B", "8-K12G3",
-                                     "8-K12B/A", "8-K12G3/A"})
+                                     "8-A12B/A", "8-A12G/A", "8-K12B/A", "8-K12G3/A"})
 READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
 # Names the parser of the end and registration filings; a new version re-derives
 # every such event as a correction (derive_event_classes). v4: equity classes named
@@ -137,8 +137,14 @@ READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
 # "including associated ... purchase rights pursuant to the ... Rights Plan"). v6:
 # a successor's Form 8-K12B or 8-K12G3 (and its /A) is read for the classes it
 # continues (parse_successor_document). v7: a successor's Rule 12g-3 sentence that
-# names no equity class states no class ('unknown'), never another kind.
-EVENT_PARSER_VERSION = "sec_event_class_v7"
+# names no equity class states no class ('unknown'), never another kind. v8: the
+# Section 12(b) table of a Form 8-A or a successor's cover is found under any
+# spelling of its header (interleaved columns, as Liberty Media's 2023 8-A12B;
+# "to be registered"; words split by markup), a Form 8-A12G's class without its
+# "(Title of class)" label, and up to 2,000 characters of either; the amendments
+# of a Form 8-A or a successor's 8-K12B/8-K12G3 are read like their originals and
+# say whether they restate the registration or cancel it.
+EVENT_PARSER_VERSION = "sec_event_class_v8"
 # Names the package parser (symbols, classes, share counts). Recorded on each
 # package and on each fact version it inserts; not part of a fact's hash. v3: a
 # line's member refines a title that does not say what the line is (truncated or
@@ -1254,7 +1260,7 @@ _DEPENDENT_RES = (
     re.compile(r"\bguarantee[sd]?\b[^;]*", re.I),
 )
 _EQUITY_CLASS_RE = re.compile(
-    r"\b(?:common|ordinary|capital)\s+(?:stock|shares?|units?)\b"
+    r"\b(?:comm?on|ordinary|capital)\s+(?:stock|shares?|units?)\b"
     r"|\bshares?\s+of\s+beneficial\s+interest\b"
     r"|\b(?:american\s+)?depositary\s+(?:shares?|receipts?)\b|\bADSs?\b|\bADRs?\b"
     r"|\b(?:limited\s+)?partnership\s+(?:units|interests)\b|\btracking\s+stock\b"
@@ -1302,6 +1308,10 @@ _NAME_STOP_WORDS = frozenset({
     "market", "exchange", "nasdaq", "nyse", "llc", "inc", "corporation", "corp", "plc", "ltd",
     "limited", "company", "co",
 })
+_NUMBER_WORDS = frozenset({
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+    "twelve", "twenty", "hundred", "thousand",
+})
 
 
 def equity_class_names(description: str | None) -> set[str]:
@@ -1326,9 +1336,14 @@ def equity_class_names(description: str | None) -> set[str]:
         for i in range(len(tokens) - 1, -1, -1):
             token = tokens[i]
             labelled = i > 0 and tokens[i - 1].lower() in ("class", "series", "ser")
+            # a capitalized number inside a name ("Liberty Formula One Common
+            # Stock"), not a count ("one share of", "ten Ordinary Shares")
+            named = (token.lower() in _NUMBER_WORDS and token[0].isupper() and i > 0
+                     and tokens[i - 1][0].isupper()
+                     and tokens[i - 1].lower() not in _NAME_STOP_WORDS)
             if (not token[0].isalnum() or len(words) == 4
-                    or (not labelled and (token[0].isdigit()
-                                          or token.lower() in _NAME_STOP_WORDS))):
+                    or (not labelled and not named
+                        and (token[0].isdigit() or token.lower() in _NAME_STOP_WORDS))):
                 break
             words.append(token.lower().replace("-", ""))
         names.add(" ".join([*reversed(words), match.group(1).lower()]))
@@ -1410,19 +1425,85 @@ def venue_kind(venue: str | None) -> str:
     return "unknown"
 
 
-_REGISTERED_12B_RE = re.compile(
-    r"title\s+of\s+each\s+class\s+to\s+be\s+so\s+registered"
-    r"(?:\s+name\s+of\s+each\s+exchange\s+on\s+which\s+each\s+class\s+is\s+to\s+be\s+registered)?",
+# A Section 12(b) table: "Title of each class [to be so registered] / [Trading
+# Symbol(s)] / Name of each exchange on which [each class is to be] registered".
+# Filers interleave the two columns' lines ("Title of each class Name of each
+# exchange on which to be so registered each class is to be registered": Liberty
+# Media's 8-A12B of 2023), drop words ("to be registered"), or split them with
+# markup ("Title of e ach c lass"), so the header is matched as letters: it runs
+# from "title of each class" to the last "registered" or "symbol(s)" before which
+# every letter spells header words.
+_TABLE_TITLE_RE = re.compile(r"t\s*i\s*t\s*l\s*e\s*(?:o\s*f|f\s*o\s*r)\s*(?:e\s*a\s*c\s*h\s*)?"
+                             r"c\s*l\s*a\s*s\s*s(?:\s*e\s*s)?", re.I)
+_TABLE_HEADER_END_RE = re.compile(
+    r"r\s*e\s*g\s*i\s*s\s*t\s*e\s*r\s*e\s*d|s\s*y\s*m\s*b\s*o\s*l\s*(?:\(\s*s\s*\)|s)?", re.I)
+_TABLE_HEADER_WORDS = (
+    "title", "of", "for", "each", "class", "classes", "to", "be", "so", "registered", "name",
+    "names",
+    "exchange", "exchanges", "on", "which", "is", "are", "it", "securities", "security",
+    "trading", "symbol", "symbols", "s", "the", "and", "where", "stock", "in", "at",
+)
+# A second column label left inside the block of a label: value table ("Title of
+# each class to be registered: Common Stock ... Name of each exchange on which
+# each class is to be registered: The NASDAQ Stock Market LLC").
+_TABLE_EXCHANGE_LABEL_RE = re.compile(
+    r"\(?\s*names?\s+of\s+(?:each\s+)?exchanges?\s+(?:on|of|in|at)\s+which\s+"
+    r"(?:[a-z]+\s+){0,8}?registered\s*\)?\s*:?", re.I)
+_REGISTERED_12B_END_RE = re.compile(
+    r"if\s+this\s+form\s+relates|securities\s+(?:to\s+be\s+)?registered\s+pursuant\s+to\s+section"
+    r"\s+12\s*\(\s*g\s*\)|\bitem\s+1\b|\b(?:explanatory|introductory)\s+note\b|\btable\s+of\s+contents\b"
+    r"|\bdescription\s+of\s+(?:the\s+)?registrant", re.I)
+_REGISTERED_12B_LINE_RE = re.compile(
+    r"securities\s+(?:to\s+be\s+)?registered\s+pursuant\s+to\s+section\s+12\s*\(\s*b\s*\)\s+of\s+"
+    r"the\s+(?:exchange\s+)?act\s*:?", re.I)
+_REGISTERED_12G_RE = re.compile(
+    r"securities\s+(?:to\s+be\s+)?registered\s+pursuant\s+to\s+section\s+12\s*\(\s*g\s*\)\s+of\s+"
+    r"the\s+(?:exchange\s+)?act\s*:?", re.I)
+_TITLE_OF_CLASS_RE = re.compile(r"\(\s*title\s+of\s+(?:each\s+)?class(?:es)?\s*\)", re.I)
+# Where a 12(g) line ends without its "(Title of class)" label: the next item,
+# note or box, or a 12(b) table a filer put under a 12(g) caption.
+_REGISTERED_12G_END_RE = re.compile(
+    r"\bitem\s+1\b|\bexplanatory\s+note\b|\bdescription\s+of\s+(?:the\s+)?registrant"
+    r"|\bif\s+this\s+form\s+relates|\btitle\s+of\s+each\s+class", re.I)
+_NO_CLASS_WORDS = frozenset({"NOT", "APPLICABLE", "NONE", "N", "A", "NA"})
+# A registration's description keeps up to this many characters: Liberty Media's
+# 2023 table names seven classes in about 630.
+_REGISTRATION_TEXT_LIMIT = 2000
+# An amendment that cancels the registration of the class it concerns rather
+# than restating it: Arlington Asset's 8-A12B/A of 2023 "to reflect the
+# expiration of the preferred share purchase rights", a withdrawal, a termination.
+_REGISTRATION_CANCELS_RE = re.compile(
+    r"\b(?:reflect|give\s+effect\s+to)\s+(?:the\s+)?(?:expiration|termination|redemption"
+    r"|cancell?ation|withdrawal)\s+of\s+[\w\s'’,-]{0,80}?\b(?:rights|warrants"
+    r"|registration\s+(?:of|under)|form\s*8-?a)\b"
+    r"|\b(?:the\s+)?rights\s+(?:have|had)\s+(?:expired|terminated|been\s+redeemed)\b"
+    r"|\bwithdraw(?:s|n|ing)?\s+(?:the\s+|its\s+|this\s+)?(?:registration\s+(?:of|under)"
+    r"|form\s*8-?a)\b"
+    r"|\bterminat(?:e|es|ed|ing)\s+(?:the\s+|its\s+)?registration\s+(?:of|under)\b",
     re.I,
 )
-_REGISTERED_12B_END_RE = re.compile(
-    r"if\s+this\s+form\s+relates|securities\s+to\s+be\s+registered\s+pursuant\s+to\s+section"
-    r"\s+12\s*\(\s*g\s*\)", re.I)
-_REGISTERED_12G_RE = re.compile(
-    r"securities\s+to\s+be\s+registered\s+pursuant\s+to\s+section\s+12\s*\(\s*g\s*\)\s+of\s+"
-    r"the\s+act\s*:?", re.I)
-_TITLE_OF_CLASS_RE = re.compile(r"\(\s*title\s+of\s+(?:each\s+)?class(?:es)?\s*\)", re.I)
-_NO_CLASS_WORDS = frozenset({"NOT", "APPLICABLE", "NONE", "N", "A", "NA"})
+# Each row of a 12(b) table ends with its exchange; a separator after it keeps one
+# row's dependent instrument ("Units, each consisting of one share of Class A
+# common stock and one-half of one Warrant") from swallowing the next rows (the
+# Class A common stock itself), as the "; " between a Form 25's classes does.
+_EXCHANGE_NAME_RE = re.compile(
+    r"\b(?:the\s+)?(?:nasdaq|new\s+york|american|chicago|boston|philadelphia|pacific|toronto"
+    r"|cboe|bats|investors|long[-\s]term|miami|national|nyse)\b[\w\s.,&-]{0,40}?"
+    r"\b(?:market|exchange)\b(?:\s*,?\s*(?:llc|l\.l\.c\.|inc\.?|incorporated))?"
+    r"|\bnyse(?:\s+(?:american|mkt|amex|arca|texas|chicago))?\b(?:\s*,?\s*(?:llc|inc\.?))?"
+    r"|\bnasdaq\b(?:\s*,?\s*(?:llc|inc\.?))?",
+    re.I,
+)
+
+
+def _header_words_only(text: str) -> bool:
+    """Whether every letter of ``text`` spells a sequence of table header words."""
+    letters = re.sub(r"[^a-z]", "", text.lower())
+    spelled = [True] + [False] * len(letters)
+    for i in range(1, len(letters) + 1):
+        spelled[i] = any(len(word) <= i and spelled[i - len(word)]
+                         and letters[i - len(word): i] == word for word in _TABLE_HEADER_WORDS)
+    return spelled[-1]
 
 
 def _names_a_class(block: str) -> bool:
@@ -1432,48 +1513,109 @@ def _names_a_class(block: str) -> bool:
     return bool(words) and not words <= _NO_CLASS_WORDS
 
 
-def parse_registration_document(raw: str) -> EventClass:
-    """The class a Form 8-A registers: the 12(b) table ("Title of each class to be
-    so registered" / "Name of each exchange ...": PepsiCo's common stock on Nasdaq
-    in 2017, its notes in 2018), else the 12(g) line above "(Title of class)"
-    (Statera's Series B Preferred Stock of 2023). No class -> 'unknown'."""
+def _registration_table(body: str, end_re: re.Pattern[str]) -> str | None:
+    """The rows of the first Section 12(b) table in ``body``, up to ``end_re``;
+    None when there is no such table or it names no class ("None", "N/A"). A
+    table whose labels are printed in parentheses below its rows ("Common Stock
+    ... (Title of each class to be so registered) (Name of each exchange ...)")
+    has its rows between the Section 12(b) line and the labels."""
+    title = _TABLE_TITLE_RE.search(body)
+    if not title:
+        return None
+    if body[:title.start()].rstrip().endswith("("):
+        line = None
+        for line in _REGISTERED_12B_LINE_RE.finditer(body, max(0, title.start() - 3000),
+                                                     title.start()):
+            pass
+        if line is None:
+            return None
+        if end_re.search(body, line.end(), title.start()):
+            return None  # the label of a later part ("(Title of class)" of a 12(g) line)
+        block = re.sub(r"\s+", " ", body[line.end(): title.start()]).strip(" :;,.-_(")
+        if _names_a_class(block):
+            return block[:_REGISTRATION_TEXT_LIMIT]
+        labels = re.match(r"(?:\s*\([^()]{0,200}\))+", body[title.start() - 1:])
+        if labels is None or not _header_words_only(labels.group(0)):
+            return None
+        start = title.start() - 1 + labels.end()
+        end = end_re.search(body, start)
+        block = body[start: end.start() if end else start + _REGISTRATION_TEXT_LIMIT]
+        block = re.sub(r"\s+", " ", _TABLE_EXCHANGE_LABEL_RE.sub(" ", block)).strip(" :;,.-_")
+        return block[:_REGISTRATION_TEXT_LIMIT] if _names_a_class(block) else None
+    stop = end_re.search(body, title.end())
+    limit = min(title.end() + 300, stop.start() if stop else len(body))
+    header_end = None
+    for terminal in _TABLE_HEADER_END_RE.finditer(body, title.end(), limit):
+        if _header_words_only(body[title.end(): terminal.start()]):
+            header_end = terminal.end()
+    if header_end is None:
+        return None
+    end = end_re.search(body, header_end)
+    block = body[header_end: end.start() if end else header_end + _REGISTRATION_TEXT_LIMIT]
+    block = _TABLE_EXCHANGE_LABEL_RE.sub(" ", block)
+    block = re.sub(r"\s+", " ", _EXCHANGE_NAME_RE.sub(lambda m: m.group(0) + ";", block))
+    block = re.sub(r"(?:\s*;)+", ";", block).strip(" :;,.-_")
+    return block[:_REGISTRATION_TEXT_LIMIT] if _names_a_class(block) else None
+
+
+def _registration_effect(body: str, form: str, kind: str) -> str | None:
+    """An amendment of a Form 8-A 'cancels' its registration when it reflects the
+    expiration, redemption or withdrawal of what was registered (rights expiring
+    after the issuer's merger must not reopen its common stock); an amendment of
+    a registration 'restates' it when it states a class, and states nothing
+    otherwise (an amendment filing only exhibits is not read). A successor's
+    8-K12B/A or 8-K12G3/A never cancels: its delisting or termination language
+    concerns the predecessor's securities (Primo Brands 2024, Avadel 2017)."""
+    if not form.endswith("/A"):
+        return None
+    if form.removesuffix("/A") in REGISTRATION_FORMS and _REGISTRATION_CANCELS_RE.search(body):
+        return "cancels"
+    return "restates" if kind != "unknown" else None
+
+
+def parse_registration_document(raw: str, form: str = "8-A12B") -> EventClass:
+    """The class a Form 8-A (or its amendment) registers: its 12(b) table
+    (PepsiCo's common stock on Nasdaq in 2017, its notes in 2018; Liberty Media's
+    seven tracking stocks in 2023), else its 12(g) line, up to "(Title of class)"
+    or the next item (Statera's Series B Preferred Stock of 2023). No class ->
+    'unknown'. An amendment restates or cancels the registration
+    (_registration_effect: Carlyle's 8-A12B/A of 2020 registers the common stock
+    of the corporation it converted into; Arlington Asset's of 2023 reflects the
+    expiration of its preferred share purchase rights)."""
     documents = _DOCUMENT_RE.findall(raw)
     body = _plain(documents[0] if documents else raw)
-    description = None
-    table = _REGISTERED_12B_RE.search(body)
-    if table:
-        end = _REGISTERED_12B_END_RE.search(body, table.end())
-        block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
+    description = _registration_table(body, _REGISTERED_12B_END_RE)
+    for section in [] if description is not None else _REGISTERED_12G_RE.finditer(body):
+        rest = body[section.end():]
+        if _TABLE_TITLE_RE.match(rest.lstrip()):
+            description = _registration_table(rest, _REGISTERED_12B_END_RE)
+            if description is not None:
+                break
+            continue
+        ends = [m for m in (_TITLE_OF_CLASS_RE.search(body, section.end()),
+                            _REGISTERED_12G_END_RE.search(body, section.end())) if m]
+        stop = min(m.start() for m in ends) if ends else section.end() + 300
+        block = re.sub(r"\s+", " ", body[section.end(): stop]).strip(" :;,.-_")
         if _names_a_class(block):
-            description = block[:500]
-    if description is None:
-        section = _REGISTERED_12G_RE.search(body)
-        label = _TITLE_OF_CLASS_RE.search(body, section.end()) if section else None
-        if label:
-            block = body[section.end(): label.start()].strip(" :;,.-")
-            if _names_a_class(block):
-                description = block[-500:]
+            description = block[-_REGISTRATION_TEXT_LIMIT:]
+            break
+    kind = event_class_kind(description)
     return EventClass(
         class_description=description,
-        class_kind=event_class_kind(description),
+        class_kind=kind,
         class_count=class_count(description),
         provision=None,
         extinguished=None,
         venue=None,
         venue_kind="unknown",
-        amendment_effect=None,
+        amendment_effect=_registration_effect(body, form, kind),
     )
 
 
-# The Section 12(b) table of an 8-K cover (2019 on): "Title of each class /
-# Trading Symbol(s) / Name of each exchange on which registered", up to the
-# emerging-growth or Form 8-K checkboxes.
-_COVER_12B_RE = re.compile(
-    r"title\s+of\s+each\s+class\s+trading\s+symbols?(?:\s*\(\s*s\s*\))?\s+name\s+of\s+each\s+"
-    r"exchange\s+on\s+which\s+(?:it\s+is\s+|each\s+is\s+)?registered\s*:?", re.I)
 _COVER_12B_END_RE = re.compile(
     r"indicate\s+by\s+check\s+mark|check\s+the\s+appropriate\s+box|securities\s+registered"
-    r"\s+pursuant\s+to\s+section\s+12\s*\(\s*g|emerging\s+growth", re.I)
+    r"\s+pursuant\s+to\s+section\s+12\s*\(\s*g|emerging\s+growth|\b(?:explanatory|introductory)\s+note\b"
+    r"|\bitem\s+\d+\.\d+\b|\btable\s+of\s+contents\b", re.I)
 # Before the cover table, the successor language: "Pursuant to Rule 12g-3(c) ...
 # the ordinary shares of the Company are deemed to be registered under Section
 # 12(b) ... (as the successor issuer to Liberty Global)".
@@ -1481,22 +1623,17 @@ _SUCCESSOR_SENTENCE_RE = re.compile(
     r"[^.]{0,500}?(?:\brule\s+12g-?3\b|\bsuccessor\s+issuer\b)[^.]{0,500}\.", re.I)
 
 
-def parse_successor_document(raw: str) -> EventClass:
-    """The classes a successor's Form 8-K12B or 8-K12G3 continues: the Section
-    12(b) table of its cover (2019 on: KKR's 2022 common stock, Liberty Global's
-    2023 Class A, B and C common shares), else the sentence that registers the
-    successor's securities under Rule 12g-3 ("the ordinary shares of the Company
-    are deemed to be registered under Section 12(b)", Liberty Global 2013). No
-    such text -> 'unknown'."""
+def parse_successor_document(raw: str, form: str = "8-K12B") -> EventClass:
+    """The classes a successor's Form 8-K12B or 8-K12G3 (or its amendment)
+    continues: the Section 12(b) table of its cover (2019 on: KKR's 2022 common
+    stock, Liberty Global's 2023 Class A, B and C common shares), else the
+    sentence that registers the successor's securities under Rule 12g-3 ("the
+    ordinary shares of the Company are deemed to be registered under Section
+    12(b)", Liberty Global 2013). No such text -> 'unknown'. An amendment
+    restates or cancels the registration as a Form 8-A's does."""
     documents = _DOCUMENT_RE.findall(raw)
     body = _plain(documents[0] if documents else raw)
-    description = None
-    table = _COVER_12B_RE.search(body)
-    if table:
-        end = _COVER_12B_END_RE.search(body, table.end())
-        block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
-        if _names_a_class(block):
-            description = block[:500]
+    description = _registration_table(body, _COVER_12B_END_RE)
     kind = event_class_kind(description)
     if description is None:
         sentence = _SUCCESSOR_SENTENCE_RE.search(body)
@@ -1513,7 +1650,7 @@ def parse_successor_document(raw: str) -> EventClass:
         extinguished=None,
         venue=None,
         venue_kind="unknown",
-        amendment_effect=None,
+        amendment_effect=_registration_effect(body, form, kind),
     )
 
 
@@ -1529,9 +1666,9 @@ def parse_event_document(raw: str, form: str) -> EventClass:
     read by parse_registration_document.
     """
     if form.removesuffix("/A") in REGISTRATION_FORMS:
-        return parse_registration_document(raw)
+        return parse_registration_document(raw, form)
     if form.removesuffix("/A") in SUCCESSOR_FORMS:
-        return parse_successor_document(raw)
+        return parse_successor_document(raw, form)
     amendment_effect = None
     if form.endswith("/A"):
         amendment_effect = "cancels" if _CANCELS_RE.search(_plain(raw)) else "restates"

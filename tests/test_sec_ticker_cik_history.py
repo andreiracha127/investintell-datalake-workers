@@ -452,12 +452,68 @@ def _filing(adsh: str) -> str:
           "equity", 1, None, None, None, "unknown", None)),
         ("0000950103-18-014472", "8-A12B",
          ("2.500% Senior Notes due 2022 1.750% Senior Notes due 2021 2.625% Senior Notes due "
-          "2026 0.875% Senior Notes due 2028 The Nasdaq Stock Market LLC The Nasdaq Stock "
-          "Market LLC The Nasdaq Stock Market LLC The Nasdaq Stock Market LLC", "other", 1,
+          "2026 0.875% Senior Notes due 2028 The Nasdaq Stock Market LLC; The Nasdaq Stock "
+          "Market LLC; The Nasdaq Stock Market LLC; The Nasdaq Stock Market LLC", "other", 1,
           None, None, None, "unknown", None)),
         ("0001437749-23-002250", "8-A12G",
          ("Series B Preferred Stock, par value $0.005 per share", "other", 1, None, None, None,
           "unknown", None)),
+        # Parser v8 (W1 v3 handoff). Liberty Media's 8-A12B of 2023-08-01 interleaves
+        # its table header ("Title of each class Name of each exchange on which to
+        # be so registered each class is to be registered"), which v7 read as no
+        # class: seven tracking stocks, Series B Liberty SiriusXM (LSXMB) among them.
+        ("0001104659-23-086344", "8-A12B",
+         ("Series A Liberty SiriusXM Common Stock, par value $0.01 per share The Nasdaq Stock "
+          "Market LLC; Series B Liberty SiriusXM Common Stock, par value $0.01 per share The "
+          "Nasdaq Stock Market LLC; Series C Liberty SiriusXM Common Stock, par value $0.01 "
+          "per share The Nasdaq Stock Market LLC; Series A Liberty Live Common Stock, par "
+          "value $0.01 per share The Nasdaq Stock Market LLC; Series C Liberty Live Common "
+          "Stock, par value $0.01 per share The Nasdaq Stock Market LLC; Series A Liberty "
+          "Formula One Common Stock, par value $0.01 per share The Nasdaq Stock Market LLC; "
+          "Series C Liberty Formula One Common Stock, par value $0.01 per share The Nasdaq "
+          "Stock Market LLC", "equity", 7, None, None, None, "unknown", None)),
+        # Carlyle's 8-A12B/A of 2020-01-02: the corporation it converted into
+        # registers its common stock, which continues CG.
+        ("0001193125-20-000229", "8-A12B/A",
+         ("Common Stock The Nasdaq Global Select Market", "equity", 1, None, None, None,
+          "unknown", "restates")),
+        # Arlington Asset's 8-A12B/A of 2023-12-15, after its merger, "to reflect the
+        # expiration of the preferred share purchase rights": no common stock.
+        ("0001104659-23-126435", "8-A12B/A",
+         ("Rights to Purchase Series A Junior Preferred Stock New York Stock Exchange", "other",
+          1, None, None, None, "unknown", "cancels")),
+        # A SPAC's units, Class A common stock and warrants: each row ends with its
+        # exchange, so the units' "each consisting of" does not swallow the stock
+        # (v7 read it as another kind).
+        ("0001193125-21-081112", "8-A12B",
+         ("Units, each consisting of one share of Class A common stock and one-eighth of one "
+          "Warrant The New York Stock Exchange; Class A common stock, par value $0.0001 per "
+          "share The New York Stock Exchange; Warrants, each whole warrant exercisable for one "
+          "share of Class A common stock at an exercise price of $11.50 per share The New York "
+          "Stock Exchange", "equity", 1, None, None, None, "unknown", None)),
+        # "Title of each class to be registered" (no "so"): notes.
+        ("0000004962-25-000064", "8-A12B",
+         ("3.433% Fixed-to-Floating Rate Notes due May 20, 2032 The New York Stock Exchange",
+          "other", 1, None, None, None, "unknown", None)),
+        # Labels in parentheses below the row, and above it.
+        ("0000943374-21-000383", "8-A12B",
+         ("Common Stock, $0.50 par value per share The Nasdaq Stock Market, LLC", "equity", 1,
+          None, None, None, "unknown", None)),
+        ("0001144204-14-059666", "8-A12B",
+         ("Common Shares, no par value The NASDAQ Stock Market LLC", "equity", 1, None, None,
+          None, "unknown", None)),
+        # A 12(g) line without its "(Title of class)" label.
+        ("0001144204-09-010310", "8-A12G",
+         ("Common stock, par value $0.001 per share", "equity", 1, None, None, None, "unknown",
+          None)),
+        # A successor's amendment restating its cover table; another filing only
+        # exhibits, with no table and no Rule 12g-3 sentence, states nothing.
+        ("0001104659-20-079062", "8-K12B/A",
+         ("Common stock, par value $0.0001 per share FREE The NASDAQ Stock Market LLC; Warrants "
+          "to purchase one-half of one share of common stock FREEW The NASDAQ Stock Market LLC",
+          "equity", 1, None, None, None, "unknown", "restates")),
+        ("0000897101-16-002761", "8-K12G3/A",
+         (None, "unknown", 1, None, None, None, "unknown", None)),
     ],
 )
 def test_end_filings_state_their_class_provision_and_exchange(
@@ -4342,6 +4398,63 @@ def test_a_parser_change_re_derives_events_as_corrections(
     stats = loader.run([], dsn=dsn, dry_run=False, form_indexes=[index], documents=documents,
                        reconciled_on=d(2013, 12, 1))
     assert (stats[0]["inserted"], stats[0]["retired"], stats[1]["derived"]) == (0, 0, 0)
+
+
+V7 = "sec_event_class_v7"
+
+
+def test_parser_v8_restates_the_registrations_v7_misread_or_skipped(
+    schema_dsn, tmp_path: Path,
+) -> None:
+    """W1 v3 handoff: as production holds them after the v7 re-derivation, Liberty
+    Media's 8-A12B of 2023-08-01 read as stating no class, and the 8-A amendments
+    of Carlyle (2020) and Arlington Asset (2023) never read. Parser v8 re-reads
+    them as corrections: each old version is visible at no date, each new one from
+    its filing's public date, and the indexes that carried the old carry the new."""
+    conn, _ = schema_dsn
+    rows = {  # adsh: (cik, form, filed, the v7 reading)
+        "0001104659-23-086344": (1560385, "8-A12B", "2023-08-01", ("unknown", 1, V7)),
+        "0001193125-20-000229": (1527166, "8-A12B/A", "2020-01-02", (None, None, None)),
+        "0001104659-23-126435": (1209028, "8-A12B/A", "2023-12-15", (None, None, None)),
+    }
+    for adsh, (cik, form, filed, (kind, count, parser)) in rows.items():
+        _observe(conn, cik, f"T{cik}", "2019-05-01")
+        old_hash = uuid4().hex
+        conn.execute(
+            "INSERT INTO sec_registration_events (fact_hash, adsh, cik, form, filed, class_kind, "
+            "class_count, parser_version, available_on, loaded_on, source_package) VALUES "
+            "(%s, %s, %s, %s, %s, %s, %s, %s, %s::date + 1, '2026-10-09', 'index')",
+            (old_hash, adsh, cik, form, filed, kind, count, parser, filed))
+        conn.execute("INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, "
+                     "fact_hash, loaded_on) VALUES ('index', 'event', %s, '2026-10-09')",
+                     (old_hash,))
+    documents = loader.EventDocuments(FILINGS, None)
+    stats = loader.derive_event_classes(conn, documents, reconciled_on=d(2026, 10, 12))
+    assert (stats["derived"], stats["class_equity"], stats["class_other"]) == (3, 2, 1)
+    assert conn.execute(
+        "SELECT form, class_kind, class_count, amendment_effect, parser_version, available_on, "
+        "retired_on, retired_reason FROM sec_registration_events ORDER BY filed, id"
+    ).fetchall() == [
+        ("8-A12B/A", None, None, None, None, d(2020, 1, 3), d(2026, 10, 12), "parser_correction"),
+        ("8-A12B/A", "equity", 1, "restates", loader.EVENT_PARSER_VERSION, d(2020, 1, 3), None,
+         None),
+        ("8-A12B", "unknown", 1, None, V7, d(2023, 8, 2), d(2026, 10, 12), "parser_correction"),
+        ("8-A12B", "equity", 7, None, loader.EVENT_PARSER_VERSION, d(2023, 8, 2), None, None),
+        ("8-A12B/A", None, None, None, None, d(2023, 12, 16), d(2026, 10, 12),
+         "parser_correction"),
+        ("8-A12B/A", "other", 1, "cancels", loader.EVENT_PARSER_VERSION, d(2023, 12, 16), None,
+         None),
+    ]
+    assert "Series B Liberty SiriusXM Common Stock" in conn.execute(
+        "SELECT class_description FROM sec_registration_events WHERE retired_on IS NULL "
+        "AND cik = 1560385").fetchone()[0]
+    assert conn.execute(
+        "SELECT count(*) FROM sec_ticker_cik_package_facts f JOIN sec_registration_events e "
+        "ON e.fact_hash = f.fact_hash WHERE f.retired_on IS NULL AND e.retired_on IS NULL"
+    ).fetchone() == (3,)
+    # Read by v8, nothing changes on the next run.
+    assert loader.derive_event_classes(conn, documents, reconciled_on=d(2026, 10, 19))[
+        "derived"] == 0
 
 
 def test_an_end_re_derived_years_later_takes_effect_at_its_filing(
