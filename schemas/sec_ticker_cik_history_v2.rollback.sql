@@ -965,6 +965,11 @@ $fn$;
 -- v2's helpers, which no v1 function uses.
 DROP FUNCTION IF EXISTS sec_class_label(text, text);
 DROP FUNCTION IF EXISTS sec_named_classes(text);
+DROP FUNCTION IF EXISTS sec_end_role(text[], text[], text, text[], text, text);
+DROP FUNCTION IF EXISTS sec_first_label(text);
+DROP FUNCTION IF EXISTS sec_label_id_re();
+DROP FUNCTION IF EXISTS sec_label_norm(text);
+DROP FUNCTION IF EXISTS sec_label_text(text);
 
 -- Ownership and grants of every routine, as v1 sets them (the two functions
 -- created again above start with default privileges).

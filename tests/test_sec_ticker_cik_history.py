@@ -13,7 +13,9 @@ from __future__ import annotations
 import datetime as dt
 import gzip
 import itertools
+import json
 import os
+import re
 import random
 import zipfile
 from dataclasses import replace
@@ -262,6 +264,25 @@ def test_share_counts_are_dated_by_the_stated_day_not_the_rounded_month_end(
         (None, "FUTU", "ClassOfStock=Adr;", "depositary"),
         (None, "XYZ", "ClassOfStock=OtherAddress;", "equity"),
         (None, "AAPL", "", "equity"),
+        # A title that does not say what the line is yields to its member (FSN v3):
+        # IBKC's truncated depositary preferred title, General Finance's and
+        # AstraZeneca's run-together notes, Hecla's "Series B".
+        ("Depositary Shares, Each Representing a 1/400th Interest in", "IBKCP",
+         "ClassOfStock=SeriesBPreferredStock;", "preferred"),
+        ("7.875% Senior Notesdue 2025", "GFNSZ",
+         "ClassOfStock=DebtInstrument7.875PercentSeniorNotes;", "debt"),
+        ("0.300% Notesdue 2023", "AZN-23B",
+         "ClassesOfShareCapital=ZeroPointThreeZeroZeroNotesDueTwentyTwentyThree;", "debt"),
+        ("Series B", "HL-PB", "ClassOfStock=SeriesBCumulativePreferredStock;", "preferred"),
+        ("6.25% Class A Cumulative Redeemable Units, Series 1", "BPYPM",
+         "ComponentsOfEquity=PreferredUnits625Series1;", "preferred"),
+        # ... but not a title that says it: an ADS of units, a common stock.
+        ("American Depositary Shares, each representing four units (or a right to receive",
+         "BRBI", "ClassesOfShareCapital=AmericanDepositarySharesEachRepresentingFourUnitsOr"
+         "ARightToReceiveFourUnitsEachOfWhichIsComposedOfOneCommonShareAndTwoPreferredShares;",
+         "depositary"),
+        ("Common Stock", "XYZ", "ClassOfStock=PreferredStockConvertedToCommon;", "equity"),
+        ("Class A", "XYZ", "ClassOfStock=CommonClassA;", "equity"),
     ],
 )
 def test_security_kind_reads_the_title_then_segments_then_symbol(
@@ -463,6 +484,13 @@ def test_end_filings_state_their_class_provision_and_exchange(
         ("5.75% Convertible Senior Notes", "other"),
         ("Plan interests in the XTO Energy Inc. Employees 401(k) Plan and Exxon Mobil "
          "Corporation Common Stock", "other"),
+        # CAE's 8-A12B of 2026-07-22 (parser v5): a rights plan is no employee plan.
+        ("Common Shares, including associated Common Share purchase rights pursuant to the "
+         "Registrant\u2019s Shareholder Rights Plan, which purchase rights will trade together "
+         "with the Common Shares The Nasdaq Stock Market LLC", "equity"),
+        ("Preferred Stock Purchase Rights under Stockholders Rights Agreement", "other"),
+        ("Rights to Purchase Series A Junior Participating Preferred Stock (pursuant to Rights "
+         "Agreement dated as of June 8, 2012)", "other"),
         ("", "unknown"),
         (None, "unknown"),
     ],
@@ -1291,20 +1319,25 @@ def test_reused_ticker_without_an_end_event_overlaps_until_the_old_hold_is_stale
     assert _issuer(conn, "T", "2011-04-03")[:2] == ("resolved", 732717)
 
 
-def test_an_unread_delisting_ends_only_a_single_symbol_issuer(schema_dsn) -> None:
+def test_an_unread_delisting_of_a_two_symbol_issuer_closes_until_a_later_statement(
+    schema_dsn,
+) -> None:
+    """An unread end ends a single-symbol issuer's line. Of an issuer listing
+    common stock and notes it could be the notes' (Codex thread 4222924619), so it
+    closes both tentatively (the admission rule): the next statement reopens."""
     conn, _ = schema_dsn
     _observe(conn, 10, "ONE", "2021-01-10")
     adsh = _observe(conn, 20, "TWO", "2021-01-10")
     _observe(conn, 20, "TWO-27", "2021-01-10", class_key="LongtermDebtType=Notes2027;",
              kind="debt", adsh=adsh)
     _event(conn, 10, "25-NSE", "2021-02-01")
-    _event(conn, 20, "25-NSE", "2021-02-01")  # could be the notes: does not end TWO
+    _event(conn, 20, "25-NSE", "2021-02-01")
     assert _issuer(conn, "ONE", "2021-02-02")[:2] == ("ended", None)
-    assert _issuer(conn, "TWO", "2021-02-02")[:2] == ("resolved", 20)
-    # Nor does an unread 15-15D: it too could be the notes' (Codex thread
-    # 4222924619); after a single-symbol filing it ends the hold.
+    assert _issuer(conn, "TWO", "2021-02-02")[:2] == ("ended", None)
+    _observe(conn, 20, "TWO", "2021-02-10")
+    assert _issuer(conn, "TWO", "2021-02-12")[:2] == ("resolved", 20)
     _event(conn, 20, "15-15D", "2021-03-01")
-    assert _issuer(conn, "TWO", "2021-03-02")[:2] == ("resolved", 20)
+    assert _issuer(conn, "TWO", "2021-03-02")[:2] == ("ended", None)
     _event(conn, 10, "15-15D", "2021-03-01")
     _observe(conn, 10, "ONE", "2021-02-20")  # reopened after the 25-NSE, then
     assert _issuer(conn, "ONE", "2021-03-02")[:2] == ("ended", None)
@@ -1638,8 +1671,8 @@ def test_price_span_ends_at_a_deregistration_and_reopens_on_a_later_statement(
         ("", d(2009, 11, 6), d(2010, 3, 16), "15-12G", d(2009, 11, 6), None, d(2010, 5, 8)),
     ]
     assert _span(conn, "T", 732717)[0][5] == d(2010, 3, 16)  # prior holder ended there
-    # An unread delisting or deregistration after a filing with two symbols ends
-    # nothing (Codex thread 4222924619); after a single-symbol filing it does.
+    # An unread delisting or deregistration after a filing with two symbols closes
+    # the run tentatively (it could be the notes'); the next statement reopens it.
     adsh = _observe(conn, 20, "TWO", "2021-01-10")
     _observe(conn, 20, "TWO-27", "2021-01-10", class_key="LongtermDebtType=Notes2027;",
              kind="debt", adsh=adsh)
@@ -1647,7 +1680,8 @@ def test_price_span_ends_at_a_deregistration_and_reopens_on_a_later_statement(
     _event(conn, 20, "15-15D", "2021-03-01")
     _observe(conn, 20, "TWO", "2021-04-01")
     assert _span(conn, "TWO", 20) == [
-        ("", d(2021, 1, 11), None, None, d(2021, 4, 2), None, None),
+        ("", d(2021, 1, 11), d(2021, 2, 2), "25-NSE", d(2021, 1, 11), None, None),
+        ("", d(2021, 4, 2), None, None, d(2021, 4, 2), None, None),
     ]
     _observe(conn, 21, "ONE", "2021-01-10")
     _event(conn, 21, "15-15D", "2021-03-01")
@@ -2136,10 +2170,13 @@ def test_a_definitive_pair_needs_a_delisting_of_every_listed_class(schema_dsn) -
     _observe(conn, 98, "TWB", "2019-01-10", class_key=CLASS_B, adsh=q)
     _event(conn, 98, "25-NSE", "2019-02-01", kind="equity", count=1, venue_kind="primary")
     _event(conn, 98, "15-12G", "2019-02-11", kind="equity", count=2)
-    assert _ends(conn, 98, "2019-03-01") == [("15-12G", d(2019, 2, 12), False)]
+    # the 25-NSE of one class, unnamed, closes both lines tentatively and pairs
+    # with nothing: the Form 15 is not definitive
+    assert _ends(conn, 98, "2019-03-01") == [("25-NSE", d(2019, 2, 2), False),
+                                             ("15-12G", d(2019, 2, 12), False)]
     _event(conn, 98, "25-NSE", "2019-02-05", kind="equity", count=1, venue_kind="primary")
     _event(conn, 98, "25-NSE", "2019-02-05", kind="equity", count=2, venue_kind="primary")
-    assert [e[2] for e in _ends(conn, 98, "2019-03-01")] == [True, True]
+    assert [e[2] for e in _ends(conn, 98, "2019-03-01")] == [False, False, True, True]
 
 
 def test_a_new_symbol_of_the_same_cik_after_a_definitive_end_is_a_new_line(
@@ -2226,57 +2263,83 @@ def test_a_foreign_issuers_form_15f_ends_its_hold_like_a_form_15(schema_dsn) -> 
     assert _issuer(conn, "PTRX", "2023-06-30")[:2] == ("ended", None)
 
 
-def test_a_form_15_for_one_class_of_a_multi_class_issuer_ends_no_line(schema_dsn) -> None:
-    """Codex thread 4222924619: a 15-12G or 15-15D naming fewer classes than the
-    issuer listed needs the same whole-class coverage as other partial ends."""
+def test_a_form_15_for_one_class_of_a_multi_class_issuer_closes_tentatively(
+    schema_dsn,
+) -> None:
+    """Codex thread 4222924619, under the admission rule: a 15-12G or 15-15D
+    naming fewer classes than the issuer listed, without saying which, closes
+    every line tentatively (until its next statement); naming both, it ends
+    both."""
     conn, _ = schema_dsn
     a = _observe(conn, 98, "MCA", "2024-02-10", class_key=CLASS_A)
     _observe(conn, 98, "MCB", "2024-02-10", class_key=CLASS_B, adsh=a)
     _event(conn, 98, "15-12G", "2024-03-01", kind="equity", count=1)
     _event(conn, 98, "15F-15D", "2024-03-05", kind="equity", count=1)
-    assert _ends(conn, 98, "2024-04-01") == []
-    assert _issuer(conn, "MCA", "2024-04-01")[:2] == ("resolved", 98)
+    assert _ends(conn, 98, "2024-04-01") == [("15-12G", d(2024, 3, 2), False),
+                                             ("15F-15D", d(2024, 3, 6), False)]
+    assert _issuer(conn, "MCA", "2024-04-01")[:2] == ("ended", None)
+    a = _observe(conn, 98, "MCA", "2024-04-10", class_key=CLASS_A)
+    _observe(conn, 98, "MCB", "2024-04-10", class_key=CLASS_B, adsh=a)
     # Naming both classes, it ends both lines.
     _event(conn, 98, "15-15D", "2024-05-01", kind="equity", count=2)
-    assert _ends(conn, 98, "2024-06-01") == [("15-15D", d(2024, 5, 2), False)]
+    assert _ends(conn, 98, "2024-06-01")[-1] == ("15-15D", d(2024, 5, 2), False)
     assert _issuer(conn, "MCA", "2024-06-01")[:2] == ("ended", None)
     assert _issuer(conn, "MCB", "2024-06-01")[:2] == ("ended", None)
 
 
 @pytest.mark.parametrize("form", loader.END_FORMS)
 @pytest.mark.parametrize("kind", ["equity", "unknown", None])
-def test_no_partial_end_form_ends_a_line_of_a_two_symbol_issuer(
+def test_a_partial_end_form_closes_a_two_symbol_issuers_lines_until_a_later_statement(
     schema_dsn, form: str, kind: str | None,
 ) -> None:
-    """Codex thread 4222924619, re-checked for every end form: one that names
-    one class (or none, or was not read) of an issuer listing two symbols ends
-    neither line, as filed or as restated."""
+    """Codex thread 4222924619, under the admission rule (Light #223 round 4): an
+    end of one class (or none named, or not read) of an issuer listing two symbols
+    does not say which line it ends, so it closes both tentatively, as filed and
+    as restated: never definitively, and each reopens on its next statement."""
     conn, _ = schema_dsn
     a = _observe(conn, 98, "MCA", "2024-02-10", class_key=CLASS_A)
     _observe(conn, 98, "MCB", "2024-02-10", class_key=CLASS_B, adsh=a)
     _event(conn, 98, form, "2024-03-01", kind=kind, count=1, venue_kind="primary")
     _event(conn, 98, f"{form}/A", "2024-03-20", kind="equity", count=1, venue_kind="primary",
            effect="restates")
-    assert _ends(conn, 98, "2024-04-01") == []
+    assert _ends(conn, 98, "2024-04-01") == [(form, d(2024, 3, 2), False)]
+    assert conn.execute(
+        "SELECT tentative_keys FROM sec_issuer_end_events(98, '2024-04-01')").fetchall() == [
+        (sorted([CLASS_A, CLASS_B]),)]
     assert [_issuer(conn, t, "2024-04-01")[:2] for t in ("MCA", "MCB")] == [
+        ("ended", None), ("ended", None)]
+    a = _observe(conn, 98, "MCA", "2024-04-10", class_key=CLASS_A)
+    _observe(conn, 98, "MCB", "2024-04-10", class_key=CLASS_B, adsh=a)
+    assert [_issuer(conn, t, "2024-04-12")[:2] for t in ("MCA", "MCB")] == [
         ("resolved", 98), ("resolved", 98)]
 
 
 def test_a_form_15_for_an_unlisted_class_leaves_the_listed_class(schema_dsn) -> None:
     """W1 re-gate (P2): the cover lists class A (AAA) and counts an unlisted class
-    B; a 15-12G or 15-15D naming one equity class may terminate B's registration
-    and must not close A. A delisting (25, 25-NSE) or a 15-12B concerns a listed
-    class, so one naming one class ends the one listed line."""
+    B. A 15-12G or 15-15D naming class B, A's label known, leaves A. One naming one
+    class without saying which may terminate B's registration or A's: it closes A
+    tentatively (the admission rule), and A's next statement reopens it. A
+    delisting (25, 25-NSE) or a 15-12B concerns a listed class, so one naming one
+    class ends the one listed line."""
     conn, _ = schema_dsn
+    q = _observe(conn, 71, "AAB", "2024-02-14", class_key=CLASS_A, title="Class A common stock")
+    _count(conn, 71, CLASS_A, "2024-02-13", 600, "2024-02-14", adsh=q)
+    _count(conn, 71, CLASS_B, "2024-02-13", 400, "2024-02-14", adsh=q)
+    _event(conn, 71, "15-12G", "2024-03-01", kind="equity", count=1,
+           description="Class B common stock")
+    assert _ends(conn, 71, "2024-04-01") == []
+    assert _issuer(conn, "AAB", "2024-04-01")[:2] == ("resolved", 71)
     q = _observe(conn, 72, "AAA", "2024-02-14", class_key=CLASS_A)
     _count(conn, 72, CLASS_A, "2024-02-13", 600, "2024-02-14", adsh=q)
     _count(conn, 72, CLASS_B, "2024-02-13", 400, "2024-02-14", adsh=q)
     _event(conn, 72, "15-12G", "2024-03-01", kind="equity", count=1)
     _event(conn, 72, "15F-15D", "2024-03-04", kind="equity", count=1)
-    assert _ends(conn, 72, "2024-04-01") == []
-    assert _issuer(conn, "AAA", "2024-04-01")[:2] == ("resolved", 72)
+    assert [e[2] for e in _ends(conn, 72, "2024-04-01")] == [False, False]
+    assert _issuer(conn, "AAA", "2024-04-01")[:2] == ("ended", None)
+    _observe(conn, 72, "AAA", "2024-04-05", class_key=CLASS_A)
+    assert _issuer(conn, "AAA", "2024-04-07")[:2] == ("resolved", 72)
     _event(conn, 72, "15-15D", "2024-04-10", kind="equity", count=2)
-    assert _ends(conn, 72, "2024-05-01") == [("15-15D", d(2024, 4, 11), False)]
+    assert _ends(conn, 72, "2024-05-01")[-1] == ("15-15D", d(2024, 4, 11), False)
     assert _issuer(conn, "AAA", "2024-05-01")[:2] == ("ended", None)
     q = _observe(conn, 73, "BBB", "2024-02-14", class_key=CLASS_A)
     _count(conn, 73, CLASS_A, "2024-02-13", 600, "2024-02-14", adsh=q)
@@ -2646,8 +2709,9 @@ def test_a_registration_of_another_class_does_not_transfer_the_ended_class(
     """Light #223 follow-up contract (probe case registration_of_another_common_class):
     an A/B issuer files a 25-NSE of class B and an 8-A12B of class A the same day.
     The registration names class A, so it is no transfer of class B's listing:
-    B's hold and line end, A's stay. A registration of class B, or one that names
-    no class (a Form 10, not read), still makes the end a transfer."""
+    B's hold and line end, A's stay. A registration of class B carries B on. One
+    that names no class (a Form 10, not read) carries on only an issuer's one
+    symbol: here it could be A's, so B ends (the admission rule)."""
     conn, _ = schema_dsn
     for cik, registered in ((100, "Class A common stock"), (101, "Class B common stock"),
                             (102, None)):
@@ -2676,10 +2740,17 @@ def test_a_registration_of_another_class_does_not_transfer_the_ended_class(
     assert (_alive(conn, "D100A", 100, "CommonClassA", on),
             _alive(conn, "D100B", 100, "CommonClassB", on)) == (True, False)
     assert _line(conn, 100, "CommonClassB", on.isoformat())[0] == "ended"
-    for cik in (101, 102):
-        assert _ends(conn, cik, on.isoformat()) == []
-        assert _issuer(conn, f"D{cik}B", on.isoformat())[:2] == ("resolved", cik)
-        assert _alive(conn, f"D{cik}B", cik, "CommonClassB", on)
+    assert _ends(conn, 101, on.isoformat()) == []
+    assert _issuer(conn, "D101B", on.isoformat())[:2] == ("resolved", 101)
+    assert _alive(conn, "D101B", 101, "CommonClassB", on)
+    assert _issuer(conn, "D102B", on.isoformat())[:2] == ("ended", None)
+    assert _issuer(conn, "D102A", on.isoformat())[:2] == ("resolved", 102)
+    # One symbol: the unread Form 10 carries it on.
+    _observe(conn, 103, "SOLO", "2024-02-01")
+    _event(conn, 103, "25-NSE", "2024-03-01", kind="equity", extinguished=False,
+           venue_kind="primary", description="Common stock")
+    _event(conn, 103, "10-12B", "2024-03-01")
+    assert _issuer(conn, "SOLO", on.isoformat())[:2] == ("resolved", 103)
 
 
 def test_a_preferred_only_holder_between_two_listed_holders_is_another_holder(
@@ -2774,15 +2845,21 @@ def test_an_incomplete_cover_does_not_rejoin_an_undimensioned_predecessor(
             if row[0] == "other_holder"] == [("other_holder", 1288776, "", d(2014, 3, 2))]
 
 
-# Generated self-check of the Light #223 follow-up contract: every combination of
-# cover completeness, class count and kind, per rule (ends, registrations,
-# holders, line linkage and the sole class), with point-in-time answers stated
-# from the contract, not from the SQL:
-# * complete covers (10-K/10-Q type: they state counts) define the class set; an
-#   incomplete cover (an 8-K listing some classes) never drops an end, never
-#   re-merges lines and never makes a class look like the sole class, so every
-#   incomplete-cover variant must answer as its complete-cover base;
-# * each effect is dated by its own knowledge date (an end, a registration).
+# Generated self-check of the Light #223 contract. The admission rule (v2 header):
+# a price row is sized only when exactly one line is positively alive at its date
+# and no competing holder or class is evidenced then; any ambiguity refuses. Each
+# combination below states its point-in-time answers from that rule, not from the
+# SQL:
+# * complete covers (10-K/10-Q type: they state counts) say which classes are
+#   absent; a later cover (an 8-K) adds the classes it shows and drops none;
+# * an end closes the classes it identifies (a label one symbol carries; no name
+#   and every class counted; the issuer's one symbol), leaves the classes it
+#   names otherwise, and closes every other class it may concern tentatively:
+#   until that class's next statement, never definitively;
+# * a registration carries on, across a delisting, exactly the classes it names
+#   (naming none: the issuer's one symbol), from its own knowledge date;
+# * a non-listed row is a competing holder unless a listed hold of the ticker was
+#   positively active then (no end, rename or staleness since).
 # Each test collects every mismatching cell before failing.
 
 SHAPES = {
@@ -2827,15 +2904,19 @@ def _subsets(items) -> list[tuple]:
     return found or [tuple(items)]
 
 
-def _expected_end(classes, desc: str, count: int) -> set[str]:
-    """The listed classes an end ends: exactly the class it names (none when the
-    issuer does not list it); all of them when it names none and counts them all
-    (none when it counts fewer: which one is not stated); none for a preferred."""
+def _expected_end(classes, desc: str, count: int) -> dict[str, str]:
+    """{class: 'identified' | 'tentative'}: the classes an end closes. A preferred
+    end closes no listed class; an end naming no class closes every class,
+    identified when it counts them all; a named end closes the class carrying the
+    label (an unlabelled sole class whatever it names) and leaves the others."""
+    keys = [key for key, _, _ in classes]
     if desc == "preferred":
-        return set()
+        return {}
     if desc == "unnamed":
-        return {key for key, _, _ in classes} if count >= len(classes) else set()
-    return {key for key, _, label in classes if label == desc}
+        return dict.fromkeys(keys, "identified" if count >= len(classes) else "tentative")
+    if all(label is None for _, _, label in classes):
+        return dict.fromkeys(keys, "identified")
+    return {key: "identified" for key, _, label in classes if label == desc}
 
 
 def _end_description(desc: str) -> str:
@@ -2857,22 +2938,30 @@ def test_generated_ends_by_cover_completeness_class_count_and_kind(
     conn, _ = schema_dsn
     classes = SHAPES[shape]
     keys = [key for key, _, _ in classes]
+    labels = [label for _, _, label in classes]
     descs = [("unnamed", n) for n in sorted({1, len(classes)})] + [("preferred", 1)]
-    if shape != "1u":  # an unlabelled sole class cannot be told from a named one
-        descs += [(label, 1) for _, _, label in classes] + [("z", 1)]
+    descs += [(label, 1) for label in labels if label] + [("z", 1)]
+    if shape == "1u":
+        descs.append(("a", 1))
     ciks = itertools.count(10_000)
     failures = []
     for (form, extinguished), (desc, count) in itertools.product(END_FORMS, descs):
-        ended = _expected_end(classes, desc, count)
+        closed = _expected_end(classes, desc, count)
+        # definitive: identified by a 25-NSE that says the class was extinguished
+        definitive = {key for key, role in closed.items() if role == "identified"
+                      and form == "25-NSE" and extinguished}
         variants = [("complete", None, ()), ("incomplete only", None, ())]
         variants += [("8-K before the end", "2024-02-15", sub) for sub in _subsets(keys)]
         variants += [("8-K after the end", "2024-03-08", sub) for sub in _subsets(keys)
-                     if not ended & set(sub)]  # re-listing an ended class: not stated
+                     if not set(closed) & set(sub)]
+        if len(classes) > 1:  # positive evidence: a class only a newer 8-K shows
+            variants.append(("newer 8-K shows the last class", "2024-02-15", (keys[-1],)))
         for variant, filed, listed in variants:
             cik = next(ciks)
             symbol = {key: f"E{cik}{(label or 'x').upper()}" for key, _, label in classes}
             rows = [(symbol[key], key, title, kind) for key, title, _ in classes]
-            _cover(conn, cik, "2024-02-01", rows, complete=variant != "incomplete only")
+            first = rows[:-1] if variant.startswith("newer") else rows
+            _cover(conn, cik, "2024-02-01", first, complete=variant != "incomplete only")
             if filed:
                 _cover(conn, cik, filed, [r for r in rows if r[1] in listed], complete=False)
             _event(conn, cik, form, "2024-03-01",
@@ -2883,96 +2972,244 @@ def test_generated_ends_by_cover_completeness_class_count_and_kind(
             cell = (shape, kind, form, extinguished, desc, count, variant, listed)
             for on in ("2024-03-01", "2024-03-03", "2024-03-15"):
                 for key in keys:
-                    gone = on != "2024-03-01" and key in ended  # public from 03-02
+                    gone = on != "2024-03-01" and key in closed  # public from 03-02
                     want = ("ended", None) if gone else ("resolved", cik)
                     got = _issuer(conn, symbol[key], on)[:2]
                     if got != want:
                         failures.append((cell, on, key, want, got))
             for key in keys:
-                if _alive(conn, symbol[key], cik, key, d(2024, 3, 3)) == (key in ended):
-                    failures.append((cell, "alive 2024-03-03", key, key not in ended))
+                if _alive(conn, symbol[key], cik, key, d(2024, 3, 3)) == (key in closed):
+                    failures.append((cell, "alive 2024-03-03", key, key not in closed))
+            # A later statement of every class reopens all but definitive ends.
+            _cover(conn, cik, "2024-03-20", rows, complete=False)
+            for key in keys:
+                want = ("ended", None) if key in definitive else ("resolved", cik)
+                got = _issuer(conn, symbol[key], "2024-03-25")[:2]
+                if got != want:
+                    failures.append((cell, "after a later statement", key, want, got))
     assert failures == []
 
 
+@pytest.mark.parametrize("scheme", ["letters", "romans", "digits"])
+def test_generated_class_label_forms_identify_the_named_class(schema_dsn, scheme) -> None:
+    """Light #223 round 4: one grammar reads a class's identifier from a title, a
+    member and an end description in every form filers use (spaced, glued to
+    Class, upper case, behind a run-together prefix, in a member, after the
+    &#160; artifact, after "Common", a lowercase letter), so an end naming the
+    second class closes it and leaves the first ("ClassII" is ii, never i)."""
+    conn, _ = schema_dsn
+    first, second = {"letters": ("A", "B"), "romans": ("I", "II"), "digits": ("1", "2")}[scheme]
+    forms = {
+        "title": lambda x, i: (f"Class {x} common stock", f"ClassOfStock=Common{i}Member;"),
+        "glued title": lambda x, i: (f"Class{x} Common Stock", f"ClassOfStock=Common{i}Member;"),
+        "upper title": lambda x, i: (f"CLASS {x} COMMON STOCK", f"ClassOfStock=Common{i}Member;"),
+        "prefixed title": lambda x, i: (f"Title of each classClass {x} Common Stock",
+                                        f"ClassOfStock=Common{i}Member;"),
+        "member": lambda x, i: (None, f"ClassOfStock=Class{x}CommonStock;"),
+        "member after 160": lambda x, i: (None, f"ClassOfStock=Class160{x}CommonStock;"),
+        "member after Common": lambda x, i: (None, f"ClassOfStock=CommonClass{x};"),
+    }
+    if scheme == "letters":
+        forms["lowercase member"] = lambda x, i: (None, f"ClassOfStock=Class{x.lower()}CommonStock;")
+    descriptions = ("Class {} common stock", "CLASS {} COMMON STOCK",
+                    "Class {} Common Stock, par value $0.01 per share")
+    ciks = itertools.count(50_000)
+    failures = []
+    for (name, form), text in itertools.product(forms.items(), descriptions):
+        cik = next(ciks)
+        rows = []
+        for i, x in enumerate((first, second)):
+            title, key = form(x, i)
+            rows.append((f"F{cik}{i}", key, title, "equity"))
+        _cover(conn, cik, "2024-02-01", rows, complete=True)
+        _event(conn, cik, "25-NSE", "2024-03-01", kind="equity", venue_kind="primary",
+               description=text.format(second))
+        got = ([_issuer(conn, r[0], "2024-03-03")[0] for r in rows],
+               conn.execute("SELECT class_keys FROM sec_issuer_end_events(%s, '2024-03-03')",
+                            (cik,)).fetchall())
+        want = (["resolved", "ended"], [([rows[1][1]],)])
+        if got != want:
+            failures.append((scheme, name, text, want, got))
+    assert failures == []
+
+
+def test_production_class_label_forms_read_as_identifiers(schema_dsn) -> None:
+    """Every distinct Class/Series title, member and equity end description in
+    production (read-only, 2026-10-09; tests/fixtures/.../production_class_labels.json)
+    yields only identifiers (never a word such as "of", "is" or a dimension
+    name), the same identifier spaced, glued to "Class" or upper-cased, and the
+    curated readings below."""
+    conn, _ = schema_dsn
+    corpus = json.loads((FSN_FIXTURES / "production_class_labels.json").read_text(encoding="utf-8"))
+    valid = re.compile(r"^(?:[a-z]{1,2}|[a-z][0-9]{1,2}|[0-9]{1,4}[a-z0-9]{0,2})$")
+    words = {"of", "is", "to", "in", "on", "as", "an", "or", "by", "no", "be", "it", "at"}
+    bad = []
+    for text in corpus["titles"] + corpus["members"]:
+        label = conn.execute("SELECT sec_class_label(%s, NULL)", (text,)).fetchone()[0]
+        if label is not None and (not valid.match(label) or label in words):
+            bad.append((text, label))
+    for text in corpus["descriptions"]:
+        for label in conn.execute("SELECT sec_named_classes(%s)", (text,)).fetchone()[0]:
+            if not valid.match(label) or label in words:
+                bad.append((text, label))
+    spaced = re.compile(r"\bClass ([A-Z]|[0-9]{1,2}|[IVX]{1,4})\b")
+    for text in corpus["titles"]:
+        found = spaced.search(text)
+        if not found:
+            continue
+        glued = text.replace(found.group(0), f"Class{found.group(1)}", 1)
+        labels = {conn.execute("SELECT sec_class_label(%s, NULL)", (t,)).fetchone()[0]
+                  for t in (text, glued, text.upper())}
+        if len(labels) != 1 or None in labels:
+            bad.append((text, sorted(map(str, labels))))
+    curated = {
+        ("Class A Common Stock", None): "a",
+        ("ClassA Common Stock, par value $0.0001 per share", "ClassOfStock=CommonClassB;"): "a",
+        ("Title of each classClass A Common Stock", None): "a",
+        ("CLASS A COMMON STOCK", None): "a",
+        ("Class A-1 Common Stock", None): "a1",
+        ("Class2 Common Stock, $0.0001 par value per share", None): "2",
+        ("Class ACommon Stock, par value $0.0001 per share", None): "a",
+        ("Class Acommon stock, $0.0001 par value", None): "a",
+        ("American Depositary Shares, each representing twelveSeries B", None): "b",
+        ("Series 60 units", None): "60",
+        (None, "ClassOfStock=ClassIICommonStock;"): "ii",
+        (None, "ClassOfStock=Class160A160OrdinaryShares;"): "a",
+        (None, "ClassOfStock=ClassaCommonStock;"): "a",
+        (None, "ClassOfStock=SeriescGciGroupCommonStock;"): "c",
+        (None, "ClassOfStock=ClassBSeries1CommonStock;"): "b",
+        (None, "ClassOfStock=Series2019ACorporateUnits;"): "2019a",
+        (None, "ClassOfStock=ClassB2CommonStock;"): "b2",
+        (None, "ClassOfStock=CommonStock;"): None,
+        (None, "ClassOfStock=ClassOrdinaryShares;"): None,
+        (None, "ClassesOfShareCapital=OrdinaryShares;"): None,
+        ("Classified Board", None): None,
+        ("CLASS OF STOCK", None): None,
+    }
+    for (title, key), want in curated.items():
+        got = conn.execute("SELECT sec_class_label(%s, %s)", (title, key)).fetchone()[0]
+        if got != want:
+            bad.append(((title, key), want, got))
+    named = {
+        "Class A and Class B common stock": ["a", "b"],
+        "Classes A, B and C common stock": ["a", "b", "c"],
+        "Class 2 and Class 3 shares": ["2", "3"],
+        "Class II common stock": ["ii"],
+        "Series A and Series C Common Stock": ["a", "c"],
+        "Series A Liberty Live Common Stock & Series C Liberty Live Common Stock": ["a", "c"],
+        "Class A Common Stock, Class B Common Stock, Series C Common Stock": ["a", "b", "c"],
+        "Series A Preferred Stock": [],
+        "Name of exchange on which each class is to be registered Class A common stock": ["a"],
+        "Common Stock, par value $0.0001 per share (Title of class of securities)": [],
+    }
+    for text, want in named.items():
+        got = conn.execute("SELECT sec_named_classes(%s)", (text,)).fetchone()[0]
+        if got != want:
+            bad.append((text, want, got))
+    assert bad == []
+
+
 REGISTRATIONS = {
-    # name: (form, class_kind, description), the classes it names
-    "target": ("8-A12B", "equity", "Class {t} common stock"),
-    "other": ("8-A12B", "equity", "Class {o} common stock"),
-    "all": ("8-A12B", "equity", "Classes A and B common stock"),
-    "unnamed": ("8-A12B", "equity", "Common stock"),
-    "unread": ("10-12B", None, None),
-    "kind other": ("8-A12B", "other", "Series A Preferred Stock"),
+    # name: (form, class_kind)
+    "names the last class": ("8-A12B", "equity"),
+    "names the first class": ("8-A12B", "equity"),
+    "names every class": ("8-A12B", "equity"),
+    "names no class": ("8-A12B", "equity"),
+    "unread": ("10-12B", None),
+    "another kind": ("8-A12B", "other"),
 }
 WINDOW_OFFSETS = (-40, -31, -30, -10, 0, 5, 10, 11, 20)
 
 
-@pytest.mark.parametrize("shape", ["1d", "2"])
-def test_generated_registrations_correlate_by_class_and_knowledge_date(
-    schema_dsn, shape,
-) -> None:
-    """An end with a registration from 30 days before to 10 days after it is a
-    transfer when the registration names a class the end names (either naming
-    none: any class; a registration of another kind: none), unless the 25-NSE
-    extinguished the class; Forms 15-12G and 15-15D end it even then. The transfer
-    counts from the registration's own knowledge date."""
+def _classes_text(labels) -> str:
+    upper = [label.upper() for label in labels]
+    if len(upper) == 1:
+        return f"Class {upper[0]} common stock"
+    return f"Classes {', '.join(upper[:-1])} and {upper[-1]} common stock"
+
+
+@pytest.mark.parametrize("shape", ["1d", "2", "3"])
+def test_generated_registrations_carry_on_the_classes_they_name(schema_dsn, shape) -> None:
+    """An end with a registration from 30 days before to 10 days after it: the
+    registration carries on exactly the classes it names (naming none: the
+    issuer's one symbol; another kind: none), from its own knowledge date; the
+    end closes the rest of its scope (the last class, every class named, or every
+    class unnamed). An extinguished class is not carried on, and a Form 15-12G or
+    15-15D ends the registration whatever is registered."""
     conn, _ = schema_dsn
     classes = SHAPES[shape]
-    keys = [key for key, _, _ in classes]
-    target = classes[-1][2]
-    other = "a" if shape == "2" else "b"  # 1d: a class the issuer does not list
-    reg_names = {"target": {target}, "other": {other}, "all": {"a", "b"}}
-    cases = [("none", 0)] + [(r, o) for r in ("target", "unread") for o in WINDOW_OFFSETS]
-    cases += [(r, o) for r in ("other", "all", "unnamed", "kind other") for o in (0, 5)]
+    labels = [label for _, _, label in classes]
+    scopes = {"names the last class": ([labels[-1]], 1),
+              "names every class": (labels, len(labels)),
+              "names no class": (None, len(labels))}
+    if shape == "1d":
+        del scopes["names every class"]
+    names = {"names the last class": {labels[-1]},
+             "names the first class": {labels[0]} if len(labels) > 1 else {"z"},
+             "names every class": set(labels)}
+    cases = [("none", 0)] + [(r, o) for r in ("names the last class", "unread")
+                             for o in WINDOW_OFFSETS]
+    cases += [(r, o) for r in ("names the first class", "names every class", "names no class",
+                               "another kind") for o in (0, 5)]
     ciks = itertools.count(20_000)
     failures = []
-    for (form, extinguished), named, (reg, offset) in itertools.product(
-            END_FORMS, (True, False), cases):
+    for (form, extinguished), (scope, (scope_labels, count)), (reg, offset) in itertools.product(
+            END_FORMS, scopes.items(), cases):
         cik = next(ciks)
         symbol = {key: f"R{cik}{label.upper()}" for key, _, label in classes}
         _cover(conn, cik, "2024-02-01",
                [(symbol[key], key, title, "equity") for key, title, _ in classes],
                complete=True)
-        _event(conn, cik, form, "2024-03-01", kind="equity",
-               count=1 if named else len(classes), extinguished=extinguished,
+        _event(conn, cik, form, "2024-03-01", kind="equity", count=count,
+               extinguished=extinguished,
                venue_kind="primary" if form.startswith("25") else None,
-               description=f"Class {target.upper()} common stock" if named else "Common stock")
+               description=_classes_text(scope_labels) if scope_labels else "Common stock")
         reg_filed = _day("2024-03-01", offset)
+        reg_names = names.get(reg, set())
         if reg != "none":
-            reg_form, reg_kind, text = REGISTRATIONS[reg]
+            reg_form, reg_kind = REGISTRATIONS[reg]
+            text = ({"names no class": "Common stock", "another kind": "Series A Preferred Stock",
+                     "unread": None}[reg] if not reg_names else _classes_text(sorted(reg_names)))
             _event(conn, cik, reg_form, reg_filed, kind=reg_kind,
-                   venue_kind="primary" if reg_kind else None,
-                   description=text and text.format(t=target.upper(), o=other.upper()))
-        scope = {classes[-1][0]} if named else set(keys)
+                   venue_kind="primary" if reg_kind else None, description=text)
+        in_scope = {key for key, _, label in classes
+                    if scope_labels is None or label in scope_labels}
         for on in ("2024-03-01", "2024-03-03", "2024-03-08", "2024-03-26"):
-            known = (reg not in ("none", "kind other") and -30 <= offset <= 10
+            known = (reg not in ("none", "another kind") and -30 <= offset <= 10
                      and on >= _day(reg_filed, 1))
-            names = reg_names.get(reg, set())
-            transfer = (known and not extinguished
-                        and (not names or not named or target in names))
-            applies = on >= "2024-03-02" and (form in ("15-12G", "15-15D") or not transfer)
-            ended = scope if applies else set()
-            for key in keys:
-                want = ("ended", None) if key in ended else ("resolved", cik)
+            for key, _, label in classes:
+                carried = (known and not extinguished and form not in ("15-12G", "15-15D")
+                           and (label in reg_names or (not reg_names and len(classes) == 1)))
+                ended = on >= "2024-03-02" and key in in_scope and not carried
+                want = ("ended", None) if ended else ("resolved", cik)
                 got = _issuer(conn, symbol[key], on)[:2]
                 if got != want:
-                    failures.append(((shape, form, extinguished, named, reg, offset), on, key,
+                    failures.append(((shape, form, extinguished, scope, reg, offset), on, key,
                                      want, got))
     assert failures == []
 
 
-def test_generated_holders_by_kind_gap_and_prior_end(schema_dsn) -> None:
-    """A ticker held by a listed issuer P, then shown by M on a row of each kind,
-    then taken by Q (whose line is alive as another symbol meanwhile). M's row
-    counts unless it is non-listed and P showed the ticker on a listed row within
-    the 400 days before it and had not ended by then. Holders active on a date
-    are its holders (two: ambiguous), and Q's line sees them as other holders."""
+def test_generated_holders_by_lifecycle_kind_gap_and_cik(schema_dsn) -> None:
+    """A ticker held by a listed issuer P (class A), then shown by M on a row of
+    each kind (another CIK, or P itself on a preferred or notes row), then taken by
+    Q (whose line is alive as another symbol meanwhile). P's hold ends by an end
+    of class A, or by a complete cover showing class A under another symbol (a
+    rename), before or after M's row, or goes stale after 400 days. M's row counts
+    unless it is non-listed and P's listed hold was active then; a complete cover
+    of M's CIK after it that does not show the ticker ends it. The holders
+    active on a date are its holders (two: ambiguous), and Q's line sees them as
+    other holders."""
     conn, _ = schema_dsn
     ciks = itertools.count(30_000, 3)
     failures = []
-    for prior_end, gap, kind in itertools.product(("none", "before M", "after M"),
-                                                  (100, 300, 500), KIND_ROWS):
+    lifecycles = ("active", "end before M", "end after M", "rename before M",
+                  "rename after M")
+    for lifecycle, gap, kind, same_cik in itertools.product(
+            lifecycles, (100, 300, 500), KIND_ROWS, (False, True)):
+        if same_cik and kind in LISTED_KINDS:
+            continue  # P's own listed row of another class: a class question, above
         p = next(ciks)
-        m, q = p + 1, p + 2
+        m, q = (p if same_cik else p + 1), p + 2
         ticker = f"H{p}"
         p_known = dt.date(2022, 1, 2)
         m_known = p_known + dt.timedelta(days=gap)
@@ -2981,33 +3218,45 @@ def test_generated_holders_by_kind_gap_and_prior_end(schema_dsn) -> None:
         class_key, title = KIND_ROWS[kind]
         _observe(conn, m, ticker, _day(m_known.isoformat(), -1), kind=kind,
                  class_key=class_key, title=title)
-        if prior_end != "none":
-            end_filed = (p_known + dt.timedelta(days=30) if prior_end == "before M"
-                         else m_known + dt.timedelta(days=5))
-            _event(conn, p, "25-NSE", end_filed.isoformat(), kind="equity", extinguished=True,
-                   venue_kind="primary", description="Class A common stock")
+        change_on = None
+        if lifecycle != "active":
+            filed = (p_known + dt.timedelta(days=30) if lifecycle.endswith("before M")
+                     else m_known + dt.timedelta(days=5))
+            change_on = filed + dt.timedelta(days=1)
+            if lifecycle.startswith("end"):
+                _event(conn, p, "25-NSE", filed.isoformat(), kind="equity", extinguished=True,
+                       venue_kind="primary", description="Class A common stock")
+            else:
+                _cover(conn, p, filed.isoformat(), [(f"N{p}", "CommonClassA",
+                                                     "Class A common stock", "equity")],
+                       complete=True)
         _cover(conn, q, _day(m_known.isoformat(), -60),
                [(f"Q{q}", "Common", "Common stock", "equity")], complete=True)
         _cover(conn, q, _day(m_known.isoformat(), 120),
                [(ticker, "Common", "Common stock", "equity")], complete=True)
+
+        def p_active(on: dt.date) -> bool:
+            return (change_on is None or change_on > on) and (on - p_known).days <= 400
+
         on = m_known + dt.timedelta(days=30)
-        p_active = prior_end == "none" and (on - p_known).days <= 400
-        m_counts = kind in LISTED_KINDS or prior_end == "before M" or gap >= 400
-        active = {p} if p_active else set()
-        active |= {m} if m_counts else set()
+        m_counts = kind in LISTED_KINDS or not p_active(m_known)
+        # P's own complete cover after M's row, listing class A only, says P's
+        # preferred or notes no longer shows the ticker
+        if same_cik and lifecycle == "rename after M":
+            m_counts = False
+        active = ({p} if p_active(on) else set()) | ({m} if m_counts else set())
         want = (("ambiguous", None) if len(active) == 2 else
                 ("resolved", min(active)) if active else ("ended", None))
-        cell = (prior_end, gap, kind)
+        cell = (lifecycle, gap, kind, same_cik)
         got = _issuer(conn, ticker, on.isoformat())
         if got[:2] != want or (len(active) == 2 and sorted(got[4]) != sorted(active)):
             failures.append((cell, on, want, got))
         if _holders_on(conn, ticker, q, "Common", on) != active:
             failures.append((cell, "Q's other holders", active,
                              _holders_on(conn, ticker, q, "Common", on)))
-        # Before M's row: P's alone (ended once its end is public).
         before = m_known - dt.timedelta(days=1)
         if gap < 400:
-            want = ("ended", None) if prior_end == "before M" else ("resolved", p)
+            want = ("resolved", p) if p_active(before) else ("ended", None)
             if _issuer(conn, ticker, before.isoformat())[:2] != want:
                 failures.append((cell, before, want, _issuer(conn, ticker, before.isoformat())))
     assert failures == []
@@ -3017,14 +3266,18 @@ def test_generated_line_linkage_and_sole_class_by_cover_completeness(schema_dsn)
     """An undimensioned sole class ("Common stock"), then a complete cover showing
     its symbol on class C beside 0-2 other listed classes, an unlisted counted
     class or not, a listed preferred or not. The two are one line exactly when
-    class C is the only listed class of that complete cover (the preferred, a
-    non-listed kind, and the unlisted class do not count); 8-Ks listing some
-    classes, before or after the split, change nothing."""
+    nothing shows class C beside another listed class: complete covers alone say
+    a class is the only one, while any cover (an 8-K too) is evidence of two
+    classes side by side. The preferred, a non-listed kind, and the unlisted
+    class do not count; 8-Ks listing some classes change nothing else. A class
+    renamed on consecutive complete one-class covers stays one line even if an
+    8-K later shows it beside a new class."""
     conn, _ = schema_dsn
     ciks = itertools.count(40_000)
     failures = []
     variants = ("none", "8-K C after", "8-K undimensioned between", "8-K C between",
-                "8-K beside class after")
+                "8-K beside class after", "8-K C beside another listed class",
+                "split only on an 8-K beside another class")
     for beside, unlisted, preferred, variant in itertools.product(
             (0, 1, 2), (False, True), (False, True), variants):
         if variant == "8-K beside class after" and not beside:
@@ -3038,17 +3291,23 @@ def test_generated_line_linkage_and_sole_class_by_cover_completeness(schema_dsn)
         if preferred:
             rows.append((f"L{cik}P", "SeriesAPreferred", "Series A preferred stock",
                          "preferred"))
-        split = _cover(conn, cik, "2014-04-03", rows, complete=True)
+        only_8k = variant == "split only on an 8-K beside another class"
+        if only_8k:
+            rows.append((f"L{cik}E", "ClassE", "Class E common stock", "equity"))
+        split = _cover(conn, cik, "2014-04-03", rows, complete=not only_8k)
         if unlisted:
             _count(conn, cik, "ClassD", "2014-04-02", 100, "2014-04-03", adsh=split)
         extra = {"8-K C after": ("2014-05-01", rows[:1]),
                  "8-K undimensioned between": (
                      "2014-03-20", [(ticker, "", "Common stock", "equity")]),
                  "8-K C between": ("2014-03-20", rows[:1]),
-                 "8-K beside class after": ("2014-05-01", rows[1:2])}.get(variant)
+                 "8-K beside class after": ("2014-05-01", rows[1:2]),
+                 "8-K C beside another listed class": (
+                     "2014-05-01", rows[:1] + [(f"L{cik}E", "ClassE", "Class E common stock",
+                                                "equity")])}.get(variant)
         if extra:
             _cover(conn, cik, extra[0], extra[1], complete=False)
-        linked = beside == 0
+        linked = beside == 0 and not only_8k
         cell = (beside, unlisted, preferred, variant)
         lines = dict(conn.execute("SELECT class_key, line_key FROM sec_issuer_lines(%s)",
                                   (cik,)).fetchall())

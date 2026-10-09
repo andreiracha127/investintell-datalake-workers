@@ -126,11 +126,16 @@ READ_REGISTRATION_FORMS = frozenset({"8-A12B", "8-A12G"})
 READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
 # Names the parser of the end and registration filings; a new version re-derives
 # every such event as a correction (derive_event_classes). v4: equity classes named
-# without a Class/Series label count (equity_class_names); Forms 8-A are read.
-EVENT_PARSER_VERSION = "sec_event_class_v4"
+# without a Class/Series label count (equity_class_names); Forms 8-A are read. v5:
+# a shareholder rights plan is no employee plan (CAE's 8-A12B of its common shares
+# "including associated ... purchase rights pursuant to the ... Rights Plan").
+EVENT_PARSER_VERSION = "sec_event_class_v5"
 # Names the package parser (symbols, classes, share counts). Recorded on each
-# package and on each fact version it inserts; not part of a fact's hash.
-FSN_PARSER_VERSION = "sec_fsn_v2"
+# package and on each fact version it inserts; not part of a fact's hash. v3: a
+# line's member refines a title that does not say what the line is (truncated or
+# run together: "Series B", "Depositary Shares, Each Representing a 1/400th
+# Interest in", "7.875% Senior Notesdue 2025").
+FSN_PARSER_VERSION = "sec_fsn_v3"
 # Why a fact version was retired (sec_*.retired_reason). SOURCE: the public record
 # changed (a republished package, an index that dropped or reassigned a row, a
 # monthly package superseded by its quarter): the old version stays visible before
@@ -278,6 +283,14 @@ _SEGMENT_KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 # An ordinary or common share member: on a foreign private issuer's form, the
 # segments that identify an untitled line as the ordinary class.
 _EQUITY_SEGMENT_RE = re.compile(r"Ordinary|Common(?:Stock|Shares?|Class)", re.IGNORECASE)
+# A title that says what an equity line is. A title read as equity or depositary
+# without saying so (truncated or run together: "Series B", "6.375% Series A
+# Cumulative Redeemable", "Depositary Shares, Each Representing a 1/400th Interest
+# in", "7.875% Senior Notesdue 2025") yields to a member naming debt or preferred
+# stock (IBKC's and US Bancorp's depositary preferreds, General Finance's notes).
+_EQUITY_TITLE_RE = re.compile(
+    r"common|ordinary|american\s*deposit[ao]ry|\bADSs?\b|\bADRs?\b|capital\s+stock"
+    r"|beneficial\s+interest|partnership", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -568,10 +581,12 @@ def security_kind(title: str | None, ticker: str, segments: str, *,
     alike without a title."""
     if title:
         text = _ATTACHED_RIGHTS_RE.sub("", title)
-        for kind, pattern in _KIND_RULES:
-            if pattern.search(text):
-                return kind
-        return "equity"
+        kind = next((kind for kind, pattern in _KIND_RULES if pattern.search(text)), "equity")
+        if kind in EQUITY_KINDS and not _EQUITY_TITLE_RE.search(text):
+            for refined, pattern in _SEGMENT_KIND_RULES[:2]:  # debt, preferred
+                if pattern.search(segments):
+                    return refined
+        return kind
     for kind, pattern in _SEGMENT_KIND_RULES:
         if pattern.search(segments):
             return kind
@@ -1197,6 +1212,9 @@ _PLAN_RE = re.compile(
     r"|\bretirement\b|\bdeferred\s+compensation\b",
     re.I,
 )
+# A shareholder rights plan or agreement is no employee plan.
+_RIGHTS_PLAN_RE = re.compile(
+    r"\b(?:(?:share|stock)holders?['\u2019]?\s+)?rights\s+(?:plan|agreement)\b", re.I)
 # Phrases naming an instrument that only refers to an equity class.
 _DEPENDENT_RES = (
     # units composed of shares and warrants
@@ -1339,7 +1357,7 @@ def event_class_kind(description: str | None) -> str:
     when it names only other instruments, 'unknown' when there is none."""
     if not description:
         return "unknown"
-    if _PLAN_RE.search(description):
+    if _PLAN_RE.search(_RIGHTS_PLAN_RE.sub(" ", description)):
         return "other"
     text = description
     for pattern in _DEPENDENT_RES:
