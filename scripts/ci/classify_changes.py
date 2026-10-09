@@ -60,6 +60,7 @@ NPORT_PATTERNS = (
     "railway.sec-ticker-cik-history.toml",
     "schemas/sec_ticker_cik_history_v*.sql",
     "tests/test_sec_ticker_cik_history.py",
+    "tests/test_sec_ticker_cik_history_v3.py",
     "tests/fixtures/sec_ticker_cik_history/*/*.txt",
     "tests/fixtures/sec_ticker_cik_history/*/*.tsv",
     "tests/fixtures/sec_ticker_cik_history/*.json",
