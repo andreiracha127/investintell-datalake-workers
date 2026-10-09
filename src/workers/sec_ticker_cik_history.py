@@ -34,7 +34,7 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
    an event already read by the current parser version is carried, not fetched.
 4. Re-derive the class of end and 8-A events read by another parser version, or
    not read yet, as parser corrections (dated by the filing, the old reading
-   retired as never true).
+   retired as never true), at most ``EVENT_REDERIVE_LIMIT`` a run.
 
 A change of the package parser (``FSN_PARSER_VERSION``) is not applied by this
 worker, which reloads a package only when the SEC republishes it: the operator
@@ -61,6 +61,15 @@ from pathlib import Path
 
 from scripts import load_sec_ticker_cik_history as history
 from src.db import LOCK_SEC_TICKER_CIK_HISTORY, advisory_lock, connect
+
+
+# Events read by another parser version that one run reads again, the latest
+# filed first (about ten minutes of requests at most 10 per second, and of the
+# order of 150 MB of filings in the run's temporary directory). An event parser
+# change is re-derived by the operator from the workstation cache before the
+# worker runs (docs/runbooks/sec-ticker-cik-history.md); without that, the
+# backlog drains over later runs instead of one run fetching every filing.
+EVENT_REDERIVE_LIMIT = 2000
 
 
 def _quarters(calc_date: dt.date) -> list[tuple[int, int]]:
@@ -206,7 +215,8 @@ def run(
                     history.load_form_index(conn, target, documents=documents))
                 if cache is None:
                     target.unlink()
-            stats["event_classes"] = history.derive_event_classes(conn, documents)
+            stats["event_classes"] = history.derive_event_classes(
+                conn, documents, limit=EVENT_REDERIVE_LIMIT)
             stats["filings_fetched"] = documents.fetched
             stats["filings_failed"] = documents.failed
             stats["filings_rejected"] = documents.rejected

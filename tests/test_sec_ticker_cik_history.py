@@ -5676,6 +5676,43 @@ def test_verify_cache_checks_the_package_file_named_on_the_command_line(
                         ).fetchall() == [("BB",)]
 
 
+def test_worker_re_derives_a_bounded_number_of_events_per_run(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After an event parser change the operator re-derives from the workstation
+    cache; a worker that runs first reads at most EVENT_REDERIVE_LIMIT filings a
+    run, the latest filed first, instead of fetching every filing again."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    monkeypatch.setattr(worker, "EVENT_REDERIVE_LIMIT", 2)
+    conn, dsn = schema_dsn
+    _observe(conn, 5133, "AM", "2013-07-10")
+    filings = {}
+    for adsh, form, filed in (("0000876661-13-000657", "25-NSE", "2013-08-12"),
+                              ("0001193125-13-343607", "15-12B", "2013-08-22"),
+                              ("0001078782-11-001558", "15-12G", "2011-03-01")):
+        _event(conn, 5133, form, filed, kind="unknown", adsh=adsh)  # read by "test"
+        filings[adsh] = (FILINGS / f"{adsh}.txt").read_bytes()
+    build = tmp_path / "build"
+    build.mkdir()
+    packages = {"2024_10_notes.zip": _stored_month(build, "2024_10_notes.zip", "TT")}
+    client, calls = _fake_sec(tmp_path, packages, {}, filings)
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert ({k: stats["event_classes"][k] for k in ("derived", "deferred")},
+            stats["filings_fetched"]) == ({"derived": 2, "deferred": 1}, 2)
+    fetched = [url.rsplit("/", 1)[1] for method, url in calls if url.startswith(FILING_BASE)]
+    assert fetched == ["0001193125-13-343607.txt", "0000876661-13-000657.txt"]
+    stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+    assert {k: stats["event_classes"][k] for k in ("derived", "deferred")} == {
+        "derived": 1, "deferred": 0}
+    assert conn.execute(
+        "SELECT count(*) FROM sec_registration_events WHERE retired_on IS NULL "
+        "AND parser_version = %s", (loader.EVENT_PARSER_VERSION,)).fetchone() == (3,)
+
+
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:
     import psycopg
 

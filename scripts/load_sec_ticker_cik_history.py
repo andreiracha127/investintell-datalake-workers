@@ -2534,28 +2534,32 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
 
 def derive_event_classes(conn, documents: EventDocuments, *,
                          reconciled_on: dt.date | None = None,
-                         ciks: set[int] | None = None) -> dict[str, int]:
+                         ciks: set[int] | None = None,
+                         limit: int | None = None) -> dict[str, int]:
     """Re-derive the class of current end and 8-A events of CIKs with cover data
     whose filing was not read, or was read by another parser version.
 
     A changed event is a parser correction (the filing did not change, our
     reading did): its version is retired as such (visible at no date) and the
     re-derived one is knowable from the filing date + 1; the indexes that carried
-    the old version carry the new one.
+    the old version carry the new one. With ``limit`` (the recurring worker) at
+    most that many events are read, the latest filed first, and the rest are
+    counted as ``deferred`` for a later run: a parser change is re-derived by the
+    operator from the workstation cache, not by fetching every filing again.
     """
     on = reconciled_on or dt.date.today()
     ciks = cover_ciks(conn) if ciks is None else ciks
-    rows = conn.execute(
+    rows = [row for row in conn.execute(
         f"SELECT {', '.join(EVENT_COLUMNS)}, fact_hash FROM sec_registration_events "
-        "WHERE retired_on IS NULL AND form = ANY(%s) AND parser_version IS DISTINCT FROM %s",
+        "WHERE retired_on IS NULL AND form = ANY(%s) AND parser_version IS DISTINCT FROM %s "
+        "ORDER BY filed DESC, adsh DESC",
         (sorted(READ_EVENT_FORMS), EVENT_PARSER_VERSION),
-    ).fetchall()
+    ).fetchall() if row[EVENT_COLUMNS.index("cik")] in ciks]
+    deferred = rows[limit:] if limit is not None else []
     stats: Counter = Counter()
     changed: list[tuple[str, RegistrationEvent]] = []
-    for row in rows:
+    for row in rows[:limit] if limit is not None else rows:
         event = RegistrationEvent(**dict(zip(EVENT_COLUMNS, row[:-1])))
-        if event.cik not in ciks:
-            continue
         (derived,), classes = describe_events([event], documents, ciks)
         stats.update(classes)
         if (derived.parser_version is not None and classes.get("filings_missing", 0) == 0
@@ -2595,6 +2599,7 @@ def derive_event_classes(conn, documents: EventDocuments, *,
     return {
         "derived": len(changed),
         **{key: stats.get(key, 0) for key in CLASS_STAT_KEYS},
+        **({"deferred": len(deferred)} if limit is not None else {}),
     }
 
 
