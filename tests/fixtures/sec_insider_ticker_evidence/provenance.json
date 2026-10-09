@@ -77,6 +77,28 @@
         "0001258105-24-000007"
       ],
       "rows": 1
+    },
+    "2006q4": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2006q4_form345.zip",
+      "accessions": [
+        "0001140361-06-016251",
+        "0001181431-06-063496"
+      ],
+      "rows": 2
+    },
+    "2015q4": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2015q4_form345.zip",
+      "accessions": [
+        "0001467481-15-000014"
+      ],
+      "rows": 1
+    },
+    "2025q2": {
+      "source": "https://www.sec.gov/files/dera/data/insider-transactions-data-sets/2025q2_form345.zip",
+      "accessions": [
+        "0001454938-25-000115"
+      ],
+      "rows": 1
     }
   },
   "secapi": {

@@ -35,8 +35,14 @@ DERA_SYMBOLS = {
     "0002151730-26-000002": ["WELPP"],
     "0001314152-26-000191": [],
     "0001728451-26-000004": ["BRK-A"],
-    "0001327318-26-000010": [],
+    # TrueCar's own Form 4 (issuer CIK 1327318). sec_insider_v3 read TRUE as a
+    # boolean placeholder; every whole-field TRUE in DERA is an issuer's symbol.
+    "0001327318-26-000010": ["TRUE"],
     "0001193125-26-106222": ["WSO", "WSOB"],
+    "0001181431-06-063496": ["TRUE"],  # Centrue Financial
+    "0001140361-06-016251": ["OB"],  # OneBeacon, "NYSE: OB"
+    "0001454938-25-000115": ["OB"],  # Outbrain
+    "0001467481-15-000014": [],  # OTCBB alone names no symbol
     "0001493152-22-016490": [],
     "0000107140-22-000040": ["JWA", "JWB"],
     "0001033012-22-000101": ["FBC"],
@@ -94,6 +100,33 @@ def test_normalization_of_real_section_five_filings(row):
     ],
 )
 def test_additional_symbol_rules(raw, expected):
+    assert insider.normalize_symbols(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # TrueCar and Centrue write TRUE, OneBeacon and Outbrain OB (1,941 filings).
+        ("TRUE", ["TRUE"]),
+        ("(TRUE)", ["TRUE"]),
+        ("OB", ["OB"]),
+        ("NYSE: OB", ["OB"]),
+        ("NYSE:OB", ["OB"]),
+        # A boolean typed as a symbol, as W1 reads it, and the OTC marks stay placeholders.
+        ("true", []),
+        ("True", []),
+        ("FALSE", []),
+        ("false", []),
+        ("OTCBB", []),
+        ("OTC BB", []),
+        ("OTCBB-__", []),
+        # Beside a symbol OB still qualifies it.
+        ("EDLG, OB", ["EDLG"]),
+        ("fmbh.ob", ["FMBH"]),
+    ],
+)
+def test_v4_reads_true_and_ob_as_symbols_but_keeps_placeholder_senses(raw, expected):
+    assert insider.PARSER_VERSION == "sec_insider_v4"
     assert insider.normalize_symbols(raw) == expected
 
 
@@ -844,3 +877,31 @@ def test_metadata_only_accession_learned_later_is_dated_by_reconciliation(clean_
     available = dict(clean_db.execute("SELECT accession, available_on FROM sec_insider_filings").fetchall())
     # The republished XML is new knowledge, not a fact backdated to the 2003 filing.
     assert available == {known: dt.date(2003, 5, 30), late: dt.date(2026, 10, 9)}
+
+
+def test_v4_reparse_retires_and_redates_only_changed_readings(clean_db, tmp_path, monkeypatch):
+    package = _dera_zip(tmp_path, "2026q1")  # TrueCar's TRUE and Watsco's WSO; WSOB
+    unchanged = "SELECT to_jsonb(f) FROM sec_insider_filings f WHERE accession = '0001193125-26-106222'"
+    v4 = insider.normalize_symbols
+    with monkeypatch.context() as v3:
+        v3.setattr(insider, "PARSER_VERSION", "sec_insider_v3")
+        v3.setattr(insider, "normalize_symbols",
+                   lambda raw: [] if insider._key(raw) in ("TRUE", "OB") else v4(raw))
+        insider.load_package(clean_db, package, source="dera", reconciled_on=dt.date(2026, 10, 9))
+    before = clean_db.execute(unchanged).fetchall()
+    result = insider.load_package(clean_db, package, source="dera", reconciled_on=dt.date(2026, 10, 10))
+    assert (result["inserted"], result["retired"]) == (1, 1)
+    assert clean_db.execute(
+        "SELECT normalized_symbols, available_on, retired_on FROM sec_insider_filings "
+        "WHERE accession = '0001327318-26-000010' ORDER BY id"
+    ).fetchall() == [
+        ([], dt.date(2026, 1, 24), dt.date(2026, 10, 10)),
+        # The new reading is new knowledge, dated by reconciliation, not 2026-01-24.
+        (["TRUE"], dt.date(2026, 10, 10), None),
+    ]
+    # An unchanged reading keeps its row and its original availability.
+    assert clean_db.execute(unchanged).fetchall() == before
+    assert clean_db.execute(
+        "SELECT count(*) FILTER (WHERE retired_on IS NULL), count(*) FROM sec_insider_package_members"
+    ).fetchone() == (2, 2)
+    assert clean_db.execute("SELECT parser_version FROM sec_insider_packages").fetchone() == ("sec_insider_v4",)

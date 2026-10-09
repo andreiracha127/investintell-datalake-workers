@@ -53,7 +53,7 @@ from scripts.load_sec_ticker_cik_history import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "sec_insider_ticker_evidence.sql"
-PARSER_VERSION = "sec_insider_v3"
+PARSER_VERSION = "sec_insider_v4"
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 DERA_LISTING_URL = "https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets"
 SECAPI_BASE = "https://api.sec-api.io"
@@ -71,10 +71,14 @@ _PREFIX = re.compile(r"^(?:NYSE(?:\s*(?:AMERICAN|ARCA|MKT))?|NASDAQ(?:\s*(?:GS|G
 _OTC_SUFFIX = re.compile(r"(?<=[A-Z0-9])(?:[.,]\s*|\s+)(?:OB|PK)\b", re.I)
 _WRAPPER = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]")
 # Whole-field placeholders: W1's set plus phrases insider filers type (DERA 2006-2026).
-# W1 now reads TRUE, FALSE, OTCBB and OB on the whole cover field (TrueCar's TRUE is
-# a symbol there); sec_insider_v3 keeps them placeholders, as it was built.
+# W1b keeps its own copy, so a change to W1's set needs a parser version here.
+# sec_insider_v4 reads TRUE and OB as symbols, as W1 does. In DERA and the 2003-2005
+# XML every whole-field TRUE is uppercase and the issuer's own symbol (TrueCar,
+# Centrue: 1,545 filings); OB alone is OneBeacon's or Outbrain's (394 of 396).
+# A lowercase or mixed-case "true" stays a boolean, and OB beside a symbol still
+# qualifies it (EDLG, OB). FALSE never occurs; OTCBB alone never names a symbol.
 _PLACEHOLDERS = PLACEHOLDER_KEYS | {
-    "TRUE", "FALSE", "OTCBB", "OB",
+    "FALSE", "OTCBB",
     "", "NOSYMBOL", "NOTRADINGSYMBOL", "NOTICKER", "NOTPUBLIC", "NOTTRADING", "NONEYET",
     "TOCOME", "SEEREMARK", "SEEREMARKS", "INREMARKS", "APPFOR", "APPLIED", "APPLIEDFOR",
     "PENDING", "UNKNOWN", "PRIVATE", "SYMBOL", "XXXXXXXXXX",
@@ -114,7 +118,10 @@ def _key(value: str) -> str:
 
 
 def _is_placeholder(value: str) -> bool:
-    return _key(value) in _PLACEHOLDERS or bool(re.fullmatch(r"X{3,}", _key(value)))
+    key = _key(value)
+    if key == "TRUE":  # the symbol only as written in uppercase
+        return not re.sub(r"[^A-Za-z]", "", value).isupper()
+    return key in _PLACEHOLDERS or bool(re.fullmatch(r"X{3,}", key))
 
 
 def _letters(value: str) -> int:

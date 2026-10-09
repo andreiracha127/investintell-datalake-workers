@@ -11,7 +11,10 @@ learned for them later is dated by reconciliation. Unusable raw symbols are kept
 The parser imports W1's `normalize_symbol` without changing W1. Its extra rules
 unwrap filer punctuation and remove exchange, OTC, country and when-issued markers.
 Placeholders and prose (`NOT LISTED`, `SEE REMARK`, `LEE ENT`, `XPEL, INC.`) are
-rejected whole before any split. Explicit lists and slashes split (`LTR;CG`,
+rejected whole before any split. Since `sec_insider_v4`, `TRUE` and `OB` are symbols
+(TrueCar and Centrue; OneBeacon and Outbrain), as in W1. A lowercase or mixed-case
+`true` stays a boolean, `OB` beside a symbol still qualifies it (`EDLG, OB`), and
+`FALSE` and `OTCBB` remain placeholders. Explicit lists and slashes split (`LTR;CG`,
 `ABI/CRA`, `Z AND ZG`); a space splits only class variants of one root
 (`CRDA CRDB`). Class and preferred suffixes stay attached (`BRK/A`, `HFC PrB`),
 and a lone listed class names its sibling (`BWINA / B`). The source has no class mapping.
@@ -59,7 +62,9 @@ loader requires the schema to exist and does not apply it implicitly. For a Linu
 worker, replace both cache paths with persistent paths mounted for that worker.
 
 Use the same load command for incremental runs: package hashes and parser
-versions skip unchanged parses; remote validators detect republication. Downloads
+versions skip unchanged parses; remote validators detect republication. A new parser
+version re-parses every package. Only readings that change are retired and inserted
+again, available from the reconciliation date; unchanged facts keep their rows. Downloads
 stage to temporary files before replacing the cache. sec-api credentials travel
 in an Authorization header; console errors scrub secrets. SEC requests use
 `InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)` and are sequential.
