@@ -24,6 +24,12 @@ else:
 PART_COUNT = 2
 PLAN_VERSION = 1
 SUCCESS_STATUSES = {"parsed", "issuer_binding_unverified", "not_securities_description"}
+# Only these fields are produced or refreshed while parsing original bytes.
+# All other discovery metadata remains pinned to the immutable parent snapshot,
+# including binding, symbols, issuer identity, attachment and date provenance.
+PARSE_OUTPUT_FIELDS = {"status", "error", "evidence_count", "parser_version", "source_sha256",
+                       "content_format", "pdf_text_extractor", "pdf_pages",
+                       "issuer_binding_proof", "document_recovery_proof"}
 
 
 def file_sha256(path: Path) -> str:
@@ -49,6 +55,13 @@ def _parent_documents(parent: dict) -> dict[str, dict]:
             raise ValueError("Parent discovery contains a duplicate source package")
         documents[source["source_package"]] = source
     return documents
+
+
+def _matches_parent_metadata(document: dict, parent: dict) -> bool:
+    child_metadata = {key: value for key, value in document.items() if key not in PARSE_OUTPUT_FIELDS}
+    parent_metadata = {key: value for key, value in parent.items() if key not in PARSE_OUTPUT_FIELDS}
+    return (loader.canonical_json(child_metadata) == loader.canonical_json(parent_metadata)
+            and (not parent.get("source_sha256") or document.get("source_sha256") == parent["source_sha256"]))
 
 
 def _load_plan(cache: Path) -> tuple[dict, dict]:
@@ -125,11 +138,15 @@ def collect(cache: Path, part: int, observations: Path | None = None, *, offline
     plan, parent = _load_plan(cache)
     directory = cache / "parts" / str(part)
     manifest = json.loads((directory / "input-manifest.json").read_text(encoding="utf-8"))
-    expected = {key for key, source in _parent_documents(parent).items() if partition(source) == part}
+    parent_documents = _parent_documents(parent)
+    expected = {key for key, source in parent_documents.items() if partition(source) == part}
     if (manifest.get("shard") != _shard_identity(plan, part) or manifest.get("complete") is not False
             or {row["source_package"] for row in manifest["documents"]} != expected
             or len(manifest["documents"]) != len(expected)):
         raise ValueError("Child input does not match its immutable parent partition")
+    if any(loader.canonical_json(document) != loader.canonical_json(parent_documents[document["source_package"]])
+           for document in manifest["documents"]):
+        raise ValueError("Child input parsing or binding metadata differs from its immutable parent")
     if (directory / "documents").resolve() != (cache / "documents").resolve():
         raise ValueError("Create the child's documents link to the shared original cache before collection")
     observation_rows = json.loads(observations.read_text(encoding="utf-8-sig")) if observations else None
@@ -158,9 +175,8 @@ def _validate_child(cache: Path, plan: dict, parent_documents: dict, part: int) 
     immutable = ("cik", "adsh", "form", "filed", "source_url")
     for package, document in documents.items():
         if (document.get("status") not in SUCCESS_STATUSES
-                or any(document[key] != parent_documents[package][key] for key in immutable)
-                or document.get("document_role", "primary") != parent_documents[package].get("document_role", "primary")):
-            raise ValueError("Child source status or original filing identity mismatches")
+                or not _matches_parent_metadata(document, parent_documents[package])):
+            raise ValueError("Child source status or immutable parsing and binding metadata mismatches")
     evidence = directory / "evidence.jsonl"
     if file_sha256(evidence) != child.get("evidence_sha256"):
         raise ValueError("Child evidence artifact hash mismatch")

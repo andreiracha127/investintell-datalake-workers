@@ -1,0 +1,314 @@
+<DOCUMENT>
+<TYPE>40FR12B
+<SEQUENCE>1
+<FILENAME>t17577e40fr12b.txt
+<DESCRIPTION>40FR12B
+<TEXT>
+<PAGE>
+
+                       SECURITIES AND EXCHANGE COMMISSION
+                             WASHINGTON, D.C. 20549
+
+                                    FORM 40-F
+
+      [X]   Registration statement pursuant to Section 12 of the Securities
+            Exchange Act of 1934
+
+                                       or
+
+      [ ]   Annual report pursuant to Section 13(a) or 15(d) of the Securities
+            Exchange Act of 1934
+
+FOR FISCAL YEAR ENDED: NOT APPLICABLE          COMMISSION FILE NUMBER: 001-32562
+
+                                  STANTEC INC.
+             (Exact name of registrant as specified in its charter)
+
+             CANADA                           8711               NOT APPLICABLE
+ (Province or other jurisdiction  (Primary standard industrial  (I.R.S. employer
+of incorporation or organization)  classification code number,   identification
+                                         if applicable)            number, if
+                                                                   applicable)
+
+                               10160 - 112 STREET
+                               EDMONTON, ALBERTA,
+                                 CANADA, T5K 2L6
+                                 (780) 917-7000
+
+    (Address and telephone number of registrant's principal executive office)
+
+    STANTEC CONSULTING INC., 8211 SOUTH 48TH STREET, PHOENIX, ARIZONA 85044,
+                                 (602) 438-2200
+
+ (Name, address and telephone number of agent for service in the United States)
+
+Securities registered or to be registered pursuant to Section 12(b) of the Act:
+
+Title of each class:                  Name of each exchange on which registered:
+   COMMON SHARES                                NEW YORK STOCK EXCHANGE
+
+             Securities registered or to be registered pursuant to
+                         Section 12(g) of the Act:  NONE
+
+        Securities for which there is a reporting obligation pursuant to
+                         Section 15(d) of the Act:  NONE
+
+For annual reports, indicate by check mark the information filed with this form:
+
+    [ ] Annual Information Form      [ ] Audited Annual Financial Statements
+
+  Indicate the number of outstanding shares of each of the issuer's classes of
+  capital or common stock as of the close of the period covered by the annual
+                             report: NOT APPLICABLE
+
+     Indicate by check mark whether the registrant by filing the information
+    contained in this form is also thereby furnishing the information to the
+ Commission pursuant to Rule 12g3-2(b) under the Securities Exchange Act of 1934
+ (the "Exchange Act"). If "Yes" is marked, indicate the file number assigned to
+                  the registrant in connection with such rule.
+
+                              Yes [ ]       No [X]
+
+    Indicate by check mark whether the registrant: (1) has filed all reports
+  required to be filed by Section 13(d) or 15(d) of the Exchange Act during the
+    proceeding 12 months (or for such shorter period that the registrant was
+     required to file such reports); and (2) has been subject to such filing
+                        requirements in the past 90 days.
+
+                              Yes [ ]       No [X]
+
+<PAGE>
+
+                         OFF-BALANCE SHEET ARRANGEMENTS
+
+As of June 30, 2005, the Registrant's only material off-balance sheet financing
+arrangements relate to letters of credit in the amount of C$1.7 million.
+
+                             CONTRACTUAL OBLIGATIONS
+
+The following table summarizes the contractual obligations due on the
+Registrant's long-term debt, other liabilities, and operating lease commitments
+as of December 31, 2004:
+
+<TABLE>
+<CAPTION>
+                                                                  PAYMENTS DUE BY PERIOD
+                                      ------------------------------------------------------------------------------
+                                                         LESS THAN          2-3            4-5           MORE THAN
+                                         TOTAL             1 YEAR          YEARS          YEARS           5 YEARS
+                                      ------------      -----------      ----------     ----------     -------------
+                                                           (IN THOUSANDS OF CANADIAN DOLLARS)
+<S>                                   <C>               <C>              <C>            <C>            <C>
+Long-term debt ..................     C$    33,975      C$   12,820      C$  19,585     C$   1,459     C$        111
+Interest on debt (1).............            2,824            1,479           1,269             76                 -
+Other liabilities................           19,868            3,050           6,079          3,400             7,339
+Operating lease commitments......          207,666           29,509          50,301         34,211            93,645
+                                      ------------      -----------      ----------     ----------     -------------
+Total contractual obligations....     C$   264,333      C$   46,858      C$  77,234     C$  39,146     C$    101,095
+                                      ============      ===========      ==========     ==========     =============
+</TABLE>
+
+(1) Based on an estimated average interest rate of 5.42% per year.
+
+<PAGE>
+
+                  UNDERTAKING AND CONSENT TO SERVICE OF PROCESS
+
+A.   UNDERTAKING
+
+The Registrant undertakes to make available, in person or by telephone,
+representatives to respond to inquiries made by the Commission staff, and to
+furnish promptly, when requested to do so by the Commission staff, information
+relating to: the securities registered pursuant to Form 40-F; or transactions in
+said securities.
+
+B.   CONSENT TO SERVICE OF PROCESS
+
+Concurrently with the filing of this Registration Statement on Form 40-F, the
+Registrant has filed with the Commission a written irrevocable consent and power
+of attorney on FORM F-X.
+
+Any change to the name or address of the agent for service of the Registrant
+shall be communicated promptly to the Commission by amendment to Form F-X
+Referencing the file number of the Registrant.
+
+<PAGE>
+
+                                   SIGNATURES
+
+            Pursuant to the requirements of the Exchange Act, the Registrant
+certifies that it meets all of the requirements for filing on Form 40-F and has
+duly caused this registration statement to be signed on its behalf by the
+undersigned, thereto duly authorized.
+
+                                STANTEC INC.
+
+                                By: /s/ Jeffrey S. Lloyd
+                                    -------------------------------------------
+                                    Name:  Jeffrey S. Lloyd
+                                    Title: Vice President, Secretary and General
+                                           Counsel
+
+                                Dated: August 3, 2005
+
+<PAGE>
+
+
+                                  EXHIBIT INDEX
+
+<TABLE>
+<CAPTION>
+EXHIBITS                             DESCRIPTION
+<S>       <C>
+23.1      Consent of Ernst & Young LLP - Independent Registered Public
+          Accounting Firm
+23.2      Consent of KPMG LLP- Independent Registered Public Accounting Firm
+99.01     Press Release - January 16, 2004
+99.02     Material Change Report - January 23, 2004
+99.03     Notice of Meeting and Record Date - February 20, 2004
+99.04     Press Release - February 26, 2004
+99.05     Press Release - April 5, 2004
+99.06     Annual Participation Fee - April 7, 2004
+99.07     Annual Report - April 7, 2004
+99.08     Annual Report Feedback Card - April 7, 2004
+99.09     Audited Annual Financial Statements - April 7, 2004
+99.10     Confirmation of Mailing - April 7, 2004
+99.11     Employee Share Purchase Plan Proxy- April 7, 2004
+99.12     Letter to Shareholders - April 7, 2004
+99.13     Management's Discussion & Analysis - April 7, 2004
+99.14     Management Information Circular - April 7, 2004
+99.15     Notice of Meeting - April 7, 2004
+99.16     Form of Proxy - April 7, 2004
+99.17     Supplement Mailing - April 7, 2004
+99.18     Report on Securities in QC - April 8, 2004
+99.19     Annual Information Form - April 12, 2004
+99.20     Material Change Report - April 12, 2004
+99.21     Notice regarding AIF NI 51-102 F2 - April 19, 2004
+99.22     News Release - May 6, 2004
+99.23     Voting Results - May 10, 2004
+99.24     Form 52-109F2 - Certification of Interim Filings - CEO - May 14, 2004
+99.25     Form 52-109F2 - Certification of Interim Filings - CFO - May 14, 2004
+99.26     Interim Financial Statements - May 14, 2004
+99.27     Interim Management's Discussion & Analysis - May 14, 2004
+99.28     News Release - May 28, 2004
+99.29     Normal Course Issuer Bid Report - June 4, 2004
+99.30     Normal Course Issuer Bid Notice of Intention - June 4, 2004
+99.31     Material Change Report - June 7, 2004
+99.32     News Release - August 5, 2004
+99.33     Form 52-109F2 - Certification of Interim Filings - CEO - August 12, 2004
+99.34     Form 52-109F2 - Certification of Interim Filings - CFO - August 12, 2004
+99.35     Interim Financial Statements -August 12, 2004
+99.36     Interim Management's Discussion & Analysis - August 12, 2004
+99.37     News Release - September 27, 2004
+99.38     News Release - October 12, 2004
+99.39     News Release - November 4, 2004
+99.40     52-109F2 - Certification of Interim Filings - CEO - November 11, 2004
+99.41     52-109F2 - Certification of Interim Filings - CFO - November 11, 2004
+99.42     Interim Financial Statements - November 11, 2004
+99.43     Interim Management's Discussion & Analysis - November 11, 2004
+99.44     News Release - February 24, 2005
+99.45     Notice of Meeting and Record Date - March 3, 2005
+99.46     52-109FT1 - Certification of Interim Filings - CEO - March 31, 2005
+99.47     52-109FT1 - Certification of Interim Filings - CFO -March 31, 2005
+99.48     Annual Information Form - March 31, 2005
+99.49     Audited Annual Financial Statements - March 31, 2005 (Incorporated by reference
+          from the Registrant's registration statement on Form F-4/A (File No. 333-124748),
+          filed with the Securities and Exchange Commission as of July 19, 2005)
+99.50     Annual Participation Fee - March 31, 2005
+99.51     Annual Report - March 31, 2005
+99.52     Annual Report Feedback - March 31, 2005
+99.53     Employee Share Purchase Plan Proxy - March 31, 2005
+99.54     Management's Discussion & Analysis - March 31, 2005
+99.55     Management Information Circular- March 31, 2005
+99.56     Notice of Meeting - March 31, 2005
+99.57     Form of Proxy - March 31, 2005
+99.58     Report on Securities in QC, March 31, 2005
+99.59     Security holders documents - By-law No. 1 of Stantec Inc. - March 31, 2005
+99.60     Security holders documents - Certificate of Amendment of Stantec Inc.
+</TABLE>
+
+<PAGE>
+
+<TABLE>
+<S>       <C>
+99.61     Shareholder Letter- March 31, 2005
+99.62     Notice regarding AIF (NI 51-102 F2) - April 1, 2005
+99.63     Confirmation of Mailing - April 7, 2005
+99.64     News Release - April 14, 2005 (Incorporated by reference from the Registrant's 425, filed
+          with the Securities and Exchange Commission as of April 14, 2005)
+99.65     Schedule 13D - April 21, 2005 (Incorporated by reference from the Registrant's Schedule 13D,
+          filed with the Securities and Exchange Commission as of April 19, 2005)
+99.66     Conference Call Transcript - April 21, 2005 (Incorporated by reference from the Registrant's
+          425, filed with the Securities and Exchange Commission as of April 18, 2005)
+99.67     Contact Information - April 21, 2005
+99.68     Form 3 - April 21, 2005 (Incorporated by reference from the Registrant's Form 3, filed with
+          the Securities and Exchange Commission as of April 19, 2005)
+99.69     Integration Plan - April 21, 2005 (Incorporated by reference from the Registrant's 425,
+          filed with the Securities and Exchange Commission as of April 15, 2005)
+99.70     Investors Question & Answer - April 21, 2005 (Incorporated by reference from the Registrant's
+          425, filed with the Securities and Exchange Commission as of April 20, 2005)
+99.71     Joint Web Announcement - April 21, 2005
+99.72     Material Change Report - April 21, 2005
+99.73     Merger Agreement - April 21, 2005 (Incorporated by reference from the Registrant's
+          registration statement on Form F-4 (File No. 333-124748), filed with the Securities and Exchange
+          Commission as of May 9, 2005)
+99.74     Stockholders Support Agreement - April 21, 2005 (Incorporated by reference from the
+          Registrant's registration statement on Form F-4 (File No. 333-124748), filed with the Securities
+          and Exchange Commission as of May 9, 2005)
+99.75     Revised Conference Call Transcript - April 28, 2005 (Incorporated by reference from the
+          Registrant's 425, filed with the Securities and Exchange Commission as of April 28, 2005)
+99.76     Alternative Monthly Report - May 10, 2005
+99.77     News release - May 10, 2005 - Voting Results - May 10, 2005
+99.78     Annual General Meeting Transcript - May 12, 2005 (Incorporated by reference from the
+          Registrant's 425, filed with the Securities and Exchange Commission as of May 12, 2005)
+99.79     First Quarter Results Conference Call Transcript - May 12, 2005 (Incorporated by reference
+          from the Registrant's 425, filed with the Securities and Exchange Commission as of May 12, 2005)
+99.80     52-109FT2 - Certification of Interim Filings - CEO - May 13, 2005
+99.81     52-109FT2 - Certification of Interim Filings - CFO - May 13, 2005
+99.82     Interim Financials - May 13, 2005 (Incorporated by reference from the Registrant's
+          registration statement on Form F-4/A (File No. 333-124748), filed with the Securities and
+          Exchange Commission as of June 24, 2005)
+99.83     Interim Management's Discussion & Analysis - May 13, 2005
+99.84     Form F-4 - May 19, 2005 (Incorporated by reference from the Registrant's registration
+          statement on Form F-4 (File No. 333-124748), filed with the Securities and Exchange Commission
+          as of May 9, 2005)
+99.85     Options Memorandum - May 19, 2005
+99.86     CEO Forum held on April 29, 2005 - May 20,2005 (Incorporated by reference from the
+          Registrant's 425, filed with the Securities and Exchange Commission as of April 29, 2005)
+99.87     CEO Forum - May 20,2005 (Incorporated by reference from the Registrant's 425, filed with the
+          Securities and Exchange Commission as of May 24, 2005)
+99.88     Employee Responses for April 22, 2005 - May 20, 2005 (Incorporated by reference from the
+          Registrant's 425, filed with the Securities and Exchange Commission as of April 29, 2005)
+99.89     Employee Responses for April 29, 2005 - May 20, 2005 (Incorporated by reference from the
+          Registrant's 425, filed with the Securities and Exchange Commission as of April 29, 2005)
+99.90     Employee Responses for May 6, 2005 - May 20, 2005 (Incorporated by reference from the
+          Registrant's 425, filed with the Securities and Exchange Commission as of May 10, 2005)
+99.91     Employee Responses for May 20, 2005 - May 20, 2005 (Incorporated by reference from the
+          Registrant's 425, filed with the Securities and Exchange Commission as of June 10, 2005)
+99.92     Merger Memorandum - May 24, 2005
+99.93     Restricted Stock - May 24, 2005
+99.94     Annual Information Form letter - May 30, 2005
+99.95     Revised Annual Information Form - May 30, 2005
+99.96     Press Release - May 31, 2005
+</TABLE>
+
+<PAGE>
+
+<TABLE>
+<S>       <C>
+99.96     Normal Course Issuer Bid Notice of Intention - June 09,2005
+99.97     Material Change Report- June 09,2005
+99.98     Normal Course Issuer Bid (Quebec) - June 09,2005
+99.99     CEO Forum - June 10,2005
+99.100    CEO Forum - June 27,2005 (Incorporated by reference from the Registrant's 425, filed with
+          the Securities and Exchange Commission as of June 24, 2005)
+99.101    Form F-4 Amendment #1 - June 27,2005 (Incorporated by reference from the Registrant's
+          registration statement on Form F-4/A (File No. 333-124748), filed with the Securities and
+          Exchange Commission as of June 24, 2005)
+99.102    Press Release - June 28,2005
+99.103    Certificate of Amendment - July 22,2005
+99.104    Press Release - July 28,2005 (Incorporated by reference from the Registrant's 425, filed
+          with the Securities and Exchange Commission as of July 28, 2005)
+</TABLE>
+</TEXT>
+</DOCUMENT>

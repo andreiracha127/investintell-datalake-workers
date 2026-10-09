@@ -36,10 +36,18 @@ from uuid import uuid4
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 QUERY_URL = "https://api.sec-api.io"
 FULLTEXT_URL = QUERY_URL + "/full-text-search"
-ANNUAL_FORMS = ("20-F", "20-F/A", "40-F", "40-F/A", "20FR12B", "20FR12G", "20FR12B/A", "20FR12G/A")
+ANNUAL_FORMS = ("20-F", "20-F/A", "40-F", "40-F/A", "20FR12B", "20FR12G", "20FR12B/A", "20FR12G/A", "40FR12B", "40FR12B/A")
 F6_FORMS = ("F-6", "F-6/A", "F-6EF", "F-6 POS")
 MANIFEST_VERSION = 1
-DISCOVERY_VERSION = "foreign-listing-discovery-v5-publication-floor"
+DISCOVERY_VERSION = "foreign-listing-discovery-v6-complete-depositary-terms"
+RATIO_CHANGE_QUERY = (
+    'ratio AND (ADS OR ADR OR GDR OR GDS OR ADSs OR ADRs OR GDRs OR GDSs '
+    'OR "depositary shares" OR "depositary receipts" '
+    'OR "depository shares" OR "depository receipts" '
+    'OR "depositary share" OR "depositary receipt" '
+    'OR "depository share" OR "depository receipt" '
+    'OR ("American shares" AND receipts) OR ("American share" AND receipts))'
+)
 
 
 def canonical_json(value: object) -> str:
@@ -412,6 +420,13 @@ def search_filings(client: SecClient, query: str, start: date, end: date) -> lis
 
 def search_text(client: SecClient, query: str, forms: Iterable[str], start: date, end: date,
                 *, cik: int | None = None) -> list[dict]:
+    """Require distinct document hits to satisfy the full-text declared total.
+
+    This endpoint counts filings AND exhibits, unlike filing search. Distinct
+    attachments legitimately share an accession; legacy SGML attachments can
+    also share their URL. Their document type completes the hit identity.
+    """
+    forms = tuple(forms)
     base = {"query": query, "formTypes": list(forms), "startDate": str(start), "endDate": str(end)}
     if cik is not None:
         base["ciks"] = [str(cik)]
@@ -423,14 +438,31 @@ def search_text(client: SecClient, query: str, forms: Iterable[str], start: date
         middle = start + (end - start) // 2
         return (search_text(client, query, forms, start, middle, cik=cik)
                 + search_text(client, query, forms, middle + timedelta(days=1), end, cik=cik))
-    rows = list(first["filings"])
+    rows = []
+    seen = set()
+
+    def add(page_rows: list[dict]) -> None:
+        for row in page_rows:
+            accession = row.get("accessionNo") or row.get("accessionNumber")
+            url = row.get("filingUrl") or row.get("linkToFilingDetails")
+            if not accession or not url:
+                raise ValueError("SEC full-text hit lacks accession or document URL")
+            identity = (accession, canonical_sec_url(url), str(row.get("type") or ""))
+            if identity in seen:
+                raise ValueError("SEC full-text search repeated accession/document hit; rerun with narrower dates")
+            seen.add(identity)
+            rows.append(row)
+
+    add(first["filings"])
     page = 2
-    while len(rows) < total:
+    while len(seen) < total:
         more = client.search(FULLTEXT_URL, {**base, "page": str(page)})["filings"]
         if not more:
             raise ValueError("SEC full-text query stopped before declared total")
-        rows.extend(more)
+        add(more)
         page += 1
+    if len(seen) != total:
+        raise ValueError("SEC full-text unique document hits do not match declared total")
     return rows
 
 
@@ -509,7 +541,7 @@ def discover_issuer(client: SecClient, lines: list[dict], start: date, end: date
     for name in names:
         if len(re.sub(r"[^A-Za-z0-9]", "", name)) >= 6:
             add(search_text(client, _quote(name), F6_FORMS, start, end), "issuer_name_in_f6", name)
-    add(search_text(client, 'ratio AND (ADS OR "depositary shares")',
+    add(search_text(client, RATIO_CHANGE_QUERY,
                     ("6-K", "6-K/A"), start, end, cik=cik), "registrant_cik")
     return [docs[key] for key in sorted(docs)]
 

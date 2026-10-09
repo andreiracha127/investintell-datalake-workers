@@ -73,6 +73,36 @@ def test_real_tsm_securities_description_exhibit_is_ratio_corroboration_only():
     assert {row["symbol"] for row in rows} == {"TSM"}
 
 
+@pytest.mark.parametrize("form", ["20FR12G", "20FR12G/A"])
+def test_discovered_20fr12g_securities_description_is_ratio_corroboration_only(form):
+    from scripts.load_sec_foreign_listing_evidence import securities_description_exhibits
+
+    url = "https://www.sec.gov/Archives/edgar/data/1046179/000119312524083790/exhibit2a1.htm"
+    filing = {"formType": form, "documentFormatFiles": [{
+        "type": "EX-2.A.1", "description": "Description of securities", "documentUrl": url,
+    }]}
+    attachment, = securities_description_exhibits(filing)
+    # A real description can also include a securities table. Its role must
+    # still prevent it from establishing an exchange-listed security itself.
+    content = """<p>Securities registered pursuant to Section 12(b)</p>
+    <table><tr><th>Title of each class</th><th>Trading symbol</th><th>Exchange</th></tr>
+    <tr><td>American Depositary Shares, each representing five common shares</td>
+    <td>TSM</td><td>New York Stock Exchange</td></tr></table>"""
+    kwargs = {"cik": 1046179, "form_type": attachment["formType"],
+              "accession_number": "0001193125-24-083790", "filing_date": "2024-03-28",
+              "source_url": attachment["filingUrl"], "symbols": ["TSM"]}
+    rows = parse_filing(content, document_role=attachment["document_role"], **kwargs)
+    assert rows
+    assert {row["evidence_kind"] for row in rows} == {"ads_ratio"}
+    assert {row["source_kind"] for row in rows} == {"securities_description"}
+    assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in rows} == {(5, 1)}
+    assert {row["form"] for row in rows} == {form}
+    assert {row["available_on"] for row in rows} == {"2024-03-29"}
+    assert all(row["evidence_location"].startswith("exhibit/securities-description;") for row in rows)
+    # Primary 12(g) registration parsing keeps its existing scope.
+    assert parse_filing(content, **kwargs) == []
+
+
 def test_real_pt_item12d_does_not_treat_the_former_ratio_as_current():
     rows = parse_fixture("pt_2025_ratio_change")
     ratios = [row for row in rows if row["evidence_kind"] == "ads_ratio"]
@@ -426,6 +456,89 @@ def test_real_legacy_cover_layouts_retain_type_without_inventing_ticker(name, ex
     assert rows
     assert {row["listed_type"] for row in rows} == {expected}
     assert all(row["symbol"] is None for row in rows)
+
+
+@pytest.mark.parametrize("name,title,exchange", [
+    ("fsv_2015_40fr12b", "Subordinate Voting Shares", "NASDAQ Stock Market"),
+    ("stn_2005_40fr12b", "COMMON SHARES", "NEW YORK STOCK EXCHANGE"),
+    ("qtrrf_2008_40fr12b", "Common Shares, no par value", "American Stock Exchange"),
+])
+def test_real_40fr12b_legacy_covers_retain_direct_type_without_current_symbol(name, title, exchange):
+    meta = json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"))
+    payload = (FIXTURES / meta["fixture"]).read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == meta["sha256"] == meta["original_source_sha256"]
+    assert b"\r\n" not in payload
+    rows = parse_filing(
+        payload.decode("utf-8"), symbols=[meta["symbol"]],
+        **{key: meta[key] for key in ("cik", "form_type", "accession_number", "filing_date", "source_url")},
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["evidence_kind"] == "listed_type" and row["source_kind"] == "cover_12b"
+    assert row["listed_type"] == "ordinary_direct" and row["ordinary_candidate"] is True
+    assert row["symbol"] is None
+    assert row["ratio_numerator"] is row["ratio_denominator"] is None
+    assert title in row["evidence_text"] and exchange in row["evidence_text"]
+    tomorrow = (dt.date.fromisoformat(meta["filing_date"]) + dt.timedelta(days=1)).isoformat()
+    assert row["effective_from"] == row["available_on"] == tomorrow
+    assert row["source_url"] == meta["source_url"] and row["source_sha256"] == meta["sha256"]
+
+
+@pytest.mark.parametrize("body", [
+    "Common Shares NEW YORK STOCK EXCHANGE Common Shares NEW YORK STOCK EXCHANGE",
+    "Common Shares NEW YORK STOCK EXCHANGE Preferred Shares NEW YORK STOCK EXCHANGE",
+    "Subscription Rights to Common Shares NEW YORK STOCK EXCHANGE",
+    "Common Shares not for trading NEW YORK STOCK EXCHANGE",
+    "Common Shares",
+    "Class A Common Shares NEW YORK STOCK EXCHANGE Class B Common Shares NEW YORK STOCK EXCHANGE",
+])
+def test_positioned_ordinary_cover_requires_one_unqualified_equity_line(body):
+    content = ("Securities registered pursuant to Section 12(b) of the Act: "
+               "Title of each class Name of each exchange on which registered " + body +
+               " Securities registered pursuant to Section 12(g): None")
+    rows = parse_filing(
+        content, cik=123, form_type="40FR12B", accession_number="0000000123-20-000001",
+        filing_date="2020-01-01", source_url="https://www.sec.gov/Archives/test", symbols=["TODAY"],
+    )
+    assert not any(row["listed_type"] == "ordinary_direct" for row in rows)
+    assert all(row["symbol"] is None for row in rows)
+
+
+def test_positioned_common_share_prose_without_cover_column_headings_is_not_listing_evidence():
+    rows = parse_filing(
+        "Securities registered pursuant to Section 12(b): Common Shares NEW YORK STOCK EXCHANGE "
+        "Securities registered pursuant to Section 12(g): None",
+        cik=123, form_type="40FR12B", accession_number="0000000123-20-000001",
+        filing_date="2020-01-01", source_url="https://www.sec.gov/Archives/test", symbols=["TODAY"],
+    )
+    assert not rows
+
+
+def test_legacy_voting_cover_does_not_choose_between_two_unbound_equity_classes():
+    rows = parse_filing(
+        """<p>Securities registered pursuant to Section 12(b):</p>
+        <table><tr><th>Title of each class</th><th>Name of each exchange on which registered</th></tr>
+        <tr><td>Subordinate Voting Shares</td><td>NASDAQ Stock Market</td></tr>
+        <tr><td>Variable Voting Shares</td><td>NASDAQ Stock Market</td></tr></table>
+        <p>Securities registered pursuant to Section 12(g): None</p>""",
+        cik=123, form_type="40FR12B", accession_number="0000000123-20-000001",
+        filing_date="2020-01-01", source_url="https://www.sec.gov/Archives/test", symbols=["TODAY"],
+    )
+    assert not rows
+
+
+def test_historical_american_exchange_does_not_make_a_preference_line_ordinary():
+    rows = parse_filing(
+        """<p>Securities registered pursuant to Section 12(b):</p>
+        <table><tr><th>Title of each class</th><th>Trading Symbol</th>
+        <th>Name of each exchange on which registered</th></tr>
+        <tr><td>Series A Preferred Shares</td><td>PREF</td><td>American Stock Exchange</td></tr></table>""",
+        cik=123, form_type="40FR12B", accession_number="0000000123-20-000001",
+        filing_date="2020-01-01", source_url="https://www.sec.gov/Archives/test",
+    )
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "PREF" and rows[0]["listed_type"] == "unknown"
+    assert rows[0]["ordinary_candidate"] is False
 
 
 @pytest.mark.parametrize("name,ratio", [
@@ -975,3 +1088,188 @@ def test_preferred_ads_cannot_consume_an_ordinary_issuer_ratio(db):
     add_ratio(db, symbol=None)
     add_ratio(db, source="item_12d")
     assert resolve(db, "2020-01-02")[0] == "none"
+
+
+def _parse_ratio_transition_fixture(name):
+    metadata = json.loads((FIXTURES / "ratio_transition_regressions.json").read_text(encoding="utf-8"))
+    meta = next(item for item in metadata if item["name"] == name)
+    payload = (FIXTURES / meta["fixture"]).read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == meta["sha256"]
+    assert b"\r" not in payload
+    kwargs = {key: meta[key] for key in ("cik", "form_type", "accession_number", "filing_date", "source_url")}
+    return parse_filing(payload.decode("utf-8"), **kwargs)
+
+
+def test_original_honda_2007_reciprocal_transitions_keep_new_regimes_and_their_own_dates():
+    rows = _parse_ratio_transition_fixture("honda_2007_6k_ratio_transitions")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"]) for row in rows} == {
+        (1, 1, "2006-07-01"), (1, 2, "2002-01-10"),
+    }
+    assert sum(row["effective_from"] == "2006-07-01" for row in rows) == 3
+    assert {row["available_on"] for row in rows} == {"2007-03-14"}
+    assert all(row["source_kind"] == "ratio_change_6k" for row in rows)
+
+
+@pytest.mark.parametrize("name", ["pldt_2002_charter_not_ratio_change", "fms_2008_tax_not_ratio_date"])
+def test_original_non_ads_effective_dates_do_not_date_undated_ads_ratios(name):
+    assert _parse_ratio_transition_fixture(name) == []
+
+
+def test_original_tal_transition_retains_explicit_class_a_share_antecedent():
+    rows = _parse_ratio_transition_fixture("tal_2017_class_a_ratio_change")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"], row["underlying_class"])
+            for row in rows} == {(1, 3, "2017-08-16", "class_a")}
+
+
+def test_original_dated_current_ratio_is_kept_without_an_old_numeric_side():
+    rows = _parse_ratio_transition_fixture("osn_2017_dated_current_ratio")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(3, 1, "2016-08-22")}
+
+
+@pytest.mark.parametrize("name,ratio,effective", [
+    ("mechel_2015_ordinary_adr_change", (2, 1), "2016-01-12"),
+    ("james_hardie_2016_cufs_adr_change", (1, 1), "2015-09-18"),
+])
+def test_original_adr_transitions_retain_the_new_ratio_and_explicit_unit_direction(name, ratio, effective):
+    rows = _parse_ratio_transition_fixture(name)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(*ratio, effective)}
+    assert all(row["ordinary_candidate"] for row in rows)
+
+
+def test_explicitly_dated_current_ratio_label_is_not_a_former_ratio():
+    rows = _parse_6k_transition_text(
+        "The current ADS ratio is one ADS representing three ordinary shares, effective from July 1, 2020."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(3, 1, "2020-07-01")}
+
+
+def _parse_6k_transition_text(text):
+    return parse_filing(text, cik=715153, form_type="6-K", accession_number="0001193125-07-052771",
+                        filing_date="2020-08-01", source_url="https://www.sec.gov/Archives/test")
+
+
+@pytest.mark.parametrize("new_side", [
+    "one ADS representing twenty ordinary shares",
+    "one ADS, each representing twenty ordinary shares",
+])
+def test_forward_from_to_clause_is_not_misread_as_a_reciprocal_ratio(new_side):
+    rows = _parse_6k_transition_text(
+        "The ADS ratio changed from one ADS representing one ordinary share to "
+        f"{new_side}, effective July 1, 2020."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in rows} == {(20, 1)}
+
+
+def test_reciprocal_american_share_receipt_parentheses_end_the_instrument():
+    instrument = "American share (evidenced by depositary receipts)"
+    rows = _parse_6k_transition_text(
+        f"The depositary ratio changed from two ordinary shares to one {instrument} "
+        f"to one ordinary share to one {instrument}, effective July 1, 2020."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(1, 1, "2020-07-01")}
+
+
+def test_compact_ratio_without_share_to_depositary_direction_is_not_guessed():
+    assert _parse_6k_transition_text(
+        "The ADR ratio changed from a 5-to-1 ratio to a 1-to-1 ratio, effective July 1, 2020."
+    ) == []
+
+
+@pytest.mark.parametrize("later_date", [", effective July 1, 2020", ""])
+def test_two_transitions_in_one_sentence_never_share_the_first_event_date(later_date):
+    assert _parse_6k_transition_text(
+        "The ADR ratio changed from one ADR representing one ordinary share to one ADR representing two "
+        "ordinary shares, effective January 1, 2020, and from one ADR representing two ordinary shares "
+        f"to one ADR representing five ordinary shares{later_date}."
+    ) == []
+
+
+def test_adjacent_undated_change_does_not_borrow_the_previous_transition_date():
+    rows = _parse_6k_transition_text(
+        "The ADR ratio changed from one ADR representing one ordinary share to one ADR representing two "
+        "ordinary shares, effective January 1, 2020. Separately, the ratio will change from one ADR "
+        "representing two ordinary shares to one ADR representing five ordinary shares."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(2, 1, "2020-01-01")}
+
+
+def test_charter_effective_date_with_an_ads_mention_does_not_date_a_ratio_transition():
+    assert _parse_6k_transition_text(
+        "The ADS ratio will change from one ADS representing one ordinary share to one ADS representing five "
+        "ordinary shares. The amended charter became effective January 1, 2020 while the ADSs continued trading."
+    ) == []
+
+
+def test_conflicting_dates_for_the_same_announced_change_remain_unresolved():
+    assert _parse_6k_transition_text(
+        "The ADS ratio will change from one ADS representing one ordinary share to one ADS representing five "
+        "ordinary shares. The effective date of the ratio change is January 1, 2020. "
+        "The effective date of the ratio change is July 1, 2020."
+    ) == []
+
+
+def test_ratio_transition_does_not_inherit_a_neighboring_preferred_program_class():
+    rows = _parse_6k_transition_text(
+        "The Class B preferred ADS program is separate. The ordinary ADS ratio changed from one ADS "
+        "representing one ordinary share to one ADS representing four ordinary shares, effective July 1, 2020."
+    )
+    assert rows
+    assert {row["underlying_class"] for row in rows} == {None}
+    assert all(row["ordinary_candidate"] for row in rows)
+
+
+def test_ratio_change_heading_connects_a_directly_dated_depositary_entitlement():
+    rows = _parse_6k_transition_text(
+        "Ratio change. Effective October 1, 2020, each American Depositary Share represents five ordinary shares."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(5, 1, "2020-10-01")}
+
+
+def test_ratio_heading_does_not_connect_a_tax_date_to_an_undated_entitlement():
+    assert _parse_6k_transition_text(
+        "Ratio change. Effective October 1, 2020, the German tax reform applies while each ADS represents five ordinary shares."
+    ) == []
+
+
+@pytest.mark.parametrize("proof", [
+    "",
+    " Each CUFS represents two ordinary shares.",
+    " One ADR is equivalent to one ordinary share/CUFS.",
+])
+def test_cufs_to_adr_counts_without_matching_ordinary_entitlement_are_not_share_ratios(proof):
+    assert _parse_6k_transition_text(
+        "The ADR ratio changed from a 5-to-1 CUFS-to-ADR ratio to a 10-to-1 ratio, effective July 1, 2020."
+        + proof
+    ) == []
+
+
+def test_compact_ordinary_share_to_adr_direction_does_not_require_a_cufs_conversion():
+    rows = _parse_6k_transition_text(
+        "The ADR ratio changed from a 5-to-1 ordinary shares-to-ADR ratio to a 10-to-1 ratio, effective July 1, 2020."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(10, 1, "2020-07-01")}
+
+
+def test_original_ccu_anaphoric_date_remains_attached_through_an_underlying_share_clarification():
+    rows = _parse_ratio_transition_fixture("ccu_2017_anaphoric_ratio_date")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(2, 1, "2012-12-20")}
+
+
+@pytest.mark.parametrize("intervening", [
+    "The board amended the company charter.",
+    "The company completed an unrelated acquisition.",
+])
+def test_anaphoric_effective_date_does_not_cross_an_unrelated_intervening_action(intervening):
+    assert _parse_6k_transition_text(
+        "The ADS ratio changed from one ADS representing five ordinary shares to one ADS representing two "
+        "ordinary shares. There was no change to the underlying ordinary shares. "
+        f"{intervening} This action was effective on December 20, 2012."
+    ) == []

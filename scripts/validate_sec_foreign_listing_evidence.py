@@ -56,6 +56,7 @@ def main() -> int:
             evidenced = {(int(o["cik"]), o["ticker_key"]) for o in observations
                          if o["available_on"] <= day
                          and (not o.get("retired_on") or o["retired_on"] > day)}
+            evidenced.intersection_update(lines)
             results = []
             for cik, symbol in lines:
                 row = conn.execute(

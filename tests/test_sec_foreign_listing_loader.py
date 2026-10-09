@@ -136,7 +136,9 @@ def test_unpartitionable_window_fails_explicitly():
 
 
 def test_full_text_keeps_issuer_form_and_date_filters_each_page():
-    client = SearchClient([response([{"filingUrl": "a"}], 2), response([{"filingUrl": "b"}])])
+    base = "https://www.sec.gov/Archives/edgar/data/123/"
+    client = SearchClient([response([{"accessionNo": "a", "filingUrl": base + "a.htm"}], 2),
+                           response([{"accessionNo": "b", "filingUrl": base + "b.htm"}])])
     rows = loader.search_text(client, '"ratio change"', ["6-K"], date(2010, 1, 1), date(2025, 12, 31), cik=123)
     assert len(rows) == 2
     for _, payload in client.calls:
@@ -146,9 +148,31 @@ def test_full_text_keeps_issuer_form_and_date_filters_each_page():
 
 
 def test_full_text_truncation_is_not_success():
-    client = SearchClient([response([{"filingUrl": "a"}], 2), response([])])
+    client = SearchClient([response([{"accessionNo": "a", "filingUrl": "https://www.sec.gov/Archives/edgar/data/123/a.htm"}], 2), response([])])
     with pytest.raises(ValueError, match="before declared total"):
         loader.search_text(client, "ratio", ["6-K"], date(2020, 1, 1), date(2020, 12, 31))
+
+
+@pytest.mark.parametrize("same_page", [False, True])
+def test_full_text_repeated_hit_cannot_satisfy_declared_total(same_page):
+    hit = {"accessionNo": "a", "filingUrl": "https://www.sec.gov/Archives/edgar/data/123/a.htm", "type": "6-K"}
+    pages = [response([hit, hit], 2)] if same_page else [response([hit], 2), response([hit])]
+    with pytest.raises(ValueError, match="repeated accession/document"):
+        loader.search_text(SearchClient(pages), "ratio", ["6-K"], date(2020, 1, 1), date(2020, 12, 31))
+
+
+def test_full_text_retains_distinct_same_accession_exhibits_in_declared_total():
+    hit = {"accessionNo": "a", "filingUrl": "https://www.sec.gov/Archives/edgar/data/123/a.txt", "type": "6-K"}
+    exhibit = {**hit, "type": "EX-99.1"}
+    other_exhibit = {**hit, "filingUrl": hit["filingUrl"].replace("a.txt", "b.htm"), "type": "EX-99.1"}
+    client = SearchClient([response([hit], 3), response([exhibit, other_exhibit])])
+    assert loader.search_text(client, "ratio", ["6-K"], date(2020, 1, 1), date(2020, 12, 31)) == [hit, exhibit, other_exhibit]
+
+
+def test_full_text_overstated_unique_page_is_not_success():
+    hits = [{"accessionNo": name, "filingUrl": f"https://www.sec.gov/Archives/edgar/data/123/{name}.htm"} for name in ("a", "b")]
+    with pytest.raises(ValueError, match="do not match declared total"):
+        loader.search_text(SearchClient([response(hits, 1)]), "ratio", ["6-K"], date(2020, 1, 1), date(2020, 12, 31))
 
 
 def test_discovery_version_requires_explicit_refresh_and_retains_old_manifest(tmp_path, monkeypatch):
@@ -176,6 +200,59 @@ def test_annual_query_tokenization_does_not_admit_late_notices(tmp_path, monkeyp
     assert loader.discover_issuer(loader.SecClient(tmp_path, offline=True),
                                   [{"cik": 123, "symbol": "ABC", "issuer_name": ""}],
                                   date(2020, 1, 1), date(2020, 12, 31)) == []
+
+
+@pytest.mark.parametrize("form", ["40FR12B", "40FR12B/A"])
+def test_canadian_registration_discovery_reaches_supported_parser(tmp_path, monkeypatch, form):
+    from scripts.sec_foreign_listing_parser import parse_filing
+    def search(client, query, start, end):
+        assert f'formType:"{form}"' in query
+        return [{"accessionNo": "0000000123-20-000001", "formType": form,
+                 "filedAt": "2020-03-01", "cik": "123",
+                 "filingUrl": "https://www.sec.gov/Archives/edgar/data/123/registration.htm"}]
+    monkeypatch.setattr(loader, "search_filings", search)
+    monkeypatch.setattr(loader, "search_text", lambda *_, **__: [])
+    documents = loader.discover_issuer(loader.SecClient(tmp_path, offline=True),
+                                      [{"cik": 123, "symbol": "TEST", "issuer_name": ""}],
+                                      date(2020, 1, 1), date(2020, 12, 31))
+    assert len(documents) == 1 and documents[0]["form"] == form
+    rows = parse_filing(
+        '<p>Securities registered pursuant to Section 12(b) of the Act:</p>'
+        '<table><tr><th>Title of each class</th><th>Trading Symbol</th>'
+        '<th>Name of each exchange on which registered</th></tr>'
+        '<tr><td>Common shares</td><td>TEST</td><td>NYSE</td></tr></table>',
+        cik=123, form_type=form, accession_number=documents[0]["adsh"],
+        filing_date=documents[0]["filed"], source_url=documents[0]["source_url"])
+    assert any(row["listed_type"] == "ordinary_direct" for row in rows)
+
+
+@pytest.mark.parametrize("term", ["ADS", "ADR", "GDR", "GDS", "depositary shares",
+                                  "depositary receipts", "depository shares", "depository receipts",
+                                  "depositary share", "depositary receipt", "depository share", "depository receipt",
+                                  "American shares", "American share"])
+def test_ratio_change_discovery_covers_parser_depositary_terms(tmp_path, monkeypatch, term):
+    from scripts.sec_foreign_listing_parser import parse_filing
+    monkeypatch.setattr(loader, "search_filings", lambda *_, **__: [])
+    def search(client, query, forms, start, end, *, cik):
+        # Model a filing returned only when the query includes its terminology.
+        assert term in query
+        assert tuple(forms) == ("6-K", "6-K/A") and cik == 123
+        if term.startswith("American share"):
+            assert "receipts" in query
+        return [{"accessionNo": "0000000123-20-000001", "formType": "6-K",
+                 "filedAt": "2020-03-01", "cik": "123",
+                 "filingUrl": "https://www.sec.gov/Archives/edgar/data/123/change.htm"}]
+    monkeypatch.setattr(loader, "search_text", search)
+    documents = loader.discover_issuer(loader.SecClient(tmp_path, offline=True),
+                                      [{"cik": 123, "symbol": "TEST", "issuer_name": ""}],
+                                      date(2020, 1, 1), date(2020, 12, 31))
+    assert len(documents) == 1
+    wording = term + " (evidenced by depositary receipts)" if term.startswith("American share") else term
+    rows = parse_filing(f'The ratio will change: {wording}, each representing five ordinary shares. '
+                       'The ratio change is effective on March 5, 2020.',
+                       cik=123, form_type="6-K", accession_number=documents[0]["adsh"],
+                       filing_date="2020-03-01", source_url=documents[0]["source_url"], symbols=["TEST"])
+    assert any(row["ratio_numerator"] == 5 and row["ratio_denominator"] == 1 for row in rows)
 
 
 def test_securities_description_candidates_preserve_filing_date_and_role():
@@ -1000,12 +1077,13 @@ def test_late_validation_failure_rolls_back_already_flushed_batches(db, monkeypa
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_sources").fetchone()[0] == 0
 
 
-def _completed_shard_artifacts(tmp_path):
+def _completed_shard_artifacts(tmp_path, *, binding="registrant_cik"):
     from scripts import run_sec_foreign_listing_evidence_shards as shards
     documents = []
     for number in range(6):
         source = {**_source(), "source_url": f"https://www.sec.gov/Archives/edgar/data/123/report-{number}.htm",
-                  "form": "20-F", "filed": "2020-03-01", "binding": "registrant_cik", "symbols": ["ABC"]}
+                  "form": "20-F", "filed": "2020-03-01", "binding": binding,
+                  "issuer_name": "ACME PLC", "symbols": ["ABC"]}
         documents.append(loader.canonical_document(source))
     assert {shards.partition(document) for document in documents} == {0, 1}
     parent = {"complete": True, "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"},
@@ -1088,6 +1166,83 @@ def test_shard_partition_keeps_all_issuer_bindings_of_same_url_together():
     from scripts import run_sec_foreign_listing_evidence_shards as shards
     source = {"source_url": "https://www.sec.gov/Archives/edgar/data/123/report.htm", "cik": 123}
     assert shards.partition(source) == shards.partition({**source, "cik": 456})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("binding", "registrant_cik"), ("issuer_name", "A DIFFERENT ISSUER"),
+    ("cik", 123.0),
+    ("symbols", ["OTHER"]), ("registrant_cik", "999"),
+    ("document_role", "securities_description"), ("attachment_type", "EX-2.1"),
+    ("attachment_description", "Different securities"),
+    ("query_accepted_on", "2020-03-02"), ("query_filed_at", "2020-03-02T12:00:00Z"),
+    ("filing_date_proof", {"source": "w1_same_accession", "filed": "2020-03-01", "records": []}),
+    ("publication_floor_on", "2020-03-02"),
+    ("publication_floor_proof", {"source": "discovery_reported_publication_floor",
+                                 "publication_floor_on": "2020-03-01", "tampered": True}),
+    ("source_sha256", "c" * 64), ("new_discovery_metadata", "tampered"),
+])
+def test_shards_reject_changed_parsing_and_binding_metadata_before_collection_and_combine(
+        tmp_path, monkeypatch, field, value):
+    shards, _, _ = _completed_shard_artifacts(tmp_path, binding="issuer_name_in_f6")
+    directory = tmp_path / "parts" / "0"
+    input_path = directory / "input-manifest.json"
+    child_path = directory / "manifest.json"
+    input_manifest = json.loads(input_path.read_text())
+    input_manifest["documents"][0][field] = value
+    loader.write_json(input_path, input_manifest)
+    monkeypatch.setattr(loader, "parse_manifest", lambda *_args, **_kwargs: pytest.fail("Altered child reached parsing"))
+    monkeypatch.setattr(loader, "load_key", lambda *_args: pytest.fail("Altered child reached credentials"))
+    with pytest.raises(ValueError, match="immutable parent"):
+        shards.collect(tmp_path, 0)
+    child = json.loads(child_path.read_text())
+    child["documents"][0][field] = value
+    loader.write_json(child_path, child)
+    output = tmp_path / "combined.jsonl"
+    output.write_bytes(b"previous-artifact\n")
+    with pytest.raises(ValueError):
+        shards.combine(tmp_path, output)
+    assert output.read_bytes() == b"previous-artifact\n"
+
+
+def test_historical_coverage_excludes_retired_tickers_outside_fixed_universe(tmp_path, monkeypatch):
+    import sys
+    import psycopg
+    from scripts import validate_sec_foreign_listing_evidence as validator
+
+    universe = tmp_path / "universe.json"
+    observations = tmp_path / "observations.json"
+    output = tmp_path / "validation"
+    loader.write_json(universe, [{"cik": 123, "symbol": "ABC"}])
+    loader.write_json(observations, [
+        {"cik": 123, "ticker_key": "ABC", "available_on": "2009-01-01", "retired_on": "2015-12-31"},
+        {"cik": 456, "ticker_key": "RETIRED", "available_on": "2009-01-01", "retired_on": "2015-12-31"},
+    ])
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def execute(self, query, parameters=()):
+            if parameters:
+                assert parameters[:2] == (123, "ABC")
+            return self
+
+        def fetchone(self):
+            return {"status": "resolved", "listing_status": "resolved", "listed_type": "ordinary_direct"}
+
+    monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: Connection())
+    monkeypatch.setenv("SEC_FOREIGN_TEST_DATABASE_URL", "unused-local-test-connection")
+    monkeypatch.setattr(sys, "argv", ["validator", "--universe", str(universe),
+                                     "--observations", str(observations), "--output-dir", str(output),
+                                     "--sample-size", "0"])
+    assert validator.main() == 0
+    coverage = json.loads((output / "coverage.json").read_text())["coverage"]
+    assert [row["w1_evidenced_lines"] for row in coverage] == [1, 0, 0, 0]
+    assert [row["resolved_among_w1_evidenced"] for row in coverage] == [1, 0, 0, 0]
+    assert all(row["w1_evidenced_lines"] <= row["foreign_lines"] for row in coverage)
 
 
 def _sgml_submission(original, *, accession="0001234567-20-000001", duplicate=False):

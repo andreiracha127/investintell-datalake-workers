@@ -1,0 +1,13 @@
+{
+  "name": "qtrrf_2008_40fr12b",
+  "fixture": "qtrrf_2008_40fr12b.htm",
+  "cik": 1339688,
+  "symbol": "QTRRF",
+  "accession_number": "0001062993-08-000528",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1339688/000106299308000528/form40f.htm",
+  "filing_date": "2008-02-13",
+  "form_type": "40FR12B",
+  "sha256": "779a6b55529a38f2fa9b462bf37028f9abf4926a51208ae99d3e35a98dea5be0",
+  "original_source_sha256": "779a6b55529a38f2fa9b462bf37028f9abf4926a51208ae99d3e35a98dea5be0",
+  "excerpt": "Full original SEC filing, CRLF normalized to LF only"
+}
