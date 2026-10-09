@@ -40,15 +40,20 @@ from collections import Counter
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Iterator
+from typing import Iterator
 from zoneinfo import ZoneInfo
 
 # W1's contract module is imported read-only: extra filer-text rules live here.
-from scripts.load_sec_ticker_cik_history import normalize_symbol
+from scripts.load_sec_ticker_cik_history import (
+    EXCHANGE_TOKENS,
+    PLACEHOLDER_KEYS,
+    _is_suffix_token,
+    normalize_symbol,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "sec_insider_ticker_evidence.sql"
-PARSER_VERSION = "sec_insider_v1"
+PARSER_VERSION = "sec_insider_v2"
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 DERA_LISTING_URL = "https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets"
 SECAPI_BASE = "https://api.sec-api.io"
@@ -64,7 +69,20 @@ _MONTHS = {name: n for n, name in enumerate(
 _PREFIX = re.compile(r"^(?:NYSE(?:\s*(?:AMERICAN|ARCA|MKT))?|NASDAQ(?:\s*(?:GS|GM|CM))?|AMEX|OTC(?:BB|QB|QX)?|OTC\s+MARKETS|CBOE|TSX|LSE)\s*[:/\s]\s*", re.I)
 _OTC_SUFFIX = re.compile(r"(?<=[A-Z0-9])(?:[.,]\s*|\s+)(?:OB|PK)\b", re.I)
 _WRAPPER = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]")
-_PLACEHOLDERS = {"", "NONE", "NA", "NOSYMBOL", "NOTRADINGSYMBOL", "NOTAPPLICABLE", "NIL", "NULL", "TRUE", "FALSE", "TBD", "OTCBB", "XXXXXXXXXX"}
+# Whole-field placeholders: W1's set plus phrases insider filers type (DERA 2006-2026).
+_PLACEHOLDERS = PLACEHOLDER_KEYS | {
+    "", "NOSYMBOL", "NOTRADINGSYMBOL", "NOTICKER", "NOTPUBLIC", "NOTTRADING", "NONEYET",
+    "TOCOME", "SEEREMARK", "SEEREMARKS", "INREMARKS", "APPFOR", "APPLIED", "APPLIEDFOR",
+    "PENDING", "UNKNOWN", "PRIVATE", "SYMBOL", "XXXXXXXXXX",
+}
+# In a multi-word field these qualify a symbol rather than name one: exchanges and
+# OTC tiers (FLL AMEX), country codes (FF US, TAM LN) and when-issued (CARR WI).
+_QUALIFIERS = EXCHANGE_TOKENS | {"NSYE", "OTBB", "OB", "PK", "US", "LN", "WI"}
+_EXCHANGE_LABEL = re.compile(r"[A-Za-z.]{2,6}:")  # ASX: HTW, TSX.V: AFH
+# A corporate form makes a multi-word field an issuer name (DEERE & CO, XPEL, INC.).
+_COMPANY_WORDS = frozenset({"INC", "CORP", "CO", "COMPANY", "LTD", "LLC", "LP", "PLC", "GROUP"})
+_LIST_DELIMITER = re.compile(r"[,;&]|\s+AND\s+", re.I)
+_STATE_DESIGNATOR = re.compile(r"(?<![A-Za-z0-9])/[A-Z]{2}/")
 _TOKEN_SECRET = re.compile(r"((?:token|api[_-]?key|password)=)[^&\s'\"]+", re.I)
 _SECRETS: set[str] = set()
 NEW_YORK = ZoneInfo("America/New_York")
@@ -91,42 +109,110 @@ def _key(value: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", value.upper())
 
 
+def _is_placeholder(value: str) -> bool:
+    return _key(value) in _PLACEHOLDERS or bool(re.fullmatch(r"X{3,}", _key(value)))
+
+
+def _letters(value: str) -> int:
+    return len(re.sub(r"[^A-Za-z]", "", value))
+
+
+def _is_suffix(token: str) -> bool:
+    """A class, series, line or preferred suffix (``A``, ``WS``, ``PrB``, ``PR.A``)."""
+    return _is_suffix_token(token) or _is_suffix_token(re.sub(r"[.\-]", "", token).upper())
+
+
+def _item_tokens(item: str) -> list[tuple[str, bool]]:
+    """Tokens of one list item. True marks a token separated from the previous
+    one by whitespace alone; a slash or a standalone dash (``PHC - PIHC``) lists."""
+    tokens: list[tuple[str, bool]] = []
+    spaced = True
+    for piece in re.split(r"(/)|\s+", item):
+        if not piece:
+            continue
+        if piece == "/" or re.fullmatch(r"[-.:]+", piece):
+            spaced = False
+            continue
+        tokens.append((piece, spaced))
+        spaced = True
+    return tokens
+
+
+def _sibling_line(previous: str, token: str) -> str | None:
+    """The sibling class a lone listed class names: ``BWINA / B`` is BWINB,
+    ``CTMMA,B`` is CTMMB and ``SEAL-PA/PB`` is SEAL-PB."""
+    if re.fullmatch(r"[ABCK]", token, re.I) and re.fullmatch(r"[A-Z]{4,}[ABCK]", previous, re.I):
+        return previous[:-1] + token if previous[-1].upper() != token.upper() else None
+    match = re.fullmatch(r"(.+[-.])([^-.]+)", previous)
+    if (match and len(match[2]) == len(token) and match[2].upper() != token.upper()
+            and _is_suffix_token(match[2].upper()) and _is_suffix_token(token.upper())):
+        return match[1] + token
+    return None
+
+
+def _drop_words(items: list, unwanted) -> list:
+    """Remove unwanted words, unless they are the only words in the field."""
+    kept = [[(t, s) for t, s in tokens if not unwanted(t)] for tokens in items]
+    return [tokens for tokens in kept if tokens] if any(kept) else items
+
+
 def normalize_symbols(raw: str) -> list[str]:
     """Normalize the free-text issuer symbol without changing W1's normalizer.
 
-    Explicit list delimiters split unconditionally (including ``Z AND ZG``).
-    A slash or space splits full symbols, while a one-letter class suffix
-    stays attached (``BRK/A`` and ``BF'B`` become ``BRK-A`` and ``BF-B``).
+    Placeholders and prose are rejected whole before any split: ``NOT LISTED``,
+    ``SEE REMARK``, issuer names (``LEE ENT``, ``XPEL, INC.``). Explicit list
+    delimiters split (``LTR;CG``, ``Z AND ZG``), as does a slash (``ABI/CRA``).
+    A space splits only class variants of one root (``CRDA CRDB``). Exchange,
+    country and when-issued words are dropped (``FF US``). A class, series or
+    preferred suffix stays attached (``BRK/A``, ``BF'B``, ``HFC PrB``); a lone
+    listed class names the sibling line (``BWINA / B``).
     """
     value = html.unescape(raw).strip()
     value = _WRAPPER.sub(lambda m: m.group(1) or m.group(2) or "", value)
     value = value.strip('"\u201c\u201d?').strip()
     value = value.strip("'\u2018\u2019").strip()
-    if _key(value) in _PLACEHOLDERS or re.fullmatch(r"X{3,}", _key(value)):
+    if _is_placeholder(value):
         return []
     value = _OTC_SUFFIX.sub("", value)
-    symbols: list[str] = []
-    for part in re.split(r"[,;&]|\s+AND\s+", value, flags=re.I):
-        part = _PREFIX.sub("", part.strip()).strip('"?').strip()
-        if not part:
-            continue
+    # EDGAR's state-of-incorporation designator belongs to a name (/DE/CHD).
+    value = _STATE_DESIGNATOR.sub(" ", value).strip()
+    items: list[list[tuple[str, bool]]] = []
+    for item in _LIST_DELIMITER.split(value):
+        item = _PREFIX.sub("", item.strip()).strip('"?').strip()
         # Apostrophes are symbol separators, not letters to be silently glued.
-        part = re.sub(r"['\u2018\u2019]", "-", part)
-        tokens = [t for t in re.split(r"[\s/]+", part) if t]
-        groups: list[str] = []
-        for token in tokens:
-            letters = len(re.sub(r"[^A-Za-z]", "", token))
-            previous_letters = len(re.sub(r"[^A-Za-z]", "", groups[-1])) if groups else 0
-            if groups and (letters < 2 or previous_letters < 2):
+        tokens = _item_tokens(re.sub(r"['\u2018\u2019]", "-", item))
+        if tokens:
+            items.append(tokens)
+    items = _drop_words(items, lambda t: _key(t) in _QUALIFIERS)
+    items = _drop_words(items, _EXCHANGE_LABEL.fullmatch)  # BDGV: OTC keeps BDGV
+    words = [_key(t) for tokens in items for t, _ in tokens]
+    if len(words) > 1 and any(w and (w in _PLACEHOLDERS or w in _COMPANY_WORDS) for w in words):
+        return []
+    groups: list[str] = []
+    for tokens in items:
+        for position, (token, spaced) in enumerate(tokens):
+            sibling = _sibling_line(groups[-1], token) if groups and (position == 0 or not spaced) else None
+            if sibling:
+                groups.append(sibling)
+            elif position == 0:
+                # A lone class letter after a list delimiter belongs to the symbol before it.
+                if groups and len(tokens) == 1 and len(_key(token)) == 1 and _letters(token) == 1:
+                    groups[-1] += "-" + token
+                else:
+                    groups.append(token)
+            elif _letters(token) < 2 or _letters(groups[-1]) < 2 or _is_suffix(token):
                 groups[-1] += "-" + token
+            elif spaced and len(os.path.commonprefix([_key(groups[-1]), _key(token)])) < 2:
+                return []  # words of a name or a sentence, not class variants of one root
             else:
                 groups.append(token)
-        for group in groups:
-            if _key(group) in _PLACEHOLDERS or re.fullmatch(r"X{3,}", _key(group)):
-                continue
-            ticker, _ = normalize_symbol(group)
-            if ticker and ticker not in symbols:
-                symbols.append(ticker)
+    symbols: list[str] = []
+    for group in groups:
+        if _is_placeholder(group):
+            continue
+        ticker, _ = normalize_symbol(group)
+        if ticker and ticker not in symbols:
+            symbols.append(ticker)
     return symbols
 
 
@@ -623,6 +709,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.verify_cache:
             # A ZIP removed from the remote catalogue is not freshly verified.
             paths = [p for p in paths if source_of(p) != "dera" or p in selected_remote]
+        if args.download_secapi and not args.packages:
+            # The requested month window bounds the load, not only the download:
+            # a persistent cache may hold archives outside it.
+            window = {p.resolve() for p in selected_remote}
+            paths = [p for p in paths if source_of(p) != "sec-api" or p.resolve() in window]
         if not paths:
             parser.error("no insider packages selected")
         if args.dry_run:

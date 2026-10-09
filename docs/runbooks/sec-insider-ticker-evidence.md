@@ -8,9 +8,12 @@ complete container lists; the loader consumes every requested monthly archive.
 It records early non-XML filings separately and keeps unusable raw symbols for audit.
 
 The parser imports W1's `normalize_symbol` without changing W1. Its extra rules
-unwrap filer punctuation, remove exchange/OTC markers and split explicit lists.
-Slash/space splitting preserves single-letter class suffixes such as `BRK/A`;
-explicit `AND` lists also cover `Z AND ZG`. The source has no class mapping.
+unwrap filer punctuation and remove exchange, OTC, country and when-issued markers.
+Placeholders and prose (`NOT LISTED`, `SEE REMARK`, `LEE ENT`, `XPEL, INC.`) are
+rejected whole before any split. Explicit lists and slashes split (`LTR;CG`,
+`ABI/CRA`, `Z AND ZG`); a space splits only class variants of one root
+(`CRDA CRDB`). Class and preferred suffixes stay attached (`BRK/A`, `HFC PrB`),
+and a lone listed class names its sibling (`BWINA / B`). The source has no class mapping.
 
 ## Point-in-time query
 
@@ -83,7 +86,8 @@ python -m scripts.validate_sec_insider_ticker_evidence --export-only --snapshots
 python -m scripts.validate_sec_insider_ticker_evidence --local-dsn postgresql://postgres@127.0.0.1:55461/w1b --snapshots E:/investintell-data/w1b/production
 ```
 
-An interrupted export resumes existing CSVs; use a new empty snapshots directory
+Exports are written atomically. An interrupted export resumes only complete CSVs
+(psql header and final newline) and re-exports the rest; use a new empty snapshots directory
 for a new production snapshot. Validation writes `coverage.json`, including the
 coverage table, cover agreement and numerical clean-handover evaluation.
 

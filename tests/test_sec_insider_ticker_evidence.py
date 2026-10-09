@@ -97,6 +97,62 @@ def test_additional_symbol_rules(raw, expected):
     assert insider.normalize_symbols(raw) == expected
 
 
+# Real DERA ISSUERTRADINGSYMBOL values (2006q1-2026q3). Splitting the prose
+# ones used to emit fake symbols, some of them other issuers' real tickers.
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "NOT LISTED", "not listed", "NOT TRADED", "NOT PUBLIC", "NO TICKER", "No Ticker",
+        "SEE REMARK", "IN REMARKS", "(to come)", "None Yet", "app. for", "PENDING",
+        "unknown", "PRIVATE", "NOT APPLICABLE", "NO SYMBOL", "[ N/A ]",
+        # Issuer names: SEE, FB, CNB and CO are other issuers' tickers.
+        "LEE ENT", "EAST FORK", "BAAP FB", "CNB CORP", "HCA INC.", "XPEL, INC.",
+        "DEERE & CO", "OWL ROCK T", "hcsb finan", "MSO II", "OTCM PRKA",
+    ],
+)
+def test_placeholder_and_prose_fields_are_rejected_before_splitting(raw):
+    assert insider.normalize_symbols(raw) == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Real multi-symbol fields keep every symbol.
+        ("JWA/JWB", ["JWA", "JWB"]),
+        ("jwa/jwb", ["JWA", "JWB"]),
+        ("CRDA CRDB", ["CRDA", "CRDB"]),
+        ("TAP.A TAP", ["TAP-A", "TAP"]),
+        ("Z AND ZG", ["Z", "ZG"]),
+        ("ABI/CRA", ["ABI", "CRA"]),
+        ("LTR;CG", ["LTR", "CG"]),
+        ("PHC - PIHC", ["PHC", "PIHC"]),
+        ("N O G", ["N-O-G"]),
+        # Exchange, country and when-issued words qualify the symbol.
+        ("FF US", ["FF"]),
+        ("CARR WI", ["CARR"]),
+        ("FLL AMEX", ["FLL"]),
+        ("ASX: HTW", ["HTW"]),
+        ("BDGV: OTC", ["BDGV"]),
+        ("OTC;RAKR", ["RAKR"]),
+        ("/DE/CHD", ["CHD"]),
+        # Preferred and line suffixes attach; a lone listed class is the sibling line.
+        ("HFC PrB", ["HFC-PB"]),
+        ("HBC PR A", ["HBC-PA"]),
+        ("REN/REN WS", ["REN", "REN-WS"]),
+        ("PDAC - UN", ["PDAC-UN"]),
+        ("BWINA / B", ["BWINA", "BWINB"]),
+        ("CTMMA,B", ["CTMMA", "CTMMB"]),
+        ("SEAL-PA/PB", ["SEAL-PA", "SEAL-PB"]),
+        # Single words that are real tickers (Sealed Air, Thoma Bravo Advantage).
+        ("SEE", ["SEE"]),
+        ("TBA", ["TBA"]),
+        ("NYSE: CO", ["CO"]),
+    ],
+)
+def test_real_symbol_lists_survive_prose_rejection(raw, expected):
+    assert insider.normalize_symbols(raw) == expected
+
+
 def _dera_zip(tmp_path, quarter="2026q3", *, replacement_rows=None):
     source = FIXTURE / "dera" / quarter / "SUBMISSION.tsv"
     package = tmp_path / f"{quarter}_form345.zip"
@@ -276,6 +332,42 @@ def test_secapi_rejects_incomplete_or_duplicate_monthly_catalogue(tmp_path, cata
     assert client.downloads == []
 
 
+def test_secapi_download_window_bounds_the_load_from_a_persistent_cache(tmp_path, monkeypatch, capsys):
+    accession = "0001181431-03-009430"
+    fixture = FIXTURE / "secapi" / accession
+    secapi = tmp_path / "secapi"
+    archives = {}
+    for month in ("2003-05", "2003-06", "2004-01"):
+        package = secapi / "form-5-files" / month[:4] / f"{month}.zip"
+        package.parent.mkdir(parents=True, exist_ok=True)
+        folder = f"{month}/{accession.replace('-', '')}"
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.write(fixture / "metadata.json", f"{folder}/metadata.json")
+            archive.write(fixture / "ownership.xml", f"{folder}/rrd10184.xml")
+        archives[month] = package
+    windows = []
+
+    def sync(out_dir, *, first, last, api_key):
+        windows.append((first, last))
+        return [archives["2003-05"], archives["2003-06"]]
+
+    monkeypatch.setattr(insider, "sync_secapi", sync)
+    monkeypatch.setattr(insider, "load_api_key", lambda dotenv: "test-key")
+    base = ["--packages-dir", str(tmp_path / "dera"), "--secapi-dir", str(secapi), "--dry-run"]
+
+    def loaded(argv):
+        assert insider.main(argv) == 0
+        return [json.loads(line)["package"] for line in capsys.readouterr().out.splitlines()
+                if '"package"' in line]
+
+    window = ["--download-secapi", "--from", "2003-05", "--to", "2003-06"]
+    assert loaded(base + window) == ["form-5-files/2003/2003-05.zip", "form-5-files/2003/2003-06.zip"]
+    assert windows == [("2003-05", "2003-06")]
+    # Explicit packages override the window; without a download the cache loads whole.
+    assert loaded(base + window + [str(archives["2004-01"])]) == ["form-5-files/2004/2004-01.zip"]
+    assert len(loaded(base)) == 3
+
+
 def test_http_client_preserves_user_agent_and_request_spacing_without_network(monkeypatch):
     requests = []
     sleeps = []
@@ -403,6 +495,38 @@ def test_dera_listing_handles_compressed_http_response(tmp_path):
     (path,) = insider.sync_dera(tmp_path, verify_cache=True, client=client)
     assert client.downloads == [path]
     assert path.read_bytes() == client.payload
+
+
+def test_resumed_production_export_reexports_interrupted_files(tmp_path, monkeypatch):
+    from scripts import validate_sec_insider_ticker_evidence as validation
+
+    monkeypatch.setattr(validation, "_check_query_window", lambda: None)
+    exported = []
+
+    def psql(args, **kwargs):
+        query = args[-1]
+        if "current_user" in query:
+            return SimpleNamespace(returncode=0, stdout="mcp_ro,on,30s\n", stderr="")
+        exported.append(query)
+        body = ("ticker,first_price\nAAPL,1980-12-31\n" if "first_price" in query
+                else "ticker,status,cover_cik\nAAPL,resolved,320193\n")
+        return SimpleNamespace(returncode=0, stdout=body, stderr="")
+
+    monkeypatch.setattr(validation.subprocess, "run", psql)
+    # An interrupted write: the header and part of a row parse as a shorter CSV.
+    (tmp_path / "first_prices.csv").write_bytes(b"ticker,first_price\nAAPL,19")
+    (tmp_path / "cover_2007.csv").write_bytes(b"")
+    complete = b"ticker,status,cover_cik\nMSFT,resolved,789019\n"
+    (tmp_path / "cover_2008.csv").write_bytes(complete)
+    validation.export_production("psql", tmp_path)
+    assert len(exported) == len(validation.YEARS)  # every file except complete cover_2008
+    assert (tmp_path / "first_prices.csv").read_bytes() == b"ticker,first_price\nAAPL,1980-12-31\n"
+    assert (tmp_path / "cover_2007.csv").read_bytes() == b"ticker,status,cover_cik\nAAPL,resolved,320193\n"
+    assert (tmp_path / "cover_2008.csv").read_bytes() == complete
+    assert not list(tmp_path.glob("*.tmp"))
+    manifest = json.loads((tmp_path / "production_snapshot.json").read_text(encoding="utf-8"))
+    assert manifest["sha256"]["first_prices.csv"] == hashlib.sha256(
+        (tmp_path / "first_prices.csv").read_bytes()).hexdigest()
 
 
 @pytest.fixture(scope="module")

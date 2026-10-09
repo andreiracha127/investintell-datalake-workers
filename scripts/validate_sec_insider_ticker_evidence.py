@@ -19,11 +19,34 @@ YEARS = (2007, 2008, 2010, 2012, 2013, 2014, 2015, 2016, 2017, 2018)
 READ_OPTIONS = "-c default_transaction_read_only=on -c statement_timeout=30000 -c lock_timeout=5000"
 
 
-def export_production(psql: str, target: Path) -> None:
-    """Save price eligibility and cover states, without a present-day CIK prior."""
+def _check_query_window() -> None:
     now = dt.datetime.now(dt.timezone.utc)
     if dt.time(6) <= now.time().replace(tzinfo=None) < dt.time(8, 30):
         raise RuntimeError("Production exports are outside the allowed query window")
+
+
+def _complete_csv(text: str, header: str) -> bool:
+    """psql writes the header line first and ends every row with a newline."""
+    return text.startswith(header + "\n") and text.endswith("\n")
+
+
+def _reusable_export(path: Path, header: str) -> bool:
+    try:
+        return _complete_csv(path.read_text(encoding="utf-8"), header)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """An interrupted write leaves only the staged file, never a partial export."""
+    staged = path.with_name(path.name + ".tmp")
+    staged.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(staged, path)
+
+
+def export_production(psql: str, target: Path) -> None:
+    """Save price eligibility and cover states, without a present-day CIK prior."""
+    _check_query_window()
     target.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "PGOPTIONS": READ_OPTIONS, "PGCONNECT_TIMEOUT": "15", "PGSSLMODE": "disable"}
     base = [psql, "-X", "-q", "-w", "-h", "127.0.0.1", "-p", "65432", "-U", "mcp_ro",
@@ -40,26 +63,27 @@ def export_production(psql: str, target: Path) -> None:
         "FROM universe_constituents u CROSS JOIN LATERAL "
         f"sec_ticker_issuer_at(u.ticker, DATE '{y}-12-31') f ORDER BY u.ticker" for y in YEARS})
     for name, query in queries.items():
-        now = dt.datetime.now(dt.timezone.utc)
-        if dt.time(6) <= now.time().replace(tzinfo=None) < dt.time(8, 30):
-            raise RuntimeError("Production exports are outside the allowed query window")
-        if (target / name).exists():
+        _check_query_window()
+        header = "ticker,first_price" if name == "first_prices.csv" else "ticker,status,cover_cik"
+        # Only a complete earlier export is resumed; anything else is exported again.
+        if _reusable_export(target / name, header):
             print(json.dumps({"reused_export": name}), flush=True)
             continue
         result = subprocess.run(base + ["-c", f"COPY ({query}) TO STDOUT WITH (FORMAT CSV, HEADER TRUE)"],
             env=env, check=False, capture_output=True, text=True)
         if result.returncode:
             raise RuntimeError(f"Production psql export {name} failed: {result.stderr.strip()}")
-        (target / name).write_text(result.stdout, encoding="utf-8", newline="\n")
+        if not _complete_csv(result.stdout, header):
+            raise RuntimeError(f"Production psql export {name} is not a complete CSV")
+        _write_atomic(target / name, result.stdout)
         print(json.dumps({"export": name, "rows": len(result.stdout.splitlines()) - 1}), flush=True)
     files = [target / name for name in queries]
-    (target / "production_snapshot.json").write_text(json.dumps({
+    _write_atomic(target / "production_snapshot.json", json.dumps({
         "captured_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "first_exported_at": dt.datetime.fromtimestamp(min(p.stat().st_mtime for p in files), dt.timezone.utc).isoformat(),
         "identity": identity, "pgoptions": READ_OPTIONS,
         "universe_columns": ["ticker"], "years": YEARS,
-        "sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}, indent=2) + "\n",
-        encoding="utf-8", newline="\n")
+        "sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}, indent=2) + "\n")
 
 
 def validate(local_dsn: str, target: Path) -> dict:
