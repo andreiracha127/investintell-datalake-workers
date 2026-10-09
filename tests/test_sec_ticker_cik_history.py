@@ -5124,7 +5124,9 @@ def test_worker_detects_a_same_size_republication_by_its_validator_or_digest(
     calls.clear()
     stats = worker.run(dsn, calc_date="2024-11-15", client=client)
     assert [(p["inserted"], p["retired"]) for p in stats["packages"]] == [(1, 1)]
-    assert calls.count(("GET", FSN_BASE + "2024_10_notes.zip")) == 1  # fetched once
+    # Without a persistent cache the check's download is deleted at once and the
+    # load fetches the package again (Codex thread 4225169074).
+    assert calls.count(("GET", FSN_BASE + "2024_10_notes.zip")) == 2
     calls.clear()
     assert worker.run(dsn, calc_date="2024-11-15", client=client)["state"] == "noop"
     assert conn.execute(
@@ -5411,6 +5413,54 @@ def test_a_check_without_a_cache_holds_no_download(
     todo, fetched = worker._packages_to_load(conn, client, urls, work, keep=False)
     assert (todo, fetched) == ([], {})
     assert sizes == [1, 1] and list(work.glob("*.zip")) == []
+
+
+def test_a_batch_republication_without_a_cache_holds_one_download_at_a_time(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4225169074: three loaded packages, recorded without validators,
+    republished at the same size without validators, and WORKER_LIMIT=1. Without a
+    persistent cache the run never holds more than the one package it loads: a
+    digest check's download is deleted whatever it shows, and a republished
+    package is downloaded again when it loads."""
+    import tempfile
+
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [])
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    conn, dsn = schema_dsn
+    build = tmp_path / "build"
+    build.mkdir()
+    names = ("2024q1_notes.zip", "2024q2_notes.zip", "2024q3_notes.zip")
+    for number, name in enumerate(names, start=1):
+        _stored_month(build, name, "AA", f"000000000{number}-24-000001", "20240305")
+        loader.load_package(conn, loader.parse_package(build / name),
+                            reconciled_on=d(2024, 11, 1))
+    remote = {name: _stored_month(build, name, "BB", f"000000000{number}-24-000001",
+                                  "20240305") for number, name in enumerate(names, start=1)}
+    client, calls = _fake_sec(tmp_path, remote, {}, last_modified={name: "" for name in names})
+    held = []
+    real_fetch = loader.fetch_package
+
+    def fetch(*args, **kwargs):
+        validators = real_fetch(*args, **kwargs)
+        held.append(len(list(scratch.rglob("*.zip"))))
+        return validators
+
+    monkeypatch.setattr(loader, "fetch_package", fetch)
+    stats = worker.run(dsn, calc_date="2024-11-15", limit=1, client=client)
+    assert (stats["backlog"], stats["republished"]) == (3, list(names))
+    assert [(p["package"], p["inserted"], p["retired"]) for p in stats["packages"]] == [
+        ("2024q1_notes.zip", 1, 1)]
+    # Three digest checks, then the one load: each download alone on disk.
+    assert held == [1, 1, 1, 1]
+    assert calls.count(("GET", FSN_BASE + "2024q1_notes.zip")) == 2
+    assert list(scratch.iterdir()) == []
 
 
 def test_a_cached_copy_of_an_unrecorded_package_is_never_loaded(

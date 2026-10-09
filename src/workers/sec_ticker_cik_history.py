@@ -18,9 +18,10 @@ the same public sources (docs/runbooks/sec-ticker-cik-history.md):
    trusted), and recorded with the validators of that download in the load's
    own transaction. Each package is reconciled in its own transaction: facts it
    no longer carries (and no other package does) are retired, never deleted.
-   The zip is deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it, so a run
-   never needs more than one package of disk. ``WORKER_LIMIT`` caps the
-   packages per run (the backlog resumes next run). DERA consolidates the
+   The zip is deleted again unless ``SEC_TICKER_CACHE_DIR`` keeps it, and so is
+   every download of the republication check (a republished package is fetched
+   again when it loads), so a run never needs more than one package of disk.
+   ``WORKER_LIMIT`` caps the packages per run (the backlog resumes next run). DERA consolidates the
    monthly packages of a quarter into ``YYYYqN`` after about a year: loading the
    quarterly supersedes them (their facts retire unless a current package
    carries them), and a listed monthly package whose quarterly is loaded is
@@ -109,10 +110,11 @@ def _packages_to_load(
     conn, client, urls: list[str], workdir: Path, *, keep: bool = True,
 ) -> tuple[list[tuple[str, bool]], dict[str, Validators]]:
     """(url, republished) of every package to load, oldest first, and the
-    validators of the republished packages this check downloaded into
-    ``workdir`` (they are loaded from there). Without ``keep`` (no persistent
-    cache) a download whose digest matches the loaded version is deleted at once,
-    so checking every loaded package never holds them all on disk.
+    validators of the republished packages this check downloaded into the
+    persistent cache ``workdir`` (they are loaded from there). Without ``keep``
+    (no persistent cache) every digest-check download is deleted at once, whatever
+    it shows: the run holds one package at a time, and a republished package is
+    downloaded again when it loads, within WORKER_LIMIT.
     New: listed and not loaded. Republished: loaded, current (not superseded) and
     listed, and different from the loaded version (every such package is
     checked, not only the newest). A monthly package whose quarterly is loaded
@@ -137,13 +139,12 @@ def _packages_to_load(
         if name not in current or history.covering_quarter(name) in quarters:
             continue  # not loaded, or about to be superseded by its quarterly
         target = workdir / name
-        downloaded = not target.exists()
         republished, validators = _republished(conn, client, url, target, current[name])
         if republished:
             todo.append((url, True))
-            if validators is not None:
+            if keep and validators is not None:
                 fetched[name] = validators
-        elif not keep and downloaded:
+        if not keep:
             target.unlink(missing_ok=True)
     todo.sort(key=lambda item: history.package_sort_key(Path(names[item[0]])))
     return todo, fetched
