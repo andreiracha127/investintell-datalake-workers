@@ -1,0 +1,193 @@
+<SEC-DOCUMENT>0001193125-13-251863.txt : 20130607
+<SEC-HEADER>0001193125-13-251863.hdr.sgml : 20130607
+<ACCEPTANCE-DATETIME>20130607170553
+ACCESSION NUMBER:		0001193125-13-251863
+CONFORMED SUBMISSION TYPE:	8-K12B
+PUBLIC DOCUMENT COUNT:		11
+CONFORMED PERIOD OF REPORT:	20130607
+ITEM INFORMATION:		Entry into a Material Definitive Agreement
+ITEM INFORMATION:		Completion of Acquisition or Disposition of Assets
+ITEM INFORMATION:		Notice of Delisting or Failure to Satisfy a Continued Listing Rule or Standard; Transfer of Listing
+ITEM INFORMATION:		Material Modifications to Rights of Security Holders
+ITEM INFORMATION:		Departure of Directors or Certain Officers; Election of Directors; Appointment of Certain Officers: Compensatory Arrangements of Certain Officers
+ITEM INFORMATION:		Amendments to Articles of Incorporation or Bylaws; Change in Fiscal Year
+ITEM INFORMATION:		Regulation FD Disclosure
+ITEM INFORMATION:		Financial Statements and Exhibits
+FILED AS OF DATE:		20130607
+DATE AS OF CHANGE:		20130607
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Liberty Global plc
+		CENTRAL INDEX KEY:			0001570585
+		STANDARD INDUSTRIAL CLASSIFICATION:	CABLE & OTHER PAY TELEVISION SERVICES [4841]
+		IRS NUMBER:				981089808
+		STATE OF INCORPORATION:			X0
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		8-K12B
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-35961
+		FILM NUMBER:		13901375
+
+	BUSINESS ADDRESS:	
+		STREET 1:		38 HANS CRESCENT
+		CITY:			LONDON
+		STATE:			X0
+		ZIP:			SW1X 0LZ
+		BUSINESS PHONE:		303-220-6600
+
+	MAIL ADDRESS:	
+		STREET 1:		12300 LIBERTY BOULEVARD
+		CITY:			ENGLEWOOD
+		STATE:			CO
+		ZIP:			80112
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	Liberty Global Corp Ltd
+		DATE OF NAME CHANGE:	20130227
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	Lynx Europe Ltd.
+		DATE OF NAME CHANGE:	20130226
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-K12B
+<SEQUENCE>1
+<FILENAME>d548311d8k12b.htm
+<DESCRIPTION>FORM 8-K12B
+<TEXT>
+<HTML><HEAD>
+<TITLE>Form 8-K12B</TITLE>
+</HEAD>
+ <BODY BGCOLOR="WHITE">
+
+ <P STYLE="line-height:0px;margin-top:0px;margin-bottom:0px;border-bottom:0.5pt solid #000000">&nbsp;</P>
+<P STYLE="line-height:3px;margin-top:0px;margin-bottom:2px;border-bottom:0.5pt solid #000000">&nbsp;</P> <P STYLE="margin-top:4px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="5"><B>UNITED STATES </B></FONT></P>
+<P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="5"><B>SECURITIES AND EXCHANGE COMMISSION </B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT
+STYLE="font-family:Times New Roman" SIZE="3"><B>Washington, D.C. 20549 </B></FONT></P> <P STYLE="font-size:12px;margin-top:0px;margin-bottom:0px">&nbsp;</P><center>
+<P STYLE="line-height:6px;margin-top:0px;margin-bottom:2px;border-bottom:1pt solid #000000;width:21%">&nbsp;</P></center> <P STYLE="margin-top:12px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="5"><B>FORM 8-K
+</B></FONT></P> <P STYLE="font-size:12px;margin-top:0px;margin-bottom:0px">&nbsp;</P><center> <P STYLE="line-height:6px;margin-top:0px;margin-bottom:2px;border-bottom:1pt solid #000000;width:21%">&nbsp;</P></center>
+<P STYLE="margin-top:12px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="3"><B>CURRENT REPORT </B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT
+STYLE="font-family:Times New Roman" SIZE="3"><B>Pursuant to Section&nbsp;13 or 15(d) </B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="3"><B>of the Securities Exchange Act of
+1934 </B></FONT></P> <P STYLE="margin-top:12px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="3"><B>Date of Report (Date of earliest event reported): June&nbsp;7, 2013 </B></FONT></P>
+<P STYLE="font-size:12px;margin-top:0px;margin-bottom:0px">&nbsp;</P><center> <P STYLE="line-height:6px;margin-top:0px;margin-bottom:2px;border-bottom:1pt solid #000000;width:21%">&nbsp;</P></center>
+<P STYLE="margin-top:12px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="6"><B>Liberty Global plc </B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT
+STYLE="font-family:Times New Roman" SIZE="2"><B>(Exact name of Registrant as specified in its charter) </B></FONT></P> <P STYLE="font-size:12px;margin-top:0px;margin-bottom:0px">&nbsp;</P><center>
+<P STYLE="line-height:6px;margin-top:0px;margin-bottom:2px;border-bottom:1pt solid #000000;width:21%">&nbsp;</P></center> <P STYLE="font-size:12px;margin-top:0px;margin-bottom:0px">&nbsp;</P>
+<TABLE CELLSPACING="0" CELLPADDING="0" WIDTH="100%" BORDER="0" STYLE="BORDER-COLLAPSE:COLLAPSE" ALIGN="center">
+
+
+<TR>
+<TD WIDTH="34%"></TD>
+<TD VALIGN="bottom"></TD>
+<TD WIDTH="32%"></TD>
+<TD VALIGN="bottom" WIDTH="1%"></TD>
+<TD WIDTH="32%"></TD></TR>
+
+
+<TR>
+<TD VALIGN="top" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="2"><B>England and Wales</B></FONT></TD>
+<TD VALIGN="bottom"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD VALIGN="top"></TD>
+<TD VALIGN="bottom"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD VALIGN="top" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="2"><B>98-1112770</B></FONT></TD></TR>
+<TR>
+<TD VALIGN="top" ALIGN="center"> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="1"><B>(State or other jurisdiction</B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:1px" ALIGN="center"><FONT
+STYLE="font-family:Times New Roman" SIZE="1"><B>of incorporation)</B></FONT></P></TD>
+<TD VALIGN="bottom"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD VALIGN="top" ALIGN="center"> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="1"><B>Commission</B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:1px" ALIGN="center"><FONT
+STYLE="font-family:Times New Roman" SIZE="1"><B>File Number</B></FONT></P></TD>
+<TD VALIGN="bottom"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD VALIGN="top" ALIGN="center"> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="1"><B>(IRS Employer</B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:1px" ALIGN="center"><FONT
+STYLE="font-family:Times New Roman" SIZE="1"><B>Identification No.)</B></FONT></P></TD></TR>
+</TABLE> <P STYLE="font-size:12px;margin-top:0px;margin-bottom:0px">&nbsp;</P>
+<TABLE CELLSPACING="0" CELLPADDING="0" WIDTH="100%" BORDER="0" STYLE="BORDER-COLLAPSE:COLLAPSE" ALIGN="center">
+
+
+<TR>
+<TD WIDTH="50%"></TD>
+<TD VALIGN="bottom" WIDTH="1%"></TD>
+<TD WIDTH="48%"></TD></TR>
+
+
+<TR>
+<TD VALIGN="top" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="2"><B>38 Hans Crescent, London, England</B></FONT></TD>
+<TD VALIGN="bottom"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD VALIGN="top" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="2"><B>SW1X 0LZ</B></FONT></TD></TR>
+<TR>
+<TD VALIGN="top" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="1"><B>(Address of principal executive offices)</B></FONT></TD>
+<TD VALIGN="bottom"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD VALIGN="top" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="1"><B>(Zip code)</B></FONT></TD></TR>
+</TABLE> <P STYLE="margin-top:12px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="2"><B>+44.20.7190.6449 </B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT
+STYLE="font-family:Times New Roman" SIZE="1"><B>(Registrant&#146;s telephone number, including area code) </B></FONT></P> <P STYLE="margin-top:12px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="2"><B>N.A.
+</B></FONT></P> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="1"><B>(Former name or former address, if changed since last report) </B></FONT></P>
+<P STYLE="font-size:12px;margin-top:0px;margin-bottom:0px">&nbsp;</P><center> <P STYLE="line-height:6px;margin-top:0px;margin-bottom:2px;border-bottom:1pt solid #000000;width:21%">&nbsp;</P></center>
+<P STYLE="margin-top:12px;margin-bottom:0px; text-indent:4%"><FONT STYLE="font-family:Times New Roman" SIZE="2">Check the appropriate box below if the Form 8-K filing is intended to simultaneously satisfy the filing obligation of the registrant
+under any of the following provisions (see General Instruction A.2. below): </FONT></P> <P STYLE="font-size:6px;margin-top:0px;margin-bottom:0px">&nbsp;</P>
+<TABLE STYLE="BORDER-COLLAPSE:COLLAPSE" BORDER="0" CELLPADDING="0" CELLSPACING="0" WIDTH="100%">
+<TR>
+<TD WIDTH="4%"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD WIDTH="4%" VALIGN="top" ALIGN="left"><FONT STYLE="font-family:Times New Roman" SIZE="2"><FONT STYLE="FONT-FAMILY:WINGDINGS">&#168;</FONT></FONT></TD>
+<TD ALIGN="left" VALIGN="top"><FONT STYLE="font-family:Times New Roman" SIZE="2">Written communications pursuant to Rule 425 under the Securities Act (17 CFR 230.425) </FONT></TD></TR></TABLE>
+<P STYLE="font-size:6px;margin-top:0px;margin-bottom:0px">&nbsp;</P>
+<TABLE STYLE="BORDER-COLLAPSE:COLLAPSE" BORDER="0" CELLPADDING="0" CELLSPACING="0" WIDTH="100%">
+<TR>
+<TD WIDTH="4%"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD WIDTH="4%" VALIGN="top" ALIGN="left"><FONT STYLE="font-family:Times New Roman" SIZE="2"><FONT STYLE="FONT-FAMILY:WINGDINGS">&#168;</FONT></FONT></TD>
+<TD ALIGN="left" VALIGN="top"><FONT STYLE="font-family:Times New Roman" SIZE="2">Soliciting material pursuant to Rule 14a-12 under the Exchange Act (17 CFR 240.14a-12) </FONT></TD></TR></TABLE>
+<P STYLE="font-size:6px;margin-top:0px;margin-bottom:0px">&nbsp;</P>
+<TABLE STYLE="BORDER-COLLAPSE:COLLAPSE" BORDER="0" CELLPADDING="0" CELLSPACING="0" WIDTH="100%">
+<TR>
+<TD WIDTH="4%"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD WIDTH="4%" VALIGN="top" ALIGN="left"><FONT STYLE="font-family:Times New Roman" SIZE="2"><FONT STYLE="FONT-FAMILY:WINGDINGS">&#168;</FONT></FONT></TD>
+<TD ALIGN="left" VALIGN="top"><FONT STYLE="font-family:Times New Roman" SIZE="2">Pre-commencement communications pursuant to Rule 14d-2(b) under the Exchange Act (17 CFR 240.14d-2(b)) </FONT></TD></TR></TABLE>
+<P STYLE="font-size:6px;margin-top:0px;margin-bottom:0px">&nbsp;</P>
+<TABLE STYLE="BORDER-COLLAPSE:COLLAPSE" BORDER="0" CELLPADDING="0" CELLSPACING="0" WIDTH="100%">
+<TR>
+<TD WIDTH="4%"><FONT SIZE="1">&nbsp;</FONT></TD>
+<TD WIDTH="4%" VALIGN="top" ALIGN="left"><FONT STYLE="font-family:Times New Roman" SIZE="2"><FONT STYLE="FONT-FAMILY:WINGDINGS">&#168;</FONT></FONT></TD>
+<TD ALIGN="left" VALIGN="top"><FONT STYLE="font-family:Times New Roman" SIZE="2">Pre-commencement communications pursuant to Rule 13e-4(c) under the Exchange Act (17 CFR 240.13e-4(c)) </FONT></TD></TR></TABLE>
+<P STYLE="font-size:10px;margin-top:0px;margin-bottom:0px">&nbsp;</P> <P STYLE="line-height:0px;margin-top:0px;margin-bottom:0px;border-bottom:0.5pt solid #000000">&nbsp;</P>
+<P STYLE="line-height:3px;margin-top:0px;margin-bottom:2px;border-bottom:0.5pt solid #000000">&nbsp;</P>
+
+<p Style='page-break-before:always'>
+<HR  SIZE="3" style="COLOR:#999999" WIDTH="100%" ALIGN="CENTER">
+
+ <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="2"><B>Background Information </B></FONT></P>
+<P STYLE="margin-top:12px;margin-bottom:0px; text-indent:4%"><FONT STYLE="font-family:Times New Roman" SIZE="2">On June&nbsp;7, 2013, Liberty Global, Inc., a Delaware corporation (&#147;<U>Liberty Global</U>&#148;), Liberty Global plc, a public
+limited company organized under English law (formerly known as Lynx Europe Limited) (the &#147;<U>Company</U>&#148;) and Virgin Media Inc., a Delaware corporation (&#147;<U>Virgin Media</U>&#148;) completed the previously-announced business
+combination transaction pursuant to which the Company became the publicly-held parent company of the successors by merger to Liberty Global and Virgin Media (the &#147;<U>Mergers</U>&#148;). In connection with the Mergers and pursuant to the
+Agreement and Plan of Merger dated as of February&nbsp;5, 2013, as amended on March&nbsp;6, 2013 (the &#147;<U>Merger Agreement</U>&#148;), by and among Liberty Global, the Company, Lynx US MergerCo 1 LLC (&#147;<U>Lynx Merger Sub 1</U>&#148;), Lynx
+US MergerCo 2 LLC (&#147;<U>Lynx Merger Sub 2</U>&#148;), Viper US MergerCo 1 LLC (&#147;<U>Viper Merger Sub 1</U>&#148;), Viper US MergerCo 2 LLC (&#147;<U>Viper Merger Sub 2</U>&#148;) and Virgin Media, (a)&nbsp;Viper Merger Sub 2 was merged with
+and into Virgin Media, with Virgin Media as the surviving entity (the &#147;<U>First Viper Merger</U>&#148;), (b)&nbsp;immediately thereafter, and as part of the same plan, Virgin Media as the surviving entity was then merged with and into Viper
+Merger Sub 1, with Viper Merger Sub 1 as the surviving entity (renamed Virgin Media Inc.), (c)&nbsp;immediately thereafter, and as part of the same plan, Lynx Merger Sub 2 was merged with and into Liberty Global, with Liberty Global as the surviving
+entity (the &#147;<U>First Lynx Merger</U>&#148;), and (d)&nbsp;immediately thereafter, and as part of the same plan, Liberty Global as the surviving entity was then merged with and into Lynx Merger Sub 1, with Lynx Merger Sub 1 as the surviving
+entity (renamed Liberty Global, Inc.). </FONT></P> <P STYLE="margin-top:12px;margin-bottom:0px; text-indent:4%"><FONT STYLE="font-family:Times New Roman" SIZE="2">In connection with the First Viper Merger, each share of common stock, par value $0.01
+per share, of Virgin Media was converted into the right to receive (a)&nbsp;0.2582 of a Class&nbsp;A ordinary share of the Company, (b)&nbsp;0.1928 of a Class C ordinary share of the Company and (c)&nbsp;$17.50 in cash (without interest). In
+connection with the First Lynx Merger, each share of Series A common stock, par value $0.01 per share, of Liberty Global was converted into the right to receive one Class&nbsp;A ordinary share of the Company, each share of Series B common stock, par
+value $0.01 per share, of Liberty Global was converted into the right to receive one Class B ordinary share of the Company and each share of Series C common stock, par value $0.01 per share, of Liberty Global was converted into the right to receive
+one Class C ordinary share of the Company. Each Class&nbsp;A ordinary share of the Company will be entitled to one vote per share, each Class B ordinary share of the Company will be entitled to ten votes per share and each Class C ordinary shares of
+the Company will be issued without voting rights. </FONT></P> <P STYLE="margin-top:12px;margin-bottom:0px; text-indent:4%"><FONT STYLE="font-family:Times New Roman" SIZE="2">Based on the number of shares of common stock of Liberty Global and Virgin
+Media that were outstanding as of June 6, 2013, the Company had outstanding, immediately following the closing of the Mergers, approximately 211.6 million Class A ordinary shares, 10.2 million Class B ordinary shares and 158.1 million Class C
+ordinary shares. These outstanding amounts do not include any ordinary shares issuable upon exercise or conversion of options or other convertible securities, including as a result of the conversion of Virgin Media&#146;s outstanding 6.50%
+convertible senior notes due 2016. </FONT></P> <P STYLE="margin-top:12px;margin-bottom:0px; text-indent:4%"><FONT STYLE="font-family:Times New Roman" SIZE="2">The issuance of ordinary shares of the Company in connection with the Mergers, as
+described above, was registered under the Securities Act of 1933, as amended, pursuant to a registration statement on Form S&#150;4 (File No.&nbsp;333&#150;187100), filed with the Securities and Exchange Commission (&#147;<U>SEC</U>&#148;) and
+declared effective on May&nbsp;1, 2013 (the &#147;<U>Form S-4</U>&#148;). </FONT></P> <P STYLE="margin-top:12px;margin-bottom:0px; text-indent:4%"><FONT STYLE="font-family:Times New Roman" SIZE="2">Pursuant to Rule 12g-3(c) under the Securities
+Exchange Act of 1934, as amended (the &#147;<U>Exchange Act</U>&#148;), the ordinary shares of the Company are deemed to be registered under Section&nbsp;12(b) of the Exchange Act and, accordingly, the Company (as the successor issuer to Liberty
+Global) will be subject to the reporting obligations under Sections 13 and 15(d) of the Exchange Act. The three classes of ordinary shares of the Company will begin trading on June 10, 2013 on the NASDAQ Global Select Market under the same ticker
+symbols &#147;LBTYA&#148;, &#147;LBTYB&#148; and &#147;LBTYK&#148;. </FONT></P> <P STYLE="margin-top:12px;margin-bottom:0px; text-indent:4%"><FONT STYLE="font-family:Times New Roman" SIZE="2">Based upon the facts available to the Company and its
+current projections as of the date of this Current Report, the Company believes that, as structured, the exchange of Liberty Global common stock for ordinary shares of the Company pursuant to the Mergers may not be taxable to United States
+(&#147;<U>U.S.</U>&#148;) stockholders of Liberty Global common stock for U.S. federal income tax purposes.&nbsp;However, the tax free treatment for the exchange of Liberty Global common stock for Company ordinary shares is not certain and depends
+on various factual and legal inquiries. The factual determination regarding the tax treatment of the Mergers depends, in part, on the calculation of aggregate U.S. shareholder gain and tax </FONT></P>
+ <p STYLE="margin-top:0px;margin-bottom:0px"><FONT SIZE="1">&nbsp;</FONT></P> <P STYLE="margin-top:0px;margin-bottom:0px" ALIGN="center"><FONT STYLE="font-family:Times New Roman" SIZE="2">2 </FONT></P>
+
+
+<p Style='page-break-before:always'>
+<HR  SIZE="3" style="COLOR:#999999" WIDTH="100%" ALIGN="CENTER">
+
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

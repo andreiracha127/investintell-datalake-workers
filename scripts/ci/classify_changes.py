@@ -58,10 +58,11 @@ NPORT_PATTERNS = (
     "scripts/load_sec_ticker_cik_history.py",
     "src/workers/sec_ticker_cik_history.py",
     "railway.sec-ticker-cik-history.toml",
-    "schemas/sec_ticker_cik_history_v1*.sql",
+    "schemas/sec_ticker_cik_history_v*.sql",
     "tests/test_sec_ticker_cik_history.py",
     "tests/fixtures/sec_ticker_cik_history/*/*.txt",
     "tests/fixtures/sec_ticker_cik_history/*/*.tsv",
+    "tests/fixtures/sec_ticker_cik_history/*.json",
     # Section 16 insider ticker -> CIK evidence (W1b): DERA and sec-api loaders.
     "scripts/load_sec_insider_filings.py",
     "scripts/validate_sec_insider_ticker_evidence.py",

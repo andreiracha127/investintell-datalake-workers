@@ -12,13 +12,14 @@ Sources (public, fetched with the SEC User-Agent, one request at a time):
   of loading partial data.
 * EDGAR full-index form indexes (``full-index/YYYY/QTRn/form.gz``): the ends
   (Forms 15-12B, 15-12G, 15-15D, their foreign private issuer forms 15F-12B,
-  15F-12G, 15F-15D, 25, 25-NSE) and starts (8-A12B, 8-A12G, 10-12B, 10-12G) of
-  registrations, and their amendments.
+  15F-12G, 15F-15D, 25, 25-NSE) and starts (8-A12B, 8-A12G, 10-12B, 10-12G, and a
+  successor's 8-K12B or 8-K12G3) of registrations, and their amendments.
 * The EDGAR filings of those ends for CIKs with cover data
   (``Archives/edgar/data/<cik>/<adsh>.txt``), read for the class, rule provision
   and exchange they state, cached on disk one file per accession.
 
-Rules (schemas/sec_ticker_cik_history_v1.sql documents the tables):
+Rules (schemas/sec_ticker_cik_history_v1.sql documents the tables, _v2.sql the
+functions it changes):
 
 * only periodic and current reports carry cover evidence (PERIODIC_FORMS:
   10-K, 10-Q, 8-K, 20-F, 40-F, 6-K, 10-KT, 10-QT and their amendments);
@@ -79,7 +80,8 @@ EDGAR_FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{folder}/{adsh
 FILING_SPACING_S = 0.11
 # SEC fair access allows 10 requests/s; downloads run one at a time, spaced.
 DOWNLOAD_SPACING_S = 0.5
-SCHEMA_PATH = ROOT / "schemas" / "sec_ticker_cik_history_v1.sql"
+SCHEMA_PATHS = (ROOT / "schemas" / "sec_ticker_cik_history_v1.sql",
+                ROOT / "schemas" / "sec_ticker_cik_history_v2.sql")
 
 SYMBOL_TAG = "TradingSymbol"
 TITLE_TAG = "Security12bTitle"
@@ -108,15 +110,48 @@ LISTED_KINDS = EQUITY_KINDS | {UNKNOWN_KIND}
 # (8-A12B/8-A12G/10-12B/10-12G). An '/A' amends the latest original of its form.
 END_FORMS = ("15-12B", "15-12G", "15-15D", "15F-12B", "15F-12G", "15F-15D", "25", "25-NSE")
 REGISTRATION_FORMS = ("8-A12B", "8-A12G", "10-12B", "10-12G")
-EVENT_ORIGINAL_FORMS = END_FORMS + REGISTRATION_FORMS
+# A successor issuer's notice that it assumed the registration of a class (Rules
+# 12g-3, 12b): filed under the CIK whose class it substitutes, it continues that
+# CIK's listed line (KKR's 8-K12B of 2022-05-31, a holding-company
+# reorganization the day before NYSE's 25-NSE of the old common stock).
+SUCCESSOR_FORMS = ("8-K12B", "8-K12G3")
+EVENT_ORIGINAL_FORMS = END_FORMS + REGISTRATION_FORMS + SUCCESSOR_FORMS
 EVENT_FORMS = EVENT_ORIGINAL_FORMS + tuple(f"{form}/A" for form in EVENT_ORIGINAL_FORMS)
 END_EVENT_FORMS = frozenset(END_FORMS + tuple(f"{form}/A" for form in END_FORMS))
-# Names the parser of the end filings; a new version re-derives every end event
-# as a correction (derive_event_classes).
-EVENT_PARSER_VERSION = "sec_event_class_v3"
+# Registrations read for the class they register: a delisting is a transfer only
+# when a registration of the same class is filed near it (PepsiCo's 8-A12B of its
+# common stock), not of notes or preferred. A Form 10 (a spin-off's registration
+# statement) is not read: its class stays unknown.
+READ_REGISTRATION_FORMS = frozenset({"8-A12B", "8-A12G", "8-K12B", "8-K12G3",
+                                     "8-K12B/A", "8-K12G3/A"})
+READ_EVENT_FORMS = END_EVENT_FORMS | READ_REGISTRATION_FORMS
+# Names the parser of the end and registration filings; a new version re-derives
+# every such event as a correction (derive_event_classes). v4: equity classes named
+# without a Class/Series label count (equity_class_names); Forms 8-A are read. v5:
+# a shareholder rights plan is no employee plan (CAE's 8-A12B of its common shares
+# "including associated ... purchase rights pursuant to the ... Rights Plan"). v6:
+# a successor's Form 8-K12B or 8-K12G3 (and its /A) is read for the classes it
+# continues (parse_successor_document). v7: a successor's Rule 12g-3 sentence that
+# names no equity class states no class ('unknown'), never another kind.
+EVENT_PARSER_VERSION = "sec_event_class_v7"
+# Names the package parser (symbols, classes, share counts). Recorded on each
+# package and on each fact version it inserts; not part of a fact's hash. v3: a
+# line's member refines a title that does not say what the line is (truncated or
+# run together: "Series B", "Depositary Shares, Each Representing a 1/400th
+# Interest in", "7.875% Senior Notesdue 2025"); Corporate Units and Tangible
+# Equity Units are units.
+FSN_PARSER_VERSION = "sec_fsn_v3"
+# Why a fact version was retired (sec_*.retired_reason). SOURCE: the public record
+# changed (a republished package, an index that dropped or reassigned a row, a
+# monthly package superseded by its quarter): the old version stays visible before
+# its retirement. PARSER_CORRECTION: the same public filing read again by another
+# parser version: the old reading was never true, so it is visible at no date and
+# the new reading is knowable from the filing's own public date.
+SOURCE = "source"
+PARSER_CORRECTION = "parser_correction"
 CLASS_STAT_KEYS = ("class_equity", "class_other", "class_unknown", "class_carried",
-                   "class_unread", "filings_missing")
-FETCH_STAT_KEYS = ("filings_fetched", "filings_failed")
+                   "class_reused", "class_unread", "filings_missing")
+FETCH_STAT_KEYS = ("filings_fetched", "filings_failed", "filings_rejected")
 
 PACKAGE_RE = re.compile(
     r"^(?P<year>\d{4})(?:q(?P<quarter>[1-4])|_(?P<month>\d{2}))_notes(?:_\d+)?\.zip$"
@@ -176,17 +211,22 @@ def is_foreign_form(form: str) -> bool:
     return form.removesuffix("/A") in FOREIGN_FORMS
 
 
-# Values filers put in dei:TradingSymbol when a security has no symbol.
+# Values filers put in dei:TradingSymbol when a security has no symbol, by their
+# separator-free key (None, N/A, "Not Applicable"...). Every FSN value with one
+# of these keys is a placeholder (NONE: 122 facts of 30-odd filers; NA: 62).
 PLACEHOLDER_KEYS = frozenset({
-    "NONE", "NA", "NOTAPPLICABLE", "NOTAVAILABLE", "TRUE", "FALSE", "NULL", "NIL",
+    "NONE", "NA", "NOTAPPLICABLE", "NOTAVAILABLE", "NULL", "NIL",
     "NOSYMBOL", "NOTRADINGSYMBOL", "NOTLISTED", "NOTTRADED", "UNLISTED", "TBD",
-    "OTCBB", "OB",
 })
+# XBRL booleans typed as a symbol ("true", "True", "False": 107 facts of a dozen
+# filers) are placeholders. An all-uppercase TRUE is TrueCar's symbol (all 94 FSN
+# facts written TRUE are TrueCar's); FALSE in any case is a placeholder.
+BOOLEAN_KEYS = frozenset({"TRUE", "FALSE"})
 _FILLER_RE = re.compile(r"^X{3,}$")
 MAX_KEY_LENGTH = 12
 _EXCHANGE_PREFIX_RE = re.compile(
     r"^(?:NYSE\s*AMERICAN|NYSE\s*ARCA|NYSE\s*MKT|NYSE|NASDAQ(?:GS|GM|CM)?|AMEX|OTCQX|"
-    r"OTCQB|OTCBB|OTC|CBOE|TSX)\s*[:\-/]\s*",
+    r"OTCQB|OTCBB|OTC\s*PINK|OTC|CBOE|TSX)\s*[:\-/]\s*",
     re.IGNORECASE,
 )
 EXCHANGE_TOKENS = frozenset({
@@ -194,6 +234,13 @@ EXCHANGE_TOKENS = frozenset({
     "NYSEAMERICAN", "NYSEMKT", "AMERICAN", "MKT", "CBOE", "BATS", "OTC", "OTCBB", "OTCQB",
     "OTCQX", "TSX",
 })
+# Venue names that are also the symbol their operator lists under: a field that is
+# only CBOE is Cboe Global Markets' own symbol (all 113 FSN facts), not a venue.
+# Any other venue alone (OTC, OTCQB, OTCQX, NYSE: 5 facts) is a placeholder.
+LISTED_VENUE_SYMBOLS = frozenset({"CBOE", "BATS"})
+# The OTC Bulletin Board suffix: beside a symbol it qualifies it ("EDLG, OB",
+# WELPP.OB); alone it is Outbrain's symbol (all 63 FSN facts written OB).
+QUALIFIER_KEYS = EXCHANGE_TOKENS | {"OB"}
 _OTC_SUFFIX_RE = re.compile(r"[.\s]+(?:OB|OTCBB|OTCQB|OTCQX|OTC)$", re.IGNORECASE)
 # A token that qualifies the symbol before it rather than naming another one:
 # a class letter, a preferred/series marker, warrants, units, rights, a note year.
@@ -223,7 +270,11 @@ _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"\bnotes?\b|debentures?|\bbonds?\b|\bdue\s+(?:19|20)\d\d\b|senior\s+(?:un)?secured"
         r"|subordinated|medium[-\s]term|\bloan\b", re.IGNORECASE)),
     ("preferred", re.compile(r"preferred|preference|\bperpetual\b|\bpref\b", re.IGNORECASE)),
-    ("unit", re.compile(r"^\s*units?\b|\bunits?,?\s+each\b|\beach\s+unit\b", re.IGNORECASE)),
+    # SPAC units, and the mandatory-convertible equity units (Corporate Units,
+    # Tangible Equity Units: a purchase contract and a note), not common stock
+    ("unit", re.compile(r"^\s*units?\b|\bunits?,?\s+each\b|\beach\s+unit\b"
+                        r"|\b(?:corporate|equity|stock\s+purchase)\s+units?\b"
+                        r"|\bpurchase\s+contracts?\b", re.IGNORECASE)),
     ("warrant", re.compile(r"warrant", re.IGNORECASE)),
     ("right", re.compile(r"^\s*rights?\b|\brights?,?\s+each\b|\bcontingent\s+value\b",
                          re.IGNORECASE)),
@@ -241,6 +292,14 @@ _SEGMENT_KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 # An ordinary or common share member: on a foreign private issuer's form, the
 # segments that identify an untitled line as the ordinary class.
 _EQUITY_SEGMENT_RE = re.compile(r"Ordinary|Common(?:Stock|Shares?|Class)", re.IGNORECASE)
+# A title that says what an equity line is. A title read as equity or depositary
+# without saying so (truncated or run together: "Series B", "6.375% Series A
+# Cumulative Redeemable", "Depositary Shares, Each Representing a 1/400th Interest
+# in", "7.875% Senior Notesdue 2025") yields to a member naming debt or preferred
+# stock (IBKC's and US Bancorp's depositary preferreds, General Finance's notes).
+_EQUITY_TITLE_RE = re.compile(
+    r"common|ordinary|american\s*deposit[ao]ry|\bADSs?\b|\bADRs?\b|capital\s+stock"
+    r"|beneficial\s+interest|partnership", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -383,12 +442,26 @@ def _unwrap(raw: str) -> str:
     return _QUOTES_RE.sub(" ", _GROUP_RE.sub(group, raw))
 
 
+def is_placeholder(value: str) -> bool:
+    """Whether a value as the filer wrote it says "no symbol": a placeholder key
+    (None, N/A, "Not Applicable"), a filler (XXXXX), or an XBRL boolean in its
+    lexical form ("true", "False"; TRUE is a symbol)."""
+    key = ticker_key(_SEPARATORS_RE.sub("", value))
+    if key == "TRUE":
+        return not value.strip().isupper()
+    if key in BOOLEAN_KEYS:
+        return True
+    return key in PLACEHOLDER_KEYS or bool(_FILLER_RE.match(key))
+
+
 def normalize_symbol(raw: str) -> tuple[str | None, str | None]:
     """One filer-typed symbol -> (ticker, None) or (None, rejection reason)."""
     value = _EXCHANGE_PREFIX_RE.sub("", raw.strip()).strip()
     value = _OTC_SUFFIX_RE.sub("", value).strip()
     if not value:
         return None, "empty"
+    if is_placeholder(value):
+        return None, "placeholder"
     preferred = _PREFERRED_RE.match(value)
     if preferred and (
         preferred.group("marker") in ("Pr", "pr", "p") or preferred.group("sep")
@@ -414,10 +487,12 @@ def _is_suffix_token(token: str) -> bool:
 
 def _split_field(field: str) -> list[str]:
     """Symbols written in one field: separated by space or slash unless the next
-    token only qualifies the previous symbol."""
+    token only qualifies the previous symbol. An exchange name is dropped only
+    when it qualifies another token ("BAX NYSE"); alone it is the field (CBOE)."""
     field = _EXCHANGE_PREFIX_RE.sub("", field.strip()).strip()
     tokens = [t for t in re.split(r"[\s/]+", field) if t and not re.fullmatch(r"[-.:]+", t)]
-    tokens = [t for t in tokens if t.upper() not in EXCHANGE_TOKENS]
+    if len(tokens) > 1:
+        tokens = [t for t in tokens if t.upper() not in EXCHANGE_TOKENS]
     symbols: list[list[str]] = []
     for token in tokens:
         if symbols and _is_suffix_token(token):
@@ -434,26 +509,36 @@ def normalize_symbols(raw: str) -> tuple[list[str], list[str]]:
     prefixes and OTC suffixes are dropped (``NYSE: KO``, ``NYSE/TRN``,
     ``WELPP.OB``); a field lists several symbols when they are separated by
     ``,`` ``;`` ``&`` ``AND``, or by a space or slash before a full symbol
-    (``JWA/JWB``, ``CRDA CRDB``) - not before a class or series suffix
-    (``BRK B``, ``USB PrA``, ``USB/28``). A field that reads as prose or a
-    placeholder (``No Trading Symbol``, ``Common Stock par value``) is rejected
-    whole.
+    (``JWA/JWB``, ``jwa/jwb``, ``CRDA CRDB``) - not before a class or series
+    suffix (``BRK B``, ``USB PrA``, ``USB/28``). A field that reads as prose or a
+    placeholder (``No Trading Symbol``, ``Common Stock par value``, ``true``) is
+    rejected whole; so is a venue name alone (``OTCQB``), unless the venue's
+    operator lists under it (``CBOE``).
     """
     unwrapped = _unwrap(raw)
     whole = ticker_key(_SEPARATORS_RE.sub("", unwrapped))
-    if whole in PLACEHOLDER_KEYS or _FILLER_RE.match(whole):
+    if is_placeholder(unwrapped) or (
+            whole in EXCHANGE_TOKENS and whole not in LISTED_VENUE_SYMBOLS):
         return [], ["placeholder"]
     if not whole:
         return [], ["empty"]
     tickers: list[str] = []
     rejections: list[str] = []
-    for part in re.split(r"[;,&]|\s+AND\s+", unwrapped, flags=re.IGNORECASE):
-        if not part.strip():
+    parts = [p.strip() for p in re.split(r"[;,&]|\s+AND\s+", unwrapped, flags=re.IGNORECASE)
+             if p.strip()]
+    for part in parts:
+        part = _EXCHANGE_PREFIX_RE.sub("", part).strip()  # OTC Pink: IRRX
+        if not part:
             continue
-        tokens = [t for t in re.split(r"[\s/]+", part.strip()) if t]
-        if len(tokens) > 1 and any(
-            len(t) >= 3 and re.search(r"[a-z]", t) and not _is_suffix_token(t)
-            for t in tokens
+        if len(parts) > 1 and ticker_key(part) in QUALIFIER_KEYS:
+            rejections.append("placeholder")  # "EDLG, OB": the market, not a symbol
+            continue
+        # Prose is several words, one of them a written word ("Common Stock par
+        # value"); slash-joined lowercase symbols (jwa/jwb) are one word.
+        words = part.split()
+        if len(words) > 1 and any(
+            len(w) >= 3 and re.search(r"[a-z]", w) and not _is_suffix_token(w)
+            for w in words
         ):
             rejections.append("malformed")  # prose, not symbols
             continue
@@ -505,10 +590,12 @@ def security_kind(title: str | None, ticker: str, segments: str, *,
     alike without a title."""
     if title:
         text = _ATTACHED_RIGHTS_RE.sub("", title)
-        for kind, pattern in _KIND_RULES:
-            if pattern.search(text):
-                return kind
-        return "equity"
+        kind = next((kind for kind, pattern in _KIND_RULES if pattern.search(text)), "equity")
+        if kind in EQUITY_KINDS and not _EQUITY_TITLE_RE.search(text):
+            for refined, pattern in _SEGMENT_KIND_RULES[:2]:  # debt, preferred
+                if pattern.search(segments):
+                    return refined
+        return kind
     for kind, pattern in _SEGMENT_KIND_RULES:
         if pattern.search(segments):
             return kind
@@ -800,7 +887,7 @@ def resolve_owner(
 
 
 def _filing_profiles(
-    symbol_classes: dict[tuple[str, int], set[str]],
+    symbol_classes: dict[tuple[str, int], dict[str, set[str]]],
     other_classes: dict[tuple[str, int], set[str]],
     counted: set[tuple[str, int]],
 ) -> dict[tuple[str, int], tuple[int, bool]]:
@@ -810,18 +897,21 @@ def _filing_profiles(
     The classes are those of the filing's equity/depositary symbols, plus the
     dimensioned classes of its share counts and of its titled equity classes
     without an accepted symbol (an unlisted class B with ticker "N/A" still
-    counts). An undimensioned symbol next to a dimensioned class that no symbol
-    names is one of those classes (a filer tags the symbol without a member and
-    the counts with members: American Greetings' AM beside its Class A and
-    Class B counts is two classes, not three).
+    counts). ``symbol_classes`` maps each class key to the distinct symbols shown
+    on it: distinct symbols sharing one context are distinct classes (an
+    undimensioned "GOOG, GOOGL" or "JWA/JWB" is two). Undimensioned symbols next
+    to dimensioned classes that no symbol names are those classes (a filer tags
+    the symbol without a member and the counts with members: American Greetings'
+    AM beside its Class A and Class B counts is two classes, not three).
     """
     profiles: dict[tuple[str, int], tuple[int, bool]] = {}
     for filing in set(symbol_classes) | set(other_classes):
-        symbols = symbol_classes.get(filing, set())
+        symbols = symbol_classes.get(filing, {})
         others = other_classes.get(filing, set())
-        count = len(symbols | others)
-        if "" in symbols and others - symbols:
-            count -= 1
+        named = sum(len(tickers) for key, tickers in symbols.items() if key)
+        unnamed = len(others - set(symbols))
+        undimensioned = len(symbols.get("", ()))
+        count = named + (max(undimensioned, unnamed) if undimensioned else unnamed)
         profiles[filing] = (count, filing in counted)
     return profiles
 
@@ -835,7 +925,10 @@ def build_share_counts(
     rejected: Counter,
 ) -> list[ShareCount]:
     entities = _entities(cover, segments)
-    rows: dict[tuple[str, str, dt.date, Decimal], ShareCount] = {}
+    # One count per (accession, owner, context, stated day, value): two
+    # co-registrants of a combined filing may state the same count (100 shares
+    # each) in one context.
+    rows: dict[tuple[str, int, str, str, dt.date, Decimal], ShareCount] = {}
     for fact in facts:
         submission = submissions.get(fact.adsh)
         context = segments.get(fact.dimh)
@@ -852,7 +945,7 @@ def build_share_counts(
             continue
         cik, key = owner
         stated_on, rounded = dates
-        rows.setdefault((fact.adsh, fact.dimh, stated_on, fact.shares), ShareCount(
+        rows.setdefault((fact.adsh, cik, fact.coreg, fact.dimh, stated_on, fact.shares), ShareCount(
             adsh=fact.adsh,
             cik=cik,
             dimh=fact.dimh,
@@ -885,7 +978,7 @@ def build_observations(
     """
     entities = _entities(facts, segments)
     pending: list[dict] = []
-    symbol_classes: dict[tuple[str, int], set[str]] = {}
+    symbol_classes: dict[tuple[str, int], dict[str, set[str]]] = {}
     other_classes: dict[tuple[str, int], set[str]] = {}
     for share in share_counts:
         if share.class_key:
@@ -927,7 +1020,8 @@ def build_observations(
             kind = security_kind(title, ticker, context,
                                  foreign=is_foreign_form(submission.form))
             if kind in LISTED_KINDS:
-                symbol_classes.setdefault((adsh, cik), set()).add(key)
+                symbol_classes.setdefault((adsh, cik), {}).setdefault(key, set()).add(
+                    ticker_key(ticker))
             pending.append({
                 "adsh": adsh, "cik": cik, "dimh": dimh, "segments": context, "class_key": key,
                 "ticker": ticker, "ticker_raw": raw, "security_title": title,
@@ -1127,6 +1221,9 @@ _PLAN_RE = re.compile(
     r"|\bretirement\b|\bdeferred\s+compensation\b",
     re.I,
 )
+# A shareholder rights plan or agreement is no employee plan.
+_RIGHTS_PLAN_RE = re.compile(
+    r"\b(?:(?:share|stock)holders?['\u2019]?\s+)?rights\s+(?:plan|agreement)\b", re.I)
 # Phrases naming an instrument that only refers to an equity class.
 _DEPENDENT_RES = (
     # units composed of shares and warrants
@@ -1179,6 +1276,58 @@ _SERIES_MENTION_RE = re.compile(
     re.I,
 )
 _CLASS_ID_RE = re.compile(rf"(?<![A-Za-z0-9])({_CLASS_ID})(?![A-Za-z0-9])", re.I)
+# A depositary share and the shares it represents are one listed line ("American
+# Depositary Shares, each representing ten Ordinary Shares").
+_DEPOSITARY_PHRASE_RE = re.compile(
+    r"\b(?:(?:american\s+)?deposit[ao]ry\s+(?:shares?|receipts?)|ADS[sR]?s?)\b[^;]*?"
+    r"\brepresent\w*\b[^;]*?\b(?:shares?|stock)\b",
+    re.I,
+)
+_EQUITY_NOUN_RE = re.compile(r"\b(common|ordinary|capital)\s+(?:stock|shares?|units?)\b", re.I)
+# Words that end a class name read backwards from its noun ("par value $0.01 per
+# share Common Stock", "the Common Stock", "ten Ordinary Shares").
+_NAME_STOP_WORDS = frozenset({
+    "a", "an", "the", "of", "to", "for", "and", "or", "per", "each", "with", "in", "on", "its",
+    "our", "any", "all", "by", "into", "as", "such", "share", "shares", "stock", "par", "value",
+    "no", "nominal", "underlying", "representing", "represented", "represents", "including",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+    "twelve", "twenty", "hundred", "thousand",
+    # an exchange or an issuer named before the class ("Nasdaq Stock Market Common
+    # Stock", "Shell plc Class A Ordinary Shares")
+    "market", "exchange", "nasdaq", "nyse", "llc", "inc", "corporation", "corp", "plc", "ltd",
+    "limited", "company", "co",
+})
+
+
+def equity_class_names(description: str | None) -> set[str]:
+    """The distinct equity classes a Form 15/25/8-A description names by name, with
+    or without a Class/Series label: "Common Stock" and "Non-Voting Common Stock"
+    are two, as are the four of "Series A Liberty Capital Common Stock, Series B
+    Liberty Capital Common Stock, Liberty Starz Ser A Common Stock, Liberty Starz
+    Ser B Common Stock". Instruments that only refer to a class (warrants, rights,
+    units), depositary shares of a class and a parenthesized alias ("Ordinary
+    Shares (Common Stock)", '(the "Common Stock")') are not classes of their own."""
+    if not description:
+        return set()
+    text = re.sub(r"\([^()]*\)", " ", description)
+    for pattern in (*_DEPENDENT_RES, _DEPOSITARY_PHRASE_RE):
+        text = pattern.sub(" ; ", text)
+    names: set[str] = set()
+    for match in _EQUITY_NOUN_RE.finditer(text):
+        if _PREFERRED_BEFORE_RE.search(text[: match.start()]):
+            continue
+        words: list[str] = []
+        tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]*|[^\sA-Za-z0-9]", text[: match.start()])
+        for i in range(len(tokens) - 1, -1, -1):
+            token = tokens[i]
+            labelled = i > 0 and tokens[i - 1].lower() in ("class", "series", "ser")
+            if (not token[0].isalnum() or len(words) == 4
+                    or (not labelled and (token[0].isdigit()
+                                          or token.lower() in _NAME_STOP_WORDS))):
+                break
+            words.append(token.lower().replace("-", ""))
+        names.add(" ".join([*reversed(words), match.group(1).lower()]))
+    return names
 _EXTINGUISHED_RE = re.compile(r"12d2-2\s*\(\s*a\s*\)", re.I)
 # An amendment that withdraws the removal (Minim's 25-NSE/A of 2025-04-09: "will
 # not be delisting the common stock ... per the Form 25 filed on October 24, 2024").
@@ -1217,7 +1366,7 @@ def event_class_kind(description: str | None) -> str:
     when it names only other instruments, 'unknown' when there is none."""
     if not description:
         return "unknown"
-    if _PLAN_RE.search(description):
+    if _PLAN_RE.search(_RIGHTS_PLAN_RE.sub(" ", description)):
         return "other"
     text = description
     for pattern in _DEPENDENT_RES:
@@ -1229,9 +1378,11 @@ def event_class_kind(description: str | None) -> str:
 
 
 def class_count(description: str | None) -> int:
-    """Distinct share classes a description names ("Class A ... Class B",
-    "Class A and B", "Classes A, B and C", "Class A/B", "Class 1 and Class 2",
-    "Series A Common Stock and Series B Common Stock"); at least 1."""
+    """Distinct share classes a description names: by Class/Series enumeration
+    ("Class A ... Class B", "Class A and B", "Classes A, B and C", "Class A/B",
+    "Class 1 and Class 2", "Series A Common Stock and Series B Common Stock"), or
+    by name ("Common Stock; Non-Voting Common Stock", equity_class_names),
+    whichever names more; at least 1."""
     if not description:
         return 1
     names = {
@@ -1241,7 +1392,7 @@ def class_count(description: str | None) -> int:
         for name in _CLASS_ID_RE.findall(
             re.sub(r"(?i)\b(?:and|or|class|series)\b", " ", group))
     }
-    return max(1, len(names))
+    return max(1, len(names), len(equity_class_names(description)))
 
 
 def venue_kind(venue: str | None) -> str:
@@ -1254,6 +1405,113 @@ def venue_kind(venue: str | None) -> str:
     return "unknown"
 
 
+_REGISTERED_12B_RE = re.compile(
+    r"title\s+of\s+each\s+class\s+to\s+be\s+so\s+registered"
+    r"(?:\s+name\s+of\s+each\s+exchange\s+on\s+which\s+each\s+class\s+is\s+to\s+be\s+registered)?",
+    re.I,
+)
+_REGISTERED_12B_END_RE = re.compile(
+    r"if\s+this\s+form\s+relates|securities\s+to\s+be\s+registered\s+pursuant\s+to\s+section"
+    r"\s+12\s*\(\s*g\s*\)", re.I)
+_REGISTERED_12G_RE = re.compile(
+    r"securities\s+to\s+be\s+registered\s+pursuant\s+to\s+section\s+12\s*\(\s*g\s*\)\s+of\s+"
+    r"the\s+act\s*:?", re.I)
+_TITLE_OF_CLASS_RE = re.compile(r"\(\s*title\s+of\s+(?:each\s+)?class(?:es)?\s*\)", re.I)
+_NO_CLASS_WORDS = frozenset({"NOT", "APPLICABLE", "NONE", "N", "A", "NA"})
+
+
+def _names_a_class(block: str) -> bool:
+    """Whether a registration block names something ("Not Applicable Not
+    Applicable", "None" and "N/A" do not)."""
+    words = {word.upper() for word in re.findall(r"[A-Za-z]+", block)}
+    return bool(words) and not words <= _NO_CLASS_WORDS
+
+
+def parse_registration_document(raw: str) -> EventClass:
+    """The class a Form 8-A registers: the 12(b) table ("Title of each class to be
+    so registered" / "Name of each exchange ...": PepsiCo's common stock on Nasdaq
+    in 2017, its notes in 2018), else the 12(g) line above "(Title of class)"
+    (Statera's Series B Preferred Stock of 2023). No class -> 'unknown'."""
+    documents = _DOCUMENT_RE.findall(raw)
+    body = _plain(documents[0] if documents else raw)
+    description = None
+    table = _REGISTERED_12B_RE.search(body)
+    if table:
+        end = _REGISTERED_12B_END_RE.search(body, table.end())
+        block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
+        if _names_a_class(block):
+            description = block[:500]
+    if description is None:
+        section = _REGISTERED_12G_RE.search(body)
+        label = _TITLE_OF_CLASS_RE.search(body, section.end()) if section else None
+        if label:
+            block = body[section.end(): label.start()].strip(" :;,.-")
+            if _names_a_class(block):
+                description = block[-500:]
+    return EventClass(
+        class_description=description,
+        class_kind=event_class_kind(description),
+        class_count=class_count(description),
+        provision=None,
+        extinguished=None,
+        venue=None,
+        venue_kind="unknown",
+        amendment_effect=None,
+    )
+
+
+# The Section 12(b) table of an 8-K cover (2019 on): "Title of each class /
+# Trading Symbol(s) / Name of each exchange on which registered", up to the
+# emerging-growth or Form 8-K checkboxes.
+_COVER_12B_RE = re.compile(
+    r"title\s+of\s+each\s+class\s+trading\s+symbols?(?:\s*\(\s*s\s*\))?\s+name\s+of\s+each\s+"
+    r"exchange\s+on\s+which\s+(?:it\s+is\s+|each\s+is\s+)?registered\s*:?", re.I)
+_COVER_12B_END_RE = re.compile(
+    r"indicate\s+by\s+check\s+mark|check\s+the\s+appropriate\s+box|securities\s+registered"
+    r"\s+pursuant\s+to\s+section\s+12\s*\(\s*g|emerging\s+growth", re.I)
+# Before the cover table, the successor language: "Pursuant to Rule 12g-3(c) ...
+# the ordinary shares of the Company are deemed to be registered under Section
+# 12(b) ... (as the successor issuer to Liberty Global)".
+_SUCCESSOR_SENTENCE_RE = re.compile(
+    r"[^.]{0,500}?(?:\brule\s+12g-?3\b|\bsuccessor\s+issuer\b)[^.]{0,500}\.", re.I)
+
+
+def parse_successor_document(raw: str) -> EventClass:
+    """The classes a successor's Form 8-K12B or 8-K12G3 continues: the Section
+    12(b) table of its cover (2019 on: KKR's 2022 common stock, Liberty Global's
+    2023 Class A, B and C common shares), else the sentence that registers the
+    successor's securities under Rule 12g-3 ("the ordinary shares of the Company
+    are deemed to be registered under Section 12(b)", Liberty Global 2013). No
+    such text -> 'unknown'."""
+    documents = _DOCUMENT_RE.findall(raw)
+    body = _plain(documents[0] if documents else raw)
+    description = None
+    table = _COVER_12B_RE.search(body)
+    if table:
+        end = _COVER_12B_END_RE.search(body, table.end())
+        block = body[table.end(): end.start() if end else table.end() + 500].strip(" :;,.-")
+        if _names_a_class(block):
+            description = block[:500]
+    kind = event_class_kind(description)
+    if description is None:
+        sentence = _SUCCESSOR_SENTENCE_RE.search(body)
+        if sentence:
+            description = sentence.group(0).strip()[:500]
+            # the sentence registers the successor's securities: naming no equity
+            # class, it states no class (not another kind, which carries nothing on)
+            kind = "equity" if event_class_kind(description) == "equity" else "unknown"
+    return EventClass(
+        class_description=description,
+        class_kind=kind,
+        class_count=class_count(description),
+        provision=None,
+        extinguished=None,
+        venue=None,
+        venue_kind="unknown",
+        amendment_effect=None,
+    )
+
+
 def parse_event_document(raw: str, form: str) -> EventClass:
     """The class, rule provision and exchange a Form 15/25 filing states.
 
@@ -1262,8 +1520,13 @@ def parse_event_document(raw: str, form: str) -> EventClass:
     text: the class is the block between the address label and "(Description of
     class of securities)" or "(Title of each class of securities covered by this
     Form)"; Form 25's exchange is named next to the issuer above "(Exact name of
-    Issuer ...)". No such block -> class_kind 'unknown'.
+    Issuer ...)". No such block -> class_kind 'unknown'. A registration (8-A) is
+    read by parse_registration_document.
     """
+    if form.removesuffix("/A") in REGISTRATION_FORMS:
+        return parse_registration_document(raw)
+    if form.removesuffix("/A") in SUCCESSOR_FORMS:
+        return parse_successor_document(raw)
     amendment_effect = None
     if form.endswith("/A"):
         amendment_effect = "cancels" if _CANCELS_RE.search(_plain(raw)) else "restates"
@@ -1305,14 +1568,24 @@ def parse_event_document(raw: str, form: str) -> EventClass:
     )
 
 
+def is_submission(raw: str, adsh: str) -> bool:
+    """Whether a body is the SEC submission ``adsh``: its SEC header names the
+    accession (every one of the 15,888 cached filings does, PEM-wrapped or not); a
+    maintenance or throttling page answered with 200 does not."""
+    return re.search(rf"ACCESSION\s+NUMBER:\s*{re.escape(adsh)}\b", raw[:20000]) is not None
+
+
 class EventDocuments:
-    """The EDGAR filings of end events, kept in ``cache_dir`` (one file per
-    accession) so a re-parse never fetches again. A missing file is fetched with
-    ``client`` (the SEC User-Agent) at most once per ``spacing`` seconds; 429 and
-    5xx answers and transport errors back off (Retry-After when given) and retry.
-    Without a client only cached filings are read. A filing that cannot be
-    fetched (404 or any other HTTP error, or no answer after the retries) is not
-    a document: ``text`` returns None and ``failed`` counts it."""
+    """The EDGAR filings of end and registration events, kept in ``cache_dir``
+    (one file per accession) so a re-parse never fetches again. A missing file is
+    fetched with ``client`` (the SEC User-Agent) at most once per ``spacing``
+    seconds; 429 and 5xx answers and transport errors back off (Retry-After when
+    given) and retry. Without a client only cached filings are read. A filing that
+    cannot be fetched (404 or any other HTTP error, or no answer after the
+    retries) is not a document: ``text`` returns None and ``failed`` counts it. A
+    body that is not the requested submission (a 200 HTML maintenance page) is
+    retried, never cached, and if it persists counted in ``rejected``; a cached
+    file that is not the submission is ignored and fetched again."""
 
     def __init__(self, cache_dir: Path, client=None, *, spacing: float | None = None,
                  retries: int = 6) -> None:
@@ -1322,6 +1595,7 @@ class EventDocuments:
         self.retries = retries
         self.fetched = 0
         self.failed = 0
+        self.rejected = 0
         self._last = 0.0
 
     def text(self, cik: int, adsh: str) -> str | None:
@@ -1329,7 +1603,12 @@ class EventDocuments:
         fetched now."""
         target = self.cache_dir / f"{adsh}.txt"
         if target.exists():
-            return target.read_bytes().decode("latin-1")
+            cached = target.read_bytes().decode("latin-1")
+            if is_submission(cached, adsh):
+                return cached
+            if self.client is None:
+                self.rejected += 1
+                return None
         if self.client is None:
             return None
         try:
@@ -1339,6 +1618,7 @@ class EventDocuments:
         except ImportError:  # a client that is not httpx
             transport_errors = (OSError,)
         url = EDGAR_FILING_URL.format(cik=cik, folder=adsh.replace("-", ""), adsh=adsh)
+        not_submission = False
         for attempt in range(self.retries):
             wait = self.spacing - (time.monotonic() - self._last)
             if wait > 0:
@@ -1351,18 +1631,29 @@ class EventDocuments:
                 time.sleep(backoff)
                 continue
             if response.status_code == 200:
+                text = response.content.decode("latin-1")
+                if not is_submission(text, adsh):
+                    not_submission = True  # a maintenance or throttling page
+                    if attempt >= 2:
+                        break
+                    time.sleep(backoff)
+                    continue
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
                 partial = target.with_name(target.name + ".part")
                 partial.write_bytes(response.content)
                 partial.replace(target)
                 self.fetched += 1
-                return response.content.decode("latin-1")
+                return text
+            not_submission = False
             if response.status_code in (429, 500, 502, 503, 504):
                 retry_after = response.headers.get("retry-after", "")
                 time.sleep(float(retry_after) if retry_after.isdigit() else backoff)
                 continue
             break  # 404 or another HTTP error: not fetched
-        self.failed += 1
+        if not_submission:
+            self.rejected += 1
+        else:
+            self.failed += 1
         return None
 
 
@@ -1374,18 +1665,32 @@ def describe_events(
     events: list[RegistrationEvent], documents: EventDocuments | None, ciks: set[int],
     known: dict[tuple[str, int, str, dt.date], RegistrationEvent] | None = None,
 ) -> tuple[list[RegistrationEvent], Counter]:
-    """Read the end filings (and their amendments) of CIKs with cover data.
+    """Read the end filings (and their amendments) and the Forms 8-A of CIKs with
+    cover data.
 
-    A filing that cannot be read now (not cached, no client) is no evidence: the
-    class already derived for that event (``known``) is carried forward
+    An event already read by this parser version (``known``) is carried as read
+    (``class_reused``), without fetching its filing again: a worker without a
+    persistent cache would otherwise fetch both quarters' filings every week. A
+    filing that cannot be read now (not cached, no client, not the submission) is
+    no evidence: the class already derived for that event is carried forward
     unchanged, and only a parse replaces it. Each such miss counts as
     ``filings_missing``.
     """
     described: list[RegistrationEvent] = []
     stats: Counter = Counter()
     for event in events:
-        if documents is None or event.form not in END_EVENT_FORMS or event.cik not in ciks:
+        prior = (known or {}).get(_event_key(event))
+        if documents is None and prior is not None:
+            # No filings to read in this run: the class read before stands.
+            stats["class_carried"] += 1
+            described.append(replace(prior, source_package=event.source_package))
+            continue
+        if documents is None or event.form not in READ_EVENT_FORMS or event.cik not in ciks:
             described.append(event)
+            continue
+        if prior is not None and prior.parser_version == EVENT_PARSER_VERSION:
+            stats["class_reused"] += 1
+            described.append(replace(prior, source_package=event.source_package))
             continue
         raw = documents.text(event.cik, event.adsh)
         if raw is None:
@@ -1433,24 +1738,50 @@ def cover_ciks(conn) -> set[int]:
 # Database
 # --------------------------------------------------------------------------- #
 def apply_schema(dsn: str | None) -> None:
-    """Local/dev only: production applies the governed DDL by hand."""
+    """Local/dev only: production applies the governed DDL by hand, v1 then v2.
+    v1 is applied only to a database without its tables (v1 cannot replace the
+    functions v2 reshaped); v2 is idempotent and always applied."""
     with connect(dsn, autocommit=True) as conn:
-        conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+        base = conn.execute(
+            "SELECT to_regclass('sec_ticker_cik_observations') IS NOT NULL").fetchone()[0]
+        for path in SCHEMA_PATHS[1:] if base else SCHEMA_PATHS:
+            conn.execute(path.read_text(encoding="utf-8"))
+
+
+def prepare_session(conn) -> None:
+    """Before the session's first temporary table: one package fills its member
+    and fact sets by COPY into temporary tables in one transaction (60,500 and
+    45,638 rows, 1,024 pages, for 2023q2: the whole 8 MB default), and PostgreSQL
+    18 pins local buffers while COPY extends a table."""
+    conn.execute("SET temp_buffers = '64MB'")
 
 
 def require_schema(conn) -> None:
-    present = conn.execute(
+    """Refuse a database without the governed tables (v1) or without the v2
+    functions this loader's rows are judged by (sec_issuer_end_events with
+    effective_on)."""
+    present, v2 = conn.execute(
         "SELECT to_regclass('sec_ticker_cik_observations') IS NOT NULL "
         "AND to_regclass('sec_cover_share_counts') IS NOT NULL "
         "AND to_regclass('sec_registration_events') IS NOT NULL "
         "AND to_regclass('sec_ticker_cik_packages') IS NOT NULL "
         "AND to_regclass('sec_ticker_cik_package_members') IS NOT NULL "
-        "AND to_regclass('sec_ticker_cik_package_facts') IS NOT NULL"
-    ).fetchone()[0]
+        "AND to_regclass('sec_ticker_cik_package_facts') IS NOT NULL, "
+        "COALESCE((SELECT 'effective_on' = ANY(p.proargnames) FROM pg_catalog.pg_proc p "
+        "WHERE p.oid = to_regprocedure('sec_issuer_end_events(bigint,date,boolean)')), false) "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a "
+        "WHERE a.attrelid = to_regclass('sec_ticker_cik_observations') "
+        "AND a.attname = 'retired_reason' AND NOT a.attisdropped)"
+    ).fetchone()
     if not present:
         raise RuntimeError(
             "sec_ticker_cik_observations is missing: apply "
-            "schemas/sec_ticker_cik_history_v1.sql first"
+            "schemas/sec_ticker_cik_history_v1.sql, then schemas/sec_ticker_cik_history_v2.sql"
+        )
+    if not v2:
+        raise RuntimeError(
+            "the sec_ticker_cik_history functions are v1: apply "
+            "schemas/sec_ticker_cik_history_v2.sql first"
         )
 
 
@@ -1462,13 +1793,19 @@ def _copy(cur, table: str, columns: tuple[str, ...], rows: Iterable[tuple]) -> N
 
 def _record_package(cur, *, package: str, sha256: str, size: int, submissions: int,
                     symbol_facts: int, observations: int, share_counts: int, events: int,
-                    rejected: Counter) -> None:
+                    rejected: Counter, parser_version: str,
+                    validators: tuple[str | None, str | None] | None = None) -> None:
+    """Record a loaded version with the parser that read it and the SEC's
+    validators (ETag, Last-Modified) of the very bytes loaded, in the load's
+    transaction; None: not known for them."""
+    etag, last_modified = validators or (None, None)
     cur.execute(
         """
         INSERT INTO sec_ticker_cik_packages (
             source_package, package_sha256, package_bytes, submissions, symbol_facts,
-            observations, share_counts, events, rejected
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            observations, share_counts, events, rejected, remote_etag, remote_last_modified,
+            parser_version
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
         ON CONFLICT (source_package) DO UPDATE SET
             package_sha256 = EXCLUDED.package_sha256,
             package_bytes = EXCLUDED.package_bytes,
@@ -1478,10 +1815,14 @@ def _record_package(cur, *, package: str, sha256: str, size: int, submissions: i
             share_counts = EXCLUDED.share_counts,
             events = EXCLUDED.events,
             rejected = EXCLUDED.rejected,
+            remote_etag = EXCLUDED.remote_etag,
+            remote_last_modified = EXCLUDED.remote_last_modified,
+            parser_version = EXCLUDED.parser_version,
             loaded_at = now()
         """,
         (package, sha256, size, submissions, symbol_facts, observations, share_counts,
-         events, json.dumps(dict(sorted(rejected.items())))),
+         events, json.dumps(dict(sorted(rejected.items()))), etag, last_modified,
+         parser_version),
     )
 
 
@@ -1545,27 +1886,54 @@ _BITEMPORAL_TABLES = {
 
 
 def _reconcile(cur, *, package: str, fact_table: str, temp: str | None,
-               columns: tuple[str, ...], availability: str,
-               reconciled_on: dt.date) -> dict[str, int]:
+               columns: tuple[str, ...], availability: str, reconciled_on: dt.date,
+               reason: str = SOURCE, key_columns: tuple[str, ...] = (),
+               parser_version: str | None = None) -> dict[str, int]:
     """Retire what the package no longer carries (and no other current package
     does); add what it newly carries. Never deletes or overwrites a fact row.
 
-    A newly carried fact of an accession any package ever contained for the same
-    fact family (current or retired membership) is a correction: knowable from
-    the later of its filing's public date and the reconciliation date. Another
-    family's history does not count (a 10-12B carried by an FSN package is first
-    seen as an index event when the index lists it). That includes a fact retired earlier
-    and carried again: it is available again from this reconciliation, and its
-    retired interval stays. A fact of an accession never loaded before is
-    knowable from its filing's public date. ``temp`` None carries nothing (a
-    superseded package).
+    ``reason`` says why the package's facts differ from the stored ones.
+    SOURCE (the public record changed): the retired version keeps its interval,
+    and a newly carried fact of an accession any package ever contained for the
+    same fact family (current or retired membership) is a correction knowable
+    from the later of its filing's public date and the reconciliation date.
+    Another family's history does not count (a 10-12B carried by an FSN package
+    is first seen as an index event when the index lists it). That includes a
+    fact retired earlier and carried again: it is available again from this
+    reconciliation, and its retired interval stays. A fact of an accession never
+    loaded before is knowable from its filing's public date.
+    PARSER_CORRECTION (the same bytes read by another parser version): the retired
+    version is marked so (visible at no date) and the new one is knowable from its
+    filing's public date. With ``key_columns`` (events), a version that replaces a
+    current one of the same key (the same index row read differently) is a parser
+    correction whatever ``reason`` says. ``temp`` None carries nothing (a
+    superseded package). ``parser_version`` is stamped on inserted rows.
     """
     table = _BITEMPORAL_TABLES[fact_table]
     carried = (f"AND NOT EXISTS (SELECT 1 FROM {temp} n WHERE n.fact_hash = f.fact_hash)"
                if temp else "")
+    if temp is not None and key_columns:
+        keys = ", ".join(f"n.{c}" for c in key_columns)
+        on_keys = " AND ".join(f"t.{c} = n.{c}" for c in key_columns)
+        cur.execute(
+            f"CREATE TEMP TABLE tmp_sec_corrected ON COMMIT DROP AS "
+            f"SELECT DISTINCT {keys} FROM {temp} n JOIN {table} t ON {on_keys} "
+            f"WHERE t.retired_on IS NULL AND t.fact_hash <> n.fact_hash "
+            f"AND NOT EXISTS (SELECT 1 FROM {table} u "
+            f"WHERE u.fact_hash = n.fact_hash AND u.retired_on IS NULL)")
+
+        def corrected(alias: str) -> str:
+            match = " AND ".join(f"k.{c} = {alias}.{c}" for c in key_columns)
+            return f"EXISTS (SELECT 1 FROM tmp_sec_corrected k WHERE {match})"
+
+        retired_reason = f"CASE WHEN {corrected('t')} THEN '{PARSER_CORRECTION}' ELSE %(reason)s END"
+        restated = corrected("n")
+    else:
+        retired_reason = "%(reason)s"
+        restated = "true" if reason == PARSER_CORRECTION else "false"
     cur.execute(
         f"""
-        UPDATE {table} t SET retired_on = %(on)s
+        UPDATE {table} t SET retired_on = %(on)s, retired_reason = {retired_reason}
         WHERE t.retired_on IS NULL AND t.fact_hash IN (
             SELECT f.fact_hash FROM sec_ticker_cik_package_facts f
             WHERE f.source_package = %(package)s AND f.fact_table = %(fact_table)s
@@ -1575,27 +1943,29 @@ def _reconcile(cur, *, package: str, fact_table: str, temp: str | None,
                   WHERE o.fact_table = f.fact_table AND o.fact_hash = f.fact_hash
                     AND o.source_package <> %(package)s AND o.retired_on IS NULL))
         """,
-        {"on": reconciled_on, "package": package, "fact_table": fact_table},
+        {"on": reconciled_on, "package": package, "fact_table": fact_table, "reason": reason},
     )
     retired = cur.rowcount
     if temp is None:
         return {"retired": retired, "inserted": 0}
+    stamp = ", parser_version" if parser_version else ""
     cur.execute(
         f"""
-        INSERT INTO {table} ({", ".join(columns)}, fact_hash, available_on, loaded_on)
+        INSERT INTO {table} ({", ".join(columns)}, fact_hash, available_on, loaded_on{stamp})
         SELECT {", ".join(f"n.{c}" for c in columns)}, n.fact_hash,
-               CASE WHEN EXISTS (
+               CASE WHEN {restated} THEN {availability}
+                    WHEN EXISTS (
                         SELECT 1 FROM sec_ticker_cik_package_members m
                         WHERE m.adsh = n.adsh AND m.fact_table = %(fact_table)s)
                     THEN GREATEST({availability}, %(on)s)
                     ELSE {availability}
                END,
-               %(on)s
+               %(on)s{", %(parser)s" if parser_version else ""}
         FROM {temp} n
         WHERE NOT EXISTS (
             SELECT 1 FROM {table} t WHERE t.fact_hash = n.fact_hash AND t.retired_on IS NULL)
         """,
-        {"on": reconciled_on, "fact_table": fact_table},
+        {"on": reconciled_on, "fact_table": fact_table, "parser": parser_version},
     )
     return {"retired": retired, "inserted": cur.rowcount}
 
@@ -1604,15 +1974,24 @@ _OBS_AVAILABILITY = "COALESCE(n.accepted::date, n.filed + 1)"
 _EVENT_AVAILABILITY = "n.filed + 1"
 
 
-def load_package(conn, result: PackageResult, *,
-                 reconciled_on: dt.date | None = None) -> dict[str, int]:
-    """Reconcile one package version in a single transaction (bitemporal)."""
+def load_package(conn, result: PackageResult, *, reconciled_on: dt.date | None = None,
+                 validators: tuple[str | None, str | None] | None = None) -> dict[str, int]:
+    """Reconcile one package version in a single transaction (bitemporal), and
+    record it with ``validators``: the SEC's (ETag, Last-Modified) of the bytes
+    parsed (the GET that fetched them, or a --verify-cache HEAD of that file)."""
     package = result.package
     on = reconciled_on or dt.date.today()
     obs_rows = [(*o.as_tuple(), o.fact_hash) for o in result.observations]
     share_rows = [(*s.as_tuple(), s.fact_hash) for s in result.share_counts]
     with conn.transaction():
         with conn.cursor() as cur:
+            # The same bytes as the version loaded before: whatever differs is
+            # this parser's reading, not the SEC's data (a re-derivation).
+            recorded = cur.execute(
+                "SELECT package_sha256 FROM sec_ticker_cik_packages WHERE source_package = %s",
+                (package,)).fetchone()
+            reason = (PARSER_CORRECTION if recorded is not None and recorded[0] == result.sha256
+                      else SOURCE)
             cur.execute(
                 f"CREATE TEMP TABLE tmp_sec_obs ON COMMIT DROP AS SELECT "
                 f"{', '.join(OBSERVATION_COLUMNS)}, fact_hash "
@@ -1628,11 +2007,12 @@ def load_package(conn, result: PackageResult, *,
             observations = _reconcile(
                 cur, package=package, fact_table="observation", temp="tmp_sec_obs",
                 columns=OBSERVATION_COLUMNS, availability=_OBS_AVAILABILITY,
-                reconciled_on=on,
+                reconciled_on=on, reason=reason, parser_version=FSN_PARSER_VERSION,
             )
             shares = _reconcile(
                 cur, package=package, fact_table="share_count", temp="tmp_sec_shares",
                 columns=SHARE_COLUMNS, availability=_OBS_AVAILABILITY, reconciled_on=on,
+                reason=reason, parser_version=FSN_PARSER_VERSION,
             )
             _replace_facts(cur, package, [
                 *(("observation", o.fact_hash) for o in result.observations),
@@ -1650,9 +2030,11 @@ def load_package(conn, result: PackageResult, *,
                 cur, package=package, sha256=result.sha256, size=result.size_bytes,
                 submissions=len(result.submissions), symbol_facts=result.symbol_facts,
                 observations=len(result.observations), share_counts=len(result.share_counts),
-                events=0, rejected=result.rejected,
+                events=0, rejected=result.rejected, validators=validators,
+                parser_version=FSN_PARSER_VERSION,
             )
     return {
+        "reconciled_as": reason,
         "inserted": observations["inserted"],
         "retired": observations["retired"],
         "shares_inserted": shares["inserted"],
@@ -1715,7 +2097,8 @@ def resume_supersession(conn, *, reconciled_on: dt.date | None = None) -> list[d
 
 def record_remote_validators(conn, package: str, *, etag: str | None,
                              last_modified: str | None) -> None:
-    """The SEC's ETag / Last-Modified of the loaded package version."""
+    """The SEC's ETag / Last-Modified of the loaded package version, when a fresh
+    download proved the loaded version current (its SHA-256 matched)."""
     conn.execute(
         "UPDATE sec_ticker_cik_packages SET remote_etag = %s, remote_last_modified = %s "
         "WHERE source_package = %s", (etag, last_modified, package),
@@ -1747,7 +2130,7 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
     events, sha256, size = parse_form_index(path)
     if documents is not None and ciks is None:
         ciks = cover_ciks(conn)
-    known = derived_events(conn, (e.adsh for e in events)) if documents is not None else {}
+    known = derived_events(conn, (e.adsh for e in events))
     events, classes = describe_events(events, documents, ciks or set(), known)
     package = path.name
     on = reconciled_on or dt.date.today()
@@ -1762,13 +2145,14 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
             counts = _reconcile(
                 cur, package=package, fact_table="event", temp="tmp_sec_events",
                 columns=EVENT_COLUMNS, availability=_EVENT_AVAILABILITY, reconciled_on=on,
+                key_columns=("adsh", "cik", "form", "filed"),
             )
             _replace_facts(cur, package, (("event", e.fact_hash) for e in events), on)
             _replace_members(cur, package, (("event", e.adsh, e.cik) for e in events), on)
             _record_package(
                 cur, package=package, sha256=sha256, size=size, submissions=0,
                 symbol_facts=0, observations=0, share_counts=0, events=len(events),
-                rejected=Counter(),
+                rejected=Counter(), parser_version=EVENT_PARSER_VERSION,
             )
     return {
         "package": package,
@@ -1782,19 +2166,20 @@ def load_form_index(conn, path: Path, *, reconciled_on: dt.date | None = None,
 def derive_event_classes(conn, documents: EventDocuments, *,
                          reconciled_on: dt.date | None = None,
                          ciks: set[int] | None = None) -> dict[str, int]:
-    """Re-derive the class of current end events of CIKs with cover data whose
-    filing was not read, or was read by another parser version.
+    """Re-derive the class of current end and 8-A events of CIKs with cover data
+    whose filing was not read, or was read by another parser version.
 
-    A changed event is a correction: its version is retired and the re-derived
-    one is knowable from the later of the filing date + 1 and the reconciliation
-    date; the indexes that carried the old version carry the new one.
+    A changed event is a parser correction (the filing did not change, our
+    reading did): its version is retired as such (visible at no date) and the
+    re-derived one is knowable from the filing date + 1; the indexes that carried
+    the old version carry the new one.
     """
     on = reconciled_on or dt.date.today()
     ciks = cover_ciks(conn) if ciks is None else ciks
     rows = conn.execute(
         f"SELECT {', '.join(EVENT_COLUMNS)}, fact_hash FROM sec_registration_events "
         "WHERE retired_on IS NULL AND form = ANY(%s) AND parser_version IS DISTINCT FROM %s",
-        (sorted(END_EVENT_FORMS), EVENT_PARSER_VERSION),
+        (sorted(READ_EVENT_FORMS), EVENT_PARSER_VERSION),
     ).fetchall()
     stats: Counter = Counter()
     changed: list[tuple[str, RegistrationEvent]] = []
@@ -1811,17 +2196,17 @@ def derive_event_classes(conn, documents: EventDocuments, *,
         with conn.cursor() as cur:
             for old_hash, event in changed:
                 cur.execute(
-                    "UPDATE sec_registration_events SET retired_on = %s "
-                    "WHERE fact_hash = %s AND retired_on IS NULL", (on, old_hash),
+                    "UPDATE sec_registration_events SET retired_on = %s, retired_reason = %s "
+                    "WHERE fact_hash = %s AND retired_on IS NULL",
+                    (on, PARSER_CORRECTION, old_hash),
                 )
                 cur.execute(
                     f"INSERT INTO sec_registration_events "
                     f"({', '.join(EVENT_COLUMNS)}, fact_hash, available_on, loaded_on) "
-                    f"SELECT {', '.join(['%s'] * len(EVENT_COLUMNS))}, %s, "
-                    f"GREATEST(%s::date + 1, %s::date), %s "
+                    f"SELECT {', '.join(['%s'] * len(EVENT_COLUMNS))}, %s, %s::date + 1, %s "
                     f"WHERE NOT EXISTS (SELECT 1 FROM sec_registration_events "
                     f"WHERE fact_hash = %s AND retired_on IS NULL)",
-                    (*event.as_tuple(), event.fact_hash, event.filed, on, on, event.fact_hash),
+                    (*event.as_tuple(), event.fact_hash, event.filed, on, event.fact_hash),
                 )
                 cur.execute(
                     "INSERT INTO sec_ticker_cik_package_facts (source_package, fact_table, "
@@ -1868,11 +2253,13 @@ def list_package_urls(client) -> list[str]:
     return urls
 
 
-def fetch_package(client, url: str, target: Path) -> Path:
-    """Stream one FSN zip to disk; it replaces ``target`` only once it opens."""
+def fetch_package(client, url: str, target: Path) -> tuple[str | None, str | None]:
+    """Stream one FSN zip to disk; it replaces ``target`` only once it opens.
+    Returns the SEC's (ETag, Last-Modified) of the bytes fetched."""
     partial = target.with_name(target.name + ".part")
     with client.stream("GET", url) as response:
         response.raise_for_status()
+        validators = (response.headers.get("etag"), response.headers.get("last-modified"))
         with partial.open("wb") as fh:
             for chunk in response.iter_bytes(1 << 20):
                 fh.write(chunk)
@@ -1880,7 +2267,7 @@ def fetch_package(client, url: str, target: Path) -> Path:
         pass
     partial.replace(target)
     time.sleep(DOWNLOAD_SPACING_S)
-    return target
+    return validators
 
 
 def download_packages(packages_dir: Path) -> list[Path]:
@@ -1892,7 +2279,8 @@ def download_packages(packages_dir: Path) -> list[Path]:
             target = packages_dir / url.rsplit("/", 1)[1]
             if target.exists():
                 continue
-            fetched.append(fetch_package(client, url, target))
+            fetch_package(client, url, target)
+            fetched.append(target)
             print(json.dumps({"downloaded": target.name, "bytes": target.stat().st_size}))
     return fetched
 
@@ -1900,32 +2288,43 @@ def download_packages(packages_dir: Path) -> list[Path]:
 VALIDATORS_FILE = "validators.json"
 
 
-def verify_package_cache(client, packages_dir: Path) -> dict[str, tuple[str | None, str | None]]:
+def verify_package_cache(
+    client, packages_dir: Path, paths: Iterable[Path] = (),
+) -> dict[Path, tuple[str | None, str | None]]:
     """Before a load from a workstation cache: HEAD every listed package and fetch
     again any cached zip that is missing, whose size differs, whose ETag differs
     from the one recorded when it was fetched, or whose Last-Modified is newer
-    than the cached file. Returns the fresh (ETag, Last-Modified) per package,
-    the only validators the load records; prints how many were fetched again."""
+    than the cached file. The zip checked is the one the load will read: a path
+    named on the command line (``paths``), else ``packages_dir/<name>``. Returns
+    the fresh (ETag, Last-Modified) per verified path (resolved), the only
+    validators the load records; prints how many were fetched again."""
     from email.utils import parsedate_to_datetime
 
     packages_dir.mkdir(parents=True, exist_ok=True)
-    sidecar_path = packages_dir / VALIDATORS_FILE
-    try:
-        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        sidecar = {}
-    validators: dict[str, tuple[str | None, str | None]] = {}
+    named: dict[str, Path] = {}
+    for path in paths:
+        if named.setdefault(path.name, path).resolve() != path.resolve():
+            raise ValueError(f"two packages named {path.name}: {named[path.name]}, {path}")
+    sidecars: dict[Path, dict] = {}
+    validators: dict[Path, tuple[str | None, str | None]] = {}
     reasons: Counter = Counter()
     listed = [url for url in list_package_urls(client) if PACKAGE_RE.match(url.rsplit("/", 1)[1])]
     for url in listed:
         name = url.rsplit("/", 1)[1]
+        target = named.get(name, packages_dir / name)
+        if target.parent not in sidecars:
+            try:
+                sidecars[target.parent] = json.loads(
+                    (target.parent / VALIDATORS_FILE).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                sidecars[target.parent] = {}
+        sidecar = sidecars[target.parent]
         head = client.head(url)
         head.raise_for_status()
         time.sleep(DOWNLOAD_SPACING_S)
         length = head.headers.get("content-length")
         size = int(length) if length else None
         etag, modified = head.headers.get("etag"), head.headers.get("last-modified")
-        target = packages_dir / name
         reason = None
         if not target.exists():
             reason = "missing"
@@ -1941,11 +2340,14 @@ def verify_package_cache(client, packages_dir: Path) -> dict[str, tuple[str | No
             if stamp > cached:
                 reason = "last_modified"
         if reason:
-            fetch_package(client, url, target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            etag, modified = fetch_package(client, url, target)  # those of the bytes fetched
             reasons[reason] += 1
         sidecar[name] = {"etag": etag, "last_modified": modified, "size": size}
-        validators[name] = (etag, modified)
-    sidecar_path.write_text(json.dumps(sidecar, indent=1, sort_keys=True), encoding="utf-8")
+        validators[target.resolve()] = (etag, modified)
+    for directory, sidecar in sidecars.items():
+        (directory / VALIDATORS_FILE).write_text(json.dumps(sidecar, indent=1, sort_keys=True),
+                                                 encoding="utf-8")
     print(json.dumps({"verify_cache": {"listed": len(listed),
                                        "fetched_again": sum(reasons.values()),
                                        **dict(sorted(reasons.items()))}}), flush=True)
@@ -1957,15 +2359,15 @@ def discover_packages(packages_dir: Path) -> list[Path]:
     return sorted(found, key=package_sort_key)
 
 
-def listed_packages(packages: Iterable[Path], validators: dict[str, object]) -> list[Path]:
-    """After --verify-cache: only the packages the SEC lists (and that were just
-    verified) load. Any other zip in the cache, such as a package the SEC no
+def listed_packages(packages: Iterable[Path], validators: dict[Path, object]) -> list[Path]:
+    """After --verify-cache: only the package files the SEC lists and that were
+    just verified, by path, load. Any other zip, such as a package the SEC no
     longer lists, is ignored and logged."""
     packages = list(packages)
-    unlisted = sorted(path.name for path in packages if path.name not in validators)
+    unlisted = sorted(path.name for path in packages if path.resolve() not in validators)
     if unlisted:
         print(json.dumps({"ignored_unlisted_packages": unlisted}), flush=True)
-    return [path for path in packages if path.name in validators]
+    return [path for path in packages if path.resolve() in validators]
 
 
 def run(
@@ -1976,7 +2378,7 @@ def run(
     form_indexes: Iterable[Path] = (),
     reconciled_on: dt.date | None = None,
     documents: EventDocuments | None = None,
-    validators: dict[str, tuple[str | None, str | None]] | None = None,
+    validators: dict[Path, tuple[str | None, str | None]] | None = None,
 ) -> list[dict[str, object]]:
     """Parse and reconcile packages, then indexes (reading end filings with
     ``documents``), then re-derive end events read by another parser version;
@@ -1992,6 +2394,7 @@ def run(
             ).fetchone()[0]
             if not locked:
                 raise RuntimeError("another sec_ticker_cik_history load holds the lock")
+            prepare_session(conn)
             require_schema(conn)
             for item in resume_supersession(conn, reconciled_on=reconciled_on):
                 print(json.dumps(item), flush=True)
@@ -2007,11 +2410,8 @@ def run(
             item = result.stats()
             if conn is not None:
                 started = time.monotonic()
-                item.update(load_package(conn, result, reconciled_on=reconciled_on))
-                if validators and path.name in validators:
-                    etag, modified = validators[path.name]
-                    record_remote_validators(conn, path.name, etag=etag,
-                                             last_modified=modified)
+                item.update(load_package(conn, result, reconciled_on=reconciled_on,
+                                         validators=(validators or {}).get(path.resolve())))
                 item.update(supersede_monthly_packages(conn, path.name,
                                                        reconciled_on=reconciled_on))
                 item["load_seconds"] = round(time.monotonic() - started, 1)
@@ -2031,7 +2431,8 @@ def run(
             item = {"package": "derive_event_classes",
                     **derive_event_classes(conn, documents, reconciled_on=reconciled_on,
                                            ciks=ciks),
-                    "filings_fetched": documents.fetched, "filings_failed": documents.failed}
+                    "filings_fetched": documents.fetched, "filings_failed": documents.failed,
+                    "filings_rejected": documents.rejected}
             print(json.dumps(item), flush=True)
             stats.append(item)
     finally:
@@ -2070,7 +2471,7 @@ def main(argv: list[str] | None = None) -> int:
     validators = None
     if args.verify_cache:
         with sec_client() as verifier:
-            validators = verify_package_cache(verifier, args.packages_dir)
+            validators = verify_package_cache(verifier, args.packages_dir, args.packages)
     if args.download:
         download_packages(args.packages_dir)
         if not args.no_events:

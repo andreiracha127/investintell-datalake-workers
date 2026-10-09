@@ -75,9 +75,12 @@ def test_fund_classification_pipeline_selects_nport(path: str) -> None:
         "railway.sec-ticker-cik-history.toml",
         "schemas/sec_ticker_cik_history_v1.sql",
         "schemas/sec_ticker_cik_history_v1.rollback.sql",
+        "schemas/sec_ticker_cik_history_v2.sql",
+        "schemas/sec_ticker_cik_history_v2.rollback.sql",
         "tests/test_sec_ticker_cik_history.py",
         "tests/fixtures/sec_ticker_cik_history/filings/0000876661-13-000657.txt",
         "tests/fixtures/sec_ticker_cik_history/fsn_2018q2_tsm/txt.tsv",
+        "tests/fixtures/sec_ticker_cik_history/production_class_labels.json",
     ],
 )
 def test_sec_ticker_history_loader_selects_only_nport(path: str) -> None:

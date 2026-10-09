@@ -1,0 +1,390 @@
+<SEC-DOCUMENT>0000950103-18-014472.txt : 20181207
+<SEC-HEADER>0000950103-18-014472.hdr.sgml : 20181207
+<ACCEPTANCE-DATETIME>20181207161920
+ACCESSION NUMBER:		0000950103-18-014472
+CONFORMED SUBMISSION TYPE:	8-A12B
+PUBLIC DOCUMENT COUNT:		1
+FILED AS OF DATE:		20181207
+DATE AS OF CHANGE:		20181207
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			PEPSICO INC
+		CENTRAL INDEX KEY:			0000077476
+		STANDARD INDUSTRIAL CLASSIFICATION:	BEVERAGES [2080]
+		IRS NUMBER:				131584302
+		STATE OF INCORPORATION:			NC
+		FISCAL YEAR END:			1229
+
+	FILING VALUES:
+		FORM TYPE:		8-A12B
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-01183
+		FILM NUMBER:		181223687
+
+	BUSINESS ADDRESS:	
+		STREET 1:		700 ANDERSON HILL RD
+		CITY:			PURCHASE
+		STATE:			NY
+		ZIP:			10577
+		BUSINESS PHONE:		9142532000
+
+	MAIL ADDRESS:	
+		STREET 1:		700 ANDERSON HILL ROAD
+		CITY:			PURCHASE
+		STATE:			NY
+		ZIP:			10577-1444
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	PEPSI COLA CO
+		DATE OF NAME CHANGE:	19700903
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-A12B
+<SEQUENCE>1
+<FILENAME>dp98806_8a12b.htm
+<DESCRIPTION>FORM 8-A12B
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+<P STYLE="margin: 0"></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 14pt"><B>UNITED
+STATES</B></FONT><BR>
+<FONT STYLE="font-size: 14pt"><B>SECURITIES AND EXCHANGE COMMISSION</B></FONT><BR>
+<B>Washington, D.C. 20549</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>FORM 8-A</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>FOR REGISTRATION OF CERTAIN CLASSES OF
+SECURITIES</B><BR>
+<B>PURSUANT TO SECTION 12(b) OR (g) OF THE</B><BR>
+<B>SECURITIES EXCHANGE ACT OF 1934</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; font: 10pt Times New Roman, Times, Serif; border-collapse: collapse">
+<TR STYLE="vertical-align: bottom">
+    <TD COLSPAN="2">
+        <P STYLE="font: 20pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; border-bottom: Black 0.5pt solid"><B>PepsiCo,
+Inc.</B></P></TD></TR>
+<TR STYLE="vertical-align: bottom">
+    <TD COLSPAN="2" STYLE="font-size: 12pt; text-align: center"><FONT STYLE="font-size: 10pt">(Exact name of registrant as specified
+    in its charter)</FONT></TD></TR>
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="width: 50%; padding-right: 5pt"><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt"><B>North
+        Carolina</B></FONT></P></TD>
+    <TD STYLE="width: 50%; padding-right: 5pt"><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt"><B>13-1584302</B></FONT></P></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="font-size: 12pt; text-align: center"><FONT STYLE="font-size: 10pt">(State or other jurisdiction of incorporation
+    or organization)</FONT></TD>
+    <TD STYLE="font-size: 12pt; text-align: center"><FONT STYLE="font-size: 10pt">(I.R.S. Employer Identification No.)</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="font-size: 10pt; text-align: center">&nbsp;</TD>
+    <TD STYLE="font-size: 10pt; text-align: center">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: bottom">
+    <TD><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt"><B>700
+        Anderson Hill Road</B><BR>
+        <B>Purchase, New York</B></FONT></P></TD>
+    <TD><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt"><B>10577</B></FONT></P></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="font-size: 12pt; text-align: center"><FONT STYLE="font-size: 10pt">(Address of principal executive offices)</FONT></TD>
+    <TD STYLE="font-size: 12pt; text-align: center"><FONT STYLE="font-size: 10pt">(Zip Code)</FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 10pt">Securities
+to be registered pursuant to Section 12(b) of the Act:</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; font: 10pt Times New Roman, Times, Serif; border-collapse: collapse">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="width: 50%; padding-right: 5pt"><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt">Title
+        of each class to be so registered</FONT></P></TD>
+    <TD STYLE="width: 50%; padding-right: 5pt"><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt">Name
+        of each exchange on which each class is to be registered&nbsp;</FONT></P></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="font-size: 12pt; text-align: center"><FONT STYLE="font-size: 10pt"><B>2.500% Senior Notes due 2022</B><BR>
+    <B>1.750% Senior Notes due 2021</B><BR>
+    <B>2.625% Senior Notes due 2026</B><BR>
+    <B>0.875% Senior Notes due 2028</B></FONT></TD>
+    <TD STYLE="font-size: 12pt; text-align: center"><FONT STYLE="font-size: 10pt"><B>The Nasdaq Stock Market LLC</B><BR>
+    <B>The Nasdaq Stock Market LLC</B><BR>
+    <B>The Nasdaq Stock Market LLC</B><BR>
+    <B>The Nasdaq Stock Market LLC</B></FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt"></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">If this form relates to the registration
+of a class of securities pursuant to Section 12(b) of the Exchange Act and is effective pursuant to General Instruction A.(c)
+or (e), check the following box. <FONT STYLE="font-family: Times New Roman, Times, Serif">&#9746;</FONT></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">If this form relates to the registration
+of a class of securities pursuant to Section 12(g) of the Exchange Act and is effective pursuant to General Instruction A.(d)
+or (e), check the following box. <FONT STYLE="font-family: Times New Roman, Times, Serif">&#9744;</FONT></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">If this form relates to the registration
+of a class of securities concurrently with a Regulation A offering, check the following box. <FONT STYLE="font-family: Times New Roman, Times, Serif">&#9744;</FONT></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">Securities Act registration statement
+or Regulation A offering statement file number to which this form relates: ______________________ (if applicable)</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 10pt">Securities
+to be registered pursuant to Section 12(g) of the Act:</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; font: 10pt Times New Roman, Times, Serif; border-collapse: collapse">
+<TR>
+    <TD STYLE="width: 100%"><P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt"><B>None</B></FONT></P></TD></TR>
+<TR>
+    <TD STYLE="font-size: 12pt; text-align: center"><FONT STYLE="font-size: 10pt">(Title of class)</FONT></TD></TR>
+</TABLE>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<!-- Field: Page; Sequence: 1 -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="margin: 0pt"></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 12pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt; width: 100%"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 0.5in; text-align: left"><FONT STYLE="font-size: 10pt"><B>Item 1.</B></FONT></TD><TD STYLE="padding-right: 2pt; padding-left: 2pt"><FONT STYLE="font-size: 10pt"><B>Description of Registrant&rsquo;s
+Securities to Be Registered.</B></FONT></TD>
+</TR></TABLE>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">PepsiCo,
+Inc., a North Carolina corporation (the &ldquo;Company&rdquo;) issued its 2.500% Senior Notes due 2022, 1.750% Senior
+Notes due 2021, 2.625% Senior Notes due 2026 and 0.875% Senior Notes due 2028 (collectively, the &ldquo;Debt
+Securities&rdquo;) under the Indenture dated as of May 21, 2007 between the Company and The Bank of New York Mellon, as
+trustee, a copy of which is incorporated herein by reference to Exhibit 4.1 hereto.</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in"><FONT STYLE="font-size: 10pt"><I>2.500%
+Senior Notes due 2022</I></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">The descriptions
+under the heading &ldquo;Description of Notes&rdquo; relating to the Company&rsquo;s 2.500% Senior Notes due 2022 in the Prospectus
+Supplement dated October&nbsp;23, 2012 and under the heading &ldquo;Description of Debt Securities&rdquo; in the accompanying
+Prospectus dated October 13, 2011 included in the Company&rsquo;s Registration Statement on Form S-3, File No. 333-177307,
+filed with the Securities and Exchange Commission (the &ldquo;Commission&rdquo;) on October 13, 2011, is incorporated herein by
+reference. The Form of 2.500% Senior Note due 2022 is incorporated herein by reference to Exhibit 4.2 hereto. The Board of Directors&rsquo;
+resolutions allowing the officers of the Company to establish the form and the terms of the 2.500% Senior Notes due 2022 are incorporated
+herein by reference to Exhibit 4.6 hereto.</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in"><FONT STYLE="font-size: 10pt"><I>1.750%
+Senior Notes due 2021</I></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">The descriptions
+under the heading &ldquo;Description of Notes&rdquo; relating to the Company&rsquo;s 1.750% Senior Notes due 2021 in the Prospectus
+Supplement dated April&nbsp;23, 2014 and under the heading &ldquo;Description of Debt Securities&rdquo; in the accompanying Prospectus
+dated October 13, 2011 included in the Company&rsquo;s Registration Statement on Form S-3, File No. 333-177307, filed with
+the Commission on October 13, 2011, is incorporated herein by reference. The Form of 1.750% Senior Note due 2021 is incorporated
+herein by reference to Exhibit 4.3 hereto. The Board of Directors&rsquo; resolutions allowing the officers of the Company to establish
+the form and the terms of the 1.750% Senior Notes due 2021 are incorporated herein by reference to Exhibit 4.7 hereto.</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in"><FONT STYLE="font-size: 10pt"><I>2.625%
+Senior Notes due 2026</I></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">The descriptions
+under the heading &ldquo;Description of Notes&rdquo; relating to the Company&rsquo;s 2.625% Senior Notes due 2026 in the Prospectus
+Supplement dated April&nbsp;23, 2014 and under the heading &ldquo;Description of Debt Securities&rdquo; in the accompanying Prospectus
+dated October 13, 2011 included in the Company&rsquo;s Registration Statement on Form S-3, File No. 333-177307, filed with
+the Commission on October 13, 2011, is incorporated herein by reference. The Form of 2.625% Senior Note due 2026 is incorporated
+herein by reference to Exhibit 4.4 hereto. The Board of Directors&rsquo; resolutions allowing the officers of the Company to establish
+the form and the terms of the 2.625% Senior Notes due 2026 are incorporated herein by reference to Exhibit 4.7 hereto.</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+
+<!-- Field: Page; Sequence: 2 -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="margin: 0pt"></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in"><FONT STYLE="font-size: 10pt"><I>0.875%
+Senior Notes due 2028</I></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.25in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">The descriptions
+under the heading &ldquo;Description of Notes&rdquo; relating to the Company&rsquo;s 0.875% Senior Notes due 2028 in the Prospectus
+Supplement dated July&nbsp;11, 2016 and under the heading &ldquo;Description of Debt Securities&rdquo; in the accompanying Prospectus
+dated July 25, 2014 included in the Company&rsquo;s Registration Statement on Form S-3, File No. 333-197640, filed with the
+Commission on July 25, 2014, is incorporated herein by reference. The Form of 0.875% Senior Note due 2028 is incorporated herein
+by reference to Exhibit 4.5 hereto. The Board of Directors&rsquo; resolutions allowing the officers of the Company to establish
+the form and the terms of the 0.875% Senior Notes due 2028 are incorporated herein by reference to Exhibit 4.7 hereto.</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" STYLE="font: 12pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt; width: 100%"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0in"></TD><TD STYLE="width: 0.5in; text-align: left"><FONT STYLE="font-size: 10pt"><B>Item 2.</B></FONT></TD><TD STYLE="padding-right: 2pt; padding-left: 2pt"><FONT STYLE="font-size: 10pt"><B>Exhibits.</B></FONT></TD>
+</TR></TABLE>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">In accordance
+with the Instructions as to Exhibits for Form 8-A, copies of all constituent instruments defining the rights of the holders of
+each class of Debt Securities are filed as exhibits hereto.</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; font: 10pt Times New Roman, Times, Serif; border-collapse: collapse">
+<TR STYLE="vertical-align: bottom">
+    <TD STYLE="width: 16%; border: #BFBFBF 1pt solid; padding: 2pt"><P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt"><B>Exhibit
+No.</B></FONT></P></TD>
+    <TD STYLE="width: 84%; border-top: #BFBFBF 1pt solid; border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; padding: 2pt"><P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center; text-indent: 0in; border-bottom: Black 0.5pt solid"><FONT STYLE="font-size: 10pt"><B>Description</B>&nbsp;</FONT></P></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; border-left: #BFBFBF 1pt solid; padding: 2pt; text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">4.1</FONT></TD>
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; padding: 2pt; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt"><A HREF="http://www.sec.gov/Archives/edgar/data/77476/000095012308012878/y71809exv4w3.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif">Indenture
+    dated May 21, 2007 between PepsiCo, Inc. and The Bank of New York Mellon (formerly known as The Bank of New York), as Trustee,
+    incorporated herein by reference to Exhibit 4.3 to PepsiCo, Inc.&rsquo;s Registration Statement on Form S-3 (Registration
+    No. 333-154314) filed with the Commission on October 15, 2008.</FONT></A></FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; border-left: #BFBFBF 1pt solid; padding: 2pt; text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">4.2</FONT></TD>
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; padding: 2pt; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt"><A HREF="http://www.sec.gov/Archives/edgar/data/77476/000119312512441707/d425877dex41.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif">Form
+    of 2.500% Senior Note due 2022, incorporated herein by reference to Exhibit 4.1 to PepsiCo, Inc.&rsquo;s Current Report on
+    Form 8-K filed with the Commission on October 30, 2012.</FONT></A></FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; border-left: #BFBFBF 1pt solid; padding: 2pt; text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">4.3</FONT></TD>
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; padding: 2pt; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt"><A HREF="http://www.sec.gov/Archives/edgar/data/77476/000110465914031301/a14-11218_1ex4d1.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif">Form
+    of 1.750% Senior Note due 2021, incorporated herein by reference to Exhibit 4.1 to PepsiCo, Inc.&rsquo;s Current Report on
+    Form 8-K filed with the Commission on April 28, 2014.</FONT></A></FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; border-left: #BFBFBF 1pt solid; padding: 2pt; text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">4.4</FONT></TD>
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; padding: 2pt; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt"><A HREF="http://www.sec.gov/Archives/edgar/data/77476/000110465914031301/a14-11218_1ex4d2.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif">Form
+    of 2.625% Senior Note due 2026, incorporated herein by reference to Exhibit 4.2 to PepsiCo, Inc.&rsquo;s Current Report on
+    Form 8-K filed with the Commission on April 28, 2014.</FONT></A></FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; border-left: #BFBFBF 1pt solid; padding: 2pt; text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">4.5</FONT></TD>
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; padding: 2pt; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt"><A HREF="http://www.sec.gov/Archives/edgar/data/77476/000110465916133022/a16-11909_5ex4d1.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif">Form
+    of 0.875% Senior Note due 2028, incorporated herein by reference to Exhibit 4.1 to PepsiCo, Inc.&rsquo;s Current Report on
+    Form 8-K filed with the Commission on July 18, 2016.</FONT></A></FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; border-left: #BFBFBF 1pt solid; padding: 2pt; text-align: center; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt">4.6</FONT></TD>
+    <TD STYLE="border-right: #BFBFBF 1pt solid; border-bottom: #BFBFBF 1pt solid; padding: 2pt; text-indent: 0in; font-size: 12pt"><FONT STYLE="font-size: 10pt"><A HREF="http://www.sec.gov/Archives/edgar/data/77476/000095012311046737/y91154exv4w3.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif">Board
+    of Directors Resolutions Authorizing PepsiCo, Inc.&rsquo;s Officers to Establish the Terms of the 2.500% Senior Notes due
+    2022, incorporated herein by reference to Exhibit 4.3 to PepsiCo, Inc.&rsquo;s Current Report on Form 8-K filed with the Commission
+    on May 6, 2011.</FONT></A></FONT></TD></TR>
+</TABLE>
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<!-- Field: Page; Sequence: 3; Options: NewSection; Value: 3 -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="margin-top: 0pt; text-align: center; margin-bottom: 0pt; font: 10pt Times New Roman, Times, Serif"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->3<!-- Field: /Sequence --></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="margin: 0"></P>
+
+<P STYLE="margin: 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; font: 10pt Times New Roman, Times, Serif; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="border-right: rgb(191,191,191) 1pt solid; border-bottom: rgb(191,191,191) 1pt solid; border-left: #BFBFBF 1pt solid; padding: 2pt; text-align: center; text-indent: 0in; font-size: 12pt; width: 16%; border-top: rgb(191,191,191) 1pt solid"><FONT STYLE="font-size: 10pt">4.7</FONT></TD>
+    <TD STYLE="border-right: rgb(191,191,191) 1pt solid; border-bottom: rgb(191,191,191) 1pt solid; padding: 2pt; text-indent: 0in; font-size: 12pt; width: 84%; border-top: rgb(191,191,191) 1pt solid"><FONT STYLE="font-size: 10pt"><A HREF="http://www.sec.gov/Archives/edgar/data/77476/000119312513084656/d493310dex44.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif">Board
+    of Directors Resolutions Authorizing PepsiCo, Inc.&rsquo;s Officers to Establish the Terms of the 1.750% Senior Notes due
+    2021, the 2.625% Senior Notes due 2026 and the 0.875% Senior Notes due 2028, incorporated herein by reference to Exhibit 4.4
+    to PepsiCo, Inc.&rsquo;s Current Report on Form 8-K filed with the Commission on February 28, 2013.</FONT></A></FONT></TD></TR>
+</TABLE>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<P STYLE="margin-top: 0; margin-bottom: 0">&nbsp;</P>
+
+<!-- Field: Page; Sequence: 4; Value: 3 -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="margin-top: 0pt; text-align: center; margin-bottom: 0pt; font: 10pt Times New Roman, Times, Serif"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->4<!-- Field: /Sequence --></P></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt; margin-bottom: 6pt"><P STYLE="margin: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 10pt"><B>SIGNATURE</B></FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">Pursuant
+to the requirements of Section 12 of the Securities Exchange Act of 1934, the registrant has duly caused this registration statement
+to be signed on its behalf by the undersigned, thereto duly authorized.</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt"></FONT></P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+<TR>
+    <TD><FONT STYLE="font-size: 10pt">Date: December 7, 2018</TD>
+    <TD COLSPAN="2" STYLE="vertical-align: bottom"><FONT STYLE="font-size: 10pt"><B>PEPSICO, INC.</B></FONT></TD></TR>
+<TR>
+    <TD>&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="vertical-align: bottom">&nbsp;</TD></TR>
+<TR>
+    <TD STYLE="width: 60%">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; text-align: right; width: 4%; padding-right: 2pt"><FONT STYLE="font-size: 10pt">By:</FONT></TD>
+    <TD STYLE="vertical-align: bottom; border-bottom: black 1pt solid; width: 36%; padding-right: 2pt; padding-left: 2pt"><FONT STYLE="font-size: 10pt">/s/ Cynthia A. Nastanski</FONT></TD></TR>
+<TR>
+    <TD>&nbsp;</TD>
+    <TD STYLE="vertical-align: top; text-align: right; padding-right: 2pt"><FONT STYLE="font-size: 10pt">Name:</FONT></TD>
+    <TD STYLE="vertical-align: bottom; padding-right: 2pt; padding-left: 2pt"><FONT STYLE="font-size: 10pt">Cynthia A. Nastanski</FONT></TD></TR>
+<TR>
+    <TD>&nbsp;</TD>
+    <TD STYLE="vertical-align: top; text-align: right; padding-right: 2pt"><FONT STYLE="font-size: 10pt">Title:</FONT></TD>
+    <TD STYLE="vertical-align: bottom; padding-right: 2pt; padding-left: 2pt"><FONT STYLE="font-size: 10pt">Senior Vice President, Corporate Law and Deputy Corporate Secretary</FONT></TD></TR>
+</TABLE>
+
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in"><FONT STYLE="font-size: 10pt">&nbsp;</FONT></P>
+
+
+<!-- Field: Page; Sequence: 5; Options: Last -->
+    <DIV STYLE="margin-top: 6pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="margin: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+
+
+<P STYLE="margin: 0"></P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
