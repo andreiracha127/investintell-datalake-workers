@@ -560,9 +560,10 @@ files. This section supersedes the v2 descriptions above where they differ.
 The admission rule and the parser-correction/source-change distinction remain
 the contract: visibility and the ordering of a statement are separate.
 
-- A label is unique when one **class key** carries it. A ticker change on an
-  incomplete cover does not turn that class into two classes or downgrade its
-  extinguishing end to a tentative closure.
+- A label is unique when one **canonical line** carries it. Raw member aliases
+  linked by the line engine count once, as do ticker changes within that line.
+  Dated grouping uses only visible observations through the relevant source
+  date; future alias or coexistence evidence cannot change an earlier answer.
 - Labels carry their namespace (`class:a`, `series:a`); Roman/Arabic equivalence
   remains within that namespace. `Class II` and `Class 2` identify the same
   class, while `Class A` and `Series A` never do. When a listed observation has
@@ -576,10 +577,16 @@ the contract: visibility and the ordering of a statement are separate.
   `8-A12B/A`/`8-A12G/A` amendments contribute registration evidence at their
   own filing date, subject to their public visibility date. A cancellation
   removes the associated registration; an unread amendment cannot relist an
-  extinguished class. Restatements do not backdate newly named classes.
+  extinguished class. A named label must identify one canonical line in the
+  dated registration/candidate evidence; a shared tracking-stock label relists
+  nothing and cannot fall through to the unnamed one-symbol rule. Restatements
+  do not backdate newly named classes.
 - An end naming only preferred stock, warrants, units, rights or debt closes
-  its named instrument kinds. It does not close common stock merely because
-  its parser classification is `other`. Dependent purchase-right attachments
+  only instruments identified by kind plus their class/series label, or by an
+  explicit symbol. A kind-only description identifies a sole line of that kind
+  at the end date; multiple possible lines remain tentative. An explicitly
+  different sibling remains a competing holder. It does not close common stock
+  merely because its parser classification is `other`. Dependent purchase-right attachments
   are removed before matching instrument kinds, in both “purchase rights” and
   “rights ... to purchase” word orders. Each candidate statement supplies its
   own instrument kind: a preferred/debt row elsewhere in a class's history,
@@ -696,7 +703,12 @@ day is in the union of `alive` intervals and outside the union of
 available vendor price rows or exchange trading days. Performance samples use
 identical inputs and settings on both versions, in a quiet local database window.
 
-### V3 acceptance evidence (2026-10-09)
+### Initial V3 acceptance evidence (e5f18d24, 2026-10-09)
+
+These initial measurements are preserved as the baseline for the production
+gate repair below. The later gate identified three P1 paths despite these
+passing tests; the follow-up adds the missing alias, sibling-instrument and
+shared-label scenarios.
 
 Migration hashes:
 
@@ -819,3 +831,148 @@ sample; this is not a general latency improvement. The older reported 128 ms
 median was not reproduced with this population/session methodology and must
 not be used as the before value for this comparison. Further median-latency
 optimization remains a follow-up, alongside the separately owned loader work.
+
+### Production-gate repair relative to e5f18d24
+
+This follow-up changes only the three identity failures in `W1-V3-GATE.md`:
+
+1. **Aliases count once.** `sec_issuer_lines_at` uses the existing canonical
+   grouping algorithm with separate public-visibility and source-date bounds.
+   End-label uniqueness and prior class counts use those groups. CWENA's two
+   affected raw keys therefore identify one Class A line; the extinguishing
+   2026-05-01 25-NSE (`0000876661-26-000380`, effective May 2) stays definitive.
+   The May 7 stale cover cannot reopen it.
+2. **Non-equity ends select instruments.** Each clause keeps its own kind,
+   declared class/series labels and explicit symbols. A Series A preferred end
+   leaves a Series B preferred sibling alone, including its competing-holder
+   evidence under a reused ticker. Kind-only scope identifies one instrument
+   identity and otherwise stays tentative. Candidate type, own-label priority,
+   declared-label constraints, and purchase-target exclusion are preserved.
+   A corroborating current symbol cannot weaken the closure of a uniquely
+   identified class across its known ticker aliases.
+3. **Registration labels must identify one line.** Registration and candidate
+   cohorts are separately dated and visibility-gated. A shared tracking-stock
+   label cannot relist multiple lines, and a named but ambiguous registration
+   cannot become an unnamed fallback. The existing unnamed registration before
+   the first cover remains valid when the candidate proves exactly one line.
+
+The public eleven-column `sec_issuer_end_events` result remains unchanged in
+shape. Internal `sec_issuer_end_scopes` retains instrument selectors for the
+four engines and for audit. The implementation does not change the loader,
+worker, CI, W1b or Light. All measurements below compare the repaired contract
+with exact commit `e5f18d24` on the same pinned v7 facts; the initial v2-to-e5
+measurements above are historical evidence, not the new delta.
+
+The repaired SQL hashes are:
+
+```text
+v3       985c07e7f3282e142a44a3aeba76e8205ea141e77151ebec70d72162b34e1775
+rollback b86d3919227d00cff1da6221c5f70e11bd0dfee71666600e5427c713a8fded83
+```
+
+On `timescale/timescaledb:2.27.2-pg18` (PostgreSQL 18.4, Alpine GCC 15.2.0,
+`en_US.utf8`, `temp_buffers=8MB`, `work_mem=16MB`, `jit=off`), the two test
+files ran separately with `PYTEST_WORKERS=2`: 101 v3 tests passed in 90.25 s
+and 376 existing tests passed in 365.61 s. The gate regressions produced 28
+expected failures against `e5f18d24`, with 11 baseline controls passing.
+The invariant cross-check covered 107 scenarios, 345 observations and 1,380
+lifecycle-engine evaluations, plus 76 explicit expected-state checks and four
+competing-line checks: zero violations. Both Light probes pinned to `cee5b0ab`
+exited zero using local copies; only the edge probe's schema hash pin changed.
+
+The existing test file changes only its helper privilege list and permits the
+dated identity helper in its inlining check. Its behavioral expectations stay
+unchanged. Explicitly named historical instruments retain their own end binding
+when an unrelated complete cover omits them; this does not change the existing
+complete-cover lifecycle transitions.
+
+| Migration operation | Time | Relations rewritten |
+|---|---:|---:|
+| v2 to repaired v3 | 26.06 ms | 0 |
+| Reapply v3 | 26.09 ms | 0 |
+| Rollback | 18.29 ms | 0 |
+| Reapply after rollback | 25.81 ms | 0 |
+
+All 43 physical relations, including TOAST, retained their physical identities.
+Rollback restored all 25 v2 routine definitions exactly, with no extra routines.
+All 33 v3 routines have the required owner and execution grants; seven
+tables/views retain the reader grants. The public end wrapper matched the
+internal eleven-column projection for all 12,541 CIKs.
+
+CWENA's May 1 filing remains definitive at its May 2 effective/public date,
+with both raw aliases identified and no tentative keys. All 161 daily hold and
+dated-line checks from May 2 through October 9 refuse reopening; ticker/alive
+runs have no post-end overlap. Its May 7 through October 9 admission tail falls
+from 156 calendar days to zero. The prior USB, KKR, SBLK, RTX, ORCL, KIM,
+LTRPA and LTRPB real-data controls also pass.
+
+The full local comparison retains the same pinned v7 source facts. All 12,541
+CIKs have end and line outputs in both versions, with no errors or missing
+inputs. End output changes from 13,574 to 13,088 rows across 2,981 CIKs: 6,324
+full tuples added and 6,810 removed (net -486). These are multiset differences,
+including changed output fields, not counts of newly discovered filings.
+All 35,788 class-to-line assignments remain unchanged.
+
+Grouped by CIK/accession, 2,731 old groups disappear (2,732 former `other`
+rows), 47 groups appear (58 rows), and surviving groups gain 2,188 rows through
+scope separation. These changes explain the net -486; they are derived scope
+outputs, not event-table inserts or deletes.
+
+| Date | Changed full answers / 21,680 | Changed status/identity/kind |
+|---|---:|---:|
+| 2010-12-31 | 0 | 0 |
+| 2015-12-31 | 1 | 1 |
+| 2020-12-31 | 426 | 371 |
+| 2023-12-31 | 1,068 | 754 |
+| 2026-10-09 | 1,494 | 895 |
+
+All 108,400 answers per version have complete, matching input populations.
+Across all five dates, no equity, depositary or unknown-kind answer changes
+from ended to resolved. CWENA changes from resolved to ended on the final date.
+There are 1,837 ended-to-resolved transitions across all dates, all in
+non-listed kinds. Additional listed-kind resolved-to-ended changes include
+JAQC, LVOX and SAMA in 2023, and AL and APAD in 2026; they reflect the changed
+derived scopes and alias counts. The evidence bundle retains their source
+events and the complete per-date deltas.
+The candidate five-date scan took 1,526 s with two readers. This is a validation
+run duration, not a new paired latency benchmark; the extra identity checks have
+a material runtime cost, and this follow-up claims no general speed improvement.
+
+| Admission population | Matched targets | Lines losing days | Days lost | Lines gaining days | Days gained | Both directions |
+|---|---:|---:|---:|---:|---:|---:|
+| Latest listed-kind-selected targets | 14,928 | 61 | 11,294 | 19 | 3,084 | 15 |
+| Latest targets across all kinds | 21,680 | 455 | 55,166 | 1,675 | 923,379 | 112 |
+
+Admission counts calendar days in `union(alive) - union(other_holder)`, clipped
+to 2009-01-01 through 2026-10-09 inclusive. The two populations are separate;
+the all-kind selector has one latest target per ticker and excludes 138 older
+listed-kind selections. All 21,818 measured triples (14,928 core plus 6,890
+supplemental) completed with zero errors or duplicate inputs. Row counts and
+two order-independent checksums of all observation, share and event facts
+match the pinned baseline, whose 27 normalized routines remain unchanged.
+
+CN and C36Y each lose 1,404 days because preferred-class competing-holder
+intervals return while their own alive intervals remain unchanged. Source
+descriptions support the larger preferred-sibling gains: ALLPH's Series H is
+not closed by other Allstate series' ends, BFS Series D/E are not closed by the
+Series C end, and AGNC C/D/E are not closed by A/B ends. These named checks do
+not independently certify every underlying source classification.
+
+The complete evidence bundle is
+`E:/investintell-handoffs/limitations-program/w1-v3-gate-fix-validation/`, with
+the final report, both test logs, probe logs, migration report, full snapshots,
+delta files, source diagnostics and final integrity manifest. All work was
+local; there were no production queries or mutations.
+
+One non-equity reversal remains a source-identity limitation: TEUPRC at
+2015-12-31 changes ended to resolved. The cached 25-NSE
+`0000876661-15-000631` names legal Series C preferred shares, but the sole
+pinned preferred observation (`0000919574-15-003118`, 2015-03-23) has a NULL
+title and technical member `PreferredClassC`, producing `class:c`. The end
+provides `series:c` and no explicit ticker link. The old closure matched only
+the preferred kind. The schema cannot equate Class C and Series C without
+violating the namespace fence, so this gain is not certified as economically
+correct. Its 133 gained days are included in the all-kind totals above.
+Separately owned source enrichment must attach independently evidenced
+legal-series identity with its proper dates; no loader or fact changes were
+made for this comparison.

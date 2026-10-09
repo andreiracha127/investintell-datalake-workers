@@ -227,12 +227,149 @@ WITH cleaned AS (
         '(?i)(?:\w+\s+){0,6}purchase\s+rights?\M', 'rights', 'g'),
         '(?i)(\mrights?\M)[^;,\n]{0,100}?\mto\s+purchase\M[^;,\n]*', '\1', 'g') AS description
     FROM cleaned
+), own_instruments AS (
+    SELECT regexp_replace(description, '(?i)(\mwarrants?\M[^;\n]{0,100}?)\m(?:to\s+(?:purchase|acquire)|exercisable\s+for)\M[^;,\n]*', '\1', 'g') AS description FROM instruments
 )
 SELECT ARRAY(SELECT n.kind
-    FROM instruments c, (VALUES ('warrant', '\mwarrants?\M'), ('unit', '\munits?\M'),
+    FROM own_instruments c, (VALUES ('warrant', '\mwarrants?\M'), ('unit', '\munits?\M'),
         ('right', '\mrights?\M'), ('preferred', 'preferred|preference'),
         ('debt', '\mnotes?\M|debentures?|\mbonds?\M')) n(kind, pattern)
     WHERE c.description ~* n.pattern ORDER BY n.kind COLLATE "C")
+$fn$;
+
+-- Instrument scopes keep labels and explicit trading symbols attached to
+-- their own kind. Labels naming purchased common/preferred shares do not name
+-- the warrant/right itself. Dependent rights are excluded by sec_named_kinds.
+CREATE OR REPLACE FUNCTION sec_instrument_scopes(p_description text)
+RETURNS TABLE (kind text, labels text[], symbols text[])
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $fn$
+WITH detached AS (
+    -- Remove dependent rights before stripping standalone purchase targets;
+    -- otherwise removing "to purchase" would turn an attachment into a right.
+    SELECT regexp_replace(regexp_replace(sec_label_text(p_description),
+        '(?i)\m(?:associated|attached|and|together with)\s+(?:\w+\s+){0,4}purchase\s+rights?\M', ' ', 'g'),
+        '(?i)\m(?:associated|attached|and|together with)\s+(?:associated\s+)?rights?\M[^;,\n]{0,100}?\mto\s+purchase\M[^;,\n]*',
+        ' ', 'g') AS text
+), own_text AS (
+    SELECT regexp_replace(regexp_replace(text,
+        '(?i)(\m(?:warrants?|rights?)\M[^;\n]{0,100}?)\m(?:to\s+(?:purchase|acquire)|exercisable\s+for)\M[^;,\n]*', '\1', 'g'),
+        '(?i)(\m(?:symbol|ticker))\s*\(s\)', '\1s', 'g') AS text
+    FROM detached
+),
+clauses AS MATERIALIZED (
+    SELECT c.text FROM own_text own CROSS JOIN LATERAL regexp_split_to_table(own.text,
+        '(?i)[;\n]|(?:,|\mand\M)\s*(?=(?:warrants?|units?|rights?|preferred|preference|notes?|debentures?|bonds?)\M)') c(text)
+), grammar AS (
+    SELECT '(?:^|[^a-z])(class(?:es)?|series)\s+((?:' || sec_label_id_re() || ')'
+        || '(?:\s*(?:,|/|&|\mand\M|\mor\M)\s*(?:' || sec_label_id_re() || '))*)' AS label_re,
+        '(?i)\m(?:(?:trading\s+symbols?|tickers?|symbols?)\M\s*(?:is\s+|are\s+)?[:=("'' ]*|(?:nyse(?:\s+(?:american|arca))?|nasdaq|amex)\s*[:(]\s*)([a-z0-9][a-z0-9.-]{0,31})(?=\s*(?:$|[,;:()"'']))' AS symbol_re,
+        '(?i)\m(common|ordinary|capital|preferred|preference|warrants?|units?|rights?|notes?|debentures?|bonds?)\M' AS kind_re
+), tokens AS (
+    SELECT c.text, 'label'::text AS type, x.m[1] AS namespace, x.m[2] AS value,
+           regexp_instr(c.text, g.label_re, 1, x.n::integer, 0, 'i') AS begins,
+           regexp_instr(c.text, g.label_re, 1, x.n::integer, 1, 'i') AS ends
+    FROM clauses c CROSS JOIN grammar g
+    CROSS JOIN LATERAL regexp_matches(c.text, g.label_re, 'gi') WITH ORDINALITY x(m,n)
+    UNION ALL
+    SELECT c.text, 'symbol', NULL, x.m[1],
+           regexp_instr(c.text, g.symbol_re, 1, x.n::integer, 0),
+           regexp_instr(c.text, g.symbol_re, 1, x.n::integer, 1)
+    FROM clauses c CROSS JOIN grammar g
+    CROSS JOIN LATERAL regexp_matches(c.text, g.symbol_re, 'g') WITH ORDINALITY x(m,n)
+), attached AS (
+    SELECT t.*, CASE WHEN t.type = 'label' THEN COALESCE(after_kind.value, before_kind.value)
+                    ELSE COALESCE(before_kind.value, after_kind.value) END AS kind_word
+    FROM tokens t CROSS JOIN grammar g
+    LEFT JOIN LATERAL (SELECT lower((regexp_match(substring(t.text FROM t.ends), g.kind_re))[1]) AS value) after_kind ON true
+    LEFT JOIN LATERAL (
+        SELECT lower(x.m[1]) AS value
+        FROM regexp_matches(left(t.text, t.begins - 1), g.kind_re, 'g') WITH ORDINALITY x(m,n)
+        ORDER BY x.n DESC LIMIT 1
+    ) before_kind ON true
+), scoped AS (
+    SELECT a.*, CASE WHEN a.kind_word IN ('common','ordinary','capital') THEN 'equity'
+                    WHEN a.kind_word IN ('preferred','preference') THEN 'preferred'
+                    WHEN a.kind_word IN ('note','notes','debenture','debentures','bond','bonds') THEN 'debt'
+                    ELSE rtrim(a.kind_word, 's') END AS instrument_kind
+    FROM attached a
+), kinds AS (
+    SELECT DISTINCT c.text, k.kind FROM clauses c CROSS JOIN LATERAL unnest(sec_named_kinds(c.text)) k(kind)
+)
+SELECT k.kind,
+       ARRAY(SELECT DISTINCT ((CASE WHEN lower(t.namespace) = 'series' THEN 'series:' ELSE 'class:' END)
+                    || sec_label_norm(id.value)) COLLATE "C"
+             FROM scoped t CROSS JOIN LATERAL regexp_split_to_table(t.value,
+                 '(?i)\s*(?:,|/|&|\mand\M|\mor\M)\s*') id(value)
+             WHERE t.text = k.text AND t.type = 'label' AND t.instrument_kind = k.kind AND sec_label_norm(id.value) IS NOT NULL
+             ORDER BY 1),
+       ARRAY(SELECT DISTINCT regexp_replace(upper(t.value), '[^A-Z0-9]', '', 'g') COLLATE "C"
+             FROM scoped t WHERE t.text = k.text AND t.type = 'symbol' AND t.instrument_kind = k.kind
+               AND (lower(t.value) NOT IN ('of','the','is','are','for','on','and','or','in','to','an')
+                    OR substring(t.text FROM t.begins FOR t.ends - t.begins) ~ '[:=("'']') ORDER BY 1)
+FROM kinds k
+$fn$;
+
+CREATE OR REPLACE FUNCTION sec_instrument_label(p_title text, p_class_key text, p_kind text)
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $fn$
+WITH title AS MATERIALIZED (
+         SELECT s.kind, array_remove(array_agg(DISTINCT l.label COLLATE "C" ORDER BY l.label COLLATE "C"), NULL) AS labels
+         FROM sec_instrument_scopes(p_title) s LEFT JOIN LATERAL unnest(s.labels) l(label) ON true
+         GROUP BY s.kind
+     ), member AS MATERIALIZED (
+         SELECT s.kind, array_remove(array_agg(DISTINCT l.label COLLATE "C" ORDER BY l.label COLLATE "C"), NULL) AS labels
+         FROM sec_instrument_scopes(p_class_key) s LEFT JOIN LATERAL unnest(s.labels) l(label) ON true
+         GROUP BY s.kind
+     ),
+     generic_labels AS (
+         -- Supplying a harmless equity suffix reuses the namespace/enumeration
+         -- grammar for kind-free labels. The guards below reject actual equity
+         -- wording and purchase targets before these labels can be used.
+         SELECT ARRAY(SELECT DISTINCT label COLLATE "C"
+                      FROM regexp_split_to_table(COALESCE(p_title, ''), '[;\n]') clause
+                      CROSS JOIN LATERAL unnest(sec_named_classes(clause || ' common stock')) label
+                      ORDER BY 1) AS title_labels,
+                ARRAY(SELECT DISTINCT label COLLATE "C"
+                      FROM regexp_split_to_table(COALESCE(p_class_key, ''), '[;\n]') clause
+                      CROSS JOIN LATERAL unnest(sec_named_classes(clause || ' common stock')) label
+                      ORDER BY 1) AS member_labels
+     ), plain AS (
+         SELECT g.*, CASE WHEN cardinality(g.member_labels) = 1 THEN g.member_labels[1] END AS label,
+                sec_label_text(p_class_key) AS member_text, sec_label_text(p_title) AS title_text
+         FROM generic_labels g
+     ), target AS (
+         SELECT COALESCE((regexp_match(p.title_text,
+             '(?i)\m(?:to\s+(?:purchase|acquire)|exercisable\s+for)\M(.*)'))[1], '') AS text
+         FROM plain p
+     )
+SELECT CASE
+    WHEN EXISTS (SELECT 1 FROM title t WHERE t.kind = p_kind AND cardinality(t.labels) > 0)
+        THEN (SELECT CASE WHEN cardinality(t.labels) = 1 THEN t.labels[1] END
+              FROM title t WHERE t.kind = p_kind)
+    WHEN cardinality(p.title_labels) > 0 AND NOT EXISTS (SELECT 1 FROM title)
+      AND p.title_text !~* '\m(common|ordinary|capital)\M'
+      AND p.title_text !~* '\m(?:to\s+(?:purchase|acquire)|exercisable\s+for|purchase\s+rights?)\M'
+        THEN CASE WHEN cardinality(p.title_labels) = 1 THEN p.title_labels[1] END
+    WHEN NOT EXISTS (SELECT 1 FROM title t WHERE t.kind = p_kind)
+      AND (EXISTS (SELECT 1 FROM title) OR p.title_text ~* '\m(common|ordinary|capital)\M')
+        THEN NULL
+    WHEN EXISTS (SELECT 1 FROM member m WHERE m.kind = p_kind AND cardinality(m.labels) > 0)
+        THEN (SELECT CASE WHEN cardinality(m.labels) = 1 THEN m.labels[1] END
+              FROM member m WHERE m.kind = p_kind)
+    -- A plain Class/Series member is own-class evidence when the row supplies
+    -- its kind. Explicit other-kind words and purchase targets are not.
+    WHEN NOT EXISTS (SELECT 1 FROM member m WHERE m.kind <> p_kind)
+      AND p.member_text !~* '\m(common|ordinary|capital)\M'
+      AND p.member_text !~* '\m(?:to\s+(?:purchase|acquire)|exercisable\s+for|purchase\s+rights?)\M'
+      AND NOT COALESCE(p.label = sec_first_label(target.text), false)
+      AND NOT COALESCE(p.label = ANY(sec_named_classes(target.text)), false)
+      AND NOT EXISTS (SELECT 1 FROM sec_instrument_scopes(target.text) t WHERE p.label = ANY(t.labels))
+      AND NOT (p.title_text ~* '\mpurchase\s+rights?\M'
+               AND COALESCE(p.label = sec_first_label(p.title_text), false))
+        THEN p.label
+END
+FROM plain p CROSS JOIN target
 $fn$;
 
 CREATE OR REPLACE FUNCTION sec_end_role(
@@ -252,11 +389,32 @@ SELECT CASE
                             ELSE 'identified' END
                END
                END
-           WHEN p_kind = ANY(p_named_kinds) THEN 'identified'
+           WHEN p_class_kind = 'other' AND p_kind = ANY(p_named_kinds) THEN
+               CASE WHEN p_class_key = ANY(p_class_keys) THEN
+                   CASE WHEN p_class_key = ANY(p_tentative_keys) THEN 'tentative' ELSE 'identified' END END
            WHEN p_class_kind IS NULL OR p_class_kind = 'unknown' THEN
                CASE WHEN cardinality(p_tentative_keys) > 0 THEN 'tentative'
                     ELSE 'identified' END
        END
+$fn$;
+
+CREATE OR REPLACE FUNCTION sec_end_role(
+    p_class_keys text[], p_tentative_keys text[], p_class_kind text, p_named_kinds text[],
+    p_class_key text, p_kind text, p_label text, p_ticker_key text, p_instrument_scope jsonb
+)
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $fn$
+SELECT CASE WHEN p_kind IN ('equity','depositary','unknown') OR p_class_kind IS DISTINCT FROM 'other'
+    THEN sec_end_role(p_class_keys,p_tentative_keys,p_class_kind,p_named_kinds,p_class_key,p_kind)
+    WHEN p_kind = ANY(p_named_kinds) THEN (
+        SELECT CASE WHEN bool_or(scope.role = 'identified') THEN 'identified'
+                    WHEN bool_or(scope.role = 'tentative') THEN 'tentative' END
+        FROM jsonb_to_recordset(COALESCE(p_instrument_scope, '[]'::jsonb))
+             scope(class_key text,label text,ticker_key text,mode text,named_label text,role text)
+        WHERE scope.class_key = p_class_key
+          AND (scope.mode <> 'symbol' OR scope.ticker_key = p_ticker_key)
+          AND (p_label IS NULL OR scope.named_label IS NULL OR p_label = scope.named_label)
+          AND (p_label IS NULL OR scope.label IS NULL OR p_label = scope.label)) END
 $fn$;
 
 CREATE OR REPLACE FUNCTION sec_registration_end_events(
@@ -395,7 +553,242 @@ SELECT h.known_on, h.filed, h.form, h.adsh,
 FROM surviving h GROUP BY h.original, h.known_on, h.filed, h.form, h.adsh
 $fn$;
 
-CREATE OR REPLACE FUNCTION sec_issuer_end_events(
+CREATE OR REPLACE FUNCTION sec_issuer_lines_at(
+    p_cik bigint, p_as_of date, p_current boolean, p_source_through date
+)
+RETURNS TABLE (class_key text, line_key text)
+LANGUAGE plpgsql STABLE PARALLEL SAFE
+-- Planned once per call; JIT compilation would cost more than the query.
+SET jit = off
+AS $fn$
+#variable_conflict use_column
+DECLARE
+    keys text[];
+    firsts date[];
+    equity boolean[];
+    comp integer[];
+    pairs text[];
+    edge record;
+    ia integer;
+    ib integer;
+    ca integer;
+    cb integer;
+    i integer;
+    j integer;
+    clash boolean;
+BEGIN
+    SELECT array_agg(c.class_key ORDER BY c.class_key COLLATE "C"),
+           array_agg(c.first_on ORDER BY c.class_key COLLATE "C"),
+           array_agg(c.equity ORDER BY c.class_key COLLATE "C")
+      INTO keys, firsts, equity
+    FROM (
+        SELECT o.class_key, min(o.source_available_on) AS first_on,
+               bool_or(o.security_kind IN ('equity', 'depositary', 'unknown')) AS equity
+        FROM sec_observations_at(p_as_of, p_current) o
+        WHERE o.cik = p_cik AND o.source_available_on <= p_source_through
+        GROUP BY o.class_key
+    ) c;
+    IF keys IS NULL THEN
+        RETURN;
+    END IF;
+    comp := ARRAY(SELECT generate_series(1, cardinality(keys)));
+    -- classes that appear side by side in one filing, as 'a' || chr(31) || 'b'
+    SELECT COALESCE(array_agg(DISTINCT (x.class_key || chr(31) || y.class_key) COLLATE "C" ORDER BY (x.class_key || chr(31) || y.class_key) COLLATE "C"), '{}')
+      INTO pairs
+    FROM sec_observations_at(p_as_of, p_current) x
+    JOIN sec_observations_at(p_as_of, p_current) y
+      ON y.adsh = x.adsh AND y.cik = x.cik AND y.class_key <> x.class_key
+    WHERE x.cik = p_cik AND x.source_available_on <= p_source_through
+      AND y.source_available_on <= p_source_through
+      AND x.security_kind IN ('equity', 'depositary', 'unknown')
+      AND y.security_kind IN ('equity', 'depositary', 'unknown');
+    FOR edge IN
+        WITH equity_rows AS (
+            SELECT o.adsh, o.class_key, o.ticker_key, o.source_available_on AS on_date,
+                   o.accepted, o.filing_equity_classes, o.filing_complete
+            FROM sec_observations_at(p_as_of, p_current) o
+            WHERE o.cik = p_cik AND o.source_available_on <= p_source_through AND o.security_kind IN ('equity', 'depositary', 'unknown')
+        ), shown AS (
+            SELECT e.class_key, e.ticker_key, min(e.on_date) AS first_on,
+                   count(DISTINCT e.adsh) AS filings
+            FROM equity_rows e
+            GROUP BY e.class_key, e.ticker_key
+        ), filing_lines AS (
+            SELECT e.adsh, count(DISTINCT e.class_key) AS listed
+            FROM equity_rows e
+            GROUP BY e.adsh
+        ), structure AS (
+            -- the class structure comes from complete covers only: an 8-K (whose
+            -- members vary: CCL's, DUK's and NI's 8-Ks name their common stock
+            -- unlike their 10-Qs) says neither that a class is the only one nor
+            -- that it is listed beside another
+            SELECT e.class_key,
+                   bool_and(e.filing_equity_classes = 1) FILTER (WHERE e.filing_complete)
+                       AS sole_only,
+                   bool_or(f.listed > 1) FILTER (WHERE e.filing_complete) AS beside_listed
+            FROM equity_rows e
+            JOIN filing_lines f ON f.adsh = e.adsh
+            GROUP BY e.class_key
+        ), shared AS (
+            SELECT x.class_key AS a, y.class_key AS b,
+                   min(GREATEST(x.first_on, y.first_on)) AS on_date,
+                   sum(x.filings + y.filings) AS evidence
+            FROM shown x
+            JOIN shown y ON y.ticker_key = x.ticker_key AND y.class_key COLLATE "C" > x.class_key COLLATE "C"
+            JOIN structure sx ON sx.class_key = x.class_key
+            JOIN structure sy ON sy.class_key = y.class_key
+            WHERE NOT (x.class_key = '' AND COALESCE(sx.sole_only, true)
+                       AND COALESCE(sy.beside_listed, false))
+            GROUP BY x.class_key, y.class_key
+        ), sole AS (
+            SELECT f.key, f.on_date,
+                   lag(f.key) OVER (ORDER BY f.on_date, f.accepted NULLS FIRST, f.adsh COLLATE "C")
+                       AS prev_key
+            FROM (
+                SELECT e.adsh, min(e.on_date) AS on_date, max(e.accepted) AS accepted,
+                       CASE WHEN count(DISTINCT e.class_key) = 1
+                                 AND bool_and(e.filing_equity_classes = 1)
+                            THEN min(e.class_key COLLATE "C") END AS key
+                FROM equity_rows e
+                WHERE e.filing_complete
+                GROUP BY e.adsh
+            ) f
+        ), relabels AS (
+            SELECT LEAST(s.prev_key COLLATE "C", s.key COLLATE "C") AS a, GREATEST(s.prev_key COLLATE "C", s.key COLLATE "C") AS b,
+                   min(s.on_date) AS on_date, count(*) AS evidence
+            FROM sole s
+            WHERE s.key IS NOT NULL AND s.prev_key IS NOT NULL AND s.prev_key <> s.key
+            GROUP BY LEAST(s.prev_key COLLATE "C", s.key COLLATE "C"), GREATEST(s.prev_key COLLATE "C", s.key COLLATE "C")
+        )
+        SELECT u.a, u.b, min(u.on_date) AS on_date, sum(u.evidence) AS evidence
+        FROM (SELECT * FROM shared UNION ALL SELECT * FROM relabels) u
+        GROUP BY u.a, u.b
+        ORDER BY min(u.on_date), sum(u.evidence) DESC, u.a COLLATE "C", u.b COLLATE "C"
+    LOOP
+        ia := array_position(keys, edge.a);
+        ib := array_position(keys, edge.b);
+        ca := comp[ia];
+        cb := comp[ib];
+        CONTINUE WHEN ca = cb OR (edge.a || chr(31) || edge.b) = ANY(pairs);
+        clash := false;
+        FOR i IN 1 .. cardinality(keys) LOOP
+            CONTINUE WHEN comp[i] <> ca;
+            FOR j IN 1 .. cardinality(keys) LOOP
+                IF comp[j] = cb AND (keys[i] || chr(31) || keys[j]) = ANY(pairs) THEN
+                    clash := true;
+                    EXIT;
+                END IF;
+            END LOOP;
+            EXIT WHEN clash;
+        END LOOP;
+        CONTINUE WHEN clash;
+        FOR i IN 1 .. cardinality(keys) LOOP
+            IF comp[i] = cb THEN
+                comp[i] := ca;
+            END IF;
+        END LOOP;
+    END LOOP;
+    RETURN QUERY
+    SELECT k.key,
+           CASE WHEN equity[k.n::integer] THEN (
+               SELECT keys[m.n] FROM generate_subscripts(keys, 1) AS m(n)
+               WHERE comp[m.n] = comp[k.n::integer] AND equity[m.n]
+               ORDER BY firsts[m.n], keys[m.n] COLLATE "C"
+               LIMIT 1)
+           ELSE k.key END
+    FROM unnest(keys) WITH ORDINALITY AS k(key, n);
+END
+$fn$;
+
+-- Caller first checks that the registration names p_label (or names no class
+-- and the end's singleton rule applies). Dates bound source chronology;
+-- p_as_of/p_current independently control which fact versions are visible.
+CREATE OR REPLACE FUNCTION sec_registration_identifies(
+    p_cik bigint, p_as_of date, p_current boolean,
+    p_registration_on date, p_candidate_on date,
+    p_class_key text, p_label text
+)
+RETURNS boolean
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+WITH bounds AS (
+    SELECT 'registration'::text AS which, p_registration_on AS on_date
+    UNION ALL
+    SELECT 'candidate', p_candidate_on
+), visible AS MATERIALIZED (
+    SELECT o.adsh, o.class_key, o.security_title, o.source_available_on AS source_on,
+           o.accepted, o.filing_complete
+    FROM sec_observations_at(p_as_of, p_current) o
+    WHERE o.cik = p_cik
+      AND o.security_kind IN ('equity', 'depositary', 'unknown')
+      AND o.source_available_on <= GREATEST(p_registration_on, p_candidate_on)
+), filings AS MATERIALIZED (
+    SELECT o.adsh, max(o.source_on) AS source_on, max(o.accepted) AS accepted,
+           bool_or(o.filing_complete) AS complete
+    FROM visible o GROUP BY o.adsh
+), latest_complete AS (
+    SELECT b.which, b.on_date, f.adsh, f.source_on, f.accepted
+    FROM bounds b
+    LEFT JOIN LATERAL (
+        SELECT f.* FROM filings f WHERE f.complete AND f.source_on <= b.on_date
+        ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh COLLATE "C" DESC
+        LIMIT 1
+    ) f ON true
+), cohort_rows AS MATERIALIZED (
+    SELECT b.which, o.class_key, o.source_on, sec_first_label(o.security_title) AS explicit_label
+    FROM latest_complete b
+    JOIN filings f ON f.source_on <= b.on_date
+      AND (b.adsh IS NULL OR f.adsh = b.adsh OR f.source_on > b.source_on
+           OR (f.source_on = b.source_on AND
+               (COALESCE(f.accepted, '-infinity'::timestamp), f.adsh COLLATE "C")
+                 > (COALESCE(b.accepted, '-infinity'::timestamp), b.adsh COLLATE "C")))
+    JOIN visible o ON o.adsh = f.adsh
+), requests AS (
+    SELECT DISTINCT r.class_key, r.source_on AS bound_on
+    FROM cohort_rows r WHERE r.explicit_label IS NULL
+), historical_labels AS MATERIALIZED (
+    SELECT l.* FROM sec_class_label_history(p_cik, p_as_of, p_current,
+        (SELECT jsonb_agg(jsonb_build_object('class_key', r.class_key, 'bound_on', r.bound_on)
+                          ORDER BY r.class_key COLLATE "C", r.bound_on)
+         FROM requests r)) l
+), labelled AS MATERIALIZED (
+    SELECT r.which, r.class_key, COALESCE(r.explicit_label, h.label) AS label
+    FROM cohort_rows r LEFT JOIN historical_labels h
+      ON h.class_key = r.class_key AND h.bound_on = r.source_on
+), mappings AS MATERIALIZED (
+    SELECT b.which, l.class_key, l.line_key
+    FROM bounds b CROSS JOIN LATERAL
+         sec_issuer_lines_at(p_cik, p_as_of, p_current, b.on_date) l
+), target AS (
+    SELECT m.line_key FROM mappings m
+    WHERE m.which = 'candidate' AND m.class_key = p_class_key
+), cohort AS MATERIALIZED (
+    SELECT l.which, l.label, own.line_key, candidate.line_key AS candidate_line
+    FROM labelled l
+    JOIN mappings own ON own.which = l.which AND own.class_key = l.class_key
+    LEFT JOIN mappings candidate
+      ON candidate.which = 'candidate' AND candidate.class_key = l.class_key
+), candidate_scope AS (
+    SELECT count(DISTINCT c.line_key) AS lines,
+           bool_or(c.line_key = t.line_key) AS includes_target
+    FROM cohort c CROSS JOIN target t
+    WHERE c.which = 'candidate' AND (p_label IS NULL OR c.label = p_label)
+), registration_scope AS (
+    SELECT count(DISTINCT c.line_key) AS lines,
+           bool_and(COALESCE(c.candidate_line = t.line_key, false)) AS same_line
+    FROM cohort c CROSS JOIN target t
+    WHERE c.which = 'registration' AND (p_label IS NULL OR c.label = p_label)
+)
+SELECT COALESCE(p_registration_on <= p_candidate_on AND p_class_key IS NOT NULL
+       AND c.lines = 1 AND c.includes_target
+       AND ((r.lines = 1 AND r.same_line)
+            -- A registration may precede the first cover. The later candidate
+            -- must identify exactly one canonical line: the named label when
+            -- supplied, or the whole cohort for the existing unnamed fallback.
+            OR r.lines = 0), false)
+FROM candidate_scope c CROSS JOIN registration_scope r
+$fn$;
+CREATE OR REPLACE FUNCTION sec_issuer_end_scopes(
     p_cik bigint, p_as_of date, p_current boolean DEFAULT false
 )
 RETURNS TABLE (
@@ -409,13 +802,14 @@ RETURNS TABLE (
     class_kind text,
     named_kinds text[],
     tentative_keys text[],
-    issuer_symbols integer
+    issuer_symbols integer,
+    instrument_scope jsonb
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
 WITH horizon AS (
     SELECT CASE WHEN p_current THEN 'infinity'::date ELSE p_as_of END AS on_date
-), filings AS MATERIALIZED (
+), all_filings AS MATERIALIZED (
     -- the covers visible at D, placed by when they were filed (source_on)
     SELECT o.adsh,
            max(o.source_available_on) AS source_on,
@@ -429,11 +823,12 @@ WITH horizon AS (
     CROSS JOIN LATERAL sec_observations_at(h.on_date, p_current) o
     WHERE o.cik = p_cik
     GROUP BY o.adsh
-    HAVING bool_or(o.security_kind IN ('equity', 'depositary', 'unknown'))
+), filings AS MATERIALIZED (
+    SELECT f.* FROM all_filings f WHERE f.equity_symbols > 0
 ), cover_rows AS MATERIALIZED (
     -- Keep every cover row for counts; labels are parsed only after the
     -- per-end evidence join selects the relevant listed observations.
-    SELECT o.adsh, o.class_key, o.ticker_key,
+    SELECT o.adsh, o.class_key, o.ticker_key, o.security_kind,
            o.security_kind IN ('equity', 'depositary', 'unknown') AS listed,
            o.security_title
     FROM horizon h
@@ -497,6 +892,11 @@ WITH horizon AS (
            CASE WHEN h.amendment_effect = 'cancels' THEN NULL ELSE h.class_description END
     FROM events e JOIN amendment_history h ON h.original_adsh = e.adsh
     WHERE h.latest > 1
+), version_lines AS MATERIALIZED (
+    SELECT v.adsh, v.version_key, l.class_key, l.line_key
+    FROM versions v CROSS JOIN horizon h
+    CROSS JOIN LATERAL sec_issuer_lines_at(p_cik, h.on_date, p_current,
+        COALESCE(v.restated_filed, v.filed) + 1) l
 ), judging AS MATERIALIZED (
     -- the complete cover each end is judged against: the latest one (a
     -- 10-K/10-Q-type cover lists every class) filed before it
@@ -536,17 +936,144 @@ WITH horizon AS (
       ON l.class_key = e.class_key AND l.bound_on = e.bound_on
 ), classes AS MATERIALIZED (
     SELECT e.adsh, e.effective, e.version_key, e.class_key, max(e.label COLLATE "C") AS label,
-           count(DISTINCT e.label) AS labels
+           count(DISTINCT e.label) AS labels,
+           COALESCE(max(line.line_key COLLATE "C"), e.class_key) AS line_key
     FROM evidence e
+    LEFT JOIN version_lines line ON line.adsh = e.adsh AND line.version_key = e.version_key AND line.class_key = e.class_key
     WHERE e.listed
     GROUP BY e.adsh, e.effective, e.version_key, e.class_key
 ), label_symbols AS MATERIALIZED (
     -- a label identifies a class only when one symbol carries it (tracking
     -- stocks of several groups each have a Series A)
-    SELECT e.adsh, e.effective, e.version_key, e.label, count(DISTINCT e.class_key) AS symbols
+    SELECT e.adsh, e.effective, e.version_key, e.label, count(DISTINCT COALESCE(line.line_key, e.class_key)) AS symbols
     FROM evidence e
+    LEFT JOIN version_lines line ON line.adsh = e.adsh AND line.version_key = e.version_key AND line.class_key = e.class_key
     WHERE e.listed AND e.label IS NOT NULL
     GROUP BY e.adsh, e.effective, e.version_key, e.label
+), version_instrument_clauses AS MATERIALIZED (
+    SELECT v.adsh, v.version_key, scope.kind, scope.labels, scope.symbols
+    FROM versions v CROSS JOIN LATERAL sec_instrument_scopes(v.class_description) scope
+), version_instrument_scopes AS MATERIALIZED (
+    -- Each declared label has its own history. Removing a sibling label from
+    -- an amendment must not move a retained label's original effective date.
+    SELECT DISTINCT c.adsh, c.version_key, c.kind, c.symbols, selected.label AS named_label,
+           jsonb_build_array(c.kind, selected.label, c.symbols)::text AS selector_key,
+           CASE WHEN selected.label IS NULL THEN '{}'::text[] ELSE ARRAY[selected.label] END AS labels
+    FROM version_instrument_clauses c
+    CROSS JOIN LATERAL unnest(CASE WHEN cardinality(c.labels) = 0 THEN ARRAY[NULL::text]
+                                  ELSE c.labels END) selected(label)
+), instrument_current_raw AS MATERIALIZED (
+    SELECT DISTINCT v.adsh, v.version_key, r.security_kind, r.class_key, r.ticker_key,
+           r.security_title,
+           COALESCE(line.line_key, r.class_key) AS line_key, true AS current_cohort
+    FROM versions v
+    LEFT JOIN LATERAL (
+        SELECT f.adsh, f.source_on FROM all_filings f
+        WHERE f.complete AND f.source_on < COALESCE(v.restated_filed, v.filed) + 1
+        ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh COLLATE "C" DESC LIMIT 1
+    ) complete ON true
+    JOIN all_filings f ON f.source_on < COALESCE(v.restated_filed, v.filed) + 1
+      AND (complete.adsh IS NULL OR f.adsh = complete.adsh OR f.source_on > complete.source_on)
+    JOIN cover_rows r ON r.adsh = f.adsh AND NOT r.listed
+    LEFT JOIN version_lines line ON line.adsh = v.adsh AND line.version_key = v.version_key AND line.class_key = r.class_key
+), historical_instrument_kinds AS MATERIALIZED (
+    SELECT DISTINCT scope.adsh, scope.version_key, scope.kind
+    FROM version_instrument_scopes scope
+    WHERE scope.named_label IS NOT NULL OR cardinality(scope.symbols) > 0
+), instrument_historical_raw AS MATERIALIZED (
+    -- An explicitly named old instrument may disappear from an unrelated
+    -- complete cover before its registration ends. Retain its source-bounded
+    -- identity for selector-specific fallback; never expose it to kind-only
+    -- wildcard scope or overwrite a positive current selector match.
+    SELECT DISTINCT v.adsh, v.version_key, r.security_kind, r.class_key, r.ticker_key,
+           r.security_title, COALESCE(line.line_key, r.class_key) AS line_key, false AS current_cohort
+    FROM versions v JOIN historical_instrument_kinds kind
+      ON kind.adsh = v.adsh AND kind.version_key = v.version_key
+    JOIN all_filings f ON f.source_on < COALESCE(v.restated_filed, v.filed) + 1
+    JOIN cover_rows r ON r.adsh = f.adsh AND NOT r.listed AND r.security_kind = kind.kind
+    LEFT JOIN version_lines line ON line.adsh = v.adsh AND line.version_key = v.version_key
+                                AND line.class_key = r.class_key
+), instrument_evidence_raw AS MATERIALIZED (
+    SELECT * FROM instrument_current_raw
+    UNION ALL
+    SELECT * FROM instrument_historical_raw
+), instrument_label_inputs AS MATERIALIZED (
+    -- The new identity parser is immutable. Parse each distinct input once,
+    -- not once per repeated cover/end-version join row before DISTINCT.
+    SELECT DISTINCT r.security_title, r.class_key, r.security_kind
+    FROM instrument_evidence_raw r
+), instrument_labels AS MATERIALIZED (
+    SELECT r.*, sec_instrument_label(r.security_title, r.class_key, r.security_kind) AS label
+    FROM instrument_label_inputs r
+), instrument_evidence AS MATERIALIZED (
+    SELECT r.adsh, r.version_key, r.security_kind, r.class_key, r.ticker_key,
+           label.label, r.line_key, bool_or(r.current_cohort) AS current_cohort
+    FROM instrument_evidence_raw r JOIN instrument_labels label
+      ON label.class_key = r.class_key AND label.security_kind = r.security_kind
+     AND label.security_title IS NOT DISTINCT FROM r.security_title
+    GROUP BY r.adsh, r.version_key, r.security_kind, r.class_key, r.ticker_key, label.label, r.line_key
+), instrument_scope_presence AS MATERIALIZED (
+    SELECT scope.adsh, scope.version_key, scope.selector_key,
+           COALESCE(bool_or(
+               ((scope.named_label IS NOT NULL AND r.label = scope.named_label)
+                OR (cardinality(scope.symbols) > 0 AND r.ticker_key = ANY(scope.symbols)))
+               AND (scope.named_label IS NULL OR r.label IS NULL OR r.label = scope.named_label)
+               AND (cardinality(scope.symbols) = 0 OR r.ticker_key = ANY(scope.symbols))), false) AS has_current_match
+    FROM version_instrument_scopes scope LEFT JOIN instrument_evidence r
+      ON r.adsh = scope.adsh AND r.version_key = scope.version_key AND r.security_kind = scope.kind
+     AND r.current_cohort
+    GROUP BY scope.adsh, scope.version_key, scope.selector_key
+), instrument_candidates AS MATERIALIZED (
+    SELECT r.*, scope.selector_key, scope.labels AS named_labels, scope.symbols AS named_symbols, scope.named_label
+    FROM version_instrument_scopes scope JOIN instrument_scope_presence present
+      ON present.adsh = scope.adsh AND present.version_key = scope.version_key AND present.selector_key = scope.selector_key
+    JOIN instrument_evidence r ON r.adsh = scope.adsh AND r.version_key = scope.version_key AND r.security_kind = scope.kind
+    WHERE r.current_cohort OR (
+        NOT present.has_current_match
+        AND ((scope.named_label IS NOT NULL AND r.label = scope.named_label)
+             OR (cardinality(scope.symbols) > 0 AND r.ticker_key = ANY(scope.symbols)))
+        AND (scope.named_label IS NULL OR r.label IS NULL OR r.label = scope.named_label)
+        AND (cardinality(scope.symbols) = 0 OR r.ticker_key = ANY(scope.symbols)))
+), instrument_kind_counts AS MATERIALIZED (
+    SELECT r.adsh, r.version_key, r.security_kind, r.selector_key,
+           count(DISTINCT (r.line_key, COALESCE(r.label, 'symbol:' || r.ticker_key))) AS lines
+    FROM instrument_candidates r GROUP BY r.adsh, r.version_key, r.security_kind, r.selector_key
+), instrument_label_counts AS MATERIALIZED (
+    SELECT r.adsh, r.version_key, r.security_kind, r.selector_key, r.label,
+           count(DISTINCT (r.line_key, COALESCE(r.label, 'symbol:' || r.ticker_key))) AS lines
+    FROM instrument_candidates r WHERE r.label IS NOT NULL
+    GROUP BY r.adsh, r.version_key, r.security_kind, r.selector_key, r.label
+), instrument_symbol_counts AS MATERIALIZED (
+    SELECT r.adsh, r.version_key, r.security_kind, r.selector_key, r.ticker_key,
+           count(DISTINCT (r.line_key, COALESCE(r.label, 'symbol:' || r.ticker_key))) AS lines
+    FROM instrument_candidates r GROUP BY r.adsh, r.version_key, r.security_kind, r.selector_key, r.ticker_key
+), instrument_roles AS MATERIALIZED (
+    SELECT v.adsh, v.version_key, r.security_kind, r.class_key, r.label, r.ticker_key,
+           jsonb_build_array(r.class_key, r.label,
+               CASE WHEN selection.value = 'symbol' THEN r.ticker_key END,
+               selection.value, r.named_label)::text AS member,
+           CASE
+               WHEN cardinality(r.named_labels) > 0 AND r.label IS NOT NULL AND NOT r.label = ANY(r.named_labels)
+                    THEN 'excluded'
+               WHEN cardinality(r.named_symbols) > 0 AND NOT r.ticker_key = ANY(r.named_symbols) THEN 'excluded'
+               WHEN cardinality(r.named_symbols) > 0 AND symbol_count.lines = 1 THEN 'identified'
+               WHEN cardinality(r.named_labels) > 0 AND r.label = ANY(r.named_labels) AND label_count.lines = 1 THEN 'identified'
+               WHEN cardinality(r.named_labels) = 0 AND cardinality(r.named_symbols) = 0 AND kind_count.lines = 1 THEN 'identified'
+               ELSE 'tentative'
+           END AS role
+    FROM instrument_candidates r JOIN versions v ON v.adsh = r.adsh AND v.version_key = r.version_key
+    JOIN instrument_kind_counts kind_count ON kind_count.adsh = r.adsh AND kind_count.version_key = r.version_key
+      AND kind_count.security_kind = r.security_kind AND kind_count.selector_key = r.selector_key
+    LEFT JOIN instrument_label_counts label_count ON label_count.adsh = r.adsh AND label_count.version_key = r.version_key
+      AND label_count.security_kind = r.security_kind AND label_count.selector_key = r.selector_key AND label_count.label = r.label
+    JOIN instrument_symbol_counts symbol_count ON symbol_count.adsh = r.adsh AND symbol_count.version_key = r.version_key
+      AND symbol_count.security_kind = r.security_kind AND symbol_count.selector_key = r.selector_key AND symbol_count.ticker_key = r.ticker_key
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN r.named_label IS NOT NULL AND r.label = r.named_label AND label_count.lines = 1
+                    THEN 'label'
+                    WHEN cardinality(r.named_symbols) > 0 THEN 'symbol'
+                    WHEN r.named_label IS NOT NULL THEN 'label' ELSE 'kind' END AS value
+    ) selection
 ), judged AS MATERIALIZED (
     SELECT v.*,
            sec_named_classes(v.class_description) AS named,
@@ -557,7 +1084,7 @@ WITH horizon AS (
                      FROM evidence e WHERE e.adsh = v.adsh AND e.version_key = v.version_key), 0)
                AS prior_symbols,
            GREATEST(COALESCE(j.cover_classes, 1),
-                    (SELECT count(*) FROM classes c
+                    (SELECT count(DISTINCT c.line_key) FROM classes c
                      WHERE c.adsh = v.adsh AND c.version_key = v.version_key), 1) AS prior_classes,
            -- a Form 15-12G or 15-15D (or 15F) ends a registration, which may be of an
            -- unlisted class; the other forms end listed classes
@@ -630,17 +1157,22 @@ WITH horizon AS (
     FROM roles r
     JOIN role_dates scope ON scope.adsh = r.adsh AND scope.version_key = r.version_key AND scope.class_key = r.class_key
     JOIN judged j ON j.adsh = r.adsh AND j.version_key = r.version_key
+    LEFT JOIN label_symbols unique_label ON unique_label.adsh = r.adsh AND unique_label.version_key = r.version_key AND unique_label.label = r.label
     WHERE r.role IN ('identified', 'tentative')
       AND NOT EXISTS (
           SELECT 1 FROM starts g
           WHERE g.filed BETWEEN scope.first_filed - 30 AND scope.first_filed + 10
             AND (g.form IN ('8-K12B', '8-K12G3')
                  OR NOT (j.registration_end OR COALESCE(j.extinguished, false)))
-            AND ((r.label IS NOT NULL AND r.label = ANY(g.classes))
-                 OR (cardinality(g.classes) = 0 AND j.prior_symbols = 1)))
+            AND CASE WHEN ((r.label IS NOT NULL AND r.label = ANY(g.classes) AND unique_label.symbols = 1)
+                 OR (cardinality(g.classes) = 0 AND j.prior_symbols = 1)) THEN
+                sec_registration_identifies(p_cik, CASE WHEN p_current THEN 'infinity'::date ELSE p_as_of END,
+                    p_current, g.filed + 1, GREATEST(scope.first_filed + 1, g.filed + 1), r.class_key,
+                    CASE WHEN cardinality(g.classes) = 0 THEN NULL ELSE r.label END)
+                ELSE false END)
 ), applies AS MATERIALIZED (
     SELECT j.*,
-           ((j.class_kind = 'other' AND cardinality(j.named_kinds) > 0)
+           ((EXISTS (SELECT 1 FROM instrument_roles instrument WHERE instrument.adsh = j.adsh AND instrument.version_key = j.version_key AND instrument.role <> 'excluded'))
             OR (j.class_kind IS DISTINCT FROM 'other' AND EXISTS (
                 SELECT 1 FROM closed c WHERE c.adsh = j.adsh AND c.version_key = j.version_key)))
            AND (j.registration_end OR j.venue_kind IS DISTINCT FROM 'secondary') AS applying,
@@ -671,9 +1203,9 @@ WITH horizon AS (
     FROM applies a JOIN closed c ON c.adsh = a.adsh AND c.version_key = a.version_key
     WHERE a.effective AND a.applying
     UNION ALL
-    SELECT a.adsh, 'kind', k, 'identified'
-    FROM applies a CROSS JOIN LATERAL unnest(a.named_kinds) k
-    WHERE a.effective AND a.applying
+    SELECT DISTINCT a.adsh, 'instrument:' || instrument.security_kind, instrument.member, instrument.role
+    FROM applies a JOIN instrument_roles instrument ON instrument.adsh = a.adsh AND instrument.version_key = a.version_key
+    WHERE a.effective AND a.applying AND instrument.role <> 'excluded'
 ), scope_history AS MATERIALIZED (
     SELECT m.*, v.version_key,
            COALESCE(v.restated_filed, v.filed) + 1 AS scope_on,
@@ -685,7 +1217,10 @@ WITH horizon AS (
            v.applying AND CASE WHEN m.domain = 'class' THEN EXISTS (
                SELECT 1 FROM closed c WHERE c.adsh = v.adsh AND c.version_key = v.version_key
                  AND c.class_key = m.member AND c.role = m.role)
-               ELSE m.member = ANY(v.named_kinds) END AS present
+               ELSE EXISTS (SELECT 1 FROM instrument_roles instrument
+                    WHERE instrument.adsh = v.adsh AND instrument.version_key = v.version_key
+                      AND 'instrument:' || instrument.security_kind = m.domain
+                      AND instrument.member = m.member AND instrument.role = m.role) END AS present
     FROM scope_members m JOIN applies v ON v.adsh = m.adsh
 ), surviving_scope AS (
     SELECT DISTINCT ON (h.adsh COLLATE "C", h.domain COLLATE "C", h.member COLLATE "C") h.*
@@ -695,18 +1230,24 @@ WITH horizon AS (
         WHERE z.adsh = h.adsh AND z.domain = h.domain AND z.member = h.member AND NOT z.present), 0)
     ORDER BY h.adsh COLLATE "C", h.domain COLLATE "C", h.member COLLATE "C", h.sequence
 ), dated_scopes AS (
-    SELECT h.adsh, h.scope_on, h.scope_available,
-           COALESCE(array_agg(h.member COLLATE "C" ORDER BY h.member COLLATE "C")
-                    FILTER (WHERE h.domain = 'class'), '{}') AS scope_keys,
-           COALESCE(array_agg(h.member COLLATE "C" ORDER BY h.member COLLATE "C")
-                    FILTER (WHERE h.domain = 'class' AND h.role = 'tentative'), '{}') AS scope_tentative,
-           COALESCE(array_agg(h.member COLLATE "C" ORDER BY h.member COLLATE "C")
-                    FILTER (WHERE h.domain = 'kind'), '{}') AS scope_kinds
-    FROM surviving_scope h GROUP BY h.adsh, h.scope_on, h.scope_available
+    SELECT h.adsh, h.scope_on, h.scope_available, h.domain,
+           ARRAY(SELECT DISTINCT CASE WHEN h.domain = 'class' THEN member ELSE member::jsonb ->> 0 END COLLATE "C"
+                 FROM unnest(array_agg(h.member)) member ORDER BY 1) AS scope_keys,
+           ARRAY(SELECT DISTINCT CASE WHEN h.domain = 'class' THEN member ELSE member::jsonb ->> 0 END COLLATE "C"
+                 FROM unnest(array_agg(h.member) FILTER (WHERE h.role = 'tentative')) member ORDER BY 1) AS scope_tentative,
+           CASE WHEN h.domain = 'class' THEN '{}'::text[] ELSE ARRAY[substring(h.domain FROM 12)] END AS scope_kinds,
+           bool_or(h.role = 'identified') AS any_identified,
+           CASE WHEN h.domain = 'class' THEN '[]'::jsonb ELSE
+               jsonb_agg(jsonb_build_object('class_key', h.member::jsonb ->> 0,
+                   'label', h.member::jsonb ->> 1, 'ticker_key', h.member::jsonb ->> 2,
+                   'mode', h.member::jsonb ->> 3, 'named_label', h.member::jsonb ->> 4, 'role', h.role)
+                   ORDER BY h.member COLLATE "C") FILTER (WHERE h.domain <> 'class') END AS instrument_scope
+    FROM surviving_scope h GROUP BY h.adsh, h.scope_on, h.scope_available, h.domain
 ), current_ends AS (
     SELECT a.*,
-           CASE WHEN a.restated_on IS NULL THEN a.class_keys ELSE d.scope_keys END AS scope_keys,
-           d.scope_tentative, d.scope_kinds, d.scope_on, d.scope_available
+           CASE WHEN d.domain = 'class' AND a.restated_on IS NULL THEN a.class_keys ELSE d.scope_keys END AS scope_keys,
+           d.scope_tentative, d.scope_kinds, d.scope_on, d.scope_available, d.any_identified, d.instrument_scope,
+           d.domain <> 'class' AS instrument_only
     FROM applies a JOIN dated_scopes d ON d.adsh = a.adsh
     WHERE a.effective AND a.applying
 ), registrations AS (
@@ -714,7 +1255,7 @@ WITH horizon AS (
         SELECT c.class_key FROM classes c
         JOIN label_symbols ls ON ls.adsh = c.adsh AND ls.version_key = c.version_key
                               AND ls.label = c.label AND ls.symbols = 1
-        WHERE c.adsh = a.adsh AND c.effective AND c.labels = 1
+        WHERE NOT a.instrument_only AND c.adsh = a.adsh AND c.effective AND c.labels = 1
           AND (a.scope_keys IS NULL OR c.class_key = ANY(a.scope_keys))
           AND EXISTS (
               SELECT 1 FROM starts g JOIN sec_registration_events source
@@ -727,7 +1268,10 @@ WITH horizon AS (
               WHERE g.form IN ('8-A12B', '8-A12G')
                 AND g.filed BETWEEN a.scope_on - 31 AND a.scope_on - 1
                 AND g.available_on <= a.scope_on
-                AND c.label = ANY(g.classes))
+                AND CASE WHEN c.label = ANY(g.classes) THEN
+                    sec_registration_identifies(p_cik, CASE WHEN p_current THEN 'infinity'::date ELSE p_as_of END,
+                        p_current, g.filed + 1, a.scope_on, c.class_key, c.label)
+                    ELSE false END)
         ORDER BY c.class_key COLLATE "C") AS reissued_keys
     FROM current_ends a
 )
@@ -736,7 +1280,8 @@ SELECT a.scope_available,
        CASE
            WHEN scope.reissued THEN false
            -- an end that identifies no class is never definitive
-           WHEN a.class_kind = 'other' THEN a.form = '25-NSE' AND COALESCE(a.extinguished, false)
+           WHEN NOT a.any_identified THEN false
+           WHEN a.instrument_only THEN a.form = '25-NSE' AND COALESCE(a.extinguished, false)
            WHEN a.scope_keys IS NOT NULL AND a.scope_keys <@ a.scope_tentative THEN false
            -- an end of some of the listed classes: definitive for those it
            -- identifies only when the 25-NSE says they were extinguished
@@ -767,9 +1312,9 @@ SELECT a.scope_available,
            )
        END AS definitive,
        a.scope_on,
-       scope.class_keys, a.class_kind,
+       scope.class_keys, CASE WHEN a.instrument_only THEN 'other' ELSE a.class_kind END,
        a.scope_kinds,
-       a.scope_tentative, a.prior_symbols::integer
+       a.scope_tentative, a.prior_symbols::integer, a.instrument_scope
 FROM registrations a
 CROSS JOIN LATERAL (
     SELECT a.scope_keys AS class_keys, false AS reissued
@@ -784,6 +1329,19 @@ CROSS JOIN LATERAL (
 ) scope
 WHERE (scope.class_keys IS NULL OR cardinality(scope.class_keys) > 0
        OR cardinality(a.scope_kinds) > 0) AND a.scope_available <= p_as_of
+$fn$;
+
+CREATE OR REPLACE FUNCTION sec_issuer_end_events(
+    p_cik bigint, p_as_of date, p_current boolean DEFAULT false
+)
+RETURNS TABLE (available_on date, filed date, form text, adsh text, definitive boolean,
+    effective_on date, class_keys text[], class_kind text, named_kinds text[],
+    tentative_keys text[], issuer_symbols integer)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+SELECT e.available_on, e.filed, e.form, e.adsh, e.definitive, e.effective_on,
+       e.class_keys, e.class_kind, e.named_kinds, e.tentative_keys, e.issuer_symbols
+FROM sec_issuer_end_scopes(p_cik, p_as_of, p_current) e
 $fn$;
 
 CREATE OR REPLACE FUNCTION sec_ticker_listed_holds_at(
@@ -832,7 +1390,7 @@ WITH shown AS (
     GROUP BY r.cik
 ), candidate_rows_unlabelled AS MATERIALIZED (
     SELECT p.cik, f.adsh, f.class_key, f.security_kind, f.accepted, f.filing_complete,
-           f.filing_equity_classes, f.security_title,
+           f.filing_equity_classes, f.security_title, f.ticker_key,
            f.source_available_on AS known_on,
            f.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g') AS shows
     FROM per_cik p
@@ -858,7 +1416,9 @@ WITH shown AS (
     SELECT request.cik, label.* FROM label_requests request
     CROSS JOIN LATERAL sec_class_label_history(request.cik, p_as_of, p_current, request.requests) label
 ), candidate_rows AS MATERIALIZED (
-    SELECT r.*, COALESCE(r.explicit_label, history.label) AS label
+    SELECT r.*, CASE WHEN r.security_kind IN ('equity', 'depositary', 'unknown')
+                    THEN COALESCE(r.explicit_label, history.label)
+                    ELSE sec_instrument_label(r.security_title, r.class_key, r.security_kind) END AS label
     FROM label_inputs r LEFT JOIN historical_labels history
       ON history.cik = r.cik AND history.class_key = r.class_key AND history.bound_on = r.known_on
 ), candidates AS (
@@ -897,11 +1457,11 @@ WITH shown AS (
                           WHERE y.cik = c.cik AND y.adsh = c.adsh AND y.class_key = t.class_key))
 ), ends AS MATERIALIZED (
     SELECT p.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive, e.class_keys,
-           e.tentative_keys, e.class_kind, e.named_kinds, e.issuer_symbols,
+           e.tentative_keys, e.class_kind, e.named_kinds, e.issuer_symbols, e.instrument_scope,
            (SELECT min(c.known_on) FROM candidates c
             WHERE c.cik = p.cik AND c.shows AND c.known_on >= e.effective_on) AS first_post_on
     FROM per_cik p
-    CROSS JOIN LATERAL sec_issuer_end_events(p.cik, p_as_of, p_current) e
+    CROSS JOIN LATERAL sec_issuer_end_scopes(p.cik, p_as_of, p_current) e
 ), starts AS MATERIALIZED (
     SELECT p.cik, r.* FROM per_cik p
     CROSS JOIN LATERAL sec_registration_starts(p.cik, p_as_of, p_current) r
@@ -910,12 +1470,12 @@ WITH shown AS (
     -- ends) may close A and B on different dates while both carry the ticker.
     -- A stale post-definitive row remains closed; a registration only rescues
     -- the class of that row, never another class sharing its ticker.
-    SELECT r.cik, r.adsh, r.class_key, r.security_kind, d.effective_on, d.adsh AS end_adsh, role.value,
+    SELECT r.cik, r.adsh, r.class_key, r.security_kind, r.ticker_key, d.effective_on, d.adsh AS end_adsh, role.value,
            d.effective_on <= c.known_on AS blocked
     FROM candidate_rows r JOIN candidates c ON c.cik = r.cik AND c.adsh = r.adsh
     JOIN ends d ON d.cik = r.cik
     CROSS JOIN LATERAL (SELECT sec_end_role(d.class_keys, d.tentative_keys,
-        d.class_kind, d.named_kinds, r.class_key, r.security_kind) AS value) role
+        d.class_kind, d.named_kinds, r.class_key, r.security_kind, r.label, r.ticker_key, d.instrument_scope) AS value) role
     WHERE (r.shows OR NOT c.shows) AND role.value IS NOT NULL
       AND (d.effective_on > c.known_on OR (
           ((d.definitive AND role.value = 'identified' AND EXISTS (
@@ -930,22 +1490,26 @@ WITH shown AS (
               WHERE registration.cik = r.cik AND registration.filed >= d.effective_on
                 AND registration.available_on <= c.known_on
                 AND r.security_kind IN ('equity', 'depositary', 'unknown')
-                AND (r.label = ANY(registration.classes)
-                     OR (cardinality(registration.classes) = 0 AND d.issuer_symbols = 1)))))
+                AND CASE WHEN (r.label = ANY(registration.classes)
+                     OR (cardinality(registration.classes) = 0 AND d.issuer_symbols = 1)) THEN
+                    sec_registration_identifies(r.cik, p_as_of, p_current, registration.filed + 1,
+                        r.known_on, r.class_key,
+                        CASE WHEN cardinality(registration.classes) = 0 THEN NULL ELSE r.label END)
+                    ELSE false END)))
 ), closes AS MATERIALIZED (
     -- EVERY candidate row needs SOME closure by this bound. Requiring a
     -- single end row to close all rows fails after a per-class amendment split.
     SELECT e.cik, e.adsh AS end_adsh, e.effective_on, e.class_keys, c.adsh,
            bool_and(EXISTS (SELECT 1 FROM row_closures z
                WHERE z.cik = r.cik AND z.adsh = r.adsh AND z.class_key = r.class_key
-                 AND z.security_kind = r.security_kind AND z.effective_on <= e.effective_on)) AS closed,
+                 AND z.security_kind = r.security_kind AND z.ticker_key = r.ticker_key AND z.effective_on <= e.effective_on)) AS closed,
            bool_and(EXISTS (SELECT 1 FROM row_closures z
                WHERE z.cik = r.cik AND z.adsh = r.adsh AND z.class_key = r.class_key
-                 AND z.security_kind = r.security_kind AND z.effective_on <= e.effective_on
+                 AND z.security_kind = r.security_kind AND z.ticker_key = r.ticker_key AND z.effective_on <= e.effective_on
                  AND z.value = 'identified')) AS identified,
            bool_and(EXISTS (SELECT 1 FROM row_closures z
                WHERE z.cik = r.cik AND z.adsh = r.adsh AND z.class_key = r.class_key
-                 AND z.security_kind = r.security_kind AND z.effective_on <= e.effective_on
+                 AND z.security_kind = r.security_kind AND z.ticker_key = r.ticker_key AND z.effective_on <= e.effective_on
                  AND z.blocked)) AS blocked
     FROM ends e JOIN candidates c ON c.cik = e.cik
     JOIN candidate_rows r ON r.cik = c.cik AND r.adsh = c.adsh AND (r.shows OR NOT c.shows)
@@ -1051,7 +1615,7 @@ WITH shown AS (
     GROUP BY r.cik
 ), candidate_rows_unlabelled AS MATERIALIZED (
     SELECT p.cik, f.adsh, f.class_key, f.security_kind, f.accepted, f.filing_complete,
-           f.filing_equity_classes, f.security_title,
+           f.filing_equity_classes, f.security_title, f.ticker_key,
            f.source_available_on AS known_on,
            f.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g') AS shows
     FROM per_cik p
@@ -1083,7 +1647,9 @@ WITH shown AS (
     SELECT request.cik, label.* FROM label_requests request
     CROSS JOIN LATERAL sec_class_label_history(request.cik, p_as_of, p_current, request.requests) label
 ), candidate_rows AS MATERIALIZED (
-    SELECT r.*, COALESCE(r.explicit_label, history.label) AS label
+    SELECT r.*, CASE WHEN r.security_kind IN ('equity', 'depositary', 'unknown')
+                    THEN COALESCE(r.explicit_label, history.label)
+                    ELSE sec_instrument_label(r.security_title, r.class_key, r.security_kind) END AS label
     FROM label_inputs r LEFT JOIN historical_labels history
       ON history.cik = r.cik AND history.class_key = r.class_key AND history.bound_on = r.known_on
 ), candidates AS (
@@ -1122,11 +1688,11 @@ WITH shown AS (
                           WHERE y.cik = c.cik AND y.adsh = c.adsh AND y.class_key = t.class_key))
 ), ends AS MATERIALIZED (
     SELECT p.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive, e.class_keys,
-           e.tentative_keys, e.class_kind, e.named_kinds, e.issuer_symbols,
+           e.tentative_keys, e.class_kind, e.named_kinds, e.issuer_symbols, e.instrument_scope,
            (SELECT min(c.known_on) FROM candidates c
             WHERE c.cik = p.cik AND c.shows AND c.known_on >= e.effective_on) AS first_post_on
     FROM per_cik p
-    CROSS JOIN LATERAL sec_issuer_end_events(p.cik, p_as_of, p_current) e
+    CROSS JOIN LATERAL sec_issuer_end_scopes(p.cik, p_as_of, p_current) e
 ), starts AS MATERIALIZED (
     SELECT p.cik, r.* FROM per_cik p
     CROSS JOIN LATERAL sec_registration_starts(p.cik, p_as_of, p_current) r
@@ -1135,12 +1701,12 @@ WITH shown AS (
     -- ends) may close A and B on different dates while both carry the ticker.
     -- A stale post-definitive row remains closed; a registration only rescues
     -- the class of that row, never another class sharing its ticker.
-    SELECT r.cik, r.adsh, r.class_key, r.security_kind, d.effective_on, d.adsh AS end_adsh, role.value,
+    SELECT r.cik, r.adsh, r.class_key, r.security_kind, r.ticker_key, d.effective_on, d.adsh AS end_adsh, role.value,
            d.effective_on <= c.known_on AS blocked
     FROM candidate_rows r JOIN candidates c ON c.cik = r.cik AND c.adsh = r.adsh
     JOIN ends d ON d.cik = r.cik
     CROSS JOIN LATERAL (SELECT sec_end_role(d.class_keys, d.tentative_keys,
-        d.class_kind, d.named_kinds, r.class_key, r.security_kind) AS value) role
+        d.class_kind, d.named_kinds, r.class_key, r.security_kind, r.label, r.ticker_key, d.instrument_scope) AS value) role
     WHERE (r.shows OR NOT c.shows) AND role.value IS NOT NULL
       AND (d.effective_on > c.known_on OR (
           ((d.definitive AND role.value = 'identified' AND EXISTS (
@@ -1155,22 +1721,26 @@ WITH shown AS (
               WHERE registration.cik = r.cik AND registration.filed >= d.effective_on
                 AND registration.available_on <= c.known_on
                 AND r.security_kind IN ('equity', 'depositary', 'unknown')
-                AND (r.label = ANY(registration.classes)
-                     OR (cardinality(registration.classes) = 0 AND d.issuer_symbols = 1)))))
+                AND CASE WHEN (r.label = ANY(registration.classes)
+                     OR (cardinality(registration.classes) = 0 AND d.issuer_symbols = 1)) THEN
+                    sec_registration_identifies(r.cik, p_as_of, p_current, registration.filed + 1,
+                        r.known_on, r.class_key,
+                        CASE WHEN cardinality(registration.classes) = 0 THEN NULL ELSE r.label END)
+                    ELSE false END)))
 ), closes AS MATERIALIZED (
     -- EVERY candidate row needs SOME closure by this bound. Requiring a
     -- single end row to close all rows fails after a per-class amendment split.
     SELECT e.cik, e.adsh AS end_adsh, e.effective_on, e.class_keys, c.adsh,
            bool_and(EXISTS (SELECT 1 FROM row_closures z
                WHERE z.cik = r.cik AND z.adsh = r.adsh AND z.class_key = r.class_key
-                 AND z.security_kind = r.security_kind AND z.effective_on <= e.effective_on)) AS closed,
+                 AND z.security_kind = r.security_kind AND z.ticker_key = r.ticker_key AND z.effective_on <= e.effective_on)) AS closed,
            bool_and(EXISTS (SELECT 1 FROM row_closures z
                WHERE z.cik = r.cik AND z.adsh = r.adsh AND z.class_key = r.class_key
-                 AND z.security_kind = r.security_kind AND z.effective_on <= e.effective_on
+                 AND z.security_kind = r.security_kind AND z.ticker_key = r.ticker_key AND z.effective_on <= e.effective_on
                  AND z.value = 'identified')) AS identified,
            bool_and(EXISTS (SELECT 1 FROM row_closures z
                WHERE z.cik = r.cik AND z.adsh = r.adsh AND z.class_key = r.class_key
-                 AND z.security_kind = r.security_kind AND z.effective_on <= e.effective_on
+                 AND z.security_kind = r.security_kind AND z.ticker_key = r.ticker_key AND z.effective_on <= e.effective_on
                  AND z.blocked)) AS blocked
     FROM ends e JOIN candidates c ON c.cik = e.cik
     JOIN candidate_rows r ON r.cik = c.cik AND r.adsh = c.adsh AND (r.shows OR NOT c.shows)
@@ -1314,7 +1884,9 @@ WITH raw_own AS (
     SELECT request.cik, label.* FROM label_requests request
     CROSS JOIN LATERAL sec_class_label_history(request.cik, p_as_of, false, request.requests) label
 ), rows AS MATERIALIZED (
-    SELECT r.*, COALESCE(r.explicit_label, history.label) AS label
+    SELECT r.*, CASE WHEN r.security_kind IN ('equity', 'depositary', 'unknown')
+                    THEN COALESCE(r.explicit_label, history.label)
+                    ELSE sec_instrument_label(r.security_title, r.class_key, r.security_kind) END AS label
     FROM label_inputs r LEFT JOIN historical_labels history
       ON history.cik = p_cik AND history.class_key = r.class_key AND history.bound_on = r.known_on
 ), aliases AS MATERIALIZED (
@@ -1326,7 +1898,7 @@ WITH raw_own AS (
     SELECT r.adsh, max(r.known_on) AS known_on, max(r.accepted) AS accepted
     FROM rows r GROUP BY r.adsh
 ), ends AS MATERIALIZED (
-    SELECT e.* FROM sec_issuer_end_events(p_cik, p_as_of, false) e
+    SELECT e.* FROM sec_issuer_end_scopes(p_cik, p_as_of, false) e
 ), starts AS MATERIALIZED (
     SELECT s.* FROM sec_registration_starts(p_cik, p_as_of, false) s
 ), row_closures AS MATERIALIZED (
@@ -1338,7 +1910,7 @@ WITH raw_own AS (
                     WHEN bool_or(x.value = 'tentative') THEN 'tentative' END AS value
         FROM (
             SELECT sec_end_role(e.class_keys, e.tentative_keys, e.class_kind,
-                                e.named_kinds, k.class_key, r.security_kind) AS value
+                                e.named_kinds, k.class_key, r.security_kind, r.label, r.ticker_key, e.instrument_scope) AS value
             FROM (
                 SELECT a.class_key FROM aliases a
                 WHERE r.security_kind IN ('equity', 'depositary', 'unknown')
@@ -1360,8 +1932,11 @@ WITH raw_own AS (
                 SELECT 1 FROM starts s
                 WHERE s.filed >= e.effective_on AND s.available_on <= c.known_on
                   AND r.security_kind IN ('equity', 'depositary', 'unknown')
-                  AND (r.label = ANY(s.classes)
-                       OR (cardinality(s.classes) = 0 AND e.issuer_symbols = 1)))))
+                  AND CASE WHEN (r.label = ANY(s.classes)
+                       OR (cardinality(s.classes) = 0 AND e.issuer_symbols = 1)) THEN
+                      sec_registration_identifies(p_cik, p_as_of, false, s.filed + 1, r.known_on,
+                          r.class_key, CASE WHEN cardinality(s.classes) = 0 THEN NULL ELSE r.label END)
+                      ELSE false END)))
 ), chosen AS (
     SELECT c.* FROM candidates c
     WHERE EXISTS (
@@ -1415,146 +1990,11 @@ $fn$;
 
 CREATE OR REPLACE FUNCTION sec_issuer_lines(p_cik bigint)
 RETURNS TABLE (class_key text, line_key text)
-LANGUAGE plpgsql STABLE PARALLEL SAFE
--- Planned once per call; JIT compilation would cost more than the query.
+LANGUAGE sql STABLE PARALLEL SAFE
 SET jit = off
 AS $fn$
-#variable_conflict use_column
-DECLARE
-    keys text[];
-    firsts date[];
-    equity boolean[];
-    comp integer[];
-    pairs text[];
-    edge record;
-    ia integer;
-    ib integer;
-    ca integer;
-    cb integer;
-    i integer;
-    j integer;
-    clash boolean;
-BEGIN
-    SELECT array_agg(c.class_key ORDER BY c.class_key COLLATE "C"),
-           array_agg(c.first_on ORDER BY c.class_key COLLATE "C"),
-           array_agg(c.equity ORDER BY c.class_key COLLATE "C")
-      INTO keys, firsts, equity
-    FROM (
-        SELECT o.class_key, min(o.source_available_on) AS first_on,
-               bool_or(o.security_kind IN ('equity', 'depositary', 'unknown')) AS equity
-        FROM sec_observations_at('infinity'::date, true) o
-        WHERE o.cik = p_cik
-        GROUP BY o.class_key
-    ) c;
-    IF keys IS NULL THEN
-        RETURN;
-    END IF;
-    comp := ARRAY(SELECT generate_series(1, cardinality(keys)));
-    -- classes that appear side by side in one filing, as 'a' || chr(31) || 'b'
-    SELECT COALESCE(array_agg(DISTINCT (x.class_key || chr(31) || y.class_key) COLLATE "C" ORDER BY (x.class_key || chr(31) || y.class_key) COLLATE "C"), '{}')
-      INTO pairs
-    FROM sec_observations_at('infinity'::date, true) x
-    JOIN sec_observations_at('infinity'::date, true) y
-      ON y.adsh = x.adsh AND y.cik = x.cik AND y.class_key <> x.class_key
-    WHERE x.cik = p_cik
-      AND x.security_kind IN ('equity', 'depositary', 'unknown')
-      AND y.security_kind IN ('equity', 'depositary', 'unknown');
-    FOR edge IN
-        WITH equity_rows AS (
-            SELECT o.adsh, o.class_key, o.ticker_key, o.source_available_on AS on_date,
-                   o.accepted, o.filing_equity_classes, o.filing_complete
-            FROM sec_observations_at('infinity'::date, true) o
-            WHERE o.cik = p_cik AND o.security_kind IN ('equity', 'depositary', 'unknown')
-        ), shown AS (
-            SELECT e.class_key, e.ticker_key, min(e.on_date) AS first_on,
-                   count(DISTINCT e.adsh) AS filings
-            FROM equity_rows e
-            GROUP BY e.class_key, e.ticker_key
-        ), filing_lines AS (
-            SELECT e.adsh, count(DISTINCT e.class_key) AS listed
-            FROM equity_rows e
-            GROUP BY e.adsh
-        ), structure AS (
-            -- the class structure comes from complete covers only: an 8-K (whose
-            -- members vary: CCL's, DUK's and NI's 8-Ks name their common stock
-            -- unlike their 10-Qs) says neither that a class is the only one nor
-            -- that it is listed beside another
-            SELECT e.class_key,
-                   bool_and(e.filing_equity_classes = 1) FILTER (WHERE e.filing_complete)
-                       AS sole_only,
-                   bool_or(f.listed > 1) FILTER (WHERE e.filing_complete) AS beside_listed
-            FROM equity_rows e
-            JOIN filing_lines f ON f.adsh = e.adsh
-            GROUP BY e.class_key
-        ), shared AS (
-            SELECT x.class_key AS a, y.class_key AS b,
-                   min(GREATEST(x.first_on, y.first_on)) AS on_date,
-                   sum(x.filings + y.filings) AS evidence
-            FROM shown x
-            JOIN shown y ON y.ticker_key = x.ticker_key AND y.class_key COLLATE "C" > x.class_key COLLATE "C"
-            JOIN structure sx ON sx.class_key = x.class_key
-            JOIN structure sy ON sy.class_key = y.class_key
-            WHERE NOT (x.class_key = '' AND COALESCE(sx.sole_only, true)
-                       AND COALESCE(sy.beside_listed, false))
-            GROUP BY x.class_key, y.class_key
-        ), sole AS (
-            SELECT f.key, f.on_date,
-                   lag(f.key) OVER (ORDER BY f.on_date, f.accepted NULLS FIRST, f.adsh COLLATE "C")
-                       AS prev_key
-            FROM (
-                SELECT e.adsh, min(e.on_date) AS on_date, max(e.accepted) AS accepted,
-                       CASE WHEN count(DISTINCT e.class_key) = 1
-                                 AND bool_and(e.filing_equity_classes = 1)
-                            THEN min(e.class_key COLLATE "C") END AS key
-                FROM equity_rows e
-                WHERE e.filing_complete
-                GROUP BY e.adsh
-            ) f
-        ), relabels AS (
-            SELECT LEAST(s.prev_key COLLATE "C", s.key COLLATE "C") AS a, GREATEST(s.prev_key COLLATE "C", s.key COLLATE "C") AS b,
-                   min(s.on_date) AS on_date, count(*) AS evidence
-            FROM sole s
-            WHERE s.key IS NOT NULL AND s.prev_key IS NOT NULL AND s.prev_key <> s.key
-            GROUP BY LEAST(s.prev_key COLLATE "C", s.key COLLATE "C"), GREATEST(s.prev_key COLLATE "C", s.key COLLATE "C")
-        )
-        SELECT u.a, u.b, min(u.on_date) AS on_date, sum(u.evidence) AS evidence
-        FROM (SELECT * FROM shared UNION ALL SELECT * FROM relabels) u
-        GROUP BY u.a, u.b
-        ORDER BY min(u.on_date), sum(u.evidence) DESC, u.a COLLATE "C", u.b COLLATE "C"
-    LOOP
-        ia := array_position(keys, edge.a);
-        ib := array_position(keys, edge.b);
-        ca := comp[ia];
-        cb := comp[ib];
-        CONTINUE WHEN ca = cb OR (edge.a || chr(31) || edge.b) = ANY(pairs);
-        clash := false;
-        FOR i IN 1 .. cardinality(keys) LOOP
-            CONTINUE WHEN comp[i] <> ca;
-            FOR j IN 1 .. cardinality(keys) LOOP
-                IF comp[j] = cb AND (keys[i] || chr(31) || keys[j]) = ANY(pairs) THEN
-                    clash := true;
-                    EXIT;
-                END IF;
-            END LOOP;
-            EXIT WHEN clash;
-        END LOOP;
-        CONTINUE WHEN clash;
-        FOR i IN 1 .. cardinality(keys) LOOP
-            IF comp[i] = cb THEN
-                comp[i] := ca;
-            END IF;
-        END LOOP;
-    END LOOP;
-    RETURN QUERY
-    SELECT k.key,
-           CASE WHEN equity[k.n::integer] THEN (
-               SELECT keys[m.n] FROM generate_subscripts(keys, 1) AS m(n)
-               WHERE comp[m.n] = comp[k.n::integer] AND equity[m.n]
-               ORDER BY firsts[m.n], keys[m.n] COLLATE "C"
-               LIMIT 1)
-           ELSE k.key END
-    FROM unnest(keys) WITH ORDINALITY AS k(key, n);
-END
+SELECT l.class_key, l.line_key
+FROM sec_issuer_lines_at(p_cik, 'infinity'::date, true, 'infinity'::date) l
 $fn$;
 
 CREATE OR REPLACE FUNCTION sec_ticker_line_runs_from(
@@ -1662,7 +2102,9 @@ WITH key AS (
     SELECT request.cik, label.* FROM label_requests request
     CROSS JOIN LATERAL sec_class_label_history(request.cik, 'infinity'::date, true, request.requests) label
 ), candidate_rows AS MATERIALIZED (
-    SELECT r.*, COALESCE(r.explicit_label, history.label) AS label
+    SELECT r.*, CASE WHEN r.security_kind IN ('equity', 'depositary', 'unknown')
+                    THEN COALESCE(r.explicit_label, history.label)
+                    ELSE sec_instrument_label(r.security_title, r.class_key, r.security_kind) END AS label
     FROM label_inputs r LEFT JOIN historical_labels history
       ON history.cik = r.cik AND history.class_key = r.class_key AND history.bound_on = r.known_on
 ), candidates AS MATERIALIZED (
@@ -1672,9 +2114,9 @@ WITH key AS (
     FROM candidate_rows r GROUP BY r.cik, r.line_key, r.adsh
 ), ends AS MATERIALIZED (
     SELECT h.cik, e.effective_on, e.filed, e.form, e.adsh, e.definitive, e.class_keys,
-           e.tentative_keys, e.class_kind, e.named_kinds, e.issuer_symbols
+           e.tentative_keys, e.class_kind, e.named_kinds, e.issuer_symbols, e.instrument_scope
     FROM holder_ciks h
-    CROSS JOIN LATERAL sec_issuer_end_events(h.cik, 'infinity'::date, true) e
+    CROSS JOIN LATERAL sec_issuer_end_scopes(h.cik, 'infinity'::date, true) e
 ), starts AS MATERIALIZED (
     SELECT h.cik, r.filed, r.available_on, r.classes
     FROM holder_ciks h
@@ -1683,7 +2125,7 @@ WITH key AS (
     -- Alias keys preserve class continuity; the kind is joined back to each
     -- actual candidate row below, never aggregated across the line's history.
     SELECT h.cik, h.line_key, k.security_kind, e.effective_on, e.form, e.adsh,
-           e.definitive, e.issuer_symbols, role.value AS role
+           e.definitive, e.issuer_symbols, e.class_keys, e.tentative_keys, e.class_kind, e.named_kinds, e.instrument_scope, role.value AS role
     FROM held h JOIN ends e ON e.cik = h.cik
     JOIN (SELECT DISTINCT cik, line_key, security_kind FROM candidate_rows WHERE has_line) k
       ON k.cik = h.cik AND k.line_key = h.line_key
@@ -1696,14 +2138,23 @@ WITH key AS (
     ) role WHERE role.value IS NOT NULL
 ), row_closures AS MATERIALIZED (
     SELECT r.cik, r.line_key, r.adsh, r.class_key, r.security_kind, r.ticker_key,
-           d.effective_on, d.adsh AS end_adsh, d.form, d.role,
+           d.effective_on, d.adsh AS end_adsh, d.form, actual.value AS role,
            d.effective_on <= r.known_on AS blocked
     FROM candidate_rows r JOIN candidates c
       ON c.cik = r.cik AND c.line_key = r.line_key AND c.adsh = r.adsh
     JOIN line_ends d ON d.cik = r.cik AND d.line_key = r.line_key AND d.security_kind = r.security_kind
-    WHERE r.has_line AND (r.shows OR NOT c.shows)
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN r.security_kind IN ('equity', 'depositary', 'unknown') THEN d.role ELSE (
+            SELECT CASE WHEN bool_or(role.value = 'identified') THEN 'identified'
+                        WHEN bool_or(role.value = 'tentative') THEN 'tentative' END
+            FROM lines l CROSS JOIN LATERAL (SELECT sec_end_role(d.class_keys, d.tentative_keys,
+                 d.class_kind, d.named_kinds, l.class_key, r.security_kind, r.label, r.ticker_key,
+                 d.instrument_scope) AS value) role
+            WHERE l.cik = r.cik AND l.line_key = r.line_key) END AS value
+    ) actual
+    WHERE r.has_line AND (r.shows OR NOT c.shows) AND actual.value IS NOT NULL
       AND (d.effective_on > r.known_on OR (
-          ((d.definitive AND d.role = 'identified' AND EXISTS (
+          ((d.definitive AND actual.value = 'identified' AND EXISTS (
               SELECT 1 FROM candidate_rows prior
               WHERE prior.cik = r.cik AND prior.line_key = r.line_key AND prior.has_line
                 AND prior.known_on < d.effective_on AND prior.ticker_key = r.ticker_key
@@ -1721,8 +2172,12 @@ WITH key AS (
               WHERE registration.cik = r.cik AND registration.filed >= d.effective_on
                 AND registration.available_on <= r.known_on
                 AND r.security_kind IN ('equity', 'depositary', 'unknown')
-                AND (r.label = ANY(registration.classes)
-                     OR (cardinality(registration.classes) = 0 AND d.issuer_symbols = 1)))))
+                AND CASE WHEN (r.label = ANY(registration.classes)
+                     OR (cardinality(registration.classes) = 0 AND d.issuer_symbols = 1)) THEN
+                    sec_registration_identifies(r.cik, 'infinity'::date, true, registration.filed + 1,
+                        r.known_on, r.class_key,
+                        CASE WHEN cardinality(registration.classes) = 0 THEN NULL ELSE r.label END)
+                    ELSE false END)))
 ), counted AS MATERIALIZED (
     SELECT c.* FROM candidates c
     WHERE NOT (EXISTS (SELECT 1 FROM candidate_rows r
@@ -1912,7 +2367,9 @@ WITH lines AS MATERIALIZED (
     SELECT request.cik, label.* FROM label_requests request
     CROSS JOIN LATERAL sec_class_label_history(request.cik, 'infinity'::date, true, request.requests) label
 ), candidate_rows AS MATERIALIZED (
-    SELECT r.*, COALESCE(r.explicit_label, history.label) AS label
+    SELECT r.*, CASE WHEN r.security_kind IN ('equity', 'depositary', 'unknown')
+                    THEN COALESCE(r.explicit_label, history.label)
+                    ELSE sec_instrument_label(r.security_title, r.class_key, r.security_kind) END AS label
     FROM label_inputs r LEFT JOIN historical_labels history
       ON history.cik = r.cik AND history.class_key = r.class_key AND history.bound_on = r.known_on
 ), candidates AS MATERIALIZED (
@@ -1924,10 +2381,10 @@ WITH lines AS MATERIALIZED (
 ), starts AS MATERIALIZED (
     SELECT p_cik AS cik, r.* FROM sec_registration_starts(p_cik, 'infinity'::date, true) r
 ), ends AS MATERIALIZED (
-    SELECT e.* FROM sec_issuer_end_events(p_cik, 'infinity'::date, true) e
+    SELECT e.* FROM sec_issuer_end_scopes(p_cik, 'infinity'::date, true) e
 ), line_ends AS MATERIALIZED (
     SELECT p_cik AS cik, p_line_key AS line_key, k.security_kind,
-           e.effective_on, e.adsh, e.form, e.definitive, e.issuer_symbols, role.value AS role
+           e.effective_on, e.adsh, e.form, e.definitive, e.issuer_symbols, e.class_keys, e.tentative_keys, e.class_kind, e.named_kinds, e.instrument_scope, role.value AS role
     FROM ends e
     CROSS JOIN (SELECT DISTINCT security_kind FROM candidate_rows WHERE has_line) k
     CROSS JOIN LATERAL (
@@ -1939,14 +2396,23 @@ WITH lines AS MATERIALIZED (
     ) role WHERE role.value IS NOT NULL
 ), row_closures AS MATERIALIZED (
     SELECT r.cik, r.line_key, r.adsh, r.class_key, r.security_kind, r.ticker_key,
-           d.effective_on, d.adsh AS end_adsh, d.form, d.role,
+           d.effective_on, d.adsh AS end_adsh, d.form, actual.value AS role,
            d.effective_on <= r.known_on AS blocked
     FROM candidate_rows r JOIN candidates c
       ON c.cik = r.cik AND c.line_key = r.line_key AND c.adsh = r.adsh
     JOIN line_ends d ON d.cik = r.cik AND d.line_key = r.line_key AND d.security_kind = r.security_kind
-    WHERE r.has_line AND (r.shows OR NOT c.shows)
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN r.security_kind IN ('equity', 'depositary', 'unknown') THEN d.role ELSE (
+            SELECT CASE WHEN bool_or(role.value = 'identified') THEN 'identified'
+                        WHEN bool_or(role.value = 'tentative') THEN 'tentative' END
+            FROM lines l CROSS JOIN LATERAL (SELECT sec_end_role(d.class_keys, d.tentative_keys,
+                 d.class_kind, d.named_kinds, l.class_key, r.security_kind, r.label, r.ticker_key,
+                 d.instrument_scope) AS value) role
+            WHERE l.line_key = p_line_key) END AS value
+    ) actual
+    WHERE r.has_line AND (r.shows OR NOT c.shows) AND actual.value IS NOT NULL
       AND (d.effective_on > r.known_on OR (
-          ((d.definitive AND d.role = 'identified' AND EXISTS (
+          ((d.definitive AND actual.value = 'identified' AND EXISTS (
               SELECT 1 FROM candidate_rows prior
               WHERE prior.cik = r.cik AND prior.line_key = r.line_key AND prior.has_line
                 AND prior.known_on < d.effective_on AND prior.ticker_key = r.ticker_key
@@ -1959,8 +2425,12 @@ WITH lines AS MATERIALIZED (
               WHERE registration.cik = r.cik AND registration.filed >= d.effective_on
                 AND registration.available_on <= r.known_on
                 AND r.security_kind IN ('equity', 'depositary', 'unknown')
-                AND (r.label = ANY(registration.classes)
-                     OR (cardinality(registration.classes) = 0 AND d.issuer_symbols = 1)))))
+                AND CASE WHEN (r.label = ANY(registration.classes)
+                     OR (cardinality(registration.classes) = 0 AND d.issuer_symbols = 1)) THEN
+                    sec_registration_identifies(r.cik, 'infinity'::date, true, registration.filed + 1,
+                        r.known_on, r.class_key,
+                        CASE WHEN cardinality(registration.classes) = 0 THEN NULL ELSE r.label END)
+                    ELSE false END)))
 ), counted AS MATERIALIZED (
     SELECT c.* FROM candidates c
     WHERE NOT (EXISTS (SELECT 1 FROM candidate_rows r
@@ -2338,7 +2808,13 @@ FROM bounded b
 CROSS JOIN LATERAL unnest(b.tickers) AS t(ticker)
 WHERE b.valid_to IS NULL OR b.valid_to > b.valid_from;
 
-REVOKE ALL ON FUNCTION sec_class_label_history(bigint, date, boolean, jsonb), sec_named_kinds(text), sec_label_text(text), sec_label_norm(text), sec_label_id_re(), sec_first_label(text),
+REVOKE ALL ON FUNCTION sec_instrument_label(text, text, text),
+    sec_issuer_lines_at(bigint, date, boolean, date),
+    sec_instrument_scopes(text),
+    sec_registration_identifies(bigint, date, boolean, date, date, text, text),
+    sec_issuer_end_scopes(bigint, date, boolean),
+    sec_end_role(text[], text[], text, text[], text, text, text, text, jsonb),
+    sec_class_label_history(bigint, date, boolean, jsonb), sec_named_kinds(text), sec_label_text(text), sec_label_norm(text), sec_label_id_re(), sec_first_label(text),
     sec_class_label(text, text), sec_named_classes(text),
     sec_end_role(text[], text[], text, text[], text, text),
     sec_observations_at(date, boolean),
@@ -2362,6 +2838,13 @@ REVOKE ALL ON FUNCTION sec_class_label_history(bigint, date, boolean, jsonb), se
 DO $$
 DECLARE
     routines constant text[] := ARRAY[
+        'sec_instrument_label(text, text, text)',
+        'sec_issuer_lines_at(bigint, date, boolean, date)',
+        'sec_instrument_scopes(text)',
+        'sec_registration_identifies(bigint, date, boolean, date, date, text, text)',
+        'sec_issuer_end_scopes(bigint, date, boolean)',
+        'sec_end_role(text[], text[], text, text[], text, text, text, text, jsonb)',
+
         'sec_class_label_history(bigint, date, boolean, jsonb)',
         'sec_named_kinds(text)',
         'sec_label_text(text)',

@@ -49,6 +49,12 @@ FSN_FIXTURES = ROOT / "tests" / "fixtures" / "sec_ticker_cik_history"
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 READERS = ("app_runtime", "app_analytics_ro", "mcp_ro")
 FUNCTIONS = (
+    "sec_end_role(text[],text[],text,text[],text,text,text,text,jsonb)",
+    "sec_issuer_end_scopes(bigint,date,boolean)",
+    "sec_registration_identifies(bigint,date,boolean,date,date,text,text)",
+    "sec_instrument_label(text,text,text)",
+    "sec_issuer_lines_at(bigint,date,boolean,date)",
+    "sec_instrument_scopes(text)",
     "sec_class_label_history(bigint,date,boolean,jsonb)",
     "sec_named_kinds(text)",
     "sec_observations_at(date,boolean)",
@@ -1954,10 +1960,10 @@ def test_resolvers_inline_into_lateral_joins(schema_dsn) -> None:
         "LATERAL sec_cover_ticker_shares_at(t, 1, DATE '2024-01-01') i",
     ):
         plan = "\n".join(r[0] for r in conn.execute("EXPLAIN " + query).fetchall())
-        # V3's bulk title-history helper is intentionally PL/pgSQL. Public
-        # resolvers and every other SEC SQL routine must still inline.
+        # V3's bulk title-history and dated line-identity helpers are intentionally
+        # PL/pgSQL. Public resolvers and every other SEC SQL routine must inline.
         scans = set(re.findall(r"\bFunction Scan on (sec_\w+)\b", plan))
-        assert scans <= {"sec_class_label_history"}, plan
+        assert scans <= {"sec_class_label_history", "sec_issuer_lines_at"}, plan
 
 
 def test_class_relabel_with_a_rename_closes_the_old_symbol_everywhere(schema_dsn) -> None:

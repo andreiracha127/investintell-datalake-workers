@@ -1866,6 +1866,12 @@ BEGIN
     END LOOP;
 END $$;
 
+DROP FUNCTION IF EXISTS sec_end_role(text[], text[], text, text[], text, text, text, text, jsonb);
+DROP FUNCTION IF EXISTS sec_issuer_end_scopes(bigint, date, boolean);
+DROP FUNCTION IF EXISTS sec_registration_identifies(bigint, date, boolean, date, date, text, text);
+DROP FUNCTION IF EXISTS sec_instrument_label(text, text, text);
+DROP FUNCTION IF EXISTS sec_instrument_scopes(text);
+DROP FUNCTION IF EXISTS sec_issuer_lines_at(bigint, date, boolean, date);
 DROP FUNCTION IF EXISTS sec_named_kinds(text);
 DROP FUNCTION IF EXISTS sec_class_label_history(bigint, date, boolean, jsonb);
 COMMIT;

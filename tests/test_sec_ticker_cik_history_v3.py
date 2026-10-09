@@ -11,11 +11,18 @@ from __future__ import annotations
 import datetime as dt
 import itertools
 import os
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 import test_sec_ticker_cik_history as base
+
+
+# Pin a previous candidate without modifying the checked-out schema during gate
+# regression comparisons. The default always tests the working tree's migration.
+V3_TEST_SQL = (Path(os.environ["SEC_TEST_V3_SQL_PATH"]).read_text(encoding="utf-8")
+               if os.getenv("SEC_TEST_V3_SQL_PATH") else base.V3_SQL)
 
 
 @pytest.fixture
@@ -34,7 +41,7 @@ def schema_dsn():
         try:
             conn.execute(base.V1_SQL + base.V2_SQL)
             if os.getenv("SEC_TEST_SCHEMA_VERSION", "3") == "3":
-                conn.execute(base.V3_SQL)
+                conn.execute(V3_TEST_SQL)
             yield conn, psycopg.conninfo.make_conninfo(dsn, options=f"-csearch_path={schema}")
         finally:
             conn.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE")
@@ -480,7 +487,8 @@ def test_all_text_tiebreaks_are_pinned_to_byte_collation(schema_dsn):
     definitions = dict(conn.execute(
         "SELECT proname,pg_get_functiondef(oid) FROM pg_proc "
         "WHERE pronamespace=current_schema()::regnamespace "
-        "AND proname IN ('sec_issuer_lines','sec_issuer_end_events',"
+        # Public line/end routines now project the implementations below.
+        "AND proname IN ('sec_issuer_lines_at','sec_issuer_end_scopes',"
         "'sec_ticker_holds_at','sec_issuer_line_at')").fetchall())
     assert len(definitions) == 4
     for name, definition in definitions.items():
@@ -547,6 +555,7 @@ def _invariant_failures(conn, tickers):
     stays ended. Candidate labels come only from that filing's own class rows.
     """
     failures = []
+    label_line_counts = {}
     for ticker in tickers:
         rows = conn.execute(
             "SELECT cik,class_key,security_kind,source_available_on,adsh,security_title "
@@ -590,7 +599,17 @@ def _invariant_failures(conn, tickers):
                 label = conn.execute("SELECT sec_class_label(%s,%s)", (title, key)).fetchone()[0]
                 starts = conn.execute("SELECT classes FROM sec_registration_starts(%s,'infinity',true) "
                                       "WHERE filed>%s AND available_on<=%s", (cik, filed, on)).fetchall()
-                supported = any(label in labels or (not labels and symbols == 1) for (labels,) in starts)
+                identity = cik, on, label
+                if identity not in label_line_counts:
+                    label_line_counts[identity] = conn.execute(
+                        "SELECT count(DISTINCT l.line_key) FROM sec_issuer_lines(%s) l "
+                        "JOIN sec_observations_at('infinity',true) o ON o.class_key=l.class_key "
+                        "WHERE o.cik=%s AND o.source_available_on<=%s "
+                        "AND o.security_kind IN ('equity','depositary','unknown') "
+                        "AND sec_class_label(o.security_title,o.class_key)=%s",
+                        (cik, cik, on, label)).fetchone()[0]
+                supported = any((label in labels and label_line_counts[identity] == 1)
+                                or (not labels and symbols == 1) for (labels,) in starts)
                 if not supported:
                     for engine, active in engines.items():
                         if active:
@@ -666,3 +685,388 @@ def test_existing_generated_invariant_space_checked_in_all_four_engines(schema_d
     monkeypatch.setattr(base, "_admission_invariant_failures", expanded_check)
     base.test_generated_admission_invariants(schema_dsn)
     assert len(seen) == 1 and seen[0][0] == 93 and seen[0][2] == 0
+
+
+def _gate_alias_fixture(conn, cik):
+    first, second = "CommonClassA", "ClassACommonStock"
+    _cover(conn, cik, "2026-04-01", [("CWENA", first, "Class A common stock", "equity")])
+    _cover(conn, cik, "2026-04-15", [("CWENA", second, "Class A common stock", "equity")],
+           complete=False)
+    _end(conn, cik, "2026-05-01")
+    _cover(conn, cik, "2026-05-07", [("CWENA", second, "Class A common stock", "equity")],
+           complete=False)
+    return first, second
+
+
+def test_gate_alias_keys_count_as_one_line_for_definitive_label_scope(schema_dsn):
+    conn, _ = schema_dsn
+    keys = _gate_alias_fixture(conn, 301)
+    assert conn.execute("SELECT count(DISTINCT line_key) FROM sec_issuer_lines(301)").fetchone()[0] == 1
+    assert conn.execute("SELECT bool_and(definitive),bool_and(cardinality(tentative_keys)=0) "
+                        "FROM sec_issuer_end_events(301,'2026-05-10')").fetchone() == (True, True)
+    for key in keys:
+        _assert_engines(conn, "CWENA", 301, key, "2026-05-10", False)
+
+
+def test_gate_dated_alias_uniqueness_does_not_use_future_coexistence(schema_dsn):
+    conn, _ = schema_dsn
+    first, second = _gate_alias_fixture(conn, 302)
+    before = (base._issuer(conn, "CWENA", "2026-05-10"),
+              base._line(conn, 302, first, "2026-05-10"))
+    assert before[0][:2] == ("ended", None)
+    assert before[1][0] == "ended"
+    # Only this later filing establishes that the keys coexist as separate lines.
+    _cover(conn, 302, "2026-09-01", [("CWENA", first, "Class A common stock", "equity"),
+                                     ("CWENB", second, "Class A common stock", "equity")])
+    assert (base._issuer(conn, "CWENA", "2026-05-10"),
+            base._line(conn, 302, first, "2026-05-10")) == before
+
+
+def _gate_non_equity_fixture(conn, cik, kind, same_cik, description=None):
+    noun = "preferred stock" if kind == "preferred" else "warrants"
+    ticker, other = f"GT{cik}", f"GA{cik}"
+    _cover(conn, cik, "2024-01-01", [(other, "InstrumentA", f"Series A {noun}", kind),
+                                     (ticker, "InstrumentB", f"Series B {noun}", kind)])
+    common_cik = cik if same_cik else cik + 10000
+    # An incomplete cover adds common T without asserting absence of the
+    # previously observed preferred/warrant line under the same CIK.
+    _cover(conn, common_cik, "2024-02-01", [(ticker, "Common", "Common stock", "equity")],
+           complete=False)
+    _end(conn, cik, description=description or f"Series A {noun}", kind="other")
+    return ticker, other, common_cik
+
+
+def _other_line_covers(conn, ticker, common_cik, holder_cik, holder_key, on):
+    return conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM sec_line_price_evidence(%s,%s,'Common') e "
+        "JOIN sec_issuer_lines(%s) l ON l.line_key=e.line_key AND l.class_key=%s "
+        "WHERE e.evidence='other_holder' AND e.holder_cik=%s "
+        "AND e.valid_from<=%s AND (e.valid_to IS NULL OR %s<e.valid_to))",
+        (ticker, common_cik, holder_cik, holder_key, holder_cik, on, on)).fetchone()[0]
+
+
+@pytest.mark.parametrize("kind", ["preferred", "warrant"])
+@pytest.mark.parametrize("same_cik", [False, True])
+def test_gate_non_equity_end_leaves_named_kinds_other_series_competing(schema_dsn, kind, same_cik):
+    conn, _ = schema_dsn
+    ticker, other, common_cik = _gate_non_equity_fixture(conn, 303, kind, same_cik)
+    _assert_engines(conn, other, 303, "InstrumentA", "2024-04-01", False)
+    _assert_engines(conn, ticker, 303, "InstrumentB", "2024-04-01", True)
+    _assert_engines(conn, ticker, common_cik, "Common", "2024-04-01", True)
+    assert _other_line_covers(conn, ticker, common_cik, 303, "InstrumentB", "2024-04-01")
+
+
+@pytest.mark.parametrize("kind", ["preferred", "warrant"])
+def test_gate_unnamed_multiple_same_kind_lines_are_tentative_not_definitive(schema_dsn, kind):
+    conn, _ = schema_dsn
+    noun = "Preferred stock" if kind == "preferred" else "Warrants"
+    _cover(conn, 304, "2024-01-01", [("UNA", "InstrumentA", f"Series A {noun}", kind),
+                                     ("UNB", "InstrumentB", f"Series B {noun}", kind)])
+    _end(conn, 304, description=noun, kind="other", count=1)
+    end = conn.execute("SELECT definitive,sec_end_role(class_keys,tentative_keys,class_kind,named_kinds,"
+                       "'InstrumentA',%s),sec_end_role(class_keys,tentative_keys,class_kind,named_kinds,"
+                       "'InstrumentB',%s) FROM sec_issuer_end_events(304,'2024-03-03')", (kind, kind)).fetchone()
+    assert end == (False, "tentative", "tentative")
+    _cover(conn, 304, "2024-04-01", [("UNA", "InstrumentA", f"Series A {noun}", kind),
+                                     ("UNB", "InstrumentB", f"Series B {noun}", kind)], complete=False)
+    _assert_engines(conn, "UNA", 304, "InstrumentA", "2024-04-03", True)
+    _assert_engines(conn, "UNB", 304, "InstrumentB", "2024-04-03", True)
+
+
+@pytest.mark.parametrize("kind", ["preferred", "warrant"])
+def test_gate_unnamed_single_kind_line_is_identified(schema_dsn, kind):
+    conn, _ = schema_dsn
+    noun = "Preferred stock" if kind == "preferred" else "Warrants"
+    _cover(conn, 305, "2024-01-01", [("SOLE", "InstrumentA", f"Series A {noun}", kind), _row("COMMON")])
+    _end(conn, 305, description=noun, kind="other")
+    assert conn.execute("SELECT definitive,sec_end_role(class_keys,tentative_keys,class_kind,named_kinds,"
+                        "'InstrumentA',%s) FROM sec_issuer_end_events(305,'2024-03-03')", (kind,)).fetchone() == (
+                            True, "identified")
+    _cover(conn, 305, "2024-04-01", [("SOLE", "InstrumentA", f"Series A {noun}", kind)], complete=False)
+    _assert_engines(conn, "SOLE", 305, "InstrumentA", "2024-04-03", False)
+    _assert_engines(conn, "COMMON", 305, "ClassA", "2024-04-03", True)
+
+
+@pytest.mark.parametrize("kind", ["preferred", "warrant"])
+@pytest.mark.parametrize("phrase", ["trading symbol", "trading symbol is"])
+def test_gate_non_equity_symbol_identifies_one_of_same_kind_siblings(schema_dsn, kind, phrase):
+    conn, _ = schema_dsn
+    noun = "Preferred stock" if kind == "preferred" else "Warrants"
+    ticker, other, common_cik = _gate_non_equity_fixture(
+        conn, 306, kind, False, description=f"{noun}, {phrase} GA306")
+    _assert_engines(conn, other, 306, "InstrumentA", "2024-04-01", False)
+    _assert_engines(conn, ticker, 306, "InstrumentB", "2024-04-01", True)
+    assert _other_line_covers(conn, ticker, common_cik, 306, "InstrumentB", "2024-04-01")
+
+
+def test_gate_symbol_prose_is_not_a_positive_instrument_identifier(schema_dsn):
+    conn, _ = schema_dsn
+    _cover(conn, 308, "2024-01-01", [("PRA", "InstrumentA", "Series A preferred stock", "preferred"),
+                                     ("OF", "InstrumentB", "Series B preferred stock", "preferred")])
+    _end(conn, 308, description="The trading symbol of the preferred stock", kind="other")
+    assert conn.execute("SELECT definitive,sec_end_role(class_keys,tentative_keys,class_kind,named_kinds,"
+                        "'InstrumentA','preferred'),sec_end_role(class_keys,tentative_keys,class_kind,named_kinds,"
+                        "'InstrumentB','preferred') FROM sec_issuer_end_events(308,'2024-03-03')"
+                        ).fetchone() == (False, "tentative", "tentative")
+
+
+def test_gate_warrant_end_does_not_end_its_preferred_purchase_target(schema_dsn):
+    conn, _ = schema_dsn
+    _cover(conn, 309, "2024-01-01", [("WA", "WarrantA", "Class A warrants", "warrant"),
+                                     ("WB", "WarrantB", "Class B warrants", "warrant"),
+                                     ("PB", "PreferredB", "Series B preferred stock", "preferred")])
+    _end(conn, 309, description="Class A warrants to purchase Series B preferred stock", kind="other")
+    _assert_engines(conn, "WA", 309, "WarrantA", "2024-04-01", False)
+    _assert_engines(conn, "WB", 309, "WarrantB", "2024-04-01", True)
+    _assert_engines(conn, "PB", 309, "PreferredB", "2024-04-01", True)
+
+
+@pytest.mark.parametrize("rename_complete", [False, True])
+@pytest.mark.parametrize("corroborating_symbol", [False, True])
+def test_gate_named_non_equity_class_end_survives_ticker_rename(schema_dsn, rename_complete, corroborating_symbol):
+    conn, _ = schema_dsn
+    common = ("UNCHANGED", "Common", "Common stock", "equity")
+    _cover(conn, 312, "2024-01-01", [("OLD", "PreferredA", "Series A preferred stock", "preferred"), common])
+    _cover(conn, 312, "2024-02-01", [("NEW", "PreferredA", "Series A preferred stock", "preferred"), common],
+           complete=rename_complete)
+    description = "Series A preferred stock" + (", trading symbol NEW" if corroborating_symbol else "")
+    _end(conn, 312, description=description, kind="other")
+    assert conn.execute("SELECT bool_and(definitive) FROM sec_issuer_end_events(312,'2024-03-03')"
+                        ).fetchone()[0] is True
+    _cover(conn, 312, "2024-05-01", [("OLD", "PreferredA", "Series A preferred stock", "preferred")],
+           complete=False)
+    _assert_engines(conn, "OLD", 312, "PreferredA", "2024-05-03", False)
+    _assert_engines(conn, "NEW", 312, "PreferredA", "2024-05-03", False)
+    _assert_engines(conn, "UNCHANGED", 312, "Common", "2024-05-03", True)
+
+
+@pytest.mark.parametrize(("title", "member", "kind", "expected"), [
+    (None, "ClassOfStock=SeriesA;", "preferred", "series:a"),
+    (None, "ClassOfStock=CommonStockSeriesA;", "preferred", None),
+    (None, "ClassOfStock=WarrantsToPurchaseSeriesA;", "warrant", None),
+    (None, "ClassOfStock=RightsToPurchaseSeriesA;", "right", None),
+    (None, "ClassOfStock=WarrantsSeriesBToPurchaseSeriesA;", "warrant", "series:b"),
+    ("Series A", "PreferredSeriesB", "preferred", "series:a"),
+    ("Common stock", "PreferredSeriesB", "preferred", None),
+    ("Rights to purchase Series A preferred stock", "PreferredSeriesB", "preferred", None),
+    ("Warrants to purchase Series A common stock", "WarrantsSeriesA", "warrant", "series:a"),
+    ("Rights to purchase Series A preferred stock", "RightsSeriesA", "right", "series:a"),
+    ("Series A preferred stock; Series B preferred stock", None, "preferred", None),
+    ("Series A preferred stock; Series A preferred stock", None, "preferred", "series:a"),
+])
+def test_instrument_label_uses_own_title_or_member_kind(schema_dsn, title, member, kind, expected):
+    conn, _ = schema_dsn
+    assert conn.execute("SELECT sec_instrument_label(%s,%s,%s)", (title, member, kind)).fetchone()[0] == expected
+
+
+def test_gate_kind_free_own_member_label_preserves_definitive_end(schema_dsn):
+    conn, _ = schema_dsn
+    key = "ClassOfStock=SeriesA;"
+    _cover(conn, 313, "2024-01-01", [("BARE", key, None, "preferred")])
+    _end(conn, 313, description="Series A preferred stock", kind="other")
+    assert conn.execute("SELECT bool_and(definitive) FROM sec_issuer_end_events(313,'2024-03-03')"
+                        ).fetchone()[0] is True
+    _cover(conn, 313, "2024-05-01", [("BARE", key, None, "preferred")], complete=False)
+    _assert_engines(conn, "BARE", 313, key, "2024-05-03", False)
+
+
+@pytest.mark.parametrize("description", [
+    'Preferred stock (trading symbol "ON")',
+    "Preferred stock (NYSE: ON)",
+    "Preferred stock, trading symbol: ON",
+])
+def test_gate_delimited_symbol_is_not_discarded_as_an_ordinary_word(schema_dsn, description):
+    conn, _ = schema_dsn
+    _cover(conn, 314, "2024-01-01", [("PRA", "InstrumentA", "Series A preferred stock", "preferred"),
+                                     ("ON", "InstrumentB", "Series B preferred stock", "preferred")])
+    _end(conn, 314, description=description, kind="other")
+    _assert_engines(conn, "ON", 314, "InstrumentB", "2024-04-01", False)
+    _assert_engines(conn, "PRA", 314, "InstrumentA", "2024-04-01", True)
+
+
+def test_gate_bare_right_purchase_target_is_not_the_rights_own_series(schema_dsn):
+    conn, _ = schema_dsn
+    _cover(conn, 315, "2024-01-01", [("RA", "RightA", "Series A rights", "right"),
+                                     ("RB", "RightB", "Series B rights", "right")])
+    _end(conn, 315, description="Rights to purchase Series A preferred stock", kind="other")
+    assert conn.execute("SELECT definitive,sec_end_role(class_keys,tentative_keys,class_kind,named_kinds,"
+                        "'RightA','right'),sec_end_role(class_keys,tentative_keys,class_kind,named_kinds,"
+                        "'RightB','right') FROM sec_issuer_end_events(315,'2024-03-03')"
+                        ).fetchone() == (False, "tentative", "tentative")
+
+
+def test_gate_same_kind_clauses_keep_their_own_optional_symbol_scopes(schema_dsn):
+    conn, _ = schema_dsn
+    _cover(conn, 316, "2024-01-01", [("PRA", "PreferredA", "Series A preferred stock", "preferred"),
+                                     ("PRB", "PreferredB", "Series B preferred stock", "preferred"),
+                                     ("T", "PreferredC", "Series C preferred stock", "preferred")])
+    _cover(conn, 10316, "2024-02-01", [("T", "Common", "Common stock", "equity")], complete=False)
+    _end(conn, 316, description="Series A preferred stock; Series B preferred stock, trading symbol PRB",
+         kind="other", count=2)
+    _assert_engines(conn, "PRA", 316, "PreferredA", "2024-04-01", False)
+    _assert_engines(conn, "PRB", 316, "PreferredB", "2024-04-01", False)
+    _assert_engines(conn, "T", 316, "PreferredC", "2024-04-01", True)
+    _assert_engines(conn, "T", 10316, "Common", "2024-04-01", True)
+    assert _other_line_covers(conn, "T", 10316, 316, "PreferredC", "2024-04-01")
+
+
+def test_gate_label_symbol_pairs_do_not_cross_match_same_kind_siblings(schema_dsn):
+    conn, _ = schema_dsn
+    _cover(conn, 317, "2024-01-01", [("PRA", "PreferredA", "Series A preferred stock", "preferred"),
+                                     ("PRB", "PreferredB", "Series B preferred stock", "preferred"),
+                                     ("PRB", "SwappedA", "Series A other preferred stock", "preferred")])
+    _cover(conn, 10317, "2024-02-01", [("PRB", "Common", "Common stock", "equity")], complete=False)
+    _end(conn, 317, description="Series A preferred stock, trading symbol PRA; "
+                               "Series B preferred stock, trading symbol PRB", kind="other", count=2)
+    _assert_engines(conn, "PRA", 317, "PreferredA", "2024-04-01", False)
+    # The CIK-level PRB hold belongs to the surviving swapped-label sibling.
+    ended = _engines(conn, "PRB", 317, "PreferredB", "2024-04-01")
+    assert ended == {"sec_ticker_holds": True, "sec_issuer_line_at": False,
+                     "sec_ticker_line_runs": False, "sec_line_alive_runs": False}
+    _assert_engines(conn, "PRB", 317, "SwappedA", "2024-04-01", True)
+    _assert_engines(conn, "PRB", 10317, "Common", "2024-04-01", True)
+    assert _other_line_covers(conn, "PRB", 10317, 317, "SwappedA", "2024-04-01")
+
+
+def test_gate_historical_unknown_label_cannot_erase_a_declared_series_constraint(schema_dsn):
+    conn, _ = schema_dsn
+    _cover(conn, 318, "2024-01-01", [("T", "Preferred", "Preferred stock", "preferred"),
+                                     ("OTHER", "CommonOther", "Common stock", "equity")])
+    _cover(conn, 318, "2024-02-01", [("T", "Preferred", "Series B preferred stock", "preferred")],
+           complete=False)
+    _cover(conn, 10318, "2024-02-15", [("T", "Common", "Common stock", "equity")], complete=False)
+    _end(conn, 318, description="Series A preferred stock", kind="other")
+    _assert_engines(conn, "T", 318, "Preferred", "2024-04-01", True)
+    _assert_engines(conn, "T", 10318, "Common", "2024-04-01", True)
+    assert _other_line_covers(conn, "T", 10318, 318, "Preferred", "2024-04-01")
+
+
+def test_gate_retained_non_equity_label_keeps_original_end_date_when_sibling_removed(schema_dsn):
+    conn, _ = schema_dsn
+    _cover(conn, 319, "2024-01-01", [("PRA", "PreferredA", "Series A preferred stock", "preferred"),
+                                     ("PRB", "PreferredB", "Series B preferred stock", "preferred")])
+    _end(conn, 319, description="Series A and Series B preferred stock", kind="other", count=2)
+    _cover(conn, 319, "2024-04-01", [("PRA", "PreferredA", "Series A preferred stock", "preferred")],
+           complete=False)
+    base._event(conn, 319, "25-NSE/A", "2024-05-01", kind="other", count=1, venue_kind="primary",
+                extinguished=True, effect="restates", description="Series A preferred stock")
+    assert conn.execute("SELECT effective_on FROM sec_issuer_end_events(319,'2024-06-01') e "
+                        "WHERE sec_end_role(e.class_keys,e.tentative_keys,e.class_kind,e.named_kinds,"
+                        "'PreferredA','preferred') IS NOT NULL").fetchall() == [(dt.date(2024, 3, 2),)]
+    _assert_engines(conn, "PRA", 319, "PreferredA", "2024-04-03", False)
+    _assert_engines(conn, "PRB", 319, "PreferredB", "2024-06-01", True)
+
+
+def test_gate_named_historical_instrument_end_keeps_direct_resolver_compatibility(schema_dsn):
+    conn, _ = schema_dsn
+    jan = _cover(conn, 320, "2024-01-01", [("PRA", "PA", "Series A preferred stock", "preferred"),
+                                         ("T", "PB", "Series B preferred stock", "preferred")], complete=False)
+    conn.execute("UPDATE sec_ticker_cik_observations SET filing_complete=true WHERE adsh=%s", (jan,))
+    _cover(conn, 320, "2024-02-01", [("T", "Common", "Common stock", "equity")])
+    _end(conn, 320, description="Series A preferred stock", kind="other")
+    # Preserve the established complete-cover lifecycle. The raw-class dated
+    # resolver did not follow that cover for non-equity keys even on e5f18d24.
+    for ticker, key in (("PRA", "PA"), ("T", "PB")):
+        before = _engines(conn, ticker, 320, key, "2024-02-15")
+        assert before == {"sec_ticker_holds": ticker == "T", "sec_issuer_line_at": True,
+                          "sec_ticker_line_runs": False, "sec_line_alive_runs": False}
+    _assert_engines(conn, "PRA", 320, "PA", "2024-03-15", False)
+    assert _engines(conn, "T", 320, "PB", "2024-03-15") == {
+        "sec_ticker_holds": True, "sec_issuer_line_at": True,
+        "sec_ticker_line_runs": False, "sec_line_alive_runs": False}
+    _assert_engines(conn, "T", 320, "Common", "2024-03-15", True)
+
+
+def _gate_tracking_fixture(conn, cik, groups, form):
+    rows = [(f"G{cik}{n}", f"Group{n}Original", f"Series A Group {n} Common Stock", "equity")
+            for n in range(1, groups + 1)]
+    _cover(conn, cik, "2024-01-01", rows)
+    aliases = [(ticker, f"Group{n}Alias", title, kind)
+               for n, (ticker, _, title, kind) in enumerate(rows, 1) if n <= 3]
+    _cover(conn, cik, "2024-02-01", aliases, complete=False)
+    mapping = dict(conn.execute("SELECT class_key,line_key FROM sec_issuer_lines(%s)", (cik,)).fetchall())
+    components = {frozenset(key for key, owner in mapping.items() if owner == line)
+                  for line in mapping.values()}
+    assert components == {frozenset((f"Group{n}Original", f"Group{n}Alias")) if n <= 3
+                          else frozenset((f"Group{n}Original",)) for n in range(1, groups + 1)}
+    # Isolate the registration guard from the separate raw-alias counting bug:
+    # the declared whole-class end covers even the baseline's raw-key count.
+    _end(conn, cik, description="Common stock", count=len(rows) + len(aliases))
+    assert conn.execute("SELECT bool_and(definitive) FROM sec_issuer_end_events(%s,'2024-03-03')",
+                        (cik,)).fetchone()[0] is True
+    base._event(conn, cik, form, "2024-04-01", kind="equity", effect="restates" if form.endswith("/A") else None,
+                description="Series A Group 1 Common Stock")
+    _cover(conn, cik, "2024-05-01", rows, complete=False)
+    return rows
+
+
+@pytest.mark.parametrize("groups", [1, 4])
+@pytest.mark.parametrize("form", ["8-A12B", "8-A12B/A", "8-K12B/A"])
+def test_gate_registration_label_must_identify_one_line_not_one_raw_key(schema_dsn, groups, form):
+    conn, _ = schema_dsn
+    rows = _gate_tracking_fixture(conn, 307, groups, form)
+    assert conn.execute("SELECT count(*),count(DISTINCT line_key) FROM sec_issuer_lines(307)").fetchone() == (
+        2 if groups == 1 else 7, groups)
+    for ticker, key, _, _ in rows:
+        _assert_engines(conn, ticker, 307, key, "2024-05-03", groups == 1)
+
+
+def test_gate_dated_registration_uniqueness_ignores_future_line_split(schema_dsn):
+    conn, _ = schema_dsn
+    rows = _gate_tracking_fixture(conn, 310, 1, "8-A12B/A")
+    ticker, key, title, kind = rows[0]
+    before = (base._issuer(conn, ticker, "2024-05-03"), base._line(conn, 310, key, "2024-05-03"))
+    assert before[0][:2] == ("resolved", 310)
+    assert before[1][0] == "resolved"
+    _cover(conn, 310, "2024-09-01", [(ticker, key, title, kind),
+                                     ("SPLITLATER", "Group1Alias", title, kind)])
+    assert (base._issuer(conn, ticker, "2024-05-03"), base._line(conn, 310, key, "2024-05-03")) == before
+
+
+def test_gate_ambiguous_named_registration_cannot_use_unnamed_one_symbol_fallback(schema_dsn):
+    conn, _ = schema_dsn
+    rows = [("SHARED", "Group1", "Series A Group One Common Stock", "equity"),
+            ("SHARED", "Group2", "Series A Group Two Common Stock", "equity")]
+    _cover(conn, 311, "2024-01-01", rows)
+    _end(conn, 311, description="Common stock", count=2)
+    assert conn.execute("SELECT bool_and(definitive) FROM sec_issuer_end_events(311,'2024-03-03')"
+                        ).fetchone()[0] is True
+    base._event(conn, 311, "8-A12B/A", "2024-04-01", kind="equity", effect="restates",
+                description="Series A Group One Common Stock")
+    _cover(conn, 311, "2024-05-01", rows, complete=False)
+    for _, key, _, _ in rows:
+        _assert_engines(conn, "SHARED", 311, key, "2024-05-03", False)
+
+
+def test_gate_independent_crosscheck_covers_aliases_siblings_and_shared_labels(schema_dsn):
+    conn, _ = schema_dsn
+    expected = []
+    tickers = ["CWENA"]
+    for key in _gate_alias_fixture(conn, 401):
+        expected.append(("CWENA", 401, key, "2026-05-10", False))
+    competitor_checks = []
+    for cik, (kind, same_cik) in enumerate(itertools.product(("preferred", "warrant"), (False, True)), 402):
+        ticker, other, common_cik = _gate_non_equity_fixture(conn, cik, kind, same_cik)
+        tickers.extend((ticker, other))
+        expected.extend(((other, cik, "InstrumentA", "2024-04-01", False),
+                         (ticker, cik, "InstrumentB", "2024-04-01", True),
+                         (ticker, common_cik, "Common", "2024-04-01", True)))
+        competitor_checks.append((ticker, common_cik, cik, "InstrumentB", "2024-04-01"))
+    for cik, groups in ((406, 1), (407, 4)):
+        for ticker, key, _, _ in _gate_tracking_fixture(conn, cik, groups, "8-A12B/A"):
+            tickers.append(ticker)
+            expected.append((ticker, cik, key, "2024-05-03", groups == 1))
+    failures = _invariant_failures(conn, tickers)
+    for ticker, cik, key, on, alive in expected:
+        failures.extend(("wrong scoped state", engine, ticker, cik, key, on, state, alive)
+                        for engine, state in _engines(conn, ticker, cik, key, on).items() if state != alive)
+    for check in competitor_checks:
+        if not _other_line_covers(conn, *check):
+            failures.append(("missing competing line", *check))
+    observed = conn.execute("SELECT count(*) FROM sec_observations_at('infinity',true) "
+                            "WHERE ticker_key=ANY(%s)", (tickers,)).fetchone()[0]
+    assert (len(tickers), observed, len(expected)) == (14, 29, 19)
+    assert failures == []
+    print(f"Gate cross-check: 7 scenarios, {observed} observations, {4 * observed} lifecycle engine "
+          f"evaluations, {4 * len(expected)} expected-state evaluations, 4 competing-line checks, "
+          f"{len(failures)} violations")
