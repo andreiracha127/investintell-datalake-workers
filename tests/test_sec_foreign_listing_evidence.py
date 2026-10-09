@@ -637,7 +637,11 @@ def db(sql_database):
 def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=None,
         filed="2020-01-01", effective=None, available=None, retired=None, until=None,
         symbol="TSM", underlying_class=None, ordinary_candidate=True, cik=1046179,
-        publication_floor_on=None, effective_date_explicit=None):
+        publication_floor_on=None, effective_date_explicit=None,
+        adsh="0001193125-20-000001", form="20-F",
+        ratio_change_program_key=None, ratio_change_correction_kind=None,
+        ratio_change_correction_text=None, ratio_effectiveness_pending=None,
+        ratio_effectiveness_pending_text=None):
     from psycopg import sql
     tomorrow = (dt.date.fromisoformat(filed) + dt.timedelta(days=1)).isoformat()
     row = dict(
@@ -645,7 +649,12 @@ def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=
         ordinary_candidate=ordinary_candidate,
         publication_floor_on=publication_floor_on,
         effective_date_explicit=(effective is not None) if effective_date_explicit is None else effective_date_explicit,
-        adsh="0001193125-20-000001", form="20-F", filed=filed,
+        adsh=adsh, form=form, filed=filed,
+        ratio_change_program_key=ratio_change_program_key,
+        ratio_change_correction_kind=ratio_change_correction_kind,
+        ratio_change_correction_text=ratio_change_correction_text,
+        ratio_effectiveness_pending=ratio_effectiveness_pending,
+        ratio_effectiveness_pending_text=ratio_effectiveness_pending_text,
         source_url="https://www.sec.gov/Archives/edgar/data/test",
         source_sha256="a" * 64, source_kind=source, evidence_kind=kind,
         listed_type=listed_type if kind == "listed_type" else None,
@@ -814,6 +823,260 @@ def test_late_correction_preserves_the_old_answer_before_retirement(db):
     assert resolve(db, "2024-12-31")[-1] == [old]
     assert resolve(db, "2025-01-01")[1] == "ads"
     assert resolve(db, "2025-01-01")[-1] == [new]
+
+
+def _dated_ratio_notice(db, ratio, *, filed="2022-11-17", effective="2022-11-28",
+                        adsh="0001140361-22-042069", correction=False,
+                        program="old_cusip:98417P105", **kwargs):
+    return add_ratio(
+        db, ratio, source="ratio_change_6k", filed=filed, effective=effective,
+        adsh=adsh, form="6-K/A" if correction else "6-K", symbol=None,
+        ratio_change_program_key=program,
+        ratio_change_correction_kind="correcting_and_replacing" if correction else None,
+        ratio_change_correction_text="CORRECTING and REPLACING ADR Ratio Change" if correction else None,
+        **kwargs,
+    )
+
+
+def _pending_ratio_registration(db, ratio, *, filed="2022-11-15",
+                                adsh="0001193805-22-001555", **kwargs):
+    return add_ratio(
+        db, ratio, filed=filed, adsh=adsh, symbol=None, form="F-6 POS",
+        ratio_effectiveness_pending=True,
+        ratio_effectiveness_pending_text=(
+            "The ratio change amendments shall not become effective until the effective date "
+            "for such ratio change as announced by the Depositary."
+        ), **kwargs,
+    )
+
+
+def test_explicit_same_event_replacement_and_pending_contract_respect_xin_boundaries(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (2, 1), filed="2022-01-01")
+    add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01")
+    _pending_ratio_registration(db, (20, 1))
+    old = _dated_ratio_notice(db, (16, 1))
+    corrected = _dated_ratio_notice(db, (20, 1), filed="2022-11-18",
+                                    adsh="0001140361-22-042119", correction=True)
+    for day in ("2022-11-15", "2022-11-16", "2022-11-18", "2022-11-19", "2022-11-27"):
+        assert resolve(db, day)[:4] == ("resolved", "ads", 2, 1)
+    answer = resolve(db, "2022-11-28")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert corrected in answer[-1] and old not in answer[-1]
+
+
+def test_delayed_correction_preserves_the_old_effective_answer_until_publication(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (16, 1), filed="2022-01-01")
+    add_ratio(db, (16, 1), source="cover_footnote", filed="2022-01-01")
+    old = _dated_ratio_notice(db, (16, 1))
+    _pending_ratio_registration(db, (20, 1))
+    corrected = _dated_ratio_notice(db, (20, 1), filed="2022-11-18",
+                                    publication_floor_on="2022-12-01",
+                                    adsh="0001140361-22-042119", correction=True)
+    before = resolve(db, "2022-11-30")
+    assert before[:4] == ("resolved", "ads", 16, 1)
+    assert old in before[-1] and corrected not in before[-1]
+    after = resolve(db, "2022-12-01")
+    assert after[:4] == ("resolved", "ads", 20, 1)
+    assert corrected in after[-1] and old not in after[-1]
+
+
+@pytest.mark.parametrize("correction,program", [
+    (False, "old_cusip:98417P105"), (True, "old_cusip:98417P204"),
+])
+def test_unrelated_or_nonreplacement_same_date_notices_remain_ambiguous(db, correction, program):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (20, 1), filed="2022-01-01")
+    add_ratio(db, (20, 1), source="cover_footnote", filed="2022-01-01")
+    old = _dated_ratio_notice(db, (16, 1))
+    newer = _dated_ratio_notice(db, (20, 1), filed="2022-11-18", program=program,
+                                adsh="0001140361-22-042119", correction=correction)
+    answer = resolve(db, "2022-11-28")
+    assert answer[0] == "ambiguous"
+    assert old in answer[-1] and newer in answer[-1]
+
+
+def test_correction_of_a_different_class_never_replaces_the_original_event(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (20, 1), filed="2022-01-01")
+    add_ratio(db, (20, 1), source="cover_footnote", filed="2022-01-01")
+    old = _dated_ratio_notice(db, (16, 1))
+    _dated_ratio_notice(db, (20, 1), filed="2022-11-18", underlying_class="class_b",
+                       adsh="0001140361-22-042119", correction=True)
+    answer = resolve(db, "2022-11-28")
+    assert answer[0] == "ambiguous" and old in answer[-1]
+
+
+def test_same_day_correction_ties_never_choose_one_ratio(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (20, 1), filed="2022-01-01")
+    add_ratio(db, (20, 1), source="cover_footnote", filed="2022-01-01")
+    old = _dated_ratio_notice(db, (16, 1))
+    first = _dated_ratio_notice(db, (20, 1), filed="2022-11-18",
+                                adsh="0001140361-22-042119", correction=True)
+    second = _dated_ratio_notice(db, (24, 1), filed="2022-11-18",
+                                 adsh="0001140361-22-042120", correction=True)
+    answer = resolve(db, "2022-11-28")
+    assert answer[0] == "ambiguous"
+    assert first in answer[-1] and second in answer[-1] and old not in answer[-1]
+
+
+def test_later_republication_does_not_promote_a_legally_older_replacement(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (20, 1), filed="2022-01-01")
+    add_ratio(db, (20, 1), source="cover_footnote", filed="2022-01-01")
+    old = _dated_ratio_notice(db, (16, 1))
+    _dated_ratio_notice(db, (20, 1), filed="2022-11-16", publication_floor_on="2022-11-20",
+                       adsh="0001140361-22-042119", correction=True)
+    answer = resolve(db, "2022-11-28")
+    assert answer[0] == "ambiguous" and old in answer[-1]
+
+
+def test_pending_f6_uses_later_public_date_knowledge_without_backdating(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (2, 1), filed="2022-01-01")
+    add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01")
+    pending = _pending_ratio_registration(db, (20, 1))
+    _dated_ratio_notice(db, (20, 1), filed="2022-11-18", available="2022-12-01",
+                       adsh="0001140361-22-042119")
+    for day in ("2022-11-16", "2022-11-28", "2022-11-30"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 2, 1) and pending not in answer[-1]
+    assert resolve(db, "2022-12-01")[:4] == ("resolved", "ads", 20, 1)
+
+
+def test_fee_table_in_same_registration_cannot_bypass_pending_contract(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (2, 1), filed="2022-01-01")
+    add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01")
+    _pending_ratio_registration(db, (20, 1))
+    fee = add_ratio(db, (20, 1), filed="2022-11-15", adsh="0001193805-22-001555",
+                    form="F-6 POS", symbol=None)
+    _dated_ratio_notice(db, (20, 1), filed="2022-11-18", adsh="0001140361-22-042119")
+    for day in ("2022-11-16", "2022-11-19", "2022-11-27"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 2, 1) and fee not in answer[-1]
+    answer = resolve(db, "2022-11-28")
+    assert answer[:4] == ("resolved", "ads", 20, 1) and fee in answer[-1]
+
+
+@pytest.mark.parametrize("adsh,ratio,underlying_class", [
+    ("0001193805-22-001556", (20, 1), None),
+    ("0001193805-22-001555", (16, 1), None),
+    ("0001193805-22-001555", (20, 1), "class_b"),
+])
+def test_pending_contract_condition_does_not_govern_an_unrelated_registration_fact(
+        db, adsh, ratio, underlying_class):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (2, 1), filed="2022-01-01")
+    add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01")
+    pending = _pending_ratio_registration(db, (20, 1))
+    independent = add_ratio(db, ratio, filed="2022-11-15", adsh=adsh, symbol=None,
+                            form="F-6 POS", underlying_class=underlying_class)
+    answer = resolve(db, "2022-11-16")
+    assert answer[0] == "ambiguous" and independent in answer[-1] and pending not in answer[-1]
+
+
+@pytest.mark.parametrize("effective,ratio,underlying_class,symbol", [
+    ("2020-07-01", (20, 1), None, None),
+    ("2022-11-28", (16, 1), None, None),
+    ("2022-11-28", (20, 1), "class_b", None),
+    ("2022-11-28", (20, 1), None, "OTHER"),
+])
+def test_pending_f6_requires_its_own_dated_ratio_class_and_program(
+        db, effective, ratio, underlying_class, symbol):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (2, 1), filed="2022-01-01")
+    add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01")
+    pending = _pending_ratio_registration(db, (20, 1))
+    add_ratio(db, ratio, source="ratio_change_6k", filed="2022-11-18", effective=effective,
+              symbol=symbol, underlying_class=underlying_class)
+    answer = resolve(db, "2022-11-28")
+    assert pending not in answer[-1]
+
+
+def test_dated_ante_consolidation_ends_the_old_event_when_pending_f6_takes_effect(db):
+    add(db, filed="2022-05-01")
+    add_ratio(db, (10, 1), filed="2019-01-01")
+    add_ratio(db, (10, 1), source="cover_footnote", filed="2022-05-01")
+    old = add_ratio(db, (10, 1), source="ratio_change_6k", filed="2019-05-07", effective="2019-04-11")
+    _pending_ratio_registration(db, (1, 1), filed="2022-11-21")
+    new = add_ratio(db, (1, 1), source="ratio_change_6k", filed="2022-11-04", effective="2022-12-09")
+    for day in ("2022-11-05", "2022-11-22", "2022-12-08"):
+        assert resolve(db, day)[:4] == ("resolved", "ads", 10, 1)
+    answer = resolve(db, "2022-12-09")
+    assert answer[:4] == ("resolved", "ads", 1, 1)
+    assert new in answer[-1] and old not in answer[-1]
+
+
+def _insert_dated_ratio_source_fixture(db, name):
+    from psycopg import sql
+    meta = json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"))
+    payload = (FIXTURES / meta["fixture"]).read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == meta["sha256"] and b"\r" not in payload
+    parsed = parse_filing(payload.decode("utf-8"), **{
+        key: meta[key] for key in ("cik", "form_type", "accession_number", "filing_date", "source_url")
+    })
+    ids = []
+    for fact in parsed:
+        row = {**fact, "fact_hash": uuid4().hex, "loaded_on": "2026-10-09", "source_package": name}
+        stmt = sql.SQL("INSERT INTO public.sec_foreign_listing_evidence ({}) VALUES ({}) RETURNING id").format(
+            sql.SQL(",").join(map(sql.Identifier, row)),
+            sql.SQL(",").join(sql.Placeholder() for _ in row),
+        )
+        ids.append(db.execute(stmt, list(row.values())).fetchone()[0])
+    return ids
+
+
+def test_real_xin_correcting_notice_and_pending_receipt_preserve_the_temporal_regime(db):
+    add(db, cik=1398453, symbol="XIN", filed="2022-01-01")
+    add_ratio(db, (2, 1), cik=1398453, symbol="XIN", filed="2022-01-01")
+    add_ratio(db, (2, 1), cik=1398453, symbol="XIN", source="cover_footnote", filed="2022-01-01")
+    _insert_dated_ratio_source_fixture(db, "xin_2022_pending_f6_ratio")
+    old = _insert_dated_ratio_source_fixture(db, "xin_2022_original_ratio_notice")
+    new = _insert_dated_ratio_source_fixture(db, "xin_2022_correcting_ratio_notice")
+    assert old and new
+    for day in ("2022-11-15", "2022-11-16", "2022-11-18", "2022-11-19", "2022-11-27"):
+        assert resolve(db, day, cik=1398453, symbol="XIN")[:4] == ("resolved", "ads", 2, 1)
+    answer = resolve(db, "2022-11-28", cik=1398453, symbol="XIN")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert set(new).intersection(answer[-1]) and not set(old).intersection(answer[-1])
+
+
+def test_real_ante_consolidation_defers_the_pending_receipt_to_legal_effectiveness(db):
+    add(db, cik=1413745, symbol="ANTE", filed="2022-05-01")
+    add_ratio(db, (10, 1), cik=1413745, symbol="ANTE", filed="2019-01-01")
+    add_ratio(db, (10, 1), cik=1413745, symbol="ANTE", source="cover_footnote", filed="2022-05-01")
+    old = add_ratio(db, (10, 1), cik=1413745, symbol=None, source="ratio_change_6k",
+                    filed="2019-05-07", effective="2019-04-11")
+    _insert_dated_ratio_source_fixture(db, "ante_2022_pending_f6_ratio")
+    new = []
+    for name in ("ante_2022_consolidation_notice", "ante_2022_consolidation_meeting_notice",
+                 "ante_2022_consolidation_confirmation"):
+        new.extend(_insert_dated_ratio_source_fixture(db, name))
+    assert new
+    for day in ("2022-11-05", "2022-11-22", "2022-12-08"):
+        assert resolve(db, day, cik=1413745, symbol="ANTE")[:4] == ("resolved", "ads", 10, 1)
+    for day in ("2022-12-09", "2022-12-12", "2025-12-31"):
+        answer = resolve(db, day, cik=1413745, symbol="ANTE")
+        assert answer[:4] == ("resolved", "ads", 1, 1)
+        assert old not in answer[-1] and set(new).intersection(answer[-1])
+
+
+def test_foreign_evidence_schema_replay_is_additive_and_idempotent(sql_database):
+    before = sql_database.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone()[0]
+    schema = (ROOT / "schemas" / "sec_foreign_listing_evidence.sql").read_text(encoding="utf-8")
+    sql_database.execute(schema)
+    sql_database.execute(schema)
+    assert sql_database.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone()[0] == before
+    constraints = sql_database.execute(
+        "SELECT conname FROM pg_catalog.pg_constraint "
+        "WHERE conrelid = 'public.sec_foreign_listing_evidence'::regclass "
+        "AND conname IN ('sec_foreign_listing_ratio_program_ck', "
+        "'sec_foreign_listing_ratio_correction_ck', 'sec_foreign_listing_ratio_pending_ck')"
+    ).fetchall()
+    assert len(constraints) == 3
 
 
 def test_future_ratio_change_does_not_leak_then_supersedes_old_regime(db):
@@ -1272,4 +1535,117 @@ def test_anaphoric_effective_date_does_not_cross_an_unrelated_intervening_action
         "The ADS ratio changed from one ADS representing five ordinary shares to one ADS representing two "
         "ordinary shares. There was no change to the underlying ordinary shares. "
         f"{intervening} This action was effective on December 20, 2012."
+    ) == []
+
+
+def _parse_independent_listing_fixture(name):
+    metadata = json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"))
+    payload = (FIXTURES / metadata["fixture"]).read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == metadata["sha256"]
+    assert b"\r" not in payload
+    kwargs = {key: metadata[key] for key in ("cik", "form_type", "accession_number", "filing_date", "source_url")}
+    return parse_filing(payload.decode("utf-8-sig", errors="replace"), **kwargs)
+
+
+def test_original_drd_for_transition_does_not_attach_the_old_ratio_to_the_new_date():
+    rows = _parse_independent_listing_fixture("drd_2007_ratio_for_transition")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(10, 1, "2007-07-23")}
+    assert {row["available_on"] for row in rows} == {"2007-07-21"}
+
+
+def test_explicit_old_new_ratio_table_retains_only_the_new_column():
+    rows = _parse_6k_transition_text(
+        "The ADS ratio change is effective July 23, 2020. "
+        "<table><tr><th>OLD</th><th>NEW</th></tr><tr><td>Ratio: one ADS for one ordinary share</td>"
+        "<td>one ADS for ten ordinary shares</td></tr></table>"
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in rows} == {(10, 1)}
+
+
+@pytest.mark.parametrize("history", ["one ADS formerly represented one ordinary share", "one ADS used to represent one ordinary share"])
+def test_historical_former_ratio_is_not_assigned_the_new_event_date(history):
+    rows = _parse_6k_transition_text(
+        f"The ADS ratio change is effective July 23, 2020. The {history}. "
+        "The new ratio is one ADS for ten ordinary shares, effective July 23, 2020."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in rows} == {(10, 1)}
+
+
+def test_original_xin_correction_carries_exact_program_and_literal_replacement_provenance():
+    original = _parse_independent_listing_fixture("xin_2022_original_ratio_notice")
+    corrected = _parse_independent_listing_fixture("xin_2022_correcting_ratio_notice")
+    assert {(row["ratio_numerator"], row["effective_from"]) for row in original} == {(16, "2022-11-28")}
+    assert {(row["ratio_numerator"], row["effective_from"]) for row in corrected} == {(20, "2022-11-28")}
+    assert {row["ratio_change_program_key"] for row in original + corrected} == {"old_cusip:98417P105"}
+    assert all(row["ratio_change_correction_kind"] is None for row in original)
+    assert {row["ratio_change_correction_kind"] for row in corrected} == {"correcting_and_replacing"}
+    assert all(row["ratio_change_correction_text"] ==
+               "CORRECTING and REPLACING - Xinyuan Real Estate Co., Ltd. Announces ADR Ratio Change" for row in corrected)
+    assert {row["available_on"] for row in original} == {"2022-11-18"}
+    assert {row["available_on"] for row in corrected} == {"2022-11-19"}
+
+
+def test_amendment_form_and_recency_alone_do_not_claim_a_ratio_correction():
+    rows = parse_filing(
+        "The new ADR ratio is one ADR for twenty ordinary shares, effective November 28, 2022. "
+        "Old CUSIP: 98417P105.", cik=1398453, form_type="6-K/A", accession_number="0001140361-22-042119",
+        filing_date="2022-11-18", source_url="https://www.sec.gov/Archives/test",
+    )
+    assert rows
+    assert {row["ratio_change_program_key"] for row in rows} == {"old_cusip:98417P105"}
+    assert all(row["ratio_change_correction_kind"] is None for row in rows)
+    assert all(row["ratio_change_correction_text"] is None for row in rows)
+
+
+@pytest.mark.parametrize("name,ratio", [
+    ("xin_2022_pending_f6_ratio", 20), ("ante_2022_pending_f6_ratio", 1),
+])
+def test_original_operative_f6_conditions_are_explicit_pending_ratio_facts(name, ratio):
+    rows = _parse_independent_listing_fixture(name)
+    assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in rows} == {(ratio, 1)}
+    assert all(row["ratio_effectiveness_pending"] is True for row in rows)
+    assert all("announced by the Depositary" in row["ratio_effectiveness_pending_text"] for row in rows)
+
+
+def test_proposed_f6_filing_and_generic_holder_notice_are_not_pending_ratio_conditions():
+    rows = parse_filing(
+        "It is proposed that this filing become effective immediately. Each ADS represents five ordinary shares. "
+        "Any amendment prejudicing holder rights shall not become effective until thirty days after notice.",
+        cik=123, form_type="F-6 POS", accession_number="0001234567-20-000001", filing_date="2020-01-01",
+        source_url="https://www.sec.gov/Archives/test",
+    )
+    assert rows
+    assert all(row["ratio_effectiveness_pending"] is None for row in rows)
+
+
+@pytest.mark.parametrize("name,available", [
+    ("ante_2022_consolidation_notice", "2022-11-05"),
+    ("ante_2022_consolidation_meeting_notice", "2022-11-05"),
+    ("ante_2022_consolidation_confirmation", "2022-12-01"),
+])
+def test_original_ante_ratio_follows_the_named_consolidation_date_not_trading_price_date(name, available):
+    rows = _parse_independent_listing_fixture(name)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(1, 1, "2022-12-09")}
+    assert {row["available_on"] for row in rows} == {available}
+    assert all("effective-date-named-event=Share Consolidation" in row["evidence_location"] for row in rows)
+    assert all("December 9, 2022" in row["evidence_text"] for row in rows)
+    assert all(row["ordinary_candidate"] for row in rows)
+
+
+def test_unlinked_consolidation_does_not_supply_a_ratio_effective_date():
+    assert _parse_6k_transition_text(
+        "The Share Consolidation will be effective at 5:00 P.M., on December 9, 2022. "
+        "Separately, the Company proposes an ADS ratio change from one ADS for ten ordinary shares "
+        "to one ADS for one ordinary share."
+    ) == []
+
+
+def test_conflicting_named_consolidation_dates_do_not_choose_one():
+    assert _parse_6k_transition_text(
+        "The Share Consolidation will be effective at 5:00 P.M., on December 9, 2022. "
+        "The Share Consolidation will be effective at 5:00 P.M., on December 10, 2022. "
+        "Upon the Share Consolidation, the ADS ratio will change from one ADS for ten ordinary shares "
+        "to one ADS for one ordinary share."
     ) == []

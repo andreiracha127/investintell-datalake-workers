@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS public.sec_foreign_listing_evidence (
     -- True only when the document itself states the extracted effective date;
     -- false when effective_from is the filing + 1 observation fallback.
     effective_date_explicit boolean NOT NULL DEFAULT false,
+    -- A correction links one expressly replaced ratio-change event, never
+    -- arbitrary announcements by filing order. Program identity is the exact
+    -- source-labelled old CUSIP; the literal correction headline is retained.
+    ratio_change_program_key text,
+    ratio_change_correction_kind text,
+    ratio_change_correction_text text,
+    -- A contract expressly awaiting a Depositary-announced ratio date is not
+    -- operative merely because the amended registration was filed.
+    ratio_effectiveness_pending boolean DEFAULT false,
+    ratio_effectiveness_pending_text text,
     effective_to date,
     evidence_text text NOT NULL CHECK (length(btrim(evidence_text)) > 0),
     evidence_location text NOT NULL CHECK (length(btrim(evidence_location)) > 0),
@@ -93,6 +103,61 @@ CREATE TABLE IF NOT EXISTS public.sec_foreign_listing_evidence (
          AND ratio_denominator = trunc(ratio_denominator))
     )
 );
+
+-- Additive and replayable for existing evidence-only installations.
+ALTER TABLE public.sec_foreign_listing_evidence
+    ADD COLUMN IF NOT EXISTS ratio_change_program_key text,
+    ADD COLUMN IF NOT EXISTS ratio_change_correction_kind text,
+    ADD COLUMN IF NOT EXISTS ratio_change_correction_text text,
+    ADD COLUMN IF NOT EXISTS ratio_effectiveness_pending boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS ratio_effectiveness_pending_text text;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conrelid = 'public.sec_foreign_listing_evidence'::regclass
+          AND conname = 'sec_foreign_listing_ratio_program_ck'
+    ) THEN
+        ALTER TABLE public.sec_foreign_listing_evidence
+            ADD CONSTRAINT sec_foreign_listing_ratio_program_ck CHECK (
+                ratio_change_program_key IS NULL
+                OR (ratio_change_program_key ~ '^old_cusip:[A-Z0-9]{9}$'
+                    AND evidence_kind = 'ads_ratio' AND source_kind = 'ratio_change_6k'
+                    AND form IN ('6-K', '6-K/A'))
+            );
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conrelid = 'public.sec_foreign_listing_evidence'::regclass
+          AND conname = 'sec_foreign_listing_ratio_correction_ck'
+    ) THEN
+        ALTER TABLE public.sec_foreign_listing_evidence
+            ADD CONSTRAINT sec_foreign_listing_ratio_correction_ck CHECK (
+                (ratio_change_correction_kind IS NULL AND ratio_change_correction_text IS NULL)
+                OR (ratio_change_correction_kind IS NOT NULL
+                    AND ratio_change_correction_kind = 'correcting_and_replacing'
+                    AND ratio_change_program_key IS NOT NULL
+                    AND ratio_change_correction_text IS NOT NULL
+                    AND length(btrim(ratio_change_correction_text)) > 0)
+            );
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_constraint
+        WHERE conrelid = 'public.sec_foreign_listing_evidence'::regclass
+          AND conname = 'sec_foreign_listing_ratio_pending_ck'
+    ) THEN
+        ALTER TABLE public.sec_foreign_listing_evidence
+            ADD CONSTRAINT sec_foreign_listing_ratio_pending_ck CHECK (
+                (NOT coalesce(ratio_effectiveness_pending, false)
+                    AND ratio_effectiveness_pending_text IS NULL)
+                OR (ratio_effectiveness_pending IS TRUE
+                    AND ratio_effectiveness_pending_text IS NOT NULL
+                    AND length(btrim(ratio_effectiveness_pending_text)) > 0
+                    AND evidence_kind = 'ads_ratio' AND source_kind = 'f6')
+            );
+    END IF;
+END;
+$$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS sec_foreign_listing_evidence_current_idx
     ON public.sec_foreign_listing_evidence (fact_hash) WHERE retired_on IS NULL;
@@ -131,6 +196,12 @@ CREATE INDEX IF NOT EXISTS sec_foreign_listing_evidence_source_idx
 -- Filing assertion order uses the legal filed date, not a replacement's later
 -- publication floor: replacing an old report does not turn it into a new report.
 -- The 6-K stream contributes the latest effective event, retaining every tie.
+-- An explicit correcting-and-replacing announcement ends only the earlier
+-- claim for the exact same old CUSIP, event date, symbol and underlying class,
+-- after the correction becomes public. A later legal filing is required;
+-- republication dates cannot promote an older claim. Unrelated and same-date
+-- conflicting assertions remain independent. This replacement is applied to
+-- known future announcements as well, before F-6 deferral and selection.
 -- Repeated annual statements therefore
 -- do not make a properly evidenced subsequent change ambiguous forever.
 -- An ended latest assertion does not resurrect an older assertion in its stream.
@@ -149,6 +220,16 @@ CREATE INDEX IF NOT EXISTS sec_foreign_listing_evidence_source_idx
 -- identify the same program/class and exact ratio, and supply one unique future
 -- date. This does not rewrite the source dates, move older registrations, or
 -- override an F-6's own explicit date. Deferral precedes latest-filing selection.
+-- An expressly pending F-6 entitlement requires a matching public dated change
+-- on/after the registration, for the same bound program and exact underlying
+-- class, before becoming operative. Unlike an ordinary filing-date fallback,
+-- this explicit condition can be satisfied by later-announced date knowledge,
+-- prospectively from its availability and effective date only. Pending contracts
+-- are excluded before latest-filing selection, preserving the last operative
+-- registration. Historical or unrelated matching ratios cannot activate them.
+-- A literal pending condition in the operative contract governs matching ratio
+-- facts throughout that same issuer/accession/class/symbol registration family;
+-- its fee table or counsel opinion cannot bypass the contract's effective clause.
 CREATE OR REPLACE FUNCTION public.sec_foreign_listing_at(
     p_cik bigint, p_symbol text, p_as_of date
 )
@@ -164,7 +245,7 @@ RETURNS TABLE (
 LANGUAGE sql STABLE PARALLEL SAFE
 SET search_path = pg_catalog, public
 AS $fn$
-WITH issuer_known AS MATERIALIZED (
+WITH issuer_observed AS MATERIALIZED (
     SELECT e.*,
            CASE WHEN e.source_kind = 'f6' THEN 'f6'
                 WHEN e.source_kind = 'ratio_change_6k' THEN 'change'
@@ -173,6 +254,23 @@ WITH issuer_known AS MATERIALIZED (
     WHERE e.cik = p_cik
       AND e.available_on <= p_as_of
       AND (e.retired_on IS NULL OR e.retired_on > p_as_of)
+), issuer_known AS MATERIALIZED (
+    SELECT e.* FROM issuer_observed e
+    WHERE NOT (
+        e.source_stream = 'change' AND e.ratio_change_program_key IS NOT NULL
+        AND EXISTS (
+            SELECT 1 FROM issuer_observed c
+            WHERE c.source_stream = 'change'
+              AND c.ratio_change_correction_kind = 'correcting_and_replacing'
+              AND c.ratio_change_correction_text IS NOT NULL
+              AND c.ratio_change_program_key = e.ratio_change_program_key
+              AND c.effective_from = e.effective_from
+              AND c.symbol_key IS NOT DISTINCT FROM e.symbol_key
+              AND c.underlying_class IS NOT DISTINCT FROM e.underlying_class
+              AND c.ordinary_candidate = e.ordinary_candidate
+              AND c.adsh <> e.adsh AND c.filed > e.filed
+        )
+    )
 ), issuer_visible AS MATERIALIZED (
     SELECT e.* FROM issuer_known e WHERE e.effective_from <= p_as_of
 ), issuer_cover AS MATERIALIZED (
@@ -213,6 +311,26 @@ WITH issuer_known AS MATERIALIZED (
 ), visible AS MATERIALIZED (
     SELECT v.* FROM bound_visible v CROSS JOIN issuer_binding b
     WHERE NOT (
+        v.source_kind = 'f6'
+        AND (coalesce(v.ratio_effectiveness_pending, false)
+             OR EXISTS (
+                 SELECT 1 FROM issuer_known p
+                 WHERE p.source_kind = 'f6' AND p.ratio_effectiveness_pending IS TRUE
+                   AND p.adsh = v.adsh AND p.filed = v.filed
+                   AND p.symbol_key IS NOT DISTINCT FROM v.symbol_key
+                   AND p.underlying_class IS NOT DISTINCT FROM v.underlying_class
+                   AND p.ratio_numerator * v.ratio_denominator
+                       = v.ratio_numerator * p.ratio_denominator
+             ))
+        AND NOT EXISTS (
+            SELECT 1 FROM announced_changes c
+            WHERE c.effective_from >= v.filed + 1
+              AND c.effective_from <= p_as_of
+              AND c.underlying_class IS NOT DISTINCT FROM v.underlying_class
+              AND c.ratio_numerator * v.ratio_denominator
+                  = v.ratio_numerator * c.ratio_denominator
+        )
+    ) AND NOT (
         v.source_kind = 'f6' AND NOT v.effective_date_explicit
         AND v.effective_from = v.filed + 1 AND v.ordinary_candidate
         AND (v.underlying_class IS NULL OR b.underlying_class IS NULL

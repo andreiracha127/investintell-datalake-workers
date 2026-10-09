@@ -1,0 +1,37 @@
+{
+  "name": "ante_2022_pending_f6_ratio",
+  "fixture": "ante_2022_pending_f6_ratio.txt",
+  "cik": 1413745,
+  "form_type": "F-6 POS",
+  "accession_number": "0001193805-22-001589",
+  "filing_date": "2022-11-21",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1413745/000119380522001589/e618045_ex99-a2.htm",
+  "source_sha256": "f2a8733a5ce4a5f3d4ac6015f6c1d0326aaa070c591caa4bc34dc4ae0b65e34f",
+  "sha256": "62f6ee6712669492894dbbaaf22893c14d6c8a63f29d50d781941444387ac476",
+  "derivation": "Independent HTMLParser visible text, whitespace normalized; contiguous prefix from hash-verified original bytes, retaining pending amendment effective condition and ADR face entitlement.",
+  "source_visible_text_offset": 0,
+  "source_visible_text_end": 59666,
+  "source_visible_text_sha256": "29ecb505f53b2af10e7c5bec9eb74f4403ba615e5e91c6b2b275261028fc8725",
+  "original_source_bytes": 210285,
+  "filing_date_proof": {
+    "filed": "2022-11-21",
+    "records": [
+      {
+        "cik": 1413745,
+        "filed": "2022-11-21",
+        "line": "1413745|AIRNET TECHNOLOGY INC.|F-6 POS|2022-11-21|edgar/data/1413745/0001193805-22-001589.txt",
+        "source_sha256": "30bc8ebde79fa2bd68be8a630db67ce43949e1de0dad400a574fb48a67611c45",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR4/master.idx"
+      },
+      {
+        "cik": 1474274,
+        "filed": "2022-11-21",
+        "line": "1474274|JPMorgan Chase Bank, N.A. - ADR Depositary|F-6 POS|2022-11-21|edgar/data/1474274/0001193805-22-001589.txt",
+        "source_sha256": "30bc8ebde79fa2bd68be8a630db67ce43949e1de0dad400a574fb48a67611c45",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "parent_manifest_sha256": "a8b046fbd976f28d12231956f9d2217e70ed95ea391aab80badc065228d3c38b"
+}

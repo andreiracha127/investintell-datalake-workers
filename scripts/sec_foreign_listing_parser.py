@@ -16,7 +16,7 @@ from html.parser import HTMLParser
 import re
 from typing import Iterable
 
-PARSER_VERSION = "foreign-listing-v2"
+PARSER_VERSION = "foreign-listing-v3"
 _SPACE = re.compile(r"\s+")
 _ADS = r"(?:(?:(?:American?|Global)\s+)?deposit[ao]ry\s+(?:shares?|receipts?)|American\s+shares?\s*\(evidenced\s+by\s+deposit[ao]ry\s+receipts\)|[AG]D[SR]s?)"
 _SHARES = r"(?:(?:(?:class|series)\s+[A-Z0-9]+\s+)?(?:ordinary|common)\s+shares?|shares?\s+of\s+common\s+stock|(?:class|series)\s+[A-Z0-9]+\s+shares?|shares?)"
@@ -24,7 +24,7 @@ _WORDS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirtee
 _QUANTITY = rf"(?:\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?|(?:{_WORDS})(?:[ -]+(?:{_WORDS}|and)){{0,5}})(?:\s*\(\s*\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?\s*\))?"
 _OF_UNIT = r"(?:\s+of(?:\s+(?:one|an?|the)(?:\s*\(\s*\d+\s*/\s*\d+\s*\))?)?)?"
 _RATIO = re.compile(
-    rf"(?P<adsn>each|{_QUANTITY})\s+{_ADS}(?!\w)(?:[^.;]|\.(?=\d)){{0,100}}?\b(?:represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?|to|per)\s+(?P<ordinary>{_QUANTITY}){_OF_UNIT}\s+(?:(?:of\s+)?(?:our|the|its|company.s)\s+)?{_SHARES}",
+    rf"(?P<adsn>each|{_QUANTITY})\s+{_ADS}(?!\w)(?:[^.;]|\.(?=\d)){{0,100}}?\b(?:represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?|to|per|for)\s+(?P<ordinary>{_QUANTITY}){_OF_UNIT}\s+(?:(?:of\s+)?(?:our|the|its|company.s)\s+)?{_SHARES}",
     re.I,
 )
 _RATIO_TITLE = re.compile(
@@ -41,8 +41,8 @@ _RATIO_COMPACT_TRANSITION = re.compile(
     rf"(?P<ordinary>{_QUANTITY})\s*-\s*to\s*-\s*(?P<adsn>{_QUANTITY})\s+ratio\b", re.I,
 )
 _RATIO_CHANGE = re.compile(
-    r"\b(?:ratio|exchange\s+(?:ratio|rate))\b[^.;]{0,100}\bchang\w*\b"
-    r"|\bchang\w*\b[^.;]{0,100}\b(?:ratio|exchange\s+(?:ratio|rate))\b"
+    r"\b(?:ratio|exchange\s+(?:ratio|rate))\b[^.;]{0,180}\b(?:chang|amend)\w*\b"
+    r"|\b(?:chang|amend)\w*\b[^.;]{0,180}\b(?:ratio|exchange\s+(?:ratio|rate))\b"
     r"|\b(?:new|former)\s+(?:(?:ADS|ADR|GDS|GDR)s?\s+)?ratio\b",
     re.I,
 )
@@ -224,15 +224,49 @@ def _cufs_ordinary_ratio_proofs(text: str, match: re.Match, ratio: Fraction) -> 
     return proofs if ratios == {ratio} else []
 
 
+def _reciprocal_matches(text: str) -> list[re.Match]:
+    return [match for match in _RATIO_RECIPROCAL.finditer(text)
+            if not re.match(r"\s*[,;:]?\s*(?:each(?:\s+of\s+which)?\s+)?represent(?:s|ing)?\b",
+                            text[match.end():match.end() + 60], re.I)
+            and not re.match(rf"\s+(?:per|to|for)\s+{_QUANTITY}{_OF_UNIT}\s+{_SHARES}",
+                             text[match.end():match.end() + 100], re.I)]
+
+
+def _old_new_ratio_spans(text: str) -> set[tuple[int, int]]:
+    """Identify former values only in explicit ordered OLD/NEW ratio tables."""
+    former = set()
+    for header in re.finditer(r"\b(?P<left>OLD|FORMER|PREVIOUS|NEW|CURRENT)\s+(?:RATIO\s+)?"
+                              r"(?P<right>OLD|FORMER|PREVIOUS|NEW|CURRENT)\b", text, re.I):
+        labels = (header.group("left").upper(), header.group("right").upper())
+        if sum(label in {"OLD", "FORMER", "PREVIOUS"} for label in labels) != 1:
+            continue
+        field = re.search(r"\bRatio\s*:?", text[header.end():header.end() + 400], re.I)
+        if not field:
+            continue
+        start = header.end() + field.end()
+        block = text[start:start + 500]
+        matches = {}
+        for pattern in (_RATIO, _RATIO_TITLE):
+            for match in pattern.finditer(block):
+                if match.end() not in matches or match.start() < matches[match.end()].start():
+                    matches[match.end()] = match
+        ordered = sorted(matches.values(), key=lambda match: match.start())
+        if len(ordered) >= 2:
+            old = ordered[0 if labels[0] in {"OLD", "FORMER", "PREVIOUS"} else 1]
+            former.add((start + old.start(), start + old.end()))
+    return former
+
+
 def _ratios(text: str):
     seen: set[tuple[int, int, int]] = set()
-    reciprocal = [match for match in _RATIO_RECIPROCAL.finditer(text)
-                  if not re.match(r"\s*[,;:]?\s*(?:each(?:\s+of\s+which)?\s+)?represent(?:s|ing)?\b",
-                                  text[match.end():match.end() + 60], re.I)
-                  and not re.match(rf"\s+(?:per|to)\s+{_QUANTITY}{_OF_UNIT}\s+{_SHARES}",
-                                   text[match.end():match.end() + 100], re.I)]
+    reciprocal = _reciprocal_matches(text)
+    former_table = _old_new_ratio_spans(text)
     for pattern in (_RATIO_RECIPROCAL, _RATIO_COMPACT_TRANSITION, _RATIO, _RATIO_TITLE):
         for match in reciprocal if pattern is _RATIO_RECIPROCAL else pattern.finditer(text):
+            if any(start <= match.start() and match.end() <= end for start, end in former_table):
+                continue
+            if re.search(r"\b(?:previously|formerly|used\s+to)\b", match.group(), re.I):
+                continue
             # In "from one share to two ADSs, to one share to one ADS", an
             # ADS-first match can cross the two regimes. Keep each complete
             # shares-to-ADS clause instead, so the former side remains former.
@@ -294,7 +328,7 @@ def _canonical_symbol(value: str | None) -> str | None:
 
 def _prior_ratio(text: str, offset: int) -> bool:
     return bool(re.search(
-        r"(?:from|previous|current|existing|old|former|then)\s+(?:(?:a|the)\s+)?(?:(?:(?:ADS|ADR)(?:[- ]to[- ]Share)?[- ]?)?ratio\s*:?[ ]*(?:(?:of|was|is)\s+)?)?[\"“'‘]*$",
+        r"\b(?:from|previous(?:ly)?|current|existing|old|former(?:ly)?|then)\s+(?:(?:a|the)\s+)?(?:(?:(?:ADS|ADR)(?:[- ]to[- ]Share)?[- ]?)?ratio\s*:?[ ]*(?:(?:of|was|is)\s+)?)?[\"“'‘]*$",
         text[max(0, offset - 100):offset], re.I,
     ))
 
@@ -307,7 +341,7 @@ def _superseded_ratio(text: str, start: int, end: int) -> bool:
     ))
 
 
-def _6k_ratio_context(text: str, start: int, end: int) -> str | None:
+def _6k_ratio_context(text: str, start: int, end: int) -> tuple[str, str] | None:
     """Bind a 6-K ratio to its own transition and connected date statements."""
     left, right = max(0, start - 1200), min(len(text), end + 1400)
     boundaries = [left]
@@ -382,7 +416,7 @@ def _6k_ratio_context(text: str, start: int, end: int) -> str | None:
         scope_end = following_end
         if not unchanged_underlying and not related_anaphor_date:
             anaphor_connected = False
-    return text[scope_start:scope_end]
+    return text[scope_start:scope_end], own
 
 
 def _6k_ratio_class(match: re.Match, context: str) -> str:
@@ -399,6 +433,89 @@ def _6k_ratio_class(match: re.Match, context: str) -> str:
         r"(?:\s*\([^)]{0,40}\))?\s+ratio\b", prefix, re.I,
     ))
     return class_text + " " + declarations[-1].group("class") if declarations else class_text
+
+
+def _6k_named_event_date(text: str, match: re.Match, own: str) -> tuple[str, re.Match] | None:
+    """Resolve an explicitly linked Share Consolidation within the same source."""
+    links = list(re.finditer(r"\b(?:conditional\s+)?upon\s+(?:the\s+)?Share\s+Consolidation\b", own, re.I))
+    if not links or any(re.search(r"\b(?:not|unrelated|independent)\b", own[max(0, link.start() - 30):link.start()], re.I)
+                        for link in links):
+        return None
+    date_value = r"(?:[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})"
+    clock = r"(?:at\s+\d{1,2}\s*:\s*\d{2}\s*[AP]\.?\s*M\.?\s*,?\s*)?"
+    pattern = re.compile(
+        rf"\b(?:(?:the|such)\s+)?Share\s+Consolidation\s+(?:will\s+be|shall\s+be|to\s+be|is|was)\s+effective\s+"
+        rf"{clock}(?:on\s+)?(?P<date>{date_value})", re.I,
+    )
+    matches = list(pattern.finditer(text, max(0, match.start() - 2500), min(len(text), match.end() + 2500)))
+    dated = [(proof, _effective_date("effective on " + proof.group("date"))) for proof in matches]
+    dated = [(proof, value) for proof, value in dated if value]
+    if len({value for _, value in dated}) != 1:
+        return None
+    proof, value = dated[0]
+    return value, proof
+
+
+def _6k_correction_metadata(text: str, context: str) -> dict:
+    # An Old CUSIP is a literal program pin for this transition. A /A suffix,
+    # newer date, or merely matching issuer never establishes replacement.
+    cusips = set(re.findall(r"\bOld\s+CUSIP\s*[:#]?\s*([A-Z0-9]{9})(?!\w)", context, re.I))
+    if len(cusips) != 1:
+        return {}
+    metadata = {"ratio_change_program_key": "old_cusip:" + next(iter(cusips)).upper()}
+    heading = re.search(
+        r"\bCORRECTING\s+and\s+REPLACING\b\s*[-\u2013\u2014:]?\s*.{0,220}?\b(?:ADR|ADS|GDR|GDS)\s+Ratio\s+Change\b",
+        text[:4000], re.I,
+    )
+    if heading and not re.search(r"\b(?:not|previously|formerly|quoted)\b", text[max(0, heading.start() - 60):heading.start()], re.I):
+        metadata.update({"ratio_change_correction_kind": "correcting_and_replacing",
+                         "ratio_change_correction_text": _clean(heading.group())})
+    return metadata
+
+
+def _f6_pending_effectiveness(text: str, ratio: Fraction, class_text: str) -> dict:
+    """Flag only a source's operative ratio condition awaiting depositary notice."""
+    current_class = _underlying_class(class_text)
+
+    def matches_ratio(fragment: str) -> bool:
+        observations = [(value, _underlying_class(match.group())) for match, value in _ratios(fragment)]
+        if not observations and ratio.denominator == 1:
+            # XIN's operative sections replace the ADR's quoted "two Shares"
+            # with "twenty Shares", rather than repeating the complete ADS
+            # definition. Tie that replacement to the source's per-one-ADS
+            # entitlement, never to an arbitrary multi-ADS group quantity.
+            for change in re.finditer(
+                rf"\breplacing\b[^.;]{{0,80}}?{_QUANTITY}\s+{_SHARES}[^.;]{{0,40}}?\bwith\s+"
+                rf"[\"'\u201c\u201d\u2018\u2019\ufffd]*\s*(?P<new>(?P<quantity>{_QUANTITY})\s+{_SHARES})", fragment, re.I,
+            ):
+                observations.append((_number(change.group("quantity")), _underlying_class(change.group("new"))))
+        return (bool(observations) and {value for value, _ in observations} == {ratio}
+                and all(value is None or current_class is None or value == current_class for _, value in observations))
+
+    for proof in re.finditer(
+        r"\bEffective\s+on\s+the\s+date\s+announced\s+by\s+the\s+Depositary\b[^.;]{0,400}", text, re.I,
+    ):
+        if matches_ratio(proof.group()):
+            return {"ratio_effectiveness_pending": True, "ratio_effectiveness_pending_text": _clean(proof.group())}
+    for proof in re.finditer(
+        r"\b(?:ratio\s+change\s+amendments?|the\s+amendment\s+reflected\s+in\s+Section\s+\d+\.\d+)"
+        r"(?:[^.;]|\.(?=\d)){0,200}?\bshall\s+not\s+become\s+effective\s+until\b[^.;]{0,200}"
+        r"\bannounced\s+by\s+the\s+Depositary\b", text, re.I,
+    ):
+        reference = re.search(r"\bSections?\s+(\d+\.\d+(?:\s+and\s+\d+\.\d+)?)", proof.group(), re.I)
+        if not reference:
+            continue
+        fragments = []
+        for section in re.findall(r"\d+\.\d+", reference.group(1)):
+            heading = re.search(r"\bSECTION\s+" + re.escape(section) + r"\s*\.", text, re.I)
+            if not heading:
+                continue
+            tail = text[heading.end():heading.end() + 4000]
+            next_heading = re.search(r"\b(?:SECTION\s+\d+\.\d+\s*\.|ARTICLE\s+[IVXLC]+)\s", tail, re.I)
+            fragments.append(tail[:next_heading.start()] if next_heading else tail)
+        if matches_ratio(" ".join(fragments)):
+            return {"ratio_effectiveness_pending": True, "ratio_effectiveness_pending_text": _clean(proof.group())}
+    return {}
 
 
 def _underlying_class(text: str) -> str | None:
@@ -584,7 +701,7 @@ def parse_filing(
 
     def emit(kind: str, source_kind: str, symbol: str | None, evidence: str, location: str,
              listed_type: str | None = None, ratio: Fraction | None = None,
-             effective: str | None = None, class_text: str = "") -> None:
+             effective: str | None = None, class_text: str = "", metadata: dict | None = None) -> None:
         if document_role == "securities_description":
             if kind == "listed_type":
                 return
@@ -604,6 +721,9 @@ def parse_filing(
             "effective_date_explicit": effective is not None,
             "available_on": public, "evidence_text": _clean(evidence),
             "evidence_location": location, "parser_version": PARSER_VERSION,
+            "ratio_change_program_key": None, "ratio_change_correction_kind": None,
+            "ratio_change_correction_text": None, "ratio_effectiveness_pending": None,
+            "ratio_effectiveness_pending_text": None, **(metadata or {}),
         })
 
     if base_form in ("20-F", "40-F", "20FR12B", "40FR12B") or document_role == "securities_description":
@@ -814,22 +934,31 @@ def parse_filing(
             local_symbols = [s.upper() for s in _explicit_symbols(context)] or explicit
             for symbol in local_symbols if len(set(local_symbols)) == 1 else [None]:
                 emit("ads_ratio", "f6", symbol, context, location, ratio=ratio,
-                     effective=amendment_date or _effective_date(context), class_text=match.group())
+                     effective=amendment_date or _effective_date(context), class_text=match.group(),
+                     metadata=_f6_pending_effectiveness(text, ratio, match.group()))
     elif base_form == "6-K":
         for match, ratio in _ratios(text):
-            context = _6k_ratio_context(text, match.start(), match.end())
-            if context is None:
+            scope = _6k_ratio_context(text, match.start(), match.end())
+            if scope is None:
                 continue
+            context, own = scope
             # In 'from one ADS ... to one ADS ...', retain only the new side.
             dated_current = (re.search(r"\bcurrent\b[^.;]{0,60}\bratio\b[^.;]{0,30}$",
                                        text[max(0, match.start() - 120):match.start()], re.I)
                              and not _RATIO_FROM.search(context))
             if _prior_ratio(text, match.start()) and not dated_current:
                 continue
-            effective = _effective_date(context)
+            named_event = _6k_named_event_date(text, match, own)
+            effective = named_event[0] if named_event else _effective_date(context)
             if not effective:
                 continue
             location = f"6k/ratio-change;text-offset={match.start()}"
+            if named_event:
+                proof = named_event[1]
+                context_start = text.find(context, max(0, match.start() - 1200), match.end() + 1400)
+                if context_start >= 0:
+                    context = text[min(context_start, proof.start()):max(context_start + len(context), proof.end())]
+                location += ";effective-date-named-event=Share Consolidation;named-event-date-text-offset=" + str(proof.start())
             if match.groupdict().get("unit", "").upper() == "CUFS":
                 proofs = _cufs_ordinary_ratio_proofs(text, match, ratio)
                 context_start = text.find(context, max(0, match.start() - 1200), match.end() + 1400)
@@ -838,7 +967,8 @@ def parse_filing(
                     location += ";ordinary-equivalence-text-offset=" + str(proofs[0].start())
             local_symbols = [s.upper() for s in _explicit_symbols(context)] or [s.upper() for s in _explicit_symbols(text)]
             for symbol in local_symbols if len(set(local_symbols)) == 1 else [None]:
-                emit("ads_ratio", "ratio_change_6k", symbol, context, location, ratio=ratio, effective=effective, class_text=_6k_ratio_class(match, context))
+                emit("ads_ratio", "ratio_change_6k", symbol, context, location, ratio=ratio, effective=effective,
+                     class_text=_6k_ratio_class(match, context), metadata=_6k_correction_metadata(text, context))
     unique = {}
     for row in rows:
         key = tuple((key, str(value)) for key, value in row.items())

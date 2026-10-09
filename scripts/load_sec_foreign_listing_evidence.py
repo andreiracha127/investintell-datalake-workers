@@ -988,6 +988,8 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
 FACT_COLUMNS = ("fact_hash", "cik", "symbol", "adsh", "form", "filed", "source_url", "source_sha256", "source_kind",
                 "evidence_kind", "listed_type", "underlying_class", "ordinary_candidate",
                 "ratio_numerator", "ratio_denominator", "effective_from", "effective_to", "effective_date_explicit",
+                "ratio_change_program_key", "ratio_change_correction_kind", "ratio_change_correction_text",
+                "ratio_effectiveness_pending", "ratio_effectiveness_pending_text",
                 "evidence_text", "evidence_location", "parser_version", "publication_floor_on", "available_on", "loaded_on", "source_package")
 APPLY_BATCH_SIZE = 1000
 
