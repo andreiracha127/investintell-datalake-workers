@@ -1,0 +1,199 @@
+[
+  {
+    "cik": 901832,
+    "symbol": "AZN",
+    "as_of": "2025-12-31",
+    "status": "resolved",
+    "listed_type": "ads",
+    "ratio_numerator": "1.00000000000000000000",
+    "ratio_denominator": "2.0000000000000000",
+    "listing_status": "resolved",
+    "ratio_status": "resolved",
+    "sources": [
+      {
+        "adsh": "0001104659-25-014750",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000110465925014750/azn-20241231x20f.htm",
+        "source_sha256": "08a81821d9272d50ba8263abe4d8efafb9c6fdf0ca5970d93a69ef9a9b3dcb01",
+        "source_kind": "cover_12b",
+        "filed": "2025-02-18",
+        "available_on": "2025-02-19",
+        "effective_from": "2025-02-19",
+        "effective_date_explicit": false,
+        "evidence_location": "cover/section-12b/table[3]/row[2];html-line=7;publication-floor=2025-02-18;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-02-18;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx;filed-date-reference-sha256=1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f"
+      },
+      {
+        "adsh": "0001104659-25-014750",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000110465925014750/azn-20241231x20f.htm",
+        "source_sha256": "08a81821d9272d50ba8263abe4d8efafb9c6fdf0ca5970d93a69ef9a9b3dcb01",
+        "source_kind": "cover_footnote",
+        "filed": "2025-02-18",
+        "available_on": "2025-02-19",
+        "effective_from": "2025-02-19",
+        "effective_date_explicit": false,
+        "evidence_location": "cover/section-12b;text-offset=1364;publication-floor=2025-02-18;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-02-18;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx;filed-date-reference-sha256=1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f"
+      },
+      {
+        "adsh": "0001193805-25-000067",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000119380525000067/e664152_ex99-a.htm",
+        "source_sha256": "3c7a5367ff9616f2250424a74a8f1e21b749962de3fb10e36c67ffbca9e3f05a",
+        "source_kind": "f6",
+        "filed": "2025-01-21",
+        "available_on": "2025-01-22",
+        "effective_from": "2025-01-22",
+        "effective_date_explicit": false,
+        "evidence_location": "f6/depositary-description;text-offset=3580;publication-floor=2025-01-21;publication-floor-source=discovery_reported_publication_floor;issuer-cover=https://www.sec.gov/Archives/edgar/data/901832/000119380525000067/e664152_f6-az.htm;issuer-cover-sha256=d1bc08a0742f3399da2e17c00463cdffa15e7f492a315c82f355384277394249;filed-date=2025-01-21;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx;filed-date-reference-sha256=1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f"
+      },
+      {
+        "adsh": "0001193805-25-000067",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000119380525000067/e664152_ex99-a.htm",
+        "source_sha256": "3c7a5367ff9616f2250424a74a8f1e21b749962de3fb10e36c67ffbca9e3f05a",
+        "source_kind": "f6",
+        "filed": "2025-01-21",
+        "available_on": "2025-01-22",
+        "effective_from": "2025-01-22",
+        "effective_date_explicit": false,
+        "evidence_location": "f6/depositary-description;text-offset=150604;publication-floor=2025-01-21;publication-floor-source=discovery_reported_publication_floor;issuer-cover=https://www.sec.gov/Archives/edgar/data/901832/000119380525000067/e664152_f6-az.htm;issuer-cover-sha256=d1bc08a0742f3399da2e17c00463cdffa15e7f492a315c82f355384277394249;filed-date=2025-01-21;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx;filed-date-reference-sha256=1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f"
+      },
+      {
+        "adsh": "0001193805-25-000067",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000119380525000067/e664152_f6-az.htm",
+        "source_sha256": "d1bc08a0742f3399da2e17c00463cdffa15e7f492a315c82f355384277394249",
+        "source_kind": "f6",
+        "filed": "2025-01-21",
+        "available_on": "2025-01-22",
+        "effective_from": "2025-01-22",
+        "effective_date_explicit": false,
+        "evidence_location": "f6/depositary-description;text-offset=1729;publication-floor=2025-01-21;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-01-21;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx;filed-date-reference-sha256=1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f"
+      }
+    ]
+  },
+  {
+    "cik": 1015820,
+    "symbol": "QGEN",
+    "as_of": "2025-12-31",
+    "status": "resolved",
+    "listed_type": "ordinary_direct",
+    "ratio_numerator": "1",
+    "ratio_denominator": "1",
+    "listing_status": "resolved",
+    "ratio_status": "resolved",
+    "sources": [
+      {
+        "adsh": "0001015820-25-000027",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/1015820/000101582025000027/qgen-20241231.htm",
+        "source_sha256": "833673ced90e45b278e32aae9df4304e64b3f6723bc52f53d9d58b0c24221b8d",
+        "source_kind": "cover_12b",
+        "filed": "2025-03-31",
+        "available_on": "2025-04-01",
+        "effective_from": "2025-04-01",
+        "effective_date_explicit": false,
+        "evidence_location": "cover/section-12b/table[5]/row[3];html-line=5;publication-floor=2025-03-28;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-03-31;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx;filed-date-reference-sha256=1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f"
+      }
+    ]
+  },
+  {
+    "cik": 1017413,
+    "symbol": "CNQ",
+    "as_of": "2025-12-31",
+    "status": "resolved",
+    "listed_type": "ordinary_direct",
+    "ratio_numerator": "1",
+    "ratio_denominator": "1",
+    "listing_status": "resolved",
+    "ratio_status": "resolved",
+    "sources": [
+      {
+        "adsh": "0001017413-25-000024",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/1017413/000101741325000024/cnq-20241231.htm",
+        "source_sha256": "6c4bcb3f9b75cc14ae25cbe375628222327234b3a1e5a779251c3426059275c6",
+        "source_kind": "cover_12b",
+        "filed": "2025-03-26",
+        "available_on": "2025-03-27",
+        "effective_from": "2025-03-27",
+        "effective_date_explicit": false,
+        "evidence_location": "cover/section-12b/table[3]/row[3];html-line=8;publication-floor=2025-03-26;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-03-26;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx;filed-date-reference-sha256=1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f"
+      }
+    ]
+  },
+  {
+    "cik": 1046179,
+    "symbol": "TSM",
+    "as_of": "2025-12-31",
+    "status": "resolved",
+    "listed_type": "ads",
+    "ratio_numerator": "5.0000000000000000",
+    "ratio_denominator": "1.00000000000000000000",
+    "listing_status": "resolved",
+    "ratio_status": "resolved",
+    "sources": [
+      {
+        "adsh": "0001193125-25-083423",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/1046179/000119312525083423/d896993d20f.htm",
+        "source_sha256": "8239f280b4e9b70fedddd536db181f6ea96fd898ceb2b93cacd730c6aaae2c1e",
+        "source_kind": "cover_footnote",
+        "filed": "2025-04-17",
+        "available_on": "2025-04-18",
+        "effective_from": "2025-04-18",
+        "effective_date_explicit": false,
+        "evidence_location": "cover/section-12b/table[6]/row[3];html-line=39;publication-floor=2025-04-17;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-04-17;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx;filed-date-reference-sha256=673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068"
+      },
+      {
+        "adsh": "0001193125-25-083423",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/1046179/000119312525083423/d896993d20f.htm",
+        "source_sha256": "8239f280b4e9b70fedddd536db181f6ea96fd898ceb2b93cacd730c6aaae2c1e",
+        "source_kind": "listing_description",
+        "filed": "2025-04-17",
+        "available_on": "2025-04-18",
+        "effective_from": "2025-04-18",
+        "effective_date_explicit": false,
+        "evidence_location": "item-9/listing-description;text-offset=244095;publication-floor=2025-04-17;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-04-17;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx;filed-date-reference-sha256=673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068"
+      },
+      {
+        "adsh": "0001193125-25-083423",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/1046179/000119312525083423/d896993dex2a1.htm",
+        "source_sha256": "afff8c13a28c1c81c65ba8f50ba747fc8cd5d530a9ddd2e9cf5f4d0648c1f02c",
+        "source_kind": "securities_description",
+        "filed": "2025-04-17",
+        "available_on": "2025-04-18",
+        "effective_from": "2025-04-18",
+        "effective_date_explicit": false,
+        "evidence_location": "exhibit/securities-description;text-offset=574;publication-floor=2025-04-17;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-04-17;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/master.idx;filed-date-reference-sha256=673b90f8e958bdee2b23345e0a2d8170e4cb4dd110e9be84d84590db86324068"
+      },
+      {
+        "adsh": "0001193805-07-002923",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/1046179/000119380507002923/e602705_f6pos-tsmc.txt",
+        "source_sha256": "e92432054968230fc03e9b1790181900bffb0110acd8558f943ae0735520b9c3",
+        "source_kind": "f6",
+        "filed": "2007-11-16",
+        "available_on": "2007-11-17",
+        "effective_from": "2007-11-17",
+        "effective_date_explicit": false,
+        "evidence_location": "f6/depositary-description;text-offset=8877;publication-floor=2007-11-16;publication-floor-source=discovery_reported_publication_floor;filed-date=2007-11-16;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2007/QTR4/master.idx;filed-date-reference-sha256=a80fabe5c56b968315e1d2ebe56275a7a5c81c85a460f2587ea928d8182d1e24"
+      }
+    ]
+  },
+  {
+    "cik": 1654126,
+    "symbol": "ZIM",
+    "as_of": "2025-12-31",
+    "status": "resolved",
+    "listed_type": "ordinary_direct",
+    "ratio_numerator": "1",
+    "ratio_denominator": "1",
+    "listing_status": "resolved",
+    "ratio_status": "resolved",
+    "sources": [
+      {
+        "adsh": "0001178913-25-000793",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/1654126/000117891325000793/zk2532795.htm",
+        "source_sha256": "008c0d2e1cc0a5880b10e13a077c62d290d47b2e124fa0132581c56caa6d1ee2",
+        "source_kind": "cover_12b",
+        "filed": "2025-03-12",
+        "available_on": "2025-03-13",
+        "effective_from": "2025-03-13",
+        "effective_date_explicit": false,
+        "evidence_location": "cover/section-12b/table[5]/row[2];html-line=1723;publication-floor=2025-03-12;publication-floor-source=discovery_reported_publication_floor;filed-date=2025-03-12;filed-date-source=sec_quarter_master_index;filed-date-reference=https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx;filed-date-reference-sha256=1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f"
+      }
+    ]
+  }
+]

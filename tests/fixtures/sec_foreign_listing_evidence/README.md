@@ -61,6 +61,10 @@ LF. They are data, never executable input. Tests make no SEC requests.
   shares effective at the opening of Nasdaq trading on February 18, 2025.
   Tests distinguish that explicit effective date from February 13 availability
   and from dates appearing only in announcements or trading history.
+  A separate real 2024 cover/Item 9 fixture retains the ordinary-share cover
+  label and the explicit ADS listing declaration as conflicting type evidence.
+  The declaration is labeled `listing_description`, contributes no ratio, and
+  results in `ambiguous` rather than silently overriding the cover.
 
 The 2024 cover files and preflight covers are contiguous source extracts. AZN files ending in
 `combined.html` concatenate verbatim HTML elements from one source document;

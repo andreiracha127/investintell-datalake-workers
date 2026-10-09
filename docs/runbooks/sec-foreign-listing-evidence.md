@@ -41,6 +41,8 @@ supply a ratio. OTLY's 2024 cover names ordinary shares while its Item 9 names
 Nasdaq-listed ADSs under the same symbol; the two co-effective assertions return
 `ambiguous`. This preserves the source conflict rather than treating the cover's
 underlying-class title as an unqualified direct-listing answer.
+A table of contents, risk discussion or unrelated historical ADS mention is
+insufficient for this declaration.
 
 F-6, F-6EF and F-6 POS provide exact ADS ratios. Cover or Item 12.D ratio text
 corroborates them. The collector also follows a 20-F's attached Section 12(b)

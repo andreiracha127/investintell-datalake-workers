@@ -1,0 +1,105 @@
+{
+  "generated_at": "2026-10-09T06:34:06.904363+00:00",
+  "universe_sha256": "06d052a96fdc8759c6d443f67fbf20ecaacac4655dd7cb306e31f558e5c5b43b",
+  "observations_sha256": "a937b8cc1d7bfdfc5812c30c1a2b2a17961995d5d350554c292f7215b59797f8",
+  "ciks": 1770,
+  "coverage": [
+    {
+      "as_of": "2010-12-31",
+      "foreign_lines": 3036,
+      "w1_evidenced_lines": 20,
+      "resolved_both": 2,
+      "resolved_type": 17,
+      "resolved_among_w1_evidenced": 2,
+      "resolved_among_current_refused": 1,
+      "ambiguous": 0,
+      "none": 3034,
+      "resolved_types": {
+        "ads": 1,
+        "ordinary_direct": 1
+      }
+    },
+    {
+      "as_of": "2015-12-31",
+      "foreign_lines": 3036,
+      "w1_evidenced_lines": 272,
+      "resolved_both": 79,
+      "resolved_type": 154,
+      "resolved_among_w1_evidenced": 79,
+      "resolved_among_current_refused": 70,
+      "ambiguous": 1,
+      "none": 2956,
+      "resolved_types": {
+        "ordinary_direct": 79
+      }
+    },
+    {
+      "as_of": "2020-12-31",
+      "foreign_lines": 3036,
+      "w1_evidenced_lines": 964,
+      "resolved_both": 497,
+      "resolved_type": 736,
+      "resolved_among_w1_evidenced": 358,
+      "resolved_among_current_refused": 346,
+      "ambiguous": 32,
+      "none": 2507,
+      "resolved_types": {
+        "ordinary_direct": 345,
+        "ads": 152
+      }
+    },
+    {
+      "as_of": "2025-12-31",
+      "foreign_lines": 3036,
+      "w1_evidenced_lines": 2799,
+      "resolved_both": 1127,
+      "resolved_type": 1461,
+      "resolved_among_w1_evidenced": 1111,
+      "resolved_among_current_refused": 806,
+      "ambiguous": 85,
+      "none": 1824,
+      "resolved_types": {
+        "ordinary_direct": 912,
+        "ads": 215
+      }
+    }
+  ],
+  "current_w1_status_counts": {
+    "refused": 1373,
+    "resolved": 64,
+    "stale": 63,
+    "missing": 1536
+  },
+  "current_w1_refusal_counts": {
+    "foreign_issuer_listing_unverified": 1373
+  },
+  "sample_seed": 173,
+  "sample_size": 30,
+  "sample_method": "Seeded sample without replacement from resolved 2025 lines, half ADS and half direct where available; spare slots filled from the other group",
+  "sample_types": {
+    "ads": 15,
+    "ordinary_direct": 15
+  },
+  "collection": {
+    "manifest_sha256": "c7bc46335e024377309ada19940400480b524559cb259f4df1004719a62481cb",
+    "discovery_complete": true,
+    "parse_complete": true,
+    "source_documents": 31573,
+    "unique_urls": 31294,
+    "source_statuses": {
+      "parsed": 30632,
+      "issuer_binding_unverified": 593,
+      "not_securities_description": 348
+    },
+    "evidence_rows": 28639,
+    "evidence_sha256": "c607fd3b15be11c42a7fe649f0ed1c32422982b69a91678066a0267d32ebdd12"
+  },
+  "implementation_sha256": {
+    "schemas/sec_foreign_listing_evidence.sql": "ab21ec5e4478ec97d15a2c88c52f9ad6fdc8928300c45bb337a53d4c8dd47786",
+    "scripts/sec_foreign_listing_parser.py": "d2f6604ff11944b04bd90553ecb6e72edf52e55929b884452958791938f9c66d",
+    "scripts/load_sec_foreign_listing_evidence.py": "f86550ddb226b271e61e657dc1beecb92e7a4e2637916f55412e58e5c97062ce",
+    "scripts/enrich_sec_foreign_listing_filing_dates.py": "4c6ab7e7bdef74a340c74dd79134b7de60011bb6fb9d4ab0f6c17fa172c710ad",
+    "scripts/run_sec_foreign_listing_evidence_shards.py": "efa4585aa7db8ef618c097c6f2d0f3e79c474229e954d716b8f359738fabaf8f",
+    "scripts/validate_sec_foreign_listing_evidence.py": "c6adceca53e355dbe17d14d78c19d0a05678211fb646f61528d6b663d38dee7f"
+  }
+}
