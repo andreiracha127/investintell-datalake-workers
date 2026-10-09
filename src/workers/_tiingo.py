@@ -38,17 +38,26 @@ Yahoo and OpenFIGI, which have their own, different limits.)
 
 from __future__ import annotations
 
+import csv
 import datetime as _dt
+import io
 import math
 import os
 import threading
 import time
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 
 TIINGO_BASE_URL = "https://api.tiingo.com"
 MAX_CONSECUTIVE_429 = 30
 _RETRY_SLEEPS = (1.0, 4.0, 16.0)
+
+# Tiingo's list of every ticker it serves end-of-day prices for, with its own
+# asset type (Stock / ETF / Mutual Fund). A static zip on the media host,
+# refreshed daily; fetching it is one unauthenticated GET, not a metered API call.
+SUPPORTED_TICKERS_URL = "https://apimedia.tiingo.com/docs/tiingo/daily/supported_tickers.zip"
+_SUPPORTED_COLUMNS = frozenset({"ticker", "assetType", "startDate", "endDate"})
 
 # Account plan ceilings, shared across every worker in the fleet. These track the
 # plan of the key in TIINGO_API_KEY (Power tier, key rotated 2026-08-02) — NOT a
@@ -160,6 +169,41 @@ def api_key() -> str:
 def parse_price_bars(bars: list[dict]) -> list[tuple[_dt.date, float | None]]:
     """Tiingo daily bars → [(date, adjClose-or-close)]; missing price → None."""
     return [(obs.date, obs.price) for obs in parse_nav_observations(bars, source="tiingo")]
+
+
+def parse_supported_tickers(content: bytes) -> dict[str, str]:
+    """``supported_tickers.zip`` → ``{TICKER: assetType}`` of each ticker's current listing.
+
+    Tiingo reuses tickers: CA was a NASDAQ stock until 2018 and is a municipal-bond
+    ETF since 2023, and both rows are in the file. The current listing is the one
+    with the latest ``endDate`` (empty = open), then the latest ``startDate`` —
+    the security ``GET /tiingo/daily/{ticker}`` describes. A full tie falls to the
+    larger ``assetType`` string, so the result does not depend on row order.
+
+    A file without the expected columns or rows raises ``ValueError``: an empty
+    map would silently classify every ticker as unlisted."""
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        members = [n for n in archive.namelist() if n.lower().endswith(".csv")]
+        if len(members) != 1:
+            raise ValueError(f"supported_tickers.zip: expected one CSV, found {members}")
+        with archive.open(members[0]) as raw:
+            reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8", newline=""))
+            missing = _SUPPORTED_COLUMNS - set(reader.fieldnames or ())
+            if missing:
+                raise ValueError(f"supported_tickers.csv: missing columns {sorted(missing)}")
+            current: dict[str, tuple[str, str, str]] = {}
+            for row in reader:
+                ticker = (row["ticker"] or "").strip().upper()
+                asset_type = (row["assetType"] or "").strip()
+                if not ticker or not asset_type:
+                    continue
+                key = ((row["endDate"] or "").strip() or "9999-12-31",
+                       (row["startDate"] or "").strip(), asset_type)
+                if key > current.get(ticker, ("", "", "")):
+                    current[ticker] = key
+    if not current:
+        raise ValueError("supported_tickers.csv: no rows")
+    return {ticker: key[2] for ticker, key in current.items()}
 
 
 class TiingoClient:
@@ -323,8 +367,8 @@ class TiingoClient:
 
         ``GET https://api.tiingo.com/tiingo/daily/{ticker}`` returns a single JSON
         object ``{ticker, name, description, startDate, endDate, exchangeCode}``.
-        Used by ``tiingo_fund_meta`` for the fund catalog's descriptive prose and
-        inception (startDate). Paced by the same token bucket and protected by the
+        Used by ``tiingo_fund_meta`` for fund/ETF descriptive prose and the
+        startDate..endDate span. Paced by the same token bucket and protected by the
         same 30×429 breaker as ``_get_bars``. Returns ``None`` for an unknown
         ticker (404) or any error/non-object body so the caller can record
         ``source_status='not_found'`` without crashing the sweep."""
@@ -357,3 +401,16 @@ class TiingoClient:
                 return None
             return payload
         return None
+
+    def fetch_supported_asset_types(self) -> dict[str, str]:
+        """Tiingo's own asset type per ticker, from ``supported_tickers.zip``.
+
+        The meta endpoint returns no asset type, so this is where a priced
+        ticker's ETF / mutual-fund status comes from. One GET on the media host,
+        sent without the API token and outside the token bucket (the file is not
+        a metered endpoint). Raises on a transport error or an unusable file."""
+        import httpx
+
+        resp = httpx.get(SUPPORTED_TICKERS_URL, timeout=REQUEST_TIMEOUT_S)
+        resp.raise_for_status()
+        return parse_supported_tickers(resp.content)
