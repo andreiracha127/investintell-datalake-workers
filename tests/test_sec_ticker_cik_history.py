@@ -2994,15 +2994,21 @@ def test_generated_ends_by_cover_completeness_class_count_and_kind(
     assert failures == []
 
 
-@pytest.mark.parametrize("scheme", ["letters", "romans", "digits"])
+@pytest.mark.parametrize("scheme", ["letters", "romans", "digits", "romans named in digits",
+                                    "digits named in romans"])
 def test_generated_class_label_forms_identify_the_named_class(schema_dsn, scheme) -> None:
     """Light #223 round 4: one grammar reads a class's identifier from a title, a
     member and an end description in every form filers use (spaced, glued to
     Class, upper case, behind a run-together prefix, in a member, after the
     &#160; artifact, after "Common", a lowercase letter), so an end naming the
-    second class closes it and leaves the first ("ClassII" is ii, never i)."""
+    second class closes it and leaves the first ("ClassII" is 2, never 1). A Roman
+    numeral is the number it writes (production gate): an end naming Class II
+    closes a cover's Class 2, and the other way round."""
     conn, _ = schema_dsn
-    first, second = {"letters": ("A", "B"), "romans": ("I", "II"), "digits": ("1", "2")}[scheme]
+    first, second, named = {
+        "letters": ("A", "B", "B"), "romans": ("I", "II", "II"), "digits": ("1", "2", "2"),
+        "romans named in digits": ("I", "II", "2"), "digits named in romans": ("1", "2", "II"),
+    }[scheme]
     forms = {
         "title": lambda x, i: (f"Class {x} common stock", f"ClassOfStock=Common{i}Member;"),
         "glued title": lambda x, i: (f"Class{x} Common Stock", f"ClassOfStock=Common{i}Member;"),
@@ -3027,7 +3033,7 @@ def test_generated_class_label_forms_identify_the_named_class(schema_dsn, scheme
             rows.append((f"F{cik}{i}", key, title, "equity"))
         _cover(conn, cik, "2024-02-01", rows, complete=True)
         _event(conn, cik, "25-NSE", "2024-03-01", kind="equity", venue_kind="primary",
-               description=text.format(second))
+               description=text.format(named))
         got = ([_issuer(conn, r[0], "2024-03-03")[0] for r in rows],
                conn.execute("SELECT class_keys FROM sec_issuer_end_events(%s, '2024-03-03')",
                             (cik,)).fetchall())
@@ -3077,7 +3083,9 @@ def test_production_class_label_forms_read_as_identifiers(schema_dsn) -> None:
         ("Class Acommon stock, $0.0001 par value", None): "a",
         ("American Depositary Shares, each representing twelveSeries B", None): "b",
         ("Series 60 units", None): "60",
-        (None, "ClassOfStock=ClassIICommonStock;"): "ii",
+        (None, "ClassOfStock=ClassIICommonStock;"): "2",
+        ("Class II Common Stock", None): "2",
+        ("Class XIV Common Stock", None): "14",
         (None, "ClassOfStock=Class160A160OrdinaryShares;"): "a",
         (None, "ClassOfStock=ClassaCommonStock;"): "a",
         (None, "ClassOfStock=SeriescGciGroupCommonStock;"): "c",
@@ -3098,7 +3106,8 @@ def test_production_class_label_forms_read_as_identifiers(schema_dsn) -> None:
         "Class A and Class B common stock": ["a", "b"],
         "Classes A, B and C common stock": ["a", "b", "c"],
         "Class 2 and Class 3 shares": ["2", "3"],
-        "Class II common stock": ["ii"],
+        "Class II common stock": ["2"],
+        "Class 2 and Class III common stock": ["2", "3"],
         "Series A and Series C Common Stock": ["a", "c"],
         "Series A Liberty Live Common Stock & Series C Liberty Live Common Stock": ["a", "c"],
         "Class A Common Stock, Class B Common Stock, Series C Common Stock": ["a", "b", "c"],
@@ -3121,6 +3130,10 @@ REGISTRATIONS = {
     "names no class": ("8-A12B", "equity"),
     "unread": ("10-12B", None),
     "another kind": ("8-A12B", "other"),
+    # a successor's registration of the CIK's class (8-K12B under the same CIK)
+    "successor names the last class": ("8-K12B", "equity"),
+    "successor names the first class": ("8-K12B", "equity"),
+    "successor unread": ("8-K12B", None),
 }
 WINDOW_OFFSETS = (-40, -31, -30, -10, 0, 5, 10, 11, 20)
 
@@ -3139,7 +3152,9 @@ def test_generated_registrations_carry_on_the_classes_they_name(schema_dsn, shap
     issuer's one symbol; another kind: none), from its own knowledge date; the
     end closes the rest of its scope (the last class, every class named, or every
     class unnamed). An extinguished class is not carried on, and a Form 15-12G or
-    15-15D ends the registration whatever is registered."""
+    15-15D ends the registration whatever is registered, except by a successor's
+    registration (8-K12B), which carries on the classes it identifies whatever the
+    end (production gate P1: an unread one rescues only a one-symbol issuer)."""
     conn, _ = schema_dsn
     classes = SHAPES[shape]
     labels = [label for _, _, label in classes]
@@ -3150,11 +3165,15 @@ def test_generated_registrations_carry_on_the_classes_they_name(schema_dsn, shap
         del scopes["names every class"]
     names = {"names the last class": {labels[-1]},
              "names the first class": {labels[0]} if len(labels) > 1 else {"z"},
-             "names every class": set(labels)}
+             "names every class": set(labels),
+             "successor names the last class": {labels[-1]},
+             "successor names the first class": {labels[0]} if len(labels) > 1 else {"z"}}
     cases = [("none", 0)] + [(r, o) for r in ("names the last class", "unread")
                              for o in WINDOW_OFFSETS]
     cases += [(r, o) for r in ("names the first class", "names every class", "names no class",
-                               "another kind") for o in (0, 5)]
+                               "another kind", "successor names the last class",
+                               "successor names the first class", "successor unread")
+              for o in (0, 5)]
     ciks = itertools.count(20_000)
     failures = []
     for (form, extinguished), (scope, (scope_labels, count)), (reg, offset) in itertools.product(
@@ -3173,7 +3192,8 @@ def test_generated_registrations_carry_on_the_classes_they_name(schema_dsn, shap
         if reg != "none":
             reg_form, reg_kind = REGISTRATIONS[reg]
             text = ({"names no class": "Common stock", "another kind": "Series A Preferred Stock",
-                     "unread": None}[reg] if not reg_names else _classes_text(sorted(reg_names)))
+                     "unread": None, "successor unread": None}[reg]
+                    if not reg_names else _classes_text(sorted(reg_names)))
             _event(conn, cik, reg_form, reg_filed, kind=reg_kind,
                    venue_kind="primary" if reg_kind else None, description=text)
         in_scope = {key for key, _, label in classes
@@ -3182,7 +3202,10 @@ def test_generated_registrations_carry_on_the_classes_they_name(schema_dsn, shap
             known = (reg not in ("none", "another kind") and -30 <= offset <= 10
                      and on >= _day(reg_filed, 1))
             for key, _, label in classes:
-                carried = (known and not extinguished and form not in ("15-12G", "15-15D")
+                successor = reg.startswith("successor")
+                carried = (known
+                           and (successor or (not extinguished
+                                              and form not in ("15-12G", "15-15D")))
                            and (label in reg_names or (not reg_names and len(classes) == 1)))
                 ended = on >= "2024-03-02" and key in in_scope and not carried
                 want = ("ended", None) if ended else ("resolved", cik)
@@ -3193,45 +3216,112 @@ def test_generated_registrations_carry_on_the_classes_they_name(schema_dsn, shap
     assert failures == []
 
 
+def test_generated_relisting_after_a_definitive_end_needs_the_lines_class(schema_dsn) -> None:
+    """Production gate P1: after a definitive end (an extinguished 25-NSE of every
+    class), a registration relists only a line it identifies: one naming its class
+    by the cover's label, or naming none (read, or not read) when the issuer listed
+    one symbol. An unlabelled common line beside a labelled class B is identified
+    by no registration; a later cover showing its symbol does not reopen it."""
+    conn, _ = schema_dsn
+    ciks = itertools.count(60_000)
+    failures = []
+    registrations = {
+        "none": None,
+        "names class B": ("8-A12B", "equity", "Class B common stock"),
+        "names class Z": ("8-A12B", "equity", "Class Z common stock"),
+        "names no class": ("8-A12B", "equity", "Common stock"),
+        "unread": ("10-12B", None, None),
+        "successor unread": ("8-K12B", None, None),
+    }
+    for with_b, reg in itertools.product((False, True), registrations):
+        cik = next(ciks)
+        rows = [(f"U{cik}", "", "Common stock", "equity")]
+        if with_b:
+            rows.append((f"B{cik}", "CommonClassB", "Class B common stock", "equity"))
+        _cover(conn, cik, "2024-02-01", rows, complete=True)
+        _event(conn, cik, "25-NSE", "2024-03-01", kind="equity", count=len(rows),
+               extinguished=True, venue_kind="primary", description="Common stock")
+        if registrations[reg]:
+            form, kind, text = registrations[reg]
+            _event(conn, cik, form, "2024-04-01", kind=kind,
+                   venue_kind="primary" if kind else None, description=text)
+        _cover(conn, cik, "2024-05-01", rows, complete=False)
+        one_symbol = len(rows) == 1
+        unnamed = reg in ("names no class", "unread", "successor unread")
+        reopened = {f"U{cik}": unnamed and one_symbol,
+                    f"B{cik}": reg == "names class B" or (unnamed and one_symbol)}
+        cell = (with_b, reg)
+        if _ends(conn, cik, "2024-05-05") != [("25-NSE", d(2024, 3, 2), True)]:
+            failures.append((cell, "ends", _ends(conn, cik, "2024-05-05")))
+        for ticker, class_key, _, _ in rows:
+            want = ("resolved", cik) if reopened[ticker] else ("ended", None)
+            got = _issuer(conn, ticker, "2024-05-05")[:2]
+            if got != want:
+                failures.append((cell, ticker, want, got))
+            if _alive(conn, ticker, cik, class_key, d(2024, 5, 5)) != reopened[ticker]:
+                failures.append((cell, ticker, "alive", reopened[ticker]))
+    assert failures == []
+
+
 def test_generated_holders_by_lifecycle_kind_gap_and_cik(schema_dsn) -> None:
-    """A ticker held by a listed issuer P (class A), then shown by M on a row of
-    each kind (another CIK, or P itself on a preferred or notes row), then taken by
-    Q (whose line is alive as another symbol meanwhile). P's hold ends by an end
-    of class A, or by a complete cover showing class A under another symbol (a
-    rename), before or after M's row, or goes stale after 400 days. M's row counts
-    unless it is non-listed and P's listed hold was active then; a complete cover
-    of M's CIK after it that does not show the ticker ends it. The holders
+    """A ticker held by a listed issuer P (an undimensioned sole class, or class
+    A), then shown by M on a row of each kind (another CIK, or P itself on a
+    preferred or notes row), then taken by Q (whose line is alive as another symbol
+    meanwhile). P's hold ends by an end of its class; by a complete cover showing
+    its class under another symbol (a rename), or showing it under another member
+    and symbol (an alias rename: the sole class dimensioned as class A under a new
+    symbol, production gate P1), before or after M's row; or goes stale after 400
+    days. A complete cover showing it under another member with the same symbol
+    (a member rename) continues the hold. M's row counts unless it is non-listed
+    and P's listed hold was active then, by the hold engine's lifecycle; a complete
+    cover of M's CIK after it that does not show the ticker ends it. The holders
     active on a date are its holders (two: ambiguous), and Q's line sees them as
     other holders."""
     conn, _ = schema_dsn
     ciks = itertools.count(30_000, 3)
     failures = []
     lifecycles = ("active", "end before M", "end after M", "rename before M",
-                  "rename after M")
-    for lifecycle, gap, kind, same_cik in itertools.product(
-            lifecycles, (100, 300, 500), KIND_ROWS, (False, True)):
+                  "rename after M", "alias rename before M", "alias rename after M",
+                  "member rename before M")
+    p_classes = {"class A": ("CommonClassA", "Class A common stock"),
+                 "undimensioned": ("", "Common stock")}
+    for lifecycle, gap, kind, same_cik, p_class in itertools.product(
+            lifecycles, (100, 300, 500), KIND_ROWS, (False, True), p_classes):
         if same_cik and kind in LISTED_KINDS:
             continue  # P's own listed row of another class: a class question, above
+        if p_class == "undimensioned" and lifecycle.startswith("end"):
+            continue  # an end of an undimensioned sole class: as for class A
         p = next(ciks)
         m, q = (p if same_cik else p + 1), p + 2
         ticker = f"H{p}"
+        p_key, p_title = p_classes[p_class]
         p_known = dt.date(2022, 1, 2)
         m_known = p_known + dt.timedelta(days=gap)
-        _cover(conn, p, "2022-01-01", [(ticker, "CommonClassA", "Class A common stock",
-                                        "equity")], complete=True)
+        _cover(conn, p, "2022-01-01", [(ticker, p_key, p_title, "equity")], complete=True)
         class_key, title = KIND_ROWS[kind]
         _observe(conn, m, ticker, _day(m_known.isoformat(), -1), kind=kind,
                  class_key=class_key, title=title)
         change_on = None
+        statements = [p_known]
         if lifecycle != "active":
             filed = (p_known + dt.timedelta(days=30) if lifecycle.endswith("before M")
                      else m_known + dt.timedelta(days=5))
-            change_on = filed + dt.timedelta(days=1)
             if lifecycle.startswith("end"):
+                change_on = filed + dt.timedelta(days=1)
                 _event(conn, p, "25-NSE", filed.isoformat(), kind="equity", extinguished=True,
                        venue_kind="primary", description="Class A common stock")
-            else:
-                _cover(conn, p, filed.isoformat(), [(f"N{p}", "CommonClassA",
+            elif lifecycle.startswith("rename"):
+                change_on = filed + dt.timedelta(days=1)
+                _cover(conn, p, filed.isoformat(), [(f"N{p}", p_key, p_title, "equity")],
+                       complete=True)
+            elif lifecycle.startswith("alias"):
+                change_on = filed + dt.timedelta(days=1)
+                _cover(conn, p, filed.isoformat(), [(f"N{p}", "ClassOfStock=ClassACommonStock;",
+                                                     "Class A common stock", "equity")],
+                       complete=True)
+            else:  # member rename keeping the symbol: a later statement of the hold
+                statements.append(filed + dt.timedelta(days=1))
+                _cover(conn, p, filed.isoformat(), [(ticker, "ClassOfStock=ClassACommonStock;",
                                                      "Class A common stock", "equity")],
                        complete=True)
         _cover(conn, q, _day(m_known.isoformat(), -60),
@@ -3240,18 +3330,19 @@ def test_generated_holders_by_lifecycle_kind_gap_and_cik(schema_dsn) -> None:
                [(ticker, "Common", "Common stock", "equity")], complete=True)
 
         def p_active(on: dt.date) -> bool:
-            return (change_on is None or change_on > on) and (on - p_known).days <= 400
+            last = max(x for x in statements if x <= on)
+            return (change_on is None or change_on > on) and (on - last).days <= 400
 
         on = m_known + dt.timedelta(days=30)
         m_counts = kind in LISTED_KINDS or not p_active(m_known)
-        # P's own complete cover after M's row, listing class A only, says P's
-        # preferred or notes no longer shows the ticker
-        if same_cik and lifecycle == "rename after M":
+        # P's own complete cover after M's row, not showing the ticker, says P's
+        # preferred or notes no longer shows it
+        if same_cik and lifecycle in ("rename after M", "alias rename after M"):
             m_counts = False
         active = ({p} if p_active(on) else set()) | ({m} if m_counts else set())
         want = (("ambiguous", None) if len(active) == 2 else
                 ("resolved", min(active)) if active else ("ended", None))
-        cell = (lifecycle, gap, kind, same_cik)
+        cell = (lifecycle, gap, kind, same_cik, p_class)
         got = _issuer(conn, ticker, on.isoformat())
         if got[:2] != want or (len(active) == 2 and sorted(got[4]) != sorted(active)):
             failures.append((cell, on, want, got))
@@ -3261,6 +3352,8 @@ def test_generated_holders_by_lifecycle_kind_gap_and_cik(schema_dsn) -> None:
         before = m_known - dt.timedelta(days=1)
         if gap < 400:
             want = ("resolved", p) if p_active(before) else ("ended", None)
+            if same_cik and lifecycle == "member rename before M":
+                want = ("resolved", p)
             if _issuer(conn, ticker, before.isoformat())[:2] != want:
                 failures.append((cell, before, want, _issuer(conn, ticker, before.isoformat())))
     assert failures == []

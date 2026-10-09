@@ -127,10 +127,13 @@ statement closes every class the statement shows T on (an end of another class
 leaves the hold, v2); it is **stale** when the statement is older than 400 days;
 else **active**. Listed rows (equity, depositary or unknown) decide: a non-listed
 row showing T (filers also tag their common symbol on notes lines) does not count
-while a listed hold of T was positively active when it was shown: a listed row
-showing T within the 400 days before, of a class no end closed since and no later
-statement showed under another symbol only, of any CIK (v2). Otherwise it is a
-competing holder. A ticker only ever shown on preferred lines resolves through
+while a listed hold of T was positively active when it was shown, by the hold
+and run engines' own lifecycle: a listed row showing T within the 400 days
+before, of a class (in lineage, a line) no end closed since, and no later
+statement the engine follows the hold through that no longer shows T (the class
+or line under another symbol only, or a complete cover without T: a sole class
+renamed, or dimensioned as class A under a new symbol), of any CIK (v2).
+Otherwise it is a competing holder. A ticker only ever shown on preferred lines resolves through
 them; an earlier holder that showed T only on rows read as debt keeps its run when
 another issuer lists T years later; an issuer that shows T only on a preferred row
 after the previous listed holder's class ended or was renamed, the same CIK too,
@@ -157,7 +160,8 @@ descriptions (`sec_class_label`, `sec_named_classes`): `Class B common stock`,
 `ClassB Common Stock`, `CLASS B`, `CommonClassB`, `ClassBCommonStock`,
 `ClassbCommonStock`, `Class160BCommonStock` (a non-breaking space), `Title of
 each classClass B` are all `b`; `ClassIICommonStock` and `Class II` are `ii`
-(Roman numerals are kept as written: `Class 2` is `2`); `Series ES` is `es`; a
+(a Roman numeral is the number it writes: `Class II` and `Class 2` are both `2`,
+so an end naming one form closes a class shown in the other); `Series ES` is `es`; a
 word (`each class is to be registered`) never is (v2).
 
 Of each listed class an end of an equity class (or stating none) is
@@ -197,10 +201,12 @@ exactly the classes it names, or, naming none, the issuer's one symbol, unless
 the 25-NSE says the class was extinguished; the end closes the rest of its
 classes. An 8-A12B of class A is no transfer of class B's listing, and an end of
 classes A and B beside an 8-A of class A closes B (v2). The registration counts
-from its own knowledge date: until it is public the end applies. No end applies
-when a successor registered the CIK's class under the same CIK (8-K12B or
-8-K12G3, Rules 12g-3 and 12b) in that window, extinguished or not: a
-holding-company reorganization that keeps the CIK continues its line (KKR's
+from its own knowledge date: until it is public the end applies. A successor's
+registration of the CIK's class under the same CIK (8-K12B or 8-K12G3, Rules
+12g-3 and 12b) in that window carries on, whatever the end and extinguished or
+not, the classes it identifies the same way (naming the class, or naming none
+when the issuer listed one symbol; v2): a holding-company reorganization that
+keeps the CIK continues its line (KKR's
 8-K12B of 2022-05-31, the day before NYSE's 25-NSE of the old common stock; its
 count rose from 593 to 860 million shares, so the base check alone would read a
 definitive end; ODP 2020 and ADTRAN 2022 did the same) (v2). A Form 8-A of notes, preferred or
@@ -220,8 +226,10 @@ continued: the first cover count filed after the end and stated on or after it
 (v2; a 10-Q filed after a merger that states the pre-merger count proves
 nothing) is within 0.8-1.25 times the last one before it. After a definitive end
 a later statement does not reopen the hold, even with a 12(b) title (v2); only a
-registration filed after the end (an 8-A, a Form 10 or a successor's 8-K12B) of
-that class (or naming none), public by then, does, or T first appearing after
+registration filed after the end (an 8-A, a Form 10 or a successor's 8-K12B),
+public by then, that identifies the line does: one naming its class by the
+cover's label, or naming none when the issuer listed one symbol (an unlabelled
+line beside other classes is identified by none), or T first appearing after
 the end (Swift's SWFT ended in
 the merger and the same CIK traded as KNX).
 
