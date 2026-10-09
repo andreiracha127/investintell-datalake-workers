@@ -90,6 +90,22 @@ stage to temporary files before replacing the cache. sec-api credentials travel
 in an Authorization header; console errors scrub secrets. SEC requests use
 `InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)` and are sequential.
 
+To upgrade the production v1 load (`sec_insider_v3`, 179 packages), in this order:
+
+1. **Apply v2** as `worker_writer` (the tables' owner) or `postgres`, as above. It
+   is one transaction of about 0.4 s on the full load (383 ms locally on PostgreSQL
+   18.4; the table is not rewritten and no row is written). Under
+   `lock_timeout = 5s` it fails cleanly, and can be run again, if the loader or a
+   long reader holds the table.
+2. **Re-read** the cached packages under `sec_insider_v4`, without download flags so
+   that exactly the loaded bytes are read:
+   `python -m scripts.load_sec_insider_filings --dsn $env:DATABASE_URL --packages-dir E:/investintell-data/w1b/dera --secapi-dir E:/investintell-data/w1b/secapi`.
+   Every package is the same bytes, so every change is a parser correction.
+   Expected (measured locally, 489 s): 179 packages, none skipped; 1,941 readings
+   retired as `parser_correction` and 1,941 inserted (`TRUE` 1,545, `OB` 396), each
+   available from its filing; nothing retired as `source`; members unchanged.
+3. Later incremental runs use the load command above with its download flags.
+
 An owner-authorized rollback of v2 restores the v1 resolver and keeps every row and
 `retired_reason`; the v4 loader then refuses the database. The second command
 removes the whole schema:
