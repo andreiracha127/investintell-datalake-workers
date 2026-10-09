@@ -1,0 +1,56 @@
+{
+  "formType": "3",
+  "accessionNo": "0001209191-03-003774",
+  "linkToFilingDetails": "https://www.sec.gov/Archives/edgar/data/829224/000120919103003774/xslF345X01/bos89911_bos5do.xml",
+  "description": "Form 3 - Initial statement of beneficial ownership of securities",
+  "linkToTxt": "https://www.sec.gov/Archives/edgar/data/829224/000120919103003774/0001209191-03-003774.txt",
+  "filedAt": "2003-05-09T20:20:46-04:00",
+  "documentFormatFiles": [
+    {
+      "sequence": "1",
+      "size": "\u00a0",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/829224/000120919103003774/xslF345X01/bos89911_bos5do.xml",
+      "description": "MAIN DOCUMENT DESCRIPTION",
+      "type": "3"
+    },
+    {
+      "sequence": "1",
+      "size": "8913",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/829224/000120919103003774/bos89911_bos5do.xml",
+      "description": "MAIN DOCUMENT DESCRIPTION",
+      "type": "3"
+    },
+    {
+      "sequence": "\u00a0",
+      "size": "10595",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/829224/000120919103003774/0001209191-03-003774.txt",
+      "description": "Complete submission text file",
+      "type": "\u00a0"
+    }
+  ],
+  "entities": [
+    {
+      "fiscalYearEnd": "0928",
+      "stateOfIncorporation": "WA",
+      "cik": "0000829224",
+      "irsNo": "911325671",
+      "companyName": "STARBUCKS CORP (Issuer)",
+      "sic": "5810 Retail-Eating &amp; Drinking Places",
+      "tickers": [
+        "SBUX"
+      ]
+    },
+    {
+      "act": "34",
+      "cik": "0001229057",
+      "fileNo": "000-20322",
+      "companyName": "OLSEN DAVID M (Reporting)",
+      "type": "3",
+      "filmNo": "03691473"
+    }
+  ],
+  "id": "17b40fa9123622cb5f71cfef837976b8",
+  "linkToHtml": "https://www.sec.gov/Archives/edgar/data/1229057/0001209191-03-003774-index.htm",
+  "linkToXbrl": "",
+  "dataFiles": []
+}

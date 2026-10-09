@@ -1,0 +1,143 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+    <schemaVersion>X0101</schemaVersion>
+
+    <documentType>5</documentType>
+<periodOfReport>2002-12-31</periodOfReport>
+<notSubjectToSection16>0</notSubjectToSection16>
+    <form3HoldingsReported>0</form3HoldingsReported>
+
+    <form4TransactionsReported>0</form4TransactionsReported>
+
+    <issuer>
+        <issuerCik>0001103313</issuerCik>
+        <issuerName>EDUCATION LENDING GROUP INC</issuerName>
+        <issuerTradingSymbol>EDLG, OB</issuerTradingSymbol></issuer>
+<reportingOwner>
+<reportingOwnerId>
+            <rptOwnerCik>0001221796</rptOwnerCik>
+            <rptOwnerName>DEROSE ROBERT</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerStreet1>  </rptOwnerStreet1>
+            <rptOwnerStreet2>  </rptOwnerStreet2>
+            <rptOwnerCity>  </rptOwnerCity>
+            <rptOwnerState>  </rptOwnerState>
+            <rptOwnerZipCode>  </rptOwnerZipCode>
+        </reportingOwnerAddress>
+            <reportingOwnerRelationship>
+<isDirector>1</isDirector>
+<isOfficer>1</isOfficer>
+<isTenPercentOwner>1</isTenPercentOwner>
+<isOther>0</isOther>
+<officerTitle>Chairman and CEO</officerTitle>
+<otherText></otherText></reportingOwnerRelationship></reportingOwner>
+<nonDerivativeSecurity>
+<securityTitle>
+<value>Common Shares. $.001 par value per share</value></securityTitle>
+<transactionDate>
+<value>2002-09-16</value></transactionDate>
+<transactionCoding>
+<transactionFormType>5</transactionFormType>
+<transactionCode>G</transactionCode>
+<equitySwapInvolved>0</equitySwapInvolved></transactionCoding>
+<transactionTimeliness>
+<value></value></transactionTimeliness>
+<transactionAmounts>
+<transactionShares>
+<value>500</value></transactionShares>
+<transactionValue>
+<value>3.75</value></transactionValue>
+<transactionAcquiredDisposedCode>
+<value>D</value></transactionAcquiredDisposedCode></transactionAmounts>
+<postTransactionAmounts>
+<sharesOwnedFollowingTransaction>
+<value>769500</value></sharesOwnedFollowingTransaction></postTransactionAmounts>
+<ownershipNature>
+<directOrIndirectOwnership>
+<value>D</value></directOrIndirectOwnership>
+<natureOfOwnership>
+<value></value></natureOfOwnership></ownershipNature></nonDerivativeSecurity>
+<nonDerivativeSecurity>
+<securityTitle>
+<value>Common Shares. $.001 par value per share</value></securityTitle>
+<transactionDate>
+<value>2002-09-16</value></transactionDate>
+<transactionCoding>
+<transactionFormType>5</transactionFormType>
+<transactionCode>G</transactionCode>
+<equitySwapInvolved>0</equitySwapInvolved></transactionCoding>
+<transactionTimeliness>
+<value></value></transactionTimeliness>
+<transactionAmounts>
+<transactionShares>
+<value>500</value></transactionShares>
+<transactionValue>
+<value>3.75</value></transactionValue>
+<transactionAcquiredDisposedCode>
+<value>D</value></transactionAcquiredDisposedCode></transactionAmounts>
+<postTransactionAmounts>
+<sharesOwnedFollowingTransaction>
+<value>769000</value></sharesOwnedFollowingTransaction></postTransactionAmounts>
+<ownershipNature>
+<directOrIndirectOwnership>
+<value>D</value></directOrIndirectOwnership>
+<natureOfOwnership>
+<value></value></natureOfOwnership></ownershipNature></nonDerivativeSecurity>
+<nonDerivativeSecurity>
+<securityTitle>
+<value>Common Shares. $.001 par value per share</value></securityTitle>
+<transactionDate>
+<value>2002-12-21</value></transactionDate>
+<transactionCoding>
+<transactionFormType>5</transactionFormType>
+<transactionCode>G</transactionCode>
+<equitySwapInvolved>0</equitySwapInvolved></transactionCoding>
+<transactionTimeliness>
+<value></value></transactionTimeliness>
+<transactionAmounts>
+<transactionShares>
+<value>35000</value></transactionShares>
+<transactionValue>
+<value>3.85</value></transactionValue>
+<transactionAcquiredDisposedCode>
+<value>D</value></transactionAcquiredDisposedCode></transactionAmounts>
+<postTransactionAmounts>
+<sharesOwnedFollowingTransaction>
+<value>734000</value></sharesOwnedFollowingTransaction></postTransactionAmounts>
+<ownershipNature>
+<directOrIndirectOwnership>
+<value>D</value></directOrIndirectOwnership>
+<natureOfOwnership>
+<value></value></natureOfOwnership></ownershipNature></nonDerivativeSecurity>
+<nonDerivativeSecurity>
+<securityTitle>
+<value>Common Shares. $.001 par value per share</value></securityTitle>
+<transactionDate>
+<value>2002-12-21</value></transactionDate>
+<transactionCoding>
+<transactionFormType>5</transactionFormType>
+<transactionCode>G</transactionCode>
+<equitySwapInvolved>0</equitySwapInvolved></transactionCoding>
+<transactionTimeliness>
+<value></value></transactionTimeliness>
+<transactionAmounts>
+<transactionShares>
+<value>35000</value></transactionShares>
+<transactionValue>
+<value>3.85</value></transactionValue>
+<transactionAcquiredDisposedCode>
+<value>A</value></transactionAcquiredDisposedCode></transactionAmounts>
+<postTransactionAmounts>
+<sharesOwnedFollowingTransaction>
+<value>40000</value></sharesOwnedFollowingTransaction></postTransactionAmounts>
+<ownershipNature>
+<directOrIndirectOwnership>
+<value>I</value></directOrIndirectOwnership>
+<natureOfOwnership>
+<value>By Trust</value></natureOfOwnership></ownershipNature></nonDerivativeSecurity>
+<ownerSignature>
+<signatureName>Robert deRose</signatureName>
+<signatureDate>2003-05-30</signatureDate></ownerSignature></ownershipDocument>
+
+

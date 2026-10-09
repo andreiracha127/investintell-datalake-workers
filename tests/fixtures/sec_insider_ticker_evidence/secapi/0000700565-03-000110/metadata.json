@@ -1,0 +1,61 @@
+{
+  "formType": "3",
+  "accessionNo": "0000700565-03-000110",
+  "effectivenessDate": "2003-05-28",
+  "linkToFilingDetails": "https://www.sec.gov/Archives/edgar/data/700565/000070056503000110/xslF345X01/form3_downs-052803ex.xml",
+  "description": "Form 3 - Initial statement of beneficial ownership of securities",
+  "linkToTxt": "https://www.sec.gov/Archives/edgar/data/1233427/000070056503000110/0000700565-03-000110.txt",
+  "filedAt": "2003-05-30T16:36:35-04:00",
+  "documentFormatFiles": [
+    {
+      "sequence": "1",
+      "size": "\u00a0",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/700565/000070056503000110/xslF345X01/form3_downs-052803ex.xml",
+      "type": "3"
+    },
+    {
+      "sequence": "1",
+      "size": "3055",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/700565/000070056503000110/form3_downs-052803ex.xml",
+      "type": "3"
+    },
+    {
+      "sequence": "2",
+      "size": "3372",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/700565/000070056503000110/powerofatt_downs.txt",
+      "description": "KELLY DOWNS POWER OF ATTORNEY",
+      "type": "EX-24"
+    },
+    {
+      "sequence": "\u00a0",
+      "size": "8392",
+      "documentUrl": "https://www.sec.gov/Archives/edgar/data/700565/000070056503000110/0000700565-03-000110.txt",
+      "description": "Complete submission text file",
+      "type": "\u00a0"
+    }
+  ],
+  "periodOfReport": "2003-05-28",
+  "entities": [
+    {
+      "fiscalYearEnd": "1231",
+      "stateOfIncorporation": "DE",
+      "cik": "700565",
+      "irsNo": "371103704",
+      "companyName": "FIRST MID ILLINOIS BANCSHARES INC (Issuer)",
+      "sic": "6022 State Commercial Banks"
+    },
+    {
+      "act": "34",
+      "cik": "1233427",
+      "fileNo": "000-13368",
+      "companyName": "DOWNS KELLY A (Reporting)",
+      "type": "3",
+      "filmNo": "03726355"
+    }
+  ],
+  "id": "2532ca1a00b40acd625cfcb48cf223eb",
+  "seriesAndClassesContractsInformation": [],
+  "linkToHtml": "https://www.sec.gov/Archives/edgar/data/1233427/0000700565-03-000110-index.htm",
+  "linkToXbrl": "",
+  "dataFiles": []
+}
