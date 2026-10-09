@@ -2,7 +2,8 @@
 -- Owner-applied, additive migration; no W1 admission or sizing is changed.
 -- Rollback: schemas/sec_foreign_listing_evidence.rollback.sql.
 --
--- Two clocks follow W1: source_available_on is filed + 1, available_on is
+-- Two clocks follow W1: source_available_on is filed + 1, bounded below by any
+-- later observed publication date of a replacement filing document. available_on is
 -- source_available_on for the first source import and at least reconciliation
 -- day for corrections. Retired versions remain queryable before retired_on.
 -- Effective intervals are [effective_from, effective_to). Cover types begin
@@ -35,6 +36,10 @@ CREATE TABLE IF NOT EXISTS public.sec_foreign_listing_evidence (
     adsh text NOT NULL CHECK (adsh ~ '^[0-9]{10}-[0-9]{2}-[0-9]{6}$'),
     form text NOT NULL,
     filed date NOT NULL,
+    -- Some replacement accessions retain the original legal filing date in
+    -- EDGAR indexes but have a later observed publication date. Never expose
+    -- their replacement document before that later public date.
+    publication_floor_on date,
     source_url text NOT NULL,
     source_sha256 text NOT NULL CHECK (source_sha256 ~ '^[0-9a-f]{64}$'),
     source_kind text NOT NULL CHECK (source_kind IN (
@@ -59,13 +64,15 @@ CREATE TABLE IF NOT EXISTS public.sec_foreign_listing_evidence (
     evidence_text text NOT NULL CHECK (length(btrim(evidence_text)) > 0),
     evidence_location text NOT NULL CHECK (length(btrim(evidence_location)) > 0),
     parser_version text NOT NULL,
-    source_available_on date GENERATED ALWAYS AS (filed + 1) STORED,
+    source_available_on date GENERATED ALWAYS AS (greatest(filed + 1, publication_floor_on)) STORED,
     available_on date NOT NULL,
     retired_on date,
     loaded_on date NOT NULL,
     source_package text NOT NULL,
-    CHECK (available_on >= filed + 1),
-    CHECK (retired_on IS NULL OR retired_on >= available_on),
+    CHECK (available_on >= greatest(filed + 1, publication_floor_on)),
+    -- A filing loaded and corrected on its filing day may retire a version
+    -- before filed + 1. Such a version was never visible; retain its real
+    -- reconciliation date rather than postponing retirement into the future.
     CHECK (effective_to IS NULL OR effective_to > effective_from),
     CHECK (listed_type IS DISTINCT FROM 'ordinary_direct' OR ordinary_candidate),
     CHECK (
@@ -113,6 +120,8 @@ CREATE INDEX IF NOT EXISTS sec_foreign_listing_evidence_source_idx
 -- F-6 and annual-report streams contribute all assertions in their latest
 -- filing, after their effective date has arrived. A later annual filing may
 -- state an earlier ratio-change date; that is still the newer assertion.
+-- Filing assertion order uses the legal filed date, not a replacement's later
+-- publication floor: replacing an old report does not turn it into a new report.
 -- The 6-K stream contributes the latest effective event, retaining every tie.
 -- Repeated annual statements therefore
 -- do not make a properly evidenced subsequent change ambiguous forever.
@@ -124,6 +133,9 @@ CREATE INDEX IF NOT EXISTS sec_foreign_listing_evidence_source_idx
 -- Differing assertions effective or filed on/after the change, or conflicting
 -- announcements of the same change, are retained and return ambiguous. Future announcements neither
 -- end earlier ratios nor leak into earlier answers.
+-- An effective dated 6-K change can corroborate its matching F-6 registration
+-- before the next annual cover is filed. Initial ratios still require annual
+-- corroboration. A later contradicting annual assertion remains ambiguous.
 CREATE OR REPLACE FUNCTION public.sec_foreign_listing_at(
     p_cik bigint, p_symbol text, p_as_of date
 )
@@ -194,9 +206,9 @@ WITH issuer_visible AS MATERIALIZED (
     SELECT v.* FROM visible v
     WHERE v.evidence_kind = 'ads_ratio'
       AND CASE WHEN v.source_stream = 'change' THEN v.effective_from
-               ELSE v.source_available_on END = (
+               ELSE v.filed + 1 END = (
           SELECT max(CASE WHEN s.source_stream = 'change' THEN s.effective_from
-                          ELSE s.source_available_on END) FROM visible s
+                          ELSE s.filed + 1 END) FROM visible s
           WHERE s.evidence_kind = 'ads_ratio' AND s.source_stream = v.source_stream)
 ), ratio_candidates AS (
     SELECT v.* FROM latest_ratios v
@@ -204,7 +216,7 @@ WITH issuer_visible AS MATERIALIZED (
           NOT EXISTS (SELECT 1 FROM changes)
           OR v.effective_from >= (SELECT max(c.effective_from) FROM changes c)
           OR (v.source_stream <> 'change'
-              AND v.source_available_on >= (SELECT max(c.effective_from) FROM changes c))
+              AND v.filed + 1 >= (SELECT max(c.effective_from) FROM changes c))
           OR EXISTS (
               SELECT 1 FROM changes c
               WHERE v.ratio_numerator * c.ratio_denominator
@@ -222,7 +234,8 @@ WITH issuer_visible AS MATERIALIZED (
                      OR bool_or(r.underlying_class <> (
                          SELECT t.underlying_class FROM type_state t)) THEN 'ambiguous'
                 WHEN bool_or(r.source_stream = 'f6')
-                     AND bool_or(r.source_stream = 'cover') THEN 'resolved'
+                     AND (bool_or(r.source_stream = 'cover')
+                          OR bool_or(r.source_stream = 'change')) THEN 'resolved'
                 ELSE 'none' END AS state,
            min(r.num) AS num, min(r.den) AS den
     FROM ratios r

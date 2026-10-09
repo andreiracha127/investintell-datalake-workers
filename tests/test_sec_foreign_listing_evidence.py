@@ -92,6 +92,43 @@ def test_real_affirmative_ads_footnote_overrides_common_share_title():
     assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in ratios} == {(5, 1)}
 
 
+@pytest.mark.parametrize("name,symbol,numerator", [
+    ("ec_2021_depository", "EC", 20),
+    ("gsk_2024_america_depositary", "GSK", 2),
+])
+def test_real_depository_and_america_spellings_share_type_and_ratio_recognition(name, symbol, numerator):
+    rows = parse_fixture(name)
+    listings = [row for row in rows if row["evidence_kind"] == "listed_type"]
+    assert any(row["symbol"] == symbol and row["listed_type"] == "ads" for row in listings)
+    assert all(row["listed_type"] == "unknown" and not row["ordinary_candidate"]
+               for row in listings if row["symbol"] != symbol)
+    ratios = [row for row in rows if row["evidence_kind"] == "ads_ratio"]
+    assert [(row["symbol"], row["ratio_numerator"], row["ratio_denominator"]) for row in ratios] == [(symbol, numerator, 1)]
+
+
+def test_real_exchange_cell_depositary_qualifier_overrides_ordinary_title():
+    rows = parse_fixture("ixhl_2022_exchange_wrapper")
+    listings = [row for row in rows if row["evidence_kind"] == "listed_type"]
+    assert [(row["symbol"], row["listed_type"]) for row in listings] == [("IXHL", "ads")]
+    assert "in connection with the listing for trading of American Depositary Shares" in listings[0]["evidence_text"]
+    assert not any(row["evidence_kind"] == "ads_ratio" for row in rows)
+
+
+def test_not_for_trading_footnote_without_depositary_evidence_stays_unknown():
+    rows = parse_filing(
+        """<p>Securities registered pursuant to Section 12(b) of the Act:</p>
+        <table><tr><th>Title of each class</th><th>Trading Symbol</th>
+        <th>Name of each exchange on which registered</th></tr>
+        <tr><td>Class A ordinary shares*</td><td>ONE</td><td>New York Stock Exchange</td></tr>
+        <tr><td>Class B ordinary shares</td><td>TWO</td><td>New York Stock Exchange</td></tr></table>
+        <p>* Not for trading, but only for registration purposes.</p>""",
+        cik=123, form_type="20-F", accession_number="0000000123-20-000001",
+        filing_date="2020-01-01", source_url="https://www.sec.gov/Archives/test",
+    )
+    listings = {row["symbol"]: row["listed_type"] for row in rows if row["evidence_kind"] == "listed_type"}
+    assert listings == {"ONE": "unknown", "TWO": "ordinary_direct"}
+
+
 def test_real_honda_table_enumerator_is_not_the_ads_denominator():
     rows = parse_fixture("hmc_2005_enumerated_cover")
     ratios = [row for row in rows if row["evidence_kind"] == "ads_ratio"]
@@ -148,6 +185,28 @@ def test_real_azn_change_keeps_effective_and_public_dates_separate(name, availab
     assert rows
     assert {row["effective_from"] for row in rows} == {"2015-07-27"}
     assert {row["available_on"] for row in rows} == {available}
+
+
+def test_full_azn_operative_amendment_does_not_activate_new_ratio_before_effective_date():
+    rows = [row for row in parse_fixture("azn_2015_amendment_full") if row["evidence_kind"] == "ads_ratio"]
+    new = [row for row in rows if (row["ratio_numerator"], row["ratio_denominator"]) == (1, 2)]
+    assert new
+    assert {row["effective_from"] for row in new} == {"2015-07-27"}
+    assert {row["available_on"] for row in new} == {"2015-07-21"}
+    # Deleted or quoted old terms may be retained only as a bounded old regime.
+    old = [row for row in rows if (row["ratio_numerator"], row["ratio_denominator"]) == (1, 1)]
+    assert all(row["effective_to"] == "2015-07-27" for row in old)
+    assert not any(row["effective_from"] == "2015-07-27" for row in old)
+
+
+def test_full_azn_legacy_agreement_is_old_ratio_evidence_not_the_amended_ratio():
+    rows = [row for row in parse_fixture("azn_2015_legacy_agreement_full") if row["evidence_kind"] == "ads_ratio"]
+    assert rows
+    assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in rows} == {(1, 1)}
+
+
+def test_azn_parent_registration_has_no_ratio_to_substitute_for_its_exhibits():
+    assert not parse_fixture("azn_2015_f6_parent_full")
 
 
 def test_candidate_ticker_words_in_titles_and_prose_are_not_symbol_evidence():
@@ -352,12 +411,14 @@ def db(sql_database):
 
 def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=None,
         filed="2020-01-01", effective=None, available=None, retired=None, until=None,
-        symbol="TSM", underlying_class=None, ordinary_candidate=True):
+        symbol="TSM", underlying_class=None, ordinary_candidate=True, cik=1046179,
+        publication_floor_on=None):
     from psycopg import sql
     tomorrow = (dt.date.fromisoformat(filed) + dt.timedelta(days=1)).isoformat()
     row = dict(
-        fact_hash=uuid4().hex, cik=1046179, symbol=symbol, underlying_class=underlying_class,
+        fact_hash=uuid4().hex, cik=cik, symbol=symbol, underlying_class=underlying_class,
         ordinary_candidate=ordinary_candidate,
+        publication_floor_on=publication_floor_on,
         adsh="0001193125-20-000001", form="20-F", filed=filed,
         source_url="https://www.sec.gov/Archives/edgar/data/test",
         source_sha256="a" * 64, source_kind=source, evidence_kind=kind,
@@ -367,7 +428,7 @@ def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=
         effective_from=effective or tomorrow, effective_to=until,
         evidence_text="Synthetic resolver assertion; parser fixtures are separate.",
         evidence_location="test", parser_version="test-v1",
-        available_on=available or tomorrow, retired_on=retired,
+        available_on=available or max(tomorrow, publication_floor_on or tomorrow), retired_on=retired,
         loaded_on="2026-10-09", source_package=uuid4().hex,
     )
     stmt = sql.SQL("INSERT INTO public.sec_foreign_listing_evidence ({}) VALUES ({}) RETURNING id").format(
@@ -394,8 +455,8 @@ def insert_real_parsed_rows(db, name):
     return ids
 
 
-def resolve(db, day):
-    row = db.execute("SELECT * FROM public.sec_foreign_listing_at(1046179, 'TSM', %s::date)", [day]).fetchone()
+def resolve(db, day, *, cik=1046179, symbol="TSM"):
+    row = db.execute("SELECT * FROM public.sec_foreign_listing_at(%s, %s, %s::date)", [cik, symbol, day]).fetchone()
     assert row is not None
     return row
 
@@ -431,6 +492,43 @@ def test_direct_listing_identity_and_filing_plus_one(db):
     add(db, listed_type="ordinary_direct")
     assert resolve(db, "2020-01-01")[0] == "none"
     assert resolve(db, "2020-01-02")[:6] == ("resolved", "ordinary_direct", 1, 1, "resolved", "resolved")
+
+
+@pytest.mark.parametrize("filed,floor,before", [
+    ("2018-06-08", "2022-11-09", "2020-12-31"),
+    ("2020-07-10", "2023-07-26", "2020-12-31"),
+])
+def test_backdated_replacement_cannot_be_seen_before_its_reported_publication(db, filed, floor, before):
+    # Real VOD/Pemex date pairs; the listed security assertion is synthetic.
+    add(db, listed_type="ordinary_direct", filed=filed, publication_floor_on=floor)
+    assert resolve(db, before)[0] == "none"
+    assert resolve(db, (dt.date.fromisoformat(floor) - dt.timedelta(days=1)).isoformat())[0] == "none"
+    assert resolve(db, floor)[:4] == ("resolved", "ordinary_direct", 1, 1)
+    source = db.execute("SELECT effective_from,source_available_on,available_on FROM public.sec_foreign_listing_evidence").fetchone()
+    assert source == (dt.date.fromisoformat(filed) + dt.timedelta(days=1), dt.date.fromisoformat(floor), dt.date.fromisoformat(floor))
+
+
+def test_publication_on_filing_plus_one_does_not_add_an_extra_day(db):
+    add(db, listed_type="ordinary_direct", filed="2024-03-25", publication_floor_on="2024-03-26")
+    assert resolve(db, "2024-03-25")[0] == "none"
+    assert resolve(db, "2024-03-26")[0] == "resolved"
+
+
+def test_republished_old_annual_does_not_displace_a_newer_legal_filing(db):
+    add(db, filed="2021-01-01")
+    add_ratio(db, (5, 1), filed="2021-01-01")
+    add_ratio(db, (5, 1), source="item_12d", filed="2021-01-01")
+    add_ratio(db, (1, 1), source="item_12d", filed="2018-06-08", publication_floor_on="2022-11-09")
+    assert resolve(db, "2022-11-08")[:4] == ("resolved", "ads", 5, 1)
+    assert resolve(db, "2022-11-09")[:4] == ("resolved", "ads", 5, 1)
+
+
+def test_later_publication_of_pre_change_assertion_does_not_create_false_conflict(db):
+    add(db, filed="2019-01-01")
+    add_ratio(db, (5, 1), filed="2020-01-01")
+    add_ratio(db, (5, 1), source="ratio_change_6k", filed="2020-01-01")
+    add_ratio(db, (1, 1), source="item_12d", filed="2018-06-08", publication_floor_on="2022-11-09")
+    assert resolve(db, "2022-11-09")[:4] == ("resolved", "ads", 5, 1)
 
 
 def test_ads_requires_f6_and_independent_cover_corroboration(db):
@@ -525,6 +623,36 @@ def test_ratio_change_can_use_latest_matching_preregistration(db):
     add_ratio(db, (1, 2), source="item_12d", filed="2020-06-01")
     add_ratio(db, (1, 2), source="ratio_change_6k", filed="2020-06-15", effective="2020-07-01")
     assert resolve(db, "2020-07-01")[:4] == ("resolved", "ads", 1, 2)
+
+
+def test_dated_change_corroborates_new_f6_before_the_next_annual_filing(db):
+    add(db, filed="2015-03-10")
+    add_ratio(db, (1, 1), filed="2014-11-14")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2015-03-10")
+    add_ratio(db, (1, 2), filed="2015-07-20", effective="2015-07-27")
+    add_ratio(db, (1, 2), source="ratio_change_6k", filed="2015-06-26", effective="2015-07-27")
+    assert resolve(db, "2015-07-20")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2015-07-21")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2015-07-26")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2015-07-27")[:4] == ("resolved", "ads", 1, 2)
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2016-03-08")
+    assert resolve(db, "2016-03-09")[0] == "ambiguous"
+
+
+def test_full_real_azn_contracts_and_announcement_switch_on_effective_date(db):
+    # Isolate ratio chronology using a synthetic, already-bound cover line.
+    # Both complete F-6 contract documents and the dated 6-K are parsed from
+    # their real SEC contents, including the companion's old unamended terms.
+    add(db, cik=901832, symbol="AZN", filed="2015-03-10")
+    add_ratio(db, (1, 1), cik=901832, symbol="AZN", source="cover_footnote", filed="2015-03-10")
+    insert_real_parsed_rows(db, "azn_2014_f6_ratio")
+    insert_real_parsed_rows(db, "azn_2015_amendment_full")
+    insert_real_parsed_rows(db, "azn_2015_legacy_agreement_full")
+    insert_real_parsed_rows(db, "azn_2015_6k_announcement")
+    assert resolve(db, "2015-07-20", cik=901832, symbol="AZN")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2015-07-21", cik=901832, symbol="AZN")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2015-07-26", cik=901832, symbol="AZN")[:4] == ("resolved", "ads", 1, 1)
+    assert resolve(db, "2015-07-27", cik=901832, symbol="AZN")[:4] == ("resolved", "ads", 1, 2)
 
 
 def test_change_does_not_resurrect_superseded_matching_registration(db):

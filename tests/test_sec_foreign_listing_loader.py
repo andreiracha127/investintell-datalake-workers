@@ -1,7 +1,7 @@
 """Discovery completeness, cache integrity and point-in-time binding regressions."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 import json
 import os
 from pathlib import Path
@@ -10,6 +10,16 @@ from urllib.parse import urlsplit
 import pytest
 
 from scripts import load_sec_foreign_listing_evidence as loader
+
+
+def _date_authority(filed="2020-03-01", adsh="0001234567-20-000001", publication_floor_on=None):
+    """Explicit synthetic W1 date evidence for tests unrelated to discovery."""
+    floor = publication_floor_on or filed
+    return {"filed": filed, "filing_date_status": "resolved", "query_accepted_on": floor,
+            "publication_floor_on": floor,
+            "publication_floor_proof": {"source": "discovery_reported_publication_floor", "publication_floor_on": floor},
+            "filing_date_proof": {"source": "w1_same_accession", "filed": filed,
+                                  "records": [{"cik": 123, "adsh": adsh, "filed": filed}]}}
 
 
 def test_atomic_checkpoint_retries_transient_windows_replace(tmp_path, monkeypatch):
@@ -387,11 +397,12 @@ def test_manifest_replay_canonicalizes_existing_viewer_identity(tmp_path, monkey
     canonical = loader.canonical_sec_url(viewer)
     raw_document = {"cik": 123, "adsh": "0001234567-20-000001", "source_url": viewer,
                     "source_package": "old-viewer-key", "binding": "registrant_cik", "symbols": ["ABC"],
-                    "filed": "2020-03-01", "form": "20-F"}
-    manifest = {"complete": True, "documents": [raw_document, {**raw_document, "source_url": canonical}]}
+                    **_date_authority(), "form": "20-F"}
+    manifest = {"complete": True, "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"},
+                "documents": [raw_document, {**raw_document, "source_url": canonical}]}
     client = loader.SecClient(tmp_path, offline=True)
     monkeypatch.setattr(client, "document", lambda *_args, **_kwargs: (b"content", "a" * 64))
-    def parse_document(_client, document, _observations, *, downloaded):
+    def parse_document(_client, document, _observations, *, downloaded, binding_sources):
         assert downloaded == (b"content", "a" * 64)
         assert document["source_url"] == canonical
         assert document["source_package"] == loader.canonical_document(raw_document)["source_package"]
@@ -405,9 +416,9 @@ def test_manifest_replay_canonicalizes_existing_viewer_identity(tmp_path, monkey
 def test_pipeline_downloads_shared_url_once_and_reparses_deterministically(tmp_path, monkeypatch):
     url = "https://www.sec.gov/Archives/edgar/data/123/000123456720000001/report.htm"
     base = {"adsh": "0001234567-20-000001", "source_url": url, "source_package": "old-key",
-            "binding": "registrant_cik", "symbols": ["ABC"], "filed": "2020-03-01", "form": "20-F"}
+            "binding": "registrant_cik", "symbols": ["ABC"], **_date_authority(), "form": "20-F"}
     documents = [{**base, "cik": 123}, {**base, "cik": 456}, {**base, "cik": 789, "source_url": url.replace("report.htm", "second.htm")}]
-    manifest = {"complete": True, "documents": documents}
+    manifest = {"complete": True, "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"}, "documents": documents}
     client = loader.SecClient(tmp_path, offline=True)
     downloads = []
     parse_calls = []
@@ -418,7 +429,7 @@ def test_pipeline_downloads_shared_url_once_and_reparses_deterministically(tmp_p
         downloads.append(source_url)
         return b"same-original-bytes", "a" * 64
 
-    def parse(_client, document, _observations, *, downloaded):
+    def parse(_client, document, _observations, *, downloaded, binding_sources):
         assert downloaded == (b"same-original-bytes", "a" * 64)
         parse_calls.append(document["cik"])
         if document["cik"] == fail_cik[0]:
@@ -453,6 +464,265 @@ def test_f6_search_name_is_not_sufficient_issuer_binding():
     assert loader.verify_f6_issuer(text, "ACME Corp")
     assert not loader.verify_f6_issuer(text, "OtherCo Ltd")
     assert not loader.verify_f6_issuer("ACME Corp is mentioned somewhere", "ACME Corp")
+
+
+def _real_azn_parent_and_amendment(tmp_path, monkeypatch):
+    fixtures = Path(__file__).parent / "fixtures" / "sec_foreign_listing_evidence"
+    manifest = json.loads((fixtures / "manifest.json").read_text(encoding="utf-8"))
+    by_name = {item["name"]: item for item in manifest}
+    documents = []
+    payloads = {}
+    for name, binding in [("azn_2015_f6_parent_full", "registrant_cik"),
+                          ("azn_2015_amendment_full", "issuer_name_in_f6")]:
+        item = by_name[name]
+        documents.append({"cik": item["cik"], "adsh": item["accession_number"],
+                          "form": item["form_type"], "filed": item["filing_date"],
+                          "source_url": item["source_url"], "source_package": name,
+                          "symbols": ["AZN"], "binding": binding,
+                          "registrant_cik": str(item["cik"]),
+                          "issuer_name": "ASTRAZENECA PLC" if binding == "issuer_name_in_f6" else ""})
+        payloads[item["source_url"]] = (fixtures / item["fixture"]).read_bytes()
+    client = loader.SecClient(tmp_path, offline=True)
+    def document(url, **_kwargs):
+        raw = payloads[url]
+        return raw, loader.digest(raw)
+    monkeypatch.setattr(client, "document", document)
+    return client, documents[0], documents[1], payloads
+
+
+def test_real_f6_attachment_inherits_verified_same_accession_parent_identity(tmp_path, monkeypatch):
+    client, parent, amendment, payloads = _real_azn_parent_and_amendment(tmp_path, monkeypatch)
+    assert loader.verify_f6_issuer(payloads[parent["source_url"]].decode("utf-8"), "ASTRAZENECA PLC")
+    assert not loader.verify_f6_issuer(payloads[amendment["source_url"]].decode("utf-8"), "ASTRAZENECA PLC")
+    rejected, rows = loader.parse_document(client, amendment)
+    assert rejected["status"] == "issuer_binding_unverified" and not rows
+    accepted, rows = loader.parse_document(client, amendment, binding_sources=[parent])
+    assert accepted["status"] == "parsed" and rows
+    proof = accepted["issuer_binding_proof"]
+    assert proof["source_url"] == parent["source_url"]
+    assert proof["source_sha256"] == loader.digest(payloads[parent["source_url"]])
+    assert proof["adsh"] == amendment["adsh"] and proof["cik"] == 901832
+    assert proof["issuer_name"] == "ASTRAZENECA PLC"
+
+
+@pytest.mark.parametrize("mutation", ["different_accession", "different_issuer", "unverified_cover"])
+def test_f6_attachment_parent_proof_cannot_be_inferred_from_cik_or_search_name(tmp_path, monkeypatch, mutation):
+    client, parent, amendment, payloads = _real_azn_parent_and_amendment(tmp_path, monkeypatch)
+    if mutation == "different_accession":
+        parent = {**parent, "adsh": "0001193805-14-002183"}
+    elif mutation == "different_issuer":
+        parent = {**parent, "cik": 123}
+    else:
+        payloads[parent["source_url"]] = b"AstraZeneca PLC is mentioned in a service contract with a depositary bank."
+    updated, rows = loader.parse_document(client, amendment, binding_sources=[parent])
+    assert updated["status"] == "issuer_binding_unverified"
+    assert rows == []
+
+
+def _date_document(*, accepted="2024-03-22", adsh="0001104659-24-037982", cik=2809):
+    return {"cik": cik, "adsh": adsh, "filed": accepted, "form": "40-F",
+            "source_url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{adsh.replace('-', '')}/report.htm",
+            "source_package": "date-test-" + adsh, "binding": "registrant_cik", "symbols": ["AEM"]}
+
+
+def _write_date_index(path, lines):
+    text = "CIK|Company Name|Form Type|Date Filed|Filename\n" + "\n".join(lines) + "\n"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return text
+
+
+def test_real_aem_friday_acceptance_uses_monday_sec_filing_and_tuesday_availability(tmp_path, monkeypatch):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    fixtures = Path(__file__).parent / "fixtures" / "sec_foreign_listing_evidence"
+    raw = (fixtures / "master_2024_q1_aem.idx").read_bytes()
+    (tmp_path / "master-2024-Q1.idx").write_bytes(raw)
+    client = loader.SecClient(tmp_path, offline=True)
+    enriched, _ = dates.enrich_manifest(client, {"complete": True, "documents": [_date_document()]}, index_root=tmp_path)
+    document = enriched["documents"][0]
+    assert document["query_accepted_on"] == "2024-03-22"
+    assert document["filed"] == "2024-03-25"
+    assert document["publication_floor_on"] == "2024-03-22"
+    assert document["filing_date_status"] == "resolved"
+    proof = document["filing_date_proof"]
+    assert proof["source"] == "sec_quarter_master_index"
+    assert proof["filed"] == "2024-03-25"
+    assert any(record["source_sha256"] == loader.digest(raw) for record in proof["records"])
+    cover = b"""<p>Securities registered pursuant to Section 12(b) of the Act:</p>
+    <table><tr><th>Title of each class</th><th>Trading Symbol</th><th>Name of each exchange on which registered</th></tr>
+    <tr><td>Common Shares</td><td>AEM</td><td>New York Stock Exchange</td></tr></table>"""
+    monkeypatch.setattr(client, "document", lambda *_args, **_kwargs: (cover, loader.digest(cover)))
+    _, rows = loader.parse_document(client, document)
+    assert rows and {row["available_on"] for row in rows} == {"2024-03-26"}
+
+
+@pytest.mark.parametrize("accepted,filed,index_name,adsh", [
+    ("2024-03-22", "2024-03-25", "master-2024-Q1.idx", "0001104659-24-037982"),
+    ("2024-03-29", "2024-04-01", "master-2024-Q2.idx", "0001104659-24-000001"),
+    ("2023-12-29", "2024-01-02", "master-2024-Q1.idx", "0001104659-23-000001"),
+])
+def test_official_filing_lookup_crosses_weekends_quarters_and_years(tmp_path, accepted, filed, index_name, adsh):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    _write_date_index(tmp_path / index_name, [f"2809|AEM|40-F|{filed}|edgar/data/2809/{adsh}.txt"])
+    document = _date_document(accepted=accepted, adsh=adsh)
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True), {"complete": True, "documents": [document]}, index_root=tmp_path)
+    assert enriched["documents"][0]["filed"] == filed
+    assert enriched["documents"][0]["query_accepted_on"] == accepted
+
+
+def test_same_accession_cofilers_with_one_date_are_one_filing_date(tmp_path):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    adsh = "0001104659-24-037982"
+    _write_date_index(tmp_path / "master-2024-Q1.idx", [
+        f"2809|AEM|40-F|2024-03-25|edgar/data/2809/{adsh}.txt",
+        f"99999|COFILER|40-F|2024-03-25|edgar/data/99999/{adsh}.txt",
+    ])
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True), {"complete": True, "documents": [_date_document()]}, index_root=tmp_path)
+    document = enriched["documents"][0]
+    assert document["filed"] == "2024-03-25"
+    assert document["filing_date_status"] == "resolved"
+    assert len(document["filing_date_proof"]["records"]) == 2
+
+
+def test_conflicting_official_dates_never_choose_by_issuer_or_query_acceptance(tmp_path):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    adsh = "0001104659-24-037982"
+    _write_date_index(tmp_path / "master-2024-Q1.idx", [
+        f"2809|AEM|40-F|2024-03-25|edgar/data/2809/{adsh}.txt",
+        f"99999|COFILER|40-F|2024-03-26|edgar/data/99999/{adsh}.txt",
+    ])
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True), {"complete": True, "documents": [_date_document()]}, index_root=tmp_path)
+    document = enriched["documents"][0]
+    assert document["filed"] is None
+    assert document["filing_date_status"] == "ambiguous"
+    assert enriched["complete"] is False
+
+
+def test_unverified_filing_date_never_falls_back_to_query_acceptance(tmp_path):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True), {"complete": True, "documents": [_date_document()]}, index_root=tmp_path)
+    document = enriched["documents"][0]
+    assert document["query_accepted_on"] == "2024-03-22"
+    assert document["filed"] is None
+    assert document["filing_date_status"] == "none"
+    assert enriched["complete"] is False
+
+
+def test_date_fallback_uses_same_accession_w1_filed_date_with_proof(tmp_path):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    observations = [{"cik": 2809, "adsh": "0001104659-24-037982", "filed": "2024-03-25", "accepted": "2024-03-22T17:31:00"}]
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True), {"complete": True, "documents": [_date_document()]}, observations=observations, index_root=tmp_path)
+    document = enriched["documents"][0]
+    assert document["filed"] == "2024-03-25"
+    assert document["filing_date_proof"]["source"] == "w1_same_accession"
+    assert document["filing_date_proof"]["records"][0]["adsh"] == observations[0]["adsh"]
+
+
+def test_w1_date_from_another_accession_cannot_fill_a_missing_index_entry(tmp_path):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    observations = [{"cik": 2809, "adsh": "0001104659-24-000001", "filed": "2024-03-25"}]
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True), {"complete": True, "documents": [_date_document()]}, observations=observations, index_root=tmp_path)
+    assert enriched["documents"][0]["filed"] is None
+
+
+def test_date_fallback_uses_exact_sgml_accession_and_filed_as_of_date(tmp_path, monkeypatch):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    raw = (b"<SEC-DOCUMENT>0001104659-24-037982.txt\n<SEC-HEADER>\n"
+           b"ACCESSION NUMBER: 0001104659-24-037982\n"
+           b"ACCEPTANCE-DATETIME: 20240322173100\nFILED AS OF DATE: 20240325\n"
+           b"</SEC-HEADER><DOCUMENT><TYPE>40-F</TYPE></DOCUMENT>")
+    client = loader.SecClient(tmp_path, offline=True)
+    monkeypatch.setattr(client, "document", lambda *_args, **_kwargs: (raw, loader.digest(raw)))
+    enriched, _ = dates.enrich_manifest(client, {"complete": True, "documents": [_date_document()]}, index_root=tmp_path)
+    document = enriched["documents"][0]
+    assert document["filed"] == "2024-03-25"
+    assert document["filing_date_proof"]["source"] == "sec_submission_header"
+    assert document["filing_date_proof"]["records"][0]["source_sha256"] == loader.digest(raw)
+
+
+def test_sgml_header_for_another_accession_does_not_prove_filing_date(tmp_path, monkeypatch):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    raw = b"<SEC-HEADER>\nACCESSION NUMBER: 0001104659-24-000001\nFILED AS OF DATE: 20240325\n</SEC-HEADER>"
+    client = loader.SecClient(tmp_path, offline=True)
+    monkeypatch.setattr(client, "document", lambda *_args, **_kwargs: (raw, loader.digest(raw)))
+    enriched, _ = dates.enrich_manifest(client, {"complete": True, "documents": [_date_document()]}, index_root=tmp_path)
+    assert enriched["documents"][0]["filed"] is None
+
+
+def test_historical_daily_index_recovers_compact_filing_date(tmp_path):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    adsh = "0001104659-18-000001"
+    _write_date_index(tmp_path / "master.20180608.idx", [
+        f"2809|AEM|40-F|20180608|edgar/data/2809/{adsh}.txt",
+    ])
+    document = _date_document(accepted="2018-06-07", adsh=adsh)
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True), {"complete": True, "documents": [document]}, index_root=tmp_path)
+    result = enriched["documents"][0]
+    assert result["filed"] == "2018-06-08"
+    assert result["filing_date_proof"]["source"] == "sec_daily_master_index"
+    assert result["filing_date_proof"]["records"][0]["source_url"].endswith("/2018/QTR2/master.20180608.idx")
+
+
+def test_conflicting_sgml_filing_dates_remain_ambiguous(tmp_path, monkeypatch):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    raw = (b"<SEC-HEADER>\nACCESSION NUMBER: 0001104659-24-037982\n"
+           b"FILED AS OF DATE: 20240325\nFILED AS OF DATE: 20240326\n</SEC-HEADER>")
+    client = loader.SecClient(tmp_path, offline=True)
+    monkeypatch.setattr(client, "document", lambda *_args, **_kwargs: (raw, loader.digest(raw)))
+    enriched, _ = dates.enrich_manifest(client, {"complete": True, "documents": [_date_document()]}, index_root=tmp_path)
+    result = enriched["documents"][0]
+    assert result["filed"] is None and result["filing_date_status"] == "ambiguous"
+    assert result["filing_date_proof"]["source"] == "sec_submission_header"
+
+
+def test_manifest_without_authoritative_dates_cannot_be_parsed(tmp_path):
+    with pytest.raises(ValueError, match="filing-date enrichment"):
+        loader.parse_manifest(loader.SecClient(tmp_path, offline=True),
+                              {"complete": True, "documents": [_date_document()]}, tmp_path / "rows.jsonl")
+
+
+@pytest.mark.parametrize("cik,adsh,filed,published", [
+    (839923, "0001104659-22-116238", "2018-06-08", "2022-11-09"),
+    (932782, "9999999997-23-003670", "2020-07-10", "2023-07-26"),
+])
+def test_old_legal_filing_date_preserves_later_reported_publication_floor(tmp_path, cik, adsh, filed, published):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    document = _date_document(cik=cik, adsh=adsh, accepted=published)
+    observations = [{"cik": cik, "adsh": adsh, "filed": filed}]
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True),
+                                      {"complete": True, "documents": [document]},
+                                      observations=observations, index_root=tmp_path)
+    result = enriched["documents"][0]
+    assert result["filed"] == filed
+    assert result["publication_floor_on"] == published
+    assert result["publication_floor_proof"]["source"] == "discovery_reported_publication_floor"
+    assert enriched["filing_date_enrichment"]["version"] == "sec-official-filing-date-v2"
+
+
+def test_publication_floor_is_the_maximum_reported_date_across_cofilers(tmp_path):
+    from scripts import enrich_sec_foreign_listing_filing_dates as dates
+    first = _date_document(accepted="2023-07-25", adsh="9999999997-23-003670", cik=932782)
+    second = {**first, "cik": 123, "filed": "2023-07-26", "source_package": "cofiler"}
+    observations = [{"cik": 932782, "adsh": first["adsh"], "filed": "2020-07-10"}]
+    enriched, _ = dates.enrich_manifest(loader.SecClient(tmp_path, offline=True),
+                                      {"complete": True, "documents": [first, second]},
+                                      observations=observations, index_root=tmp_path)
+    assert {item["publication_floor_on"] for item in enriched["documents"]} == {"2023-07-26"}
+    assert {item["filed"] for item in enriched["documents"]} == {"2020-07-10"}
+
+
+def test_parser_keeps_legal_effective_date_but_uses_later_publication_floor(tmp_path):
+    adsh = "9999999997-23-003670"
+    document = {**_date_document(accepted="2020-07-10", adsh=adsh),
+                **_date_authority("2020-07-10", adsh, publication_floor_on="2023-07-26")}
+    raw = b"""<p>Securities registered pursuant to Section 12(b) of the Act:</p>
+    <table><tr><th>Title of each class</th><th>Trading Symbol</th><th>Name of each exchange on which registered</th></tr>
+    <tr><td>Common Shares</td><td>AEM</td><td>New York Stock Exchange</td></tr></table>"""
+    _, rows = loader.parse_document(loader.SecClient(tmp_path, offline=True), document,
+                                    downloaded=(raw, loader.digest(raw)))
+    assert rows
+    assert {row["effective_from"] for row in rows} == {"2020-07-11"}
+    assert {row["available_on"] for row in rows} == {"2023-07-26"}
+    assert {row["publication_floor_on"] for row in rows} == {"2023-07-26"}
 
 
 def _observation(**updates):
@@ -570,25 +840,28 @@ def db():
         connection.close()
 
 
-def _source(package="source-a", adsh="0001234567-20-000001", count=1):
+def _source(package="source-a", adsh="0001234567-20-000001", count=1, filed="2020-03-01", publication_floor_on=None):
     return {"source_package": package, "cik": 123, "adsh": adsh, "evidence_count": count,
             "source_url": "https://www.sec.gov/Archives/edgar/data/123/report.htm",
-            "source_sha256": "a" * 64, "parser_version": "test-v1"}
+            "source_sha256": "a" * 64, "parser_version": "test-v1", **_date_authority(filed, adsh, publication_floor_on)}
 
 
 def _fact(source, *, listed_type="ordinary_direct", revision="1"):
-    row = {**source, "symbol": "ABC", "form": "20-F", "filed": "2020-03-01",
+    effective = (date.fromisoformat(source["filed"]) + timedelta(days=1)).isoformat()
+    available = max(effective, source.get("publication_floor_on") or effective)
+    row = {**source, "symbol": "ABC", "form": "20-F",
            "source_kind": "cover_12b", "evidence_kind": "listed_type", "listed_type": listed_type,
-           "ratio_numerator": None, "ratio_denominator": None, "effective_from": "2020-03-02",
+           "ratio_numerator": None, "ratio_denominator": None, "effective_from": effective,
            "effective_to": None, "evidence_text": "Common Shares NYSE revision " + revision,
-           "evidence_location": "cover table", "available_on": "2020-03-02"}
+           "evidence_location": "cover table", "available_on": available}
     row.pop("evidence_count")
     row["fact_hash"] = loader.hashlib.md5(loader.canonical_json(row).encode(), usedforsecurity=False).hexdigest()
     return row
 
 
 def _manifest(*sources):
-    return {"complete": True, "parse_complete": True, "documents": list(sources)}
+    return {"complete": True, "parse_complete": True, "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"},
+            "documents": list(sources)}
 
 
 def test_initial_batch_multiple_exhibits_preserves_original_availability(db):
@@ -617,6 +890,35 @@ def test_correction_retains_previous_version_and_withdrawal_is_dated(db):
     assert db.execute("SELECT listed_type FROM public.sec_foreign_listing_at(123,'ABC','2025-12-31')").fetchone()[0] == "ordinary_direct"
     loader.apply_evidence(db, _manifest(_source(count=0)), [], date(2026, 10, 11))
     assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2026-10-11')").fetchone()[0] == "none"
+
+
+def test_same_day_correction_before_source_availability_never_exposes_old_fact(db):
+    source = _source(filed="2026-10-09")
+    loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 9))
+    loader.apply_evidence(db, _manifest(source), [_fact(source, listed_type="ads", revision="2")], date(2026, 10, 9))
+    rows = db.execute("SELECT listed_type,available_on,retired_on FROM public.sec_foreign_listing_evidence ORDER BY id").fetchall()
+    assert rows == [("ordinary_direct", date(2026, 10, 10), date(2026, 10, 9)),
+                    ("ads", date(2026, 10, 10), None)]
+    assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2026-10-09')").fetchone()[0] == "none"
+    assert db.execute("SELECT listed_type FROM public.sec_foreign_listing_at(123,'ABC','2026-10-10')").fetchone()[0] == "ads"
+
+
+def test_initial_load_and_correction_honor_publication_floor(db):
+    source = _source(filed="2020-07-10", publication_floor_on="2023-07-26")
+    loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 9))
+    assert db.execute("SELECT available_on,source_available_on,effective_from FROM public.sec_foreign_listing_evidence").fetchone() == (
+        date(2023, 7, 26), date(2023, 7, 26), date(2020, 7, 11))
+    assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2020-12-31')").fetchone()[0] == "none"
+    assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2023-07-26')").fetchone()[0] == "resolved"
+    loader.apply_evidence(db, _manifest(source), [_fact(source, listed_type="ads", revision="2")], date(2026, 10, 10))
+    assert db.execute("SELECT available_on FROM public.sec_foreign_listing_evidence WHERE retired_on IS NULL").fetchone()[0] == date(2026, 10, 10)
+
+
+def test_fact_filing_date_must_match_the_authoritative_manifest(db):
+    source = _source()
+    wrong = {**_fact(source), "filed": "2020-02-28"}
+    with pytest.raises(ValueError, match="filing date does not match"):
+        loader.apply_evidence(db, _manifest(source), [wrong], date(2026, 10, 9))
 
 
 def test_reconciliation_rejects_backdated_source_observation(db):
@@ -695,7 +997,8 @@ def _completed_shard_artifacts(tmp_path):
                   "form": "20-F", "filed": "2020-03-01", "binding": "registrant_cik", "symbols": ["ABC"]}
         documents.append(loader.canonical_document(source))
     assert {shards.partition(document) for document in documents} == {0, 1}
-    parent = {"complete": True, "universe_sha256": "a" * 64, "documents": documents}
+    parent = {"complete": True, "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"},
+              "universe_sha256": "a" * 64, "documents": documents}
     loader.write_json(tmp_path / "manifest.json", parent)
     result = shards.prepare(tmp_path)
     for part in range(2):
@@ -774,3 +1077,122 @@ def test_shard_partition_keeps_all_issuer_bindings_of_same_url_together():
     from scripts import run_sec_foreign_listing_evidence_shards as shards
     source = {"source_url": "https://www.sec.gov/Archives/edgar/data/123/report.htm", "cik": 123}
     assert shards.partition(source) == shards.partition({**source, "cik": 456})
+
+
+def _sgml_submission(original, *, accession="0001234567-20-000001", duplicate=False):
+    block = b"<DOCUMENT>\n<TYPE>F-6\n<SEQUENCE>1\n<FILENAME>primary.htm\n<TEXT>\n" + original + b"</TEXT>\n</DOCUMENT>\n"
+    return (f"<SEC-DOCUMENT>{accession}.txt\nACCESSION NUMBER:\t{accession}\n".encode()
+            + block + (block if duplicate else b"") + b"</SEC-DOCUMENT>\n")
+
+
+def test_sgml_selection_preserves_exact_original_bytes_and_rejects_duplicates():
+    original = b"\n<HTML>" + b"Original SEC filing text. " * 10 + b"</HTML>\n"
+    selected, form = loader.extract_sgml_document(_sgml_submission(original), accession="0001234567-20-000001", filename="primary.htm")
+    assert selected == original  # Its own leading/trailing newlines are retained.
+    assert form == "F-6"
+    with pytest.raises(ValueError, match="exactly one"):
+        loader.extract_sgml_document(_sgml_submission(original, duplicate=True), accession="0001234567-20-000001", filename="primary.htm")
+    with pytest.raises(ValueError, match="exactly one"):
+        loader.extract_sgml_document(_sgml_submission(original), accession="0001234567-20-000001", filename="another.htm")
+    with pytest.raises(ValueError, match="accession"):
+        loader.extract_sgml_document(_sgml_submission(original), accession="0001234567-21-000001", filename="primary.htm")
+
+
+def test_offline_sgml_recovery_is_audited_and_retains_primary_identity(tmp_path, monkeypatch):
+    primary = "https://www.sec.gov/Archives/edgar/data/123/000123456720000001/primary.htm"
+    submission, accession, filename = loader.sgml_recovery_locator(primary)
+    original = (b"<HTML><BODY>Depositary registration statement. "
+                b"Each American Depositary Share represents five ordinary shares. "
+                b"Terms of the deposited securities are described below.</BODY></HTML>\n")
+    full = _sgml_submission(original)
+    source = loader.SecClient(tmp_path, "fake")
+    monkeypatch.setattr(source, "request", lambda *_: full)
+    source.document(submission)
+    # An offline primary miss recovers solely from the already verified complete
+    # submission. The actual HTTP primitive must never be reached.
+    monkeypatch.setattr(loader, "urlopen", lambda *_, **__: pytest.fail("Offline recovery attempted HTTP"))
+    offline = loader.SecClient(tmp_path, offline=True)
+    data, sha = offline.document(primary)
+    assert data == original and sha == loader.digest(original)
+    proof = offline.recovery_proofs[primary]
+    assert proof["recovery_source_url"] == submission
+    assert proof["recovery_source_sha256"] == loader.digest(full)
+    assert proof["recovery_filename"] == filename
+    document = {"cik": 123, "adsh": accession, "form": "F-6", "filed": "2020-03-01", "symbols": [],
+                "binding": "registrant_cik", "source_url": primary}
+    metadata, facts = loader.parse_document(offline, document)
+    assert metadata["source_url"] == primary and metadata["source_sha256"] == sha
+    assert metadata["document_recovery_proof"] == proof
+    assert facts
+    assert all(row["source_url"] == primary and row["source_sha256"] == sha for row in facts)
+    assert all(row["document_recovery_proof"] == proof and "recovery-submission-sha256=" in row["evidence_location"] for row in facts)
+    # A fresh process reads both recovered original bytes and their provenance.
+    reloaded = loader.SecClient(tmp_path, offline=True)
+    assert reloaded.document(primary) == (original, sha)
+    assert reloaded.recovery_proofs[primary] == proof
+
+
+@pytest.mark.parametrize("filename", ["0001234567-20-000001.txt", "exhibit.pdf"])
+def test_sgml_fallback_does_not_recurse_or_decode_binary_pdf(tmp_path, monkeypatch, filename):
+    client = loader.SecClient(tmp_path, "fake")
+    calls = []
+    def request(url):
+        calls.append(url)
+        return b"short"
+    monkeypatch.setattr(client, "request", request)
+    with pytest.raises(ValueError, match="empty document"):
+        client.document("https://www.sec.gov/Archives/edgar/data/123/000123456720000001/" + filename)
+    assert len(calls) == 1
+
+
+def _write_relocation_index(cache, *, duplicate=False):
+    row = "456|ACME PLC/ADR|F-6|2020-03-01|edgar/data/456/0001234567-20-000001.txt"
+    text = "CIK|Company Name|Form Type|Date Filed|Filename\n" + row + "\n"
+    if duplicate:
+        text += "789" + row[3:].replace("/456/", "/789/") + "\n"
+    loader.write_bytes(cache / "master-2020-Q1.idx", text.encode())
+    return row, text.encode()
+
+
+def test_official_index_relocation_requires_one_exact_accession_mapping(tmp_path):
+    primary = "https://www.sec.gov/Archives/edgar/data/123/000123456720000001/primary.htm"
+    row, raw = _write_relocation_index(tmp_path)
+    actual, proof = loader.indexed_relocation(tmp_path, primary)
+    assert actual == primary.replace("/123/", "/456/")
+    assert proof["recovery_index_line"] == row
+    assert proof["recovery_index_sha256"] == loader.digest(raw)
+    assert proof["recovery_index_url"].endswith("/2020/QTR1/master.idx")
+    assert loader.indexed_relocation(tmp_path, primary.replace("720000001", "720000002")) is None
+    _write_relocation_index(tmp_path, duplicate=True)
+    with pytest.raises(ValueError, match="ambiguous accession"):
+        loader.indexed_relocation(tmp_path, primary)
+
+
+def test_offline_index_recovery_preserves_identity_and_binding_provenance(tmp_path, monkeypatch):
+    primary = "https://www.sec.gov/Archives/edgar/data/123/000123456720000001/primary.htm"
+    actual = primary.replace("/123/", "/456/")
+    _write_relocation_index(tmp_path)
+    raw = (b"<HTML><BODY>ACME PLC (Exact name of issuer of deposited securities) "
+           b"Each American Depositary Share represents five ordinary shares. "
+           b"Terms of the registered deposited securities.</BODY></HTML>")
+    seed = loader.SecClient(tmp_path, "fake")
+    monkeypatch.setattr(seed, "request", lambda *_: raw)
+    seed.document(actual)
+    monkeypatch.setattr(loader, "urlopen", lambda *_, **__: pytest.fail("Offline relocation attempted HTTP"))
+    client = loader.SecClient(tmp_path, offline=True)
+    assert client.document(primary) == (raw, loader.digest(raw))
+    proof = client.recovery_proofs[primary]
+    assert proof["recovery_retrieval_url"] == actual
+    document = {"cik": 123, "adsh": "0001234567-20-000001", "form": "F-6", "filed": "2020-03-01", "symbols": [],
+                "binding": "registrant_cik", "source_url": primary}
+    updated, facts = loader.parse_document(client, document)
+    assert updated["cik"] == 123 and updated["source_url"] == primary
+    assert updated["document_recovery_proof"]["recovery_archive_cik"] == 456
+    assert facts and all("sec-index-sha256=" in fact["evidence_location"] for fact in facts)
+    exhibit = {**document, "source_url": primary.replace("primary.htm", "deposit-agreement.htm"),
+               "binding": "issuer_name_in_f6", "issuer_name": "ACME PLC"}
+    parent_proof = loader.f6_attachment_binding_proof(client, exhibit, [document])
+    assert parent_proof["source_url"] == actual
+    assert parent_proof["discovery_source_url"] == primary
+    assert parent_proof["source_sha256"] == loader.digest(raw)
+    assert parent_proof["source_recovery_proof"]["recovery_index_line"].startswith("456|ACME")

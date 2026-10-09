@@ -18,16 +18,17 @@ from typing import Iterable
 
 PARSER_VERSION = "foreign-listing-v1"
 _SPACE = re.compile(r"\s+")
-_ADS = r"(?:(?:American|Global)\s+depositary\s+(?:shares?|receipts?)|American\s+shares?\s*\(evidenced\s+by\s+depositary\s+receipts\)|[AG]D[SR]s?)"
+_ADS = r"(?:(?:(?:American?|Global)\s+)?deposit[ao]ry\s+(?:shares?|receipts?)|American\s+shares?\s*\(evidenced\s+by\s+deposit[ao]ry\s+receipts\)|[AG]D[SR]s?)"
 _SHARES = r"(?:(?:(?:class|series)\s+[A-Z0-9]+\s+)?(?:ordinary|common)\s+shares?|shares?\s+of\s+common\s+stock|(?:class|series)\s+[A-Z0-9]+\s+shares?|shares?)"
 _WORDS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|half|third|quarter"
 _QUANTITY = rf"(?:\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?|(?:{_WORDS})(?:[ -]+(?:{_WORDS}|and)){{0,5}})(?:\s*\(\s*\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?\s*\))?"
+_OF_UNIT = r"(?:\s+of(?:\s+(?:one|an?|the)(?:\s*\(\s*\d+\s*/\s*\d+\s*\))?)?)?"
 _RATIO = re.compile(
-    rf"(?P<adsn>each|{_QUANTITY})\s+{_ADS}\b(?:[^.;]|\.(?=\d)){{0,100}}?\b(?:represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?|to|per)\s+(?P<ordinary>{_QUANTITY})(?:\s+of(?:\s+(?:one|an?|the))?)?\s+(?:(?:of\s+)?(?:our|the|its|company.s)\s+)?{_SHARES}",
+    rf"(?P<adsn>each|{_QUANTITY})\s+{_ADS}\b(?:[^.;]|\.(?=\d)){{0,100}}?\b(?:represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?|to|per)\s+(?P<ordinary>{_QUANTITY}){_OF_UNIT}\s+(?:(?:of\s+)?(?:our|the|its|company.s)\s+)?{_SHARES}",
     re.I,
 )
 _RATIO_TITLE = re.compile(
-    rf"{_ADS}(?!\w)[^.;]{{0,100}}?\b(?:each\s+(?:of\s+which\s+)?|which\s+)represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?\s+(?P<ordinary>{_QUANTITY})(?:\s+of(?:\s+(?:one|an?|the))?)?\s+{_SHARES}",
+    rf"{_ADS}(?!\w)[^.;]{{0,100}}?\b(?:each\s+(?:of\s+which\s+)?|which\s+)represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?\s+(?P<ordinary>{_QUANTITY}){_OF_UNIT}\s+{_SHARES}",
     re.I,
 )
 _NOT_TRADING = re.compile(r"not\s+(?:for\s+trading|listed\s+for\s+trading)|non[- ]traded|without\s+trading\s+privileges", re.I)
@@ -242,15 +243,15 @@ def _canonical_symbol(value: str | None) -> str | None:
 
 def _prior_ratio(text: str, offset: int) -> bool:
     return bool(re.search(
-        r"(?:from|previous|current|existing|old|former|then)\s+(?:(?:ADS\s+)?ratio\s+(?:(?:of|was|is)\s+)?)?$",
-        text[max(0, offset - 70):offset], re.I,
+        r"(?:from|previous|current|existing|old|former|then)\s+(?:(?:(?:ADS|ADR)(?:[- ]to[- ]Share)?[- ]?)?ratio\s*:?[ ]*(?:(?:of|was|is)\s+)?)?[\"“'‘]*$",
+        text[max(0, offset - 100):offset], re.I,
     ))
 
 
 def _superseded_ratio(text: str, start: int, end: int) -> bool:
     context = text[max(0, start - 700):end + 700]
     return _prior_ratio(text, start) and bool(re.search(
-        r"(?:new|former|previous)\s+(?:ADS\s+)?ratio|(?:chang\w*|amend\w*).{0,100}ratio|ratio.{0,100}(?:chang\w*|amend\w*)",
+        r"(?:new|former|previous)\s+(?:(?:ADS|ADR)(?:[- ]to[- ]Share)?[- ]?)?ratio|(?:chang\w*|amend\w*).{0,100}ratio|ratio.{0,100}(?:chang\w*|amend\w*)",
         context, re.I,
     ))
 
@@ -275,7 +276,7 @@ def _ordinary_candidate(title: str) -> bool:
 def _effective_date(text: str) -> str | None:
     months = "January|February|March|April|May|June|July|August|September|October|November|December"
     # Avoid the announcement date: an explicit effective/event verb must be adjacent.
-    pattern = rf"(?:effective\s+date\s+for\s+the\s+(?:ADS\s+)?ratio\s+change\s+is|effective(?:\s+(?:date|on|as\s+of|from|beginning|at|will\s+be|is|was|became)){{0,3}}|take\s+effect\s+on|with\s+effect\s+from|implemented\s+on|change\s+[^.;]{{0,60}}?ratio[^.;]{{0,220}}?\bon)\s+(?P<date>(?:{months})\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}|\d{{1,2}}\s+(?:{months})\s+\d{{4}}|\d{{4}}-\d{{2}}-\d{{2}})"
+    pattern = rf"(?:effective\s+date\s+for\s+the\s+(?:ADS\s+)?ratio\s+change\s+is|effective(?:\s+(?:date|on|as\s+of|from|beginning|at|will\s+be|is|was|became)){{0,3}}|take\s+effect\s+on|with\s+effect\s+from|implemented\s+on|change\s+[^.;]{{0,60}}?ratio[^.;]{{0,220}}?\bon)\s*:?\s*(?P<date>(?:{months})\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}|\d{{1,2}}\s+(?:{months})\s+\d{{4}}|\d{{4}}-\d{{2}}-\d{{2}})"
     matches = list(re.finditer(pattern, text, re.I))
     dates = set()
     for match in matches:
@@ -290,6 +291,27 @@ def _effective_date(text: str) -> str | None:
         except ValueError:
             continue
     return next(iter(dates)) if len(dates) == 1 else None
+
+
+def _f6_amendment_date(text: str) -> str | None:
+    """Date the operative amendment, not the annexed agreement's old terms.
+
+    Registration exhibits often reproduce a revised ADR and a holder notice
+    many pages after the amendment itself. Its explicit ratio-change date
+    governs those replacement clauses even when it is outside a local excerpt.
+    Restrict the date search to an identified amendment's operative articles;
+    dates in signatures, specimen ADRs and legacy agreement annexes do not set it.
+    """
+    heading = re.search(r"\bamendment\s+no\.?\s*\d+\s+to\s+(?:(?:amended|and|restated)\s+)*deposit\s+agreement\b", text[:8000], re.I)
+    if not heading:
+        return None
+    body = text[heading.start():]
+    end = re.search(r"\bIN\s+WITNESS\s+WHEREOF\b|\bEXHIBIT\s+[A-Z]\s*\[?\s*FORM\b", body, re.I)
+    if end:
+        body = body[:end.start()]
+    if not re.search(r"(?:chang\w*|amend\w*).{0,100}ratio|ratio.{0,100}(?:chang\w*|amend\w*)", body, re.I):
+        return None
+    return _effective_date(body)
 
 
 def parse_filing(
@@ -366,10 +388,17 @@ def parse_filing(
         table_end = cover_start + table_end_match.start() if table_end_match else cover_end
         table_text = text[cover_start:table_end]
         footnote_markers = set()
+        depositary_notes: list[tuple[str | None, str]] = []
         for note in _DEPOSITARY_NOTE.finditer(cover):
             markers = list(re.finditer(r"\*+|[†‡]|\(\d+\)", cover[max(0, note.start() - 240):note.start()]))
+            marker_value = markers[-1].group() if markers else None
             if markers:
-                footnote_markers.add(markers[-1].group())
+                footnote_markers.add(marker_value)
+            note_text = cover[note.start():]
+            next_note = re.search(r"\*+|[†‡]|\(\d+\)|Securities\s+(?:registered|for\s+which)|Indicate\s+by\s+check", note_text, re.I)
+            if next_note:
+                note_text = note_text[:next_note.start()]
+            depositary_notes.append((marker_value, note_text))
         listed_symbols: set[str] = set()
         ads_symbols: set[str] = set()
         for table_index, table in enumerate(document.tables):
@@ -412,16 +441,20 @@ def parse_filing(
                         row_text += " " + continuation
                 non_equity = not _ordinary_candidate(title)
                 footnote = ""
-                if _DEPOSITARY_NOTE.search(cover) and re.search(_ADS, cover, re.I):
+                associated_notes = ""
+                if depositary_notes:
                     # Footnote association requires a marker on this title, or
                     # a unique symbol across the 12(b) table.
                     title_markers = set(re.findall(r"\*+|[†‡]|\(\d+\)", row_text))
                     if title_markers & footnote_markers or (not title_markers and not footnote_markers and len(table_symbols) == 1):
                         footnote = cover
-                if footnote:
+                        associated_notes = " ".join(note_text for marker, note_text in depositary_notes
+                                                    if marker in title_markers or (marker is None and not title_markers))
+                exchange_wrapper = bool(re.search(rf"in\s+connection\s+with\s+(?:the\s+)?(?:listing|registration).{{0,140}}?{_ADS}", row_text, re.I))
+                if re.search(_ADS, title, re.I) or re.search(_ADS, associated_notes, re.I) or exchange_wrapper:
                     kind = "ads"
-                elif re.search(_ADS, title, re.I):
-                    kind = "ads"
+                elif footnote:
+                    kind = "unknown"
                 elif non_equity:
                     kind = "unknown"
                 elif re.search(r"ordinary\s+shares?|common\s+(?:shares?|stock)|subordinate\s+voting\s+shares?|variable\s+voting\s+shares?", title, re.I) and not _NOT_TRADING.search(row_text):
@@ -494,14 +527,27 @@ def parse_filing(
                     emit("ads_ratio", "item_12d", symbol, context, f"item-12d;text-offset={item.start() + match.start()}", ratio=ratio, class_text=match.group(), effective=_effective_date(context))
     elif base_form in ("F-6", "F-6EF", "F-6 POS"):
         explicit = [s.upper() for s in _explicit_symbols(text)]
+        amendment_date = _f6_amendment_date(text)
+        amendment_date_match = None
+        if amendment_date:
+            stated_date = date.fromisoformat(amendment_date)
+            month = stated_date.strftime("%B")
+            amendment_date_match = re.search(
+                rf"\b(?:{month}\s+{stated_date.day}(?:st|nd|rd|th)?,?\s+{stated_date.year}|{stated_date.day}\s+{month}\s+{stated_date.year}|{amendment_date})\b",
+                text, re.I,
+            )
         for match, ratio in _ratios(text):
             context = text[max(0, match.start() - 700):match.end() + 700]
             if _superseded_ratio(text, match.start(), match.end()):
                 continue
+            location = f"f6/depositary-description;text-offset={match.start()}"
+            if amendment_date_match and not (max(0, match.start() - 700) <= amendment_date_match.start() <= match.end() + 700):
+                context += " " + text[max(0, amendment_date_match.start() - 300):amendment_date_match.end() + 150]
+                location += f";amendment-date-text-offset={amendment_date_match.start()}"
             local_symbols = [s.upper() for s in _explicit_symbols(context)] or explicit
             for symbol in local_symbols if len(set(local_symbols)) == 1 else [None]:
-                emit("ads_ratio", "f6", symbol, context, f"f6/depositary-description;text-offset={match.start()}", ratio=ratio,
-                     effective=_effective_date(context), class_text=match.group())
+                emit("ads_ratio", "f6", symbol, context, location, ratio=ratio,
+                     effective=amendment_date or _effective_date(context), class_text=match.group())
     elif base_form == "6-K":
         for match, ratio in _ratios(text):
             context = text[max(0, match.start() - 500):match.end() + 700]

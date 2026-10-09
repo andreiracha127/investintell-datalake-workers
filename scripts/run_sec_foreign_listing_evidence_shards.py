@@ -61,6 +61,7 @@ def _load_plan(cache: Path) -> tuple[dict, dict]:
     parent = json.loads(parent_file.read_text(encoding="utf-8"))
     if not parent.get("complete") or parent.get("universe_sha256") != plan["universe_sha256"]:
         raise ValueError("Parent discovery is incomplete or its universe hash changed")
+    loader.require_authoritative_filing_dates(parent)
     return plan, parent
 
 
@@ -73,6 +74,7 @@ def prepare(cache: Path) -> dict:
     parent = json.loads(raw)
     if not parent.get("complete"):
         raise ValueError("Shard preparation requires complete foreign-universe discovery")
+    loader.require_authoritative_filing_dates(parent)
     documents = _parent_documents(parent)
     parent_hash = loader.digest(raw)
     plan = {"version": PLAN_VERSION, "parts": PART_COUNT, "parent_manifest_sha256": parent_hash,
@@ -133,7 +135,8 @@ def collect(cache: Path, part: int, observations: Path | None = None, *, offline
     observation_rows = json.loads(observations.read_text(encoding="utf-8-sig")) if observations else None
     key = "" if offline else loader.load_key(dotenv)
     client = loader.SecClient(directory, key, offline=offline, requests_per_second=8 / PART_COUNT)
-    result = loader.parse_manifest(client, manifest, directory / "evidence.jsonl", workers, observation_rows)
+    result = loader.parse_manifest(client, manifest, directory / "evidence.jsonl", workers, observation_rows,
+                                   binding_sources=parent["documents"])
     # parse_manifest preserves complete=False. No partial partition can pass the
     # ordinary loader's apply_evidence complete-manifest requirement.
     return {"part": part, "parent_manifest_sha256": plan["parent_manifest_sha256"], **result}
@@ -147,6 +150,7 @@ def _validate_child(cache: Path, plan: dict, parent_documents: dict, part: int) 
         raise ValueError("Child manifest parent identity or partial status is invalid")
     if not child.get("parse_complete") or child.get("universe_sha256") != plan["universe_sha256"]:
         raise ValueError("Child parsing is incomplete or universe hash mismatches")
+    loader.require_authoritative_filing_dates(child)
     expected = {key for key, source in parent_documents.items() if partition(source) == part}
     documents = {row["source_package"]: row for row in child["documents"]}
     if len(documents) != len(child["documents"]) or set(documents) != expected:

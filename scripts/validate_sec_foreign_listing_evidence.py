@@ -125,6 +125,7 @@ def main() -> int:
         for name in ("schemas/sec_foreign_listing_evidence.sql",
                      "scripts/sec_foreign_listing_parser.py",
                      "scripts/load_sec_foreign_listing_evidence.py",
+                     "scripts/enrich_sec_foreign_listing_filing_dates.py",
                      "scripts/run_sec_foreign_listing_evidence_shards.py",
                      "scripts/validate_sec_foreign_listing_evidence.py")
     }

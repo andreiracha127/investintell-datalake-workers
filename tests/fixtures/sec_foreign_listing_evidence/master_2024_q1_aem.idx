@@ -1,0 +1,12 @@
+Description:           Master Index of EDGAR Dissemination Feed
+Last Data Received:    March 31, 2024
+Comments:              webmaster@sec.gov
+Anonymous FTP:         ftp://ftp.sec.gov/edgar/
+Cloud HTTP:            https://www.sec.gov/Archives/
+
+
+
+
+CIK|Company Name|Form Type|Date Filed|Filename
+--------------------------------------------------------------------------------
+2809|AGNICO EAGLE MINES LTD|40-F|2024-03-25|edgar/data/2809/0001104659-24-037982.txt

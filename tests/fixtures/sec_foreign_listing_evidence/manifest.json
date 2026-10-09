@@ -266,13 +266,27 @@
     "cik": 844150,
     "symbol": "NWG",
     "accession_number": "0001104659-22-030147",
-    "filing_date": "2022-03-03",
+    "filing_date": "2022-03-04",
     "form_type": "20-F",
     "source_url": "https://www.sec.gov/Archives/edgar/data/844150/000110465922030147/nwg-20211231x20f.htm",
     "sha256": "9b20c1ef61b34af9b7f84ba5fe5d44fb19818058f413d241c9f418eb71448620",
     "source_character_start": 1455726,
     "source_character_end": 1513426,
-    "extraction": "Contiguous verbatim HTML cover excerpt selected during deterministic 30-document preflight; LF normalized."
+    "extraction": "Contiguous verbatim HTML cover excerpt selected during deterministic 30-document preflight; LF normalized.",
+    "query_accepted_on": "2022-03-03",
+    "filing_date_proof": {
+      "source": "w1_same_accession",
+      "filed": "2022-03-04",
+      "observation_export_sha256": "a937b8cc1d7bfdfc5812c30c1a2b2a17961995d5d350554c292f7215b59797f8",
+      "records": [
+        {
+          "cik": 844150,
+          "adsh": "0001104659-22-030147",
+          "filed": "2022-03-04",
+          "accepted": "2022-03-03T18:33:00"
+        }
+      ]
+    }
   },
   {
     "name": "kep_2023",
@@ -388,5 +402,133 @@
       ]
     ],
     "extraction": "Verbatim source HTML span(s); PT concatenates cover and Item 12.D from the same filing; LF normalized with one final newline."
+  },
+  {
+    "name": "azn_2015_f6_parent_full",
+    "fixture": "azn_2015_f6_parent_full.html",
+    "cik": 901832,
+    "symbol": "AZN",
+    "accession_number": "0001193805-15-001204",
+    "filing_date": "2015-07-20",
+    "form_type": "F-6 POS",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000119380515001204/e613908_f6pos-astrazeneca.htm",
+    "sha256": "aecb34c67a99f17b0a7ef70cfe31e0acd01bc8c342b3729afa5d424a21834013",
+    "extraction": "Complete original SEC document, retaining operative and legacy contract context; LF normalized with one final newline."
+  },
+  {
+    "name": "azn_2015_amendment_full",
+    "fixture": "azn_2015_amendment_full.html",
+    "cik": 901832,
+    "symbol": "AZN",
+    "accession_number": "0001193805-15-001204",
+    "filing_date": "2015-07-20",
+    "form_type": "F-6 POS",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000119380515001204/e613908_ex99-ai.htm",
+    "sha256": "cc54114eea95200dcb39f05592694814d283ffcba2a33d0a4f927798934ce227",
+    "extraction": "Complete original SEC document, retaining operative and legacy contract context; LF normalized with one final newline."
+  },
+  {
+    "name": "azn_2015_legacy_agreement_full",
+    "fixture": "azn_2015_legacy_agreement_full.html",
+    "cik": 901832,
+    "symbol": "AZN",
+    "accession_number": "0001193805-15-001204",
+    "filing_date": "2015-07-20",
+    "form_type": "F-6 POS",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000119380515001204/e613908_ex99-aii.htm",
+    "sha256": "e10e97f637bcb7c327f2f185589414154f77d4390925d80c1ad9a90b22060839",
+    "extraction": "Complete original SEC document, retaining operative and legacy contract context; LF normalized with one final newline."
+  },
+  {
+    "name": "azn_2015_20f_cover",
+    "fixture": "azn_2015_20f_cover.html",
+    "cik": 901832,
+    "symbol": "AZN",
+    "accession_number": "0000950103-15-001933",
+    "filing_date": "2015-03-10",
+    "form_type": "20-F",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/901832/000095010315001933/dp54209_20f.htm",
+    "sha256": "1aa78a2d2c2b1c9f8ad7f46d1d5e6869c6b83e402709a4e7f134bf4a09471d7a",
+    "source_character_start": 12291,
+    "source_character_end": 19773,
+    "extraction": "Contiguous original SEC cover with Section 12(b) table and footnote; LF normalized with one final newline."
+  },
+  {
+    "name": "ec_2021_depository",
+    "fixture": "ec_2021_depository.html",
+    "cik": 1444406,
+    "symbol": "EC",
+    "accession_number": "0001104659-21-048256",
+    "filing_date": "2021-04-09",
+    "query_accepted_on": "2021-04-08",
+    "form_type": "20-F",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1444406/000110465921048256/tm214046d1_20f.htm",
+    "sha256": "dfc763ca492c94031c5aecfde34710a54852a046ade0e23ba45d538a8f226f00",
+    "source_character_start": 7594,
+    "source_character_end": 16107,
+    "extraction": "Contiguous original SEC Section 12(b) HTML table and context; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2021-04-09",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2021/QTR2/master.idx",
+          "source_sha256": "1d3074f10034752b236c7913b43021b34df6ef761ca9c26c8f627e664ed8fdc4",
+          "line": "1444406|ECOPETROL S.A.|20-F|2021-04-09|edgar/data/1444406/0001104659-21-048256.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "ixhl_2022_exchange_wrapper",
+    "fixture": "ixhl_2022_exchange_wrapper.html",
+    "cik": 1873875,
+    "symbol": "IXHL",
+    "accession_number": "0001213900-22-008547",
+    "filing_date": "2022-02-22",
+    "query_accepted_on": "2022-02-22",
+    "form_type": "20FR12B/A",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1873875/000121390022008547/f20fr12b2021a1_incannex.htm",
+    "sha256": "6f51efb433063dec59dec532dba9430a507b5bf67b3905e8966773207e228f7e",
+    "source_character_start": 11413,
+    "source_character_end": 17187,
+    "extraction": "Contiguous original SEC Section 12(b) HTML table and context; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2022-02-22",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2022/QTR1/master.idx",
+          "source_sha256": "078a02acce7f1b368020d4ec06a775a33d04203f374fe706227c4e14225a3361",
+          "line": "1873875|Incannex Healthcare Ltd|20FR12B/A|2022-02-22|edgar/data/1873875/0001213900-22-008547.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "gsk_2024_america_depositary",
+    "fixture": "gsk_2024_america_depositary.html",
+    "cik": 1131399,
+    "symbol": "GSK",
+    "accession_number": "0001131399-24-000007",
+    "filing_date": "2024-03-05",
+    "query_accepted_on": "2024-03-05",
+    "form_type": "20-F",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1131399/000113139924000007/gsk-20231231.htm",
+    "sha256": "56505f529de740a784fecf117f8811aba85f90fd5b5f6459e94c6a5098db7a79",
+    "source_character_start": 1015306,
+    "source_character_end": 1025865,
+    "extraction": "Contiguous original SEC Section 12(b) HTML table and context; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2024-03-05",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2024/QTR1/master.idx",
+          "source_sha256": "c5ed4d31dc82b273f578ebd6141f4f8e2eb23d16e8fa441b73ede31845be0d00",
+          "line": "1131399|GSK plc|20-F|2024-03-05|edgar/data/1131399/0001131399-24-000007.txt"
+        }
+      ]
+    }
   }
 ]

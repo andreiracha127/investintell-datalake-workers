@@ -45,19 +45,58 @@ denominator are integers representing **ordinary shares per one ADS**: `1/2`
 means one ADS represents half an ordinary share. Direct ordinary listings
 return the identity ratio `1/1`.
 
-Each filing becomes available on its filing date plus one day. Initial imports
-retain that source date. Corrections to a previously loaded accession become
-available no earlier than the reconciliation date, while retired versions
-remain visible to earlier queries. The dated resolver also respects explicit
-ratio effective dates; an announcement cannot affect dates before it was
-public. The raw document hash, accession, source URL, source text, parser
-version and location travel with every fact.
+An F-6 exhibit can inherit issuer identity from an actual issuer-name cover field
+in the **same accession**, with the same issuer CIK and official filing date.
+The exhibit retains the parent cover URL and original-byte hash. A depositary's
+registrant CIK alone does not establish this attachment relationship. Shards use
+the complete parent manifest for these lookups, including covers assigned to the
+other shard; final offline replay uses the fully populated shared original cache.
+
+Filing-search `filedAt` is not treated as the official filing date. Discovery
+finishes by matching accessions to SEC quarterly master indexes across adjacent
+quarters. Same-date cofilers agree; conflicting dates remain ambiguous. Exact
+historical daily-index records, same-accession SEC submission headers, and the
+read-only W1 export provide explicit fallbacks. API acceptance dates never fill
+an unresolved filing date. The manifest preserves the original query date and
+the authoritative date's source URL, hash and matching index/header evidence.
+
+Normal source availability is the official filing date plus one day. A
+backdated replacement document must also pass its publication floor: the maximum
+discovery-reported publication date across that accession, without another day
+added. Thus source availability is
+`greatest(filed + 1, publication_floor_on)`. For example, AEM's March 22, 2024
+acceptance and March 25 filing give March 26 availability. Vodafone's replacement
+accession reported on November 9, 2022, with a legal filing date of June 8, 2018,
+cannot become visible before November 9, 2022. Its legal effective date remains
+June 9, 2018, so it cannot supersede a newer annual filing merely because it was
+republished later. The floor is labelled as discovery-reported publication
+evidence, not as an official filing date.
+
+Version `sec-official-filing-date-v2` and matching per-document date/floor proofs
+are required before parsing, combining shards or applying evidence. Initial
+imports retain the resulting source availability. Corrections to an accession
+already loaded become available no earlier than the reconciliation date, while
+retired versions remain queryable at earlier dates. Explicit ratio effective
+dates are separate: a known future change is not in force before its stated date.
+The original document hash, accession, source URL, source text, parser version,
+location, date authority and publication-floor evidence travel with every fact.
+
+An unavailable or invalid HTML/text primary document can be recovered from its
+SEC complete submission only by an exact accession and unique `FILENAME` match.
+The loader retains original `TEXT` bytes, removing only the SGML separator line
+break. It records the complete-submission URL and hash. If SEC has moved the
+archival CIK, a unique accession mapping in a cached official quarterly index
+can establish the retrieval location; the original discovery identity remains
+unchanged, and the actual retrieval URL and index URL/hash/row are retained.
+These recovery paths also work offline after their authoritative sources have
+been cached. They do not invent missing content or substitute another accession.
 
 ## Local collection and validation
 
 Use a new external cache directory. Example PowerShell commands:
 
 ```powershell
+New-Item -ItemType Directory -Path E:/investintell-data/w1c -ErrorAction Stop | Out-Null
 $env:PGOPTIONS = '-c default_transaction_read_only=on -c statement_timeout=30000'
 $psql = 'C:/Program Files/PostgreSQL/18/bin/psql.exe'
 & $psql -X -A -t -h 127.0.0.1 -p 65432 -U mcp_ro -d market -v ON_ERROR_STOP=1 `
@@ -80,7 +119,9 @@ Downloaded originals use lossless XZ storage (older gzip/raw caches remain
 readable); their evidence hashes are
 computed over the original uncompressed bytes. The manifest records unsuccessful discovery, download, parsing and issuer
 bindings separately. A complete manifest is required for database application.
-The loader does not install the schema.
+The loader does not install the schema. Normal `--discover` includes authoritative
+filing-date enrichment. A legacy manifest containing only API dates cannot be
+parsed or applied by bypassing this stage.
 
 For a large collection, complete discovery first, then use the two-process
 wrapper below. Run the two `collect` commands in separate terminals. Each
@@ -91,23 +132,77 @@ parent discovery, source identities, observation hashes, fact hashes and counts
 before publishing the complete evidence artifact.
 
 ```powershell
-python scripts/run_sec_foreign_listing_evidence_shards.py prepare --cache-dir <cache>
-python scripts/run_sec_foreign_listing_evidence_shards.py collect --cache-dir <cache> --part 0 --observations <observations.json>
-python scripts/run_sec_foreign_listing_evidence_shards.py collect --cache-dir <cache> --part 1 --observations <observations.json>
-python scripts/run_sec_foreign_listing_evidence_shards.py combine --cache-dir <cache> --output <evidence.jsonl>
+python scripts/load_sec_foreign_listing_evidence.py `
+  --universe E:/investintell-data/w1c/universe.json `
+  --observations E:/investintell-data/w1c/foreign_observations.json `
+  --cache-dir E:/investintell-data/w1c/cache --discover `
+  --output E:/investintell-data/w1c/evidence.jsonl
+python scripts/run_sec_foreign_listing_evidence_shards.py prepare `
+  --cache-dir E:/investintell-data/w1c/cache
+python scripts/run_sec_foreign_listing_evidence_shards.py collect `
+  --cache-dir E:/investintell-data/w1c/cache --part 0 `
+  --observations E:/investintell-data/w1c/foreign_observations.json
+python scripts/run_sec_foreign_listing_evidence_shards.py collect `
+  --cache-dir E:/investintell-data/w1c/cache --part 1 `
+  --observations E:/investintell-data/w1c/foreign_observations.json
+python scripts/run_sec_foreign_listing_evidence_shards.py combine `
+  --cache-dir E:/investintell-data/w1c/cache `
+  --output E:/investintell-data/w1c/evidence.jsonl
 ```
 
 On Windows, preparation reports any shared-document directory links that need
 to be created as junctions before collection. The wrapper has no database
 operation; use the main loader's explicit `--apply` only after combination.
+Once the full source cache exists, append `--offline` to both `collect` commands
+to reparse with the current parser and complete same-accession binding context,
+then run `combine` again. Offline mode cannot make SEC requests.
+
+To upgrade a previously collected acceptance-date manifest, write a new parent
+manifest and preserve the old manifest, evidence and shard plan. The following
+commands use a new `verified` directory; select another new directory if that
+name already holds a previous run:
+
+```powershell
+python scripts/enrich_sec_foreign_listing_filing_dates.py `
+  --input-manifest E:/investintell-data/w1c/cache/manifest.json `
+  --output-manifest E:/investintell-data/w1c/cache/verified/manifest.json `
+  --cache-dir E:/investintell-data/w1c/cache `
+  --observations E:/investintell-data/w1c/foreign_observations.json `
+  --download-indexes --requests-per-second 2
+New-Item -ItemType Junction `
+  -Path E:/investintell-data/w1c/cache/verified/documents `
+  -Target E:/investintell-data/w1c/cache/documents | Out-Null
+python scripts/run_sec_foreign_listing_evidence_shards.py prepare `
+  --cache-dir E:/investintell-data/w1c/cache/verified
+```
+
+Omit `--download-indexes` when the authoritative indexes and header sources are
+already cached; enrichment then performs no network requests. Run both shard
+collections with `--cache-dir E:/investintell-data/w1c/cache/verified --offline`
+and combine that same cache. On systems supporting symbolic links, a directory
+symlink to the shared originals can replace the Windows junction.
 
 In a separate writer shell without the production read-only `PGOPTIONS`, apply
 the additive schema to a disposable PostgreSQL 16 database, then set
-`FOREIGN_EVIDENCE_DATABASE_URL` to that local database and run the same command
-with `--offline --apply`. The observed-on date defaults to the actual UTC date.
+`FOREIGN_EVIDENCE_DATABASE_URL` to that local database. Load the already combined
+artifact with `--apply` alone; it verifies the artifact hash and date/floor
+proofs, without another parse or any network operation:
+
+```powershell
+python scripts/load_sec_foreign_listing_evidence.py `
+  --universe E:/investintell-data/w1c/universe.json `
+  --cache-dir E:/investintell-data/w1c/cache `
+  --output E:/investintell-data/w1c/evidence.jsonl --apply
+```
+
+Use the `verified` cache instead when the combined artifact came from the
+upgraded parent. The observed-on date defaults to the actual UTC date.
 Do not choose an earlier date to make a correction appear historically known.
 The database operation is one transaction; unchanged facts remain unchanged,
 and changed or removed facts create or retire versions.
+For initial historical-coverage validation, use fresh disposable tables. Loading
+a corrected date artifact over an earlier incorrect import would intentionally
+retain that earlier history as part of the bitemporal correction record.
 
 ```powershell
 $env:SEC_FOREIGN_TEST_DATABASE_URL = $env:FOREIGN_EVIDENCE_DATABASE_URL
@@ -156,8 +251,10 @@ of today's symbols.
    Supply the production connection through the operator's normal credential
    mechanism. Do not use the read-only `mcp_ro` role for this step.
 5. Set `FOREIGN_EVIDENCE_DATABASE_URL` securely to that authorized writer.
-   Run the same verified local collection command with `--offline --apply`
-   and the actual reconciliation date. Do not run discovery during application.
+   Run the apply-only command above with the reviewed universe, complete verified
+   cache and exact combined JSONL artifact. Its manifest must have v2 filing-date
+   and publication-floor proofs. Use the actual reconciliation date; do not run
+   discovery or reparse during application.
 6. With `mcp_ro`, read back source/fact counts and execute the dated resolver
    checks and year-end report. Confirm existing W1 refusal behavior is unchanged.
    No Railway change, deployment, or admission switch is part of these steps.

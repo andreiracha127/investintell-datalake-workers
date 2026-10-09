@@ -39,7 +39,7 @@ FULLTEXT_URL = QUERY_URL + "/full-text-search"
 ANNUAL_FORMS = ("20-F", "20-F/A", "40-F", "40-F/A", "20FR12B", "20FR12G", "20FR12B/A", "20FR12G/A")
 F6_FORMS = ("F-6", "F-6/A", "F-6EF", "F-6 POS")
 MANIFEST_VERSION = 1
-DISCOVERY_VERSION = "foreign-listing-discovery-v3-securities-description"
+DISCOVERY_VERSION = "foreign-listing-discovery-v5-publication-floor"
 
 
 def canonical_json(value: object) -> str:
@@ -155,6 +155,94 @@ def read_universe(path: Path) -> list[dict[str, Any]]:
     return [result[key] for key in sorted(result)]
 
 
+def sgml_recovery_locator(url: str) -> tuple[str, str, str] | None:
+    """Derive only this accession's complete submission for a text document."""
+    parts = urlsplit(canonical_sec_url(url))
+    parent, filename = parts.path.rsplit("/", 1)
+    compact = parent.rsplit("/", 1)[-1]
+    if not re.fullmatch(r"\d{18}", compact) or not filename.lower().endswith((".htm", ".html", ".txt")):
+        return None
+    accession = compact[:10] + "-" + compact[10:12] + "-" + compact[12:]
+    if filename == accession + ".txt":
+        return None  # Complete submissions must never recursively recover themselves.
+    return "https://www.sec.gov" + parent + "/" + accession + ".txt", accession, unquote(filename)
+
+
+def extract_sgml_document(payload: bytes, *, accession: str, filename: str) -> tuple[bytes, str]:
+    """Select one exact SEC DOCUMENT and preserve its original TEXT bytes."""
+    header = re.search(rb"(?im)^(?:ACCESSION NUMBER:|<ACCESSION-NUMBER>)[ \t]*([0-9-]+)", payload[:65536])
+    if header is None:
+        header = re.search(rb"(?im)^<SEC-DOCUMENT>([0-9-]+)\.txt", payload[:65536])
+    if header is None or header.group(1).decode("ascii") != accession:
+        raise ValueError("Complete submission accession does not match the requested document")
+    matches = []
+    for block in re.findall(rb"(?ms)^<DOCUMENT>[ \t]*\r?\n(.*?)^</DOCUMENT>[ \t]*\r?$", payload):
+        name = re.search(rb"(?im)^<FILENAME>[ \t]*([^\r\n]+)", block)
+        if name is None or name.group(1).strip().decode("utf-8", errors="strict") != filename:
+            continue
+        text = re.search(rb"(?ms)^<TEXT>(.*?)^</TEXT>[ \t]*\r?$", block)
+        form = re.search(rb"(?im)^<TYPE>[ \t]*([^\r\n]+)", block)
+        if text is None or form is None:
+            raise ValueError("Matching SGML document has no TEXT body or TYPE")
+        data = text.group(1)
+        # The first line break separates the SGML tag from the original file.
+        # Remove exactly that delimiter, retaining every original trailing byte.
+        if data.startswith(b"\r\n"):
+            data = data[2:]
+        elif data.startswith(b"\n"):
+            data = data[1:]
+        document_type = form.group(1).strip().decode("ascii", errors="strict")
+        if (document_type.upper() in {"GRAPHIC", "PDF", "ZIP", "EXCEL"}
+                or data.lstrip().startswith(b"%PDF-") or b"\x00" in data[:1024]):
+            raise ValueError("Matching SGML document is not an HTML or text source")
+        matches.append((data, document_type))
+    if len(matches) != 1:
+        raise ValueError("Complete submission must contain exactly one matching document filename")
+    return matches[0]
+
+
+def indexed_relocation(cache_dir: Path, url: str) -> tuple[str, dict] | None:
+    """Resolve a moved archival CIK only from a unique official index entry."""
+    locator = sgml_recovery_locator(url)
+    if locator is None:
+        return None
+    _, accession, filename = locator
+    year_number = int(accession[11:13])
+    year = 1900 + year_number if year_number >= 93 else 2000 + year_number
+    # Shards share their originals through cache/documents. Index evidence is
+    # stored beside that shared directory, never inferred from another issuer.
+    shared_root = (cache_dir / "documents").resolve().parent
+    matches = []
+    for index_file in sorted(shared_root.glob(f"master-{year}-Q[1-4].idx")):
+        quarter = int(index_file.stem[-1])
+        raw = index_file.read_bytes()
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            fields = line.split("|")
+            if len(fields) != 5:
+                continue
+            path = re.fullmatch(r"edgar/data/(\d+)/(\d{10}-\d{2}-\d{6})\.txt", fields[4].strip())
+            if path is None or path.group(2) != accession:
+                continue
+            if not fields[0].strip().isdigit() or int(fields[0]) != int(path.group(1)):
+                raise ValueError("SEC index CIK and archival path disagree")
+            filed = date.fromisoformat(fields[3].strip())
+            if filed.year != year or (filed.month - 1) // 3 + 1 != quarter:
+                raise ValueError("SEC index row date does not match its published quarter")
+            actual = ("https://www.sec.gov/Archives/edgar/data/" + path.group(1) + "/"
+                      + accession.replace("-", "") + "/" + urlsplit(url).path.rsplit("/", 1)[-1])
+            proof = {"recovery_document_url": actual,
+                     "recovery_index_url": f"https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{quarter}/master.idx",
+                     "recovery_index_sha256": digest(raw), "recovery_index_line": line,
+                     "recovery_index_filed": str(filed), "recovery_archive_cik": int(path.group(1)),
+                     "recovery_accession": accession, "recovery_filename": filename}
+            matches.append((actual, proof))
+    if len(matches) > 1:
+        raise ValueError("SEC index has ambiguous accession mappings")
+    if not matches or matches[0][0] == canonical_sec_url(url):
+        return None
+    return matches[0]
+
+
 class SecClient:
     """Thread-safe rate limiter shared by searches and SEC/access-layer downloads."""
 
@@ -166,6 +254,7 @@ class SecClient:
         self.lock = threading.Lock()
         self.next_request = 0.0
         self.disk_full = threading.Event()
+        self.recovery_proofs: dict[str, dict] = {}
 
     def request(self, url: str, payload: dict | None = None) -> bytes:
         if self.offline:
@@ -210,7 +299,8 @@ class SecClient:
                           "sha256": digest(canonical_json(response).encode())})
         return response
 
-    def document(self, url: str, *, expected_sha256: str | None = None) -> tuple[bytes, str]:
+    def document(self, url: str, *, expected_sha256: str | None = None,
+                 _allow_sgml_recovery: bool = True) -> tuple[bytes, str]:
         url = canonical_sec_url(url)
         parts = urlsplit(url)
         key = digest(url.encode())
@@ -242,7 +332,36 @@ class SecClient:
                 self.disk_full.set()
                 raise OSError("Insufficient cache disk space; resume after freeing space")
             download_url = "https://archive.sec-api.io/" + parts.path.split("/data/", 1)[1] if self.key else url
-            data = self.request(download_url)
+            recovery = {}
+            try:
+                data = self.request(download_url)
+                if len(data) < 100 or b"Request Rate Threshold Exceeded" in data[:2000]:
+                    raise ValueError("SEC returned an empty document or rate-limit page")
+            except (RuntimeError, ValueError):
+                locator = sgml_recovery_locator(url) if _allow_sgml_recovery else None
+                if locator is None:
+                    raise
+                submission_url, accession, filename = locator
+                try:
+                    submission, submission_sha = self.document(submission_url, _allow_sgml_recovery=False)
+                    data, document_type = extract_sgml_document(submission, accession=accession, filename=filename)
+                    recovery = {"recovery_source_url": submission_url, "recovery_source_sha256": submission_sha,
+                                "recovery_filename": filename, "recovery_accession": accession,
+                                "recovery_document_type": document_type}
+                except (RuntimeError, ValueError, OSError):
+                    relocated = indexed_relocation(self.cache, url)
+                    if relocated is None:
+                        raise
+                    actual_url, recovery = relocated
+                    try:
+                        data, _ = self.document(actual_url, _allow_sgml_recovery=False)
+                        recovery["recovery_retrieval_url"] = actual_url
+                    except (RuntimeError, ValueError, OSError):
+                        actual_submission, _, _ = sgml_recovery_locator(actual_url)
+                        submission, submission_sha = self.document(actual_submission, _allow_sgml_recovery=False)
+                        data, document_type = extract_sgml_document(submission, accession=accession, filename=filename)
+                        recovery.update({"recovery_retrieval_url": actual_submission, "recovery_source_url": actual_submission,
+                                         "recovery_source_sha256": submission_sha, "recovery_document_type": document_type})
             if len(data) < 100 or b"Request Rate Threshold Exceeded" in data[:2000]:
                 raise ValueError("SEC returned an empty document or rate-limit page")
             compressed = lzma.compress(data, preset=3)
@@ -251,11 +370,16 @@ class SecClient:
                 raise OSError("Insufficient cache disk space; resume after freeing space")
             path = directory / (key + ".bin.xz")
             write_bytes(path, compressed)
-            write_json(meta_path, {"url": url, "sha256": digest(data), "bytes": len(data),
-                                   "stored_bytes": len(compressed), "encoding": "xz"})
+            meta = {"url": url, "sha256": digest(data), "bytes": len(data),
+                    "stored_bytes": len(compressed), "encoding": "xz", **recovery}
+            write_json(meta_path, meta)
         actual = digest(data)
         if expected_sha256 and expected_sha256 != actual:
             raise ValueError("Manifest/document SHA256 mismatch: " + key)
+        if any(name.startswith("recovery_") for name in meta):
+            self.recovery_proofs[url] = {name: value for name, value in meta.items() if name.startswith("recovery_")}
+        else:
+            self.recovery_proofs.pop(url, None)
         return data, actual
 
 
@@ -328,7 +452,8 @@ def document_metadata(row: dict, cik: int, symbols: list[str], *, binding: str, 
     filed = str(row.get("filedAt") or row.get("filed") or "")[:10]
     date.fromisoformat(filed)
     return canonical_document({"cik": cik, "symbols": symbols, "adsh": accession, "form": row["formType"],
-            "filed": filed, "source_url": url, "binding": binding, "issuer_name": issuer_name,
+            "filed": filed, "query_accepted_on": filed, "query_filed_at": str(row.get("filedAt") or ""),
+            "filing_date_status": "unverified", "source_url": url, "binding": binding, "issuer_name": issuer_name,
             "registrant_cik": str(row.get("cik") or ""),
             "source_package": digest(f"{cik}|{accession}|{url}".encode())})
 
@@ -390,7 +515,7 @@ def discover_issuer(client: SecClient, lines: list[dict], start: date, end: date
 
 
 def discover(client: SecClient, universe: list[dict], start: date, end: date, workers: int = 4,
-             *, refresh: bool = False) -> dict:
+             *, refresh: bool = False, observations: list[dict] | None = None) -> dict:
     by_cik: dict[int, list[dict]] = {}
     for row in universe:
         by_cik.setdefault(row["cik"], []).append(row)
@@ -436,6 +561,15 @@ def discover(client: SecClient, universe: list[dict], start: date, end: date, wo
                 raise
             print(canonical_json({"event": "discovery", "cik": cik, **manifest["issuers"][str(cik)]}), flush=True)
     manifest["complete"] = len(manifest["issuers"]) == len(by_cik) and all(row["status"] == "complete" for row in manifest["issuers"].values())
+    manifest["discovery_complete"] = manifest["complete"]
+    if manifest["discovery_complete"]:
+        if __package__:
+            from .enrich_sec_foreign_listing_filing_dates import enrich_manifest
+        else:
+            from enrich_sec_foreign_listing_filing_dates import enrich_manifest
+        manifest, date_summary = enrich_manifest(client, manifest, observations=observations,
+                                                 download_indexes=not client.offline)
+        write_json(client.cache / "filing-date-summary.json", date_summary)
     write_json(path, manifest)
     return manifest
 
@@ -472,6 +606,8 @@ def bind_historical_symbols(rows: list[dict], document: dict, observations: list
     cannot manufacture a trading symbol for an earlier document.
     """
     public_on = date.fromisoformat(document["filed"]) + timedelta(days=1)
+    if document.get("publication_floor_on"):
+        public_on = max(public_on, date.fromisoformat(document["publication_floor_on"]))
     matches = [observation for observation in observations
                if int(observation["cik"]) == int(document["cik"])
                and observation["adsh"] == document["adsh"]
@@ -567,9 +703,42 @@ def locate_pdf_evidence(row: dict, normalized: str, ranges: list[tuple[int, int,
     row["evidence_location"] = (f"pdf/pages={page_label};normalized-text-span={start}:{end};" + row["evidence_location"])
 
 
+def f6_attachment_binding_proof(client: SecClient, document: dict, sources: list[dict]) -> dict | None:
+    """Bind an F-6 exhibit through its actual issuer field in the same filing.
+
+    A depositary's registrant CIK is not issuer proof. Every candidate parent is
+    read and must explicitly name the expected issuer in its F-6 cover field.
+    The client enforces offline replay and original-byte cache verification.
+    """
+    issuer_name = document.get("issuer_name", "")
+    if not issuer_name or document["form"].removesuffix("/A") not in F6_FORMS:
+        return None
+    candidates = [source for source in sources
+                  if int(source["cik"]) == int(document["cik"])
+                  and source["adsh"] == document["adsh"] and source["filed"] == document["filed"]
+                  and source["form"].removesuffix("/A") in F6_FORMS
+                  and source["source_url"] != document["source_url"]]
+    candidates.sort(key=lambda source: (source.get("binding") != "registrant_cik", source["source_url"]))
+    for candidate in candidates:
+        try:
+            raw, sha256 = client.document(candidate["source_url"], expected_sha256=candidate.get("source_sha256"))
+        except (ValueError, RuntimeError, OSError):
+            continue
+        if verify_f6_issuer(raw.decode("utf-8-sig", errors="replace"), issuer_name):
+            recovery = getattr(client, "recovery_proofs", {}).get(candidate["source_url"], {})
+            return {"source_url": recovery.get("recovery_document_url", candidate["source_url"]), "source_sha256": sha256,
+                    "adsh": candidate["adsh"], "cik": int(document["cik"]), "issuer_name": issuer_name,
+                    **({"discovery_source_url": candidate["source_url"], "source_recovery_proof": recovery} if recovery else {}),
+                    "evidence_location": "f6/cover/exact-name-of-issuer-of-deposited-securities"}
+    return None
+
+
 def parse_document(client: SecClient, document: dict, observations: list[dict] | None = None,
-                   *, downloaded: tuple[bytes, str] | None = None) -> tuple[dict, list[dict]]:
+                   *, downloaded: tuple[bytes, str] | None = None,
+                   binding_sources: list[dict] | None = None) -> tuple[dict, list[dict]]:
     document = canonical_document(document)
+    document.pop("issuer_binding_proof", None)  # Re-establish proof from verified source bytes on every replay.
+    document.pop("document_recovery_proof", None)
     if __package__:
         from .sec_foreign_listing_parser import PARSER_VERSION, parse_filing
     else:
@@ -577,6 +746,9 @@ def parse_document(client: SecClient, document: dict, observations: list[dict] |
 
     raw, sha256 = downloaded if downloaded is not None else client.document(
         document["source_url"], expected_sha256=document.get("source_sha256"))
+    recovery = getattr(client, "recovery_proofs", {}).get(document["source_url"])
+    if recovery:
+        document = {**document, "document_recovery_proof": recovery}
     pdf_ranges = None
     if raw.lstrip().startswith(b"%PDF-"):
         pages, method = extract_pdf_pages(raw, cache_dir=client.cache)
@@ -590,25 +762,92 @@ def parse_document(client: SecClient, document: dict, observations: list[dict] |
                 "status": "not_securities_description", "evidence_count": 0}, []
     if document["binding"] == "issuer_name_in_f6":
         if not verify_f6_issuer(text, document["issuer_name"]):
-            return {**document, "source_sha256": sha256, "parser_version": PARSER_VERSION,
-                    "status": "issuer_binding_unverified", "evidence_count": 0}, []
+            proof = f6_attachment_binding_proof(client, document, binding_sources or [])
+            if proof is None:
+                return {**document, "source_sha256": sha256, "parser_version": PARSER_VERSION,
+                        "status": "issuer_binding_unverified", "evidence_count": 0}, []
+            document = {**document, "issuer_binding_proof": proof}
     rows = parse_filing(text, cik=document["cik"], form_type=document["form"],
                         accession_number=document["adsh"], filing_date=document["filed"],
                         source_url=document["source_url"], symbols=document["symbols"], document_role=role)
     if observations:
         rows = bind_historical_symbols(rows, document, observations)
     for row in rows:
+        if document.get("publication_floor_on"):
+            row["publication_floor_on"] = document["publication_floor_on"]
+            row["available_on"] = max(str(row["available_on"]), document["publication_floor_on"])
+            row["publication_floor_proof"] = document.get("publication_floor_proof")
+            row["evidence_location"] += (";publication-floor=" + document["publication_floor_on"]
+                                         + ";publication-floor-source="
+                                         + (document.get("publication_floor_proof") or {}).get("source", "discovery_reported_publication_floor"))
         if pdf_ranges is not None:
             locate_pdf_evidence(row, pdf_text, pdf_ranges)
         row["source_sha256"] = sha256
         row["source_package"] = document["source_package"]
+        if document.get("issuer_binding_proof"):
+            proof = document["issuer_binding_proof"]
+            row["issuer_binding_proof"] = proof
+            row["evidence_location"] += (";issuer-cover=" + proof["source_url"]
+                                         + ";issuer-cover-sha256=" + proof["source_sha256"])
+        if recovery:
+            row["document_recovery_proof"] = recovery
+            if recovery.get("recovery_source_url"):
+                row["evidence_location"] += (";recovery-submission=" + recovery["recovery_source_url"]
+                                             + ";recovery-submission-sha256=" + recovery["recovery_source_sha256"])
+            if recovery.get("recovery_retrieval_url"):
+                row["evidence_location"] += ";retrieved-from=" + recovery["recovery_retrieval_url"]
+            if recovery.get("recovery_index_url"):
+                row["evidence_location"] += (";sec-index=" + recovery["recovery_index_url"]
+                                             + ";sec-index-sha256=" + recovery["recovery_index_sha256"]
+                                             + ";sec-index-row=" + recovery["recovery_index_line"])
+            row["evidence_location"] += ";recovery-filename=" + recovery["recovery_filename"]
+        if document.get("filing_date_proof"):
+            proof = document["filing_date_proof"]
+            row["filing_date_proof"] = proof
+            row["evidence_location"] += ";filed-date=" + document["filed"] + ";filed-date-source=" + proof["source"]
+            locations = {(record.get("source_url"), record.get("source_sha256")) for record in proof.get("records", [])
+                         if record.get("source_url") and record.get("source_sha256")}
+            for proof_url, proof_sha in sorted(locations):
+                row["evidence_location"] += ";filed-date-reference=" + proof_url + ";filed-date-reference-sha256=" + proof_sha
+            if proof.get("observations_sha256"):
+                row["evidence_location"] += ";filed-date-w1-export-sha256=" + proof["observations_sha256"]
         row["fact_hash"] = hashlib.md5(canonical_json(row).encode(), usedforsecurity=False).hexdigest()
     return {**document, "source_sha256": sha256, "parser_version": PARSER_VERSION,
             "status": "parsed", "evidence_count": len(rows)}, rows
 
 
+def require_authoritative_filing_dates(manifest: dict) -> None:
+    enrichment = manifest.get("filing_date_enrichment", {})
+    if not enrichment.get("complete") or enrichment.get("version") != "sec-official-filing-date-v2":
+        raise ValueError("Authoritative SEC filing-date enrichment is required before parsing or applying evidence")
+    groups: dict[str, list[dict]] = {}
+    for document in manifest["documents"]:
+        proof = document.get("filing_date_proof") or {}
+        if (document.get("filing_date_status") != "resolved" or not document.get("filed")
+                or proof.get("filed") != document["filed"]
+                or proof.get("source") not in {"sec_quarter_master_index", "sec_daily_master_index", "sec_submission_header", "w1_same_accession"}):
+            raise ValueError("Source document has no matching authoritative SEC filing-date proof")
+        groups.setdefault(document["adsh"], []).append(document)
+    for accession, documents in groups.items():
+        reported = {document.get("query_accepted_on") for document in documents}
+        floors = {document.get("publication_floor_on") for document in documents}
+        if None in reported or None in floors or len(floors) != 1 or next(iter(floors)) < max(reported):
+            raise ValueError("Source accession publication floor is missing or precedes reported publication")
+        floor = next(iter(floors))
+        date.fromisoformat(floor)
+        year = int(accession[11:13])
+        year = year + (1900 if year >= 93 else 2000)
+        if int(documents[0]["filed"][:4]) < year and int(floor[:4]) < year:
+            raise ValueError("Backdated accession needs its actual SEC publication/acceptance date")
+        if any((document.get("publication_floor_proof") or {}).get("source") not in
+               {"discovery_reported_publication_floor", "sec_acceptance_header"} for document in documents):
+            raise ValueError("Source publication floor has no matching provenance")
+
+
 def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int = 4,
-                   observations: list[dict] | None = None) -> dict:
+                   observations: list[dict] | None = None,
+                   binding_sources: list[dict] | None = None) -> dict:
+    require_authoritative_filing_dates(manifest)
     # A URL can be associated with two issuer candidates. One worker downloads
     # and parses all its candidates, retaining at most one original per worker.
     # Legacy manifests may contain SEC inline-viewer URLs. Canonicalize before
@@ -631,6 +870,9 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
     observations_by_filing: dict[tuple[int, str], list[dict]] = {}
     for observation in observations or []:
         observations_by_filing.setdefault((int(observation["cik"]), observation["adsh"]), []).append(observation)
+    binding_sources_by_filing: dict[tuple[int, str], list[dict]] = {}
+    for source in binding_sources if binding_sources is not None else documents:
+        binding_sources_by_filing.setdefault((int(source["cik"]), source["adsh"]), []).append(source)
     by_url: dict[str, list[dict]] = {}
     for document in documents:
         by_url.setdefault(document["source_url"], []).append(document)
@@ -647,7 +889,9 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
         for document in candidates:
             try:
                 filing_observations = observations_by_filing.get((int(document["cik"]), document["adsh"]))
-                updated, rows = parse_document(client, document, filing_observations, downloaded=downloaded)
+                filing_sources = binding_sources_by_filing.get((int(document["cik"]), document["adsh"]), [])
+                updated, rows = parse_document(client, document, filing_observations,
+                                               downloaded=downloaded, binding_sources=filing_sources)
                 updated.pop("error", None)
                 # Always reparse and replace the spool, even on offline replay.
                 # It is an output staging file, never an input/cache authority.
@@ -712,7 +956,7 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
 FACT_COLUMNS = ("fact_hash", "cik", "symbol", "adsh", "form", "filed", "source_url", "source_sha256", "source_kind",
                 "evidence_kind", "listed_type", "underlying_class", "ordinary_candidate",
                 "ratio_numerator", "ratio_denominator", "effective_from", "effective_to",
-                "evidence_text", "evidence_location", "parser_version", "available_on", "loaded_on", "source_package")
+                "evidence_text", "evidence_location", "parser_version", "publication_floor_on", "available_on", "loaded_on", "source_package")
 APPLY_BATCH_SIZE = 1000
 
 
@@ -731,6 +975,7 @@ def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observ
         grouped.setdefault(row["source_package"], []).append(row)
     if set(grouped) - {document["source_package"] for document in manifest["documents"]}:
         raise ValueError("Evidence artifact contains an unmanifested source")
+    require_authoritative_filing_dates(manifest)
     counters = {"inserted": 0, "retired": 0, "unchanged": 0, "sources": 0}
     with connection.cursor() as cursor:
         cursor.execute("SELECT pg_advisory_xact_lock(79311, 173)")
@@ -789,10 +1034,16 @@ def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observ
                 if len(retire_batch) >= APPLY_BATCH_SIZE:
                     flush(retire_sql, retire_batch, retirement=True)
             for fact in facts:
+                if str(fact["filed"]) != str(document["filed"]):
+                    raise ValueError("Evidence filing date does not match its authoritative source manifest")
+                if fact.get("publication_floor_on") != document.get("publication_floor_on"):
+                    raise ValueError("Evidence publication floor does not match its source manifest")
                 if fact["fact_hash"] in existing:
                     counters["unchanged"] += 1
                     continue
                 source_available = date.fromisoformat(str(fact["filed"])) + timedelta(days=1)
+                if fact.get("publication_floor_on"):
+                    source_available = max(source_available, date.fromisoformat(str(fact["publication_floor_on"])))
                 available = max(source_available, observed_on) if prior_accession else source_available
                 values = {"ordinary_candidate": True, **fact, "available_on": available, "loaded_on": observed_on}
                 insert_batch.append(tuple(values.get(column) for column in FACT_COLUMNS))
@@ -844,12 +1095,12 @@ def main(argv: list[str] | None = None) -> int:
     key = load_key(args.dotenv) if not args.offline and (args.discover or args.download) else ""
     client = SecClient(args.cache_dir, key, offline=args.offline, requests_per_second=args.requests_per_second)
     manifest_path = args.cache_dir / "manifest.json"
+    observations = json.loads(args.observations.read_text(encoding="utf-8-sig")) if args.observations else None
     manifest = discover(client, universe, args.start_date, args.end_date, args.workers,
-                        refresh=args.refresh_discovery) if args.discover else json.loads(manifest_path.read_text(encoding="utf-8"))
+                        refresh=args.refresh_discovery, observations=observations) if args.discover else json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest["universe_sha256"] != digest(canonical_json(universe).encode()):
         raise ValueError("Manifest universe hash mismatch")
     if args.download or args.offline:
-        observations = json.loads(args.observations.read_text(encoding="utf-8-sig")) if args.observations else None
         summary = parse_manifest(client, manifest, args.output, args.workers, observations)
         write_json(args.output.with_suffix(".summary.json"), summary)
         print(canonical_json(summary), flush=True)
