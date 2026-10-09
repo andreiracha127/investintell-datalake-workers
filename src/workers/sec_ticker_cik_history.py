@@ -173,6 +173,7 @@ def run(
         ) as got:
             if not got:
                 return {**stats, "status": "lock_busy", "state": "noop"}
+            history.prepare_session(conn)
             history.require_schema(conn)
             stats["resumed_supersession"] = history.resume_supersession(conn)
             todo, fetched = _packages_to_load(conn, client, history.list_package_urls(client),

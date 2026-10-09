@@ -1748,6 +1748,14 @@ def apply_schema(dsn: str | None) -> None:
             conn.execute(path.read_text(encoding="utf-8"))
 
 
+def prepare_session(conn) -> None:
+    """Before the session's first temporary table: one package fills its member
+    and fact sets by COPY into temporary tables in one transaction (60,500 and
+    45,638 rows, 1,024 pages, for 2023q2: the whole 8 MB default), and PostgreSQL
+    18 pins local buffers while COPY extends a table."""
+    conn.execute("SET temp_buffers = '64MB'")
+
+
 def require_schema(conn) -> None:
     """Refuse a database without the governed tables (v1) or without the v2
     functions this loader's rows are judged by (sec_issuer_end_events with
@@ -2386,6 +2394,7 @@ def run(
             ).fetchone()[0]
             if not locked:
                 raise RuntimeError("another sec_ticker_cik_history load holds the lock")
+            prepare_session(conn)
             require_schema(conn)
             for item in resume_supersession(conn, reconciled_on=reconciled_on):
                 print(json.dumps(item), flush=True)
