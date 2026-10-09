@@ -71,7 +71,10 @@ _PREFIX = re.compile(r"^(?:NYSE(?:\s*(?:AMERICAN|ARCA|MKT))?|NASDAQ(?:\s*(?:GS|G
 _OTC_SUFFIX = re.compile(r"(?<=[A-Z0-9])(?:[.,]\s*|\s+)(?:OB|PK)\b", re.I)
 _WRAPPER = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]")
 # Whole-field placeholders: W1's set plus phrases insider filers type (DERA 2006-2026).
+# W1 now reads TRUE, FALSE, OTCBB and OB on the whole cover field (TrueCar's TRUE is
+# a symbol there); sec_insider_v3 keeps them placeholders, as it was built.
 _PLACEHOLDERS = PLACEHOLDER_KEYS | {
+    "TRUE", "FALSE", "OTCBB", "OB",
     "", "NOSYMBOL", "NOTRADINGSYMBOL", "NOTICKER", "NOTPUBLIC", "NOTTRADING", "NONEYET",
     "TOCOME", "SEEREMARK", "SEEREMARKS", "INREMARKS", "APPFOR", "APPLIED", "APPLIEDFOR",
     "PENDING", "UNKNOWN", "PRIVATE", "SYMBOL", "XXXXXXXXXX",
