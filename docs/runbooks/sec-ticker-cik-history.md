@@ -832,7 +832,7 @@ median was not reproduced with this population/session methodology and must
 not be used as the before value for this comparison. Further median-latency
 optimization remains a follow-up, alongside the separately owned loader work.
 
-### Production-gate repair relative to e5f18d24
+### Production-gate repair relative to e5f18d24 (5a5f4bcc)
 
 This follow-up changes only the three identity failures in `W1-V3-GATE.md`:
 
@@ -964,7 +964,7 @@ the final report, both test logs, probe logs, migration report, full snapshots,
 delta files, source diagnostics and final integrity manifest. All work was
 local; there were no production queries or mutations.
 
-One non-equity reversal remains a source-identity limitation: TEUPRC at
+At `5a5f4bcc`, one non-equity reversal remained unresolved: TEUPRC at
 2015-12-31 changes ended to resolved. The cached 25-NSE
 `0000876661-15-000631` names legal Series C preferred shares, but the sole
 pinned preferred observation (`0000919574-15-003118`, 2015-03-23) has a NULL
@@ -973,6 +973,125 @@ provides `series:c` and no explicit ticker link. The old closure matched only
 the preferred kind. The schema cannot equate Class C and Series C without
 violating the namespace fence, so this gain is not certified as economically
 correct. Its 133 gained days are included in the all-kind totals above.
-Separately owned source enrichment must attach independently evidenced
-legal-series identity with its proper dates; no loader or fact changes were
-made for this comparison.
+The re-gate identified the missing tentative closure in this case. The final
+follow-up below fixes that ambiguity handling without changing source facts
+or equating the two namespaces.
+
+### Final zero-match ambiguity repair relative to 5a5f4bcc
+
+A named non-equity label with no matching same-kind candidate now tentatively
+closes every same-kind candidate. Each candidate can resume at its next eligible
+own statement; this fallback never identifies a class or makes its end
+definitive. Explicit-symbol constraints and positively matched labels retain
+their existing behavior. Separately named labels retain their separate amendment
+histories: a matched A label identifies A, while an unmatched C label supplies
+only tentative ambiguity to the same-kind candidates.
+
+The change is confined to `sec_issuer_end_scopes` and the shared nine-argument
+`sec_end_role`. The internal `unmatched_label` mode retains the declared label
+for audit while permitting the temporary closure. Candidate class, kind and
+observed-label bindings remain intact. Match counts use the existing dated,
+selector-specific candidate pool, including its narrowly permitted historical
+bindings. The individual engine implementations and source facts are unchanged.
+
+The SQL SHA256 is
+`c0b02513892585cb11e9029acdc81f6cd7addd54f1395b3907977f9f66662392`.
+Rollback is unchanged:
+`b86d3919227d00cff1da6221c5f70e11bd0dfee71666600e5427c713a8fded83`.
+
+The prefilter audit covers all 26,687 CIKs with observation or event history,
+including event-only issuers. Among effective end versions, 51 distinct parsed
+clause representations contain a zero-match label with same-kind candidates;
+their label expansion produces 59 eligible atomic selectors across 29 issuers.
+Both counts remain unchanged after the fix because the facts and candidate
+cohorts are identical. Counting all amendment-chain versions gives 52 clauses
+and 60 selectors. Clause representations are deduplicated by CIK, accession,
+version, kind, full label array and symbol array.
+
+| Effective candidate-bearing zero-match selectors | Before | After |
+|---|---:|---:|
+| All candidates tentative | 22 | 59 |
+| All known labels disagree; all candidates excluded | 16 | 0 |
+| Mixed known/unknown labels; only unknown candidates tentative | 21 | 0 |
+| Any candidate identified by the zero-match fallback | 0 | 0 |
+
+These are prefilter role counts, distinct from the final applying-end gates.
+Another 813 effective zero-match selectors have no same-kind candidates and
+are counted separately; the fallback cannot close absent rows. No zero-match
+selector in this corpus has an explicit symbol. The baseline and repaired
+prefilter versions, clauses and candidate cohorts compare exactly; 31 routine
+bodies are unchanged, and only the two intended helper bodies differ.
+
+After the existing venue, registration and scope-history gates, applying
+zero-match selectors increase from 43 to 58 (36 to 49 accession groups).
+Fifteen selectors newly apply. The remaining eligible selector is a secondary-
+venue 25-NSE (`0001143362-21-000122`, CIK 895421) and remains filtered in both
+versions. Public end tuples change from 13,088 to 13,096: 22 added, 14 removed,
+across ten CIKs. Non-`other` end tuples are unchanged everywhere.
+
+The current-truth price-evidence dependency check identifies 29 affected CIKs
+and 268 historical ticker keys, including retired observations and every
+security kind. It freshly measures all 271 affected triples (49 core and 222
+supplemental); unaffected outputs retain explicit baseline provenance. The
+full prefilter cohort comparison, unchanged function bodies, historical
+CIK/ticker receipt, and disjoint complete target sets establish the comparison
+over all 14,928 core and 21,680 latest all-kind targets. This is an exhaustive
+dependency-based comparison, not a fresh full-population query traversal.
+
+Core admitted days are unchanged. Across all kinds, eight ticker/class targets
+lose 1,737 calendar days and none gain days, within 2009-01-01 through
+2026-10-09. Deduplicating the identical losses of two alias pairs gives six
+canonical issuer lines and 1,483 unique affected line-days across five CIKs.
+
+| Ticker/class target | Calendar days lost |
+|---|---:|
+| SANPB | 1,130 |
+| TEUPRC | 133 |
+| TEUCF | 133 |
+| AXIAPR | 121 |
+| EBRB | 121 |
+| MS26C | 47 |
+| AXIAPC | 47 |
+| FBRTPE | 5 |
+
+TEUPRC and TEUCF share one canonical line, as do AXIAPR and EBRB. TEUPRC's
+133-day gap (2015-12-16 through 2016-04-26) is now refused in all four engines.
+The 2016-04-27 statement resumes its line under TEUCF; the old TEUPRC ticker
+remains closed. The end is tentative and keeps `series:c` separate from the
+candidate's `class:c` identity.
+
+These losses are conservative ambiguity closures, not certifications that each
+target legally ended. In particular, the unchanged instrument parser supplies
+preferred-kind selectors for Santander's Senior Preferred/Non Preferred Notes
+descriptions. Their numbered series do not match SANPB's Series 6 preferred
+line, so the requested fallback temporarily closes it until its own statements.
+The parser and pinned facts remain unchanged in this narrowly scoped repair.
+
+On `timescale/timescaledb:2.27.2-pg18` with the production build/settings, the
+new test file passes all 110 cases in 109.66 s and the untouched original file
+passes all 376 cases in 374.35 s. Files ran separately with `PYTEST_WORKERS=2`.
+The final focused tests produce six expected failures and four passing controls
+against `5a5f4bcc`, and all ten pass on the repaired schema. The new independent
+zero-match check covers two scenarios, ten observations, 40 lifecycle-engine
+evaluations and 72 expected-state checks, with zero violations. Across all
+invariant spaces: 109 scenarios, 355 observations, 1,420 lifecycle evaluations,
+148 expected-state checks and four competing-line checks, all passing.
+
+The CIK 318 v3 regression intentionally changes to the new tentative policy;
+its later eligible statement verifies reopening. Matching-label, explicit-symbol,
+mixed-label and other-kind controls pass. Both unchanged Light probes at
+`cee5b0ab` exit zero using local copies and the documented hash-pin adaptation.
+
+| Migration operation | Time | Relations rewritten |
+|---|---:|---:|
+| v2 to final v3 | 44.52 ms | 0 |
+| Reapply v3 | 36.43 ms | 0 |
+| Rollback | 46.83 ms | 0 |
+| Reapply after rollback | 33.35 ms | 0 |
+
+All 43 physical relations retain their filenodes. Rollback restores the 25 v2
+routines exactly, without extra routines. All 33 final routines and seven
+inherited relations pass ownership/grant checks. Full-row dual checksums of
+the observation, share and event tables match the pinned baseline. No production
+access or loader changes occurred. Evidence and reproducible audit SQL are in
+`E:/investintell-handoffs/limitations-program/w1-v3-zero-match-validation/`.

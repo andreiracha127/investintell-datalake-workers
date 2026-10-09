@@ -928,17 +928,27 @@ def test_gate_label_symbol_pairs_do_not_cross_match_same_kind_siblings(schema_ds
     assert _other_line_covers(conn, "PRB", 10317, 317, "SwappedA", "2024-04-01")
 
 
-def test_gate_historical_unknown_label_cannot_erase_a_declared_series_constraint(schema_dsn):
+def test_zero_match_after_historical_unknown_closes_until_next_eligible_statement(schema_dsn):
     conn, _ = schema_dsn
     _cover(conn, 318, "2024-01-01", [("T", "Preferred", "Preferred stock", "preferred"),
                                      ("OTHER", "CommonOther", "Common stock", "equity")])
     _cover(conn, 318, "2024-02-01", [("T", "Preferred", "Series B preferred stock", "preferred")],
            complete=False)
     _cover(conn, 10318, "2024-02-15", [("T", "Common", "Common stock", "equity")], complete=False)
-    _end(conn, 318, description="Series A preferred stock", kind="other")
-    _assert_engines(conn, "T", 318, "Preferred", "2024-04-01", True)
-    _assert_engines(conn, "T", 10318, "Common", "2024-04-01", True)
-    assert _other_line_covers(conn, "T", 10318, 318, "Preferred", "2024-04-01")
+    # Q's initial claim is outside the end's 30-day takeover window, isolating
+    # the tentative zero-match closure from that independent ownership rule.
+    _end(conn, 318, "2024-04-01", description="Series A preferred stock", kind="other")
+    _assert_engines(conn, "T", 318, "Preferred", "2024-04-03", False)
+    _assert_engines(conn, "T", 10318, "Common", "2024-04-03", True)
+    assert not _other_line_covers(conn, "T", 10318, 318, "Preferred", "2024-04-03")
+    # Q would suppress a new preferred observation while its common hold is
+    # active. End Q first so P's next statement is eligible under the unchanged
+    # listed-first suppression policy.
+    _end(conn, 10318, "2024-04-15", description="Common stock")
+    _cover(conn, 318, "2024-05-01", [("T", "Preferred", "Series B preferred stock", "preferred")],
+           complete=False)
+    _assert_engines(conn, "T", 318, "Preferred", "2024-05-03", True)
+    assert _other_line_covers(conn, "T", 10318, 318, "Preferred", "2024-05-03")
 
 
 def test_gate_retained_non_equity_label_keeps_original_end_date_when_sibling_removed(schema_dsn):
@@ -1070,3 +1080,93 @@ def test_gate_independent_crosscheck_covers_aliases_siblings_and_shared_labels(s
     print(f"Gate cross-check: 7 scenarios, {observed} observations, {4 * observed} lifecycle engine "
           f"evaluations, {4 * len(expected)} expected-state evaluations, 4 competing-line checks, "
           f"{len(failures)} violations")
+
+
+def _zero_match_fixture(conn, cik, kind):
+    noun = "preferred stock" if kind == "preferred" else "warrants"
+    other_kind = "warrant" if kind == "preferred" else "preferred"
+    other_noun = "warrants" if other_kind == "warrant" else "preferred stock"
+    a, b, other = f"ZA{cik}", f"ZB{cik}", f"ZX{cik}"
+    _cover(conn, cik, "2024-01-01", [(a, "A", f"Class A {noun}", kind),
+                                     (b, "B", f"Class B {noun}", kind),
+                                     (other, "OtherKind", f"Series Z {other_noun}", other_kind)])
+    _end(conn, cik, description=f"Series Z {noun}", kind="other")
+    _cover(conn, cik, "2024-04-01", [(a, "A", f"Class A {noun}", kind)], complete=False)
+    _cover(conn, cik, "2024-05-01", [(b, "B", f"Class B {noun}", kind)], complete=False)
+    return a, b, other
+
+
+def test_zero_match_namespace_mismatch_is_tentative_without_merging_namespaces(schema_dsn):
+    """TEUPRC's Class C member and Series C end keep distinct namespaces."""
+    conn, _ = schema_dsn
+    _cover(conn, 501, "2024-01-01", [("TEUPRC", "PreferredClassC", None, "preferred")])
+    assert conn.execute("SELECT sec_instrument_label(NULL,'PreferredClassC','preferred'), "
+                        "sec_class_label('Series C preferred stock',NULL)").fetchone() == ("class:c", "series:c")
+    _end(conn, 501, description="Series C preferred stock", kind="other")
+    assert conn.execute("SELECT definitive,sec_end_role(class_keys,tentative_keys,class_kind,named_kinds,"
+                        "'PreferredClassC','preferred') FROM sec_issuer_end_events(501,'2024-03-03')"
+                        ).fetchone() == (False, "tentative")
+    _assert_engines(conn, "TEUPRC", 501, "PreferredClassC", "2024-03-03", False)
+    _cover(conn, 501, "2024-04-01", [("TEUPRC", "PreferredClassC", None, "preferred")], complete=False)
+    _assert_engines(conn, "TEUPRC", 501, "PreferredClassC", "2024-04-03", True)
+
+
+@pytest.mark.parametrize("kind", ["preferred", "warrant"])
+def test_zero_match_closes_same_kind_until_each_candidates_own_next_statement(schema_dsn, kind):
+    conn, _ = schema_dsn
+    a, b, other = _zero_match_fixture(conn, 502, kind)
+    assert conn.execute("SELECT bool_and(NOT definitive) FROM sec_issuer_end_events(502,'2024-03-03')"
+                        ).fetchone()[0] is True
+    for on, a_alive, b_alive in (("2024-02-15", True, True), ("2024-03-03", False, False),
+                                  ("2024-04-03", True, False), ("2024-05-03", True, True)):
+        _assert_engines(conn, a, 502, "A", on, a_alive)
+        _assert_engines(conn, b, 502, "B", on, b_alive)
+        _assert_engines(conn, other, 502, "OtherKind", on, True)
+
+
+@pytest.mark.parametrize("also_unmatched_c", [False, True])
+def test_zero_match_keeps_matching_label_identified_and_unmatched_label_atomic(schema_dsn, also_unmatched_c):
+    conn, _ = schema_dsn
+    _cover(conn, 503, "2024-01-01", [("PRA", "A", "Series A preferred stock", "preferred"),
+                                     ("PRB", "B", "Series B preferred stock", "preferred")])
+    description = "Series A and Series C preferred stock" if also_unmatched_c else "Series A preferred stock"
+    _end(conn, 503, description=description, kind="other", count=2 if also_unmatched_c else 1)
+    _cover(conn, 503, "2024-04-01", [("PRA", "A", "Series A preferred stock", "preferred")], complete=False)
+    _cover(conn, 503, "2024-05-01", [("PRB", "B", "Series B preferred stock", "preferred")], complete=False)
+    _assert_engines(conn, "PRA", 503, "A", "2024-04-03", False)
+    _assert_engines(conn, "PRB", 503, "B", "2024-03-03", not also_unmatched_c)
+    _assert_engines(conn, "PRB", 503, "B", "2024-05-03", True)
+
+
+@pytest.mark.parametrize("case", ["unknown_label_matching_symbol", "contradictory_label_symbol", "missing_symbol"])
+def test_zero_match_never_broadens_an_explicit_symbol_selector(schema_dsn, case):
+    conn, _ = schema_dsn
+    unknown = case == "unknown_label_matching_symbol"
+    _cover(conn, 504, "2024-01-01", [("PRA", "A", "Preferred stock" if unknown else "Series A preferred stock",
+                                     "preferred"), ("PRB", "B", "Series B preferred stock", "preferred")])
+    symbol = "MISSING" if case == "missing_symbol" else "PRA"
+    _end(conn, 504, description=f"Series Z preferred stock, trading symbol {symbol}", kind="other")
+    _assert_engines(conn, "PRA", 504, "A", "2024-03-03", not unknown)
+    _assert_engines(conn, "PRB", 504, "B", "2024-03-03", True)
+
+
+def test_zero_match_independent_four_engine_crosscheck(schema_dsn):
+    conn, _ = schema_dsn
+    tickers, expected = [], []
+    for cik, kind in ((505, "preferred"), (506, "warrant")):
+        a, b, other = _zero_match_fixture(conn, cik, kind)
+        tickers.extend((a, b, other))
+        for on, a_alive, b_alive in (("2024-03-03", False, False), ("2024-04-03", True, False),
+                                      ("2024-05-03", True, True)):
+            expected.extend(((a, cik, "A", on, a_alive), (b, cik, "B", on, b_alive),
+                             (other, cik, "OtherKind", on, True)))
+    failures = _invariant_failures(conn, tickers)
+    for ticker, cik, key, on, alive in expected:
+        failures.extend(("zero-match lifecycle", engine, ticker, cik, key, on, state, alive)
+                        for engine, state in _engines(conn, ticker, cik, key, on).items() if state != alive)
+    observed = conn.execute("SELECT count(*) FROM sec_observations_at('infinity',true) "
+                            "WHERE ticker_key=ANY(%s)", (tickers,)).fetchone()[0]
+    assert (len(tickers), observed, len(expected)) == (6, 10, 18)
+    assert failures == []
+    print(f"Zero-match cross-check: 2 scenarios, {observed} observations, {4 * observed} lifecycle engine "
+          f"evaluations, {4 * len(expected)} expected-state evaluations, {len(failures)} violations")

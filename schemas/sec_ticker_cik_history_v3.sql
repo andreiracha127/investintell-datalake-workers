@@ -413,7 +413,8 @@ SELECT CASE WHEN p_kind IN ('equity','depositary','unknown') OR p_class_kind IS 
              scope(class_key text,label text,ticker_key text,mode text,named_label text,role text)
         WHERE scope.class_key = p_class_key
           AND (scope.mode <> 'symbol' OR scope.ticker_key = p_ticker_key)
-          AND (p_label IS NULL OR scope.named_label IS NULL OR p_label = scope.named_label)
+          AND (scope.mode = 'unmatched_label' OR p_label IS NULL
+               OR scope.named_label IS NULL OR p_label = scope.named_label)
           AND (p_label IS NULL OR scope.label IS NULL OR p_label = scope.label)) END
 $fn$;
 
@@ -1053,6 +1054,10 @@ WITH horizon AS (
                CASE WHEN selection.value = 'symbol' THEN r.ticker_key END,
                selection.value, r.named_label)::text AS member,
            CASE
+               -- No candidate establishes the declared label's identity. Keep
+               -- the ambiguity as a temporary kind-wide closure, never as an
+               -- exclusion or an identified (potentially definitive) end.
+               WHEN selection.value = 'unmatched_label' THEN 'tentative'
                WHEN cardinality(r.named_labels) > 0 AND r.label IS NOT NULL AND NOT r.label = ANY(r.named_labels)
                     THEN 'excluded'
                WHEN cardinality(r.named_symbols) > 0 AND NOT r.ticker_key = ANY(r.named_symbols) THEN 'excluded'
@@ -1066,10 +1071,14 @@ WITH horizon AS (
       AND kind_count.security_kind = r.security_kind AND kind_count.selector_key = r.selector_key
     LEFT JOIN instrument_label_counts label_count ON label_count.adsh = r.adsh AND label_count.version_key = r.version_key
       AND label_count.security_kind = r.security_kind AND label_count.selector_key = r.selector_key AND label_count.label = r.label
+    LEFT JOIN instrument_label_counts named_count ON named_count.adsh = r.adsh AND named_count.version_key = r.version_key
+      AND named_count.security_kind = r.security_kind AND named_count.selector_key = r.selector_key AND named_count.label = r.named_label
     JOIN instrument_symbol_counts symbol_count ON symbol_count.adsh = r.adsh AND symbol_count.version_key = r.version_key
       AND symbol_count.security_kind = r.security_kind AND symbol_count.selector_key = r.selector_key AND symbol_count.ticker_key = r.ticker_key
     CROSS JOIN LATERAL (
-        SELECT CASE WHEN r.named_label IS NOT NULL AND r.label = r.named_label AND label_count.lines = 1
+        SELECT CASE WHEN r.named_label IS NOT NULL AND cardinality(r.named_symbols) = 0
+                         AND COALESCE(named_count.lines, 0) = 0 THEN 'unmatched_label'
+                    WHEN r.named_label IS NOT NULL AND r.label = r.named_label AND label_count.lines = 1
                     THEN 'label'
                     WHEN cardinality(r.named_symbols) > 0 THEN 'symbol'
                     WHEN r.named_label IS NOT NULL THEN 'label' ELSE 'kind' END AS value
