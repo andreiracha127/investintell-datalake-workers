@@ -1,0 +1,40 @@
+{
+  "name": "scisparc_2021_two_ratio_events_notice",
+  "fixture": "scisparc_2021_two_ratio_events_notice.html",
+  "cik": 1611746,
+  "form_type": "6-K",
+  "accession_number": "0001213900-21-042965",
+  "filing_date": "2021-08-16",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1611746/000121390021042965/ea145860ex99-1_scisparcltd.htm",
+  "source_sha256": "350278351469f71d067bf701b886279ac5496a0425c57688d9edb739b30c4417",
+  "sha256": "350278351469f71d067bf701b886279ac5496a0425c57688d9edb739b30c4417",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained.",
+  "original_source_bytes": 260363,
+  "filing_date_proof": {
+    "filed": "2021-08-16",
+    "records": [
+      {
+        "cik": 1611746,
+        "filed": "2021-08-16",
+        "line": "1611746|SciSparc Ltd./ADR|6-K|2021-08-16|edgar/data/1611746/0001213900-21-042965.txt",
+        "source_sha256": "e29547907e5992a789b23e8fad56d3641bd0d36f4f69302afaed6f3f78cfdec3",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2021/QTR3/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "publication_floor_on": "2021-08-16",
+  "publication_floor_proof": {
+    "publication_floor_on": "2021-08-16",
+    "reported_dates": [
+      "2021-08-16"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "a4a4e6430fabb2159a7366338de121c1d2f1a05e7953c2876e04a7d4ede91c05",
+  "reviewed_event_window": {
+    "source_visible_text_offset": 17892,
+    "source_visible_text_end": 19183,
+    "text": "On October 1, 2020, the Company’s Board resolved that the final ratio for the Reverse Split will be 20:1, which went effective on October 16, 2020. Concurrently with the Reverse Split, a change to the ratio of its ADSs to its ordinary shares was effective pursuant to which each ADS representing 40 Ordinary Shares changed to each ADS representing 140 Ordinary Shares. On March 2, 2021, the Company convened a special general meeting of its shareholders, whereby the shareholders approved to eliminate the par value of the Ordinary Shares and an increase to the Company’s share capital from 1,800,000,000 Ordinary Shares to 3,600,000,000 ordinary shares. On July 19, 2021, the Company’s Board resolved that the final ratio for the Reverse Split will be 140:1, which went effective on August 9, 2021. Concurrently with the Reverse Split, a change to the ratio of its ADSs to its Ordinary Shares was effective pursuant to which each ADS representing 140 ordinary shares changed to each ADS representing 1 Ordinary Share. Since the ADS to ordinary shares ratio is being reduced on the same proportionate basis as the reverse split, no overall effect on the ADS share price is expected. The number of ADSs held by each holder is not expected to change, and no action is required by ADS holders. "
+  }
+}

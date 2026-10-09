@@ -1649,3 +1649,197 @@ def test_conflicting_named_consolidation_dates_do_not_choose_one():
         "Upon the Share Consolidation, the ADS ratio will change from one ADS for ten ordinary shares "
         "to one ADS for one ordinary share."
     ) == []
+
+
+@pytest.mark.parametrize("name,available", [
+    ("nndm_2020_reverse_split_notice", "2020-06-17"),
+    ("nndm_2020_reverse_split_confirmation", "2020-10-20"),
+])
+def test_original_nndm_concurrent_share_conversion_has_its_exact_ratio_date(name, available):
+    rows = _parse_independent_listing_fixture(name)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(1, 1, "2020-06-29")}
+    assert {row["available_on"] for row in rows} == {available}
+    assert all(row["ordinary_candidate"] for row in rows)
+
+
+@pytest.mark.parametrize("name,available", [
+    ("edu_2011_ratio_change_notice", "2011-07-20"),
+    ("edu_2011_ratio_change_confirmation", "2011-10-19"),
+])
+def test_original_edu_completed_ratio_does_not_reuse_current_or_price_effect_side(name, available):
+    rows = _parse_independent_listing_fixture(name)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(1, 1, "2011-08-18")}
+    assert {row["available_on"] for row in rows} == {available}
+
+
+def test_original_dq_completed_event_retains_its_date_and_publication_floor():
+    rows = _parse_independent_listing_fixture("dq_2020_completed_ratio_change")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(5, 1, "2020-11-17")}
+    assert {row["available_on"] for row in rows} == {"2020-11-24"}
+
+
+def test_original_dq_f6_prior_and_commencing_entitlements_have_disjoint_intervals():
+    rows = _parse_independent_listing_fixture("dq_2020_prior_commencing_f6")
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"],
+             row.get("effective_to")) for row in rows} == {
+        (25, 1, "2020-10-27", "2020-11-17"),
+        (5, 1, "2020-11-17", None),
+    }
+    assert {row["available_on"] for row in rows} == {"2020-10-27"}
+    assert all(row["ordinary_candidate"] for row in rows)
+
+
+@pytest.mark.parametrize("name,available", [
+    ("scisparc_2021_two_ratio_events_notice", "2021-08-17"),
+    ("scisparc_2021_two_ratio_events_confirmation", "2021-08-27"),
+])
+def test_original_scisparc_preserves_both_events_without_assigning_the_old_sides(name, available):
+    rows = _parse_independent_listing_fixture(name)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(140, 1, "2020-10-16"), (1, 1, "2021-08-09")}
+    assert {row["available_on"] for row in rows} == {available}
+
+
+@pytest.mark.parametrize("transition", [
+    "from the current ADS Ratio of one ADS to three ordinary shares "
+    "to a new ADS Ratio of one ADS to thirty ordinary shares",
+    "from its original ratio of one ADS representing three ordinary shares "
+    "to a new ratio of one ADS representing thirty ordinary shares",
+    "from the then-current ADS Ratio of one ADS to three ordinary shares "
+    "to a new ADS Ratio of one ADS to thirty ordinary shares",
+])
+def test_explicit_old_new_ratio_wrappers_keep_only_the_entitlement_for_the_event(transition):
+    rows = _parse_6k_transition_text(
+        f"The Company will change its ADS ratio {transition}, effective July 23, 2020."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(30, 1, "2020-07-23")}
+
+
+def test_ratio_of_old_has_been_changed_to_new_is_one_dated_event():
+    rows = _parse_6k_transition_text(
+        "The ratio of one ADS representing three ordinary shares has been changed "
+        "to one ADS representing thirty ordinary shares, effective July 23, 2020."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(30, 1, "2020-07-23")}
+
+
+def test_class_b_current_entitlement_survives_a_separate_class_a_ratio_transition():
+    rows = _parse_6k_transition_text(
+        "The Class A ADS ratio will change from one ADS representing three Class A ordinary shares "
+        "to one ADS representing thirty Class A ordinary shares, effective July 23, 2020. "
+        "The separate Class B program has a current ratio of one ADS representing three "
+        "Class B ordinary shares, effective July 23, 2020."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["underlying_class"],
+             row["effective_from"]) for row in rows} == {
+        (30, 1, "class_a", "2020-07-23"), (3, 1, "class_b", "2020-07-23"),
+    }
+
+
+def test_hypothetical_first_trading_date_does_not_date_an_unlinked_ads_ratio_change():
+    assert _parse_6k_transition_text(
+        "The Company proposes a reverse split of its ordinary shares. "
+        "The first date when the Company's ADSs will begin trading on the Nasdaq Capital Market "
+        "after implementation of the reverse split will be September 15, 2020. "
+        "Separately, the Company proposes to change the ADS ratio from one ADS representing "
+        "one ordinary share to one ADS representing five ordinary shares."
+    ) == []
+
+
+def test_a_different_class_reverse_split_does_not_supply_the_ads_event_date():
+    assert _parse_6k_transition_text(
+        "The reverse split of the Company's Class B ordinary shares was effective July 23, 2020. "
+        "Separately, the Company proposes a reverse split of its Class A ordinary shares. "
+        "Concurrently with the Class A reverse split, the ADS ratio will change from one ADS "
+        "representing one Class A ordinary share to one ADS representing five Class A ordinary shares."
+    ) == []
+
+
+def test_conflicting_reverse_split_effective_dates_do_not_pick_the_nearest_date():
+    assert _parse_6k_transition_text(
+        "The reverse split of ordinary shares will be effective July 23, 2020. "
+        "The same reverse split of ordinary shares will be effective July 24, 2020. "
+        "Concurrently with the reverse split, the ADS ratio will change from one ADS "
+        "representing one ordinary share to one ADS representing five ordinary shares."
+    ) == []
+
+
+def test_completed_on_date_ratio_uses_the_event_date_instead_of_the_announcement_date():
+    rows = _parse_6k_transition_text(
+        "On July 31, 2020, the Company announced its quarterly results. "
+        "On July 15, 2020, the Company effected a change of the ratio of its ADSs to ordinary "
+        "shares from one ADS representing twenty-five ordinary shares to one ADS "
+        "representing five ordinary shares."
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(5, 1, "2020-07-15")}
+    assert {row["available_on"] for row in rows} == {"2020-08-02"}
+
+
+def test_announcement_on_date_alone_does_not_date_a_proposed_ratio_change():
+    assert _parse_6k_transition_text(
+        "On July 31, 2020, the Company announced a proposed change of the ratio of its ADSs "
+        "to ordinary shares from one ADS representing twenty-five ordinary shares "
+        "to one ADS representing five ordinary shares."
+    ) == []
+
+
+def _parse_f6_beneficial_ownership_entitlements(text, *, filing_date="2020-10-26"):
+    return parse_filing(
+        text, cik=1477641, form_type="F-6 POS", accession_number="0001193805-20-001310",
+        filing_date=filing_date, source_url="https://www.sec.gov/Archives/test",
+    )
+
+
+def test_expired_f6_prior_entitlement_is_not_revived_at_later_publication():
+    rows = _parse_f6_beneficial_ownership_entitlements(
+        '"Shares" mean the ordinary shares of the Company. '
+        'Prior to November 17, 2020 each "ADS" evidenced by an ADR represents the right to receive, '
+        "and to exercise the beneficial ownership interests in, twenty five Shares that are on "
+        "deposit with the Depositary and commencing on November 17, 2020 each ADS evidenced by "
+        "an ADR represents the right to receive, and to exercise the beneficial ownership "
+        "interests in, five Shares that are on deposit with the Depositary.",
+        filing_date="2020-11-23",
+    )
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
+            for row in rows} == {(5, 1, "2020-11-17")}
+    assert {row["available_on"] for row in rows} == {"2020-11-24"}
+
+
+def test_conflicting_f6_commencing_dates_do_not_fall_back_to_publication():
+    contract = (
+        '"Shares" mean the ordinary shares of the Company. '
+        'Prior to November 17, 2020 each "ADS" evidenced by an ADR represents the right to receive, '
+        "and to exercise the beneficial ownership interests in, twenty five Shares that are on "
+        "deposit with the Depositary and commencing on November 17, 2020 each ADS evidenced by "
+        "an ADR represents the right to receive, and to exercise the beneficial ownership "
+        "interests in, five Shares that are on deposit with the Depositary. "
+        "Commencing on November 18, 2020 each ADS evidenced by an ADR represents the right to receive, "
+        "and to exercise the beneficial ownership interests in, five Shares that are on deposit "
+        "with the Depositary."
+    )
+    rows = _parse_f6_beneficial_ownership_entitlements(contract)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"],
+             row["effective_to"]) for row in rows} == {(25, 1, "2020-10-27", "2020-11-17")}
+    assert not any(row["ratio_numerator"] == 5 for row in rows)
+    assert _parse_f6_beneficial_ownership_entitlements(contract, filing_date="2020-11-23") == []
+
+
+@pytest.mark.parametrize("share_definition", [
+    '"Shares" mean the preferred shares of the Company.',
+    "\"Shares\" mean units of the Company's investment trust.",
+])
+def test_f6_beneficial_ownership_of_nonordinary_units_does_not_emit_an_ordinary_ratio(share_definition):
+    rows = _parse_f6_beneficial_ownership_entitlements(
+        share_definition + ' Prior to November 17, 2020 each "ADS" evidenced by an ADR represents '
+        "the right to receive, and to exercise the beneficial ownership interests in, twenty five "
+        "Shares that are on deposit with the Depositary and commencing on November 17, 2020 "
+        "each ADS evidenced by an ADR represents the right to receive, and to exercise the "
+        "beneficial ownership interests in, five Shares that are on deposit with the Depositary."
+    )
+    assert not [row for row in rows if row["evidence_kind"] == "ads_ratio" and row["ordinary_candidate"]]

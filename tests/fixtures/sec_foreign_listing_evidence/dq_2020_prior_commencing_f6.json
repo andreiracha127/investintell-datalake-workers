@@ -1,0 +1,53 @@
+{
+  "name": "dq_2020_prior_commencing_f6",
+  "fixture": "dq_2020_prior_commencing_f6.html",
+  "cik": 1477641,
+  "symbol": "DQ",
+  "form_type": "F-6 POS",
+  "accession_number": "0001193805-20-001310",
+  "filing_date": "2020-10-26",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000119380520001310/e620017_ex99-a.htm",
+  "source_sha256": "c0696b99103f9437ce60d5db9e07fda45ff16448d19e9684f6d5175f21d77371",
+  "sha256": "c0696b99103f9437ce60d5db9e07fda45ff16448d19e9684f6d5175f21d77371",
+  "derivation": "Full original HTML decoded UTF-8 with replacement and normalized to LF; original byte hash retained.",
+  "original_source_bytes": 200421,
+  "filing_date_proof": {
+    "filed": "2020-10-26",
+    "records": [
+      {
+        "cik": 1474274,
+        "filed": "2020-10-26",
+        "line": "1474274|JPMorgan Chase Bank, N.A. - ADR Depositary|F-6 POS|2020-10-26|edgar/data/1474274/0001193805-20-001310.txt",
+        "source_sha256": "5aac625a8b8354ae9dfee4748a7afc16388d40325821aeba8ee9392b9ef69845",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR4/master.idx"
+      },
+      {
+        "cik": 1477641,
+        "filed": "2020-10-26",
+        "line": "1477641|DAQO NEW ENERGY CORP.|F-6 POS|2020-10-26|edgar/data/1477641/0001193805-20-001310.txt",
+        "source_sha256": "5aac625a8b8354ae9dfee4748a7afc16388d40325821aeba8ee9392b9ef69845",
+        "source_url": "https://www.sec.gov/Archives/edgar/full-index/2020/QTR4/master.idx"
+      }
+    ],
+    "source": "sec_quarter_master_index"
+  },
+  "publication_floor_on": "2020-10-26",
+  "publication_floor_proof": {
+    "publication_floor_on": "2020-10-26",
+    "reported_dates": [
+      "2020-10-26"
+    ],
+    "source": "discovery_reported_publication_floor"
+  },
+  "parent_manifest_sha256": "a4a4e6430fabb2159a7366338de121c1d2f1a05e7953c2876e04a7d4ede91c05",
+  "issuer_binding_proof": {
+    "adsh": "0001193805-20-001310",
+    "cik": 1477641,
+    "evidence_location": "f6/cover/exact-name-of-issuer-of-deposited-securities",
+    "issuer_name": "DAQO NEW ENERGY CORP.",
+    "source_sha256": "377eba6aac6706f636dc259de1df07427398e860bf5bcd29344376c7c048fff8",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000119380520001310/e620017_f6pos-daqo.htm"
+  },
+  "issuer_binding_cover_hash_verified": true,
+  "issuer_binding_cover_header_excerpt": "F-6 POS 1 e620017_f6pos-daqo.htm As filed with the U.S. Securities and Exchange Commission on October 26, 2020 Registration No. 333-164310 SECURITIES AND EXCHANGE COMMISSION Washington, D.C. 20549 ____________________ POST-EFFECTIVE AMENDMENT NO. 3 TO FORM F-6 REGISTRATION STATEMENT UNDER THE SECURITIES ACT OF 1933 For Depositary Shares Evidenced by American Depositary Receipts ___________________ DAQO NEW ENERGY CORP. (Exact name of issuer of deposited securities as specified in its charter) N/A (Translation of issuer's name into English) The Cayman Islands (Jurisdiction of incorporation or organization7 of issuer) JPMORGAN CHASE BANK, N.A. (Exact name of depositary as specified in its charter) 383 Madison Avenue, Floor 11, New York, New York 10179 Telephone (800) 990-1135 (Address, including zip code, and telephone number, including area code, of depositary's principal executive offices) ____________________ Cogency Global Inc. 122 East 42nd Street, 18th Floor New York, NY 10168 Telephone: (800) 221-0102 (Address, including zip code, and telephone number, including area code, of agent for service) Copy to: Scott A. Ziegler, Esq. Ziegler, Ziegler & Associates LLP 570 Lexington Avenue, Suite 2405 New York, New York 10022 (212) 319-7600 It is proposed that this filing become effective under Rule 466 ☒ immediately upon filing ☐ on _______ at __ If a separate registration statement has been filed to register the deposited shares, check the following box. ☐ CALCULATION OF REGISTRATION FEE Title of each class of Securities to be registered Amount to be registered Proposed maximum aggregate price per unit (1) Proposed maximum aggregate offering price (2) Amount of registration fee American Depositary Shares evidenced by American Depositary Receipts, each American Depositary Share representing a specified number of ordinary shares of Daqo New Energy Corp. N/A N/A N/A N/A (1) Each unit represents one American Depositary Share. (2) Estimated solely for the purpose of calculating the registration fee. Pursuant to Rule 457(k), such estimate is computed on the basis of the maximum aggregate fees or charges to be imposed in connection with the issuance of American Depositary Receipts evidencing American Depositary Shares. PART I INFORMATION REQUIRED IN PROSPECTUS The Prospectus consists of the proposed form of American Depositary Receipt (“ADR” or “American Depositary Re"
+}

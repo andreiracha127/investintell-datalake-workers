@@ -16,7 +16,7 @@ from html.parser import HTMLParser
 import re
 from typing import Iterable
 
-PARSER_VERSION = "foreign-listing-v3"
+PARSER_VERSION = "foreign-listing-v4"
 _SPACE = re.compile(r"\s+")
 _ADS = r"(?:(?:(?:American?|Global)\s+)?deposit[ao]ry\s+(?:shares?|receipts?)|American\s+shares?\s*\(evidenced\s+by\s+deposit[ao]ry\s+receipts\)|[AG]D[SR]s?)"
 _SHARES = r"(?:(?:(?:class|series)\s+[A-Z0-9]+\s+)?(?:ordinary|common)\s+shares?|shares?\s+of\s+common\s+stock|(?:class|series)\s+[A-Z0-9]+\s+shares?|shares?)"
@@ -24,7 +24,10 @@ _WORDS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirtee
 _QUANTITY = rf"(?:\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?|(?:{_WORDS})(?:[ -]+(?:{_WORDS}|and)){{0,5}})(?:\s*\(\s*\d[\d,]*(?:\.\d+)?(?:\s*/\s*\d+)?\s*\))?"
 _OF_UNIT = r"(?:\s+of(?:\s+(?:one|an?|the)(?:\s*\(\s*\d+\s*/\s*\d+\s*\))?)?)?"
 _RATIO = re.compile(
-    rf"(?P<adsn>each|{_QUANTITY})\s+{_ADS}(?!\w)(?:[^.;]|\.(?=\d)){{0,100}}?\b(?:represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?|to|per|for)\s+(?P<ordinary>{_QUANTITY}){_OF_UNIT}\s+(?:(?:of\s+)?(?:our|the|its|company.s)\s+)?{_SHARES}",
+    rf"(?P<adsn>each|{_QUANTITY})\s+[\"'\u201c\u201d\u2018\u2019\ufffd]*\s*{_ADS}(?!\w)(?:[^.;]|\.(?=\d)){{0,100}}?\b"
+    rf"(?:represent(?:s|ing)?(?:\s+the\s+right\s+to\s+receive)?|to|per|for)"
+    rf"(?:,\s*and\s+to\s+exercise\s+the\s+beneficial\s+ownership\s+interests\s+in,?)?\s+"
+    rf"(?P<ordinary>{_QUANTITY}){_OF_UNIT}\s+(?:(?:of\s+)?(?:our|the|its|company.s)\s+)?{_SHARES}",
     re.I,
 )
 _RATIO_TITLE = re.compile(
@@ -257,15 +260,72 @@ def _old_new_ratio_spans(text: str) -> set[tuple[int, int]]:
     return former
 
 
+def _transition_former_ratio_spans(text: str, reciprocal: list[re.Match]) -> set[tuple[int, int]]:
+    """Assign explicit from/to and changed-to roles before extracting facts."""
+    by_end = {match.end(): match for match in reciprocal}
+    for pattern in (_RATIO, _RATIO_TITLE):
+        for match in pattern.finditer(text):
+            if any(match.start() < inverse.end() and inverse.start() < match.end() for inverse in reciprocal):
+                continue
+            if match.end() not in by_end or match.start() < by_end[match.end()].start():
+                by_end[match.end()] = match
+    matches = sorted(by_end.values(), key=lambda match: match.start())
+    allowed = {"a", "an", "the", "its", "our", "their", "then", "current", "existing", "original", "old", "former", "previous", "new",
+               "ads", "adss", "adr", "adrs", "gds", "gdss", "gdr", "gdrs", "ratio", "of", "is", "was",
+               "american", "global", "depositary", "depository", "share", "shares", "receipt", "receipts",
+               "ordinary", "common", "to"}
+
+    def wrapper(value: str) -> bool:
+        value = re.sub(r"\b(ADS|ADR|GDS|GDR)s?Ratio\b", r"\1 ratio", value, flags=re.I)
+        tokens = re.findall(r"[A-Za-z]+|\d+", value.lower())
+        return all(token in allowed for token in tokens)
+
+    former = set()
+    for old, new in zip(matches, matches[1:]):
+        if new.start() - old.end() > 450:
+            continue
+        gap = text[old.end():new.start()]
+        if re.search(r"[.!?](?!\d)(?=\s|[\"'\u201d\u2019\ufffd])", gap):
+            continue
+        to_words = list(re.finditer(r"\bto\b", gap, re.I))
+        if not to_words or not wrapper(gap[to_words[-1].end():]):
+            continue
+        lead = text[max(0, old.start() - 280):old.start()]
+        from_words = list(re.finditer(r"\bfrom\b", lead, re.I))
+        from_role = bool(from_words and wrapper(lead[from_words[-1].end():]))
+        changed_to = bool(re.search(r"\b(?:chang(?:e|ed)|amended|adjusted|replaced)\b[^.;]{0,100}$",
+                                    gap[:to_words[-1].start()], re.I))
+        if from_role or changed_to:
+            former.add((old.start(), old.end()))
+    return former
+
+
+def _defined_shares_are_ordinary(text: str) -> bool:
+    definitions = list(re.finditer(
+        r"\bShares\s*[\"'\u201c\u201d\u2018\u2019\ufffd]*\s+(?:mean|means|shall\s+mean)\s+(?P<title>[^.;]{1,220})",
+        text, re.I,
+    ))
+    return bool(definitions) and all(
+        re.match(r"(?:the\s+)?(?:(?:Class|Series)\s+[A-Z0-9]+\s+)?(?:ordinary|common)\s+shares?\b",
+                 definition.group("title"), re.I)
+        and not re.search(r"\b(?:preferred|preference|units?|baskets?|CPOs?)\b", definition.group("title"), re.I)
+        for definition in definitions
+    )
+
+
 def _ratios(text: str):
     seen: set[tuple[int, int, int]] = set()
     reciprocal = _reciprocal_matches(text)
-    former_table = _old_new_ratio_spans(text)
+    former_table = _old_new_ratio_spans(text) | _transition_former_ratio_spans(text, reciprocal)
     for pattern in (_RATIO_RECIPROCAL, _RATIO_COMPACT_TRANSITION, _RATIO, _RATIO_TITLE):
         for match in reciprocal if pattern is _RATIO_RECIPROCAL else pattern.finditer(text):
             if any(start <= match.start() and match.end() <= end for start, end in former_table):
                 continue
             if re.search(r"\b(?:previously|formerly|used\s+to)\b", match.group(), re.I):
+                continue
+            if (re.search(r"beneficial\s+ownership\s+interests", match.group(), re.I)
+                    and not re.search(r"\b(?:ordinary|common)\s+shares?\b", match.group(), re.I)
+                    and not _defined_shares_are_ordinary(text)):
                 continue
             # In "from one share to two ADSs, to one share to one ADS", an
             # ADS-first match can cross the two regimes. Keep each complete
@@ -345,14 +405,14 @@ def _6k_ratio_context(text: str, start: int, end: int) -> tuple[str, str] | None
     """Bind a 6-K ratio to its own transition and connected date statements."""
     left, right = max(0, start - 1200), min(len(text), end + 1400)
     boundaries = [left]
-    for boundary in re.finditer(r"[.!?;](?!\d)(?=\s|$)", text[left:right]):
+    for boundary in re.finditer(r"[.!?;](?!\d)[\"'\u201d\u2019\ufffd]*(?=\s|$)", text[left:right]):
         position = left + boundary.start()
         if text[position] == "." and re.search(
             r"(?:\b(?:Co|Ltd|Inc|Corp|PLC|Mr|Dr|No)|\bU\.S|\bN\.A)$",
             text[max(left, position - 12):position], re.I,
         ):
             continue
-        boundaries.append(position + 1)
+        boundaries.append(left + boundary.end())
     boundaries.append(right)
     index = next(i for i in range(len(boundaries) - 1)
                  if boundaries[i] <= start < boundaries[i + 1])
@@ -454,6 +514,109 @@ def _6k_named_event_date(text: str, match: re.Match, own: str) -> tuple[str, re.
         return None
     proof, value = dated[0]
     return value, proof
+
+
+def _6k_reverse_split_date(text: str, match: re.Match, own: str, context: str) -> tuple[str, re.Match] | None:
+    if not re.search(r"\bConcurrently\s+with\s+(?:the\s+)?reverse\s+(?:share\s+|stock\s+)?split\b", own, re.I):
+        return None
+    date_value = r"(?:[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})"
+    own_spans = [span for span in re.compile(re.escape(own)).finditer(
+        text, max(0, match.start() - 1200), min(len(text), match.end() + 1400))
+        if span.start() <= match.start() and span.end() >= match.end()]
+    if len(own_spans) != 1:
+        return None
+    own_start, own_end = own_spans[0].span()
+    # A repeated label such as Reverse Split is a discourse reference. Resolve
+    # the immediately adjacent dated declaration, not a later split nearby.
+    prefix_start = max(0, own_start - 1200)
+    prefix = text[prefix_start:own_start]
+    boundaries = [0] + [boundary.end() for boundary in re.finditer(
+        r"[.!?](?!\d)[\"'\u201d\u2019\ufffd]*(?=\s|$)", prefix)] + [len(prefix)]
+    adjacent = []
+    date_declaration = re.compile(
+        rf"\breverse\s+(?:share\s+|stock\s+)?split\b[^.;]{{0,150}}?"
+        rf"\b(?:went|became|was|is|will\s+be)\s+effective(?:\s+(?:on|as\s+of|from))?\s+(?P<date>{date_value})",
+        re.I,
+    )
+    for start, end in reversed(list(zip(boundaries, boundaries[1:]))):
+        if not prefix[start:end].strip():
+            continue
+        proofs = list(date_declaration.finditer(text, prefix_start + start, prefix_start + end))
+        if not proofs:
+            break
+        adjacent.extend((value, proof) for proof in proofs
+                        if (value := _effective_date("effective on " + proof.group("date"))))
+    if adjacent:
+        return adjacent[0] if len({value for value, _ in adjacent}) == 1 else None
+    patterns = (
+        rf"\bThe\s+effective\s+date\s+of\s+(?:this|the)\s+reverse\s+(?:share\s+|stock\s+)?split\s+(?:was|is|will\s+be)\s+(?P<date>{date_value})",
+        rf"\bThe\s+first\s+date\b[^.;]{{0,220}}\bafter\s+implementation\s+of\s+the\s+reverse\s+(?:share\s+|stock\s+)?split\s+"
+        rf"and\s+(?:the\s+)?concurrent\s+(?:ADS\s+)?ratio\s+change\s+will\s+be\s+(?P<date>{date_value})",
+    )
+    dated = []
+    scope_start = text.find(context, max(0, match.start() - 1200), match.end() + 1400)
+    if scope_start < 0:
+        return None
+    scope_end = scope_start + len(context)
+    for pattern in patterns:
+        for proof in re.compile(pattern, re.I).finditer(text, own_end, scope_end):
+            gap = text[own_end:proof.start()]
+            statements = [statement.strip() for statement in re.split(r"[.!?](?!\d)\s+", gap) if statement.strip()]
+            if any(not re.search(rf"{_ADS}|\bratio\b|\breverse\s+(?:share\s+|stock\s+)?split\b", statement, re.I)
+                   for statement in statements) or any(_ratios(gap)):
+                continue
+            value = _effective_date("effective on " + proof.group("date"))
+            if value:
+                dated.append((value, proof))
+    return dated[0] if len({value for value, _ in dated}) == 1 else None
+
+
+def _6k_completed_event_date(own: str) -> str | None:
+    date_value = r"(?:[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})"
+    dates = set()
+    for declaration in re.finditer(
+        rf"\bOn\s+(?P<date>{date_value})\s*,?\s*(?P<subject>[^.;]{{0,100}}?)\b(?:effected|implemented|completed)\b"
+        r"[^.;]{0,100}\b(?:change\b[^.;]{0,80}\bratio\b|ratio\s+change\b)", own, re.I,
+    ):
+        if re.search(r"\b(?:announced|reported|said|disclosed|expected|intended|proposed)\b", declaration.group("subject"), re.I):
+            continue
+        value = _effective_date("effective on " + declaration.group("date"))
+        if value:
+            dates.add(value)
+    return next(iter(dates)) if len(dates) == 1 else None
+
+
+def _f6_ratio_interval(text: str, ratio: Fraction, class_text: str,
+                       candidates: list[tuple[re.Match, Fraction]]) -> tuple[str | None, str | None, str] | str | None:
+    """Keep a literal prior/commencing entitlement's two operative intervals."""
+    date_value = r"(?:[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})"
+    marker = re.compile(rf"\b(?P<role>prior\s+to|commencing(?:\s+on)?)\s+(?P<date>{date_value})", re.I)
+    if not marker.search(text):
+        return None
+    current_class = _underlying_class(class_text)
+    intervals = []
+    for candidate, value in candidates:
+        if value != ratio:
+            continue
+        candidate_class = _underlying_class(candidate.group())
+        if current_class is not None and candidate_class is not None and current_class != candidate_class:
+            continue
+        prefix_start = max(0, candidate.start() - 220)
+        for declaration in marker.finditer(text, prefix_start, candidate.start()):
+            tail = text[declaration.end():candidate.start()]
+            if not re.fullmatch(r"[\s,:()\[\]\"'\u201c\u201d\u2018\u2019\ufffd]*(?:each\s+)?", tail, re.I):
+                continue
+            day = _effective_date("effective on " + declaration.group("date"))
+            if day:
+                role = "prior" if declaration.group("role").lower().startswith("prior") else "commencing"
+                intervals.append((role, day, text[declaration.start():candidate.end()]))
+    regimes = {(role, day) for role, day, _ in intervals}
+    if len(regimes) > 1:
+        return "ambiguous"
+    if not regimes:
+        return None
+    role, day, proof = intervals[0]
+    return (None, day, proof) if role == "prior" else (day, None, proof)
 
 
 def _6k_correction_metadata(text: str, context: str) -> dict:
@@ -701,7 +864,8 @@ def parse_filing(
 
     def emit(kind: str, source_kind: str, symbol: str | None, evidence: str, location: str,
              listed_type: str | None = None, ratio: Fraction | None = None,
-             effective: str | None = None, class_text: str = "", metadata: dict | None = None) -> None:
+             effective: str | None = None, class_text: str = "", metadata: dict | None = None,
+             until: str | None = None) -> None:
         if document_role == "securities_description":
             if kind == "listed_type":
                 return
@@ -717,7 +881,7 @@ def parse_filing(
             "ordinary_candidate": _ordinary_candidate(class_text),
             "ratio_numerator": ratio.numerator if ratio else None,
             "ratio_denominator": ratio.denominator if ratio else None,
-            "effective_from": effective or public, "effective_to": None,
+            "effective_from": effective or public, "effective_to": until,
             "effective_date_explicit": effective is not None,
             "available_on": public, "evidence_text": _clean(evidence),
             "evidence_location": location, "parser_version": PARSER_VERSION,
@@ -923,18 +1087,34 @@ def parse_filing(
                 rf"\b(?:{month}\s+{stated_date.day}(?:st|nd|rd|th)?,?\s+{stated_date.year}|{stated_date.day}\s+{month}\s+{stated_date.year}|{amendment_date})\b",
                 text, re.I,
             )
-        for match, ratio in _ratios(text):
+        ratio_matches = list(_ratios(text))
+        interval_cache: dict[tuple[Fraction, str | None], tuple[str | None, str | None, str] | str | None] = {}
+        for match, ratio in ratio_matches:
             context = text[max(0, match.start() - 700):match.end() + 700]
             if _superseded_ratio(text, match.start(), match.end()):
                 continue
+            interval_key = (ratio, _underlying_class(match.group()))
+            if interval_key not in interval_cache:
+                interval_cache[interval_key] = _f6_ratio_interval(text, ratio, match.group(), ratio_matches)
+            interval = interval_cache[interval_key]
+            if interval == "ambiguous":
+                continue  # Contradictory operative dates cannot become filing-date fallbacks.
+            if interval and interval[1] is not None and interval[1] <= public:
+                continue  # This source first becomes public after the prior regime expired.
             location = f"f6/depositary-description;text-offset={match.start()}"
             if amendment_date_match and not (max(0, match.start() - 700) <= amendment_date_match.start() <= match.end() + 700):
                 context += " " + text[max(0, amendment_date_match.start() - 300):amendment_date_match.end() + 150]
                 location += f";amendment-date-text-offset={amendment_date_match.start()}"
             local_symbols = [s.upper() for s in _explicit_symbols(context)] or explicit
             for symbol in local_symbols if len(set(local_symbols)) == 1 else [None]:
+                effective = interval[0] if interval else amendment_date or _effective_date(context)
+                until = interval[1] if interval else None
+                if interval:
+                    location += ";operative-ratio-interval=" + ("prior" if until else "commencing")
+                    if interval[2] not in context:
+                        context += " " + interval[2]
                 emit("ads_ratio", "f6", symbol, context, location, ratio=ratio,
-                     effective=amendment_date or _effective_date(context), class_text=match.group(),
+                     effective=effective, until=until, class_text=match.group(),
                      metadata=_f6_pending_effectiveness(text, ratio, match.group()))
     elif base_form == "6-K":
         for match, ratio in _ratios(text):
@@ -949,7 +1129,15 @@ def parse_filing(
             if _prior_ratio(text, match.start()) and not dated_current:
                 continue
             named_event = _6k_named_event_date(text, match, own)
-            effective = named_event[0] if named_event else _effective_date(context)
+            event_name = "Share Consolidation"
+            if named_event is None:
+                named_event = _6k_reverse_split_date(text, match, own, context)
+                event_name = "Reverse Split"
+            reverse_linked = bool(re.search(r"\bConcurrently\s+with\s+(?:the\s+)?reverse\s+(?:share\s+|stock\s+)?split\b", own, re.I))
+            own_date = _6k_completed_event_date(own) or _effective_date(own)
+            if named_event and own_date and named_event[0] != own_date:
+                continue
+            effective = named_event[0] if named_event else own_date or (None if reverse_linked else _effective_date(context))
             if not effective:
                 continue
             location = f"6k/ratio-change;text-offset={match.start()}"
@@ -958,7 +1146,7 @@ def parse_filing(
                 context_start = text.find(context, max(0, match.start() - 1200), match.end() + 1400)
                 if context_start >= 0:
                     context = text[min(context_start, proof.start()):max(context_start + len(context), proof.end())]
-                location += ";effective-date-named-event=Share Consolidation;named-event-date-text-offset=" + str(proof.start())
+                location += ";effective-date-named-event=" + event_name + ";named-event-date-text-offset=" + str(proof.start())
             if match.groupdict().get("unit", "").upper() == "CUFS":
                 proofs = _cufs_ordinary_ratio_proofs(text, match, ratio)
                 context_start = text.find(context, max(0, match.start() - 1200), match.end() + 1400)
