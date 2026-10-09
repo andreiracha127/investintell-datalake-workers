@@ -5743,6 +5743,57 @@ def test_worker_re_derives_a_bounded_number_of_events_per_run(
         "AND parser_version = %s", (loader.EVENT_PARSER_VERSION,)).fetchone() == (3,)
 
 
+def test_the_index_pass_and_the_backlog_share_one_filing_budget(
+    schema_dsn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex thread 4228621218: after a parser change the open quarter's index
+    lists events read by the old parser, and the backlog holds more. One run
+    fetches at most EVENT_REDERIVE_LIMIT filings for both passes together; an
+    index event it cannot read keeps its earlier reading until a later run."""
+    from src.workers import sec_ticker_cik_history as worker
+
+    monkeypatch.setattr(loader, "DOWNLOAD_SPACING_S", 0)
+    monkeypatch.setattr(loader, "FILING_SPACING_S", 0)
+    monkeypatch.setattr(worker, "_quarters", lambda as_of: [(2024, 4)])
+    monkeypatch.setattr(worker, "EVENT_REDERIVE_LIMIT", 2)
+    conn, dsn = schema_dsn
+    _observe(conn, 5133, "AM", "2013-07-10")
+    listed = (("25-NSE", "2024-10-01", "0000876661-13-000657"),
+              ("15-12B", "2024-10-02", "0001193125-13-343607"),
+              ("15-12G", "2024-10-03", "0001078782-11-001558"))
+    backlog = ("25", "2017-08-01", "0000950103-17-012553")
+    filings = {adsh: (FILINGS / f"{adsh}.txt").read_bytes() for _, _, adsh in (*listed, backlog)}
+    index = {"2024/QTR4/form.gz": _index_bytes(
+        *((form, 5133, filed, adsh) for form, filed, adsh in listed))}
+    with pytest.MonkeyPatch.context() as old:  # loaded and read by an older parser
+        old.setattr(loader, "EVENT_PARSER_VERSION", "sec_event_class_old")
+        (tmp_path / "2024QTR4.form.gz").write_bytes(index["2024/QTR4/form.gz"])
+        _index(tmp_path / "2017QTR3.form.gz", (backlog[0], 5133, backlog[1], backlog[2]))
+        loader.run([], dsn=dsn, dry_run=False, reconciled_on=d(2024, 11, 1),
+                   form_indexes=[tmp_path / "2017QTR3.form.gz", tmp_path / "2024QTR4.form.gz"],
+                   documents=loader.EventDocuments(FILINGS, None))
+    build = tmp_path / "build"
+    build.mkdir()
+    packages = {"2024_10_notes.zip": _stored_month(build, "2024_10_notes.zip", "TT")}
+    client, calls = _fake_sec(tmp_path, packages, index, filings)
+
+    def run() -> tuple[dict, int]:
+        calls.clear()
+        stats = worker.run(dsn, calc_date="2024-11-15", client=client)
+        return stats, sum(1 for _, url in calls if url.startswith(FILING_BASE))
+
+    stats, fetched = run()
+    assert (fetched, stats["filings_deferred"], stats["event_classes"]["derived"],
+            stats["event_classes"]["deferred"]) == (2, 1, 0, 2)
+    stats, fetched = run()
+    assert (fetched, stats["filings_deferred"], stats["event_classes"]["derived"],
+            stats["event_classes"]["deferred"]) == (2, 0, 1, 0)
+    assert run()[1] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM sec_registration_events WHERE retired_on IS NULL "
+        "AND parser_version = %s", (loader.EVENT_PARSER_VERSION,)).fetchone() == (4,)
+
+
 def test_worker_reports_lock_busy_without_loading(schema_dsn, tmp_path: Path) -> None:
     import psycopg
 

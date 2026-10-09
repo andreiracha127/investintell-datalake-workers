@@ -1770,15 +1770,26 @@ class EventDocuments:
     file that is not the submission is ignored and fetched again."""
 
     def __init__(self, cache_dir: Path, client=None, *, spacing: float | None = None,
-                 retries: int = 6) -> None:
+                 retries: int = 6, budget: int | None = None) -> None:
         self.cache_dir = cache_dir
         self.client = client
         self.spacing = FILING_SPACING_S if spacing is None else spacing
         self.retries = retries
+        # At most ``budget`` filings fetched (fetched, failed or rejected); past
+        # it, a filing not cached is not read now (``deferred``).
+        self.budget = budget
         self.fetched = 0
         self.failed = 0
         self.rejected = 0
+        self.deferred = 0
         self._last = 0.0
+
+    @property
+    def remaining(self) -> int | None:
+        """Filings this object may still fetch; None without a budget."""
+        if self.budget is None:
+            return None
+        return max(0, self.budget - self.fetched - self.failed - self.rejected)
 
     def text(self, cik: int, adsh: str) -> str | None:
         """The filing's full text, or None when it is not cached and cannot be
@@ -1792,6 +1803,9 @@ class EventDocuments:
                 self.rejected += 1
                 return None
         if self.client is None:
+            return None
+        if self.remaining == 0:
+            self.deferred += 1
             return None
         try:
             import httpx
