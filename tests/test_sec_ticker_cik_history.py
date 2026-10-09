@@ -276,6 +276,10 @@ def test_share_counts_are_dated_by_the_stated_day_not_the_rounded_month_end(
         ("Series B", "HL-PB", "ClassOfStock=SeriesBCumulativePreferredStock;", "preferred"),
         ("6.25% Class A Cumulative Redeemable Units, Series 1", "BPYPM",
          "ComponentsOfEquity=PreferredUnits625Series1;", "preferred"),
+        # mandatory-convertible equity units (NiSource's NIMC, Novanta's 2026 TEUs)
+        ("Series A Corporate Units", "NIMC", "ClassOfStock=SeriesAPreferredStock;", "unit"),
+        ("6.50% Tangible Equity Units", "XYZU", "", "unit"),
+        ("Equity Units", "XYZU", "", "unit"),
         # ... but not a title that says it: an ADS of units, a common stock.
         ("American Depositary Shares, each representing four units (or a right to receive",
          "BRBI", "ClassesOfShareCapital=AmericanDepositarySharesEachRepresentingFourUnitsOr"
@@ -3269,9 +3273,10 @@ def test_generated_line_linkage_and_sole_class_by_cover_completeness(schema_dsn)
     nothing shows class C beside another listed class: complete covers alone say
     a class is the only one, while any cover (an 8-K too) is evidence of two
     classes side by side. The preferred, a non-listed kind, and the unlisted
-    class do not count; 8-Ks listing some classes change nothing else. A class
-    renamed on consecutive complete one-class covers stays one line even if an
-    8-K later shows it beside a new class."""
+    class do not count. The structure comes from complete covers only: 8-Ks,
+    whose members vary from the 10-Qs' (CCL, DUK, NI), say neither that a class is
+    the only one nor that it is listed beside another, so a split shown only on
+    an 8-K, or an 8-K showing class C beside a new class, links nothing apart."""
     conn, _ = schema_dsn
     ciks = itertools.count(40_000)
     failures = []
@@ -3295,7 +3300,7 @@ def test_generated_line_linkage_and_sole_class_by_cover_completeness(schema_dsn)
         if only_8k:
             rows.append((f"L{cik}E", "ClassE", "Class E common stock", "equity"))
         split = _cover(conn, cik, "2014-04-03", rows, complete=not only_8k)
-        if unlisted:
+        if unlisted and not only_8k:  # a count would make the 8-K a complete cover
             _count(conn, cik, "ClassD", "2014-04-02", 100, "2014-04-03", adsh=split)
         extra = {"8-K C after": ("2014-05-01", rows[:1]),
                  "8-K undimensioned between": (
@@ -3307,7 +3312,7 @@ def test_generated_line_linkage_and_sole_class_by_cover_completeness(schema_dsn)
                                                 "equity")])}.get(variant)
         if extra:
             _cover(conn, cik, extra[0], extra[1], complete=False)
-        linked = beside == 0 and not only_8k
+        linked = beside == 0 or only_8k
         cell = (beside, unlisted, preferred, variant)
         lines = dict(conn.execute("SELECT class_key, line_key FROM sec_issuer_lines(%s)",
                                   (cik,)).fetchall())

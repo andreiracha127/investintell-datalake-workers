@@ -50,8 +50,8 @@
 --   shown after it) starts a new run: a later cover, even with a 12(b) title, no
 --   longer reopens it.
 -- * An undimensioned class shown only on one-class complete covers is not linked
---   to a dimensioned class a complete cover shows beside another listed class (an
---   8-K when no complete cover shows it) merely because it later carries the same
+--   to a dimensioned class a complete cover shows beside another listed class
+--   (8-Ks do not count) merely because it later carries the same
 --   symbol (Google's GOOG before and after its 2014 class C); in lineage, such a
 --   sole-class line is followed through the issuer's later complete filings, so
 --   the recapitalization ends its run.
@@ -1131,8 +1131,7 @@ $fn$;
 --   single-class filer renaming its member or dropping the dimension).
 -- An undimensioned class shown only on one-class complete covers and a
 -- dimensioned class a complete cover shows beside another listed class are not
--- linked by a symbol they share (an 8-K counts for the second only when no
--- complete cover shows the class):
+-- linked by a symbol they share (complete covers only: 8-Ks do not count):
 -- the symbol moved in a recapitalization (Google's GOOG, its sole class until
 -- 2014, then its class C beside class A's GOOGL), so it does not say which of the
 -- listed classes continues the old one; only a relabel edge would. A class listed
@@ -1206,15 +1205,14 @@ BEGIN
             FROM equity_rows e
             GROUP BY e.adsh
         ), structure AS (
-            -- complete covers say a class is the only one, or is listed beside
-            -- another; an 8-K listing one class says nothing of that, while one
-            -- listing it beside another class is the evidence when no complete
-            -- cover shows the class
+            -- the class structure comes from complete covers only: an 8-K (whose
+            -- members vary: CCL's, DUK's and NI's 8-Ks name their common stock
+            -- unlike their 10-Qs) says neither that a class is the only one nor
+            -- that it is listed beside another
             SELECT e.class_key,
                    bool_and(e.filing_equity_classes = 1) FILTER (WHERE e.filing_complete)
                        AS sole_only,
-                   COALESCE(bool_or(f.listed > 1) FILTER (WHERE e.filing_complete),
-                            bool_or(f.listed > 1)) AS beside_listed
+                   bool_or(f.listed > 1) FILTER (WHERE e.filing_complete) AS beside_listed
             FROM equity_rows e
             JOIN filing_lines f ON f.adsh = e.adsh
             GROUP BY e.class_key

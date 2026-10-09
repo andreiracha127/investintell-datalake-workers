@@ -134,7 +134,8 @@ EVENT_PARSER_VERSION = "sec_event_class_v5"
 # package and on each fact version it inserts; not part of a fact's hash. v3: a
 # line's member refines a title that does not say what the line is (truncated or
 # run together: "Series B", "Depositary Shares, Each Representing a 1/400th
-# Interest in", "7.875% Senior Notesdue 2025").
+# Interest in", "7.875% Senior Notesdue 2025"); Corporate Units and Tangible
+# Equity Units are units.
 FSN_PARSER_VERSION = "sec_fsn_v3"
 # Why a fact version was retired (sec_*.retired_reason). SOURCE: the public record
 # changed (a republished package, an index that dropped or reassigned a row, a
@@ -265,7 +266,11 @@ _KIND_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"\bnotes?\b|debentures?|\bbonds?\b|\bdue\s+(?:19|20)\d\d\b|senior\s+(?:un)?secured"
         r"|subordinated|medium[-\s]term|\bloan\b", re.IGNORECASE)),
     ("preferred", re.compile(r"preferred|preference|\bperpetual\b|\bpref\b", re.IGNORECASE)),
-    ("unit", re.compile(r"^\s*units?\b|\bunits?,?\s+each\b|\beach\s+unit\b", re.IGNORECASE)),
+    # SPAC units, and the mandatory-convertible equity units (Corporate Units,
+    # Tangible Equity Units: a purchase contract and a note), not common stock
+    ("unit", re.compile(r"^\s*units?\b|\bunits?,?\s+each\b|\beach\s+unit\b"
+                        r"|\b(?:corporate|equity|stock\s+purchase)\s+units?\b"
+                        r"|\bpurchase\s+contracts?\b", re.IGNORECASE)),
     ("warrant", re.compile(r"warrant", re.IGNORECASE)),
     ("right", re.compile(r"^\s*rights?\b|\brights?,?\s+each\b|\bcontingent\s+value\b",
                          re.IGNORECASE)),
