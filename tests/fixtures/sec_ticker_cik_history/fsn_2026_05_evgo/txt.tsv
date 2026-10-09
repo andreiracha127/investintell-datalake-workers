@@ -1,0 +1,8 @@
+adsh	tag	version	ddate	qtrs	iprx	lang	dcml	durp	datp	dimh	dimn	coreg	escaped	srclen	txtlen	footnote	footlen	context	value
+0001821159-26-000010	EntityCentralIndexKey	dei/2025	20260331	1	0	en-US	32767	0.024658024	0.0	0x00000000	0		0	10	10		0	c-1	0001821159
+0001821159-26-000010	Security12bTitle	dei/2025	20260331	1	0	en-US	32767	0.024658024	0.0	0x3b48449e5383ec4fd8b045df9f49653c	1		0	150	150		0	c-3	Redeemable warrants included as part of the units, each whole warrant exercisable for one share of Class A common stock at an exercise price of $11.50
+0001821159-26-000010	Security12bTitle	dei/2025	20260331	1	0	en-US	32767	0.024658024	0.0	0x64aab115e615b3ad72099cbe43ef2567	1		0	49	49		0	c-2	Class A common stock, $0.0001 par value per share
+0001821159-26-000010	SecurityExchangeName	dei/2025	20260331	1	0	en-US	32767	0.024658024	0.0	0x3b48449e5383ec4fd8b045df9f49653c	1		0	6	6		0	c-3	NASDAQ
+0001821159-26-000010	SecurityExchangeName	dei/2025	20260331	1	0	en-US	32767	0.024658024	0.0	0x64aab115e615b3ad72099cbe43ef2567	1		0	6	6		0	c-2	NASDAQ
+0001821159-26-000010	TradingSymbol	dei/2025	20260331	1	0	en-US	32767	0.024658024	0.0	0x3b48449e5383ec4fd8b045df9f49653c	1		0	5	5		0	c-3	EVGOW
+0001821159-26-000010	TradingSymbol	dei/2025	20260331	1	0	en-US	32767	0.024658024	0.0	0x64aab115e615b3ad72099cbe43ef2567	1		0	4	4		0	c-2	EVGO

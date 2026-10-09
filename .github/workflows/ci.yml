@@ -301,7 +301,6 @@ jobs:
       PYTHONPATH: .
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
       SEC_TEST_DATABASE_URL: host=127.0.0.1 port=65431 dbname=postgres user=postgres
-      SEC_INSIDER_TEST_DSN: host=127.0.0.1 port=65431 dbname=postgres user=postgres
       # Loopback + a database name containing 'disposable' + an explicit password satisfy the bond default-event
       # DB-suite guard (the service uses trust auth, so the password value is ignored).
       BOND_DEFAULT_TEST_DATABASE_URL: host=127.0.0.1 port=65431 dbname=bdefault_disposable_ci user=postgres password=postgres
@@ -502,8 +501,6 @@ jobs:
             tests/test_nport_fixed_income_features_contract.py
             tests/test_nport_fixed_income_secapi_schema.py
             tests/test_nport_fixed_income_secapi_fallback_schema.py
-            tests/test_sec_ticker_cik_history.py
-            tests/test_sec_insider_ticker_evidence.py
           )
           db_tests=(
             tests/test_fomc_sep_ingestion.py
@@ -541,8 +538,6 @@ jobs:
             tests/test_nport_fixed_income_features_contract.py
             tests/test_nport_fixed_income_secapi_schema.py
             tests/test_nport_fixed_income_secapi_fallback_schema.py
-            tests/test_sec_ticker_cik_history.py
-            tests/test_sec_insider_ticker_evidence.py
           )
           printf 'environment_mode=postgres\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
@@ -783,6 +778,114 @@ jobs:
             export SEC_TEST_DATABASE_URL='host=127.0.0.1 port=65432 dbname=sec_roles_disposable_ci user=postgres'
             run_suite sec_roles tests/test_bond_market_implied_rating_materializer_db.py
           fi
+
+  # W1 and W1b (the SEC ticker -> CIK history and its insider evidence) run on
+  # the production engine: PostgreSQL 18.4 with TimescaleDB 2.27.2 on Alpine,
+  # database collation en_US.utf8, which musl orders by bytes ('BRK-A' before
+  # 'BRK34'; glibc's postgres:16 orders it linguistically, 360242f). With their
+  # DSNs set these suites never skip, so a skip fails the lane.
+  workers-sec-ticker-timescale:
+    name: workers-sec-ticker-timescale
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      SEC_TEST_DATABASE_URL: host=127.0.0.1 port=65433 dbname=sec_ticker_ci user=postgres
+      SEC_INSIDER_TEST_DSN: host=127.0.0.1 port=65433 dbname=sec_ticker_ci user=postgres
+    services:
+      timescale:
+        image: timescale/timescaledb:2.27.2-pg18
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_INITDB_ARGS: --locale=en_US.utf8
+          TIMESCALEDB_TELEMETRY: "off"
+          TS_TUNE_MEMORY: 2GB
+        ports:
+          - 65433:5432
+        # TCP, not the socket: the init-time server listens on the socket only.
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install worker test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements.quant-engine.lock pytest
+
+      - name: Provision the disposable database on the production engine
+        shell: bash
+        run: |
+          python - <<'PY'
+          import time
+
+          import psycopg
+
+          base = "host=127.0.0.1 port=65433 user=postgres"
+          for _ in range(30):
+              try:
+                  admin = psycopg.connect(f"{base} dbname=postgres", autocommit=True)
+                  break
+              except psycopg.OperationalError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("the TimescaleDB service never accepted connections")
+          with admin:
+              admin.execute("CREATE DATABASE sec_ticker_ci")
+          with psycopg.connect(f"{base} dbname=sec_ticker_ci", autocommit=True) as conn:
+              conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
+              row = conn.execute(
+                  "SELECT current_setting('server_version_num'), version(), "
+                  "(SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'), "
+                  "datcollate, datctype, datlocprovider, 'BRK-A' < 'BRK34' "
+                  "FROM pg_database WHERE datname = current_database()"
+              ).fetchone()
+              print("sec_ticker_ci: server_version_num={} ({}) timescaledb={} "
+                    "collate={} ctype={} provider={} byte_order={}".format(*row))
+              version, banner, extension, collate, ctype, provider, byte_order = row
+              assert version.startswith("18") and "musl" in banner, (version, banner)
+              assert extension == "2.27.2", extension
+              assert (collate, ctype, provider) == ("en_US.utf8", "en_US.utf8", "c"), row
+              assert byte_order is True, "en_US.utf8 must order text as production does"
+          PY
+
+      - name: Run the SEC W1 and W1b suites on TimescaleDB
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            tests/test_sec_ticker_cik_history.py
+            tests/test_sec_insider_ticker_evidence.py
+          )
+          printf 'environment_mode=timescale-pg18\nselected_scope=%s\n' "${tests[*]}"
+          python -m pytest "${tests[@]}" --collect-only -q | tee collect.log
+          collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
+          collected=${collected:-0}
+          printf 'collected_count=%s\n' "$collected"
+          test "$collected" -gt 0
+          set +e
+          python -m pytest "${tests[@]}" -q -rA | tee results.log
+          status=${PIPESTATUS[0]}
+          set -e
+          summary=$(tail -n 1 results.log)
+          passed=$( (grep -Eo '[0-9]+ passed' <<< "$summary" || true) | awk '{sum += $1} END {print sum + 0}')
+          failed=$( (grep -Eo '[0-9]+ failed' <<< "$summary" || true) | awk '{sum += $1} END {print sum + 0}')
+          skipped=$( (grep -Eo '[0-9]+ skipped' <<< "$summary" || true) | awk '{sum += $1} END {print sum + 0}')
+          printf 'executed_count=%s failures=%s skips=%s\n' "$((passed + failed))" "$failed" "$skipped"
+          test "$status" -eq 0
+          test "$((passed + failed))" -gt 0
+          test "$skipped" -eq 0
 
   quant-engine:
     name: quant-engine

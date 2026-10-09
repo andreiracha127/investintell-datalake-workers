@@ -1,0 +1,8 @@
+adsh	tag	version	ddate	qtrs	iprx	lang	dcml	durp	datp	dimh	dimn	coreg	escaped	srclen	txtlen	footnote	footlen	context	value
+0001535929-26-000149	EntityCentralIndexKey	dei/2026	20260731	0	0	en-US	32767	0.0	-4.0	0x00000000	0		0	10	10		0	c-1	0001535929
+0001535929-26-000149	Security12bTitle	dei/2026	20260731	0	0	en-US	32767	0.0	-4.0	0x410248c13c2d9a10afd7163a2e157579	1		0	45	45		0	c-3	Depositary Shares, each representing a 1/40th
+0001535929-26-000149	Security12bTitle	dei/2026	20260731	0	0	en-US	32767	0.0	-4.0	0x5982a9cbec7751ed45402dbefd397f6c	1		0	28	28		0	c-2	Common Stock, $.01 Par Value
+0001535929-26-000149	SecurityExchangeName	dei/2026	20260731	0	0	en-US	32767	0.0	-4.0	0x410248c13c2d9a10afd7163a2e157579	1		0	4	4		0	c-3	NYSE
+0001535929-26-000149	SecurityExchangeName	dei/2026	20260731	0	0	en-US	32767	0.0	-4.0	0x5982a9cbec7751ed45402dbefd397f6c	1		0	4	4		0	c-2	NYSE
+0001535929-26-000149	TradingSymbol	dei/2026	20260731	0	0	en-US	32767	0.0	-4.0	0x410248c13c2d9a10afd7163a2e157579	1		0	7	7		0	c-3	VOYAPrB
+0001535929-26-000149	TradingSymbol	dei/2026	20260731	0	0	en-US	32767	0.0	-4.0	0x5982a9cbec7751ed45402dbefd397f6c	1		0	4	4		0	c-2	VOYA

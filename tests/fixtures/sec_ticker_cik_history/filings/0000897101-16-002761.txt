@@ -1,0 +1,294 @@
+<SEC-DOCUMENT>0000897101-16-002761.txt : 20160811
+<SEC-HEADER>0000897101-16-002761.hdr.sgml : 20160811
+<ACCEPTANCE-DATETIME>20160810183742
+ACCESSION NUMBER:		0000897101-16-002761
+CONFORMED SUBMISSION TYPE:	8-K12G3/A
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20160630
+ITEM INFORMATION:		Other Events
+FILED AS OF DATE:		20160811
+DATE AS OF CHANGE:		20160810
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Canterbury Park Holding Corp
+		CENTRAL INDEX KEY:			0001672909
+		STANDARD INDUSTRIAL CLASSIFICATION:	SERVICES-RACING, INCLUDING TRACK OPERATION [7948]
+		IRS NUMBER:				475349765
+		STATE OF INCORPORATION:			MN
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		8-K12G3/A
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	000-55662
+		FILM NUMBER:		161822549
+
+	BUSINESS ADDRESS:	
+		STREET 1:		1100 CANTERBURY ROAD S.
+		CITY:			SHAKOPEE
+		STATE:			MN
+		ZIP:			55379
+		BUSINESS PHONE:		(952) 445-7223
+
+	MAIL ADDRESS:	
+		STREET 1:		1100 CANTERBURY ROAD S.
+		CITY:			SHAKOPEE
+		STATE:			MN
+		ZIP:			55379
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	New Canterbury Park Holding Corp
+		DATE OF NAME CHANGE:	20160422
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-K12G3/A
+<SEQUENCE>1
+<FILENAME>newcphc162777_8k12g3a.htm
+<DESCRIPTION>8-K12G3/A
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+<P STYLE="margin: 0"></P>
+
+<P STYLE="font: 14pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"></P>
+
+<P STYLE="font: 12pt Times New Roman, Times, Serif; margin: 0; text-align: center"><B><I><U></U></I></B></P>
+
+
+
+<P STYLE="font: 14pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"></P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="LEFT" STYLE="margin-top: 12pt; margin-bottom: 3pt"><DIV STYLE="font-size: 1pt; border-top: Black 2pt solid; border-bottom: Black 1pt solid; width: 100%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 14pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>UNITED STATES</B></P>
+
+<P STYLE="font: 14pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>SECURITIES AND EXCHANGE COMMISSION</B></P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>Washington, D.C. 20549</B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 20pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B></B></P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="CENTER" STYLE="margin-top: 3pt; margin-bottom: 3pt"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; width: 25%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 18pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>FORM 8-K/A</B></P>
+
+<P STYLE="font: 18pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>(Amendment No. 1)&nbsp;</B></P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="CENTER" STYLE="margin-top: 3pt; margin-bottom: 3pt"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; width: 25%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 20pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B></B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>CURRENT REPORT</B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>Pursuant to Section 13 or 15(d) of
+the Securities Exchange Act of 1934</B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center">Date of Report (Date of earliest event
+reported): <B>June 30, 2016 </B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 20pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><FONT STYLE="font-variant: small-caps"><B></B></FONT></P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="CENTER" STYLE="margin-top: 3pt; margin-bottom: 3pt"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; width: 25%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 20pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><FONT STYLE="font-variant: small-caps"><B>CANTERBURY
+PARK HOLDING CORPORATION</B></FONT></P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><I>(Exact name of registrant as specified
+in charter) </I></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 11pt Calibri, Helvetica, Sans-Serif; width: 100%">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="width: 34%; text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt"><B>Minnesota</B></FONT></TD>
+    <TD STYLE="width: 33%; text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt"><B>333-210877</B></FONT></TD>
+    <TD STYLE="width: 33%; text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt"><B>41-5349765</B></FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><I>(State or other jurisdiction</I></FONT></TD>
+    <TD STYLE="text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><I>(Commission</I></FONT></TD>
+    <TD STYLE="text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><I>(IRS Employer</I></FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><I>of incorporation)</I></FONT></TD>
+    <TD STYLE="text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><I>File Number)</I></FONT></TD>
+    <TD STYLE="text-align: center; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><I>Identification No.)</I></FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 11pt/normal Calibri, Helvetica, Sans-Serif; margin: 0">&nbsp;</P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>1100 Canterbury Road</B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>Shakopee, Minnesota 55379</B></P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><I>(Address, including zip code, of principal
+executive offices)</I></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center">Registrant's telephone number, including
+area code: <B>(952) 445-7223</B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>&nbsp;</B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center; "><B>New Canterbury Park
+Holding Corporation</B></P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="CENTER" STYLE="margin-top: 0pt; margin-bottom: 0pt"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; width: 60%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B></B></P>
+
+
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B></B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><FONT STYLE="font-size: 10pt">(Former
+Name or Former Address, if changed since last report)&nbsp;</FONT></P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="CENTER" STYLE="margin-top: 12pt"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; width: 25%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B></B></P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0">Check the appropriate box below if the Form 8-K filing is
+intended to simultaneously satisfy the filing obligation of the registrant under any of the following provisions:</P>
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="width: 100%; font: 11pt Calibri, Helvetica, Sans-Serif; border-collapse: collapse">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="width: 7%; padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%"><FONT STYLE="font-family: MS Mincho; font-size: 12pt">&#9744;</FONT></TD>
+    <TD STYLE="width: 93%; padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">Written communications pursuant to Rule 425 under the Securities Act (17 CFR 230.425)</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%">&nbsp;</TD>
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%"><FONT STYLE="font-family: MS Mincho; font-size: 12pt">&#9744;</FONT></TD>
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">Soliciting material pursuant to Rule 14a-12 under the Exchange Act (17 CFR 240.14a-12)</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%">&nbsp;</TD>
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%"><FONT STYLE="font-family: MS Mincho; font-size: 12pt">&#9744;</FONT></TD>
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">Pre-commencement communications pursuant to Rule 14d-2(b) under the Exchange Act (17 CFR 240.14d-2(b))</FONT></TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%">&nbsp;</TD>
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%">&nbsp;</TD></TR>
+<TR STYLE="vertical-align: top">
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%"><FONT STYLE="font-family: MS Mincho; font-size: 12pt">&#9744;</FONT></TD>
+    <TD STYLE="padding-right: 5.4pt; padding-left: 5.4pt; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt">Pre-commencement communications pursuant to Rule 13e-4(c) under the Exchange Act (17 CFR 240.13e-4(c))</FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0 0 1.5pt">&nbsp;</P>
+
+<!-- Field: Rule-Page --><DIV ALIGN="LEFT" STYLE="margin-top: 3pt; margin-bottom: 12pt"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; border-bottom: Black 2pt solid; width: 100%">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 12pt/normal Times New Roman, Times, Serif; margin: 0 0 1.5pt"></P>
+
+
+<!-- Field: Page; Sequence: 1; Value: 2 -->
+    <DIV STYLE="margin-bottom: 6pt; padding-bottom: 12pt; border-bottom: Silver 3pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="border-collapse: collapse; width: 100%; font-size: 10pt"><TR STYLE="vertical-align: top; text-align: left"><TD STYLE="width: 100%; text-align: center">&nbsp;</TD></TR></TABLE></DIV>
+    <DIV STYLE="page-break-before: always; margin-top: 6pt">&nbsp;</DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>NOTICE</B></P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0"></P>
+
+<P STYLE="font: 11pt/107% Calibri, Helvetica, Sans-Serif; margin: 0 0 8pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Canterbury
+Park Holding Corporation (the &quot;Company&quot;) hereby withdraws its Report on Form 8-K filed on July 14, 2016 as Form
+Type 8-K12G3.</FONT></P>
+
+<P STYLE="font: 11pt/107% Calibri, Helvetica, Sans-Serif; margin: 0 0 8pt"><FONT STYLE="font: 10pt Times New Roman, Times, Serif">&nbsp;</FONT></P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 11pt Calibri, Helvetica, Sans-Serif; width: 100%">
+<TR STYLE="vertical-align: top">
+    <TD STYLE="width: 72px; text-align: justify; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt"><B>Item
+    8.01.</B></FONT></TD>
+    <TD><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 12pt"><B>Other Events.</B></FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in"><B>&nbsp;</B></P>
+
+
+
+
+<P STYLE="font: 11pt/107% Calibri, Helvetica, Sans-Serif; margin: 0 0 8pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">The
+Company is withdrawing its Report on Form 8-K that it filed on July 14, 2016 as Form Type 8-K12G3 (the &ldquo;July 14
+8-K&rdquo;). Pursuant to Rule l2g-3(a) under the Securities Exchange Act of 1934, as amended, the Company will promptly file
+a new Report on Form 8-K, that will be identical to the original July l4 8-K, as Form Type 8-Kl2B. </FONT></P>
+
+
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0"></P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0">&nbsp;</P>
+
+
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-align: center"><B>SIGNATURE</B></P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0">Pursuant to the requirements of the Securities Exchange Act
+of 1934, the registrant has duly caused this report to be signed on its behalf by the undersigned hereunto duly authorized.</P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 11pt Calibri, Helvetica, Sans-Serif; width: 100%">
+<TR>
+    <TD STYLE="line-height: 107%">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">CANTERBURY PARK HOLDING CORPORATION</FONT></TD></TR>
+<TR>
+    <TD STYLE="line-height: 107%">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="line-height: 107%">&nbsp;</TD></TR>
+<TR>
+    <TD STYLE="line-height: 107%">&nbsp;</TD>
+    <TD COLSPAN="2" STYLE="line-height: 107%">&nbsp;</TD></TR>
+<TR>
+    <TD STYLE="width: 56%; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">&nbsp;Date:
+    August 10, 2016&nbsp;&nbsp;</FONT></TD>
+    <TD STYLE="width: 5%; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">By:</FONT></TD>
+    <TD STYLE="width: 39%; border-bottom: black 1pt solid; line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">/s/ Randall D. Sampson</FONT></TD></TR>
+<TR>
+    <TD STYLE="line-height: 107%">&nbsp;</TD>
+    <TD STYLE="line-height: 107%">&nbsp;</TD>
+    <TD STYLE="line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Randall D. Sampson, President and Chief</FONT></TD></TR>
+<TR>
+    <TD STYLE="line-height: 107%">&nbsp;</TD>
+    <TD STYLE="line-height: 107%">&nbsp;</TD>
+    <TD STYLE="line-height: 107%"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Executive Officer</FONT></TD></TR>
+</TABLE>
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0; text-indent: 0.5in">&nbsp;</P>
+
+<!-- Field: Page; Sequence: 4; Options: Last -->
+    <DIV STYLE="margin-bottom: 6pt; padding-bottom: 12pt; border-bottom: Silver 3pt solid"><TABLE CELLPADDING="0" CELLSPACING="0" STYLE="border-collapse: collapse; width: 100%; font-size: 10pt"><TR STYLE="vertical-align: top; text-align: left"><TD STYLE="width: 100%; text-align: center"><!-- Field: Sequence; Type: Arabic; Name: PageNo --><!-- Field: /Sequence -->&nbsp;</TD></TR></TABLE></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 11pt/normal Times New Roman, Times, Serif; margin: 0 0 0 79.5pt"></P>
+
+
+
+<P STYLE="font: 10pt/normal Times New Roman, Times, Serif; margin: 0"></P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

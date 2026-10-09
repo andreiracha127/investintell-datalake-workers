@@ -1,0 +1,1478 @@
+<SEC-DOCUMENT>0001104659-23-086344.txt : 20230801
+<SEC-HEADER>0001104659-23-086344.hdr.sgml : 20230801
+<ACCEPTANCE-DATETIME>20230801160241
+ACCESSION NUMBER:		0001104659-23-086344
+CONFORMED SUBMISSION TYPE:	8-A12B
+PUBLIC DOCUMENT COUNT:		1
+FILED AS OF DATE:		20230801
+DATE AS OF CHANGE:		20230801
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			Liberty Media Corp
+		CENTRAL INDEX KEY:			0001560385
+		STANDARD INDUSTRIAL CLASSIFICATION:	TELEVISION BROADCASTING STATIONS [4833]
+		IRS NUMBER:				371699499
+		STATE OF INCORPORATION:			DE
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		8-A12B
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	001-35707
+		FILM NUMBER:		231131573
+
+	BUSINESS ADDRESS:	
+		STREET 1:		12300 LIBERTY BOULEVARD
+		CITY:			ENGLEWOOD
+		STATE:			CO
+		ZIP:			80112
+		BUSINESS PHONE:		720-875-5400
+
+	MAIL ADDRESS:	
+		STREET 1:		12300 LIBERTY BOULEVARD
+		CITY:			ENGLEWOOD
+		STATE:			CO
+		ZIP:			80112
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	Liberty Spinco, Inc.
+		DATE OF NAME CHANGE:	20121015
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>8-A12B
+<SEQUENCE>1
+<FILENAME>tm2320270d11_8a12b.htm
+<DESCRIPTION>FORM 8-A12B
+<TEXT>
+<HTML>
+<HEAD>
+     <TITLE></TITLE>
+</HEAD>
+<BODY STYLE="font: 10pt Times New Roman, Times, Serif">
+
+<P STYLE="margin: 0pt">&nbsp;</P>
+
+<P STYLE="margin: 0pt"></P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 0; margin-bottom: 0; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 2pt solid; border-bottom: Black 1pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="margin: 0pt">&nbsp;</P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>UNITED STATES</B></P>
+
+<P STYLE="font: 14pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>SECURITIES AND EXCHANGE COMMISSION</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>WASHINGTON, DC 20549</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>FORM&nbsp;8-A</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>FOR REGISTRATION OF CERTAIN CLASSES OF SECURITIES</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>PURSUANT TO SECTION&nbsp;12(b)&nbsp;OR 12(g)&nbsp;OF
+THE</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>SECURITIES EXCHANGE ACT OF 1934</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 18pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>LIBERTY MEDIA CORPORATION</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center">(Exact Name of Registrant as Specified in Its Charter)</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+  <TR>
+    <TD STYLE="vertical-align: top; width: 50%; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Delaware</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; width: 1%; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; width: 49%; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>37-1699499</B></FONT></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">(State or other jurisdiction of <BR>
+incorporation or organization)</FONT></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">(I.R.S. Employer <BR>
+Identification No.)</FONT></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center">&nbsp;</TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center">&nbsp;</TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>12300 Liberty Boulevard</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt">&nbsp;</TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Englewood, Colorado</B></FONT></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>80112</B></FONT></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">(Address of principal executive offices)</FONT></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">(Zip Code)</FONT></TD></TR>
+  </TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Securities to be registered pursuant to Section&nbsp;12(b)&nbsp;of
+the Act:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+  <TR STYLE="vertical-align: bottom">
+    <TD STYLE="width: 61%; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Title of each class</B></FONT></TD>
+    <TD STYLE="width: 1%; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="width: 38%; padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Name of each exchange on which</B></FONT></TD></TR>
+  <TR STYLE="vertical-align: bottom">
+    <TD STYLE="border-bottom: black 1pt solid; padding: 0.25pt 0.25pt 0.5pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>to be so registered</B></FONT></TD>
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="border-bottom: black 1pt solid; padding: 0.25pt 0.25pt 0.5pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>each class is to be registered</B></FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Series&nbsp;A Liberty SiriusXM Common Stock, par value $0.01 per share</B></FONT></TD>
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>The Nasdaq Stock Market LLC</B></FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Series&nbsp;B Liberty SiriusXM Common Stock, par value $0.01 per share</B></FONT></TD>
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>The Nasdaq Stock Market LLC</B></FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Series&nbsp;C Liberty SiriusXM Common Stock, par value $0.01 per share</B></FONT></TD>
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>The Nasdaq Stock Market LLC</B></FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Series&nbsp;A Liberty Live Common Stock, par value $0.01 per share</B></FONT></TD>
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>The Nasdaq Stock Market LLC</B></FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Series&nbsp;C Liberty Live Common Stock, par value $0.01 per share</B></FONT></TD>
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>The Nasdaq Stock Market LLC</B></FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Series&nbsp;A Liberty Formula One Common Stock, par value $0.01 per share</B></FONT></TD>
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>The Nasdaq Stock Market LLC</B></FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Series&nbsp;C Liberty Formula One Common Stock, par value $0.01 per share</B></FONT></TD>
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>The Nasdaq Stock Market LLC</B></FONT></TD></TR>
+  </TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">If
+this form relates to the registration of a class of securities pursuant to Section&nbsp;12(b)&nbsp;of the Exchange Act and is effective
+pursuant to General Instruction A.(c)&nbsp;or (e), check the following box. <FONT STYLE="font-family: Wingdings">&#120;</FONT></FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">If
+this form relates to the registration of a class of securities pursuant to Section&nbsp;12(g)&nbsp;of the Exchange Act and is effective
+pursuant to General Instruction A.(d)&nbsp;or (e), check the following box. <FONT STYLE="font-family: Wingdings">&#168;</FONT></FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">If this form relates to the registration of a class of securities concurrently
+with a Regulation A offering, check the following box. <FONT STYLE="font-family: Wingdings">&#168;</FONT></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Securities Act registration statement or Regulation A offering statement
+file number to which this form relates:&nbsp;(if applicable)</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">Securities to be registered pursuant to Section&nbsp;12(g)&nbsp;of
+the Act: <B>None</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Rule-Page --><DIV STYLE="margin-top: 0; margin-bottom: 0; width: 100%"><DIV STYLE="font-size: 1pt; border-top: Black 1pt solid; border-bottom: Black 2pt solid">&nbsp;</DIV></DIV><!-- Field: /Rule-Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B>Item 1. Description of Registrant&rsquo;s Securities to be Registered.</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The securities to be registered hereby are the
+Series&nbsp;A Liberty SiriusXM common stock, par value $0.01 per share (the &ldquo;<U>Series&nbsp;A Liberty SiriusXM common stock</U>&rdquo;),
+the Series&nbsp;B Liberty SiriusXM common stock, par value $0.01 per share (the &ldquo;<U>Series&nbsp;B Liberty SiriusXM common stock</U>&rdquo;),
+the Series&nbsp;C Liberty SiriusXM common stock, par value $0.01 per share (the &ldquo;<U>Series&nbsp;C Liberty SiriusXM common stock</U>&rdquo;
+and, together with the Series&nbsp;A Liberty SiriusXM common stock and Series&nbsp;B Liberty SiriusXM common stock, the &ldquo;<U>Liberty
+SiriusXM common stock</U>&rdquo;), the Series&nbsp;A Liberty Live common stock, par value $0.01 per share (the &ldquo;<U>Series&nbsp;A
+Liberty Live common stock</U>&rdquo;), the Series&nbsp;C Liberty Live common stock, par value $0.01 per share (the &ldquo;<U>Series&nbsp;C
+Liberty Live common stock</U>&rdquo;), the Series&nbsp;A Liberty Formula One common stock, par value $0.01 per share (the &ldquo;<U>Series&nbsp;A
+Liberty Formula One common stock</U>&rdquo;), and the Series&nbsp;C Liberty Formula One common stock, par value $0.01 per share (the &ldquo;<U>Series&nbsp;C
+Liberty Formula One common stock</U>&rdquo;) of Liberty Media Corporation (the &ldquo;<U>Registrant</U>&rdquo;). The Registrant has applied
+to list the Liberty SiriusXM common stock, the Series&nbsp;A Liberty Live common stock, the Series&nbsp;C Liberty Live common stock, the
+Series&nbsp;A Liberty Formula One common stock and the Series&nbsp;C Liberty Formula One common stock on the Nasdaq Global Select Market
+under the symbols &ldquo;LSXMA,&rdquo; &ldquo;LSXMB,&rdquo; &ldquo;LSXMK,&rdquo; &ldquo;LLYVA,&rdquo; &ldquo;LLYVK,&rdquo; &ldquo;FWONA,&rdquo;
+and &ldquo;FWONK,&rdquo; respectively.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Reference is made to the Registrant&rsquo;s Registration
+Statement on Form&nbsp;S-4 (File No.&nbsp;333-268921), which was initially filed with the Securities and Exchange Commission (the &ldquo;<U>SEC</U>&rdquo;)
+on December&nbsp;21, 2022 and declared effective by the SEC on June&nbsp;9, 2023.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">A description of the Liberty SiriusXM common stock,
+the Series&nbsp;A Liberty Live common stock, the Series&nbsp;C Liberty Live common stock, the Series&nbsp;A Liberty Formula One common
+stock and the Series&nbsp;C Liberty Formula One common stock as set forth in the Registrant&rsquo;s Restated Certificate of Incorporation
+(the &ldquo;<U>charter</U>&rdquo;) is set forth below. The following description is qualified by reference to the full text of the charter,
+which is incorporated by reference as Exhibit&nbsp;3.1 to this Form&nbsp;8-A.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><U>Liberty SiriusXM Common Stock</U></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Basic Investment</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Liberty SiriusXM common stock is intended to
+track and reflect the separate economic performance of the businesses, assets and liabilities attributed to the Liberty SiriusXM Group.
+The Liberty SiriusXM Group is defined in the charter to include (i)&nbsp;the Registrant&rsquo;s direct and indirect interest, as of the
+effective date of the charter, in Sirius XM Holdings Inc. and each of its subsidiaries (including any successor to Sirius XM Holdings
+Inc. or any such subsidiary by merger, consolidation or sale, transfer, exchange, assignment or other disposition of all or substantially
+all of its assets, whether or not in connection with a SiriusXM Group Related Business Transaction (as such term is defined in the charter))
+and their respective assets, liabilities and businesses, (ii)&nbsp;all other assets, liabilities and businesses of the Registrant or any
+of its subsidiaries to the extent attributed to the Liberty SiriusXM Group as of the effective date of the charter, (iii)&nbsp;such other
+businesses, assets and liabilities that the Registrant&rsquo;s board of directors (the &ldquo;<U>board</U>&rdquo;) may determine to attribute
+to the Liberty SiriusXM Group or that may be acquired for or transferred to the Liberty SiriusXM Group in the future, (iv)&nbsp;the proceeds
+of any sale, transfer, exchange, assignment or other disposition of any of the foregoing, (v)&nbsp;an Inter-Group Interest in the Liberty
+Live Group equal to one (1)&nbsp;minus the Live Group Outstanding Interest Fraction allocable to the Liberty SiriusXM Group as of such
+date (as such terms are defined in the charter) and (vi)&nbsp;an Inter-Group Interest in the Formula One Group equal to one (1)&nbsp;minus
+the Formula One Group Outstanding Interest Fraction allocable to the Liberty SiriusXM Group as of such date (as such terms are defined
+in the charter).</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Authorized Capital Stock</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is authorized to issue up to 4.075
+billion shares of Liberty SiriusXM common stock, of which 2 billion are designated as Series&nbsp;A Liberty SiriusXM common stock, 75
+million are designated as Series&nbsp;B Liberty SiriusXM common stock, and 2 billion are designated as Series&nbsp;C Liberty SiriusXM
+common stock.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 2; Options: NewSection; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->1<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Dividends and Securities Distributions</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is permitted to pay dividends on
+Liberty SiriusXM common stock out of the lesser of its assets legally available for the payment of dividends under Delaware law and the
+ &ldquo;SiriusXM Group Available Dividend Amount&rdquo; (defined generally as the excess of the total assets less the total liabilities
+of the Liberty SiriusXM Group over the par value, or any greater amount determined to be capital in respect of, all outstanding shares
+of Liberty SiriusXM common stock or, if there is no such excess, an amount equal to the earnings or loss attributable to the Liberty SiriusXM
+Group (if positive) for the fiscal year in which such dividend is to be paid and/or the preceding fiscal year). If dividends are paid
+on any series of Liberty SiriusXM common stock, an equal per share dividend will be concurrently paid on the other series of Liberty SiriusXM
+common stock.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is permitted to make (i)&nbsp;share
+distributions of (A)&nbsp;Series&nbsp;C Liberty SiriusXM common stock to holders of all series of Liberty SiriusXM common stock, on an
+equal per share basis; and (B)&nbsp;Series&nbsp;A Liberty SiriusXM common stock to holders of Series&nbsp;A Liberty SiriusXM common stock
+and, on an equal per share basis, shares of Series&nbsp;B Liberty SiriusXM common stock to holders of Series&nbsp;B Liberty SiriusXM common
+stock and, on an equal per share basis, shares of Series&nbsp;C Liberty SiriusXM common stock to holders of Series&nbsp;C Liberty SiriusXM
+common stock; and (ii)&nbsp;share distributions of (A)&nbsp;Series&nbsp;C Liberty Live common stock or Series&nbsp;C Liberty Formula One
+common stock to holders of all series of Liberty SiriusXM common stock, on an equal per share basis, subject to certain limitations; and
+(B)&nbsp;Series&nbsp;A Liberty Live common stock or Series&nbsp;A Liberty Formula One common stock to holders of Series&nbsp;A Liberty
+SiriusXM common stock and, on an equal per share basis, shares of Series&nbsp;B Liberty Live common stock, par value $0.01 per share (the
+ &ldquo;<U>Series&nbsp;B Liberty Live common stock</U>&rdquo; and, together with the Series&nbsp;A Liberty Live common stock and Series&nbsp;C
+Liberty Live common stock, the &ldquo;<U>Liberty Live common stock</U>&rdquo;) or Series&nbsp;B Liberty Formula One common stock, par
+value $0.01 per share (the &ldquo;<U>Series&nbsp;B Liberty Formula One common stock</U>&rdquo; and, together with the Series&nbsp;A Liberty
+Formula One common stock and Series&nbsp;C Liberty Formula One common stock, the &ldquo;<U>Liberty Formula One common stock</U>&rdquo;)
+to holders of Series&nbsp;B Liberty SiriusXM common stock and, on an equal per share basis, shares of Series&nbsp;C Liberty Live common
+stock or Series&nbsp;C Liberty Formula One common stock to holders of Series&nbsp;C Liberty SiriusXM common stock, in each case, subject
+to certain limitations; and (iii)&nbsp;share distributions of any other class or series of the Registrant&rsquo;s securities or the securities
+of any other person to holders of all series of Liberty SiriusXM common stock, on an equal per share basis, subject to certain limitations.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Conversion at Option of Holder</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Each share of Series&nbsp;B Liberty SiriusXM common
+stock is convertible, at the option of the holder, into one share of Series&nbsp;A Liberty SiriusXM common stock. Shares of Series&nbsp;A
+Liberty SiriusXM common stock and Series&nbsp;C Liberty SiriusXM common stock are not convertible at the option of the holder.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Conversion at Option of Issuer</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant can convert each share of Liberty
+SiriusXM common stock into a number of shares of the corresponding series of Liberty Live common stock or Liberty Formula One common stock
+at a ratio based on the relative trading prices of the Series&nbsp;A Liberty SiriusXM common stock (or another series of Liberty SiriusXM
+common stock, subject to certain limitations) and the Series&nbsp;A Liberty Live common stock or Series&nbsp;A Liberty Formula One common
+stock (or another series of Liberty Live common stock or Liberty Formula One common stock, subject to certain limitations) over a specified
+20-trading day period.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant also can convert each share of Liberty
+Live common stock or Liberty Formula One common stock into a number of shares of the corresponding series of Liberty SiriusXM common stock
+at a ratio based on the relative trading prices of the Series&nbsp;A Liberty Live common stock (or another series of Liberty Live common
+stock, subject to certain limitations) or Series&nbsp;A Liberty Formula One common stock (or another series of Liberty Formula One common
+stock, subject to certain limitations) to the Series&nbsp;A Liberty SiriusXM common stock (or another series of Liberty SiriusXM common
+stock, subject to certain limitations) over a specified 20-trading day period.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 3; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->2<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Optional Redemption for Stock of a Subsidiary</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant may redeem outstanding shares of
+Liberty SiriusXM common stock for shares of common stock of a subsidiary that holds assets and liabilities attributed to the Liberty SiriusXM
+Group (and may or may not hold assets and liabilities attributed to the Liberty Live Group or the Formula One Group), provided that the
+board seeks and receives the approval to such redemption of holders of Liberty SiriusXM common stock, voting together as a separate class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Registrant were to effect a redemption as
+described above with stock of a subsidiary that also holds assets and liabilities of the Liberty Live Group and/or the Formula One Group,
+shares of Liberty Live common stock and/or Liberty Formula One common stock would also be redeemed in exchange for shares of that subsidiary,
+and the entire redemption would be subject to the voting rights of the holders of Liberty SiriusXM common stock described above as well
+as the separate class vote of the holders of Liberty Live common stock and/or Liberty Formula One common stock, as the case may be.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Mandatory Dividend, Redemption and Conversion Rights on Disposition
+of Assets</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Registrant disposes, in one transaction
+or a series of transactions, of all or substantially all of the assets of the Liberty SiriusXM Group, it is required to choose one of
+the following four alternatives, unless the board obtains approval of the holders of Liberty SiriusXM common stock not to take such action
+or the disposition qualifies under a specified exemption (in which case the Registrant will not be required to take any of the following
+actions):</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>pay a dividend to holders of Liberty SiriusXM common stock out of the available net proceeds of such disposition; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>if there are legally sufficient assets and the SiriusXM Group Available Dividend Amount would have been sufficient to pay a dividend,
+then: (i)&nbsp;if the disposition involves all of the properties and assets of the Liberty SiriusXM Group, redeem all outstanding shares
+of Liberty SiriusXM common stock in exchange for cash and/or securities or other assets with a fair value equal to the available net proceeds
+of such disposition, or (ii)&nbsp;if the disposition involves substantially all (but not all) of the properties and assets of the Liberty
+SiriusXM Group, redeem a portion of the outstanding shares of Liberty SiriusXM common stock in exchange for cash and/or securities or
+other assets with a fair value equal to the available net proceeds of such disposition; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>convert each outstanding share of each series of Liberty SiriusXM common stock into a number of shares of the corresponding series
+of Liberty Live common stock and/or Liberty Formula One common stock at a specified premium; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>combine a conversion of a portion of the outstanding shares of Liberty SiriusXM common stock into a number of shares of the corresponding
+series of Liberty Live common stock and/or Liberty Formula One common stock with either the payment of a dividend on or a redemption of
+shares of Liberty SiriusXM common stock, subject to certain limitations.</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Voting Rights</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Holders of Series&nbsp;A Liberty SiriusXM common
+stock are entitled to one vote for each share of such stock held and holders of Series&nbsp;B Liberty SiriusXM common stock are entitled
+to ten votes for each share of such stock held on all matters submitted to a vote of stockholders. Holders of Series&nbsp;C Liberty SiriusXM
+common stock are not entitled to any voting powers (including with respect to any class votes taken in accordance with the terms of the
+charter), except as otherwise required by Delaware law. When so required, holders of Series&nbsp;C Liberty SiriusXM common stock will
+be entitled to 1/100th of a vote for each share of such stock held.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Holders of Liberty SiriusXM common stock will vote
+as one class with holders of Liberty Live common stock and Liberty Formula One common stock on all matters that are submitted to a vote
+of stockholders unless a separate class vote is required by the terms of the charter or Delaware law. In connection with certain dispositions
+of Liberty SiriusXM Group assets as described above, the board may determine to seek approval of the holders of Liberty SiriusXM common
+stock, voting together as a separate class, to avoid effecting a mandatory dividend, redemption or conversion under the charter.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 4; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->3<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant may not redeem outstanding shares
+of Liberty SiriusXM common stock for shares of common stock of a subsidiary that holds assets and liabilities attributed to the Liberty
+SiriusXM Group unless the board seeks and receives the approval to such redemption of holders of Liberty SiriusXM common stock, voting
+together as a separate class, and, if such subsidiary also holds assets and liabilities of the Liberty Live Group and/or the Formula One
+Group, the approval of holders of Liberty Live common stock and/or Liberty Formula One common stock, as the case may be, to the corresponding
+Liberty Live common stock and/or Liberty Formula One common stock redemption, with each affected group voting as a separate class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter imposes supermajority voting requirements
+in connection with certain charter amendments and other extraordinary transactions which have not been approved by 75% of the directors
+then in office. When these requirements apply, the threshold vote required is 66&frac23;% of the aggregate voting power of the Registrant&rsquo;s
+outstanding voting securities, voting together as a single class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Intergroup Interest</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">From time to time, the board may determine to create
+an intergroup interest in the Liberty SiriusXM Group in favor of the Liberty Live Group or the Formula One Group, subject to the terms
+of the charter.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Liberty SiriusXM Group has an intergroup
+interest in the Liberty Live Group or the Formula One Group at such time as any extraordinary action is taken with respect to the Liberty
+Live common stock or the Liberty Formula One common stock (such as the payment of a dividend, a share distribution, the redemption of
+such stock for stock of a subsidiary or an action required to be taken in connection with a disposition of all or substantially all of
+the Liberty Live Group or the Formula One Group assets), the board will consider what actions are required, or permitted, to be taken
+under the charter with respect to the Liberty SiriusXM Group&rsquo;s intergroup interest in the Liberty Live Group or the Formula One
+Group. For example, in some instances, the board may determine that a portion of the aggregate consideration that is available for distribution
+to holders of Liberty Live common stock or Liberty Formula One common stock must be allocated to the Liberty SiriusXM Group to compensate
+the Liberty SiriusXM Group on a pro rata basis for its interest in the Liberty Live Group or the Formula One Group, as the case may be.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Similarly, if the Liberty Live Group or the Formula
+One Group has an intergroup interest in the Liberty SiriusXM Group at such time as any extraordinary action is taken with respect to the
+Liberty SiriusXM common stock (such as the payment of a dividend, a share distribution, the redemption of such stock for stock of a subsidiary
+or an action required to be taken in connection with a disposition of all or substantially all of the Liberty SiriusXM Group&rsquo;s assets),
+the board will consider what actions are required, or permitted, to be taken under the charter with respect to the Liberty Live Group
+or the Formula One Group&rsquo;s intergroup interest in the Liberty SiriusXM Group.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">All such board determinations will be made in accordance
+with the charter and applicable Delaware law.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Upon the effectiveness of the charter, no group
+will initially have an intergroup interest in another group.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Liquidation</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Upon the Registrant&rsquo;s liquidation, dissolution
+or winding up, holders of shares of Liberty SiriusXM common stock will be entitled to receive in respect of such stock their proportionate
+interests in the Registrant&rsquo;s assets, if any, remaining for distribution to holders of common stock (regardless of the group to
+which such assets are then attributed) in proportion to their respective number of liquidation units per share.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Each share of Liberty SiriusXM common stock initially
+will be entitled to a number of liquidation units as set forth on the statement to be filed with the Secretary of the Registrant as promptly
+as reasonably practicable following the determination thereof following the effective date of the charter, a copy of which will be furnished
+by the Registrant, on request and without cost, to any stockholder of the Registrant.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 5; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->4<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><U>Liberty Live Common Stock</U></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Basic Investment</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Liberty Live common stock is intended to track
+and reflect the separate economic performance of the businesses, assets and liabilities attributed to the Liberty Live Group. The Liberty
+Live Group is defined in the charter to include (i)&nbsp;the Registrant&rsquo;s direct and indirect interest, as of the effective date
+of the charter, in Live Nation Entertainment,&nbsp;Inc. and each of its subsidiaries (including any successor to Live Nation Entertainment,&nbsp;Inc.
+or any such subsidiary by merger, consolidation or sale, transfer, exchange, assignment or other disposition of all or substantially all
+of its assets, whether or not in connection with a Live Group Related Business Transaction (as such term is defined in the charter)) and
+their respective assets, liabilities and businesses, (ii)&nbsp;all other assets, liabilities and businesses of the Registrant or any of
+its subsidiaries to the extent attributed to the Liberty Live Group as of the effective date of the charter, (iii)&nbsp;such other businesses,
+assets and liabilities that the board may determine to attribute to the Liberty Live Group or that may be acquired for or transferred
+to the Liberty Live Group in the future, (iv)&nbsp;the proceeds of any sale, transfer, exchange, assignment or other disposition of any
+of the foregoing, (v)&nbsp;an Inter-Group Interest in the Liberty SiriusXM Group equal to one (1)&nbsp;minus the SiriusXM Group Outstanding
+Interest Fraction allocable to the Liberty Live Group as of such date (as such terms are defined in the charter) and (vi)&nbsp;an Inter-Group
+Interest in the Formula One Group equal to one (1)&nbsp;minus the Formula One Group Outstanding Interest Fraction allocable to the Liberty
+Live Group as of such date (as such terms are defined in the charter).</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Authorized Capital Stock</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is authorized to issue up to 1,062,352,500
+shares of Liberty Live common stock, of which 521,400,000 are designated as Series&nbsp;A Liberty Live common stock, 19,552,500 are designated
+as Series&nbsp;B Liberty Live common stock, and 521,400,000 are designated as Series&nbsp;C Liberty Live common stock.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Dividends and Securities Distributions</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is permitted to pay dividends on
+Liberty Live common stock out of the lesser of its assets legally available for the payment of dividends under Delaware law and the &ldquo;Live
+Group Available Dividend Amount&rdquo; (defined generally as the excess of the total assets less the total liabilities of the Liberty
+Live Group over the par value, or any greater amount determined to be capital in respect of, all outstanding shares of Liberty Live common
+stock or, if there is no such excess, an amount equal to the earnings or loss attributable to the Liberty Live Group (if positive) for
+the fiscal year in which such dividend is to be paid and/or the preceding fiscal year). If dividends are paid on any series of Liberty
+Live common stock, an equal per share dividend will be concurrently paid on the other series of Liberty Live common stock.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is permitted to make (i)&nbsp;share
+distributions of (A)&nbsp;Series&nbsp;C Liberty Live common stock to holders of all series of Liberty Live common stock, on an equal per
+share basis; and (B)&nbsp;Series&nbsp;A Liberty Live common stock to holders of Series&nbsp;A Liberty Live common stock and, on an equal
+per share basis, shares of Series&nbsp;B Liberty Live common stock to holders of Series&nbsp;B Liberty Live common stock and, on an equal
+per share basis, shares of Series&nbsp;C Liberty Live common stock to holders of Series&nbsp;C Liberty Live common stock; and (ii)&nbsp;share
+distributions of (A)&nbsp;Series&nbsp;C Liberty SiriusXM common stock or Series&nbsp;C Liberty Formula One common stock to holders of
+all series of Liberty Live common stock, on an equal per share basis, subject to certain limitations; and (B)&nbsp;Series&nbsp;A Liberty
+SiriusXM common stock or Series&nbsp;A Liberty Formula One common stock to holders of Series&nbsp;A Liberty Live common stock and, on
+an equal per share basis, shares of Series&nbsp;B Liberty SiriusXM common stock or Series&nbsp;B Liberty Formula One common stock to holders
+of Series&nbsp;B Liberty Live common stock and, on an equal per share basis, shares of Series&nbsp;C Liberty SiriusXM common stock or
+Series&nbsp;C Liberty Formula One common stock to holders of Series&nbsp;C Liberty Live common stock, in each case, subject to certain
+limitations; and (iii)&nbsp;share distributions of any other class or series of the Registrant&rsquo;s securities or the securities of
+any other person to holders of all series of Liberty Live common stock, on an equal per share basis, subject to certain limitations.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 6; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->5<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Conversion at Option of Holder</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Each share of Series&nbsp;B Liberty Live common
+stock is convertible, at the option of the holder, into one share of Series&nbsp;A Liberty Live common stock. Shares of Series&nbsp;A
+and Series&nbsp;C Liberty Live common stock are not convertible at the option of the holder.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Conversion at Option of Issuer</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant can convert each share of Liberty
+Live common stock into a number of shares of the corresponding series of Liberty SiriusXM common stock or Liberty Formula One common stock
+at a ratio based on the relative trading prices of the Series&nbsp;A Liberty Live common stock (or another series of Liberty Live common
+stock, subject to certain limitations) and the Series&nbsp;A Liberty SiriusXM common stock or Series&nbsp;A Liberty Formula One common
+stock (or another series of Liberty SiriusXM common stock or Liberty Formula One common stock, subject to certain limitations) over a
+specified 20-trading day period.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant also can convert each share of Liberty
+SiriusXM common stock or Liberty Formula One common stock into a number of shares of the corresponding series of Liberty Live common stock
+at a ratio based on the relative trading prices of the Series&nbsp;A Liberty SiriusXM common stock (or another series of Liberty SiriusXM
+common stock, subject to certain limitations) or Series&nbsp;A Liberty Formula One common stock (or another series of Liberty Formula
+One common stock, subject to certain limitations) to the Series&nbsp;A Liberty Live common stock (or another series of Liberty Live common
+stock, subject to certain limitations) over a specified 20-trading day period.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Optional Redemption for Stock of a Subsidiary</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant may redeem outstanding shares of
+Liberty Live common stock for shares of common stock of a subsidiary that holds assets and liabilities attributed to the Liberty Live
+Group (and may or may not hold assets and liabilities attributed to the Liberty SiriusXM Group or the Formula One Group), provided that
+the board seeks and receives the approval to such redemption of holders of Liberty Live common stock, voting together as a separate class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Registrant were to effect a redemption as
+described above with stock of a subsidiary that also holds assets and liabilities of the Liberty SiriusXM Group and/or the Formula One
+Group, shares of Liberty SiriusXM common stock and/or Liberty Formula One common stock would also be redeemed in exchange for shares of
+that subsidiary, and the entire redemption would be subject to the voting rights of the holders of Liberty Live common stock described
+above as well as the separate class vote of the holders of Liberty SiriusXM common stock and/or Liberty Formula One common stock, as the
+case may be.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Mandatory Dividend, Redemption and Conversion Rights on Disposition
+of Assets</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Registrant disposes, in one transaction
+or a series of transactions, of all or substantially all of the assets of the Liberty Live Group, it is required to choose one of the
+following four alternatives, unless the board obtains approval of the holders of Liberty Live common stock not to take such action or
+the disposition qualifies under a specified exemption (in which case the Registrant will not be required to take any of the following
+actions):</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>pay a dividend to holders of Liberty Live common stock out of the available net proceeds of such disposition; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>if there are legally sufficient assets and the Liberty Live Group Available Dividend Amount would have been sufficient to pay a dividend,
+then: (i)&nbsp;if the disposition involves all of the properties and assets of the Liberty Live Group, redeem all outstanding shares of
+Liberty Live common stock in exchange for cash and/or securities or other assets with a fair value equal to the available net proceeds
+of such disposition, or (ii)&nbsp;if the disposition involves substantially all (but not all) of the properties and assets of the Liberty
+Live Group, redeem a portion of the outstanding shares of Liberty Live common stock in exchange for cash and/or securities or other assets
+with a fair value equal to the available net proceeds of such disposition; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 7; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->6<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>convert each outstanding share of each series of Liberty Live common stock into a number of shares of the corresponding series of
+Liberty SiriusXM common stock and/or Liberty Formula One common stock at a specified premium; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>combine a conversion of a portion of the outstanding shares of Liberty Live common stock into a number of shares of the corresponding
+series of Liberty SiriusXM common stock and/or Liberty Formula One common stock with either the payment of a dividend on or a redemption
+of shares of Liberty Live common stock, subject to certain limitations.</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Voting Rights</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Holders of Series&nbsp;A Liberty Live common stock
+are entitled to one vote for each share of such stock held and holders of Series&nbsp;B Liberty Live common stock are entitled to ten
+votes for each share of such stock held on all matters submitted to a vote of stockholders. Holders of Series&nbsp;C Liberty Live common
+stock are not entitled to any voting powers (including with respect to any class votes taken in accordance with the terms of the charter),
+except as otherwise required by Delaware law. When so required, holders of Series&nbsp;C Liberty Live common stock will be entitled to
+1/100th of a vote for each share of such stock held.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Holders of Liberty Live common stock will vote
+as one class with holders of Liberty SiriusXM common stock and Liberty Formula One common stock on all matters that are submitted to a
+vote of stockholders unless a separate class vote is required by the terms of the charter or Delaware law. In connection with certain
+dispositions of Liberty Live Group assets as described above, the board may determine to seek approval of the holders of Liberty Live
+common stock, voting together as a separate class, to avoid effecting a mandatory dividend, redemption or conversion under the charter.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant may not redeem outstanding shares
+of Liberty Live common stock for shares of common stock of a subsidiary that holds assets and liabilities attributed to the Liberty Live
+Group unless the board seeks and receives the approval to such redemption of holders of Liberty Live common stock, voting together as
+a separate class, and, if such subsidiary also holds assets and liabilities of the Liberty SiriusXM Group and/or the Formula One Group,
+the approval of holders of Liberty SiriusXM common stock and/or Liberty Formula One common stock, as the case may be, to the corresponding
+Liberty SiriusXM common stock and/or Liberty Formula One common stock redemption, with each affected group voting as a separate class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter imposes supermajority voting requirements
+in connection with certain charter amendments and other extraordinary transactions which have not been approved by 75% of the directors
+then in office. When these requirements apply, the threshold vote required is 66&frac23;% of the aggregate voting power of the Registrant&rsquo;s
+outstanding voting securities, voting together as a single class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Intergroup Interest</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">From time to time, the board may determine to create
+an intergroup interest in the Liberty Live Group in favor of the Liberty SiriusXM Group or the Formula One Group, subject to the terms
+of the charter.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Liberty Live Group has an intergroup interest
+in the Liberty SiriusXM Group or the Formula One Group at such time as any extraordinary action is taken with respect to the Liberty SiriusXM
+common stock or the Liberty Formula One common stock (such as the payment of a dividend, a share distribution, the redemption of such
+stock for stock of a subsidiary or an action required to be taken in connection with a disposition of all or substantially all of the
+Liberty SiriusXM Group or the Formula One Group assets), the board will consider what actions are required, or permitted, to be taken
+under the charter with respect to the Liberty Live Group&rsquo;s intergroup interest in the Liberty SiriusXM Group or the Formula One
+Group. For example, in some instances, the board may determine that a portion of the aggregate consideration that is available for distribution
+to holders of Liberty SiriusXM common stock or Liberty Formula One common stock must be allocated to the Liberty Live Group to compensate
+the Liberty Live Group on a pro rata basis for its interest in the Liberty SiriusXM Group or the Formula One Group, as the case may be.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 8; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->7<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Similarly, if the Liberty SiriusXM Group or the
+Formula One Group has an intergroup interest in the Liberty Live Group at such time as any extraordinary action is taken with respect
+to the Liberty Live common stock (such as the payment of a dividend, a share distribution, the redemption of such stock for stock of a
+subsidiary or an action required to be taken in connection with a disposition of all or substantially all of the Liberty Live Group&rsquo;s
+assets), the board will consider what actions are required, or permitted, to be taken under the charter with respect to the Liberty SiriusXM
+Group or the Formula One Group&rsquo;s intergroup interest in the Liberty Live Group.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">All such board determinations will be made in accordance
+with the charter and applicable Delaware law.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Upon the effectiveness of the charter, no group
+will initially have an intergroup interest in another group.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Liquidation</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Upon the Registrant&rsquo;s liquidation, dissolution
+or winding up, holders of shares of Liberty Live common stock will be entitled to receive in respect of such stock their proportionate
+interests in the Registrant&rsquo;s assets, if any, remaining for distribution to holders of common stock (regardless of the group to
+which such assets are then attributed) in proportion to their respective number of liquidation units per share.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Each share of Liberty Live common stock initially
+will be entitled to a number of liquidation units as set forth on the statement to be filed with the Secretary of the Registrant as promptly
+as reasonably practicable following the determination thereof following the effective date of the charter, a copy of which will be furnished
+by the Registrant, on request and without cost, to any stockholder of the Registrant.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><U>Liberty Formula One Common Stock</U></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Basic Investment</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Liberty Formula One common stock is intended
+to track and reflect the separate economic performance of the business, assets and liabilities attributed to the Formula One Group. The
+Formula One Group is defined in the charter to include (i)&nbsp;the Registrant&rsquo;s direct and indirect interest, as of the effective
+date of the charter, in (x)&nbsp;all of the businesses in which the Registrant is or has been engaged, directly or indirectly (either
+itself or through direct or indirect subsidiaries, affiliates, joint ventures or other investments or any of the predecessors or successors
+of any of the foregoing), and (y)&nbsp;the respective assets and liabilities of the Registrant and its subsidiaries, in each case, other
+than any businesses, assets or liabilities attributable to the Liberty SiriusXM Group or the Liberty Live Group as of the effective date
+of the charter, (ii)&nbsp;such other businesses, assets and liabilities that the board may determine to attribute to the Formula One Group
+or that may be acquired for or transferred to the Formula One Group in the future, (iii)&nbsp;the proceeds of any sale, transfer, exchange,
+assignment or other disposition of any of the foregoing, (iv)&nbsp;an Inter-Group Interest in the Liberty SiriusXM Group equal to one
+(1)&nbsp;minus the SiriusXM Group Outstanding Interest Fraction allocable to the Formula One Group as of such date and (v)&nbsp;an Inter-Group
+Interest in the Liberty Live Group equal to one (1)&nbsp;minus the Live Group Outstanding Interest Fraction allocable to the Formula One
+Group as of such date.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Authorized Capital Stock</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is authorized to issue up to 1,018,750,000
+shares of Liberty Formula One common stock, of which 500 million are designated as Series&nbsp;A Liberty Formula One common stock, 18,750,000
+are designated as Series&nbsp;B Liberty Formula One common stock, and 500 million are designated as Series&nbsp;C Liberty Formula One
+common stock.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Dividends and Securities Distributions</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is permitted to pay dividends on
+Liberty Formula One common stock out of the lesser of its assets legally available for the payment of dividends under Delaware law and
+the &ldquo;Formula One Group Available Dividend Amount&rdquo; (defined generally as the excess of the total assets less the total liabilities
+of the Formula One Group over the par value, or any greater amount determined to be capital in respect of, all outstanding shares of Liberty
+Formula One common stock or, if there is no such excess, an amount equal to the earnings or loss attributable to the Formula One Group
+(if positive) for the fiscal year in which such dividend is to be paid and/or the preceding fiscal year). If dividends are paid on any
+series of Liberty Formula One common stock, an equal per share dividend will be concurrently paid on the other series of Liberty Formula
+One common stock.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 9; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->8<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is permitted to make (i)&nbsp;share
+distributions of (A)&nbsp;Series&nbsp;C Liberty Formula One common stock to holders of all series of Liberty Formula One common stock,
+on an equal per share basis; and (B)&nbsp;Series&nbsp;A Liberty Formula One common stock to holders of Series&nbsp;A Liberty Formula One
+common stock and, on an equal per share basis, shares of Series&nbsp;B Liberty Formula One common stock to holders of Series&nbsp;B Liberty
+Formula One common stock and, on an equal per share basis, shares of Series&nbsp;C Liberty Formula One common stock to holders of Series&nbsp;C
+Liberty Formula One common stock; and (ii)&nbsp;share distributions of (A)&nbsp;Series&nbsp;C Liberty SiriusXM common stock or Series&nbsp;C
+Liberty Live common stock to holders of all series of Liberty Formula One common stock, on an equal per share basis, subject to certain
+limitations; and (B)&nbsp;Series&nbsp;A Liberty SiriusXM common stock or Series&nbsp;A Liberty Live common stock to holders of Series&nbsp;A
+Liberty Formula One common stock and, on an equal per share basis, shares of Series&nbsp;B Liberty SiriusXM common stock or Series&nbsp;B
+Liberty Live common stock to holders of Series&nbsp;B Liberty Formula One common stock and, on an equal per share basis, shares of Series&nbsp;C
+Liberty SiriusXM common stock or Series&nbsp;C Liberty Live common stock to holders of Series&nbsp;C Liberty Formula One common stock,
+in each case, subject to certain limitations; and (iii)&nbsp;share distributions of any other class or series of the Registrant&rsquo;s
+securities or the securities of any other person to holders of all series of Liberty Formula One common stock, on an equal per share basis,
+subject to certain limitations.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Conversion at Option of Holder</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Each share of Series&nbsp;B Liberty Formula One
+common stock is convertible, at the option of the holder, into one share of Series&nbsp;A Liberty Formula One common stock. Shares of
+Series&nbsp;A and Series&nbsp;C Liberty Formula One common stock are not convertible at the option of the holder.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Conversion at Option of Issuer</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant can convert each share of Liberty
+Formula One common stock into a number of shares of the corresponding series of Liberty SiriusXM common stock or Liberty Live common stock
+at a ratio based on the relative trading prices of the Series&nbsp;A Liberty Formula One common stock (or another series of Liberty Formula
+One common stock, subject to certain limitations) and the Series&nbsp;A Liberty SiriusXM common stock or Series&nbsp;A Liberty Live common
+stock (or another series of Liberty SiriusXM common stock or Liberty Live common stock, subject to certain limitations) over a specified
+20-trading day period.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant also can convert each share of Liberty
+SiriusXM common stock or Liberty Live common stock into a number of shares of the corresponding series of Liberty Formula One common stock
+at a ratio based on the relative trading prices of the Series&nbsp;A Liberty SiriusXM common stock (or another series of Liberty SiriusXM
+common stock, subject to certain limitations) or Series&nbsp;A Liberty Live common stock (or another series of Liberty Live common stock,
+subject to certain limitations) to the Series&nbsp;A Liberty Formula One common stock (or another series of Liberty Formula One common
+stock, subject to certain limitations) over a specified 20-trading day period.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Optional Redemption for Stock of a Subsidiary</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant may redeem outstanding shares of
+Liberty Formula One common stock for shares of common stock of a subsidiary that holds assets and liabilities attributed to the Formula
+One Group (and may or may not hold assets and liabilities attributed to the Liberty SiriusXM Group or the Liberty Live Group), provided
+that the board seeks and receives the approval to such redemption of holders of Liberty Formula One common stock, voting together as a
+separate class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Registrant were to effect a redemption as
+described above with stock of a subsidiary that also holds assets and liabilities of the Liberty SiriusXM Group and/or the Liberty Live
+Group, shares of Liberty SiriusXM common stock and/or Liberty Live common stock would also be redeemed in exchange for shares of that
+subsidiary, and the entire redemption would be subject to the voting rights of the holders of Liberty Formula One common stock described
+above as well as the separate class vote of the holders of Liberty SiriusXM common stock and/or Liberty Live common stock, as the case
+may be.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 10; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->9<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Mandatory Dividend, Redemption and Conversion Rights on Disposition
+of Assets</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Registrant disposes, in one transaction
+or a series of transactions, of all or substantially all of the assets of the Formula One Group, it is required to choose one of the following
+four alternatives, unless the board obtains approval of the holders of Liberty Formula One common stock not to take such action or the
+disposition qualifies under a specified exemption (in which case the Registrant will not be required to take any of the following actions):</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>pay a dividend to holders of Liberty Formula One common stock out of the available net proceeds of such disposition; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>if there are legally sufficient assets and the Formula One Group Available Dividend Amount would have been sufficient to pay a dividend,
+then: (i)&nbsp;if the disposition involves all of the properties and assets of the Formula One Group, redeem all outstanding shares of
+Liberty Formula One common stock in exchange for cash and/or securities or other assets with a fair value equal to the available net proceeds
+of such disposition, or (ii)&nbsp;if the disposition involves substantially all (but not all) of the properties and assets of the Formula
+One Group, redeem a portion of the outstanding shares of Liberty Formula One common stock in exchange for cash and/or securities or other
+assets with a fair value equal to the available net proceeds of such disposition; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>convert each outstanding share of each series of Liberty Formula One common stock into a number of shares of the corresponding series
+of Liberty SiriusXM common stock and/or Liberty Live common stock at a specified premium; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>combine a conversion of a portion of the outstanding shares of Liberty Formula One common stock into a number of shares of the corresponding
+series of Liberty SiriusXM common stock and/or Liberty Live common stock with either the payment of a dividend on or a redemption of shares
+of Liberty Formula One common stock, subject to certain limitations.</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Voting Rights</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Holders of Series&nbsp;A Liberty Formula One common
+stock are entitled to one vote for each share of such stock held and holders of Series&nbsp;B Liberty Formula One common stock are entitled
+to ten votes for each share of such stock held on all matters submitted to a vote of stockholders. Holders of Series&nbsp;C Liberty Formula
+One common stock are not entitled to any voting powers (including with respect to any class votes taken in accordance with the terms of
+the charter), except as otherwise required by Delaware law. When so required, holders of Series&nbsp;C Liberty Formula One common stock
+will be entitled to 1/100th of a vote for each share of such stock held.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Holders of Liberty Formula One common stock will
+vote as one class with holders of Liberty SiriusXM common stock and Liberty Live common stock on all matters that are submitted to a vote
+of stockholders unless a separate class vote is required by the terms of the charter or Delaware law. In connection with certain dispositions
+of Formula One Group assets as described above, the board may determine to seek approval of the holders of Liberty Formula One common
+stock, voting together as a separate class, to avoid effecting a mandatory dividend, redemption or conversion under the charter.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant may not redeem outstanding shares
+of Liberty Formula One common stock for shares of common stock of a subsidiary that holds assets and liabilities attributed to the Formula
+One Group unless the board seeks and receives the approval to such redemption of holders of Liberty Formula One common stock, voting together
+as a separate class, and, if such subsidiary also holds assets and liabilities of the Liberty SiriusXM Group and/or the Liberty Live Group,
+the approval of holders of Liberty SiriusXM common stock and/or Liberty Live common stock, as the case may be, to the corresponding Liberty
+SiriusXM common stock and/or Liberty Live common stock redemption, with each affected group voting as a separate class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter imposes supermajority voting requirements
+in connection with certain charter amendments and other extraordinary transactions which have not been approved by 75% of the directors
+then in office. When these requirements apply, the threshold vote required is 66&frac23;% of the aggregate voting power of the Registrant&rsquo;s
+outstanding voting securities, voting together as a single class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 11; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->10<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Intergroup Interest</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">From time to time, the board may determine to create
+an intergroup interest in the Formula One Group in favor of the Liberty SiriusXM Group or the Liberty Live Group, subject to the terms
+of the charter.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">If the Formula One Group has an intergroup interest
+in the Liberty SiriusXM Group or the Liberty Live Group at such time as any extraordinary action is taken with respect to the Liberty
+SiriusXM common stock or the Liberty Live common stock (such as the payment of a dividend, a share distribution, the redemption of such
+stock for stock of a subsidiary or an action required to be taken in connection with a disposition of all or substantially all of the
+Liberty SiriusXM Group or the Liberty Live Group assets), the board will consider what actions are required, or permitted, to be taken
+under the charter with respect to the Formula One Group&rsquo;s intergroup interest in the Liberty SiriusXM Group or the Liberty Live
+Group. For example, in some instances, the board may determine that a portion of the aggregate consideration that is available for distribution
+to holders of Liberty SiriusXM common stock or Liberty Live common stock must be allocated to the Formula One Group to compensate the
+Formula One Group on a pro rata basis for its interest in the Liberty SiriusXM Group or the Liberty Live Group, as the case may be.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Similarly, if the Liberty SiriusXM Group or the
+Liberty Live Group has an intergroup interest in the Formula One Group at such time as any extraordinary action is taken with respect
+to the Liberty Formula One common stock (such as the payment of a dividend, a share distribution, the redemption of such stock for stock
+of a subsidiary or an action required to be taken in connection with a disposition of all or substantially all of the Formula One Group&rsquo;s
+assets), the board will consider what actions are required, or permitted, to be taken under the charter with respect to the Liberty SiriusXM
+Group or the Liberty Live Group&rsquo;s intergroup interest in the Formula One Group.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">All such board determinations will be made in accordance
+with the charter and applicable Delaware law.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Upon the effectiveness of the charter, no group
+will initially have an intergroup interest in another group.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Liquidation</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Upon the Registrant&rsquo;s liquidation, dissolution
+or winding up, holders of shares of Liberty Formula One common stock will be entitled to receive in respect of such stock their proportionate
+interests in the Registrant&rsquo;s assets, if any, remaining for distribution to holders of common stock (regardless of the group to
+which such assets are then attributed) in proportion to their respective number of liquidation units per share.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Each share of Liberty Formula One common stock
+initially will be entitled to a number of liquidation units as set forth on the statement to be filed with the Secretary of the Registrant
+as promptly as reasonably practicable following the determination thereof following the effective date of the charter, a copy of which
+will be furnished by the Registrant, on request and without cost, to any stockholder of the Registrant.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><U>Description of Other Provisions of the Registrant&rsquo;s Charter</U></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Authorized Share Capital</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant is authorized to issue up to 6,206,102,500
+shares of capital stock, which will be divided into the following two classes: (i)&nbsp;6,156,102,500 shares of common stock (which class
+is divided into the series described above), and (ii)&nbsp;50,000,000 shares of preferred stock (which class is issuable in series as
+described below).</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 12; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->11<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Preferred Stock</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter authorizes the board to establish one
+or more series of preferred stock and to determine, with respect to any series of preferred stock, the terms and rights of the series,
+including:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>the designation of the series;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>the number of authorized shares of the series, which number the board may subsequently increase or decrease but not below the number
+of such shares of such series of preferred stock then outstanding;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>the dividend rate or amounts, if any, and, in the case of cumulative dividends, the date or dates from which dividends on all shares
+of the series will be cumulative and the relative preferences or rights of priority or participation with respect to such dividends;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>the rights of the series in the event of the Registrant&rsquo;s voluntary or involuntary liquidation, dissolution or winding up and
+the relative preferences or rights of priority of payment;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>the rights, if any, of holders of the series to convert into or exchange for other classes or series of stock or indebtedness and
+the terms and conditions of any such conversion or exchange, including provision for adjustments within the discretion of the board;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>the voting rights, if any, of the holders of the series;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>the terms and conditions, if any, for the Registrant to purchase or redeem the shares of the series; and</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>any other relative rights, preferences and limitations of the series.</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The Registrant believes that the ability of the
+board to issue one or more series of its preferred stock will provide it with flexibility in structuring possible future financings and
+acquisitions, and in meeting other corporate needs that might arise. The authorized shares of preferred stock, as well as shares of common
+stock, will be available for issuance without further action by stockholders, unless such action is required by applicable law or the
+rules&nbsp;of any stock exchange or automatic quotation system on which the Registrant&rsquo;s securities may be listed or traded.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Although the board has no intention at the present
+time of doing so, it may issue a series of preferred stock that could, depending on the terms of such series, impede the completion of
+a merger, tender offer or other takeover attempt. The board will make any determination to issue such shares based upon its judgment as
+to the best interests of the Registrant&rsquo;s stockholders. The board, in so acting, could issue preferred stock having terms that could
+discourage an acquisition attempt through which an acquirer may be able to change the composition of the board, including a tender offer
+or other transaction that some, or a majority, of its stockholders might believe to be in their best interests or in which stockholders
+might receive a premium for their stock over the then-current market price of the stock.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Board of Directors</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter provides that, subject to any rights
+of the holders of any series of preferred stock to elect additional directors, the number of directors on the board will not be less than
+three and the exact number will be fixed from time to time by a resolution of its board. The members of the board, other than those who
+may be elected by holders of any preferred stock, are divided into three classes. Each class consists, as nearly as possible, of a number
+of directors equal to one-third of the then authorized number of board members. The term of office of the current Class&nbsp;I directors
+expires at the annual meeting of stockholders in 2026. The term of office of the current Class&nbsp;II directors expires at the annual
+meeting of stockholders in 2024. The term of office of the current Class&nbsp;III directors expires at the annual meeting of stockholders
+in 2025.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">At each annual meeting of stockholders, the successors
+of the class of directors whose term expires at that meeting will be elected to hold office for a term expiring at the annual meeting
+of stockholders held in the third year following the year of their election. The directors of each class will hold office until their
+respective successors are elected and qualified or until such director&rsquo;s earlier death, resignation or removal.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter provides that, subject to the rights
+of the holders of any series of preferred stock, directors may be removed from office only for cause upon the affirmative vote of the
+holders of at least a majority of the aggregate voting power of the Registrant&rsquo;s outstanding capital stock entitled to vote on such
+matter, voting together as a single class.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 13; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->12<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter provides that, subject to the rights
+of the holders of any series of preferred stock, vacancies on the board resulting from death, resignation, removal, disqualification or
+other cause, and newly created directorships resulting from any increase in the number of directors on the board, will be filled only
+by the affirmative vote of a majority of the remaining directors then in office (even though less than a quorum) or by the sole remaining
+director. Any director so elected shall hold office for the remainder of the full term of the class of directors in which the vacancy
+occurred or to which the new directorship is assigned, and until that director&rsquo;s successor will have been elected and qualified
+or until such director&rsquo;s earlier death, resignation or removal. No decrease in the number of directors constituting the board will
+shorten the term of any incumbent director, except as may be provided in any certificate of designation with respect to a series of preferred
+stock with respect to any additional director elected by the holders of that series of preferred stock.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">These provisions would preclude a third party from
+removing incumbent directors and simultaneously gaining control of the board by filling the vacancies created by removal with its own
+nominees. Under the classified board provisions described above, it would take at least two elections of directors for any individual
+or group to gain control of the board. Accordingly, these provisions could discourage a third party from initiating a proxy contest, making
+a tender offer or otherwise attempting to gain control of the Registrant.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Limitation on Liability and Indemnification</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter provides that, to the fullest extent
+permitted by Delaware law, the Registrant&rsquo;s directors are not liable to the Registrant or any of its stockholders or creditors for
+monetary damages for breaches of fiduciary duties as a director or officer. In addition, the Registrant indemnifies, to the fullest extent
+permitted by applicable law, any person involved in any suit or action by reason of the fact that such person is a director or officer
+of the Registrant or, at the Registrant&rsquo;s request, a director, officer, employee or agent of another corporation or entity, against
+all liability, loss and expenses incurred by such person. The Registrant will pay expenses of a director or officer in defending any proceeding
+in advance of its final disposition, provided that such payment is made upon receipt of an undertaking by the director or officer to repay
+all amounts advanced if it should be ultimately determined that the director or officer is not entitled to indemnification.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>No Stockholder Action by Written Consent; Special Meetings</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter provides that (except as otherwise
+provided in the terms of any series of preferred stock), any action required to be taken or which may be taken at any annual meeting or
+special meeting of stockholders may not be taken without a meeting and may not be effected by any consent in writing by such holders.
+Except as otherwise required by law and subject to the rights of the holders of any series of the Registrant&rsquo;s preferred stock,
+special meetings of the Registrant&rsquo;s stockholders for any purpose or purposes may be called only by its Secretary at the written
+request of the holders of not less than 66&frac23;% of the total voting power of the Registrant&rsquo;s outstanding capital stock or at
+the request of at least 75% of the members of the board then in office. The Registrant&rsquo;s bylaws provide that no business other than
+that stated in the notice of special meeting will be transacted at any special meeting.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Amendments</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The charter provides that, subject to the rights
+of the holders of any series of its preferred stock, the affirmative vote of the holders of at least 66&frac23;% of the aggregate voting
+power of the Registrant&rsquo;s outstanding capital stock generally entitled to vote upon all matters submitted to its stockholders, voting
+together as a single class, is required to adopt, amend or repeal any provision of the charter or to add or insert any provision in the
+charter, provided that the foregoing enhanced voting requirement will not apply to any adoption, amendment, repeal, addition or insertion
+(1)&nbsp;as to which Delaware law does not require the consent of the Registrant&rsquo;s stockholders or (2)&nbsp;which has been approved
+by at least 75% of the members of its board then in office. The charter further provides that the affirmative vote of the holders of at
+least 66&frac23;% of the aggregate voting power of its outstanding capital stock generally entitled to vote upon all matters submitted
+to its stockholders, voting together as a single class, is required to adopt, amend or repeal any provision of its bylaws, provided that
+the foregoing enhanced voting requirement will not apply to any adoption, amendment or repeal approved by the affirmative vote of not
+less than 75% of the members of its board then in office.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 14; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->13<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Supermajority Voting Provisions</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">In addition to the supermajority voting provisions
+discussed under &ldquo;&mdash;Amendments&rdquo; above, the charter provides that, subject to the rights of the holders of any series of
+its preferred stock, the affirmative vote of the holders of at least 66&frac23;% of the aggregate voting power of its outstanding capital
+stock generally entitled to vote upon all matters submitted to its stockholders, voting together as a single class, is required for:</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>its merger or consolidation with or into any other corporation (including a merger consummated pursuant to Section&nbsp;251(h)&nbsp;of
+the General Corporation Law of the State of Delaware and notwithstanding the exception to a vote of the stockholders for such a merger
+set forth therein), provided, that the foregoing voting provision will not apply to any such merger or consolidation (1)&nbsp;as to which
+the laws of the State of Delaware, as then in effect, do not require the vote of the Registrant&rsquo;s stockholders (other than Section&nbsp;251(h)&nbsp;of
+the General Corporation Law of the State of Delaware), or (2)&nbsp;that at least 75% of the members of the board then in office have approved;</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>the sale, lease or exchange of all, or substantially all, of its assets, provided, that the foregoing voting provisions will not apply
+to any such sale, lease or exchange that at least 75% of the members of the board then in office have approved; or</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<TABLE CELLPADDING="0" CELLSPACING="0" WIDTH="100%" STYLE="font: 10pt Times New Roman, Times, Serif; margin-top: 0pt; margin-bottom: 0pt"><TR STYLE="vertical-align: top">
+<TD STYLE="width: 0.25in"></TD><TD STYLE="width: 0.25in"><FONT STYLE="font-family: Symbol">&middot;</FONT></TD><TD>its dissolution, provided, that the foregoing voting provision will not apply to such dissolution if at least 75% of the members of
+the board then in office have approved such dissolution.</TD></TR></TABLE>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"><B><I>Anti-Takeover Statutes and Stockholder Protections</I></B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Under Section&nbsp;203 of the General Corporation
+Law of the State of Delaware, a Delaware corporation is prohibited from engaging in a &ldquo;business combination&rdquo; with an &ldquo;interested
+stockholder&rdquo; (a stockholder who owns 15% or more of the corporation&rsquo;s voting stock) for three
+years following the time that such stockholder became an interested stockholder unless certain exceptions have been met. A Delaware corporation
+may opt out of Section&nbsp;203 in its certificate of incorporation or a stockholder approved bylaw. The Registrant has not elected to
+opt-out of Section&nbsp;203.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 15; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->14<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0 0pt 0.25in; text-indent: -0.25in"><B>Item 2. Exhibits.</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">The following exhibits are filed as part of this
+Registration Statement on Form&nbsp;8-A.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+  <TR STYLE="vertical-align: bottom">
+    <TD STYLE="width: 8%; border-bottom: black 1pt solid; padding: 0.25pt 0.25pt 0.5pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Exhibit&nbsp;No.</B></FONT></TD>
+    <TD STYLE="width: 2%; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="width: 90%; border-bottom: black 1pt solid; padding: 0.25pt 0.25pt 0.5pt; font-size: 10pt; text-align: center"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt"><B>Description</B></FONT></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923069028/tm2232384d34_ex3-1.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">3.1</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923069028/tm2232384d34_ex3-1.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Form&nbsp;of Restated Certificate of Incorporation of the Registrant (incorporated by reference to Exhibit&nbsp;3.1 to the Registrant&rsquo;s Registration Statement on Form&nbsp;S-4/A, filed with the SEC on June&nbsp;8, 2023 (File No.&nbsp;333-268921)).</FONT></A></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000156038515000028/lmca-20150806ex31bd62b27.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">3.2</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000156038515000028/lmca-20150806ex31bd62b27.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Amended and Restated Bylaws of the Registrant (incorporated by reference to Exhibit&nbsp;3.1 to the Registrant&rsquo;s Current Report on Form&nbsp;8-K, filed with the SEC on August&nbsp;6, 2015 (File No.&nbsp;001-35707)).</FONT></A></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-1.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.1</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-1.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Specimen certificate for shares of the Registrant&rsquo;s Series&nbsp;A Liberty SiriusXM common stock, par value $0.01 per share (incorporated by reference to Exhibit&nbsp;4.1 to the Registrant&rsquo;s Registration Statement on Form&nbsp;S-4/A, filed with the SEC on April&nbsp;6, 2023 (File No.&nbsp;333-268921) (the &ldquo;<U>Form&nbsp;S-4</U>&rdquo;)).</FONT></A></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-2.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.2</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-2.htm"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Specimen certificate for shares of the Registrant&rsquo;s Series&nbsp;B Liberty SiriusXM common stock, par value $0.01 per share (incorporated by reference to Exhibit&nbsp;4.2 to the Form&nbsp;S-4).</FONT></A></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-3.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.3</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-3.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Specimen certificate for shares of the Registrant&rsquo;s Series&nbsp;C Liberty SiriusXM common stock, par value $0.01 per share (incorporated by reference to Exhibit&nbsp;4.3 to the Form&nbsp;S-4).</FONT></A></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-4.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.4</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-4.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Specimen certificate for shares of the Registrant&rsquo;s Series&nbsp;A Liberty Formula One common stock, par value $0.01 per share (incorporated by reference to Exhibit&nbsp;4.4 to the Form&nbsp;S-4).</FONT></A></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-6.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.5</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-6.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Specimen certificate for shares of the Registrant&rsquo;s Series&nbsp;C Liberty Formula One common stock, par value $0.01 per share (incorporated by reference to Exhibit&nbsp;4.6 to the Form&nbsp;S-4).</FONT></A></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-7.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.6</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt; font-size: 10pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-7.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Specimen certificate for shares of the Registrant&rsquo;s Series&nbsp;A Liberty Live common stock, par value $0.01 per share (incorporated by reference to Exhibit&nbsp;4.7 to the Form&nbsp;S-4).</FONT></A></TD></TR>
+  <TR>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt; text-align: center"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-9.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">4.7</FONT></A></TD>
+    <TD STYLE="vertical-align: bottom; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="vertical-align: top; padding: 0.25pt; font-size: 10pt"><A HREF="https://www.sec.gov/Archives/edgar/data/1560385/000110465923042265/tm2232384d18_ex4-9.htm" STYLE="-sec-extract: exhibit"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Specimen certificate for shares of the Registrant&rsquo;s Series&nbsp;C Liberty Live common stock, par value $0.01 per share (incorporated by reference to Exhibit&nbsp;4.9 to the Form&nbsp;S-4).</FONT></A></TD></TR>
+  </TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0"></P>
+
+<!-- Field: Page; Sequence: 16; Value: 1 -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"><!-- Field: Sequence; Type: Arabic; Name: PageNo -->15<!-- Field: /Sequence -->&nbsp;</P></DIV>
+    <DIV STYLE="break-before: page; margin-top: 6pt; margin-bottom: 12pt"><P STYLE="margin: 0pt">&nbsp;</P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align: center"><B>SIGNATURE</B></P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in">Pursuant to the requirements of Section&nbsp;12
+of the Securities Exchange Act of 1934, the registrant has duly caused this registration statement to be signed on its behalf by the undersigned,
+thereto duly authorized.</P>
+
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<TABLE CELLSPACING="0" CELLPADDING="0" STYLE="font: 10pt Times New Roman, Times, Serif; width: 100%; border-collapse: collapse">
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Date: August&nbsp;1, 2023</FONT></TD>
+    <TD COLSPAN="2" STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">LIBERTY MEDIA CORPORATION</FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="width: 51%; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="width: 6%; padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="width: 43%; padding: 0.25pt">&nbsp;</TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">By:</FONT></TD>
+    <TD STYLE="border-bottom: black 1pt solid; padding: 0.25pt 0.25pt 0.5pt">/s/ Katherine C. Jewell</TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Name:</FONT></TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Katherine C. Jewell</FONT></TD></TR>
+  <TR STYLE="vertical-align: top">
+    <TD STYLE="padding: 0.25pt">&nbsp;</TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Title:</FONT></TD>
+    <TD STYLE="padding: 0.25pt; font-size: 10pt"><FONT STYLE="font-family: Times New Roman, Times, Serif; font-size: 10pt">Vice President and Assistant Secretary</FONT></TD></TR>
+  </TABLE>
+<P STYLE="font: 10pt Times New Roman, Times, Serif; margin: 0pt 0">&nbsp;</P>
+
+<P STYLE="margin: 0pt"></P>
+
+<!-- Field: Page; Sequence: 17; Options: Last -->
+    <DIV STYLE="margin-top: 12pt; margin-bottom: 6pt; border-bottom: Black 1pt solid"><P STYLE="font-size: 10pt; text-align: center; margin-top: 0pt; margin-bottom: 0pt"></P></DIV>
+    <!-- Field: /Page -->
+
+<P STYLE="margin: 0pt">&nbsp;</P>
+
+<P STYLE="margin: 0pt">&nbsp;</P>
+
+<P STYLE="margin: 0pt">&nbsp;</P>
+
+</BODY>
+</HTML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
