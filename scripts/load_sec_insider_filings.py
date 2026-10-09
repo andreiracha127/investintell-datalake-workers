@@ -6,9 +6,12 @@ sec-api.io form-3/4/5-files monthly archives supply ownership XML from May
 are read; archive members are never extracted or executed.
 
 Each package is reconciled in one transaction. Republication retires facts
-and their package carriers; corrections become available on the reconciliation
-date. An unchanged fact retains its original availability. No outside CIK
-mapping is consulted. Schema application is an explicit operator action.
+and their package carriers as a source change; corrections become available on
+the reconciliation date. The same bytes read by a new parser version retire the
+changed readings as a parser correction (visible at no date); the new reading
+is knowable when the reading it replaces was. An unchanged fact retains its
+original availability. No outside CIK mapping is consulted. Schema application
+(v1, then v2) is an explicit operator action.
 
 Examples (run from the repository root):
   py -3.13 -m scripts.load_sec_insider_filings --packages-dir E:/investintell-data/w1b/dera --download-dera --verify-cache
@@ -52,8 +55,15 @@ from scripts.load_sec_ticker_cik_history import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "schemas" / "sec_insider_ticker_evidence.sql"
-PARSER_VERSION = "sec_insider_v3"
+SCHEMA_PATHS = (ROOT / "schemas" / "sec_insider_ticker_evidence.sql",
+                ROOT / "schemas" / "sec_insider_ticker_evidence_v2.sql")
+PARSER_VERSION = "sec_insider_v4"
+# Why a filing version was retired (sec_insider_filings.retired_reason, schema v2).
+# SOURCE: the public record changed (a republished package): the old version stays
+# visible before its retirement. PARSER_CORRECTION: the same package bytes read by
+# another parser version: the old reading was never true and is visible at no date.
+SOURCE = "source"
+PARSER_CORRECTION = "parser_correction"
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 DERA_LISTING_URL = "https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets"
 SECAPI_BASE = "https://api.sec-api.io"
@@ -62,6 +72,7 @@ DEFAULT_ROOT = Path("E:/investintell-data/w1b")
 DEFAULT_DOTENV = Path("E:/investintell-light/backend/.env")
 DERA_RE = re.compile(r"^(?P<year>\d{4})q(?P<quarter>[1-4])_form345\.zip$", re.I)
 ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+FILING_DIRECTORY_RE = re.compile(r"\d{4}-\d{2}/\d{18}")  # sec-api archive: YYYY-MM/<accession>/
 FORMS = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
 DATASETS = ("form-3-files", "form-4-files", "form-5-files")
 _MONTHS = {name: n for n, name in enumerate(
@@ -71,10 +82,14 @@ _PREFIX = re.compile(r"^(?:NYSE(?:\s*(?:AMERICAN|ARCA|MKT))?|NASDAQ(?:\s*(?:GS|G
 _OTC_SUFFIX = re.compile(r"(?<=[A-Z0-9])(?:[.,]\s*|\s+)(?:OB|PK)\b", re.I)
 _WRAPPER = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]")
 # Whole-field placeholders: W1's set plus phrases insider filers type (DERA 2006-2026).
-# W1 now reads TRUE, FALSE, OTCBB and OB on the whole cover field (TrueCar's TRUE is
-# a symbol there); sec_insider_v3 keeps them placeholders, as it was built.
+# W1b keeps its own copy, so a change to W1's set needs a parser version here.
+# sec_insider_v4 reads TRUE and OB as symbols, as W1 does. In DERA and the 2003-2005
+# XML every whole-field TRUE is uppercase and the issuer's own symbol (TrueCar,
+# Centrue: 1,545 filings); OB alone is OneBeacon's or Outbrain's (394 of 396).
+# A lowercase or mixed-case "true" stays a boolean, and OB beside a symbol still
+# qualifies it (EDLG, OB). FALSE never occurs; OTCBB alone never names a symbol.
 _PLACEHOLDERS = PLACEHOLDER_KEYS | {
-    "TRUE", "FALSE", "OTCBB", "OB",
+    "FALSE", "OTCBB",
     "", "NOSYMBOL", "NOTRADINGSYMBOL", "NOTICKER", "NOTPUBLIC", "NOTTRADING", "NONEYET",
     "TOCOME", "SEEREMARK", "SEEREMARKS", "INREMARKS", "APPFOR", "APPLIED", "APPLIEDFOR",
     "PENDING", "UNKNOWN", "PRIVATE", "SYMBOL", "XXXXXXXXXX",
@@ -91,6 +106,7 @@ _TOKEN_SECRET = re.compile(r"((?:token|api[_-]?key|password)=)[^&\s'\"]+", re.I)
 _SECRETS: set[str] = set()
 NEW_YORK = ZoneInfo("America/New_York")
 MAX_XML_BYTES = 16 * 1024 * 1024
+TEMP_BUFFERS = "128MB"  # see prepare_session
 FACT_COLUMNS = ("accession", "cik", "raw_symbol", "normalized_symbols", "form", "filed", "accepted", "source")
 STAGE_COLUMNS = FACT_COLUMNS + ("source_package", "fact_hash", "source_available_on")
 
@@ -114,7 +130,10 @@ def _key(value: str) -> str:
 
 
 def _is_placeholder(value: str) -> bool:
-    return _key(value) in _PLACEHOLDERS or bool(re.fullmatch(r"X{3,}", _key(value)))
+    key = _key(value)
+    if key == "TRUE":  # the symbol only as written in uppercase
+        return not re.sub(r"[^A-Za-z]", "", value).isupper()
+    return key in _PLACEHOLDERS or bool(re.fullmatch(r"X{3,}", key))
 
 
 def _letters(value: str) -> int:
@@ -369,23 +388,40 @@ def iter_secapi_filings(path: Path, *, stats: Counter | None = None,
 
     Accessions with metadata but no ownership XML yield no fact; they are added
     to ``metadata_only`` so the package still records them as members.
+
+    The archive's own filing directories (``YYYY-MM/<accession>/``) are its true
+    filing count; the catalogue's ``records`` counts other things. Exhausting
+    the iterator checks that each directory produced exactly one metadata record
+    for its own accession, so an incomplete parse is refused before
+    ``load_package`` reconciles anything.
     """
     stats = stats if stats is not None else Counter()
     package = package_name(path, "sec-api")
     with zipfile.ZipFile(path) as archive:
         by_directory: dict[str, list[zipfile.ZipInfo]] = {}
         metadata_members: list[zipfile.ZipInfo] = []
+        filing_directories: set[str] = set()
         for member in archive.infolist():
             name = PurePosixPath(member.filename)
+            if len(name.parts) > 2 and FILING_DIRECTORY_RE.fullmatch("/".join(name.parts[:2])):
+                filing_directories.add("/".join(name.parts[:2]))
             if name.name == "metadata.json":
                 metadata_members.append(member)
             elif name.suffix.lower() == ".xml" and not any(p.lower().startswith("xslf345") for p in name.parts):
                 by_directory.setdefault(str(name.parent), []).append(member)
         if not metadata_members:
             raise ValueError(f"{package}: no filing metadata found")
+        described: set[str] = set()
         for member in metadata_members:
             metadata = json.loads(_read_member(archive, member, MAX_XML_BYTES))
             directory = str(PurePosixPath(member.filename).parent)
+            accession = str(metadata.get("accessionNo") or metadata.get("accessionNumber") or "")
+            if not ACCESSION_RE.fullmatch(accession):
+                raise ValueError(f"{package}: filing metadata without a valid accession")
+            if (directory not in filing_directories or directory in described
+                    or PurePosixPath(directory).name != accession.replace("-", "")):
+                raise ValueError(f"{package}: {member.filename} is not the one metadata record of its filing directory")
+            described.add(directory)
             found: InsiderFiling | None = None
             for xml_member in by_directory.get(directory, []):
                 filing = parse_ownership_xml(_read_member(archive, xml_member, MAX_XML_BYTES), metadata,
@@ -397,9 +433,6 @@ def iter_secapi_filings(path: Path, *, stats: Counter | None = None,
                 found = filing
             stats["metadata_filings"] += 1
             if found is None:
-                accession = str(metadata.get("accessionNo") or metadata.get("accessionNumber") or "")
-                if not ACCESSION_RE.fullmatch(accession):
-                    raise ValueError(f"{package}: filing metadata without a valid accession")
                 if metadata_only is not None:
                     metadata_only.append(accession)
                 stats["non_xml_filings"] += 1
@@ -409,6 +442,9 @@ def iter_secapi_filings(path: Path, *, stats: Counter | None = None,
             if not found.normalized_symbols:
                 stats["no_usable_symbol"] += 1
             yield found
+        if stats["metadata_filings"] != len(filing_directories):
+            raise ValueError(f"{package}: parsed {stats['metadata_filings']} filing metadata records, "
+                             f"but the archive has {len(filing_directories)} filing directories")
 
 
 def sha256_file(path: Path) -> str:
@@ -417,6 +453,39 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def prepare_session(conn) -> None:
+    """Before the session's first temporary table, as W1's loader does. A package
+    is staged by COPY into temporary tables in one transaction; the largest DERA
+    quarter (2006q1, 83,657 filings) fills 38.6 MB of them (stage 21.3, members
+    8.8, previous facts 8.5). PostgreSQL 18 pins local buffers while COPY extends
+    a table, and at the 8 MB default that COPY fails with "no empty local buffer
+    available". 128 MB keeps the whole package resident with 3x headroom."""
+    conn.execute(f"SET temp_buffers = '{TEMP_BUFFERS}'")
+
+
+def require_schema(conn) -> None:
+    """Refuse a database without the insider tables (v1) or without v2, whose
+    resolver hides a parser correction's old reading and whose filings record
+    why a version was retired."""
+    present, v2 = conn.execute(
+        "SELECT to_regclass('sec_insider_filings') IS NOT NULL "
+        "AND to_regclass('sec_insider_packages') IS NOT NULL "
+        "AND to_regclass('sec_insider_package_facts') IS NOT NULL "
+        "AND to_regclass('sec_insider_package_members') IS NOT NULL, "
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a "
+        "WHERE a.attrelid = to_regclass('sec_insider_filings') "
+        "AND a.attname = 'retired_reason' AND NOT a.attisdropped) "
+        "AND COALESCE((SELECT p.prosrc LIKE '%parser_correction%' FROM pg_catalog.pg_proc p "
+        "WHERE p.oid = to_regprocedure('sec_insider_ticker_issuer_at(text,date)')), false)"
+    ).fetchone()
+    if not present:
+        raise RuntimeError("insider schema is missing: apply schemas/sec_insider_ticker_evidence.sql, "
+                           "then schemas/sec_insider_ticker_evidence_v2.sql, as the database owner")
+    if not v2:
+        raise RuntimeError("the insider schema is v1: apply schemas/sec_insider_ticker_evidence_v2.sql "
+                           "as the database owner first")
 
 
 def load_package(conn, path: Path, *, source: str | None = None,
@@ -433,6 +502,9 @@ def load_package(conn, path: Path, *, source: str | None = None,
             cur.execute("SELECT pg_advisory_xact_lock(900, 345)")
             cur.execute("SELECT package_sha256, parser_version FROM sec_insider_packages WHERE source_package = %s", (package,))
             previous = cur.fetchone()
+            # The same bytes as the version loaded before: whatever differs is
+            # this parser's reading, not the SEC's data.
+            reason = PARSER_CORRECTION if previous is not None and previous[0] == digest else SOURCE
             if previous == (digest, PARSER_VERSION):
                 cur.execute("UPDATE sec_insider_packages SET remote_etag = COALESCE(%s, remote_etag), remote_last_modified = COALESCE(%s, remote_last_modified) WHERE source_package = %s",
                             (validators.get("etag"), validators.get("last_modified") or validators.get("updatedAt"), package))
@@ -441,10 +513,14 @@ def load_package(conn, path: Path, *, source: str | None = None,
             metadata_only: list[str] = []
             iterator = (iter_dera_filings(path, stats=stats) if source == "dera"
                         else iter_secapi_filings(path, stats=stats, metadata_only=metadata_only))
+            # The iterator's own checks (a sec-api archive's filing count) run as
+            # it is exhausted here, before anything below retires or inserts.
             with cur.copy(f"COPY tmp_insider_stage ({', '.join(STAGE_COLUMNS)}) FROM STDIN") as copy:
                 for filing in iterator:
                     copy.write_row(filing.stage_row())
-            if not stats["filings"]:
+            # A sec-api archive of validated metadata records without ownership
+            # XML is a real revision: its members are kept and its facts retired.
+            if not stats["filings"] and not metadata_only:
                 raise ValueError(f"{package}: no structured insider filings found")
             # Members include accessions that yielded no fact (metadata without
             # ownership XML), so a fact learned later is dated by reconciliation.
@@ -457,10 +533,18 @@ def load_package(conn, path: Path, *, source: str | None = None,
             # Retire only carriers that disappeared from this fully staged revision.
             cur.execute("UPDATE sec_insider_package_facts p SET retired_on = %s WHERE p.source_package = %s AND p.retired_on IS NULL AND NOT EXISTS (SELECT 1 FROM tmp_insider_stage s WHERE s.fact_hash = p.fact_hash)", (on, package))
             cur.execute("INSERT INTO sec_insider_package_facts (source_package, fact_hash, loaded_on) SELECT %s, s.fact_hash, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_package_facts p WHERE p.source_package = %s AND p.fact_hash = s.fact_hash AND p.retired_on IS NULL)", (package, on, package))
-            cur.execute("UPDATE sec_insider_filings f SET retired_on = %s WHERE f.retired_on IS NULL AND EXISTS (SELECT 1 FROM tmp_insider_old o WHERE o.fact_hash = f.fact_hash) AND NOT EXISTS (SELECT 1 FROM sec_insider_package_facts p WHERE p.fact_hash = f.fact_hash AND p.retired_on IS NULL)", (on,))
+            # Retired readings are kept with their availability: a parser correction's
+            # new reading is knowable when the reading it replaces was.
+            cur.execute("CREATE TEMP TABLE tmp_insider_replaced (accession text NOT NULL, available_on date NOT NULL) ON COMMIT DROP")
+            cur.execute("WITH retired AS (UPDATE sec_insider_filings f SET retired_on = %s, retired_reason = %s WHERE f.retired_on IS NULL AND EXISTS (SELECT 1 FROM tmp_insider_old o WHERE o.fact_hash = f.fact_hash) AND NOT EXISTS (SELECT 1 FROM sec_insider_package_facts p WHERE p.fact_hash = f.fact_hash AND p.retired_on IS NULL) RETURNING f.accession, f.available_on) INSERT INTO tmp_insider_replaced SELECT accession, available_on FROM retired", (on, reason))
             retired = cur.rowcount
             # The accession history is checked before new package memberships are inserted.
-            cur.execute(f"INSERT INTO sec_insider_filings ({', '.join(FACT_COLUMNS)}, source_package, fact_hash, source_version, available_on, loaded_on) SELECT {', '.join('s.' + c for c in FACT_COLUMNS)}, s.source_package, s.fact_hash, %s, CASE WHEN EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.accession = s.accession) THEN GREATEST(s.source_available_on, %s) ELSE s.source_available_on END, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_filings f WHERE f.fact_hash = s.fact_hash AND f.retired_on IS NULL)", (digest, on, on))
+            # A source change of a known accession is knowable from reconciliation. A
+            # parser correction's reading is knowable when the reading it replaces
+            # was: from the filing's public date for a filing first loaded with its
+            # package, from the republication for republished content. A reading
+            # that replaces none is knowable from the filing's public date.
+            cur.execute(f"INSERT INTO sec_insider_filings ({', '.join(FACT_COLUMNS)}, source_package, fact_hash, source_version, available_on, loaded_on) SELECT {', '.join('s.' + c for c in FACT_COLUMNS)}, s.source_package, s.fact_hash, %s, CASE WHEN %s THEN COALESCE((SELECT max(r.available_on) FROM tmp_insider_replaced r WHERE r.accession = s.accession), s.source_available_on) WHEN EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.accession = s.accession) THEN GREATEST(s.source_available_on, %s) ELSE s.source_available_on END, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_filings f WHERE f.fact_hash = s.fact_hash AND f.retired_on IS NULL)", (digest, reason == PARSER_CORRECTION, on, on))
             inserted = cur.rowcount
             cur.execute("UPDATE sec_insider_package_members m SET retired_on = %s WHERE m.source_package = %s AND m.retired_on IS NULL AND NOT EXISTS (SELECT 1 FROM tmp_insider_members s WHERE s.accession = m.accession)", (on, package))
             cur.execute("INSERT INTO sec_insider_package_members (source_package, accession, loaded_on) SELECT %s, s.accession, %s FROM tmp_insider_members s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.source_package = %s AND m.accession = s.accession AND m.retired_on IS NULL)", (package, on, package))
@@ -469,8 +553,9 @@ def load_package(conn, path: Path, *, source: str | None = None,
                         (package, source, digest, digest, size, PARSER_VERSION, stats["filings"], json.dumps(rejected), validators.get("etag"), validators.get("last_modified") or validators.get("updatedAt")))
             # A caller may wrap several packages in its own transaction. ON
             # COMMIT DROP alone would retain these names until that outer commit.
-            cur.execute("DROP TABLE tmp_insider_stage, tmp_insider_old, tmp_insider_members")
-    return {"package": package, "sha256": digest, **dict(stats), "inserted": inserted, "retired": retired}
+            cur.execute("DROP TABLE tmp_insider_stage, tmp_insider_old, tmp_insider_members, tmp_insider_replaced")
+    return {"package": package, "sha256": digest, **dict(stats), "inserted": inserted, "retired": retired,
+            "retired_reason": reason}
 
 
 class _SecApiRedirect(urllib.request.HTTPRedirectHandler):
@@ -754,11 +839,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         import psycopg
         with psycopg.connect(args.dsn or "", autocommit=True) as conn:
+            prepare_session(conn)
             if args.apply_schema:
-                conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
-            row = conn.execute("SELECT to_regclass('sec_insider_filings'), to_regclass('sec_insider_packages'), to_regclass('sec_insider_package_facts'), to_regclass('sec_insider_package_members')").fetchone()
-            if not all(row):
-                raise ValueError("insider schema is missing; apply it as the database owner")
+                for schema in SCHEMA_PATHS:
+                    conn.execute(schema.read_text(encoding="utf-8"))
+            require_schema(conn)
             for path in paths:
                 log(load_package(conn, path, reconciled_on=args.reconciled_on, validators=_read_meta(path)))
         return 0

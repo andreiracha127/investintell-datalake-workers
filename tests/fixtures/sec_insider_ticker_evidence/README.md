@@ -3,7 +3,9 @@
 DERA slices contain the complete unmodified source fields for the accessions cited
 in section 5 of `W1B-INSIDER-FEASIBILITY.md`. Headers follow their source quarter,
 including `AFF10B5ONE` where present. CSV escaping and LF line endings are
-canonicalized; field values are unchanged.
+canonicalized; field values are unchanged. The 2006q4, 2015q4 and 2025q2 slices add
+real `TRUE` (Centrue), `NYSE: OB` (OneBeacon), `OB` (Outbrain) and `OTCBB` fields
+for `sec_insider_v4`.
 
 The May 2003 ownership XML and archive metadata come from sec-api original filing
 archives. The Form 3 specimen exercises X0101 and a lowercase OTC symbol; the Form

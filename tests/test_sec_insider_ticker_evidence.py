@@ -1,7 +1,7 @@
 """Real SEC source slices and point-in-time insider admission regressions.
 
 Database tests are opt-in through ``SEC_INSIDER_TEST_DSN`` and install the exact
-schema in a unique schema of that disposable local database. They never connect
+schema (v1, then v2) in a unique schema of that disposable local database. They never connect
 through the application's default connection settings.
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 import uuid
 import zipfile
 from pathlib import Path
@@ -35,8 +36,14 @@ DERA_SYMBOLS = {
     "0002151730-26-000002": ["WELPP"],
     "0001314152-26-000191": [],
     "0001728451-26-000004": ["BRK-A"],
-    "0001327318-26-000010": [],
+    # TrueCar's own Form 4 (issuer CIK 1327318). sec_insider_v3 read TRUE as a
+    # boolean placeholder; every whole-field TRUE in DERA is an issuer's symbol.
+    "0001327318-26-000010": ["TRUE"],
     "0001193125-26-106222": ["WSO", "WSOB"],
+    "0001181431-06-063496": ["TRUE"],  # Centrue Financial
+    "0001140361-06-016251": ["OB"],  # OneBeacon, "NYSE: OB"
+    "0001454938-25-000115": ["OB"],  # Outbrain
+    "0001467481-15-000014": [],  # OTCBB alone names no symbol
     "0001493152-22-016490": [],
     "0000107140-22-000040": ["JWA", "JWB"],
     "0001033012-22-000101": ["FBC"],
@@ -94,6 +101,33 @@ def test_normalization_of_real_section_five_filings(row):
     ],
 )
 def test_additional_symbol_rules(raw, expected):
+    assert insider.normalize_symbols(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # TrueCar and Centrue write TRUE, OneBeacon and Outbrain OB (1,941 filings).
+        ("TRUE", ["TRUE"]),
+        ("(TRUE)", ["TRUE"]),
+        ("OB", ["OB"]),
+        ("NYSE: OB", ["OB"]),
+        ("NYSE:OB", ["OB"]),
+        # A boolean typed as a symbol, as W1 reads it, and the OTC marks stay placeholders.
+        ("true", []),
+        ("True", []),
+        ("FALSE", []),
+        ("false", []),
+        ("OTCBB", []),
+        ("OTC BB", []),
+        ("OTCBB-__", []),
+        # Beside a symbol OB still qualifies it.
+        ("EDLG, OB", ["EDLG"]),
+        ("fmbh.ob", ["FMBH"]),
+    ],
+)
+def test_v4_reads_true_and_ob_as_symbols_but_keeps_placeholder_senses(raw, expected):
+    assert insider.PARSER_VERSION == "sec_insider_v4"
     assert insider.normalize_symbols(raw) == expected
 
 
@@ -560,11 +594,58 @@ def test_resumed_production_export_reexports_interrupted_files(tmp_path, monkeyp
         (tmp_path / "first_prices.csv").read_bytes()).hexdigest()
 
 
+def _exported_snapshot(tmp_path, monkeypatch):
+    from scripts import validate_sec_insider_ticker_evidence as validation
+
+    monkeypatch.setattr(validation, "_check_query_window", lambda: None)
+
+    def psql(args, **kwargs):
+        query = args[-1]
+        if "current_user" in query:
+            return SimpleNamespace(returncode=0, stdout="mcp_ro,on,30s\n", stderr="")
+        body = ("ticker,first_price\nAAPL,1980-12-31\nMSFT,1986-03-13\n" if "first_price" in query
+                else "ticker,status,cover_cik\nAAPL,resolved,320193\nMSFT,missing,\n")
+        return SimpleNamespace(returncode=0, stdout=body, stderr="")
+
+    monkeypatch.setattr(validation.subprocess, "run", psql)
+    validation.export_production("psql", tmp_path)
+    # The import that follows verification must never be reached by a bad snapshot.
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(
+        connect=lambda *args, **kwargs: pytest.fail("validation connected before verifying")))
+    return validation
+
+
+@pytest.mark.parametrize("defect", ["truncated", "edited", "missing_file", "missing_manifest",
+                                    "unlisted_file", "other_identity"])
+def test_validation_verifies_snapshot_manifest_and_hashes_before_importing(tmp_path, monkeypatch, defect):
+    validation = _exported_snapshot(tmp_path, monkeypatch)
+    assert validation.verify_snapshot(tmp_path)["sha256"].keys() == {
+        "first_prices.csv", *(f"cover_{y}.csv" for y in validation.YEARS)}
+    manifest_path = tmp_path / "production_snapshot.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if defect == "truncated":  # still a complete, parseable CSV with fewer rows
+        (tmp_path / "cover_2010.csv").write_bytes(b"ticker,status,cover_cik\nAAPL,resolved,320193\n")
+    elif defect == "edited":  # same size, different CIK
+        (tmp_path / "cover_2013.csv").write_bytes(b"ticker,status,cover_cik\nAAPL,resolved,320194\nMSFT,missing,\n")
+    elif defect == "missing_file":
+        (tmp_path / "first_prices.csv").unlink()
+    elif defect == "missing_manifest":
+        manifest_path.unlink()
+    elif defect == "unlisted_file":
+        del manifest["sha256"]["cover_2018.csv"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    else:
+        manifest["identity"] = "postgres,off,0"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="[Ss]napshot"):
+        validation.validate("postgresql://never-connected.invalid/w1b", tmp_path)
+
+
 @pytest.fixture(scope="module")
 def db():
     dsn = os.environ.get("SEC_INSIDER_TEST_DSN")
     if not dsn:
-        pytest.skip("set SEC_INSIDER_TEST_DSN to a disposable local PostgreSQL 16 database")
+        pytest.skip("set SEC_INSIDER_TEST_DSN to a disposable local PostgreSQL 18 database")
     psycopg = pytest.importorskip("psycopg")
     from psycopg import sql
 
@@ -572,8 +653,8 @@ def db():
     conn = psycopg.connect(dsn, autocommit=True)
     conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
     conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
-    schema_sql = (ROOT / "schemas" / "sec_insider_ticker_evidence.sql").read_text(encoding="utf-8")
-    conn.execute(schema_sql)
+    for name in ("sec_insider_ticker_evidence.sql", "sec_insider_ticker_evidence_v2.sql"):
+        conn.execute((ROOT / "schemas" / name).read_text(encoding="utf-8"))
     try:
         yield conn
     finally:
@@ -804,6 +885,10 @@ def test_republished_package_preserves_retired_facts_and_correction_knowledge(cl
     assert _resolve(clean_db, "SIRI", "2026-10-09")["filing_count"] == 0
     assert _resolve(clean_db, "NEW", "2026-10-08")["filing_count"] == 0
     assert _resolve(clean_db, "NEW", "2026-10-09")["filing_count"] == 1
+    # Changed bytes are a source change: knowledge-dated, the old version visible before.
+    assert dict(clean_db.execute(
+        "SELECT accession, retired_reason FROM sec_insider_filings WHERE retired_on IS NOT NULL"
+    ).fetchall()) == {"0001225208-26-007725": "source", "0000099780-26-000121": "source"}
 
 
 def test_bad_republication_cannot_retire_last_good_package(clean_db, tmp_path):
@@ -844,3 +929,264 @@ def test_metadata_only_accession_learned_later_is_dated_by_reconciliation(clean_
     available = dict(clean_db.execute("SELECT accession, available_on FROM sec_insider_filings").fetchall())
     # The republished XML is new knowledge, not a fact backdated to the 2003 filing.
     assert available == {known: dt.date(2003, 5, 30), late: dt.date(2026, 10, 9)}
+
+
+def _v3(monkeypatch, misread):
+    """An earlier parser version: TRUE and OB were placeholders, and ``misread``
+    maps raw fields it read differently."""
+    v4 = insider.normalize_symbols
+    monkeypatch.setattr(insider, "PARSER_VERSION", "sec_insider_v3")
+    monkeypatch.setattr(insider, "normalize_symbols", lambda raw: misread[raw] if raw in misread
+                        else [] if insider._key(raw) in ("TRUE", "OB") else v4(raw))
+
+
+def test_parser_correction_is_dated_by_the_filing_and_hides_the_old_reading(clean_db, tmp_path, monkeypatch):
+    rows = [row for row in _real_dera_rows() if row["ACCESSION_NUMBER"] in (
+        "0001327318-26-000010", "0001193125-26-106222", "0001225208-26-007725")]
+    package = _dera_zip(tmp_path, "2026q1", replacement_rows=rows)  # TrueCar, Watsco, Sirius XM
+    unchanged = "SELECT to_jsonb(f) FROM sec_insider_filings f WHERE accession = '0001225208-26-007725'"
+    with monkeypatch.context() as old:
+        _v3(old, {"WSO; WSOB": ["WSOX"]})
+        insider.load_package(clean_db, package, source="dera", reconciled_on=dt.date(2026, 10, 9))
+    before = clean_db.execute(unchanged).fetchall()
+    # The same bytes read by sec_insider_v4: a parser correction.
+    result = insider.load_package(clean_db, package, source="dera", reconciled_on=dt.date(2026, 10, 10))
+    assert (result["inserted"], result["retired"], result["retired_reason"]) == (2, 2, "parser_correction")
+    assert clean_db.execute(
+        "SELECT accession, normalized_symbols, available_on, retired_on, retired_reason "
+        "FROM sec_insider_filings WHERE accession <> '0001225208-26-007725' ORDER BY accession, id"
+    ).fetchall() == [
+        ("0001193125-26-106222", ["WSOX"], dt.date(2026, 3, 14), dt.date(2026, 10, 10), "parser_correction"),
+        ("0001193125-26-106222", ["WSO", "WSOB"], dt.date(2026, 3, 14), None, None),
+        ("0001327318-26-000010", [], dt.date(2026, 1, 24), dt.date(2026, 10, 10), "parser_correction"),
+        ("0001327318-26-000010", ["TRUE"], dt.date(2026, 1, 24), None, None),
+    ]
+    # The corrected readings are visible from the filing date; the old one at no date.
+    for day in ("2026-03-14", "2026-06-30", "2026-10-09", "2026-10-10", "2027-01-01"):
+        assert _resolve(clean_db, "WSO", day)["filing_count"] == 1
+        assert _resolve(clean_db, "WSOB", day)["filing_count"] == 1
+        assert _resolve(clean_db, "WSOX", day)["filing_count"] == 0
+    assert _resolve(clean_db, "WSO", "2026-03-13")["filing_count"] == 0
+    assert _resolve(clean_db, "TRUE", "2026-01-24")["filing_count"] == 1
+    assert _resolve(clean_db, "TRUE", "2026-01-23")["filing_count"] == 0
+    # An unchanged reading keeps its row and its original availability.
+    assert clean_db.execute(unchanged).fetchall() == before
+    assert clean_db.execute(
+        "SELECT count(*) FILTER (WHERE retired_on IS NULL), count(*) FROM sec_insider_package_members"
+    ).fetchone() == (3, 3)
+    assert clean_db.execute("SELECT parser_version FROM sec_insider_packages").fetchone() == ("sec_insider_v4",)
+
+
+def test_parser_correction_that_withdraws_a_reading_hides_it_at_every_date(clean_db, tmp_path, monkeypatch):
+    package = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE))
+    with monkeypatch.context() as old:
+        old.setattr(insider, "PARSER_VERSION", "sec_insider_v3")
+        insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 9))
+    assert _resolve(clean_db, "EDLG", "2003-06-01")["filing_count"] == 1
+    # A fixed parser no longer accepts the late filing's XML: no reading replaces it.
+    parse = insider.parse_ownership_xml
+    monkeypatch.setattr(insider, "parse_ownership_xml", lambda raw, metadata, **kwargs: None
+                        if metadata["accessionNo"] == LATE else parse(raw, metadata, **kwargs))
+    result = insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 10))
+    assert (result["inserted"], result["retired"], result["retired_reason"]) == (0, 1, "parser_correction")
+    for day in ("2003-06-01", "2026-10-09", "2026-10-10"):
+        assert _resolve(clean_db, "EDLG", day)["filing_count"] == 0
+    assert _resolve(clean_db, "FMBH", "2003-06-01")["filing_count"] == 1
+    assert clean_db.execute(
+        "SELECT count(*) FROM sec_insider_package_members WHERE retired_on IS NULL").fetchone() == (2,)
+
+
+def test_parser_correction_of_republished_content_is_not_dated_before_the_republication(
+        clean_db, tmp_path, monkeypatch):
+    package = _dera_zip(tmp_path)
+    insider.load_package(clean_db, package, source="dera", reconciled_on=dt.date(2026, 10, 8))
+    rows = [row for row in _real_dera_rows() if row["FILING_DATE"].endswith("2026") and row["ACCESSION_NUMBER"]
+            not in ("0001327318-26-000010", "0001193125-26-106222")]  # the 2026q3 slice
+    assert len(rows) == 8
+    for row in rows:
+        if row["ACCESSION_NUMBER"] == "0001225208-26-007725":
+            row["ISSUERTRADINGSYMBOL"] = "NEW"
+    _dera_zip(tmp_path, replacement_rows=rows)
+    # The republished bytes are first read by a parser that misreads them...
+    with monkeypatch.context() as old:
+        _v3(old, {"NEW": ["OLD"]})
+        assert insider.load_package(clean_db, package, source="dera",
+                                    reconciled_on=dt.date(2026, 10, 9))["retired_reason"] == "source"
+    # ...and then re-read: the correction is knowable when the republication was.
+    insider.load_package(clean_db, package, source="dera", reconciled_on=dt.date(2026, 10, 10))
+    assert clean_db.execute(
+        "SELECT normalized_symbols, available_on, retired_on, retired_reason FROM sec_insider_filings "
+        "WHERE accession = '0001225208-26-007725' ORDER BY id"
+    ).fetchall() == [
+        (["SIRI"], dt.date(2026, 9, 11), dt.date(2026, 10, 9), "source"),
+        (["OLD"], dt.date(2026, 10, 9), dt.date(2026, 10, 10), "parser_correction"),
+        (["NEW"], dt.date(2026, 10, 9), None, None),
+    ]
+    assert [_resolve(clean_db, "SIRI", day)["filing_count"] for day in ("2026-10-08", "2026-10-09")] == [1, 0]
+    assert [_resolve(clean_db, "NEW", day)["filing_count"] for day in ("2026-10-08", "2026-10-09")] == [0, 1]
+    assert [_resolve(clean_db, "OLD", day)["filing_count"] for day in ("2026-10-09", "2026-10-10")] == [0, 0]
+
+
+def _secapi_month(package, accessions, *, xml=(), metadata=None):
+    """A monthly archive in sec-api's layout: one YYYY-MM/<accession>/ per filing.
+
+    ``metadata`` maps a filing to the fixture whose metadata.json its directory
+    holds (None: no metadata record). Every filing directory keeps an XML member.
+    """
+    package.parent.mkdir(parents=True, exist_ok=True)
+    metadata = metadata if metadata is not None else {a: a for a in accessions}
+    with zipfile.ZipFile(package, "w") as archive:
+        for accession in accessions:
+            folder = f"{package.stem}/{accession.replace('-', '')}"
+            if metadata.get(accession):
+                archive.write(FIXTURE / "secapi" / metadata[accession] / "metadata.json", f"{folder}/metadata.json")
+            if accession in xml:
+                archive.write(FIXTURE / "secapi" / accession / "ownership.xml", f"{folder}/ownership.xml")
+            else:  # only an HTML rendering, no ownership XML
+                archive.writestr(f"{folder}/rendering.xml", b"<html>rendering</html>")
+
+
+KNOWN, LATE = "0000700565-03-000110", "0001181431-03-009430"
+
+
+def test_archive_of_only_metadata_records_is_reconciled(clean_db, tmp_path):
+    package = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    _secapi_month(package, (KNOWN, LATE))
+    first = insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 8))
+    assert (first.get("filings", 0), first["non_xml_filings"], first["inserted"]) == (0, 2, 0)
+    assert clean_db.execute(
+        "SELECT count(*) FROM sec_insider_package_members WHERE retired_on IS NULL").fetchone() == (2,)
+    assert clean_db.execute("SELECT filings FROM sec_insider_packages").fetchone() == (0,)
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE))
+    insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 9))
+    # XML learned after the metadata-only revision is dated by reconciliation.
+    assert dict(clean_db.execute("SELECT accession, available_on FROM sec_insider_filings").fetchall()) == {
+        KNOWN: dt.date(2026, 10, 9), LATE: dt.date(2026, 10, 9)}
+    # A republication that removes all ownership XML retires the facts.
+    _secapi_month(package, (KNOWN, LATE))
+    assert insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 10))["retired"] == 2
+    assert clean_db.execute(
+        "SELECT count(*) FROM sec_insider_filings WHERE retired_on = DATE '2026-10-10'").fetchone() == (2,)
+    assert clean_db.execute(
+        "SELECT count(*) FROM sec_insider_package_members WHERE retired_on IS NULL").fetchone() == (2,)
+
+
+@pytest.mark.parametrize("defect", ["directory_without_metadata", "metadata_of_another_filing",
+                                    "metadata_outside_filing_directory"])
+def test_secapi_parse_refuses_metadata_that_disagrees_with_filing_directories(tmp_path, defect):
+    package = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    metadata = {KNOWN: KNOWN, LATE: {"directory_without_metadata": None,
+                                     "metadata_of_another_filing": KNOWN}.get(defect, LATE)}
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE), metadata=metadata)
+    if defect == "metadata_outside_filing_directory":
+        with zipfile.ZipFile(package, "a") as archive:
+            archive.write(FIXTURE / "secapi" / LATE / "metadata.json", "2003-05/metadata.json")
+    with pytest.raises(ValueError, match="filing director"):
+        list(insider.iter_secapi_filings(package))
+
+
+def test_incomplete_secapi_parse_is_refused_before_any_retirement(clean_db, tmp_path):
+    package = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE))
+    insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 8))
+    before = _table_snapshot(clean_db)
+    # The late filing's directory keeps its XML, but its metadata record is gone.
+    _secapi_month(package, (KNOWN, LATE), xml=(KNOWN, LATE), metadata={KNOWN: KNOWN})
+    with pytest.raises(ValueError, match="2 filing directories"):
+        insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 9))
+    assert _table_snapshot(clean_db) == before
+
+
+def test_loader_raises_temp_buffers_before_the_sessions_first_statement(tmp_path, monkeypatch):
+    executed = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, statement, *args):
+            executed.append(statement)
+            return SimpleNamespace(fetchone=lambda: (True, True))
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda *args, **kwargs: Session()))
+    loads = []
+    monkeypatch.setattr(insider, "load_package",
+                        lambda conn, path, **kwargs: loads.append(list(executed)) or {"package": path.name})
+    assert insider.main([str(_dera_zip(tmp_path)), "--dsn", "postgresql://fixture.invalid/w1b"]) == 0
+    # temp_buffers cannot change once the session has used a temporary table.
+    assert executed[0] == f"SET temp_buffers = '{insider.TEMP_BUFFERS}'"
+    assert loads and loads[0][0] == executed[0]
+
+
+def test_largest_dera_quarter_stages_in_a_prepared_session(clean_db, tmp_path):
+    """2006q1 has 83,657 filings; PostgreSQL 18 fails its COPY at the 8 MB default."""
+    psycopg = pytest.importorskip("psycopg")
+    schema = clean_db.execute("SELECT current_schema()").fetchone()[0]
+    rows = [{"ACCESSION_NUMBER": f"{1000000 + n % 9000:010d}-06-{n:06d}", "FILING_DATE": "15-FEB-2006",
+             "DOCUMENT_TYPE": "4", "ISSUERCIK": str(100000 + n % 7000), "ISSUERNAME": "Issuer",
+             "ISSUERTRADINGSYMBOL": f"S{n % 7000}"} for n in range(83657)]
+    package = _dera_zip(tmp_path, replacement_rows=rows)
+    with psycopg.connect(os.environ["SEC_INSIDER_TEST_DSN"], autocommit=True,
+                         options=f"-c search_path={schema},public") as session:
+        insider.prepare_session(session)
+        assert session.execute("SHOW temp_buffers").fetchone() == (insider.TEMP_BUFFERS,)
+        result = insider.load_package(session, package, source="dera", reconciled_on=dt.date(2026, 10, 9))
+    assert (result["filings"], result["inserted"]) == (83657, 83657)
+
+
+def test_migration_v2_is_idempotent_on_a_loaded_v1_database_and_rollback_keeps_every_row(db):
+    psycopg = pytest.importorskip("psycopg")
+    from psycopg import sql
+
+    v1, v2, rollback = ((ROOT / "schemas" / name).read_text(encoding="utf-8") for name in (
+        "sec_insider_ticker_evidence.sql", "sec_insider_ticker_evidence_v2.sql",
+        "sec_insider_ticker_evidence_v2.rollback.sql"))
+    schema = "sec_insider_v1_" + uuid.uuid4().hex
+    db.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    rows = "SELECT to_jsonb(f) - 'retired_reason' FROM sec_insider_filings f ORDER BY id"
+    try:
+        with psycopg.connect(os.environ["SEC_INSIDER_TEST_DSN"], autocommit=True,
+                             options=f"-c search_path={schema},public") as conn:
+            conn.execute(v1)
+            # A loaded v1 database: current versions and one retired by a republication.
+            _insert(conn, "KEEP", 800, ["2010-02-01", "2010-02-02"])
+            _insert(conn, "GONE", 801, ["2010-03-01", "2010-03-02"], retired_on=dt.date(2010, 6, 1))
+            loaded = conn.execute(rows).fetchall()
+            answers = [_resolve(conn, t, d) for t in ("KEEP", "GONE") for d in ("2010-05-31", "2010-12-31")]
+            filenode = conn.execute("SELECT pg_relation_filenode('sec_insider_filings')").fetchone()
+            with pytest.raises(RuntimeError, match="v2"):
+                insider.require_schema(conn)
+            conn.execute(v2)
+            conn.execute(v2)
+            insider.require_schema(conn)
+            # A catalog change: no rewrite, no row written, the CHECK not validated.
+            assert conn.execute("SELECT pg_relation_filenode('sec_insider_filings')").fetchone() == filenode
+            assert conn.execute(rows).fetchall() == loaded
+            assert conn.execute("SELECT count(*) FROM sec_insider_filings WHERE retired_reason IS NOT NULL"
+                                ).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT convalidated FROM pg_constraint WHERE conrelid = 'sec_insider_filings'::regclass "
+                "AND conname = 'sec_insider_filings_retired_reason_check'").fetchall() == [(False,)]
+            # Rows retired before v2 (NULL reason) answer as a source change did.
+            assert [_resolve(conn, t, d) for t in ("KEEP", "GONE") for d in ("2010-05-31", "2010-12-31")] == answers
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute("UPDATE sec_insider_filings SET retired_reason = 'other' WHERE retired_on IS NOT NULL")
+            conn.execute("UPDATE sec_insider_filings SET retired_on = DATE '2026-10-10', "
+                         "retired_reason = 'parser_correction' WHERE raw_symbol = 'KEEP'")
+            assert _resolve(conn, "KEEP", "2010-12-31")["filing_count"] == 0
+            corrected = conn.execute("SELECT to_jsonb(f) FROM sec_insider_filings f ORDER BY id").fetchall()
+            conn.execute(rollback)
+            # Every row, and its reason, is kept; the v1 resolver and the loader's refusal return.
+            assert conn.execute("SELECT to_jsonb(f) FROM sec_insider_filings f ORDER BY id").fetchall() == corrected
+            assert _resolve(conn, "KEEP", "2010-12-31")["filing_count"] == 2
+            with pytest.raises(RuntimeError, match="v2"):
+                insider.require_schema(conn)
+            conn.execute(v2)
+            insider.require_schema(conn)
+            assert _resolve(conn, "KEEP", "2010-12-31")["filing_count"] == 0
+    finally:
+        db.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
