@@ -103,6 +103,88 @@ def test_real_anpc_placeholder_amendment_is_distinguished_from_explicit_announce
     assert {row["effective_from"] for row in announcement} == {"2022-11-04"}
 
 
+def test_real_otly_market_open_amendment_has_an_explicit_later_effective_date():
+    rows = parse_fixture("otly_2025_market_open_amendment_full")
+    assert rows
+    assert {(row["ratio_numerator"], row["ratio_denominator"]) for row in rows} == {(20, 1)}
+    assert {row["effective_from"] for row in rows} == {"2025-02-18"}
+    assert {row["available_on"] for row in rows} == {"2025-02-13"}
+    assert all(row["effective_date_explicit"] is True for row in rows)
+
+
+def test_real_otly_cover_and_listing_description_keep_the_type_conflict():
+    rows = parse_fixture("otly_2024_cover_and_listing_description")
+    types = [row for row in rows if row["evidence_kind"] == "listed_type"]
+    assert any(row["listed_type"] == "ordinary_direct" and row["source_kind"] == "cover_12b" for row in types)
+    descriptions = [row for row in types if row["source_kind"] == "listing_description"]
+    assert descriptions and all(row["listed_type"] == "ads" and row["symbol"] == "OTLY" for row in descriptions)
+    assert all(row["effective_from"] == "2024-03-23" for row in types)
+    assert not any(row["evidence_kind"] == "ads_ratio" for row in rows)
+
+
+def test_terminated_historical_ads_description_does_not_conflict_with_current_cover():
+    rows = parse_filing(
+        """<p>Securities registered pursuant to Section 12(b) of the Act:</p>
+        <table><tr><th>Title of each class</th><th>Trading Symbol</th>
+        <th>Name of each exchange on which registered</th></tr>
+        <tr><td>Ordinary Shares</td><td>OTLY</td><td>Nasdaq</td></tr></table>
+        <h2>Item 9. The Offer and Listing</h2><h3>C. Markets</h3>
+        <p>Our ADSs previously traded on Nasdaq under the symbol "OTLY", but were delisted on May 20, 2021.
+        That depositary program was terminated before our ordinary shares began trading.</p>
+        <h2>Item 10. Additional Information</h2>""",
+        cik=1843586, form_type="20-F", accession_number="0000950170-24-035039",
+        filing_date="2024-03-22", source_url="https://www.sec.gov/Archives/test",
+    )
+    assert not any(row["source_kind"] == "listing_description" for row in rows)
+    assert {row["listed_type"] for row in rows if row["evidence_kind"] == "listed_type"} == {"ordinary_direct"}
+
+
+@pytest.mark.parametrize("effective_clause", [
+    "effective as of the open of trading of the ADSs on The Nasdaq Global Select Market on February 18, 2025",
+    "effective at the close of trading on February 18, 2025",
+    "effective as of the beginning of trading on February 18, 2025",
+    "effective at the open of business on February 18, 2025",
+    "effective as of the close of business on February 18, 2025",
+])
+def test_market_session_effective_date_phrases_are_explicit(effective_clause):
+    rows = parse_filing(
+        f"Each ADS represents twenty ordinary shares, {effective_clause}.",
+        cik=1843586, form_type="F-6 POS", accession_number="0001104659-25-012180",
+        filing_date="2025-02-12", source_url="https://www.sec.gov/Archives/test",
+    )
+    assert rows
+    assert {row["effective_from"] for row in rows} == {"2025-02-18"}
+    assert all(row["effective_date_explicit"] is True for row in rows)
+
+
+@pytest.mark.parametrize("date_text", [
+    "On February 18, 2025, we announced the ratio change.",
+    "We announced a change in the ADS ratio on February 18, 2025.",
+    "The ADSs began trading on February 18, 2025.",
+])
+def test_announcement_and_trading_history_dates_are_not_ratio_effective_dates(date_text):
+    rows = parse_filing(
+        f"{date_text} Each ADS represents twenty ordinary shares.",
+        cik=1843586, form_type="F-6 POS", accession_number="0001104659-25-012180",
+        filing_date="2025-02-12", source_url="https://www.sec.gov/Archives/test",
+    )
+    assert rows
+    assert {row["effective_from"] for row in rows} == {"2025-02-13"}
+    assert all(row["effective_date_explicit"] is False for row in rows)
+
+
+def test_conflicting_market_session_effective_dates_do_not_choose_one():
+    rows = parse_filing(
+        "Each ADS represents twenty ordinary shares, effective as of the open of trading on February 18, 2025. "
+        "The ratio change is effective at the close of trading on February 19, 2025.",
+        cik=1843586, form_type="F-6 POS", accession_number="0001104659-25-012180",
+        filing_date="2025-02-12", source_url="https://www.sec.gov/Archives/test",
+    )
+    assert rows
+    assert all(row["effective_date_explicit"] is False for row in rows)
+    assert not any(row["effective_from"] in {"2025-02-18", "2025-02-19"} for row in rows)
+
+
 def test_real_affirmative_ads_footnote_overrides_common_share_title():
     rows = parse_fixture("asx_2009_affirmative_ads")
     listings = [row for row in rows if row["evidence_kind"] == "listed_type"]
@@ -508,6 +590,20 @@ def test_real_tsm_cover_f6_and_attached_description_resolve_five_shares_per_ads(
 def test_real_description_exhibit_alone_cannot_create_a_listed_line(db):
     insert_real_parsed_rows(db, "tsm_2024_securities_description")
     assert resolve(db, "2025-04-18")[:5] == ("none", None, None, None, "none")
+
+
+def test_real_otly_contemporaneous_listing_sources_resolve_as_ambiguous(db):
+    insert_real_parsed_rows(db, "otly_2024_cover_and_listing_description")
+    result = resolve(db, "2024-03-23", cik=1843586, symbol="OTLY")
+    assert result[0] == "ambiguous" and result[1] is None
+    assert result[4] == "ambiguous"
+
+
+def test_listing_description_is_not_an_accepted_ratio_source(db):
+    import psycopg
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db.transaction():
+            add_ratio(db, source="listing_description")
 
 
 def test_unbound_description_ratio_cannot_infer_its_symbol_from_later_cover(db):

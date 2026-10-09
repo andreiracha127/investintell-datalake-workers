@@ -34,6 +34,14 @@ shares are not for trading. A legacy cover without a symbol can be linked using
 a unique W1 equity line on that same accession, public by the cover's
 availability date. Today's symbol alone is insufficient.
 
+An explicit Item 9 ADS listing declaration for a symbol already bound by the
+cover, with its exchange identified, is retained separately as type-only
+`listing_description` evidence. It cannot override a conflicting cover row or
+supply a ratio. OTLY's 2024 cover names ordinary shares while its Item 9 names
+Nasdaq-listed ADSs under the same symbol; the two co-effective assertions return
+`ambiguous`. This preserves the source conflict rather than treating the cover's
+underlying-class title as an unqualified direct-listing answer.
+
 F-6, F-6EF and F-6 POS provide exact ADS ratios. Cover or Item 12.D ratio text
 corroborates them. The collector also follows a 20-F's attached Section 12(b)
 securities description, preserving the distinct `securities_description` source

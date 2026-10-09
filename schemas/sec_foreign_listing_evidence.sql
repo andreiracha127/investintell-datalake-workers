@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS public.sec_foreign_listing_evidence (
     source_sha256 text NOT NULL CHECK (source_sha256 ~ '^[0-9a-f]{64}$'),
     source_kind text NOT NULL CHECK (source_kind IN (
         'cover_12b', 'cover_footnote', 'item_12d', 'securities_description',
-        'f6', 'ratio_change_6k'
+        'listing_description', 'f6', 'ratio_change_6k'
     )),
     evidence_kind text NOT NULL CHECK (evidence_kind IN ('listed_type', 'ads_ratio')),
     listed_type text CHECK (listed_type IN ('ads', 'ordinary_direct', 'unknown')),
@@ -81,10 +81,11 @@ CREATE TABLE IF NOT EXISTS public.sec_foreign_listing_evidence (
     CHECK (
         (evidence_kind = 'listed_type' AND listed_type IS NOT NULL
          AND ratio_numerator IS NULL AND ratio_denominator IS NULL
-         AND source_kind IN ('cover_12b', 'cover_footnote')
+         AND source_kind IN ('cover_12b', 'cover_footnote', 'listing_description')
          AND effective_from = filed + 1)
         OR
         (evidence_kind = 'ads_ratio' AND listed_type IS NULL
+         AND source_kind <> 'listing_description'
          AND ratio_numerator IS NOT NULL AND ratio_denominator IS NOT NULL
          AND ratio_numerator > 0 AND ratio_numerator < 'Infinity'::numeric
          AND ratio_denominator > 0 AND ratio_denominator < 'Infinity'::numeric
@@ -113,7 +114,11 @@ CREATE INDEX IF NOT EXISTS sec_foreign_listing_evidence_source_idx
 -- they cannot collapse into one answer when the cover cannot identify a class.
 --
 -- A cover is a dated statement about its listed line. Use the latest effective
--- cover date, retaining all ties (never a chosen accession). Ratios are compared
+-- cover date, retaining all ties (never a chosen accession).
+-- A tightly symbol-bound Item 9 listing description is separate type-only
+-- evidence on that same filing date. It never overrides a contradictory cover:
+-- ordinary_direct versus ads in the same filing remains ambiguous.
+-- Ratios are compared
 -- across independent F-6, annual-report corroboration and 6-K streams. The
 -- corroboration stream contains cover footnotes, Item 12.D and the annual
 -- report's attached description of registered Section 12(b) securities. The

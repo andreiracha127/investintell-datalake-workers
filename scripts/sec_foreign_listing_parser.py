@@ -276,7 +276,17 @@ def _ordinary_candidate(title: str) -> bool:
 def _effective_date(text: str) -> str | None:
     months = "January|February|March|April|May|June|July|August|September|October|November|December"
     # Avoid the announcement date: an explicit effective/event verb must be adjacent.
-    pattern = rf"(?:effective\s+date\s+for\s+the\s+(?:ADS\s+)?ratio\s+change\s+is|effective(?:\s+(?:date|on|as\s+of|from|beginning|at|will\s+be|is|was|became)){{0,3}}|take\s+effect\s+on|with\s+effect\s+from|implemented\s+on|change\s+[^.;]{{0,60}}?ratio[^.;]{{0,220}}?\bon)\s*:?\s*(?P<date>(?:{months})\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}|\d{{1,2}}\s+(?:{months})\s+\d{{4}}|\d{{4}}-\d{{2}}-\d{{2}})"
+    boundary = r"(?:the\s+)?(?:(?:open(?:ing)?|clos(?:e|ing)|beginning|commencement|start)\s+of\s+(?:trading|business)|market\s+(?:open|close))"
+    instrument = r"(?:\s+of\s+(?:the\s+)?(?:ADSs?|ADRs?|GDSs?|GDRs?|American\s+deposit[ao]ry\s+shares?))?"
+    venue = r"(?:\s+(?:on|at)\s+(?:the\s+)?(?:Nasdaq(?:\s+(?:Global\s+Select|Global|Capital))?(?:\s+(?:Stock\s+)?Market)?|New\s+York\s+Stock\s+Exchange|NYSE(?:\s+(?:American|Arca))?))?"
+    zone = r"(?:New\s+York(?:\s+City)?|Eastern|Pacific|EST|EDT|PST|PDT|local)(?:\s+(?:Standard|Daylight))?(?:\s+time)?"
+    clock = rf"(?:\s*,?\s*(?:\(\s*)?(?:at\s+)?\d{{1,2}}(?::\d{{2}})?\s*(?:a\.?m\.?|p\.?m\.?)(?:\s+{zone})?\s*\)?,?)?"
+    zone_only = rf"(?:\s*\(\s*{zone}\s*\))?"
+    market_effect = rf"(?:effective|with\s+effect|take\s+effect)(?:\s+(?:as\s+of|at|from|on))?\s+{boundary}{instrument}{venue}{clock}{zone_only}\s*,?\s+(?:on|as\s+of)"
+    declared_date = r'''["“]?effective\s+date["”]?\s*(?:shall\s+mean|means|is|will\s+be|:)'''
+    dated_transition = r"(?:will|shall|desires?\s+to|intends?\s+to|agrees?\s+to|agreed\s+to)\s+change\s+[^.;]{0,60}?ratio[^.;]{0,220}?\bon"
+    ordinary_effect = rf"effective\s+date\s+for\s+the\s+(?:ADS\s+)?ratio\s+change\s+is|effective(?:\s+(?:date|on|as\s+of|from|beginning|at|will\s+be|is|was|became)){{0,3}}|take\s+effect\s+on|with\s+effect\s+(?:on|from)|implemented\s+on|{dated_transition}"
+    pattern = rf"(?:{market_effect}|{declared_date}|{ordinary_effect})\s*:?\s*(?P<date>(?:{months})\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}|\d{{1,2}}\s+(?:{months})\s+\d{{4}}|\d{{4}}-\d{{2}}-\d{{2}})"
     matches = list(re.finditer(pattern, text, re.I))
     dates = set()
     for match in matches:
@@ -302,14 +312,14 @@ def _f6_amendment_date(text: str) -> str | None:
     Restrict the date search to an identified amendment's operative articles;
     dates in signatures, specimen ADRs and legacy agreement annexes do not set it.
     """
-    heading = re.search(r"\bamendment\s+no\.?\s*\d+\s+to\s+(?:(?:amended|and|restated)\s+)*deposit\s+agreement\b", text[:8000], re.I)
+    heading = re.search(r"\bamendment\s+no\.?\s*\d+(?:\s*,\s*dated\s+as\s+of[^;]{0,180}?)?\s*,?\s*to\s+(?:the\s+)?(?:(?:amended|and|restated)\s+)*deposit\s+agreement\b", text[:8000], re.I)
     if not heading:
         return None
     body = text[heading.start():]
     end = re.search(r"\bIN\s+WITNESS\s+WHEREOF\b|\bEXHIBIT\s+[A-Z]\s*\[?\s*FORM\b", body, re.I)
     if end:
         body = body[:end.start()]
-    if not re.search(r"(?:chang\w*|amend\w*).{0,100}ratio|ratio.{0,100}(?:chang\w*|amend\w*)", body, re.I):
+    if not re.search(rf"(?:chang\w*|amend\w*).{{0,100}}ratio|ratio.{{0,100}}(?:chang\w*|amend\w*)|each\s+{_ADS}\s+shall\s+represent", body, re.I):
         return None
     return _effective_date(body)
 
@@ -349,6 +359,44 @@ def _item_12d_sections(text: str):
                 continue
             start = heading.end() + subsection.start()
         yield start, text[start:end]
+
+
+def _exchange_key(text: str) -> str | None:
+    if re.search(r"nasdaq", text, re.I):
+        return "nasdaq"
+    if re.search(r"NYSE\s+(?:American|MKT)|American\s+Stock\s+Exchange", text, re.I):
+        return "nyse_american"
+    if re.search(r"NYSE\s+Arca", text, re.I):
+        return "nyse_arca"
+    if re.search(r"New\s+York\s+Stock\s+Exchange|\bNYSE\b", text, re.I):
+        return "nyse"
+    return None
+
+
+def _item_9_ads_listings(text: str):
+    """Explicit exchange/symbol declarations within the actual listing item."""
+    headings = [heading for heading in re.finditer(r"\bItem\s+(?P<number>\d{1,2})(?:[A-Z])?\s*\.?", text, re.I)
+                if not _inline_item_reference(text, heading.start())]
+    for index, heading in enumerate(headings):
+        if heading.group("number") != "9":
+            continue
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        section = text[heading.end():end]
+        # Inline XBRL spans occasionally split words ("Off er", "Li sting").
+        if not re.match(r"\s*The\s+Off\s*er\s+and\s+Li\s*sting\b", section, re.I):
+            continue
+        for depositary in re.finditer(_ADS, section, re.I):
+            statement = section[depositary.start():depositary.start() + 550]
+            sentence_end = re.search(r"[.!?;](?:\s|$)", statement)
+            if sentence_end:
+                statement = statement[:sentence_end.end()]
+            symbols = {_canonical_symbol(value) for value in _explicit_symbols(statement)} - {None}
+            exchange = _exchange_key(statement)
+            if len(symbols) != 1 or not exchange or not re.search(r"\b(?:listed|traded|trading|trade)\b", statement, re.I):
+                continue
+            if re.search(r"\b(?:not|no|will|may(?!\s+\d)|expect\w*|intend\w*|plan\w*|seek\w*|appl\w*|delist\w*|suspend\w*|ceased|formerly|previously)\b", statement, re.I):
+                continue
+            yield next(iter(symbols)), exchange, statement, heading.end() + depositary.start()
 
 
 def parse_filing(
@@ -439,6 +487,7 @@ def parse_filing(
             depositary_notes.append((marker_value, note_text))
         listed_symbols: set[str] = set()
         ads_symbols: set[str] = set()
+        cover_lines: dict[str, list[tuple[str, str]]] = {}
         for table_index, table in enumerate(document.tables):
             if table.offset > table_end:
                 continue
@@ -506,6 +555,10 @@ def parse_filing(
                 for symbol in row_symbols:
                     if symbol:
                         listed_symbols.add(symbol)
+                        normalized_symbol = _canonical_symbol(symbol)
+                        exchange = next((_exchange_key(cell) for cell in cells if _exchange_key(cell)), None)
+                        if normalized_symbol and exchange:
+                            cover_lines.setdefault(normalized_symbol, []).append((exchange, title))
                         if kind == "ads":
                             ads_symbols.add(symbol)
                     emit("listed_type", "cover_footnote" if footnote else "cover_12b", symbol,
@@ -544,6 +597,16 @@ def parse_filing(
                 emit("listed_type", "cover_footnote", symbol, cover, f"cover/section-12b;text-offset={cover_start}", kind)
                 listed_symbols.add(symbol)
                 ads_symbols.add(symbol)
+        if document_role == "primary":
+            for symbol, exchange, statement, offset in _item_9_ads_listings(text):
+                associated_titles = [title for venue, title in cover_lines.get(symbol, []) if venue == exchange]
+                if associated_titles:
+                    # Keep the literal cover assertion. If it says ordinary
+                    # direct, these co-effective sources correctly disagree;
+                    # the resolver returns ambiguous instead of choosing one.
+                    emit("listed_type", "listing_description", symbol, statement,
+                         f"item-9/listing-description;text-offset={offset}", "ads",
+                         class_text=" ".join(associated_titles) + " " + statement)
         ratio_text = text if document_role == "securities_description" else cover
         for match, ratio in _ratios(ratio_text):
             if _superseded_ratio(ratio_text, match.start(), match.end()):

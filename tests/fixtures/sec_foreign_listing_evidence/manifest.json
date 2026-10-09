@@ -701,5 +701,55 @@
       ]
     ],
     "extraction": "Three verbatim SEC spans in document order: cover, quoted Item 12 cross-reference with Item 9 Markets and Item 10 boundary, and actual Item 12 through Item 13 heading; LF normalized."
+  },
+  {
+    "name": "otly_2025_market_open_amendment_full",
+    "fixture": "otly_2025_market_open_amendment_full.html",
+    "cik": 1843586,
+    "symbol": "OTLY",
+    "accession_number": "0001104659-25-012180",
+    "filing_date": "2025-02-12",
+    "form_type": "F-6 POS",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1474274/000110465925012180/tm254974d1_ex-a2.htm",
+    "sha256": "ca91c5dffd8679c32fd69c8ecdb31f5d286b384a4fee7d3fec28f80105375b25",
+    "extraction": "Complete original SEC operative amendment with market-open effective-date clause and form of ADR; LF normalized with one final newline.",
+    "filing_date_proof": {
+      "source": "sec_quarter_master_index",
+      "filed": "2025-02-12",
+      "records": [
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "line": "1474274|JPMorgan Chase Bank, N.A. - ADR Depositary|F-6 POS|2025-02-12|edgar/data/1474274/0001104659-25-012180.txt"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/full-index/2025/QTR1/master.idx",
+          "source_sha256": "1e62ae3cddf4a97c23a2732709d75926dcf794c57a4df2cf96ad1027ca7aed2f",
+          "line": "1843586|Oatly Group AB|F-6 POS|2025-02-12|edgar/data/1843586/0001104659-25-012180.txt"
+        }
+      ]
+    }
+  },
+  {
+    "name": "otly_2024_cover_and_listing_description",
+    "fixture": "otly_2024_cover_and_listing_description.html",
+    "cik": 1843586,
+    "symbol": "OTLY",
+    "accession_number": "0000950170-24-035039",
+    "filing_date": "2024-03-22",
+    "form_type": "20-F",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1843586/000095017024035039/otly-20231231.htm",
+    "sha256": "1097f581e41f7c9d85fa3082f26f22c98b64cd12d1e299e227db45778b1d96be",
+    "source_character_spans": [
+      [
+        383064,
+        389222
+      ],
+      [
+        1989884,
+        1997326
+      ]
+    ],
+    "extraction": "Two verbatim SEC spans: literal Section 12(b) ordinary-share cover and actual Item 9 listing/Markets declarations through Item 10 heading; no invented cover footnote; LF normalized."
   }
 ]

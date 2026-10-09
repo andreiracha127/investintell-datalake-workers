@@ -50,6 +50,17 @@ LF. They are data, never executable input. Tests make no SEC requests.
   filing dates are separately checked against cached SEC quarterly indexes.
   Prima BioMed's 2014 cover uses only a parenthesized ADS description in that
   exchange cell, without an "in connection with" introduction.
+- **TOUR and ANPC chronology:** TOUR's fixture retains quoted Item 12 references,
+  the separate Item 9 Markets ratio, and the real Item 12.D boundary to prevent
+  false source attribution. ANPC's complete F-6 contracts preserve placeholder
+  dates; its already-public 6-K supplies the November 4, 2022 effective date.
+  The real-document SQL regression returns one ordinary share per ADS before
+  that date and twenty from that date, with explicit-date conflicts tested
+  separately using synthetic assertions.
+- **OTLY 2025:** its complete amendment states that each ADS represents twenty
+  shares effective at the opening of Nasdaq trading on February 18, 2025.
+  Tests distinguish that explicit effective date from February 13 availability
+  and from dates appearing only in announcements or trading history.
 
 The 2024 cover files and preflight covers are contiguous source extracts. AZN files ending in
 `combined.html` concatenate verbatim HTML elements from one source document;
