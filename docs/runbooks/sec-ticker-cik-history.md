@@ -31,6 +31,10 @@ end effective dates, class-scoped ends, the rules below marked v2).
 
 ## Semantics
 
+**Admission rule.** A price row is sized only when exactly one line is
+positively alive at its date and no competing holder or class is evidenced then;
+any ambiguity refuses. Every rule below is that rule applied (fail-closed, v2).
+
 **Bitemporal storage.** Point-in-time means *public at D*. No fact is deleted or
 overwritten. A package or index is reconciled in one transaction against the fact
 versions it carried before: a version it no longer carries, and no other loaded
@@ -116,13 +120,21 @@ T listed one equity class, through every complete filing (a single-class filer
 renames its member or adds a class); and through every complete filing that
 shows one equity class in total (classes merged). The hold's *statement* is the
 latest such filing. The hold has **ended** when the statement shows another
-symbol (`other_symbol`) or an applying end filing is newer than the statement; it
-is **stale** when the statement is older than 400 days; else **active**. Listed
-rows (equity, depositary or unknown) decide: a non-listed row showing T (filers
-also tag their common symbol on notes lines) counts only while no listed row
-showing T was known at or before it (v2). A ticker only ever shown on preferred
-lines resolves through them, and an earlier holder that showed T only on rows read
-as debt keeps its run when another issuer lists T years later.
+symbol (`other_symbol`: a complete cover not showing T, or a filing showing every
+class that last showed T under other symbols; an 8-K showing one class under
+another symbol leaves T to the others) or an applying end newer than the
+statement closes every class the statement shows T on (an end of another class
+leaves the hold, v2); it is **stale** when the statement is older than 400 days;
+else **active**. Listed rows (equity, depositary or unknown) decide: a non-listed
+row showing T (filers also tag their common symbol on notes lines) does not count
+while a listed hold of T was positively active when it was shown: a listed row
+showing T within the 400 days before, of a class no end closed since and no later
+statement showed under another symbol only, of any CIK (v2). Otherwise it is a
+competing holder. A ticker only ever shown on preferred lines resolves through
+them; an earlier holder that showed T only on rows read as debt keeps its run when
+another issuer lists T years later; an issuer that shows T only on a preferred row
+after the previous listed holder's class ended or was renamed, the same CIK too,
+holds T (an other holder of a later issuer's line meanwhile).
 
 **End filings.** For CIKs with cover data the loader reads each Form 15, 15F or
 25 for the class it concerns, and each Form 8-A12B or 8-A12G for the class it
@@ -133,13 +145,38 @@ Class/Series enumerations and, since parser v4, classes named without a label
 (`Common Stock; Non-Voting Common Stock` is two; an ADS and the shares it
 represents, or a parenthesized alias, are one).
 
-An end that names its classes by letter (`Class B common stock`, `Class A and
-B`), when every listed class of the issuer's prior cover has a letter (its 12(b)
-title, else its member: `CommonClassB`, `ClassBCommonStock`, `CapitalClassC`),
-applies to the listed classes it names only: `sec_issuer_end_events.class_keys`,
-and holds, lines and lineage runs of the other classes continue (v2). Naming only
-classes the issuer does not list, it ends nothing. Such an end of some classes is
-definitive only when its 25-NSE says they were extinguished.
+Complete covers (10-K/10-Q type: they state the share counts) say which classes
+are absent; a later cover (an 8-K) adds the classes it shows and drops none. An
+end is judged against the listed classes of the latest complete cover filed
+before it and of every cover filed after that one and before the end (every
+cover when there is no complete one), so an 8-K listing some classes never drops
+a class, merges lines or makes a class look like the sole class, and a class only
+a newer 8-K shows still counts (v2). A class's label is the identifier its 12(b)
+title, else its member, gives it, read by one grammar for titles, members and end
+descriptions (`sec_class_label`, `sec_named_classes`): `Class B common stock`,
+`ClassB Common Stock`, `CLASS B`, `CommonClassB`, `ClassBCommonStock`,
+`ClassbCommonStock`, `Class160BCommonStock` (a non-breaking space), `Title of
+each classClass B` are all `b`; `ClassIICommonStock` and `Class II` are `ii`
+(Roman numerals are kept as written: `Class 2` is `2`); `Series ES` is `es`; a
+word (`each class is to be registered`) never is (v2).
+
+Of each listed class an end of an equity class (or stating none) is
+**identified** when it names the class by a label one symbol carries (`Class B
+common stock`, `Class A and B`, `Series A ... Common Stock`), names no class and
+counts every class, or the issuer lists one symbol; **excluded** when it names
+other classes and the class's label is known (naming only classes the issuer does
+not list, it ends nothing); else **tentative**: it may concern the class without
+saying so (an unlabelled class, a label several symbols carry, such as Liberty's
+tracking stocks that each have a Series A, or an end of some classes that does
+not say which). An end closes its identified classes and, under the admission
+rule, its tentative ones until each one's next statement, never definitively
+(`class_keys`, `tentative_keys`); holds, lines and lineage runs of the classes it
+does not close continue (v2). A 15-12G or 15-15D (or 15F), which may terminate an
+unlisted class, identifies a class only when it names it or counts every class
+the complete cover counted, listed or not (listed class A, counted unlisted class
+B: a 15-12G for one class closes A tentatively). An end of some classes is
+definitive, for those it identifies, only when its 25-NSE says they were
+extinguished.
 
 An end of an equity class ends the listed lines (equity, depositary, unknown),
 and a preferred, warrant, unit, right or notes line of the same CIK only when its
@@ -147,21 +184,20 @@ description names that instrument (`named_kinds`): Triton's 25-NSE of its common
 shares (2023) does not end its preferred shares, which stayed listed, while a
 SPAC's "Units; Class A common stock; Warrants" ends all three (v2).
 
-Any other end applies to every line of the CIK unless it concerns another class
-(notes, preferred, warrants, units, rights plans, employee-plan interests), or the
-issuer showed several symbols and the filing names fewer classes than the issuer
-has (a 15-12G or 15-15D for one class of a multi-class issuer too), or it is a
-15-12G or 15-15D (or 15F) of an equity class naming fewer equity classes than the
-issuer's latest complete cover showed, listed or not: a termination may concern
-an unlisted class (listed class A, counted unlisted class B) (v2). The symbols and
-classes the issuer had are those of its covers filed before the end, among those
-known at D; a version of the end re-derived years later is judged the same way. A
+No end applies when it concerns another class (notes, preferred, warrants,
+units, rights plans, employee-plan interests). The classes the issuer had are
+those known at D of the covers filed before the end; a version of the end
+re-derived years later is judged the same way. A
 25, 25-NSE or 15-12B also does not apply when the exchange is a secondary one
 (Chicago, Boston, Philadelphia, National, NYSE Arca/Pacific: IDEX and Weyerhaeuser
-dropping a Chicago listing), or when a registration of an equity class, or of a
-class not read (8-A12B, 8-A12G, 10-12B, 10-12G, 8-K12B, 8-K12G3), filed from 30
-days before to 10 days after it makes it a transfer (PepsiCo's 2017 NYSE to
-Nasdaq move), unless the 25-NSE says the class was extinguished. No end applies
+dropping a Chicago listing). A registration of an equity class, or of a class not
+read (8-A12B, 8-A12G, 10-12B, 10-12G, 8-K12B, 8-K12G3), filed from 30 days before
+to 10 days after it carries on (a transfer: PepsiCo's 2017 NYSE to Nasdaq move)
+exactly the classes it names, or, naming none, the issuer's one symbol, unless
+the 25-NSE says the class was extinguished; the end closes the rest of its
+classes. An 8-A12B of class A is no transfer of class B's listing, and an end of
+classes A and B beside an 8-A of class A closes B (v2). The registration counts
+from its own knowledge date: until it is public the end applies. No end applies
 when a successor registered the CIK's class under the same CIK (8-K12B or
 8-K12G3, Rules 12g-3 and 12b) in that window, extinguished or not: a
 holding-company reorganization that keeps the CIK continues its line (KKR's
@@ -170,8 +206,10 @@ count rose from 593 to 860 million shares, so the base check alone would read a
 definitive end; ODP 2020 and ADTRAN 2022 did the same) (v2). A Form 8-A of notes, preferred or
 warrants is no transfer (v2: Statera's 8-A12G of its Series B Preferred Stock,
 filed the day Nasdaq delisted its common stock). A filing that states no class
-(`class_kind = 'unknown'`, counted as `class_unknown`) or was not read applies only
-after a single-symbol filing; a parse failure is never read as another class.
+(`class_kind = 'unknown'`, counted as `class_unknown`) or was not read identifies
+the issuer's one symbol; after a filing with several symbols it closes them all
+tentatively (it could be the notes'), and a parse failure is never read as
+another class.
 
 An applying end is **definitive** when it names an equity class and at least as
 many classes as the issuer had, and either the 25-NSE cites Rule 12d2-2(a) (the
@@ -182,8 +220,9 @@ continued: the first cover count filed after the end and stated on or after it
 (v2; a 10-Q filed after a merger that states the pre-merger count proves
 nothing) is within 0.8-1.25 times the last one before it. After a definitive end
 a later statement does not reopen the hold, even with a 12(b) title (v2); only a
-registration filed after the end (an 8-A, a Form 10 or a successor's 8-K12B),
-public by then, does, or T first appearing after the end (Swift's SWFT ended in
+registration filed after the end (an 8-A, a Form 10 or a successor's 8-K12B) of
+that class (or naming none), public by then, does, or T first appearing after
+the end (Swift's SWFT ended in
 the merger and the same CIK traded as KNX).
 
 Every end has an **effective date** (`effective_on`: its filing date + 1, or,
@@ -307,7 +346,8 @@ The end filings and Forms 8-A of CIKs with cover data are read from
 missing (`--no-fetch` reads only the cache); an event already read by the current
 parser version is carried without a read. A run ends by re-deriving the class of
 current end and 8-A events read by another parser version (`EVENT_PARSER_VERSION`,
-now `sec_event_class_v4`) or not read yet, as corrections. With `--verify-cache`
+now `sec_event_class_v5`) or not read yet, as corrections; the packages read by
+another `FSN_PARSER_VERSION` (now `sec_fsn_v3`) are re-read with `--verify-cache`. With `--verify-cache`
 the file verified is the one loaded, by path (a package named on the command line
 included), and its validators are recorded in the package's own transaction; a
 package loaded without them is recorded without validators, and the worker
@@ -340,14 +380,17 @@ that showed the same symbol and never appear side by side (Berkshire's
 CommonClassB / ClassBCommonStock), and the one class of consecutive complete
 filings; other lines of the same issuer under the same ticker are other holders
 (GOOG moved from class A to class C in 2014). A shared symbol does not link an
-undimensioned class shown only on one-class covers to a dimensioned class shown
-only beside other classes (v2): the symbol moved in a recapitalization and does
+undimensioned class shown only on one-class complete covers to a dimensioned
+class a complete cover shows beside another listed class (v2; 8-Ks, whose
+members vary from the 10-Qs', do not count): the symbol moved in a
+recapitalization and does
 not say which new class continues the old one (a class C line is not alive under
-GOOG before class C existed). An end naming some of the issuer's classes ends only
-their lines. `sec_ticker_price_span` remains the
-run-and-neighbour view of the same engine (`sec_ticker_line_runs`). Lineage
-functions run in 15-65 ms per ticker on the full load (JIT is off for them; it
-cost 1.5 s per call).
+GOOG before class C existed). An end closes only the lines of the classes it
+closes (tentatively those it may concern without saying so). `sec_ticker_price_span` remains the
+run-and-neighbour view of the same engine (`sec_ticker_line_runs`). On the full
+load `sec_line_price_evidence` takes a median 41 ms per ticker (467 ms for the
+most reused symbols, such as AT&T's T), `sec_ticker_issuer_at` 7 ms (JIT is off
+for them; it cost 1.5 s per call).
 
 ## Known residuals
 
@@ -360,6 +403,9 @@ cost 1.5 s per call).
 | A tracking or secondary class delisted while the main symbol continues, pre-2019 (FNF / FNFV 2017) | The main symbol's hold ends until its next statement | Covers listing both symbols (2019+) |
 | Antero Midstream Partners (AM, 2014-2019) and other holders that never tagged a symbol | `ended` or `missing` | W1b |
 | Foreign private issuers' lines: ADSs tagged as the underlying class (TSM, AMOV, AMX, FUTU) and true direct listings (ZIM, QGEN, Canadian 40-F filers) alike | No total and no class count except on an explicit depositary member: `refused`, `foreign_issuer_listing_unverified` | W1c: the 20-F/40-F cover page (12(b) table and its footnotes) and F-6 ratios |
+| A class re-registered after a definitive end by an amendment of its Form 8-A, not a new one (Carlyle's 8-A12B/A of 2020-01-02 after its conversion to a corporation; Arlington Asset 2023: 2 CIKs) | The line stays ended (an amendment is not a start, and is not read) | Read 8-A amendments; one registering the equity class relists it |
+| A class extinguished and re-issued under the same symbol and CIK (Liberty's 2023 reclassification of the Liberty SiriusXM tracking stock, LSXMB) | Its 25-NSE identifies the class and ends it definitively; later covers do not reopen it | A registration of the new class, or the base check for class-scoped ends |
+| A foreign issuer's undimensioned sole class followed by an ADS line that its 20-F lists beside the ordinary shares (Sony SNE, JinkoSolar JKS, Credit Suisse CS) | The old line is not linked to the ADS line (beside another listed class): its history is another holder of the ADS line | W1c (the 20-F cover says the ordinary shares are "not for trading") |
 
 **W1c (follow-up).** Read the 20-F and 40-F cover page, which gives the listed
 security type in its 12(b) table and footnotes. TSM's says "Not for trading, but
@@ -409,45 +455,82 @@ API key.
 
 ## Production steps (owner)
 
-1. Apply `schemas/sec_ticker_cik_history_v1.sql` as `postgres` (or `worker_writer`)
-   with `psql -v ON_ERROR_STOP=1 -f schemas/sec_ticker_cik_history_v1.sql`. It
-   creates the six tables, the view and fifteen functions, sets the owner to
-   `worker_writer`, revokes PUBLIC and grants SELECT/EXECUTE to `app_runtime`,
-   `app_analytics_ro` and `mcp_ro`.
-2. Run the initial load as `worker_writer`, from the workstation that holds
-   `E:/Edgard/fsn`, `E:/Edgard/edgar-index` and the filing cache
-   `E:/Edgard/edgar-event-docs` (add `--download` to fetch packages or indexes
-   that are missing; filings missing from the cache are fetched at most 10 per
-   second). Precondition: the package cache must match the SEC listing, so the
-   run starts with `--verify-cache` (HEAD every listed package; fetch again any
-   cached zip that is missing, changed size or ETag, or is older than its
-   Last-Modified; record only those fresh validators; the first log line reports
-   `fetched_again`): `PYTHONPATH=. python -m scripts.load_sec_ticker_cik_history
-   --verify-cache --download --dsn <worker_writer DSN>`. On 2026-10-08 the cache
-   was current (79 listed, 0 fetched again). Expect 858,894 observations,
-   483,745 share counts and 80,225 events, `class_unknown` 92, `filings_missing`
-   and `filings_failed` 0; 11-13 minutes locally, about 20-30 minutes against the remote database (the
-   writes are 1.4M rows of COPY).
-3. Check: `SELECT count(*), max(available_on) FROM sec_ticker_cik_observations;`,
-   `SELECT * FROM sec_ticker_issuer_at('BRK-B', current_date);` (resolved, CIK
-   1067983, class B line), `SELECT * FROM sec_ticker_issuer_at('GOOG', '2015-11-15');`
-   (resolved, Alphabet 1652044), `SELECT count(*) FROM sec_registration_events
-   WHERE available_on > source_available_on;` (0 after a first load).
-4. Only after the follow-up PR on republication checks of every loaded package
-   (connector thread 4221867196), validator recovery after a failed load
-   (4221867184), digest validation of a same-size cached copy (4222197135),
-   path-level verification of a positional package (4222924629) and carrying
-   events already parsed under the current parser version (4223252991)
-   merges: create the Railway service `sec-ticker-cik-history` from
-   this repository with `railway.sec-ticker-cik-history.toml`,
-   `WORKER=sec_ticker_cik_history` and the `worker_writer` `DATABASE_URL`. The
-   cron is in the config file.
-5. Light's walk-forward equity sizing calls these functions: deploy the Light
-   change only after steps 1-2 and after the follow-up PR (connector threads
-   4222086431, 4222086445, 4222086476, 4222376247, 4222376271, 4222376284,
-   4222924612, 4223111409, 4223111418, 4223252982) merges. Light must handle `security_kind = 'unknown'` and the share status
-   `refused` (`foreign_issuer_listing_unverified`). W1c (above) is a separate
-   follow-up that restores sizing for foreign issuers' lines.
+Done on 2026-10-08: `schemas/sec_ticker_cik_history_v1.sql` (sha256 `6ac82e33...`)
+applied and the initial load run (858,894 observations, 483,745 share counts,
+80,225 events). A fresh installation applies v1, then v2, then runs the load
+below.
 
-Rollback: `schemas/sec_ticker_cik_history_v1.rollback.sql` (as the same role),
-and remove the Railway service.
+For the follow-up (v2), in this order:
+
+1. **Apply v2** as `worker_writer` (the tables' owner) or `postgres`:
+   `psql -v ON_ERROR_STOP=1 -f schemas/sec_ticker_cik_history_v2.sql`. One
+   transaction of about 15 ms on the full load (14 ms measured on a v1-shaped
+   copy of it; none of the 32 relations rewritten): four `ADD COLUMN` (nullable, no
+   default: catalog only, no rewrite) holding ACCESS EXCLUSIVE on the four tables
+   for those milliseconds, CHECKs added NOT VALID (no scan), and the functions
+   replaced. It writes no row. Under `lock_timeout = 5s` it fails cleanly, and can
+   be run again, if a long reader or the loader holds a table. Applying it twice
+   is a no-op. Until the re-derivation (step 2) runs, the answers already use
+   the v2 rules on the v1 reading.
+2. **Re-derive** from the workstation that holds `E:/Edgard/fsn`,
+   `E:/Edgard/edgar-index` and `E:/Edgard/edgar-event-docs`, as `worker_writer`:
+   `PYTHONPATH=. python -m scripts.load_sec_ticker_cik_history --verify-cache
+   --download --dsn <worker_writer DSN>` (`--reconciled-on` defaults to today).
+   It reloads the 79 packages (the same bytes: every change is a parser
+   correction, the old reading retired as never true and the new one dated by
+   its filing), the 72 indexes (the Forms 8-A of CIKs with cover data are read,
+   about 12,000 filings, already cached on this workstation since the 2026-10-08
+   measurement, else fetched at most 10 per second; the 8-K12B and 8-K12G3 rows
+   are added) and re-derives the end events read by `sec_event_class_v3`
+   (production) with `sec_event_class_v5`. Expect
+   (measured on a full local reload in the production state, 2026-10-09, about
+   12 minutes from the caches):
+   - observations: 13,057 versions retired as `parser_correction` and 13,373
+     inserted at their filing's public date (316 new facts); 859,210 current
+     (858,894 before). The re-readings change kinds (1,849 depositary shares of
+     preferred stock read as preferred, 1,568 Corporate/Tangible Equity Units as
+     units, 554 truncated preferred titles as preferred, 85 notes as debt) and the
+     filing profiles they belong to;
+   - share counts: none;
+   - registration events: 28,067 retired as `parser_correction` (every event read
+     by `sec_event_class_v3`, read again by v5: 12,187 Forms 8-A read for the
+     first time, 37 class counts changed) and 28,666 inserted; 80,824 current
+     (80,225 before: 599 Forms 8-K12B, 8-K12G3 and their amendments);
+   - no `source` retirement.
+   On the current lines of 14,871 tickers matched between the v1 answers and the
+   re-derived v2 answers, 487 lines lose 127,143 admitted price days (the
+   admission rule refuses them) and 127 lines gain 17,691; 54 tickers' lines
+   change, and 176 tickers leave the listed kinds (re-read as preferred, debt or
+   units).
+3. **Check**:
+   - `SELECT retired_reason, count(*) FROM sec_ticker_cik_observations WHERE
+     retired_on IS NOT NULL GROUP BY 1` (only `parser_correction` after the
+     re-derivation);
+   - `SELECT count(*) FROM sec_registration_events WHERE retired_on IS NULL AND
+     form IN ('8-K12B', '8-K12G3')` (about 590);
+   - `SELECT * FROM sec_ticker_issuer_at('KKR', '2022-12-31')` (resolved, CIK
+     1404912: its 2022 reorganization is no end);
+   - `SELECT * FROM sec_ticker_issuer_at('BRK-B', current_date)` (resolved, CIK
+     1067983) and `SELECT * FROM sec_ticker_issuer_at('GOOG', '2015-11-15')`
+     (resolved, Alphabet 1652044);
+   - Light's `backend/scripts/probe_sec_line_contract.py` and
+     `probe_sec_line_followup_edges.py` against a disposable database with v1 and
+     v2 exit 0.
+4. **Create the Railway service** `sec-ticker-cik-history` from this repository
+   with `railway.sec-ticker-cik-history.toml`, `WORKER=sec_ticker_cik_history` and
+   the `worker_writer` `DATABASE_URL` (optional: `SEC_TICKER_CACHE_DIR` on a
+   volume). The cron (`0 10 * * 1`) and `restartPolicyType = never` are in the
+   config file. The worker refuses a database without v2.
+5. **Deploy Light #223** only after steps 1-3. Light must handle
+   `security_kind = 'unknown'` and the share status `refused`
+   (`foreign_issuer_listing_unverified`). W1c (above) is a separate follow-up that
+   restores sizing for foreign issuers' lines.
+
+**Rollback of v2**: `schemas/sec_ticker_cik_history_v2.rollback.sql` (as the same
+role) restores the v1 functions and keeps every row and the v2 columns; the four
+functions that gate point-in-time rows keep hiding parser-corrected versions, so
+the old and the new reading of a re-derived fact never overlap. Remove the
+Railway service first. `schemas/sec_ticker_cik_history_v1.rollback.sql` removes
+the whole schema and its history (the tables are dropped); it is not part of
+this upgrade, and on a v2 database it runs after the v2 rollback (which drops
+v2's helper functions).
