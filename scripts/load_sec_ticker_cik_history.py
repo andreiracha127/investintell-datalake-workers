@@ -157,7 +157,7 @@ EVENT_PARSER_VERSION = "sec_event_class_v8"
 # Redeemable", "Depositary Shares, each representing a 1/40th", "7.875% FXD / FRN
 # TruPS"), or whose symbol carries a preferred series suffix (CHMI-PB, VOYA-PB),
 # is preferred, as are a domestic issuer's plain "Depositary Shares" (MainStreet's
-# MNSBP); "Perferred" is preferred; a title opening with warrants ("Redeemable
+# MNSBP; not New England Realty's "Depositary Receipts" of its units); "Perferred" is preferred; a title opening with warrants ("Redeemable
 # warrants included as part of the units") or stating an exercise price is a
 # warrant's; notes run together with "due" ("1.750% Notesdue 2031") are debt.
 FSN_PARSER_VERSION = "sec_fsn_v4"
@@ -643,7 +643,8 @@ def security_kind(title: str | None, ticker: str, segments: str, *,
                 if pattern.search(segments):
                     return refined
             if (_PREFERRED_TERMS_RE.search(text) or re.search(r"-P[A-Z]$", ticker)
-                    or (kind == "depositary" and not foreign)):
+                    or (kind == "depositary" and not foreign
+                        and re.search(r"deposit[ao]ry\s+shares?", text, re.IGNORECASE))):
                 return "preferred"
         return kind
     for kind, pattern in _SEGMENT_KIND_RULES:
