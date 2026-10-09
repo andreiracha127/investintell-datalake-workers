@@ -4,7 +4,8 @@
 # Service: sec-ticker-cik-history. Env: WORKER=sec_ticker_cik_history,
 # DATABASE_URL (datalake `market`, worker_writer). Optional: SEC_TICKER_CACHE_DIR
 # (a mounted volume keeps the DERA zips; without it each package is fetched,
-# loaded and deleted, at most ~0.6 GB of disk at a time), WORKER_LIMIT (packages
+# loaded and deleted, one package of disk at a time: the largest listed, 2021q1,
+# is 0.85 GB), WORKER_LIMIT (packages
 # per run), WORKER_CALC_DATE (replay the index quarters of a date).
 #
 # Each run loads every DERA Financial Statement and Notes package not loaded yet
