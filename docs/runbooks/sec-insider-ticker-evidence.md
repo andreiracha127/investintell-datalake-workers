@@ -45,8 +45,9 @@ v2) says why a version was retired:
 - `parser_correction`: the same package bytes read by another parser version.
   The old reading was never true and is visible at no date. The new reading is
   known when the reading it replaces was: from the filing's public date for a
-  filing first loaded with its package, never before a republication that
-  brought the content. This is the project's restatement rule, as in W1.
+  filing first loaded with its package, from the republication for republished
+  content. A reading that replaces none is known from the filing's public date.
+  This is the project's restatement rule, as in W1.
 
 The resolver counts distinct accessions per CIK, with separator-free ticker
 matching. It needs at least two filings on two dates. A sole candidate resolves;

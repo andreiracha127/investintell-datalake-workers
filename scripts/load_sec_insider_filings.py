@@ -542,7 +542,8 @@ def load_package(conn, path: Path, *, source: str | None = None,
             # A source change of a known accession is knowable from reconciliation. A
             # parser correction's reading is knowable when the reading it replaces
             # was: from the filing's public date for a filing first loaded with its
-            # package, and never before a republication that brought the content.
+            # package, from the republication for republished content. A reading
+            # that replaces none is knowable from the filing's public date.
             cur.execute(f"INSERT INTO sec_insider_filings ({', '.join(FACT_COLUMNS)}, source_package, fact_hash, source_version, available_on, loaded_on) SELECT {', '.join('s.' + c for c in FACT_COLUMNS)}, s.source_package, s.fact_hash, %s, CASE WHEN %s THEN COALESCE((SELECT max(r.available_on) FROM tmp_insider_replaced r WHERE r.accession = s.accession), s.source_available_on) WHEN EXISTS (SELECT 1 FROM sec_insider_package_members m WHERE m.accession = s.accession) THEN GREATEST(s.source_available_on, %s) ELSE s.source_available_on END, %s FROM tmp_insider_stage s WHERE NOT EXISTS (SELECT 1 FROM sec_insider_filings f WHERE f.fact_hash = s.fact_hash AND f.retired_on IS NULL)", (digest, reason == PARSER_CORRECTION, on, on))
             inserted = cur.rowcount
             cur.execute("UPDATE sec_insider_package_members m SET retired_on = %s WHERE m.source_package = %s AND m.retired_on IS NULL AND NOT EXISTS (SELECT 1 FROM tmp_insider_members s WHERE s.accession = m.accession)", (on, package))
