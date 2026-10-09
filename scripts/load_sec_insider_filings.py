@@ -96,6 +96,7 @@ _TOKEN_SECRET = re.compile(r"((?:token|api[_-]?key|password)=)[^&\s'\"]+", re.I)
 _SECRETS: set[str] = set()
 NEW_YORK = ZoneInfo("America/New_York")
 MAX_XML_BYTES = 16 * 1024 * 1024
+TEMP_BUFFERS = "128MB"  # see prepare_session
 FACT_COLUMNS = ("accession", "cik", "raw_symbol", "normalized_symbols", "form", "filed", "accepted", "source")
 STAGE_COLUMNS = FACT_COLUMNS + ("source_package", "fact_hash", "source_available_on")
 
@@ -444,6 +445,16 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def prepare_session(conn) -> None:
+    """Before the session's first temporary table, as W1's loader does. A package
+    is staged by COPY into temporary tables in one transaction; the largest DERA
+    quarter (2006q1, 83,657 filings) fills 38.6 MB of them (stage 21.3, members
+    8.8, previous facts 8.5). PostgreSQL 18 pins local buffers while COPY extends
+    a table, and at the 8 MB default that COPY fails with "no empty local buffer
+    available". 128 MB keeps the whole package resident with 3x headroom."""
+    conn.execute(f"SET temp_buffers = '{TEMP_BUFFERS}'")
+
+
 def load_package(conn, path: Path, *, source: str | None = None,
                  reconciled_on: dt.date | None = None, validators: dict | None = None) -> dict:
     """Atomically stage, validate and reconcile one package, keeping old versions."""
@@ -783,6 +794,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         import psycopg
         with psycopg.connect(args.dsn or "", autocommit=True) as conn:
+            prepare_session(conn)
             if args.apply_schema:
                 conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
             row = conn.execute("SELECT to_regclass('sec_insider_filings'), to_regclass('sec_insider_packages'), to_regclass('sec_insider_package_facts'), to_regclass('sec_insider_package_members')").fetchone()

@@ -70,7 +70,10 @@ worker, replace both cache paths with persistent paths mounted for that worker.
 Use the same load command for incremental runs: package hashes and parser
 versions skip unchanged parses; remote validators detect republication. A new parser
 version re-parses every package. Only readings that change are retired and inserted
-again, available from the reconciliation date; unchanged facts keep their rows. Downloads
+again, available from the reconciliation date; unchanged facts keep their rows. The
+loader sets `temp_buffers` to 128 MB at connect, before the session's first temporary
+table. PostgreSQL 18 fails the largest DERA quarter's staging COPY (2006q1, 83,657
+filings) at the 8 MB default with "no empty local buffer available". Downloads
 stage to temporary files before replacing the cache. sec-api credentials travel
 in an Authorization header; console errors scrub secrets. SEC requests use
 `InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)` and are sequential.
@@ -83,7 +86,8 @@ psql -X -v ON_ERROR_STOP=1 --dbname=$env:DATABASE_URL --file=schemas/sec_insider
 
 ## Local reproduction
 
-Create a uniquely named `postgres:16` container/database, apply the schema, and
+Create a uniquely named `timescale/timescaledb:2.27.2-pg18` container/database (the
+production PostgreSQL 18.4 and TimescaleDB 2.27.2), apply the schema, and
 point the same loader at the task's local DERA and sec-api cache directories.
 The loader can also download without connecting (`--download-only`) or parse
 without loading (`--dry-run`).

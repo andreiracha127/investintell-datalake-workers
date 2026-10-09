@@ -645,7 +645,7 @@ def test_validation_verifies_snapshot_manifest_and_hashes_before_importing(tmp_p
 def db():
     dsn = os.environ.get("SEC_INSIDER_TEST_DSN")
     if not dsn:
-        pytest.skip("set SEC_INSIDER_TEST_DSN to a disposable local PostgreSQL 16 database")
+        pytest.skip("set SEC_INSIDER_TEST_DSN to a disposable local PostgreSQL 18 database")
     psycopg = pytest.importorskip("psycopg")
     from psycopg import sql
 
@@ -1023,3 +1023,43 @@ def test_incomplete_secapi_parse_is_refused_before_any_retirement(clean_db, tmp_
     with pytest.raises(ValueError, match="2 filing directories"):
         insider.load_package(clean_db, package, reconciled_on=dt.date(2026, 10, 9))
     assert _table_snapshot(clean_db) == before
+
+
+def test_loader_raises_temp_buffers_before_the_sessions_first_statement(tmp_path, monkeypatch):
+    executed = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, statement, *args):
+            executed.append(statement)
+            return SimpleNamespace(fetchone=lambda: ("relation",) * 4)
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda *args, **kwargs: Session()))
+    loads = []
+    monkeypatch.setattr(insider, "load_package",
+                        lambda conn, path, **kwargs: loads.append(list(executed)) or {"package": path.name})
+    assert insider.main([str(_dera_zip(tmp_path)), "--dsn", "postgresql://fixture.invalid/w1b"]) == 0
+    # temp_buffers cannot change once the session has used a temporary table.
+    assert executed[0] == f"SET temp_buffers = '{insider.TEMP_BUFFERS}'"
+    assert loads and loads[0][0] == executed[0]
+
+
+def test_largest_dera_quarter_stages_in_a_prepared_session(clean_db, tmp_path):
+    """2006q1 has 83,657 filings; PostgreSQL 18 fails its COPY at the 8 MB default."""
+    psycopg = pytest.importorskip("psycopg")
+    schema = clean_db.execute("SELECT current_schema()").fetchone()[0]
+    rows = [{"ACCESSION_NUMBER": f"{1000000 + n % 9000:010d}-06-{n:06d}", "FILING_DATE": "15-FEB-2006",
+             "DOCUMENT_TYPE": "4", "ISSUERCIK": str(100000 + n % 7000), "ISSUERNAME": "Issuer",
+             "ISSUERTRADINGSYMBOL": f"S{n % 7000}"} for n in range(83657)]
+    package = _dera_zip(tmp_path, replacement_rows=rows)
+    with psycopg.connect(os.environ["SEC_INSIDER_TEST_DSN"], autocommit=True,
+                         options=f"-c search_path={schema},public") as session:
+        insider.prepare_session(session)
+        assert session.execute("SHOW temp_buffers").fetchone() == (insider.TEMP_BUFFERS,)
+        result = insider.load_package(session, package, source="dera", reconciled_on=dt.date(2026, 10, 9))
+    assert (result["filings"], result["inserted"]) == (83657, 83657)
