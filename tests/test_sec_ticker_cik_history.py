@@ -3978,14 +3978,14 @@ def test_loader_is_idempotent_and_retires_what_a_republication_drops(
     assert (first[1]["events"], first[1]["inserted"], first[1]["retired"]) == (1, 1, 0)
     rows = conn.execute(
         "SELECT adsh, ticker, ticker_key, cik, class_key, security_kind, available_on, "
-        "loaded_on, retired_on FROM sec_ticker_cik_observations ORDER BY adsh, ticker"
+        'loaded_on, retired_on FROM sec_ticker_cik_observations ORDER BY adsh, ticker COLLATE "C"'
     ).fetchall()
     loaded = d(2024, 3, 20)
     assert rows == [
-        (A1, "BRK34", "BRK34", 1067983, "LongtermDebtType=Notes2034;", "debt",
-         d(2024, 2, 24), loaded, None),
         (A1, "BRK-A", "BRKA", 1067983, CLASS_A, "equity", d(2024, 2, 24), loaded, None),
         (A1, "BRK-B", "BRKB", 1067983, CLASS_B, "equity", d(2024, 2, 24), loaded, None),
+        (A1, "BRK34", "BRK34", 1067983, "LongtermDebtType=Notes2034;", "debt",
+         d(2024, 2, 24), loaded, None),
         (A2, "BFB", "BFB", 14693, NONVOTING, "equity", d(2024, 3, 6), loaded, None),
     ]
     # The resolver and the class count join on the same class.
