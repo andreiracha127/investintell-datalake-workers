@@ -2,7 +2,7 @@
 
 This report supersedes final4 for production artifact selection. It fixes the two production-gate P1s found in final4 and reissues the reviewed artifact as `final5`. The preserved [run1 report](sec-foreign-listing-20261009.md) and the [final4 report](sec-foreign-listing-20261009-run2.md) remain historical baselines. W1 admission, share sizing and existing refusal behavior are unchanged.
 
-Generated from artifact-pinned results at `2026-10-09T21:44:33+00:00`. Fixing head: `f028abb6e5427309f847bb111a7b0e8938d405ed` (previous head `99d78516f4b4b290251fb3241af29c71cdd5ebc9`).
+Generated from artifact-pinned results at `2026-10-09T21:44:33+00:00`. Fixing heads: `f028abb6e5427309f847bb111a7b0e8938d405ed` (fix) and `0f152615d42d90c0b3bf817008450810a4fa2f6e` (docs pin); previous head `99d78516f4b4b290251fb3241af29c71cdd5ebc9`.
 
 ## The two gate P1s and their fixes
 
