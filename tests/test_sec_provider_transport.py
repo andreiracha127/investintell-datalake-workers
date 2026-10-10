@@ -7,7 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from scripts.sec_provider_transport import (
-    ProviderScheduler, ProviderTransport, _GovernedRedirect, filing_download_url, safe_url,
+    ProviderAuthError, ProviderScheduler, ProviderTransport, _GovernedRedirect, filing_download_url,
+    safe_url,
 )
 
 
@@ -34,6 +35,40 @@ class Clock:
         return self.now
     def sleep(self, amount):
         self.now += amount
+
+
+def test_permit_time_is_sampled_while_holding_the_lock(tmp_path):
+    clock = Clock()
+    scheduler = ProviderScheduler(tmp_path / "state.sqlite", {"government": (10, 1)},
+                                  clock=clock.time, sleep=clock.sleep)
+    connect = scheduler._connect
+    lock_waits = [1.0]
+
+    class Contended:
+        # Another process holds the write lock for one second before BEGIN returns.
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self.connection.__exit__(*exc)
+
+        def execute(self, sql, *args):
+            if sql == "BEGIN IMMEDIATE" and lock_waits:
+                clock.now += lock_waits.pop()
+            return self.connection.execute(sql, *args)
+
+        def executemany(self, *args):
+            return self.connection.executemany(*args)
+
+    scheduler._connect = lambda: Contended(connect())
+    first = scheduler.acquire("https://www.sec.gov/a")
+    second = scheduler.acquire("https://www.sec.gov/b")
+    assert first == 1001.0  # recorded when the lock was obtained, not before waiting for it
+    assert second-first >= 0.1-1e-9  # paced against the request that was actually sent
 
 
 def test_spawned_processes_share_government_alias_budget(tmp_path):
@@ -168,7 +203,7 @@ def test_http_retries_redirects_and_permanent_failure(tmp_path):
         assert retry_times[1]-retry_times[0] >= 1
         assert len(events) == 4  # both initial requests and both redirect destinations
         assert all(agent == "Tests contact@example.com" for _, _, agent in events)
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(ProviderAuthError) as caught:
             client.open(base + "/forbidden?token=top-secret", max_attempts=5)
         assert "top-secret" not in str(caught.value)
         assert sum(path.startswith("/forbidden") for path, _, _ in events) == 1

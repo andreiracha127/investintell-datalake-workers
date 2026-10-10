@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from scripts import load_sec_foreign_listing_evidence as loader
-from scripts.sec_provider_transport import ProviderTransport
+from scripts.sec_provider_transport import ProviderAuthError, ProviderTransport
 
 
 def _date_authority(filed="2020-03-01", adsh="0001234567-20-000001", publication_floor_on=None):
@@ -545,6 +545,26 @@ def test_pipeline_downloads_shared_url_once_and_reparses_deterministically(tmp_p
     assert summary["failed_documents"] == 1
     assert not summary["parse_complete"]
     assert output.read_bytes() == previous_output
+
+
+def test_provider_refusal_aborts_parse_and_marks_staging_incomplete(tmp_path, monkeypatch):
+    url = "https://www.sec.gov/Archives/edgar/data/123/report.htm"
+    document = {"adsh": "0001234567-20-000001", "cik": 123, "source_url": url, "source_package": "pkg",
+                "binding": "registrant_cik", "symbols": ["ABC"], **_date_authority(), "form": "20-F"}
+    manifest = {"complete": True, "parse_complete": True, "documents": [document],
+                "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"}}
+    client = loader.SecClient(tmp_path, offline=True)
+
+    def refuse(_url, **_kwargs):
+        raise ProviderAuthError("SEC provider HTTP 401: https://edgar-mirror.sec-api.io/123/report.htm")
+
+    monkeypatch.setattr(client, "document", refuse)
+    output = tmp_path / "evidence.jsonl"
+    output.write_bytes(b"previous complete evidence" + bytes([10]))
+    with pytest.raises(ProviderAuthError):
+        loader.parse_manifest(client, manifest, output, workers=1)
+    assert output.read_bytes() == b"previous complete evidence" + bytes([10])
+    assert json.loads((tmp_path / "manifest.json").read_text())["parse_complete"] is False
 
 
 def test_f6_search_name_is_not_sufficient_issuer_binding():

@@ -51,6 +51,15 @@ def _default_state_path() -> Path:
     return Path("/tmp/investintell-sec-provider.sqlite3")
 
 
+class ProviderAuthError(Exception):
+    """A provider refused the request (401/403): credentials, plan or access.
+
+    Deliberately not a RuntimeError, ValueError or OSError, so loader fallbacks
+    and recovery paths cannot absorb it; the run stops instead of retrying the
+    same request elsewhere.
+    """
+
+
 class ProviderScheduler:
     """SQLite transactions coordinate independent processes on one machine.
 
@@ -114,11 +123,14 @@ class ProviderScheduler:
         buckets = self.buckets(url, product)
         started = self.clock()
         while True:
-            now = self.clock()
             delay = 0.0
             try:
                 with self._connect() as connection:
                     connection.execute("BEGIN IMMEDIATE")
+                    # Sample time only while holding the lock: a timestamp taken
+                    # before a contended BEGIN would be recorded in the past and
+                    # let the next caller expire a permit for a request just sent.
+                    now = self.clock()
                     for bucket in buckets:
                         count, window = self.limits[bucket]
                         # A stricter participant persists the shared ceiling;
@@ -220,6 +232,8 @@ class ProviderTransport:
                 if status == 429:
                     self.scheduler.cooldown(retry_url, exc.headers.get("Retry-After"), product=product if urllib.parse.urlsplit(retry_url).hostname == parsed.hostname else None, fallback=min(2**attempt, 16))
                 exc.close()
+                if status in {401, 403}:
+                    raise ProviderAuthError(f"SEC provider HTTP {status}: {scrub(safe_url(url), (self.api_key,))}") from None
                 if attempt == max_attempts-1 or (status not in {408, 429, 500, 502, 503, 504} and status not in retry_statuses):
                     raise RuntimeError(f"SEC provider HTTP {status}: {scrub(safe_url(url), (self.api_key,))}") from None
             except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):

@@ -106,6 +106,8 @@ def resolve_parse_workers(requested: int | None = None, *, total_budget: int | N
         raise ValueError("invalid parse shard allocation")
     total = parse_resource_budget(worker_memory_mb)["max_workers"]
     if total < 1:
+        if requested == 1 and shard_count == 1:
+            return 1  # one worker parses inline in this process; no pool memory is reserved
         raise MemoryError("Insufficient available memory for one parse worker while preserving the memory reserve")
     total = min(total, requested if requested is not None else total,
                 total_budget if total_budget is not None else total)

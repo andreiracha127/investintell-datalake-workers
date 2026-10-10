@@ -15,6 +15,7 @@ import pytest
 
 from scripts import load_sec_insider_filings as insider
 from scripts import load_sec_ticker_cik_history as loader
+from scripts.sec_provider_transport import ProviderAuthError
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sec_ticker_cik_history"
@@ -66,7 +67,7 @@ def test_mirror_preserves_canonical_cache_original_bytes_and_event_facts(tmp_pat
     assert scheduler.urls == [requests[0].full_url]
 
 
-@pytest.mark.parametrize("failure", ["auth", "maintenance", "truncated", "incomplete-read"])
+@pytest.mark.parametrize("failure", ["maintenance", "truncated", "incomplete-read"])
 def test_paid_failure_falls_back_once_with_separate_government_permit(tmp_path, monkeypatch, failure):
     raw = (FIXTURES / "filings" / f"{ADSH}.txt").read_bytes()
     scheduler = Scheduler()
@@ -74,8 +75,6 @@ def test_paid_failure_falls_back_once_with_separate_government_permit(tmp_path, 
 
     def open_url(request, timeout):
         requests.append(request)
-        if failure == "auth":
-            raise urllib.error.HTTPError(request.full_url, 403, "fixture-key", {}, None)
         if failure == "maintenance":
             return Body(b"<html>maintenance</html>")
         if failure == "incomplete-read":
@@ -98,6 +97,27 @@ def test_paid_failure_falls_back_once_with_separate_government_permit(tmp_path, 
     assert len(requests) == len(fallback) == 1
     assert scheduler.urls == [requests[0].full_url, fallback[0]]
     assert (tmp_path / f"{ADSH}.txt").read_bytes() == raw
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_paid_auth_refusal_stops_without_government_fallback(tmp_path, monkeypatch, status):
+    scheduler = Scheduler()
+    requests = []
+
+    def open_url(request, timeout):
+        requests.append(request)
+        raise urllib.error.HTTPError(request.full_url, status, "fixture-key", {}, None)
+
+    monkeypatch.setattr(insider.urllib.request, "build_opener", lambda *args: SimpleNamespace(open=open_url))
+    fallback = []
+    documents = loader.EventDocuments(tmp_path, SimpleNamespace(get=fallback.append), api_key="fixture-key",
+                                     scheduler=scheduler, spacing=0)
+    with pytest.raises(ProviderAuthError) as caught:
+        documents.text(5133, ADSH)
+    assert "fixture-key" not in str(caught.value)
+    assert len(requests) == 1
+    assert fallback == []
+    assert not (tmp_path / f"{ADSH}.txt").exists()
 
 
 def test_government_httpx_redirects_and_429_share_scheduler(monkeypatch):

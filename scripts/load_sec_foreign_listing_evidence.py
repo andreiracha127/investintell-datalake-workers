@@ -977,11 +977,23 @@ def _parse_url_task(url: str, candidates: list[dict]) -> list[dict]:
     return updated_documents
 
 
+def _provider_auth_error() -> type[Exception]:
+    if __package__:
+        from .sec_provider_transport import ProviderAuthError
+    else:
+        from sec_provider_transport import ProviderAuthError
+    return ProviderAuthError
+
+
 def _bounded_parse_results(client: SecClient, by_url: dict, workers: int, context_path: Path):
+    # A provider refusal is a run failure, never one failed source among many.
+    refused = _provider_auth_error()
     if workers == 1:
         for url, candidates in by_url.items():
             try:
                 yield url, _parse_url_task(url, candidates), None
+            except refused:
+                raise
             except Exception as exc:
                 yield url, None, exc
         return
@@ -1005,6 +1017,8 @@ def _bounded_parse_results(client: SecClient, by_url: dict, workers: int, contex
                 url = pending.pop(future)
                 try:
                     yield url, future.result(), None
+                except refused:
+                    raise
                 except Exception as exc:
                     yield url, None, exc
 
@@ -1071,6 +1085,12 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
             if index % 100 == 0 or index == len(by_url):
                 print(canonical_json({"event": "download", "completed": index, "total": len(by_url),
                                       "parsed_documents": len(results), "errors": errors}), flush=True)
+    except BaseException:
+        # An aborted parse (provider refusal, broken pool, interrupt) must not
+        # leave an earlier staging manifest claiming a complete parse.
+        manifest["parse_complete"] = False
+        write_json(client.cache / "manifest.json", manifest)
+        raise
     finally:
         context_path.unlink(missing_ok=True)
     documents = [results[key] for key in sorted(results)]

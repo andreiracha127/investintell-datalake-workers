@@ -13,6 +13,7 @@ import pytest
 
 from scripts import load_sec_foreign_listing_evidence as loader
 from scripts import sec_parse_resources as resources
+from scripts.sec_provider_transport import ProviderAuthError
 
 
 def _authority(filed):
@@ -168,6 +169,15 @@ def test_total_budget_is_distributed_without_multiplication(monkeypatch):
         resources.resolve_parse_workers(0)
 
 
+def test_one_inline_worker_needs_no_pool_memory_reserve(monkeypatch):
+    monkeypatch.setattr(resources, "parse_resource_budget", lambda _mb: {"max_workers": 0})
+    assert resources.resolve_parse_workers(1) == 1
+    with pytest.raises(MemoryError):
+        resources.resolve_parse_workers(2)
+    with pytest.raises(MemoryError):
+        resources.resolve_parse_workers(1, shard_count=2, shard_index=0)
+
+
 def test_separate_raw_cache_cannot_be_used_online(tmp_path):
     with pytest.raises(ValueError, match="offline"):
         loader.SecClient(tmp_path / "output", raw_cache_dir=tmp_path / "raw")
@@ -214,8 +224,9 @@ def test_memory_budget_preserves_reserve_and_scales_small_container(monkeypatch,
     assert budget["max_workers"] == expected_workers
     assert budget["memory_reserve_bytes"] + expected_workers * 600 * 1024**2 <= budget["available_memory_bytes"] or expected_workers == 0
     if expected_workers == 0:
+        assert resources.resolve_parse_workers(1) == 1  # inline parsing reserves no pool memory
         with pytest.raises(MemoryError, match="memory reserve"):
-            resources.resolve_parse_workers(1)
+            resources.resolve_parse_workers(2)
 
 
 def test_readonly_raw_cache_rejects_nested_staging_and_evidence(tmp_path):
@@ -280,7 +291,7 @@ def test_mirror_failure_has_one_government_fallback_with_canonical_identity(tmp_
         def open(self, destination, **kwargs):
             calls.append(destination)
             if len(calls) == 1:
-                raise RuntimeError("Provider HTTP 403")
+                raise RuntimeError("Provider HTTP 503")
             return _Response(raw)
     client = loader.SecClient(tmp_path, "never-persist-this-key")
     client.transport = Transport()
@@ -290,6 +301,23 @@ def test_mirror_failure_has_one_government_fallback_with_canonical_identity(tmp_
     assert metadata["url"] == url
     assert "never-persist-this-key" not in json.dumps(metadata)
     assert loader.SecClient(tmp_path, offline=True).document(url) == (raw, loader.digest(raw))
+
+
+def test_mirror_auth_refusal_stops_without_government_fallback(tmp_path):
+    url = "https://www.sec.gov/Archives/edgar/data/123/report.htm"
+    calls = []
+
+    class Transport:
+        def open(self, destination, **kwargs):
+            calls.append(destination)
+            raise ProviderAuthError("SEC provider HTTP 403: https://edgar-mirror.sec-api.io/123/report.htm")
+
+    client = loader.SecClient(tmp_path, "never-persist-this-key")
+    client.transport = Transport()
+    with pytest.raises(ProviderAuthError):
+        client.document(url)
+    assert calls == ["https://edgar-mirror.sec-api.io/123/report.htm"]
+    assert not list((tmp_path / "documents").glob("*.json"))
 
 
 @pytest.mark.parametrize("bad_response", ["truncated", "maintenance", "throttled"])
