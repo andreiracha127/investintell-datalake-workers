@@ -1555,9 +1555,39 @@ def test_source_switch_updates_true_successor_boundaries(test_dsn, schema):
             "FROM nav_timeseries WHERE instrument_id=%s ORDER BY nav_date",
             (iid,),
         ).fetchall()
-        assert rows[1][1] == "yahoo" and rows[1][2] is None and rows[1][3] is True
-        assert rows[2][1] == "tiingo" and rows[2][2] is None and rows[2][3] is True
+        assert rows[1][1] == "yahoo" and rows[1][2] is None and rows[1][3] is None
+        assert rows[2][1] == "tiingo" and rows[2][2] is None and rows[2][3] is None
         assert rows[3][2] is not None and rows[3][3] is False
+
+
+def test_kind_boundary_after_legacy_row_writes_no_return_lineage(test_dsn, schema):
+    """source-lineage-v1: a NULL return_1d carries all five lineage fields NULL."""
+    _bootstrap(test_dsn, schema)
+    iid = uuid.uuid4()
+    days = [dt.date(2026, 1, day) for day in (2, 5, 6)]
+    with _connect(test_dsn, schema) as conn:
+        # Pre-provenance history: source_nav_kind NULL, no revision attribution.
+        conn.execute("SET LOCAL session_replication_role = replica")
+        conn.execute(
+            "INSERT INTO nav_timeseries (instrument_id, nav_date, nav, return_type,"
+            " currency, source) VALUES (%s, %s, 100, 'log', 'USD', 'tiingo')",
+            (iid, days[0]),
+        )
+        conn.commit()
+        _write(conn, ingest.build_rows(
+            tuple(NavObservation(d, 101.0 + i, "adjusted")
+                  for i, d in enumerate(days[1:])),
+            [(iid, "USD")],
+        ))
+        rows = conn.execute(
+            "SELECT return_1d, return_start_date, return_source_boundary,"
+            " return_uses_repaired_nav, return_semantics, return_verification_status"
+            " FROM nav_timeseries WHERE instrument_id=%s AND nav_date > %s"
+            " ORDER BY nav_date",
+            (iid, days[0]),
+        ).fetchall()
+    assert rows[0] == (None,) * 6  # NULL -> 'adjusted' kind boundary
+    assert rows[1][0] is not None and rows[1][1:4] == (days[1], False, False)
 
 
 @pytest.mark.parametrize("position", [0, 1, 3])
