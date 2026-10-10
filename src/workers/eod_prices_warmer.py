@@ -42,6 +42,24 @@ and adjusted OHLC equal on every shared date. Its verdict is
 status; a mixed adjusted basis is never complete. Existing rows are never
 rewritten, and there is no shortcut from ``min(date)``.
 
+The phase never holds a database transaction across an HTTP call. The plan,
+the footprint count and the stored-row snapshot are each ended by a commit
+before the next Tiingo request (the snapshot is in memory; ``promote`` locks the
+instrument, re-reads and compares the digest). A pass reads the ticker's rows
+in ``[1970-01-01, as_of]`` and every read locks each chunk of that range, so a
+range of more than ``MAX_VERIFICATION_CHUNKS`` (800) chunks is recorded
+``history_incomplete`` (``chunk_footprint_exceeded``, counted in the run
+statistics) before the meta call, and again before promotion, and does nothing
+else. Tiingo metadata dates must be in the documented forms; a malformed one is
+``meta:malformed_start_date`` / ``meta:malformed_end_date``, retried with
+backoff and never parsed into an interval.
+
+The W1c source is optional and isolated: discovery runs under a statement
+timeout (``FOREIGN_DISCOVERY_TIMEOUT_MS``) and any exception is rolled back and
+reported as ``foreign_history: {source: "error", reason: <ExceptionType>}``
+while the ring runs and the worker exits zero. An empty source is reported as
+``foreign_history: {source: "empty", ...}``.
+
 ``promote`` is the only writer of history rows and of ``history_complete``. In
 one transaction it locks the ticker's ``instruments`` row, re-reads the stored
 rows and compares their digest with the snapshot the verdict judged; if they
@@ -108,6 +126,7 @@ from src.workers.eod_history_validation import (
     VERDICT_INCOMPLETE,
     VERDICT_REBASE,
     Verdict,
+    parse_bar_date,
     stored_digest,
     validate_series,
     xnys_calendar,
@@ -228,6 +247,18 @@ _US_LISTING_TICKER = re.compile(US_LISTING_TICKER_PATTERN)
 HISTORY_TICKERS_PER_RUN = 25
 HISTORY_LIMIT_ENV = "EOD_HISTORY_TICKERS_PER_RUN"
 UNKNOWN_RECHECK_DAYS = 30
+# W1c discovery is optional, so it is bounded: a statement that runs past this
+# is cancelled and reported as ``foreign_history: {source: "error"}`` while the
+# ring runs. Measured 10 s over 1,676 symbols on 2026-10-10 (six times that is
+# the limit); a persistent timeout shows as ``reason: QueryCanceled`` every run.
+FOREIGN_DISCOVERY_TIMEOUT_MS = 60_000
+# A verification pass reads the ticker's rows in [CALENDAR_SUPPORTED_FROM, as_of]
+# and promotion reads them again, and each read takes a lock on every chunk of
+# that range (about five locks per chunk). Past this many chunks the pass is
+# recorded ``history_incomplete`` (``chunk_footprint_exceeded``) and does
+# nothing else. Production, 2026-10-10: 787 chunks in all, 689 overlapping the
+# range (one new chunk a year at 360-day chunks).
+MAX_VERIFICATION_CHUNKS = 800
 # A completed ticker is verified again after this many days, so a later change
 # on Tiingo's side (an earlier startDate, a revised raw close, a stored gap) is
 # found; the pass inserts nothing unless the series is still coherent.
@@ -427,12 +458,16 @@ def history_cap(history_limit: int | None, limit: int | None) -> int:
 
 
 def _parse_meta_date(value: Any) -> _dt.date | None:
-    if not value:
-        return None
-    try:
-        return _dt.date.fromisoformat(str(value)[:10])
-    except ValueError:
-        return None
+    """A metadata date in exactly the forms the bar validator accepts
+    (``YYYY-MM-DD`` or ``YYYY-MM-DDT00:00:00[.000]Z``); None when absent or
+    malformed. Nothing is truncated or coerced."""
+    return parse_bar_date(value)
+
+
+def _meta_date_malformed(value: Any) -> bool:
+    """Present, but not in a documented form. Absent (None or "") is not
+    malformed: it keeps its own path."""
+    return value is not None and value != "" and parse_bar_date(value) is None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -587,14 +622,57 @@ def upsert_eod_prices(conn, rows: list[tuple[Any, ...]]) -> int:
 # ──────────────────────────────────────────────────────────────────────────────
 # W1c foreign-listing source + full-history phase (DB I/O)
 # ──────────────────────────────────────────────────────────────────────────────
+class ChunkFootprintExceeded(RuntimeError):
+    """The eod_prices chunks in the read range exceed ``MAX_VERIFICATION_CHUNKS``."""
+
+
+# Chunks of eod_prices overlapping [since, through]: a chunk covers the dates
+# [range_start, range_end), read in UTC so the session time zone cannot move a
+# boundary. Catalog rows only: no lock on any chunk. 0 without TimescaleDB or
+# without the table.
+_CHUNK_COUNT_SQL = """
+    SELECT count(*) FROM timescaledb_information.chunks c
+    WHERE c.hypertable_name = 'eod_prices'
+      AND c.hypertable_schema = (SELECT n.nspname FROM pg_catalog.pg_class t
+                                 JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+                                 WHERE t.oid = to_regclass('eod_prices'))
+      AND (c.range_end AT TIME ZONE 'UTC')::date > %(since)s
+      AND (c.range_start AT TIME ZONE 'UTC')::date <= %(through)s
+"""
+
+
+def chunk_footprint(conn, since: _dt.date, through: _dt.date) -> int:
+    """Number of ``eod_prices`` chunks overlapping ``[since, through]``."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('timescaledb_information.chunks') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return 0
+        cur.execute(_CHUNK_COUNT_SQL, {"since": since, "through": through})
+        return cur.fetchone()[0]
+
+
+def require_chunk_footprint(conn, since: _dt.date, through: _dt.date) -> None:
+    """Raise ``ChunkFootprintExceeded`` when the range spans more chunks than
+    ``MAX_VERIFICATION_CHUNKS``. The count's own transaction is closed first."""
+    chunks = chunk_footprint(conn, since, through)
+    conn.commit()
+    if chunks > MAX_VERIFICATION_CHUNKS:
+        raise ChunkFootprintExceeded(
+            f"chunk_footprint_exceeded: {chunks} chunks in {since}..{through}, "
+            f"limit {MAX_VERIFICATION_CHUNKS}")
+
+
 def foreign_listing_tickers(conn, as_of: _dt.date) -> list[str] | None:
     """Distinct US-shaped symbols of W1c lines resolved at ``as_of`` or a year-end.
 
     ``None`` when the W1c resolver is not installed (the ring still runs). JIT
-    is off for this transaction only."""
+    is off and the statement timeout is ``FOREIGN_DISCOVERY_TIMEOUT_MS`` for
+    this transaction only."""
     # No look-ahead: a historical run probes only year-ends on or before as_of.
     dates = sorted({as_of, *(d for d in FOREIGN_LISTING_YEAR_ENDS if d <= as_of)})
     with conn.transaction(), conn.cursor() as cur:
+        cur.execute("SELECT set_config('statement_timeout', %s, true)",
+                    (f"{FOREIGN_DISCOVERY_TIMEOUT_MS}ms",))
         cur.execute("SELECT to_regprocedure(%s) IS NOT NULL", (_W1C_RESOLVER,))
         if not cur.fetchone()[0]:
             return None
@@ -813,10 +891,13 @@ def promote(
     verdict's rows (possibly none, for ``complete_nothing_to_insert``) with
     ``INSERT … DO NOTHING`` in ``UPSERT_CHUNK`` batches and write
     ``history_complete``, atomically; returns rows inserted. A crash or error at
-    any point leaves neither rows nor status."""
+    any point leaves neither rows nor status. Before it touches anything it
+    raises ``ChunkFootprintExceeded`` when ``[since, through]`` spans more than
+    ``MAX_VERIFICATION_CHUNKS`` chunks."""
     if verdict.status not in SUCCESS_VERDICTS:
         raise ValueError(f"promote() takes a certifying verdict, not {verdict.status}")
     conn.commit()  # close any read transaction; this one holds only the promotion
+    require_chunk_footprint(conn, since, through)
     inserted = 0
     try:
         with conn.cursor() as cur:
@@ -887,6 +968,7 @@ def cover_foreign_history(
     now = now or _dt.datetime.now(_dt.UTC)
     ensure_status_table(conn)
     plan = plan_foreign_history(conn, tickers, now=now, as_of=as_of)
+    conn.commit()   # the plan's reads end here: no table lock is held across HTTP
     queue = plan["pending"]
     stats: dict[str, Any] = {
         "source_tickers": len(set(tickers)),
@@ -896,6 +978,7 @@ def cover_foreign_history(
         "processed": 0, "meta_requests": 0, "history_fetches": 0,
         "instruments_inserted": 0, "instruments_filled": 0,
         "history_rows": 0, "completed": 0, "verified_without_insert": 0, "errors": 0,
+        "chunk_footprint_exceeded": 0,
     }
     recheck = now + _dt.timedelta(days=UNKNOWN_RECHECK_DAYS)
     unknown_now: list[str] = []
@@ -915,6 +998,9 @@ def cover_foreign_history(
         ticker = task.ticker
         start: _dt.date | None = None
         try:
+            # Before any request or read: a range of too many chunks is not
+            # attempted at all (promote repeats the check).
+            require_chunk_footprint(conn, CALENDAR_SUPPORTED_FROM, as_of)
             stats["meta_requests"] += 1
             status, meta = tiingo.fetch_meta_result(ticker)
             if status == "not_found":
@@ -930,6 +1016,13 @@ def cover_foreign_history(
                 continue
             if status != "found" or meta is None:
                 retry_later(task, None, f"meta:{status}")
+                continue
+            malformed = next((name for name, key in (("start", "startDate"), ("end", "endDate"))
+                              if _meta_date_malformed(meta.get(key))), None)
+            if malformed:
+                # Never truncated into a boundary: retried with backoff, and
+                # nothing is seeded from it.
+                retry_later(task, None, f"meta:malformed_{malformed}_date")
                 continue
             start = _parse_meta_date(meta.get("startDate"))
             if start is None:
@@ -947,6 +1040,11 @@ def cover_foreign_history(
             # The interval, and so every obligation, is fixed before the fetch.
             # Rows after as_of are outside this run: never compared or touched.
             stored = _stored_rows(conn, ticker, since=CALENDAR_SUPPORTED_FROM, through=as_of)
+            # The snapshot is in memory: end its read transaction NOW. Left open
+            # it holds an AccessShareLock on every chunk and index of the range
+            # across the price request, its retries and every continuation.
+            # promote() locks the instrument, re-reads and compares the digest.
+            conn.commit()
             tiingo_start = start
             start, end = verification_interval(start, meta_end, stored, as_of)
             # A historical run that stops before Tiingo's end completes only
@@ -989,6 +1087,10 @@ def cover_foreign_history(
             if not verdict.rows:
                 stats["verified_without_insert"] += 1
             stats["completed"] += 1
+        except ChunkFootprintExceeded as exc:
+            conn.rollback()
+            stats["chunk_footprint_exceeded"] += 1
+            retry_later(task, start, str(exc))
         except TiingoBudgetExceeded as exc:
             # No price row was written for this ticker; it stays pending.
             stats["aborted"] = str(exc)
@@ -1032,6 +1134,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
     aborted: str | None = None
     last_done: str | None = None
     history: dict[str, Any] | None = None
+    source_error: str | None = None
 
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_EOD_PRICES_WARMER) as got:
@@ -1041,17 +1144,27 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
             # Before any read of it, so an older shape is migrated (or refused).
             ensure_status_table(conn)
             instruments_seeded = ensure_instruments(conn)
-            foreign = foreign_listing_tickers(conn, as_of)
+            # The history source is optional: whatever its discovery raises (the
+            # resolver or its evidence relation not deployed, a permission, the
+            # statement timeout) never stops the ring. The failed transaction is
+            # rolled back, the type is reported, the history phase is skipped.
+            foreign: list[str] | None = None
+            try:
+                foreign = foreign_listing_tickers(conn, as_of)
+            except Exception as exc:  # noqa: BLE001 — isolation is the point
+                conn.rollback()
+                source_error = type(exc).__name__
             resume_after = read_cursor(conn)
             universe = warming_universe(conn)
             tickers = order_sweep(universe, resume_after=resume_after)
             watermarks = _ticker_watermarks(conn)
+            conn.commit()   # the universe and watermark reads end before any request
             if limit:
                 tickers = tickers[:limit]
             print(
                 f"eod_prices_warmer: {len(tickers)} tickers, as_of={as_of}, "
                 f"resume_after={resume_after or '-'}, "
-                f"foreign_listing={'absent' if foreign is None else len(foreign)}",
+                f"foreign_listing={source_error and 'error' or ('absent' if foreign is None else len(foreign))}",
                 flush=True,
             )
 
@@ -1105,7 +1218,9 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
         stats["skipped_rows"] = skipped_rows
     if last_done:
         stats["cursor"] = last_done
-    if foreign is None:
+    if source_error is not None:
+        stats["foreign_history"] = {"source": "error", "reason": source_error, "errors": 1}
+    elif foreign is None:
         stats["foreign_history"] = {"source": "absent"}
     elif history is not None:
         stats["foreign_history"] = history
@@ -1113,6 +1228,14 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
         stats["foreign_history"] = {
             "source_tickers": len(foreign),
             "skipped": "aborted" if aborted else "cap_zero",
+        }
+    else:
+        # The resolver exists and no line resolves (an early historical replay,
+        # an empty evidence table): reported, so monitoring can tell it from a
+        # worker that did not report the phase.
+        stats["foreign_history"] = {
+            "source": "empty", "source_tickers": 0, "already_complete": 0, "pending": 0,
+            "processed": 0, "completed": 0, "errors": 0, "deferred": 0,
         }
     if aborted:
         stats["aborted"] = aborted

@@ -9,14 +9,17 @@ fetch, the provider's raw bars exactly as returned, the stored rows in scope
 by default) set of evidenced session gaps.
 
 A bar — provider or stored — is valid when every one of its twelve fields is a
-finite number (not a bool, not a string) inside ``BOUNDS`` (prices and the
-split factor positive, volumes and dividend non-negative), raw and adjusted
+finite number (not a bool, not a string) inside its bound (``PRICE_MAX`` for
+raw prices, ``ADJ_PRICE_MAX`` for adjusted prices; prices and the split factor
+positive, volumes and dividend non-negative), raw and adjusted
 ``low <= min(open, close) <= max(open, close) <= high`` hold, and the
 adjustment factors implied by adjOpen/open, adjHigh/high and adjLow/low are
 within ``FACTOR_REL_TOL`` of adjClose/close. Every tolerance comparison is
 exact rational arithmetic (``fractions.Fraction``) on validated finite values,
 so no quotient can overflow to infinity or NaN and the boundary (``==``) is
-well defined: a difference exactly at a tolerance is accepted.
+well defined: a difference exactly at a tolerance is accepted. The ratios named
+in a conflict or rebase reason are formatted from the exact fraction with
+integer arithmetic (``_format_ratio``), never through a float.
 
 Rules, applied in this order; the first that fails decides the verdict:
 
@@ -100,12 +103,17 @@ STORED_REL_TOL = Fraction(1, 1_000_000)
 # exceed it; none do in that sample.
 FACTOR_REL_TOL = Fraction(1, 100)
 
-# Magnitude bounds (inclusive upper, exclusive lower where stated). Prices:
+# Magnitude bounds (inclusive upper, exclusive lower where stated). Raw prices:
 # BRK-A, the highest US share price, is below 1e6; 1e7 leaves headroom while
-# excluding overflow-scale values. Volumes: daily US share volume is far below
-# 1e13. Dividend: never above the price bound. Split factor: real splits are
-# well within 1e4.
+# excluding overflow-scale values. Adjusted prices have their own, larger bound:
+# cumulative reverse splits scale a history up (DryShips' disclosed ratios
+# multiply to 11,760,000, so a 1.0 raw close adjusts to 1.176e7); 1e13 leaves
+# a million-fold margin over the raw bound and is still far from float
+# overflow. Volumes: daily US share volume is far below 1e13. Dividend: a raw
+# per-share amount, never above the raw price bound. Split factor: real splits
+# are well within 1e4.
 PRICE_MAX = 1e7
+ADJ_PRICE_MAX = 1e13
 VOLUME_MAX = 1e13
 DIVIDEND_MAX = PRICE_MAX
 SPLIT_MAX = 1e4
@@ -233,7 +241,8 @@ def values_problem(values: Mapping[str, Any]) -> str | None:
         return "non_positive"
     if any(values[k] < 0 for k in _VOLUMES) or values["divCash"] < 0:
         return "negative"
-    if (any(values[k] > PRICE_MAX for k in _PRICES)
+    if (any(values[k] > PRICE_MAX for k in _RAW)
+            or any(values[k] > ADJ_PRICE_MAX for k in _ADJ)
             or any(values[k] > VOLUME_MAX for k in _VOLUMES)
             or values["divCash"] > DIVIDEND_MAX or values["splitFactor"] > SPLIT_MAX):
         return "value_out_of_bounds"
@@ -269,9 +278,28 @@ def _median(values: list[Fraction]) -> Fraction | None:
     return values[len(values) // 2] if values else None
 
 
+def _format_ratio(m: Fraction) -> str:
+    """A positive exact ratio to six decimals, from integers only: fixed point
+    for 1e-6 <= m < 1e9 (``2.000000``), scientific outside (``2.023767e+330``).
+    Rounds half to even like ``format``; never converts to a float, so no
+    ratio of two valid prices can overflow."""
+    if Fraction(1, 10**6) <= m < 10**9:
+        n = round(m * 10**6)
+        return f"{n // 10**6}.{n % 10**6:06d}"
+    e = len(str(m.numerator)) - len(str(m.denominator))      # within one of the exponent
+    while m < Fraction(10) ** e:
+        e -= 1
+    while m >= Fraction(10) ** (e + 1):
+        e += 1
+    c = round(m / Fraction(10) ** e * 10**6)                  # 1_000_000 .. 10_000_000
+    if c == 10**7:
+        c, e = 10**6, e + 1
+    return f"{c // 10**6}.{c % 10**6:06d}e{'+' if e >= 0 else '-'}{abs(e):02d}"
+
+
 def _ratio(pairs: list[tuple[float, float]]) -> str:
     m = _median([Fraction(a) / Fraction(b) for a, b in pairs])
-    return "n/a" if m is None else f"{float(m):.6f}"
+    return "n/a" if m is None else _format_ratio(m)
 
 
 def validate_series(

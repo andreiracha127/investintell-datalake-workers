@@ -1,11 +1,12 @@
 """Differential fuzz: ``validate_series`` vs an independent reference.
 
-The corpus is a deterministic sweep (``sweep_cases``, ~1,000 cases; on its own
-it kills every mutant in ``test_eod_history_mutants``) followed by
-seeded random cases (``gen_case``). Intervals lie in years the reference's own
-hard-coded NYSE calendar covers (1970, 1973, 1974, 1982, 1985, 2001, 2012,
-2023-2026), straddle ``CALENDAR_SUPPORTED_FROM`` (1970-01-01), lie before it,
-or are reversed.
+The corpus is a deterministic sweep (``sweep_cases``, ~1,800 cases; on its own
+it kills every validator mutant in ``test_eod_history_mutants``) followed by
+seeded random cases (``gen_case``). Intervals are drawn from the whole
+supported domain, every year 1970-2026, whose sessions the reference derives
+from its own hard-coded NYSE rules and special closures (no
+``exchange_calendars``); they also straddle ``CALENDAR_SUPPORTED_FROM``
+(1970-01-01), lie before it, or are reversed.
 
 Sweep (enumerated, every item is a case):
  S1. provider: each of the 12 price fields x 17 kinds (NaN, +/-inf, negative,
@@ -24,15 +25,19 @@ Sweep (enumerated, every item is a case):
      ulp inside and one ulp outside, at four scale pairs;
  S6. the 1e-6 stored/provider edge on each of the 8 price columns, stored side
      larger or smaller, at/inside/outside, three scales;
- S7. magnitude bounds at and over on coherent bars; extreme magnitudes (raw
-     1e-308 with adjusted 1e7 or 1e307/1e308; float quotients overflow);
+ S7. magnitude bounds at and over on coherent bars (raw prices 1e7, adjusted
+     prices 1e13, a 11,760,000x reverse-split history); extreme magnitudes (raw
+     1e-308 with adjusted 1e7 or 1e307/1e308; float quotients overflow; the
+     conflict ratio of 1e7 against 5e-324, which does not fit a float);
  S8. the calendar domain edge (1965, 1969-12-31, 1970-01-01/02) and a window
-     around every reference holiday, with and without a bar on the holiday.
+     around every reference holiday and special closure of 1970-2026, with and
+     without a bar on the closed day.
 
 Random (``gen_case``):
  R1. series shapes: complete, prefix, suffix, middle slice, interior holes,
-     duplicates, unsorted, off-session or outside bars, endpoints only, empty,
-     non-list body; evidenced gaps;
+     duplicates, unsorted, off-session or outside bars, duplicates of an
+     outside or off-session bar, endpoints only, empty, non-list body (a dict,
+     a string, None, a tuple of valid bars); evidenced gaps;
  R2. one provider field corrupted (all kinds above plus order-only breaks), a
      date corrupted a quarter of the time;
  R3. stored states: empty, complete, partial, gappy, outside the interval,
@@ -41,11 +46,12 @@ Random (``gen_case``):
  R4. boundary and extreme bars (factor edges, overflow, bounds), the 1e-6 edge
      on all raw or all adjusted fields, scales from 1e-4 to 1e4.
 
-On every case the production verdict, reason code and rows must equal the
-reference's; every certifying verdict must satisfy the invariant on its own
-terms (test-local exact predicate and exchange_calendars sessions); the digest
-must be order-independent and change when a stored value changes or a stored
-row is deleted.
+On every case the production verdict, reason code and rows (each row with the
+ticker it was emitted for) must equal the reference's; every certifying verdict
+must satisfy the invariant on its own terms (test-local exact predicate and
+exchange_calendars sessions); the digest must be order-independent and change
+when a stored value changes, a stored row is deleted, or an unchanged row moves
+to another date.
 
 ``EOD_FUZZ_CASES`` sets the random size (CI default 3,000); ``EOD_FUZZ_SEED``
 the seed.
@@ -73,9 +79,10 @@ _XNYS = xcals.get_calendar("XNYS", start="1970-01-01")
 CAL = v.xnys_calendar()
 D = dt.timedelta
 KEYS = ref.KEYS
-BOUND = {"open": 1e7, "high": 1e7, "low": 1e7, "close": 1e7, "adjOpen": 1e7,
-         "adjHigh": 1e7, "adjLow": 1e7, "adjClose": 1e7, "volume": 1e13,
+BOUND = {"open": 1e7, "high": 1e7, "low": 1e7, "close": 1e7, "adjOpen": 1e13,
+         "adjHigh": 1e13, "adjLow": 1e13, "adjClose": 1e13, "volume": 1e13,
          "adjVolume": 1e13, "divCash": 1e7, "splitFactor": 1e4}
+TICKER = "FZ"
 STORED_OF = dict(zip(KEYS, ref.COLS))
 
 
@@ -352,7 +359,7 @@ def gen_case(rng):
     p_kind = rng.choice([
         "complete", "complete", "complete", "prefix", "suffix", "middle", "holes",
         "duplicate", "unsorted", "off_session", "outside", "field", "field", "field",
-        "empty", "body", "endpoints"])
+        "empty", "body", "endpoints", "dup_outside", "dup_off_session", "tuple_body"])
     if p_kind == "prefix" and provider:
         provider = provider[:rng.randrange(len(provider))]
     elif p_kind == "suffix" and provider:
@@ -381,7 +388,19 @@ def gen_case(rng):
     elif p_kind == "empty":
         provider = []
     elif p_kind == "body":
-        provider = rng.choice([{"detail": "x"}, "oops", None])
+        provider = rng.choice([{"detail": "x"}, "oops", None, tuple(provider), ()])
+    elif p_kind == "tuple_body":
+        provider = tuple(provider)
+    elif p_kind == "dup_outside" and valid:
+        d = rng.choice([start - D(days=rng.randint(1, 5)), end + D(days=rng.randint(1, 5))])
+        if d.year in ref.HOLIDAYS:
+            extra_bar = make_bar(rng, d, f1)
+            provider += [extra_bar, dict(extra_bar)]
+    elif p_kind == "dup_off_session" and exp:
+        off = _non_session(rng, start, end, set(exp))
+        if off:
+            extra_bar = make_bar(rng, off, f1)
+            provider += [extra_bar, dict(extra_bar)]
     elif p_kind == "endpoints" and len(provider) > 2:
         provider = [provider[0], provider[-1]]
     if p_kind != "unsorted" and isinstance(provider, list) and rng.random() < 0.2:
@@ -406,7 +425,8 @@ def coherent(row):
         return False
     if min(o, h, lo, c, ao, ah, al, ac, split) <= 0 or min(vol, av, div) < 0:
         return False
-    if max(o, h, lo, c, ao, ah, al, ac, div) > 1e7 or max(vol, av) > 1e13 or split > 1e4:
+    if (max(o, h, lo, c, div) > 1e7 or max(ao, ah, al, ac) > 1e13
+            or max(vol, av) > 1e13 or split > 1e4):
         return False
     if not (lo <= min(o, c) and max(o, c) <= h and al <= min(ao, ac) and max(ao, ac) <= ah):
         return False
@@ -419,7 +439,14 @@ def _code(reason):
 
 
 def signature(verdict):
-    return verdict.status, _code(verdict.reason), {r[1]: tuple(r[2:]) for r in verdict.rows}
+    """(status, reason code, {date: (emitted ticker, twelve values)})."""
+    return verdict.status, _code(verdict.reason), {r[1]: (r[0], *r[2:]) for r in verdict.rows}
+
+
+def expected(start, end, provider, stored, gaps, ticker):
+    """The reference's verdict in ``signature`` form for ``ticker``."""
+    status, code, new = ref.reference_verdict(start, end, provider, stored, gaps)
+    return status, code, {d: (ticker, *values) for d, values in new.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +539,12 @@ def sweep_cases():
         "endpoints": ([base[0], base[-1]], {}, frozenset()),
         "provider_off_session": (base + [sweep_bar(friday)], {}, frozenset()),
         "provider_outside": (base + [sweep_bar(after)], {}, frozenset()),
+        "tuple_body": (tuple(base), {}, frozenset()),
+        "empty_tuple_body": ((), {}, frozenset()),
+        # duplicates combined with the rules that follow the duplicate rule
+        "duplicate_outside": (base + [sweep_bar(after), sweep_bar(after)], {}, frozenset()),
+        "duplicate_off_session": (base + [sweep_bar(friday), sweep_bar(friday)], {}, frozenset()),
+        "outside_and_off_session": (base + [sweep_bar(after), sweep_bar(friday)], {}, frozenset()),
         "stored_complete": (base, dict(full), frozenset()),
         "stored_partial": (base, {d: full[d] for d in days[:2]}, frozenset()),
         "stored_absent": (base[:1] + base[2:], dict(full), frozenset()),
@@ -568,10 +601,25 @@ def sweep_cases():
             ("split_over", {**unit, "splitFactor": math.nextafter(1e4, math.inf)}),
             ("split_tiny", {**unit, "splitFactor": 5e-324}),
             ("volume_negative_zero", {**unit, "volume": -0.0}),
+            ("adj_price_at", flat_bar(one, 1e7, 1e13)),
+            ("adj_price_over", flat_bar(one, 1e7, math.nextafter(1e13, math.inf))),
+            ("adj_reverse_split", flat_bar(one, 1.0, 11_760_000.0)),
+            ("adj_small_raw", flat_bar(one, 1e-3, 1e13)),
             ("overflow_factor", {**flat_bar(one, 1e-308, 1e7), "adjOpen": 1e6, "adjLow": 1e6}),
             ("tiny_coherent", flat_bar(one, 1e-308, 1e7)),
             ("gate_extreme", {**flat_bar(one, 1e-308, 1e307), "adjHigh": 1e308, "adjClose": 1e308})):
         yield one, one, [bar], {}, frozenset(), ("bound", label)
+    # the same adjusted bound on retained rows, and conflict ratios no float holds
+    at = flat_bar(one, 1e7, 1e13)
+    yield one, one, [at], {one: to_stored(at)}, frozenset(), ("stored_bound", "adj_at")
+    over_adj = {**to_stored(at), "adj_high": math.nextafter(1e13, math.inf)}
+    yield one, one, [at], {one: over_adj}, frozenset(), ("stored_bound", "adj_over")
+    for label, prov, kept in (
+            ("raw", flat_bar(one, 1e7, 1e7), flat_bar(one, 5e-324, 5e-324)),
+            ("adjusted", flat_bar(one, 1e-300, 1e7), flat_bar(one, 1e-300, 5e-324)),
+            ("raw_small", flat_bar(one, 5e-324, 5e-324), flat_bar(one, 1e7, 1e7)),
+            ("adjusted_small", flat_bar(one, 1e-300, 5e-324), flat_bar(one, 1e-300, 1e7))):
+        yield one, one, [prov], {one: to_stored(kept)}, frozenset(), ("ratio", label)
     # the calendar domain edge and every reference holiday
     for lo, hi in ((dt.date(1969, 12, 31), dt.date(1970, 1, 9)),
                    (dt.date(1965, 3, 1), dt.date(1965, 3, 31)),
@@ -605,11 +653,11 @@ def run_corpus(validator, digest, items, outcomes=None, calendar=CAL):
     pick = random.Random(0)
     for n, (start, end, provider, stored, gaps, kinds) in enumerate(items):
         try:
-            prod = validator("FZ", (start, end), provider, stored, calendar, gaps)
+            prod = validator(TICKER, (start, end), provider, stored, calendar, gaps)
         except Exception as exc:                                        # noqa: BLE001
             yield n, kinds, f"raised {type(exc).__name__}: {exc}"
             continue
-        want = ref.reference_verdict(start, end, provider, stored, gaps)
+        want = expected(start, end, provider, stored, gaps, TICKER)
         got = signature(prod)
         if outcomes is not None:
             outcomes[got[:2]] += 1
@@ -622,7 +670,7 @@ def run_corpus(validator, digest, items, outcomes=None, calendar=CAL):
             final = set(stored) | set(rows)
             if not (exp - gaps <= final <= exp) or set(rows) & set(stored):
                 yield n, kinds, "session invariant"
-            elif not all(coherent(r) for r in rows.values()):
+            elif not all(coherent(r[1:]) for r in rows.values()):
                 yield n, kinds, "bar invariant"
         elif prod.rows:
             yield n, kinds, "rows on a refusal"
@@ -637,6 +685,13 @@ def run_corpus(validator, digest, items, outcomes=None, calendar=CAL):
                 yield n, kinds, f"digest blind to {col}"
             if digest({k: x for k, x in stored.items() if k != d}) == prod.digest:
                 yield n, kinds, "digest blind to a deleted row"
+            # an UNCHANGED row on another date is another snapshot
+            free = next(day for day in (d + D(days=k) for k in (1, 2, 3, 5, 8, 400))
+                        if day not in stored)
+            moved = {k: x for k, x in stored.items() if k != d}
+            moved[free] = stored[d]
+            if digest(moved) == prod.digest:
+                yield n, kinds, "digest blind to the date of a row"
 
 
 def test_validator_matches_the_reference_and_keeps_the_invariant():
@@ -655,11 +710,22 @@ def test_validator_matches_the_reference_and_keeps_the_invariant():
 
 
 def test_reference_calendar_agrees_with_exchange_calendars_on_its_years():
-    """The reference's hand-written NYSE closures and exchange_calendars agree
-    on every reference year; a disagreement means one of them is wrong."""
+    """The reference's own NYSE rules and special closures (every year 1970-2026)
+    and exchange_calendars agree session by session; a disagreement means one
+    of them is wrong (a one-off offline review found none)."""
+    assert ref.YEARS == tuple(range(1970, 2027))
     for year in ref.YEARS:
         a, b = dt.date(year, 1, 1), dt.date(year, 12, 31)
         assert ref.ref_sessions(a, b) == own_sessions(a, b) == set(CAL.sessions(a, b)), year
+
+
+def test_special_closures_are_not_sessions_in_either_calendar():
+    for day in ref.SPECIAL_CLOSURES:
+        assert not ref.ref_sessions(day, day) and not own_sessions(day, day), day
+        assert not CAL.sessions(day, day), day
+    assert dt.date(1994, 4, 27) in ref.SPECIAL_CLOSURES          # Nixon's funeral
+    assert CAL.sessions(dt.date(1994, 4, 26), dt.date(1994, 4, 28)) == {
+        dt.date(1994, 4, 26), dt.date(1994, 4, 28)}
 
 
 @pytest.mark.parametrize("value", [

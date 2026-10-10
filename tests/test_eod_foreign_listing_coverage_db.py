@@ -19,9 +19,11 @@ budget abort and resume.
 from __future__ import annotations
 
 import collections
+import contextlib
 import datetime as dt
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -32,6 +34,8 @@ import psycopg
 import pytest
 from psycopg import errors, sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+from test_eod_history_mutants import WARMER_MUTANTS, warmer_mutant
 
 from src.workers import _tiingo
 from src.workers import eod_history_validation as v
@@ -192,7 +196,8 @@ class FakeTiingo:
     rows fetched before a corporate action. ``bad`` overrides fields of single
     bars; ``omit`` drops single bars from responses; ``price_start`` /
     ``price_end`` make price data start later or end earlier than meta says;
-    ``raw_prices`` replaces a ticker's price body verbatim."""
+    ``raw_prices`` replaces a ticker's price body verbatim; ``meta_start`` /
+    ``meta_end`` replace the metadata dates verbatim."""
 
     def __init__(self):
         self.listings: dict[str, dict] = {}
@@ -234,8 +239,10 @@ class FakeTiingo:
             return httpx.Response(200, json={
                 "ticker": ticker.lower(), "name": lst.get("name", f"{ticker} Holdings"),
                 "exchangeCode": lst.get("exchange", "NYSE"), "description": "",
-                "startDate": None if lst.get("no_start") else lst["start"].isoformat(),
-                "endDate": None if lst.get("no_end") else lst["end"].isoformat(),
+                "startDate": lst["meta_start"] if "meta_start" in lst else (
+                    None if lst.get("no_start") else lst["start"].isoformat()),
+                "endDate": lst["meta_end"] if "meta_end" in lst else (
+                    None if lst.get("no_end") else lst["end"].isoformat()),
             })
         params = parse_qs(urlsplit(str(request.url)).query)
         start = D.fromisoformat(params["startDate"][0])
@@ -1539,3 +1546,335 @@ def test_gate4_history_before_1970_is_not_requested_and_not_an_error(db, tiingo)
         D(1970, 1, 1))
     assert completion_of(db, "OLDT") == ("history_complete", as_of)
     assert stats["completed"] == 1 and "error_tickers" not in stats
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Gate 5 (head 56f7047a): transaction scope, chunk footprint, discovery isolation
+# ──────────────────────────────────────────────────────────────────────────────
+IDLE = psycopg.pq.TransactionStatus.IDLE
+
+
+def relation_locks(db, pid):
+    return db.q("SELECT mode, count(*) FROM pg_locks WHERE pid = %s AND locktype = 'relation'"
+                " GROUP BY mode ORDER BY mode", (pid,))
+
+
+class LockProbe:
+    """A Tiingo stand-in that records, on every call, the worker connection's
+    transaction state and relation locks, and (once, during the first price
+    request) tries to compress a historical chunk with a 100 ms lock timeout."""
+
+    def __init__(self, db, conn, fake, *, prices="success_new"):
+        self.db, self.conn, self.fake, self.prices = db, conn, fake, prices
+        self.seen = []
+        self.compressed = None
+
+    def _look(self, call):
+        self.seen.append((call, self.conn.info.transaction_status,
+                          relation_locks(self.db, self.conn.info.backend_pid)))
+
+    def fetch_meta_result(self, ticker):
+        self._look("meta")
+        lst = self.fake.listing(ticker)
+        return "found", {"name": f"{ticker} Holdings", "exchangeCode": "NYSE",
+                         "startDate": lst["start"].isoformat(), "endDate": lst["end"].isoformat()}
+
+    def fetch_daily_bars_result(self, ticker, first, last):
+        self._look("prices")
+        if self.compressed is None:
+            chunk = self.db.one(
+                "SELECT format('%%I.%%I', chunk_schema, chunk_name)"
+                " FROM timescaledb_information.chunks WHERE hypertable_schema = %s"
+                " AND hypertable_name = 'eod_prices' AND NOT is_compressed"
+                " ORDER BY range_start LIMIT 1", (self.db.schema,))[0]
+            self.db.conn.execute("SET lock_timeout = '100ms'")
+            try:
+                self.db.conn.execute("SELECT compress_chunk(%s::regclass)", (chunk,))
+                self.compressed = True
+            except errors.LockNotAvailable:
+                self.compressed = False
+            finally:
+                self.db.conn.execute("SET lock_timeout = 0")
+        if self.prices != "success_new":
+            return self.prices, []
+        return "success_new", [self.fake.bar(ticker, d) for d in bdays(first, last)]
+
+
+def hold_scenario(db, module, ticker, prices):
+    """One ticker with twelve historical monthly chunks, verified by ``module``'s
+    ``cover_foreign_history`` against a probe. Returns the problems found."""
+    instruments_row(db, ticker)
+    store_rows(db, ticker, D(2025, 10, 1), D(2026, 9, 30))
+    fake = FakeTiingo()
+    fake.listings[ticker] = {"start": D(2025, 10, 1), "end": AS_OF}
+    chunks = db.one("SELECT count(*) FROM timescaledb_information.chunks"
+                    " WHERE hypertable_schema = %s AND hypertable_name = 'eod_prices'", (db.schema,))[0]
+    problems = [] if chunks >= 12 else [f"only {chunks} chunks"]
+    with psycopg.connect(db.dsn) as conn:
+        probe = LockProbe(db, conn, fake, prices=prices)
+        stats = module.cover_foreign_history(conn, probe, [ticker], as_of=AS_OF, cap=5)
+        after = (conn.info.transaction_status, relation_locks(db, conn.info.backend_pid))
+    for call, status, locks in probe.seen:
+        if status != IDLE or locks:
+            problems.append(f"{call}: {status.name}, {locks}")
+    if probe.compressed is not True:
+        problems.append("a concurrent compress_chunk() was blocked")
+    if after != (IDLE, []):
+        problems.append(f"the phase returned {after[0].name} holding {after[1]}")
+    return problems, stats
+
+
+@pytest.mark.parametrize("prices", ["success_new", "rate_limited", "not_configured"])
+def test_gate5_finding1_the_worker_holds_no_chunk_lock_during_any_request(db, prices):
+    problems, stats = hold_scenario(db, w, "OLDT", prices)
+    assert problems == []
+    if prices == "success_new":
+        assert stats["completed"] == 1 and stats["errors"] == 0
+    else:
+        assert stats["errors"] == 1 and stats["completed"] == 0
+
+
+def test_gate5_finding1_the_held_snapshot_mutant_is_killed_by_the_lock_scenario(db):
+    """Re-introducing the held snapshot (W01) leaves the worker INTRANS with
+    its chunk locks across the price request and blocks the compression."""
+    name, old, new, _ = next(m for m in WARMER_MUTANTS if m[0].startswith("W01_"))
+    problems, _ = hold_scenario(db, warmer_mutant(name, old, new), "OLDT", "rate_limited")
+    assert any("INTRANS" in p for p in problems), problems
+    assert "a concurrent compress_chunk() was blocked" in problems
+    assert any(p.startswith("the phase returned INTRANS") for p in problems), problems
+
+
+def put(db, ticker, day):
+    db.conn.execute("INSERT INTO eod_prices VALUES (%s, %s, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1)",
+                    (ticker, day))
+
+
+def chunk_span(db, day):
+    """(first date, exclusive end date) of the chunk holding ``day``, from the catalog."""
+    return db.one(
+        "SELECT (range_start AT TIME ZONE 'UTC')::date, (range_end AT TIME ZONE 'UTC')::date"
+        " FROM timescaledb_information.chunks WHERE hypertable_schema = %s"
+        " AND hypertable_name = 'eod_prices'"
+        " AND range_start <= (%s::date)::timestamp AT TIME ZONE 'UTC'"
+        " AND range_end > (%s::date)::timestamp AT TIME ZONE 'UTC'", (db.schema, day, day))
+
+
+def test_gate5_chunk_footprint_counts_only_the_chunks_of_the_read_range(db):
+    instruments_row(db, "CHK")
+    for day in (D(1962, 3, 5), D(1970, 1, 5), AS_OF, D(2026, 12, 7)):
+        put(db, "CHK", day)
+    first = chunk_span(db, D(1970, 1, 5))
+    last_start, _ = chunk_span(db, AS_OF)
+    assert first == (D(1970, 1, 1), D(1970, 1, 31)) and last_start > D(1970, 2, 1)
+    for tz in ("UTC", "America/Los_Angeles", "Asia/Tokyo"):
+        with psycopg.connect(db.dsn) as conn:
+            conn.execute(sql.SQL("SET TIME ZONE {}").format(sql.Literal(tz)))
+            count = lambda a, b: w.chunk_footprint(conn, a, b)       # noqa: E731
+            assert count(D(1970, 1, 1), AS_OF) == 2, tz         # not 1962, not after as_of
+            assert count(D(1961, 1, 1), D(2030, 1, 1)) == 4, tz
+            assert count(D(1970, 1, 30), AS_OF) == 2, tz        # the last day of the first chunk
+            assert count(D(1970, 1, 31), AS_OF) == 1, tz        # its end is exclusive
+            assert count(D(1970, 1, 1), last_start - dt.timedelta(days=1)) == 1, tz
+            assert count(D(1970, 1, 1), last_start) == 2, tz    # the first day of the last
+            conn.rollback()
+
+
+def test_gate5_chunk_footprint_is_zero_without_a_hypertable(db):
+    with psycopg.connect(db.dsn) as conn:
+        conn.execute("DROP TABLE eod_prices CASCADE")
+        assert w.chunk_footprint(conn, D(1970, 1, 1), AS_OF) == 0       # no such table
+        conn.execute("CREATE TABLE eod_prices (ticker text, date date)")
+        assert w.chunk_footprint(conn, D(1970, 1, 1), AS_OF) == 0       # a plain table
+        conn.rollback()
+
+
+class NoCalls:
+    def fetch_meta_result(self, ticker):
+        raise AssertionError("a request was made")
+
+    fetch_daily_bars_result = fetch_meta_result
+
+
+def test_gate5_finding_chunk_footprint_ceiling_at_production_scale(db):
+    """806 monthly chunks (production has 689 in the read range): one more than
+    the ceiling's 800 refuses the pass before any request and any read."""
+    instruments_row(db, "BIG")
+    as_of = D(2036, 12, 31)
+    try:
+        # A few dozen chunks a statement: one transaction never needs more locks
+        # than the smallest lock table (the CI container's) holds.
+        for first in range(0, 806, 50):
+            db.conn.execute(
+                "INSERT INTO eod_prices SELECT 'BIG', d::date, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1"
+                " FROM generate_series(date '1970-01-05' + 30 * %s, date '1970-01-05' + 30 * %s,"
+                " interval '30 days') d", (first, min(first + 49, 805)))
+        with psycopg.connect(db.dsn) as conn:
+            assert w.chunk_footprint(conn, D(1970, 1, 1), as_of) == 806 > w.MAX_VERIFICATION_CHUNKS
+            assert w.chunk_footprint(conn, D(1970, 1, 1), D(2010, 1, 1)) < w.MAX_VERIFICATION_CHUNKS
+            stats = w.cover_foreign_history(conn, NoCalls(), ["BIG"], as_of=as_of, cap=5)
+            assert relation_locks(db, conn.info.backend_pid) == []
+            assert stats["chunk_footprint_exceeded"] == 1 and stats["errors"] == 1
+            assert stats["meta_requests"] == 0 and stats["history_fetches"] == 0
+            assert stats["error_tickers"]["BIG"].startswith("chunk_footprint_exceeded: 806 chunks")
+            with pytest.raises(w.ChunkFootprintExceeded):
+                w.promote(conn, "BIG", v.Verdict(v.VERDICT_COMPLETE, "t", (), v.stored_digest({})),
+                          through=as_of, history_start=D(1970, 1, 1))
+        assert status_of(db, "BIG")[0] == "history_incomplete"
+        assert status_of(db, "BIG")[1].startswith("chunk_footprint_exceeded")
+    finally:                  # the fixture's DROP SCHEMA could not lock 806 chunks at once
+        for year in range(1980, 2041, 4):
+            db.conn.execute("SELECT drop_chunks('eod_prices', older_than => %s::date)",
+                            (D(year, 1, 1),))
+
+
+def test_gate5_chunk_footprint_ceiling_through_the_entrypoint(db, tiingo, monkeypatch):
+    resolved_lines(db, "WIDE")
+    instruments_row(db, "WIDE")
+    store_rows(db, "WIDE", D(2026, 5, 1), D(2026, 9, 30))
+    tiingo.listings["WIDE"] = {"start": D(2026, 5, 1), "end": AS_OF}
+    run(db, history_limit=0)                      # the ring first: it may add the newest chunk
+    with psycopg.connect(db.dsn) as conn:
+        n = w.chunk_footprint(conn, v.CALENDAR_SUPPORTED_FROM, AS_OF)
+    assert n >= 5
+    monkeypatch.setattr(w, "MAX_VERIFICATION_CHUNKS", n - 1)
+    tiingo.requests.clear()
+    stats = run(db)["foreign_history"]
+    assert stats["chunk_footprint_exceeded"] == 1 and stats["errors"] == 1
+    assert stats["completed"] == 0 and tiingo.history_requests("WIDE") == []
+    assert status_of(db, "WIDE")[0] == "history_incomplete"
+    assert status_of(db, "WIDE")[1] == f"chunk_footprint_exceeded: {n} chunks in 1970-01-01..{AS_OF}, limit {n - 1}"
+    # at the ceiling the same ticker is verified and certified
+    monkeypatch.setattr(w, "MAX_VERIFICATION_CHUNKS", n)
+    db.conn.execute("UPDATE eod_warmer_ticker_status SET retry_after = NULL")
+    stats = run(db)["foreign_history"]
+    assert stats["completed"] == 1 and stats["chunk_footprint_exceeded"] == 0
+    assert status_of(db, "WIDE")[0] == "history_complete"
+
+
+def test_gate5_promote_refuses_above_the_ceiling_and_writes_nothing(db, monkeypatch):
+    instruments_row(db, "PRM")
+    store_rows(db, "PRM", D(2026, 8, 3), D(2026, 9, 30))
+    before = snapshot(db, "PRM", D(2026, 8, 1), D(2026, 10, 1))
+    rows = [("PRM", D(2026, 10, 1), *[1.0] * 4, 10, *[1.0] * 4, 10, 0.0, 1.0)]
+    monkeypatch.setattr(w, "MAX_VERIFICATION_CHUNKS", 0)
+    with psycopg.connect(db.dsn) as conn:
+        w.ensure_status_table(conn)
+        with pytest.raises(w.ChunkFootprintExceeded):
+            certify(conn, "PRM", rows, D(2026, 8, 3))
+    assert snapshot(db, "PRM", D(2026, 8, 1), D(2026, 10, 1)) == before
+    assert db.one("SELECT count(*) FROM eod_warmer_ticker_status WHERE ticker = 'PRM'")[0] == 0
+
+
+# --- discovery isolation (comment 4238137020) and an empty source (4238137015) ---
+@pytest.fixture
+def stub_resolver(db):
+    """Replace the W1c resolver with a plpgsql body; the real one is restored."""
+    @contextlib.contextmanager
+    def install(body):
+        with psycopg.connect(db.dsn, autocommit=True) as admin:
+            admin.execute("ALTER FUNCTION public.sec_foreign_listing_at(bigint, text, date)"
+                          " RENAME TO sec_foreign_listing_at_real")
+            admin.execute(
+                "CREATE FUNCTION public.sec_foreign_listing_at(bigint, text, date)"
+                " RETURNS TABLE(listing_status text) LANGUAGE plpgsql AS $f$ BEGIN "
+                + body + " END $f$")
+        try:
+            yield
+        finally:
+            with psycopg.connect(db.dsn, autocommit=True) as admin:
+                admin.execute("DROP FUNCTION public.sec_foreign_listing_at(bigint, text, date)")
+                admin.execute("ALTER FUNCTION public.sec_foreign_listing_at_real"
+                              " RENAME TO sec_foreign_listing_at")
+    return install
+
+
+@pytest.mark.parametrize(("body", "reason"), [
+    ("RAISE EXCEPTION 'resolver exploded';", "RaiseException"),
+    ("RAISE EXCEPTION 'permission denied for table sec_foreign_listing_evidence'"
+     " USING ERRCODE = '42501';", "InsufficientPrivilege"),
+    ("RAISE EXCEPTION 'relation does not exist' USING ERRCODE = '42P01';", "UndefinedTable"),
+])
+def test_gate5_comment_4238137020_a_failing_discovery_leaves_the_ring_running(
+        db, tiingo, stub_resolver, body, reason):
+    resolved_lines(db, "BOOM")
+    db.conn.execute("INSERT INTO universe_constituents VALUES ('RING', 'Ring Co', 'active')")
+    with stub_resolver(body):
+        stats = run(db)
+    assert stats["foreign_history"] == {"source": "error", "reason": reason, "errors": 1}
+    assert "aborted" not in stats                                  # run_worker exits zero
+    assert history_of(db, "RING")[2] > 0                           # the ring warmed its ticker
+    assert db.one("SELECT count(*) FROM eod_warmer_ticker_status")[0] == 0     # history skipped
+    assert tiingo.history_requests("BOOM") == []
+
+
+def test_gate5_comment_4238137020_a_slow_discovery_is_cancelled_by_its_own_timeout(
+        db, tiingo, stub_resolver, monkeypatch):
+    resolved_lines(db, "SLOW")
+    db.conn.execute("INSERT INTO universe_constituents VALUES ('RING', 'Ring Co', 'active')")
+    monkeypatch.setattr(w, "FOREIGN_DISCOVERY_TIMEOUT_MS", 300)
+    started = time.monotonic()
+    with stub_resolver("PERFORM pg_sleep(60); RETURN;"):
+        stats = run(db)
+    assert time.monotonic() - started < 30
+    assert stats["foreign_history"] == {"source": "error", "reason": "QueryCanceled", "errors": 1}
+    assert history_of(db, "RING")[2] > 0 and "aborted" not in stats
+
+
+def test_gate5_comment_4238137020_the_statement_timeout_is_local_to_discovery(db):
+    with psycopg.connect(db.dsn) as conn:           # idle, as run() calls it
+        w.foreign_listing_tickers(conn, AS_OF)
+        assert conn.execute("SHOW statement_timeout").fetchone()[0] == "0"
+        conn.rollback()
+
+
+def test_gate5_comment_4238137020_the_worker_entrypoint_exits_zero(
+        db, tiingo, stub_resolver, monkeypatch, capsys):
+    from src import run_worker
+
+    resolved_lines(db, "BOOM")
+    db.conn.execute("INSERT INTO universe_constituents VALUES ('RING', 'Ring Co', 'active')")
+    monkeypatch.setenv("WORKER", "eod_prices_warmer")
+    monkeypatch.setenv("WORKER_CALC_DATE", AS_OF.isoformat())
+    monkeypatch.setattr(run_worker, "resolve_dsn", lambda: db.dsn)
+    with stub_resolver("RAISE EXCEPTION 'resolver exploded';"):
+        run_worker.main()                                   # SystemExit would fail the test
+    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert printed["worker"] == "eod_prices_warmer" and printed["fetched"] > 0
+    assert printed["foreign_history"] == {"source": "error", "reason": "RaiseException", "errors": 1}
+
+
+def test_gate5_comment_4238137015_an_empty_source_is_reported_not_omitted(db, tiingo):
+    db.conn.execute("INSERT INTO universe_constituents VALUES ('RING', 'Ring Co', 'active')")
+    stats = run(db)
+    assert stats["foreign_history"] == {
+        "source": "empty", "source_tickers": 0, "already_complete": 0, "pending": 0,
+        "processed": 0, "completed": 0, "errors": 0, "deferred": 0}
+    assert history_of(db, "RING")[2] > 0
+
+
+# --- malformed metadata dates (comment 4238137011) ---
+@pytest.mark.parametrize("field", ["meta_start", "meta_end"])
+@pytest.mark.parametrize("bad", ["2020-01-01garbage", "2020-01-01T12:00:00Z", "20200101", " 2020-01-01"])
+def test_gate5_comment_4238137011_a_malformed_metadata_date_is_retried_never_an_interval(
+        db, tiingo, field, bad):
+    resolved_lines(db, "MALF")
+    tiingo.listings["MALF"] = {"start": D(1993, 1, 29), "end": AS_OF, field: bad}
+    stats = run(db)["foreign_history"]
+    assert stats["errors"] == 1 and stats["completed"] == 0
+    name = "start" if field == "meta_start" else "end"
+    assert status_of(db, "MALF")[:2] == ("history_incomplete", f"meta:malformed_{name}_date")
+    assert tiingo.of("prices", "MALF") == []                       # no interval, no price request
+    assert db.one("SELECT count(*) FROM instruments WHERE ticker = 'MALF'")[0] == 0   # nothing seeded
+    assert db.one("SELECT attempts, retry_after IS NOT NULL FROM eod_warmer_ticker_status"
+                  " WHERE ticker = 'MALF'") == (1, True)
+
+
+def test_gate5_comment_4238137011_documented_timestamp_dates_are_accepted(db, tiingo):
+    resolved_lines(db, "TSZ")
+    tiingo.listings["TSZ"] = {"start": D(2026, 8, 3), "end": AS_OF,
+                              "meta_start": "2026-08-03T00:00:00.000Z",
+                              "meta_end": "2026-10-09T00:00:00Z"}
+    stats = run(db)["foreign_history"]
+    assert stats["completed"] == 1 and stats["errors"] == 0
+    assert db.one("SELECT tiingo_start_date, tiingo_end_date FROM instruments WHERE ticker = 'TSZ'") \
+        == (D(2026, 8, 3), AS_OF)

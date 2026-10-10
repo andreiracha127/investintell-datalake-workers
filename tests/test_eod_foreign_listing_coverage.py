@@ -11,7 +11,10 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
+from decimal import Decimal, localcontext
+from fractions import Fraction
 
+import _eod_warmer_scenarios as scenarios
 import pytest
 
 import exchange_calendars as xcals
@@ -551,3 +554,130 @@ def test_fetch_daily_bars_result_tells_empty_from_failure(client):
     bar = {"date": "1997-10-09T00:00:00.000Z"}
     client._client.get = lambda *a, **k: _Resp(200, [bar])  # type: ignore[assignment]
     assert client.fetch_daily_bars_result("TSM", D(1997, 10, 9), AS_OF) == ("success_new", [bar])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Gate 5 (head 56f7047a): transaction scope, chunk footprint, ratio overflow,
+# adjusted-price bound, and the four review comments on the entrypoint
+# ──────────────────────────────────────────────────────────────────────────────
+def flat_one(raw, adj, **over):
+    return one(open=raw, high=raw, low=raw, close=raw,
+               adjOpen=adj, adjHigh=adj, adjLow=adj, adjClose=adj, **over)
+
+
+def test_gate5_finding1_no_transaction_is_open_across_any_http_call():
+    assert scenarios.snapshot_released(w) is None
+
+
+def test_gate5_finding1_every_continuation_branch_leaves_the_connection_idle():
+    for prices in (("rate_limited", None), ("not_configured", None), ("success_new", [{}])):
+        conn, _, _, _ = scenarios.cover(w, prices=prices)
+        assert not conn.in_txn, prices
+
+
+def test_gate5_chunk_footprint_ceiling_and_where_it_is_checked():
+    assert w.MAX_VERIFICATION_CHUNKS == 800
+    assert scenarios.footprint_ceiling(w) is None
+
+
+def ratio_text(m: Fraction) -> str:
+    """Independent oracle: the same rounding through ``decimal`` at 80 digits."""
+    with localcontext() as ctx:
+        ctx.prec = 80
+        q = Decimal(m.numerator) / Decimal(m.denominator)
+    if Fraction(1, 10**6) <= m < 10**9:
+        return f"{q:.6f}"
+    mantissa, exponent = f"{q:.6e}".split("e")      # Decimal does not pad the exponent
+    return f"{mantissa}e{int(exponent):+03d}"
+
+
+def test_gate5_finding2_extreme_raw_ratio_is_a_conflict_not_an_overflow():
+    provider = flat_one(1e7, 1e7)
+    retained = stored_of([flat_one(5e-324, 5e-324)])[END]
+    verdict = V1(provider, retained)
+    assert verdict.status == v.VERDICT_CONFLICT
+    want = ratio_text(Fraction(1e7) / Fraction(5e-324))
+    assert want.endswith("e+330")
+    assert verdict.reason == f"raw_differs: ratio={want} on 1/1 sessions"
+
+
+def test_gate5_finding2_extreme_adjusted_ratio_is_a_rebase_not_an_overflow():
+    provider = flat_one(1e-300, 1e7)
+    retained = stored_of([flat_one(1e-300, 5e-324)])[END]
+    verdict = V1(provider, retained)
+    assert verdict.status == v.VERDICT_REBASE
+    want = ratio_text(Fraction(1e7) / Fraction(5e-324))
+    assert verdict.reason == f"adjusted_moved: ratio={want} on 1/1 sessions"
+
+
+@pytest.mark.parametrize("numerator, denominator", [
+    (2, 1), (1, 2), (1, 3), (2, 3), (1, 10**6), (999_999, 10**9), (1, 10**7), (10**9, 1),
+    (10**9 - 1, 1), (123_456_789_012, 1), (10**30 + 1, 3), (5, 10**12), (1, 5 * 10**323),
+    (2**1074 * 10**7, 1), (9_999_999_5, 10**7 * 10), (99_999_995, 10**7), (1, 1),
+])
+def test_gate5_finding2_ratio_text_is_exact_and_in_range_format_is_unchanged(numerator, denominator):
+    m = Fraction(numerator, denominator)
+    assert v._format_ratio(m) == ratio_text(m)
+
+
+def test_gate5_finding2_ratio_text_matches_decimal_over_random_fractions():
+    import random
+
+    rng = random.Random(20261010)
+    for _ in range(4000):
+        num = rng.getrandbits(rng.randint(1, 1100)) + 1
+        den = rng.getrandbits(rng.randint(1, 1100)) + 1
+        m = Fraction(num, den)
+        assert v._format_ratio(m) == ratio_text(m), (num, den)
+
+
+def test_gate5_finding2_ratio_text_keeps_the_established_strings():
+    assert v._format_ratio(Fraction(2)) == "2.000000"
+    assert v._format_ratio(Fraction(1, 2)) == "0.500000"
+    assert v._ratio([]) == "n/a"
+
+
+@pytest.mark.parametrize(("over", "ok"), [
+    # raw prices keep their 1e7 bound; adjusted prices have their own, 1e13
+    ({"open": 1e7, "high": 1e7, "low": 1e7, "close": 1e7,
+      "adjOpen": 1e13, "adjHigh": 1e13, "adjLow": 1e13, "adjClose": 1e13}, True),
+    ({"open": 1e7, "high": 1e7, "low": 1e7, "close": 1e7,
+      **{k: math.nextafter(1e13, math.inf) for k in v._ADJ}}, False),
+    ({"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,       # DryShips: 11,760,000x
+      "adjOpen": 11_760_000.0, "adjHigh": 11_760_000.0, "adjLow": 11_760_000.0,
+      "adjClose": 11_760_000.0}, True),
+    ({k: math.nextafter(1e7, math.inf) for k in v._RAW}, False),   # raw still 1e7
+    ({"open": 1e7, "high": 1e7, "low": 1e7, "close": 1e7,
+      **{k: math.nextafter(1e7, math.inf) for k in v._ADJ}}, True),
+])
+def test_gate5_adjusted_prices_have_their_own_inclusive_bound(over, ok):
+    verdict = V1(one(**over))
+    if ok:
+        assert verdict.status == v.VERDICT_LOAD, verdict.reason
+    else:
+        assert verdict.reason == "unusable_bar: value_out_of_bounds at index 0"
+
+
+def test_gate5_adjusted_price_bound_applies_to_stored_rows_too():
+    stored = stored_of([flat_one(1e7, 1e13)])[END]
+    assert V1(flat_one(1e7, 1e13), stored).status == v.VERDICT_COMPLETE
+    over = math.nextafter(1e13, math.inf)
+    verdict = V1(flat_one(1e7, 1e13), {**stored, "adj_high": over})
+    assert verdict.status == v.VERDICT_CONFLICT
+    assert verdict.reason == f"stored_bar_invalid: value_out_of_bounds on {END}"
+
+
+def test_gate5_comment_4238137011_malformed_metadata_dates_are_retried_not_truncated():
+    assert scenarios.metadata_dates(w) is None
+    for bad in scenarios.MALFORMED_DATES:
+        assert w._parse_meta_date(bad) is None, bad
+    assert w._parse_meta_date("2026-10-05T00:00:00.000Z") == D(2026, 10, 5)
+    assert w._parse_meta_date(None) is None and w._parse_meta_date("") is None
+
+
+def test_gate5_comment_4238137015_an_empty_source_is_reported_not_omitted():
+    assert scenarios.source_states(w) is None
+
+
+def test_gate5_comment_4238137020_a_discovery_failure_never_stops_the_ring():
+    assert scenarios.discovery_isolation(w) is None

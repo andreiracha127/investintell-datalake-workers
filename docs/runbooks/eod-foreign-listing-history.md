@@ -21,8 +21,22 @@ Each run, in one query with `SET LOCAL jit = off`:
   historical `WORKER_CALC_DATE` run has no look-ahead). The ratio status does
   not matter.
 
-Tiingo decides existence. Without the W1c resolver the source reports `absent`
-and the ring runs unchanged. The worker asserts symbol coverage, not issuer
+Tiingo decides existence. The source is optional and isolated. Discovery runs
+under a statement timeout of 60 s (`FOREIGN_DISCOVERY_TIMEOUT_MS`; measured
+10 s over 1,676 symbols on 2026-10-10) and any exception it raises (the
+resolver or its evidence relation not deployed, a permission error, the timeout)
+is rolled back and reported; it never reaches the ring, and the worker exits
+zero. `foreign_history` in the run statistics is one of:
+
+| `foreign_history` | Meaning |
+|---|---|
+| `{source: "absent"}` | the W1c resolver is not installed |
+| `{source: "error", reason: <ExceptionType>, errors: 1}` | discovery failed; the history phase is skipped, the ring ran |
+| `{source: "empty", source_tickers: 0, ...}` with zero counts | the resolver exists and no line resolves (an early historical replay) |
+| `{source_tickers, skipped: "cap_zero" \| "aborted"}` | lines exist, the phase did not run |
+| the phase statistics | the phase ran |
+
+Without the W1c resolver the ring runs unchanged. The worker asserts symbol coverage, not issuer
 ownership: a reused ticker carries the current security's history, so Light
 must keep using the line's evidenced dates (D6).
 
@@ -43,6 +57,18 @@ interval is fixed before the fetch:
 `[max(startDate, CALENDAR_SUPPORTED_FROM), min(as_of, max(meta endDate, last stored date in scope))]`.
 One price request asks for exactly that interval. Nothing after the run's
 `as_of` is in scope. Meta without an `endDate` is retried.
+
+Metadata dates (`startDate`, `endDate`) are accepted only in the documented
+forms, the bar validator's rule (`YYYY-MM-DD` or `YYYY-MM-DDT00:00:00[.000]Z`).
+A malformed value is neither truncated nor coerced: the ticker is recorded
+`history_incomplete` (`meta:malformed_start_date` or `meta:malformed_end_date`)
+with backoff, nothing is seeded into `instruments` from it, and no interval is
+built. An absent date keeps its own path (`tiingo_unknown: no_start_date`; a
+missing `endDate` is `meta_without_end_date`, retried).
+
+No database transaction is open during any request. The plan's reads, the
+chunk-footprint count and the stored-row snapshot are each ended by a commit
+before the next Tiingo call (see Lock footprint).
 
 ### Calendar domain
 
@@ -106,9 +132,11 @@ split factor), checked in this order:
   later comparison sees a non-finite value;
 - prices and the split factor positive (`non_positive`); volumes and the
   dividend non-negative (`negative`);
-- magnitude bounds, inclusive (`value_out_of_bounds`): prices ≤ 1e7 (BRK-A, the
-  highest US share price, is below 1e6), volumes ≤ 1e13, dividend ≤ 1e7, split
-  factor ≤ 1e4;
+- magnitude bounds, inclusive (`value_out_of_bounds`): raw prices ≤ 1e7 (BRK-A,
+  the highest US share price, is below 1e6), adjusted prices ≤ 1e13 (cumulative
+  reverse splits scale a history up: DryShips' disclosed ratios multiply to
+  11,760,000, so a raw 1.0 adjusts to 1.176e7), volumes ≤ 1e13, dividend ≤ 1e7,
+  split factor ≤ 1e4;
 - raw and adjusted `low ≤ min(open, close) ≤ max(open, close) ≤ high`
   (`ohlc_order`);
 - the adjustment factors adjOpen/open, adjHigh/high and adjLow/low within 1% of
@@ -118,7 +146,11 @@ Every tolerance comparison is exact rational arithmetic (`fractions.Fraction`),
 cross-multiplied: no quotient is formed in floating point, so nothing can
 overflow to inf or NaN (raw 1e-308 with adjusted 1e6 and 1e7 is a tenfold
 factor mismatch and is refused), and a difference exactly at a tolerance is
-accepted.
+accepted. The ratio named in a `raw_differs` or `adjusted_moved` reason is
+formatted from the exact fraction with integer arithmetic, never a float:
+`2.000000` for 1e-6 ≤ ratio < 1e9, scientific outside (`2.023767e+330`). Two
+valid bars at the extremes of the bounds are therefore a conflict or a rebase,
+not an `OverflowError`.
 
 ### Tolerances
 
@@ -168,13 +200,65 @@ mapper (`build_eod_rows`), which truncates dates to their first ten characters
 and checks neither bar coherence nor sessions. Bringing the ring under the same
 validation is a pre-existing follow-up, not part of this change.
 
-A promotion holds its locks for one transaction. Measured on the production
-layout (disposable PG18 TimescaleDB, 692 monthly chunks, 688 compressed), a
-1970-to-date promotion of 14,315 rows took 2.5 s and held 3,457 locks, five per
-chunk. Production's lock table holds 256 × 100 = 25,600 entries, 3,973 of them
-in use when sampled (2026-10-10). A container at the TimescaleDB image defaults
-(128 × 25) cannot hold it, so the end-to-end pre-1970 test replays as of
-1970-12-31.
+## Lock footprint
+
+A verification pass reads the ticker's rows in `[1970-01-01, as_of]`, and so
+does every promotion. Each read locks every chunk of that range (about five
+locks per chunk: the chunk and its indexes) whichever dates the ticker holds.
+Production on 2026-10-10: 787 chunks in all, 689 of them overlapping the range,
+one new chunk a year at 360-day chunks.
+
+The phases, in order, and what each holds:
+
+1. **Plan**: reads `eod_prices` for every covered ticker's first date, then
+   commits. No lock is held afterwards.
+2. **Verification**: the meta call, then the stored-row snapshot is
+   materialised and its transaction **committed immediately**, before the price
+   request. The connection is idle (not in a transaction, no relation lock)
+   during the price request, its retries (three attempts of up to 30 s plus
+   sleeps of 1, 4 and 16 s, about 111 s before pacing) and every continuation:
+   rate limit, no key, a retryable status. `promote` takes the instruments lock,
+   re-reads and compares the digest, so integrity does not depend on the
+   snapshot's transaction. Before this fix the snapshot transaction stayed open
+   through the price request and the continuation branches: a database
+   reproduction with 12 historical chunks held 42 AccessShare locks, a
+   concurrent `compress_chunk()` failed a 100 ms lock timeout, and a
+   rate-limited phase returned still in a transaction; the plan's read held 46
+   across the first meta call.
+3. **Promotion**: one transaction, as short as its row inserts. Measured on the
+   production layout (disposable PG18 TimescaleDB, 692 monthly chunks, 688
+   compressed), a 1970-to-date promotion of 14,315 rows took 2.5 s and held
+   3,457 locks, five per chunk. Production's lock table holds 256 × 100 =
+   25,600 entries, 3,973 of them in use when sampled (2026-10-10). A container
+   at the TimescaleDB image defaults (128 × 25) cannot hold it, so the
+   end-to-end pre-1970 test replays as of 1970-12-31.
+
+**Chunk ceiling.** `MAX_VERIFICATION_CHUNKS = 800`. Before the meta call, and
+again before promotion, the worker counts the `eod_prices` chunks overlapping
+`[1970-01-01, as_of]` from the TimescaleDB catalog (no chunk lock; the
+hypertable is resolved through `search_path`, dates compared in UTC). Above the
+ceiling it records `history_incomplete` with `chunk_footprint_exceeded: <n>
+chunks in <range>, limit 800`, counts it in the run statistics
+(`chunk_footprint_exceeded`, also in `error_tickers`), and does nothing else:
+no request, no read of `eod_prices`, no write. The range is the one the
+snapshot reads, a superset of the verification interval, because the read spans
+`[1970-01-01, as_of]` whatever the ticker's `startDate`. Production is at 689
+of 800; raise the ceiling only after checking `max_locks_per_transaction`.
+
+**Measuring and stopping.** Measure the whole verification phase, not only the
+promotion, while Light ingestion and the compression policy run: sample
+`pg_locks` for the worker's backend at the three points above. During the
+price request it must show no `relation` lock. Stop and return
+`EOD_HISTORY_TICKERS_PER_RUN` to 0 on any of these:
+
+- an `out of shared memory` error in the worker, Light's ingestion or the
+  compression policy;
+- persistent compression blocking (the policy job failing or waiting on the
+  same chunks across two consecutive runs);
+- more than 12,800 main lock-table rows (half of the 25,600 entries):
+  `SELECT count(*) FROM pg_locks WHERE NOT fastpath AND mode <> 'SIReadLock'`.
+  The row count alone does not say who holds what: inspect the objects and
+  holders separately (`... GROUP BY pid` and `count(DISTINCT relation)`).
 
 ## What `history_complete` certifies
 
@@ -241,6 +325,7 @@ Run stats report:
 - `deferred`: pending tickers that did not settle this run;
 - `history_rows`;
 - `errors` / `error_tickers` and `fail_closed` / `fail_closed_tickers`;
+- `chunk_footprint_exceeded`: passes refused for the chunk ceiling;
 - `tiingo_unknown`, and `waiting` per status.
 
 ## Budget
@@ -276,27 +361,42 @@ compressed chunks of 110,000 rows each at about 9,000 rows/s:
 
 - `tests/test_eod_history_fuzz.py`: differential fuzz of `validate_series`
   against `tests/_eod_history_reference.py`. The corpus is a deterministic sweep
-  (1,016 cases: every field × every corruption kind on provider and stored
+  (1,817 cases: every field × every corruption kind on provider and stored
   data, every date variant, every tolerance edge at, one ulp inside and one ulp
-  outside, the bounds, extreme magnitudes, series and store shapes, the 1970
-  edge, and a window around every reference holiday) followed by seeded random
-  cases (3,000 in CI).
-  Verdict, reason code and rows must match; certifying verdicts must satisfy a
-  test-local exact invariant; the digest must be order-independent and change
-  when any stored value changes or a row is deleted.
-- `tests/test_eod_history_mutants.py`: 39 mutants of the validation module,
-  each an explicit text patch (the review gate's 26 plus 13 of this suite's
-  own). Each must be killed by its deterministic targeted counterexample and by
-  the seeded corpus (sweep + 1,500 random cases); the score is 39/39, and the
-  sweep alone kills all 39.
+  outside, the bounds (raw 1e7, adjusted 1e13), extreme magnitudes and
+  conflict ratios no float holds, series and store shapes including tuple
+  bodies and duplicates combined with outside or off-session bars, the 1970
+  edge, and a window around every reference holiday and special closure of
+  1970–2026) followed by seeded random cases (3,000 in CI).
+  Verdict, reason code and rows (with the ticker each was emitted for) must
+  match; certifying verdicts must satisfy a test-local exact invariant; the
+  digest must be order-independent and change when any stored value changes, a
+  row is deleted, or an unchanged row moves to another date.
+- `tests/test_eod_history_mutants.py`: 49 mutants of the validation module,
+  each an explicit text patch (the review gate's 26, 13 of this suite's own,
+  the five that gate 5 wrote and the corpus then missed, and five for the
+  ratio and the adjusted-price bound). Each must be killed by its deterministic
+  targeted counterexample and by the seeded corpus (sweep + 1,500 random
+  cases); the score is 49/49. A further 16 mutants of the warmer (the held
+  snapshot and plan transactions, the chunk ceiling and where it is checked,
+  metadata dates, discovery isolation, the empty source) are each killed by the
+  database-free scenario in `tests/_eod_warmer_scenarios.py` that pins the
+  rule; the held snapshot is also killed against TimescaleDB by the real-lock
+  scenario (`pg_locks`, a concurrent `compress_chunk()`).
 - Calendar independence: the reference does not use `exchange_calendars`. Its
-  sessions are weekdays minus a hard-coded list of NYSE closures for 1970,
-  1973, 1974, 1982, 1985, 2001, 2012 and 2023–2026 (special closures included:
-  1973-01-25, 1985-09-27, 2001-09-11..14, 2012-10-29/30, 2025-01-09), and a test
-  checks both calendars agree on every one of those years. Fuzz intervals are
-  drawn from those years. Residual dependence: for every other year, production
-  sessions come from `exchange_calendars` 4.13.2 (pinned) alone, and the
-  test-local session invariant uses the same library.
+  sessions are weekdays minus its own NYSE holiday rules, with the years each
+  applied (MLK Day from 1998, Juneteenth from 2022, Washington's Birthday and
+  Memorial Day on Mondays from 1971, Good Friday from its own Easter
+  computation, presidential Election Days 1972–1980, the Saturday and Sunday
+  observance rule with its month-end exception), plus 15 one-off closures
+  (1972-12-28, 1973-01-25, 1977-07-14, 1985-09-27, 1994-04-27, 2001-09-11..14,
+  2004-06-11, 2007-01-02, 2012-10-29/30, 2018-12-05, 2025-01-09), for every
+  year 1970–2026; sources are cited in its docstring. A one-time offline
+  comparison with `exchange_calendars` 4.13.2, session by session over 20,819
+  days, found no disagreement, and a test repeats it for every year. Fuzz
+  intervals are drawn from all those years. Residual dependence: the
+  test-local session invariant uses the same library, and the reference ends at
+  2026 (a later year needs `LAST_YEAR` raised and its closures added).
 
 ## Production numbers (read-only, 2026-10-10)
 
@@ -350,13 +450,14 @@ print(len(symbols), len(plan["complete"]), {k: len(v) for k, v in plan["waiting"
    - The first run creates and verifies the status table; check its shape and grants.
    - Confirm the Light deployment includes the D6 alive-span checks, and decide the session-gap rule.
 2. Set the cap to 25 for at least three successful cron slots (`railway service restart --service eod-prices-warmer` runs one at once). After each, check:
-   - status counts and reasons;
+   - the lock footprint of the whole verification phase (see Lock footprint): no relation lock during a price request, the promotion peak, the main lock-table rows against 12,800, and the chunk count against the 800 ceiling;
+   - status counts and reasons, including `chunk_footprint_exceeded` (it must be 0);
    - fail-closed ratios;
    - that retries rotate;
    - HTTP attempts and 429s;
    - the oldest ring `max(date)`;
    - that partial chunks fall back after the next policy run.
-3. Raise the cap to 100, then 250. Return it to 0 to pause.
+3. Raise the cap to 100, then 250. Return it to 0 to pause, and on any stop condition under Lock footprint.
 
 Rollback is the previous image: the status table holds only progress state, and
 inserted history is ordinary `eod_prices` rows.

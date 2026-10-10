@@ -1,20 +1,33 @@
-"""Mutation-kill test for ``validate_series`` and ``stored_digest``.
+"""Mutation-kill test for ``validate_series``, ``stored_digest`` and the warmer.
 
 Each mutant is an explicit text patch (old -> new, ``old`` occurring exactly
-once) applied to ``src/workers/eod_history_validation.py`` and executed as a
-throwaway module. A mutant is killed when it disagrees with the independent
-reference (``_eod_history_reference``) or breaks a digest property on
+once) applied to a source file and executed as a throwaway module.
+
+Validator mutants patch ``src/workers/eod_history_validation.py``. One is
+killed when it disagrees with the independent reference
+(``_eod_history_reference``) or breaks a digest property on
 
 * its deterministic targeted counterexample, and
 * the reduced seeded corpus: the fuzz module's deterministic sweep plus
   ``EOD_MUTANT_CASES`` random cases (default 1,500, seed ``EOD_MUTANT_SEED``).
 
-Both are required for every mutant. M01-M26 are the review gate's mutations
-(gate 4, head 57df03fe) re-targeted to the current source; X01-X13 are this
-suite's own (X13 re-creates the calendar defect the sweep found in this round).
-If the validator changes so
-that a patch no longer applies, the test fails: update the patch, never drop
-the mutant.
+Both are required for every validator mutant. M01-M26 are the review gate's
+mutations (gate 4, head 57df03fe) re-targeted to the current source; X01-X13
+are this suite's own (X13 re-creates a calendar defect an earlier sweep found);
+N02, N15, N20, N21 and G5C01 are the five mutants gate 5 (head 56f7047a) wrote
+that the corpus then missed (accept tuple bodies; the duplicate rule after the
+outside-request rule; emit the wrong ticker; a digest blind to dates; Nixon's
+funeral, 1994-04-27, as a session); R01-R05 are this round's (the conflict
+ratio through a float, and the adjusted-price bound).
+
+Warmer mutants (W01-W15 and W02a, 16) patch ``src/workers/eod_prices_warmer.py``. The fuzz
+corpus judges ``validate_series`` only, so each is killed by the database-free
+scenario (``_eod_warmer_scenarios``) that pins its rule, which the original
+module passes; the real-lock proof of W01 runs against TimescaleDB in
+``test_eod_foreign_listing_coverage_db``.
+
+If a source changes so that a patch no longer applies, the test fails: update
+the patch, never drop the mutant.
 """
 
 from __future__ import annotations
@@ -28,13 +41,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import _eod_history_reference as ref
+import _eod_warmer_scenarios as scenarios
 import pytest
 import test_eod_history_fuzz as fuzz
 
 from src.workers import eod_history_validation as v
+from src.workers import eod_prices_warmer as w
 
 SOURCE = Path(v.__file__).read_text(encoding="utf-8")
+WARMER_SOURCE = Path(w.__file__).read_text(encoding="utf-8")
 CORPUS_CASES = int(os.environ.get("EOD_MUTANT_CASES", "1500"))
 CORPUS_SEED = int(os.environ.get("EOD_MUTANT_SEED", "20261010"))
 
@@ -148,7 +163,7 @@ MUTANTS = [
      "if abs(float(a) / float(r) - float(adj_close) / float(close))"
      " > float(FACTOR_REL_TOL) * float(adj_close) / float(close):",
      one(flat(raw=1e-308, adj=1e7, adjOpen=1e6, adjLow=1e6))),
-    ("X04_drop_price_bound", "any(values[k] > PRICE_MAX for k in _PRICES)", "False",
+    ("X04_drop_price_bound", "any(values[k] > PRICE_MAX for k in _RAW)", "False",
      one(flat(raw=math.nextafter(1e7, math.inf), adj=1e7))),
     ("X05_drop_stored_outside_interval", "if stored_outside:", "if False and stored_outside:",
      Case((DAY, DAY), [bar(DAY)], {PREV: row(bar(PREV))})),
@@ -174,21 +189,121 @@ MUTANTS = [
     # was floored at 1970-01-01 was refused as outside the calendar
     ("X13_query_calendar_from_requested_day", "lo = max(first, self._first_session)",
      "lo = first", Case((dt.date(1970, 1, 1), dt.date(1970, 1, 2)), [bar(dt.date(1970, 1, 2))], {})),
+    # ---- the five gate 5 mutants the corpus missed (now killed by it) ----
+    ("N02_accept_tuple_bodies", "if not isinstance(provider_bars, list):",
+     "if not isinstance(provider_bars, (list, tuple)):", Case((DAY, DAY), (bar(),), {})),
+    ("N15_duplicate_rule_after_outside",
+     'if len(bars) != len(provider_bars):\n        return verdict(VERDICT_INCOMPLETE,\n'
+     '                       f"duplicate_dates={len(provider_bars) - len(bars)}")\n'
+     '    outside = sorted(d for d in bars if d < start or d > end)\n'
+     '    if outside:\n        return verdict(VERDICT_INCOMPLETE, f"bars_outside_request: first={outside[0]}")\n',
+     'outside = sorted(d for d in bars if d < start or d > end)\n'
+     '    if outside:\n        return verdict(VERDICT_INCOMPLETE, f"bars_outside_request: first={outside[0]}")\n'
+     '    if len(bars) != len(provider_bars):\n        return verdict(VERDICT_INCOMPLETE,\n'
+     '                       f"duplicate_dates={len(provider_bars) - len(bars)}")\n',
+     Case((DAY, DAY), [bar(NEXT), bar(NEXT)], {})),
+    ("N20_emit_the_wrong_ticker", "rows = tuple((ticker, d,", 'rows = tuple(("WRONG", d,', one(bar())),
+    ("N21_digest_omits_dates", "h.update(day.isoformat().encode())", 'h.update(b"")', DIGEST),
+    ("G5C01_nixon_funeral_is_a_session", "lo.isoformat(), last.isoformat()))",
+     "lo.isoformat(), last.isoformat())) | (frozenset({_dt.date(1994, 4, 27)})"
+     " if first <= _dt.date(1994, 4, 27) <= last else frozenset())",
+     Case((dt.date(1994, 4, 26), dt.date(1994, 4, 28)),
+          [bar(dt.date(1994, 4, 26)), bar(dt.date(1994, 4, 28))], {})),
+    # ---- this round: conflict ratio without a float; the adjusted-price bound ----
+    ("R01_ratio_through_a_float", 'return "n/a" if m is None else _format_ratio(m)',
+     'return "n/a" if m is None else f"{float(m):.6f}"',
+     Case((DAY, DAY), [flat(raw=1e7, adj=1e7)], {DAY: row(flat(raw=5e-324, adj=5e-324))})),
+    ("R02_adjusted_bound_is_the_raw_bound", "ADJ_PRICE_MAX = 1e13", "ADJ_PRICE_MAX = PRICE_MAX",
+     one(flat(raw=1.0, adj=11_760_000.0))),
+    ("R03_drop_the_adjusted_bound", "or any(values[k] > ADJ_PRICE_MAX for k in _ADJ)", "or False",
+     one(flat(raw=1e7, adj=math.nextafter(1e13, math.inf)))),
+    ("R04_adjusted_bound_exclusive", "any(values[k] > ADJ_PRICE_MAX for k in _ADJ)",
+     "any(values[k] >= ADJ_PRICE_MAX for k in _ADJ)", one(flat(raw=1e7, adj=1e13))),
+    ("R05_raw_bound_is_the_adjusted_bound", "any(values[k] > PRICE_MAX for k in _RAW)",
+     "any(values[k] > ADJ_PRICE_MAX for k in _RAW)",
+     one(flat(raw=math.nextafter(1e7, math.inf), adj=1e7))),
 ]
 GATE = [m for m in MUTANTS if m[0].startswith("M")]
 OWN = [m for m in MUTANTS if m[0].startswith("X")]
+GATE5 = [m for m in MUTANTS if m[0].startswith(("N", "G"))]
+ROUND6 = [m for m in MUTANTS if m[0].startswith("R")]
+
+# (name, old, new, scenario): scenario(module) is None for the original warmer
+# and a problem for the mutant.
+WARMER_MUTANTS = [
+    ("W01_hold_the_snapshot_transaction",
+     "            conn.commit()\n            tiingo_start = start",
+     "            tiingo_start = start", scenarios.snapshot_released),
+    # Either commit alone is covered by the other (the preflight's closes the
+    # plan's reads; the explicit one is defence in depth), so W02 removes both.
+    ("W02_hold_the_plan_transaction",
+     ("    conn.commit()   # the plan's reads end here: no table lock is held across HTTP\n",
+      "    chunks = chunk_footprint(conn, since, through)\n    conn.commit()\n"),
+     ("", "    chunks = chunk_footprint(conn, since, through)\n"), scenarios.snapshot_released),
+    ("W02a_hold_the_preflight_transaction",
+     "    chunks = chunk_footprint(conn, since, through)\n    conn.commit()\n",
+     "    chunks = chunk_footprint(conn, since, through)\n", scenarios.snapshot_released),
+    ("W03_footprint_ceiling_exclusive", "if chunks > MAX_VERIFICATION_CHUNKS:",
+     "if chunks >= MAX_VERIFICATION_CHUNKS:", scenarios.footprint_ceiling),
+    ("W04_footprint_ceiling_raised", "MAX_VERIFICATION_CHUNKS = 800", "MAX_VERIFICATION_CHUNKS = 8000",
+     scenarios.footprint_ceiling),
+    ("W05_no_footprint_check_in_promote",
+     "    require_chunk_footprint(conn, since, through)\n    inserted = 0", "    inserted = 0",
+     scenarios.footprint_ceiling),
+    ("W06_no_footprint_check_before_the_pass",
+     "            require_chunk_footprint(conn, CALENDAR_SUPPORTED_FROM, as_of)\n", "",
+     scenarios.footprint_ceiling),
+    ("W07_footprint_counted_over_the_wrong_range",
+     "require_chunk_footprint(conn, CALENDAR_SUPPORTED_FROM, as_of)",
+     "require_chunk_footprint(conn, as_of, as_of)", scenarios.footprint_ceiling),
+    ("W08_promotion_refusal_is_an_unexpected_failure", "except ChunkFootprintExceeded as exc:",
+     "except ZeroDivisionError as exc:", scenarios.footprint_ceiling),
+    ("W09_malformed_metadata_is_not_detected",
+     'return value is not None and value != "" and parse_bar_date(value) is None', "return False",
+     scenarios.metadata_dates),
+    ("W10_metadata_date_is_truncated", "    return parse_bar_date(value)\n\n\ndef _meta_date_malformed",
+     "    return parse_bar_date(str(value)[:10])\n\n\ndef _meta_date_malformed", scenarios.metadata_dates),
+    ("W11_discovery_failure_escapes",
+     "except Exception as exc:  # noqa: BLE001 \u2014 isolation is the point",
+     "except ZeroDivisionError as exc:  # noqa: BLE001", scenarios.discovery_isolation),
+    ("W12_discovery_failure_not_rolled_back",
+     "                conn.rollback()\n                source_error = type(exc).__name__",
+     "                source_error = type(exc).__name__", scenarios.discovery_isolation),
+    ("W13_discovery_failure_not_reported",
+     '{"source": "error", "reason": source_error, "errors": 1}', '{"source": "error", "reason": source_error}',
+     scenarios.discovery_isolation),
+    ("W14_empty_source_is_omitted",
+     "    else:\n        # The resolver exists and no line resolves", "    elif False:\n        # The resolver exists and no line resolves",
+     scenarios.source_states),
+    ("W15_empty_source_is_not_called_empty", '"source": "empty", "source_tickers": 0,',
+     '"source": "none", "source_tickers": 0,', scenarios.source_states),
+]
 _MODULES: dict[str, types.ModuleType] = {}
 
 
-def mutant(name: str, old: str, new: str) -> types.ModuleType:
+def _build(name: str, source: str, old, new) -> types.ModuleType:
+    """``old`` / ``new`` are one patch, or equal-length tuples of patches
+    (a mutant that needs two removals to be observable)."""
     if name not in _MODULES:
-        assert SOURCE.count(old) == 1, f"{name}: patch target occurs {SOURCE.count(old)} times"
-        mod_name = f"_eod_validation_mutant_{name}"
+        changed = source
+        for o, n in zip(old if isinstance(old, tuple) else (old,),
+                        new if isinstance(new, tuple) else (new,), strict=True):
+            assert changed.count(o) == 1, f"{name}: patch target occurs {changed.count(o)} times"
+            changed = changed.replace(o, n)
+        mod_name = f"_eod_mutant_{name}"
         module = types.ModuleType(mod_name)
         sys.modules[mod_name] = module          # dataclasses resolve the module by name
-        exec(compile(SOURCE.replace(old, new), f"<{mod_name}>", "exec"), module.__dict__)
+        exec(compile(changed, f"<{mod_name}>", "exec"), module.__dict__)
         _MODULES[name] = module
     return _MODULES[name]
+
+
+def mutant(name: str, old: str, new: str) -> types.ModuleType:
+    return _build(name, SOURCE, old, new)
+
+
+def warmer_mutant(name: str, old: str, new: str) -> types.ModuleType:
+    return _build(name, WARMER_SOURCE, old, new)
 
 
 def verdict_problem(module, case: Case) -> str | None:
@@ -198,7 +313,7 @@ def verdict_problem(module, case: Case) -> str | None:
             "MT", case.interval, case.provider, case.stored, module.xnys_calendar(), case.gaps))
     except Exception as exc:                                            # noqa: BLE001
         return f"raised {type(exc).__name__}: {exc}"
-    want = ref.reference_verdict(*case.interval, case.provider, case.stored, case.gaps)
+    want = fuzz.expected(*case.interval, case.provider, case.stored, case.gaps, "MT")
     return None if got == want else f"{got[:2]} != reference {want[:2]}"
 
 
@@ -214,6 +329,11 @@ def digest_problem(module) -> str | None:
             return f"blind to {col}"
     if module.stored_digest({PREV: snap[PREV]}) == base:
         return "blind to a deleted row"
+    # the same unchanged row on another date is another snapshot
+    if module.stored_digest({PREV: snap[PREV], NEXT: snap[DAY]}) == base:
+        return "blind to the date of a row"
+    if module.stored_digest({DAY: snap[PREV]}) == module.stored_digest({PREV: snap[PREV]}):
+        return "blind to the date of the only row"
     return None
 
 
@@ -234,8 +354,12 @@ def corpus_kill(module) -> int | None:
 
 
 def test_mutant_list_is_complete():
-    assert len(GATE) == 26 and len(OWN) >= 10
-    assert len({m[0] for m in MUTANTS}) == len(MUTANTS)
+    assert len(GATE) == 26 and len(OWN) == 13
+    assert [m[0].split("_")[0] for m in GATE5] == ["N02", "N15", "N20", "N21", "G5C01"]
+    assert len(ROUND6) == 5
+    assert len(GATE) + len(OWN) + len(GATE5) + len(ROUND6) == len(MUTANTS)
+    names = [m[0] for m in MUTANTS] + [m[0] for m in WARMER_MUTANTS]
+    assert len(set(names)) == len(names)
 
 
 @pytest.mark.parametrize("name,old,new,case", MUTANTS, ids=[m[0] for m in MUTANTS])
@@ -243,6 +367,13 @@ def test_targeted_counterexample_kills_the_mutant(name, old, new, case):
     assert targeted_problem(v, case) is None, "the original must agree with the reference"
     problem = targeted_problem(mutant(name, old, new), case)
     assert problem is not None, f"{name} survived its targeted counterexample"
+
+
+@pytest.mark.parametrize("name,old,new,scenario", WARMER_MUTANTS, ids=[m[0] for m in WARMER_MUTANTS])
+def test_warmer_scenario_kills_the_mutant(name, old, new, scenario):
+    assert scenario(w) is None, "the original warmer must pass its scenario"
+    problem = scenario(warmer_mutant(name, old, new))
+    assert problem is not None, f"{name} survived its scenario"
 
 
 def test_mutation_score_on_the_seeded_corpus():
@@ -259,7 +390,14 @@ def test_mutation_score_on_the_seeded_corpus():
             corpus_survivors.append(name)
         lines.append(f"{name:42s} targeted={'killed' if targeted else 'SURVIVED'}"
                      f" corpus={'case ' + str(at) if at is not None else 'survived'}")
-    print(f"\nmutation score {score}/{len(MUTANTS)} (corpus {CORPUS_CASES} cases, seed "
-          f"{CORPUS_SEED})\n" + "\n".join(lines))
+    warmer_killed = 0
+    for name, old, new, scenario in WARMER_MUTANTS:
+        problem = scenario(warmer_mutant(name, old, new))
+        warmer_killed += problem is not None
+        lines.append(f"{name:42s} scenario={'killed' if problem else 'SURVIVED'}")
+    print(f"\nmutation score {score}/{len(MUTANTS)} validator mutants (corpus {CORPUS_CASES} "
+          f"cases, seed {CORPUS_SEED}) + {warmer_killed}/{len(WARMER_MUTANTS)} warmer mutants\n"
+          + "\n".join(lines))
     assert score == len(MUTANTS)
+    assert warmer_killed == len(WARMER_MUTANTS)
     assert not corpus_survivors, f"mutants the corpus alone does not kill: {corpus_survivors}"
