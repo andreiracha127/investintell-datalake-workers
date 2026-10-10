@@ -117,7 +117,9 @@ policy job recompressed every partial chunk in 8 seconds.
 
 From `E:\tmp-deploy\api\backend`, outside 06:00–08:30 UTC, preview the source
 set and classify each ticker as `new`, `needs_meta`, `truncated` or `complete`.
-This makes no Tiingo call and no write:
+This makes no Tiingo call and no write. The path must be a checkout that has
+this change: `E:\investintell-datalake-workers-sep` on `main` after merge, or the
+PR worktree before it.
 
 ```powershell
 @'
