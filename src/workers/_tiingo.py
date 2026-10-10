@@ -397,20 +397,24 @@ class TiingoClient:
 
         ``found`` (a JSON object), ``not_found`` (404: Tiingo does not know the
         ticker), ``invalid_payload`` (another 4xx, an unparseable body, or a
-        non-object body) or ``transient_error`` (transport errors, 5xx or 429s
-        after every retry). Only ``not_found`` says the ticker does not exist;
-        the failures are worth retrying on a later run. Same pacing and 30×429
-        breaker as ``fetch_meta``."""
+        non-object body), ``rate_limited`` (429 on the last attempt: an
+        account-wide budget signal, not a property of the ticker) or
+        ``transient_error`` (transport errors or 5xx after every retry). Only
+        ``not_found`` says the ticker does not exist; the failures are worth
+        retrying later. Same pacing and 30×429 breaker as ``fetch_meta``."""
         url = f"{TIINGO_BASE_URL}/tiingo/daily/{ticker}"
+        failure = "transient_error"
         for sleep_s in _RETRY_SLEEPS:
             self._bucket.acquire()
             self.requests_made += 1
             try:
                 resp = self._client.get(url)
             except Exception:
+                failure = "transient_error"
                 time.sleep(sleep_s)
                 continue
             if resp.status_code == 429:
+                failure = "rate_limited"
                 self.consecutive_429 += 1
                 if self.consecutive_429 >= MAX_CONSECUTIVE_429:
                     raise TiingoBudgetExceeded(
@@ -421,6 +425,7 @@ class TiingoClient:
             if resp.status_code == 404:
                 return "not_found", None
             if resp.status_code >= 500:
+                failure = "transient_error"
                 time.sleep(sleep_s)
                 continue
             if resp.status_code >= 400:
@@ -432,7 +437,7 @@ class TiingoClient:
             if not isinstance(payload, dict):  # error body, e.g. unknown ticker
                 return "invalid_payload", None
             return "found", payload
-        return "transient_error", None
+        return failure, None
 
     def fetch_supported_asset_types(self) -> dict[str, str]:
         """Tiingo's own asset type per ticker, from ``supported_tickers.zip``.

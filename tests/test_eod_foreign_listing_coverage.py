@@ -37,35 +37,126 @@ def test_us_listing_ticker_shape_rejects_non_exchange_symbols(symbol):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Cold start and backfill windows
+# Verification pass (rule: one full-range check before history_complete)
 # ──────────────────────────────────────────────────────────────────────────────
 AS_OF = D(2026, 10, 9)
+START = D(2026, 8, 3)
 
 
-def test_window_for_a_ticker_without_rows_is_tiingo_start_to_as_of():
-    assert w.history_fetch_window(D(1997, 10, 9), None, AS_OF) == (D(1997, 10, 9), AS_OF)
-    # The screener cold start would have been only 745 days.
-    assert AS_OF - dt.timedelta(days=w.NEW_TICKER_LOOKBACK_DAYS) > D(1997, 10, 9)
+def _bdays(a, b):
+    d = a
+    while d <= b:
+        if d.weekday() < 5:
+            yield d
+        d += dt.timedelta(days=1)
 
 
-def test_window_for_truncated_rows_runs_into_the_first_stored_sessions():
-    first = D(2024, 6, 11)
-    start, end = w.history_fetch_window(D(2005, 8, 5), first, AS_OF)
-    assert start == D(2005, 8, 5)
-    assert end == first + dt.timedelta(days=w.OVERLAP_CALENDAR_DAYS)
-    # 21 calendar days hold at least OVERLAP_SESSIONS sessions even with holidays.
-    assert w.OVERLAP_CALENDAR_DAYS >= w.OVERLAP_SESSIONS * 7 // 5 + 4
-    # Never past the run date.
-    assert w.history_fetch_window(D(2005, 8, 5), AS_OF - dt.timedelta(days=3), AS_OF)[1] == AS_OF
+def _row(day, close, adj):
+    # build_eod_rows layout: ticker, date, open, high, low, close, volume,
+    # adj_open, adj_high, adj_low, adj_close, adj_volume, div_cash, split_factor
+    return ("X", day, close, close, close, close, 100, adj, adj, adj, adj, 100, 0.0, 1.0)
 
 
-def test_rows_reaching_the_start_within_tolerance_need_no_window():
-    # startDate on a Saturday; the first bar is the following Monday.
-    assert w.history_fetch_window(D(2005, 8, 6), D(2005, 8, 8), AS_OF) is None
-    assert w.history_fetch_window(D(2005, 8, 5), D(2005, 8, 5), AS_OF) is None
-    assert w.history_fetch_window(
-        D(2005, 8, 5), D(2005, 8, 5) + dt.timedelta(days=w.HISTORY_START_TOLERANCE_DAYS + 1),
-        AS_OF) is not None
+def _px(day):
+    return 20.0 + day.toordinal() % 50 / 10
+
+
+def _fetched(a=START, b=AS_OF, factor=1.0, skip=()):
+    return [_row(d, _px(d), _px(d) * factor) for d in _bdays(a, b) if d not in skip]
+
+
+def _stored(a, b, factor=1.0, skip=()):
+    return {d: {"close": _px(d), "adj_open": _px(d) * factor, "adj_high": _px(d) * factor,
+                "adj_low": _px(d) * factor, "adj_close": _px(d) * factor}
+            for d in _bdays(a, b) if d not in skip}
+
+
+def test_a_ticker_without_rows_loads_the_whole_range():
+    check = w.verify_history(_fetched(), {}, start=START)
+    assert check.verdict == "load"
+    assert [r[1] for r in check.missing] == list(_bdays(START, AS_OF))
+
+
+def test_rows_reaching_the_start_are_not_complete_until_verified():
+    """Re-gate P1 #1: 500 of 1,200 prefix rows committed by an older writer,
+    then the stored 2024-2026 tail. min(date) reaches startDate, yet 700 dates
+    are missing: the pass inserts them instead of declaring completion."""
+    start, tail = D(2020, 1, 1), D(2024, 1, 2)
+    prefix = list(_bdays(start, tail - dt.timedelta(days=1)))
+    stored = {**_stored(prefix[0], prefix[499]), **_stored(tail, AS_OF)}
+    check = w.verify_history(_fetched(start, AS_OF), stored, start=start)
+    assert check.verdict == "load"
+    assert [r[1] for r in check.missing] == prefix[500:]
+
+
+def test_complete_store_is_raw_verified_without_an_adjusted_check():
+    # A dividend moved Tiingo's adjusted basis, but nothing is missing: no insert,
+    # so no seam can be created.
+    check = w.verify_history(_fetched(factor=0.99), _stored(START, AS_OF), start=START)
+    assert check.verdict == "complete"
+    assert check.missing == ()
+
+
+def test_interior_gaps_are_loaded_like_a_prefix():
+    gap = {D(2026, 9, 1), D(2026, 9, 2)}
+    check = w.verify_history(_fetched(), _stored(START, AS_OF, skip=gap), start=START)
+    assert check.verdict == "load"
+    assert {r[1] for r in check.missing} == gap
+
+
+def test_any_raw_close_difference_fails_closed():
+    stored = _stored(D(2026, 9, 1), AS_OF)
+    stored[D(2026, 10, 7)]["close"] *= 2      # a late date, not just the first sessions
+    check = w.verify_history(_fetched(), stored, start=START)
+    assert check.verdict == "conflict"
+    assert check.detail == "raw_differs: ratio=0.500000 on 1/29 sessions"
+
+
+def test_adjusted_basis_must_match_on_all_common_dates_to_insert():
+    # Only the LAST stored session moved; a first-ten check would have passed.
+    stored = _stored(D(2026, 9, 1), AS_OF)
+    stored[AS_OF] = {k: v * 2 if k != "close" else v for k, v in stored[AS_OF].items()}
+    check = w.verify_history(_fetched(), stored, start=START)
+    assert check.verdict == "rebase"
+    assert check.detail == "adjusted_moved: ratio=0.500000 on 1/29 sessions"
+
+
+def test_two_for_one_split_after_the_stored_rows_is_a_rebase():
+    check = w.verify_history(_fetched(factor=0.5), _stored(D(2026, 9, 1), AS_OF), start=START)
+    assert (check.verdict, check.detail) == (
+        "rebase", "adjusted_moved: ratio=0.500000 on 29/29 sessions")
+
+
+def test_a_response_omitting_stored_boundary_sessions_cannot_insert():
+    """Re-gate P1 #2: stored Sep 21–Oct 7 at factor 1.0, Oct 8–9 refreshed at
+    0.5. The response carries the prefix and Oct 8–9 at 0.5 but omits Sep 21–
+    Oct 7, so only matching sessions are common. It must not insert a +103% seam."""
+    boundary = set(_bdays(D(2026, 9, 21), D(2026, 10, 7)))
+    stored = {**_stored(D(2026, 9, 21), D(2026, 10, 7), factor=1.0),
+              **_stored(D(2026, 10, 8), AS_OF, factor=0.5)}
+    fetched = _fetched(factor=0.5, skip=boundary)
+    check = w.verify_history(fetched, stored, start=START)
+    assert check.verdict == "incomplete"
+    assert check.detail == "stored_sessions_missing=13 first=2026-09-21"
+
+
+def test_an_empty_or_late_starting_response_is_incomplete():
+    assert w.verify_history([], _stored(START, AS_OF), start=START).detail == "empty_window"
+    late = w.verify_history(_fetched(D(2026, 9, 1)), {}, start=START)
+    assert (late.verdict, late.detail) == ("incomplete", "starts_after_start_date: first=2026-09-01")
+    # A startDate on a weekend is not "late".
+    assert w.verify_history(_fetched(D(2026, 8, 3)), {}, start=D(2026, 8, 1)).verdict == "load"
+
+
+def test_stored_rows_outside_the_fetched_range_are_ignored():
+    stored = {**_stored(D(2020, 1, 1), D(2020, 1, 31)), **_stored(START, AS_OF)}
+    assert w.verify_history(_fetched(), stored, start=START).verdict == "complete"
+
+
+def test_float_noise_within_tolerance_matches():
+    fetched = [_row(d, _px(d), _px(d) * (1 + 5e-8)) for d in _bdays(START, AS_OF)]
+    stored = _stored(START, AS_OF, skip={START})
+    assert w.verify_history(fetched, stored, start=START).verdict == "load"
 
 
 def test_preview_classification():
@@ -74,87 +165,17 @@ def test_preview_classification():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Adjustment basis at the junction with stored rows
+# Ring admission and retry backoff
 # ──────────────────────────────────────────────────────────────────────────────
-def _row(day, close, adj):
-    # build_eod_rows layout: ticker, date, open, high, low, close, volume,
-    # adj_open, adj_high, adj_low, adj_close, adj_volume, div_cash, split_factor
-    return ("X", day, close, close, close, close, 100, adj, adj, adj, adj, 100, 0.0, 1.0)
+def test_ring_excludes_only_covered_tickers_without_rows():
+    marks = {"DONE": AS_OF, "PART": AS_OF, "RBAS": AS_OF}
+    assert w.ring_excluded(["DONE", "PART", "RBAS", "COLD"], marks) == frozenset({"COLD"})
 
 
-def _stored(day, close, adj):
-    return {"close": close, "adj_open": adj, "adj_high": adj, "adj_low": adj, "adj_close": adj}
-
-
-SESSIONS = [D(2024, 6, 11) + dt.timedelta(days=i) for i in range(14)]
-
-
-def test_same_basis_matches():
-    fetched = [_row(d, 100.0, 97.5) for d in SESSIONS]
-    stored = {d: _stored(d, 100.0, 97.5) for d in SESSIONS}
-    assert w.compare_basis(fetched, stored) == w.BasisCheck("match", 10, 1.0)
-
-
-def test_two_for_one_split_after_the_stored_rows_is_a_moved_basis():
-    """The gate's case: rows stored before a 2:1 split with adj = raw = 100;
-    Tiingo now reports raw 100 (pre-split) but adjClose 50 for the same dates.
-    Joining a prefix on the new basis would fabricate a +100% return."""
-    fetched = [_row(d, 100.0, 50.0) for d in SESSIONS]
-    stored = {d: _stored(d, 100.0, 100.0) for d in SESSIONS}
-    check = w.compare_basis(fetched, stored)
-    assert check.verdict == "adjusted_moved"
-    assert check.ratio == pytest.approx(0.5)
-    assert check.detail() == "adjusted_moved: ratio=0.500000 over 10 sessions"
-
-
-def test_a_dividend_sized_move_is_also_caught():
-    fetched = [_row(d, 100.0, 98.0) for d in SESSIONS]
-    stored = {d: _stored(d, 100.0, 98.0 / 0.99) for d in SESSIONS}
-    check = w.compare_basis(fetched, stored)
-    assert (check.verdict, round(check.ratio, 6)) == ("adjusted_moved", 0.99)
-
-
-def test_raw_close_difference_is_a_conflict_not_a_rebase():
-    fetched = [_row(d, 40.0, 40.0) for d in SESSIONS]
-    stored = {d: _stored(d, 100.0, 100.0) for d in SESSIONS}
-    check = w.compare_basis(fetched, stored)
-    assert (check.verdict, check.ratio) == ("raw_differs", pytest.approx(0.4))
-
-
-def test_float_noise_within_tolerance_matches():
-    fetched = [_row(d, 100.0, 97.5 * (1 + 5e-8)) for d in SESSIONS]
-    stored = {d: _stored(d, 100.0, 97.5) for d in SESSIONS}
-    assert w.compare_basis(fetched, stored).verdict == "match"
-
-
-def test_only_the_first_stored_sessions_are_compared():
-    fetched = [_row(d, 100.0, 97.5 if i < 10 else 50.0) for i, d in enumerate(SESSIONS)]
-    stored = {d: _stored(d, 100.0, 97.5) for d in SESSIONS}
-    assert w.compare_basis(fetched, stored).verdict == "match"
-
-
-def test_no_common_session_cannot_be_judged():
-    fetched = [_row(d, 100.0, 97.5) for d in SESSIONS[:3]]
-    stored = {d: _stored(d, 100.0, 97.5) for d in SESSIONS[5:]}
-    assert w.compare_basis(fetched, stored) == w.BasisCheck("no_overlap", 0, None)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Ring admission comes from the recorded status
-# ──────────────────────────────────────────────────────────────────────────────
-def test_ring_admits_covered_tickers_on_status_not_rows():
-    marks = {t: D(2026, 10, 8) for t in ("DONE", "PART", "SCRN", "RBAS", "INCP")}
-    status = {
-        "DONE": {"status": w.STATUS_COMPLETE},
-        "RBAS": {"status": w.STATUS_REBASE},
-        "INCP": {"status": w.STATUS_INCOMPLETE},
-    }
-    excluded = w.ring_excluded(
-        ["DONE", "PART", "COLD", "SCRN", "SCLD", "RBAS", "INCP"], status,
-        ring_owned=frozenset({"SCRN", "SCLD"}), watermarks=marks)
-    # Rows without a complete status (an interrupted or never-run load) are not
-    # admission; nor is a retryable failure.
-    assert excluded == frozenset({"PART", "COLD", "SCLD", "INCP"})
+def test_retry_backoff_doubles_and_is_capped():
+    now = dt.datetime(2026, 10, 10, tzinfo=dt.UTC)
+    hours = [(w.retry_after(now, n) - now) / dt.timedelta(hours=1) for n in range(1, 7)]
+    assert hours == [12, 24, 48, 96, 168, 168]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -231,6 +252,8 @@ META = {"ticker": "tsm", "name": "Taiwan Semiconductor", "exchangeCode": "NYSE",
         ([_Resp(200, ["a", "list"])], ("invalid_payload", None)),
         ([_Resp(200, bad_json=True)], ("invalid_payload", None)),
         ([_Resp(503), _Resp(503), _Resp(503)], ("transient_error", None)),
+        ([_Resp(429), _Resp(429), _Resp(429)], ("rate_limited", None)),
+        ([_Resp(429), _Resp(503), _Resp(503)], ("transient_error", None)),
         ([_Resp(503), _Resp(200, META)], ("found", META)),
     ],
 )
