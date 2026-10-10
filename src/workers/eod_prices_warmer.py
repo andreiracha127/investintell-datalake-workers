@@ -54,10 +54,18 @@ else. Tiingo metadata dates must be in the documented forms; a malformed one is
 ``meta:malformed_start_date`` / ``meta:malformed_end_date``, retried with
 backoff and never parsed into an interval.
 
-The W1c source is optional and isolated: discovery runs under a statement
-timeout (``FOREIGN_DISCOVERY_TIMEOUT_MS``) and any exception is rolled back and
-reported as ``foreign_history: {source: "error", reason: <ExceptionType>}``
-while the ring runs and the worker exits zero. An empty source is reported as
+The history subsystem is optional and isolated end to end: it must never stop
+the established refresh path (the ring). The status-table bootstrap, the W1c
+discovery and the history phase each run under their own try/except, with
+short timeouts on the DDL (``STATUS_TABLE_*_TIMEOUT_MS``) and on discovery
+(``FOREIGN_DISCOVERY_TIMEOUT_MS``). A failure is rolled back and reported in the
+run statistics (``foreign_history: {source: "error", reason: <ExceptionType>}``,
+plus ``stage: "status_table"`` or ``"history"``; ``foreign_history_errors: 1``),
+the history phase is skipped for the run, the ring runs and the worker exits
+zero. The status table is the first step, so an older shape is migrated (or
+refused) before any read of it, and the history phase only ever runs against a
+table that passed ``ensure_status_table`` (a shape mismatch detected after the
+bootstrap is such a failure). An empty source is reported as
 ``foreign_history: {source: "empty", ...}``.
 
 ``promote`` is the only writer of history rows and of ``history_complete``. In
@@ -259,6 +267,12 @@ FOREIGN_DISCOVERY_TIMEOUT_MS = 60_000
 # nothing else. Production, 2026-10-10: 787 chunks in all, 689 overlapping the
 # range (one new chunk a year at 360-day chunks).
 MAX_VERIFICATION_CHUNKS = 800
+# The status-table bootstrap is DDL on a table the API reads. It waits at most
+# this long for a lock (a pending ACCESS EXCLUSIVE request also queues every
+# reader behind it) and each of its statements runs at most this long; past
+# either it fails, is reported, and the ring runs.
+STATUS_TABLE_LOCK_TIMEOUT_MS = 5_000
+STATUS_TABLE_STATEMENT_TIMEOUT_MS = 30_000
 # A completed ticker is verified again after this many days, so a later change
 # on Tiingo's side (an earlier startDate, a revised raw close, a stored gap) is
 # found; the pass inserts nothing unless the series is still coherent.
@@ -694,8 +708,13 @@ def ensure_status_table(conn) -> None:
     grant SELECT to the readers. Then verify through ``information_schema``
     that every column has its expected type and nullability, and probe the
     CHECK (each status inserts, ``'bogus'`` and NULL are rejected; probe rows
-    are rolled back). Anything else raises ``RuntimeError``."""
+    are rolled back). Anything else raises ``RuntimeError``. The DDL runs under
+    ``STATUS_TABLE_LOCK_TIMEOUT_MS`` / ``STATUS_TABLE_STATEMENT_TIMEOUT_MS`` for
+    this transaction only; ``run`` isolates every failure from the ring."""
     with conn.cursor() as cur:
+        cur.execute(
+            "SELECT set_config('lock_timeout', %s, true), set_config('statement_timeout', %s, true)",
+            (f"{STATUS_TABLE_LOCK_TIMEOUT_MS}ms", f"{STATUS_TABLE_STATEMENT_TIMEOUT_MS}ms"))
         cur.execute(_STATUS_SCHEMA_SQL)
         for col in _STATUS_NOT_NULL:
             cur.execute(
@@ -1123,6 +1142,15 @@ def cover_foreign_history(
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
+def _rollback_quietly(conn) -> None:
+    """Roll back after a history-subsystem failure. A connection that is already
+    gone must not turn that failure into a crash of the ring's run."""
+    try:
+        conn.rollback()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
         history_limit: int | None = None) -> dict:
     """Refresh eod_prices from Tiingo for every ticker in the warming universe,
@@ -1134,26 +1162,34 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
     aborted: str | None = None
     last_done: str | None = None
     history: dict[str, Any] | None = None
-    source_error: str | None = None
+    history_error: dict[str, str] | None = None
 
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_EOD_PRICES_WARMER) as got:
             if not got:
                 return {"fetched": 0, "upserted": 0, "skipped": "lock_busy"}
 
-            # Before any read of it, so an older shape is migrated (or refused).
-            ensure_status_table(conn)
-            instruments_seeded = ensure_instruments(conn)
-            # The history source is optional: whatever its discovery raises (the
-            # resolver or its evidence relation not deployed, a permission, the
-            # statement timeout) never stops the ring. The failed transaction is
-            # rolled back, the type is reported, the history phase is skipped.
+            # The history subsystem is optional and isolated end to end: the
+            # status table, the discovery and the history phase each fail on
+            # their own and never stop the ring. The failed transaction is rolled
+            # back, the exception type is reported, the history phase is skipped.
+            # The status table is first, so an older shape is migrated (or
+            # refused) before any read of it, and nothing below runs against a
+            # table that did not pass ensure_status_table.
             foreign: list[str] | None = None
             try:
-                foreign = foreign_listing_tickers(conn, as_of)
+                ensure_status_table(conn)
             except Exception as exc:  # noqa: BLE001 — isolation is the point
-                conn.rollback()
-                source_error = type(exc).__name__
+                _rollback_quietly(conn)
+                history_error = {"source": "error", "reason": type(exc).__name__,
+                                 "stage": "status_table"}
+            instruments_seeded = ensure_instruments(conn)
+            if history_error is None:
+                try:
+                    foreign = foreign_listing_tickers(conn, as_of)
+                except Exception as exc:  # noqa: BLE001 — isolation is the point
+                    _rollback_quietly(conn)
+                    history_error = {"source": "error", "reason": type(exc).__name__}
             resume_after = read_cursor(conn)
             universe = warming_universe(conn)
             tickers = order_sweep(universe, resume_after=resume_after)
@@ -1164,7 +1200,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
             print(
                 f"eod_prices_warmer: {len(tickers)} tickers, as_of={as_of}, "
                 f"resume_after={resume_after or '-'}, "
-                f"foreign_listing={source_error and 'error' or ('absent' if foreign is None else len(foreign))}",
+                f"foreign_listing={'error' if history_error else 'absent' if foreign is None else len(foreign)}",
                 flush=True,
             )
 
@@ -1202,12 +1238,18 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
                 # Full history for W1c lines runs after the ring on the same
                 # bucket, so it only spends what the ring left and never delays
                 # the priority head. A ring that died on budget skips it.
-                if foreign and cap > 0 and aborted is None:
-                    history = cover_foreign_history(
-                        conn, tiingo, foreign, as_of=as_of, cap=cap, now=now,
-                    )
-                    aborted = history.get("aborted")
-            conn.commit()
+                if foreign and cap > 0 and aborted is None and history_error is None:
+                    try:
+                        history = cover_foreign_history(
+                            conn, tiingo, foreign, as_of=as_of, cap=cap, now=now,
+                        )
+                        aborted = history.get("aborted")
+                    except Exception as exc:  # noqa: BLE001 — isolation is the point
+                        _rollback_quietly(conn)
+                        history_error = {"source": "error", "reason": type(exc).__name__,
+                                         "stage": "history"}
+            if history_error is None:
+                conn.commit()
 
     stats: dict[str, Any] = {
         "fetched": fetched, "upserted": upserted,
@@ -1218,8 +1260,9 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
         stats["skipped_rows"] = skipped_rows
     if last_done:
         stats["cursor"] = last_done
-    if source_error is not None:
-        stats["foreign_history"] = {"source": "error", "reason": source_error, "errors": 1}
+    if history_error is not None:
+        stats["foreign_history"] = history_error
+        stats["foreign_history_errors"] = 1
     elif foreign is None:
         stats["foreign_history"] = {"source": "absent"}
     elif history is not None:

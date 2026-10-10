@@ -987,7 +987,8 @@ def test_status_table_schema_is_migrated_and_verified(db):
         db.conn.execute("INSERT INTO eod_warmer_ticker_status (ticker, source, status)"
                         " VALUES ('NULX', 's', NULL)")
 
-    # A column of another type cannot be migrated in place: fail loud.
+    # A column of another type cannot be migrated in place: the function fails
+    # loud (run() isolates that from the ring, see the isolation tests below).
     db.conn.execute("DROP TABLE eod_warmer_ticker_status")
     db.conn.execute(
         """CREATE TABLE eod_warmer_ticker_status (
@@ -1800,7 +1801,8 @@ def test_gate5_comment_4238137020_a_failing_discovery_leaves_the_ring_running(
     db.conn.execute("INSERT INTO universe_constituents VALUES ('RING', 'Ring Co', 'active')")
     with stub_resolver(body):
         stats = run(db)
-    assert stats["foreign_history"] == {"source": "error", "reason": reason, "errors": 1}
+    assert stats["foreign_history"] == {"source": "error", "reason": reason}
+    assert stats["foreign_history_errors"] == 1
     assert "aborted" not in stats                                  # run_worker exits zero
     assert history_of(db, "RING")[2] > 0                           # the ring warmed its ticker
     assert db.one("SELECT count(*) FROM eod_warmer_ticker_status")[0] == 0     # history skipped
@@ -1816,7 +1818,8 @@ def test_gate5_comment_4238137020_a_slow_discovery_is_cancelled_by_its_own_timeo
     with stub_resolver("PERFORM pg_sleep(60); RETURN;"):
         stats = run(db)
     assert time.monotonic() - started < 30
-    assert stats["foreign_history"] == {"source": "error", "reason": "QueryCanceled", "errors": 1}
+    assert stats["foreign_history"] == {"source": "error", "reason": "QueryCanceled"}
+    assert stats["foreign_history_errors"] == 1
     assert history_of(db, "RING")[2] > 0 and "aborted" not in stats
 
 
@@ -1840,7 +1843,8 @@ def test_gate5_comment_4238137020_the_worker_entrypoint_exits_zero(
         run_worker.main()                                   # SystemExit would fail the test
     printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert printed["worker"] == "eod_prices_warmer" and printed["fetched"] > 0
-    assert printed["foreign_history"] == {"source": "error", "reason": "RaiseException", "errors": 1}
+    assert printed["foreign_history"] == {"source": "error", "reason": "RaiseException"}
+    assert printed["foreign_history_errors"] == 1
 
 
 def test_gate5_comment_4238137015_an_empty_source_is_reported_not_omitted(db, tiingo):
@@ -1878,3 +1882,157 @@ def test_gate5_comment_4238137011_documented_timestamp_dates_are_accepted(db, ti
     assert stats["completed"] == 1 and stats["errors"] == 0
     assert db.one("SELECT tiingo_start_date, tiingo_end_date FROM instruments WHERE ticker = 'TSZ'") \
         == (D(2026, 8, 3), AS_OF)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The history subsystem is isolated end to end: a status-table failure (or a
+# failure inside the history phase) never stops the ring
+# ──────────────────────────────────────────────────────────────────────────────
+def ring_setup(db, tiingo):
+    """A screener constituent the ring warms, and a covered line whose history
+    must NOT be attempted while the status table is unusable."""
+    db.conn.execute("INSERT INTO universe_constituents VALUES ('RING', 'Ring Co', 'active')")
+    resolved_lines(db, "FRGN")
+    tiingo.listings["FRGN"] = {"start": D(2026, 8, 3), "end": AS_OF}
+
+
+def assert_ring_ran_history_skipped(db, tiingo, stats, reason, stage):
+    assert stats["foreign_history"] == {"source": "error", "reason": reason, "stage": stage}
+    assert stats["foreign_history_errors"] == 1
+    assert "aborted" not in stats                                      # run_worker exits zero
+    assert history_of(db, "RING")[2] > 0                               # the ring warmed its ticker
+    assert tiingo.history_requests("FRGN") == []                       # no history request at all
+    assert db.one("SELECT count(*) FROM eod_prices WHERE ticker = 'FRGN'")[0] == 0
+
+
+def test_isolation_a_wrong_shape_status_table_is_reported_and_the_ring_runs(db, tiingo):
+    """A table the bootstrap cannot migrate in place (a column of another type)
+    is refused by ensure_status_table (still loud as a function). run() reports
+    it, runs the ring, never runs the history phase against it, and ends normally."""
+    ring_setup(db, tiingo)
+    db.conn.execute(
+        """CREATE TABLE eod_warmer_ticker_status (
+               ticker text PRIMARY KEY, source text NOT NULL, status text NOT NULL,
+               retry_after text)""")
+    stats = run(db)
+    assert_ring_ran_history_skipped(db, tiingo, stats, "RuntimeError", "status_table")
+    assert db.one("SELECT data_type FROM information_schema.columns WHERE table_schema = %s"
+                  " AND table_name = 'eod_warmer_ticker_status' AND column_name = 'retry_after'",
+                  (db.schema,)) == ("text",)                          # untouched
+    assert db.one("SELECT count(*) FROM eod_warmer_ticker_status")[0] == 0
+
+
+def test_isolation_a_status_name_that_is_not_a_table_is_reported_and_the_ring_runs(db, tiingo):
+    ring_setup(db, tiingo)
+    db.conn.execute("CREATE VIEW eod_warmer_ticker_status AS SELECT 'x'::text AS ticker")
+    stats = run(db)
+    assert_ring_ran_history_skipped(db, tiingo, stats, "WrongObjectType", "status_table")
+
+
+def test_isolation_a_lock_timeout_on_the_status_table_is_reported_and_the_ring_runs(
+        db, tiingo, monkeypatch):
+    """A reader holding the table keeps the bootstrap's DDL waiting: it gives up
+    after its own short lock timeout instead of queueing behind (and ahead of)
+    the API's readers, and the ring is not delayed."""
+    ring_setup(db, tiingo)
+    with psycopg.connect(db.dsn) as setup:
+        w.ensure_status_table(setup)
+    monkeypatch.setattr(w, "STATUS_TABLE_LOCK_TIMEOUT_MS", 300)
+    reader = psycopg.connect(db.dsn)
+    try:
+        reader.execute("LOCK TABLE eod_warmer_ticker_status IN ACCESS SHARE MODE")
+        started = time.monotonic()
+        stats = run(db)
+        assert time.monotonic() - started < 30
+    finally:
+        reader.rollback()
+        reader.close()
+    assert_ring_ran_history_skipped(db, tiingo, stats, "LockNotAvailable", "status_table")
+    # the next run, with the table free, bootstraps and runs the history phase
+    stats = run(db)
+    assert "foreign_history_errors" not in stats and stats["foreign_history"]["completed"] == 1
+
+
+@pytest.fixture
+def limited_role(db, base_dsn):
+    """A login role that may use the schema's tables but owns none of them: the
+    shape of a worker that is not the status table's owner."""
+    name = f"eodcov_{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(base_dsn, autocommit=True) as admin:
+        admin.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD 'pw'").format(sql.Identifier(name)))
+        for statement in (
+                "GRANT USAGE, CREATE ON SCHEMA {schema} TO {role}",
+                "GRANT ALL ON ALL TABLES IN SCHEMA {schema} TO {role}",
+                "GRANT USAGE ON SCHEMA public TO {role}",
+                "GRANT SELECT ON public.sec_foreign_listing_evidence TO {role}"):
+            admin.execute(sql.SQL(statement).format(
+                schema=sql.Identifier(db.schema), role=sql.Identifier(name)))
+    try:
+        yield name
+    finally:
+        with psycopg.connect(base_dsn, autocommit=True) as admin:
+            admin.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(name)))
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(name)))
+
+
+def test_isolation_a_permission_error_on_the_status_table_is_reported_and_the_ring_runs(
+        db, tiingo, base_dsn, limited_role):
+    ring_setup(db, tiingo)
+    with psycopg.connect(db.dsn) as owner:
+        w.ensure_status_table(owner)                    # created by the owner, not by the worker
+        owner.execute(sql.SQL("GRANT ALL ON ALL TABLES IN SCHEMA {} TO {}").format(
+            sql.Identifier(db.schema), sql.Identifier(limited_role)))
+        owner.commit()
+    role_dsn = make_conninfo(db.dsn, user=limited_role, password="pw")
+    stats = w.run(role_dsn, calc_date=AS_OF.isoformat(), history_limit=250)
+    assert_ring_ran_history_skipped(db, tiingo, stats, "InsufficientPrivilege", "status_table")
+
+
+def test_isolation_the_worker_entrypoint_exits_zero_on_a_status_table_failure(
+        db, tiingo, monkeypatch, capsys):
+    from src import run_worker
+
+    ring_setup(db, tiingo)
+    db.conn.execute(
+        "CREATE TABLE eod_warmer_ticker_status (ticker text PRIMARY KEY, source text NOT NULL,"
+        " status text NOT NULL, retry_after text)")
+    monkeypatch.setenv("WORKER", "eod_prices_warmer")
+    monkeypatch.setenv("WORKER_CALC_DATE", AS_OF.isoformat())
+    monkeypatch.setattr(run_worker, "resolve_dsn", lambda: db.dsn)
+    run_worker.main()                                       # SystemExit would fail the test
+    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert printed["fetched"] > 0
+    assert printed["foreign_history"] == {
+        "source": "error", "reason": "RuntimeError", "stage": "status_table"}
+
+
+def test_isolation_a_failure_inside_the_history_phase_is_reported_and_the_ring_ran(
+        db, tiingo, monkeypatch):
+    ring_setup(db, tiingo)
+
+    def refused(*args, **kwargs):
+        raise errors.InsufficientPrivilege("permission denied for table eod_warmer_ticker_status")
+
+    monkeypatch.setattr(w, "plan_foreign_history", refused)
+    stats = run(db)
+    assert stats["foreign_history"] == {
+        "source": "error", "reason": "InsufficientPrivilege", "stage": "history"}
+    assert stats["foreign_history_errors"] == 1 and "aborted" not in stats
+    assert history_of(db, "RING")[2] > 0 and tiingo.history_requests("FRGN") == []
+
+
+def test_isolation_the_status_table_is_created_with_the_history_cap_at_zero(db, tiingo):
+    ring_setup(db, tiingo)
+    assert db.one("SELECT to_regclass('eod_warmer_ticker_status') IS NULL")[0]
+    stats = run(db, history_limit=0)
+    assert db.one("SELECT to_regclass('eod_warmer_ticker_status') IS NOT NULL")[0]
+    assert stats["foreign_history"] == {"source_tickers": 1, "skipped": "cap_zero"}
+    assert "foreign_history_errors" not in stats and history_of(db, "RING")[2] > 0
+
+
+def test_isolation_the_status_bootstrap_uses_its_timeouts_without_leaking_them(db):
+    with psycopg.connect(db.dsn) as conn:                   # idle, as run() calls it
+        w.ensure_status_table(conn)
+        assert conn.execute("SHOW lock_timeout").fetchone()[0] == "0"
+        assert conn.execute("SHOW statement_timeout").fetchone()[0] == "0"
+        conn.rollback()

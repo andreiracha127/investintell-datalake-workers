@@ -20,7 +20,7 @@ outside-request rule; emit the wrong ticker; a digest blind to dates; Nixon's
 funeral, 1994-04-27, as a session); R01-R05 are this round's (the conflict
 ratio through a float, and the adjusted-price bound).
 
-Warmer mutants (W01-W15 and W02a, 16) patch ``src/workers/eod_prices_warmer.py``. The fuzz
+Warmer mutants (W01-W22 and W02a, 23) patch ``src/workers/eod_prices_warmer.py``. The fuzz
 corpus judges ``validate_series`` only, so each is killed by the database-free
 scenario (``_eod_warmer_scenarios``) that pins its rule, which the original
 module passes; the real-lock proof of W01 runs against TimescaleDB in
@@ -230,6 +230,8 @@ ROUND6 = [m for m in MUTANTS if m[0].startswith("R")]
 
 # (name, old, new, scenario): scenario(module) is None for the original warmer
 # and a problem for the mutant.
+_EXC = "except Exception as exc:  # noqa: BLE001 \u2014 isolation is the point"
+_BAD = "except ZeroDivisionError as exc:  # noqa: BLE001"
 WARMER_MUTANTS = [
     ("W01_hold_the_snapshot_transaction",
      "            conn.commit()\n            tiingo_start = start",
@@ -264,14 +266,41 @@ WARMER_MUTANTS = [
     ("W10_metadata_date_is_truncated", "    return parse_bar_date(value)\n\n\ndef _meta_date_malformed",
      "    return parse_bar_date(str(value)[:10])\n\n\ndef _meta_date_malformed", scenarios.metadata_dates),
     ("W11_discovery_failure_escapes",
-     "except Exception as exc:  # noqa: BLE001 \u2014 isolation is the point",
-     "except ZeroDivisionError as exc:  # noqa: BLE001", scenarios.discovery_isolation),
+     "                " + _EXC + "\n                    _rollback_quietly(conn)",
+     "                " + _BAD + "\n                    _rollback_quietly(conn)", scenarios.discovery_isolation),
     ("W12_discovery_failure_not_rolled_back",
-     "                conn.rollback()\n                source_error = type(exc).__name__",
-     "                source_error = type(exc).__name__", scenarios.discovery_isolation),
-    ("W13_discovery_failure_not_reported",
-     '{"source": "error", "reason": source_error, "errors": 1}', '{"source": "error", "reason": source_error}',
+     "                    _rollback_quietly(conn)\n"
+     '                    history_error = {"source": "error", "reason": type(exc).__name__}\n',
+     '                    history_error = {"source": "error", "reason": type(exc).__name__}\n',
      scenarios.discovery_isolation),
+    ("W13_error_counter_not_reported", '        stats["foreign_history_errors"] = 1\n', "",
+     scenarios.discovery_isolation),
+    # ---- the status table and the history phase are isolated too ----
+    ("W16_status_table_failure_escapes",
+     "            " + _EXC + "\n                _rollback_quietly(conn)",
+     "            " + _BAD + "\n                _rollback_quietly(conn)", scenarios.status_table_isolation),
+    ("W17_history_runs_against_an_unverified_table",
+     "            if history_error is None:\n                try:\n"
+     "                    foreign = foreign_listing_tickers(conn, as_of)",
+     "            if True:\n                try:\n"
+     "                    foreign = foreign_listing_tickers(conn, as_of)", scenarios.status_table_isolation),
+    ("W18_status_table_failure_not_staged", '"stage": "status_table"}', '"stage": "discovery"}',
+     scenarios.status_table_isolation),
+    ("W19_status_table_failure_not_rolled_back",
+     "                _rollback_quietly(conn)\n"
+     '                history_error = {"source": "error", "reason": type(exc).__name__,\n',
+     '                history_error = {"source": "error", "reason": type(exc).__name__,\n',
+     scenarios.status_table_isolation),
+    ("W20_history_phase_failure_escapes",
+     "                    " + _EXC + "\n                        _rollback_quietly(conn)",
+     "                    " + _BAD + "\n                        _rollback_quietly(conn)", scenarios.history_phase_isolation),
+    ("W21_status_table_without_timeouts",
+     "        cur.execute(\n"
+     '            "SELECT set_config(\'lock_timeout\', %s, true), set_config(\'statement_timeout\', %s, true)",\n'
+     '            (f"{STATUS_TABLE_LOCK_TIMEOUT_MS}ms", f"{STATUS_TABLE_STATEMENT_TIMEOUT_MS}ms"))\n',
+     "", scenarios.status_table_timeouts),
+    ("W22_status_table_lock_wait_unbounded", "STATUS_TABLE_LOCK_TIMEOUT_MS = 5_000\n",
+     "STATUS_TABLE_LOCK_TIMEOUT_MS = 5_000_000\n", scenarios.status_table_timeouts),
     ("W14_empty_source_is_omitted",
      "    else:\n        # The resolver exists and no line resolves", "    elif False:\n        # The resolver exists and no line resolves",
      scenarios.source_states),

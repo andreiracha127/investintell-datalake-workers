@@ -681,3 +681,18 @@ def test_gate5_comment_4238137015_an_empty_source_is_reported_not_omitted():
 
 def test_gate5_comment_4238137020_a_discovery_failure_never_stops_the_ring():
     assert scenarios.discovery_isolation(w) is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The history subsystem is optional and isolated end to end
+# ──────────────────────────────────────────────────────────────────────────────
+def test_isolation_a_status_table_failure_never_stops_the_ring():
+    assert scenarios.status_table_isolation(w) is None
+
+
+def test_isolation_a_failure_inside_the_history_phase_never_stops_the_ring():
+    assert scenarios.history_phase_isolation(w) is None
+
+
+def test_isolation_the_status_table_bootstrap_is_bounded_by_short_timeouts():
+    assert scenarios.status_table_timeouts(w) is None

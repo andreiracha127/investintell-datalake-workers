@@ -21,24 +21,51 @@ Each run, in one query with `SET LOCAL jit = off`:
   historical `WORKER_CALC_DATE` run has no look-ahead). The ratio status does
   not matter.
 
-Tiingo decides existence. The source is optional and isolated. Discovery runs
-under a statement timeout of 60 s (`FOREIGN_DISCOVERY_TIMEOUT_MS`; measured
-10 s over 1,676 symbols on 2026-10-10) and any exception it raises (the
-resolver or its evidence relation not deployed, a permission error, the timeout)
-is rolled back and reported; it never reaches the ring, and the worker exits
-zero. `foreign_history` in the run statistics is one of:
+Tiingo decides existence. Without the W1c resolver the ring runs unchanged. The
+worker asserts symbol coverage, not issuer ownership: a reused ticker carries
+the current security's history, so Light must keep using the line's evidenced
+dates (D6).
+
+## Isolation from the ring
+
+One rule: **the history subsystem is optional and isolated end to end.** The
+established refresh path (the ring for screener and macro tickers) never stops
+because of it, whatever fails: the status-table bootstrap, the W1c discovery,
+the planning, or the verification. Each of those runs under its own
+`try/except`; a failure is rolled back, reported in the run statistics, the
+history phase is skipped for that run, the ring runs, and the worker exits zero
+(`aborted` is never set by it).
+
+| Step | Bounded by | On failure `foreign_history` is |
+|---|---|---|
+| 1. `ensure_status_table()` (first, so an older shape is migrated before any read of it) | lock timeout 5 s, statement timeout 30 s per statement (`STATUS_TABLE_*_TIMEOUT_MS`) | `{source: "error", reason: <ExceptionType>, stage: "status_table"}` |
+| 2. W1c discovery (skipped if step 1 failed) | statement timeout 60 s (`FOREIGN_DISCOVERY_TIMEOUT_MS`; measured 10 s over 1,676 symbols on 2026-10-10) | `{source: "error", reason: <ExceptionType>}` |
+| 3. The history phase after the ring: planning, then per ticker the verification and promotion (its own per-ticker handler first) | the per-ticker handler (that ticker's `history_incomplete`) and the chunk ceiling | `{source: "error", reason: <ExceptionType>, stage: "history"}` |
+
+An error also sets the top-level `foreign_history_errors: 1`. Causes seen as
+`reason`: a permission error (`InsufficientPrivilege`, e.g. the worker is not
+the status table's owner), `LockNotAvailable` (a reader holds the status table:
+the bootstrap's DDL gives up after 5 s instead of queueing behind, and ahead of,
+the API's readers), `QueryCanceled` (the discovery timeout), an undefined
+relation or schema, `WrongObjectType`, and `RuntimeError` (a shape the
+bootstrap cannot migrate in place, found after it: a column of another type).
+
+The history phase only ever runs against a status table that passed
+`ensure_status_table()`: a shape mismatch is not "fail loud and stop the
+worker", it is "report and skip the history phase". The function itself still
+raises `RuntimeError` on a mismatch and `run()` isolates it. `foreign_history` in
+the run statistics is one of:
 
 | `foreign_history` | Meaning |
 |---|---|
 | `{source: "absent"}` | the W1c resolver is not installed |
-| `{source: "error", reason: <ExceptionType>, errors: 1}` | discovery failed; the history phase is skipped, the ring ran |
+| `{source: "error", reason, [stage]}` | a step above failed; the history phase is skipped, the ring ran |
 | `{source: "empty", source_tickers: 0, ...}` with zero counts | the resolver exists and no line resolves (an early historical replay) |
 | `{source_tickers, skipped: "cap_zero" \| "aborted"}` | lines exist, the phase did not run |
 | the phase statistics | the phase ran |
 
-Without the W1c resolver the ring runs unchanged. The worker asserts symbol coverage, not issuer
-ownership: a reused ticker carries the current security's history, so Light
-must keep using the line's evidenced dates (D6).
+With `EOD_HISTORY_TICKERS_PER_RUN=0` the bootstrap still runs first, so the
+table is created and verified before the phase is switched on.
 
 ## Code map
 
@@ -303,7 +330,9 @@ the start of every run, before any read of it. It adds missing columns, sets
 NOT NULL on `ticker`, `source`, `status`, `attempts` and `checked_at`, and
 replaces the status CHECK exactly. It then verifies every column's type and
 nullability through `information_schema`, probes the CHECK (each status
-inserts; `'bogus'` and NULL are rejected), and raises on any mismatch. It grants
+inserts; `'bogus'` and NULL are rejected), and raises on any mismatch (which
+`run()` isolates, see Isolation from the ring). Its DDL runs under a 5 s lock
+timeout and a 30 s statement timeout. It grants
 SELECT to `app_runtime`, `app_analytics_ro` and `mcp_ro`; the warmer connects as
 `worker_writer`, whose default ACL in `public` grants only `app_analytics_ro`.
 
@@ -377,9 +406,10 @@ compressed chunks of 110,000 rows each at about 9,000 rows/s:
   the five that gate 5 wrote and the corpus then missed, and five for the
   ratio and the adjusted-price bound). Each must be killed by its deterministic
   targeted counterexample and by the seeded corpus (sweep + 1,500 random
-  cases); the score is 49/49. A further 16 mutants of the warmer (the held
+  cases); the score is 49/49. A further 23 mutants of the warmer (the held
   snapshot and plan transactions, the chunk ceiling and where it is checked,
-  metadata dates, discovery isolation, the empty source) are each killed by the
+  metadata dates, the isolation of the status table, the discovery and the
+  history phase, the status bootstrap's timeouts, the empty source) are each killed by the
   database-free scenario in `tests/_eod_warmer_scenarios.py` that pins the
   rule; the held snapshot is also killed against TimescaleDB by the real-lock
   scenario (`pg_locks`, a concurrent `compress_chunk()`).
@@ -447,7 +477,7 @@ print(len(symbols), len(plan["complete"]), {k: len(v) for k, v in plan["waiting"
 ## Staged rollout
 
 1. Set `EOD_HISTORY_TICKERS_PER_RUN=0` and `WORKER_LIMIT=2300` on `eod-prices-warmer`, then merge and deploy (`railway redeploy --service eod-prices-warmer --from-source --yes` builds; a cron deployment does not execute).
-   - The first run creates and verifies the status table; check its shape and grants.
+   - The first run creates and verifies the status table; check its shape and grants. If it cannot, the run reports `foreign_history: {source: "error", stage: "status_table", reason}`, the ring runs and the worker exits zero; fix the cause (ownership, a held lock, a shape) and the next run bootstraps.
    - Confirm the Light deployment includes the D6 alive-span checks, and decide the session-gap rule.
 2. Set the cap to 25 for at least three successful cron slots (`railway service restart --service eod-prices-warmer` runs one at once). After each, check:
    - the lock footprint of the whole verification phase (see Lock footprint): no relation lock during a price request, the promotion peak, the main lock-table rows against 12,800, and the chunk count against the 800 ceiling;

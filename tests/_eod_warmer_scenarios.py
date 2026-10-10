@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+from dataclasses import dataclass
 from typing import Any
 from unittest import mock
 
@@ -267,22 +268,56 @@ class RingTiingo:
         return []
 
 
-def run_entrypoint(module: Any, discover: Any):
-    """``run`` on a stand-in connection whose W1c discovery is ``discover``.
-    Returns ``(stats, conn, ring_tickers_fetched, cover_calls)``."""
+@dataclass
+class Run:
+    stats: dict
+    conn: FakeConn
+    fetched: list
+    covers: list
+    discovered: list
+
+
+def run_entrypoint(module: Any, discover: Any, *, status: Any = None, cover: Any = None) -> Run:
+    """``run`` on a stand-in connection whose status-table bootstrap is
+    ``status``, W1c discovery ``discover`` and history phase ``cover``."""
     conn = FakeConn()
     ring = RingTiingo()
     covers: list[Any] = []
+    discovered: list[Any] = []
+
+    def discovering(c, as_of):
+        discovered.append(as_of)
+        return discover(c, as_of)
+
+    def covering(*a, **k):
+        covers.append(a)
+        return cover(*a, **k) if cover else {"processed": 1}
+
     with _patched(
         module, connect=lambda dsn: conn, advisory_lock=lambda c, key: contextlib.nullcontext(True),
-        ensure_status_table=lambda c: None, ensure_instruments=lambda c: 0,
-        foreign_listing_tickers=discover, read_cursor=lambda c: None,
+        ensure_status_table=status or (lambda c: None), ensure_instruments=lambda c: 0,
+        foreign_listing_tickers=discovering, read_cursor=lambda c: None,
         warming_universe=lambda c: ["AAA", "BBB"], _ticker_watermarks=lambda c: {},
         write_cursor=lambda c, t: None, TiingoClient=lambda **kw: ring,
-        cover_foreign_history=lambda *a, **k: covers.append(a) or {"processed": 1},
+        cover_foreign_history=covering,
     ):
         stats = module.run("dsn", calc_date=AS_OF.isoformat(), limit=10, history_limit=25)
-    return stats, conn, ring.fetched, covers
+    return Run(stats, conn, ring.fetched, covers, discovered)
+
+
+def _isolated(label: str, exc: Exception, result: Run, want: dict, *, history: bool) -> str | None:
+    """The ring ran, the failure was rolled back and reported, exit would be zero."""
+    if result.stats.get("foreign_history") != want:
+        return f"{label}: foreign_history was {result.stats.get('foreign_history')}"
+    if result.stats.get("foreign_history_errors") != 1:
+        return f"{label}: the error counter was {result.stats.get('foreign_history_errors')}"
+    if result.fetched != ["AAA", "BBB"] or "aborted" in result.stats:
+        return f"{label}: the ring did not run (fetched={result.fetched}, stats={result.stats})"
+    if result.conn.rollbacks < 1 or result.conn.in_txn:
+        return f"{label}: the failed transaction was not rolled back"
+    if result.covers and not history:
+        return f"{label}: the history phase ran after the failure"
+    return None
 
 
 def discovery_isolation(module: Any) -> str | None:
@@ -294,33 +329,132 @@ def discovery_isolation(module: Any) -> str | None:
         def failing(c, as_of, exc=exc):
             c.in_txn = True
             raise exc
+        label = f"discovery {type(exc).__name__}"
         try:
-            stats, conn, fetched, covers = run_entrypoint(module, failing)
+            result = run_entrypoint(module, failing)
         except Exception as raised:           # noqa: BLE001
-            return f"{type(exc).__name__}: discovery failure escaped run(): {type(raised).__name__}"
-        want = {"source": "error", "reason": type(exc).__name__, "errors": 1}
-        if stats.get("foreign_history") != want:
-            return f"{type(exc).__name__}: foreign_history was {stats.get('foreign_history')}"
-        if fetched != ["AAA", "BBB"] or "aborted" in stats:
-            return f"{type(exc).__name__}: the ring did not run (fetched={fetched}, stats={stats})"
-        if conn.rollbacks < 1 or conn.in_txn:
-            return f"{type(exc).__name__}: the failed transaction was not rolled back"
-        if covers:
-            return f"{type(exc).__name__}: the history phase ran after a failed discovery"
+            return f"{label}: the failure escaped run(): {type(raised).__name__}"
+        problem = _isolated(label, exc, result, {"source": "error", "reason": type(exc).__name__},
+                            history=False)
+        if problem:
+            return problem
+    return None
+
+
+STATUS_TABLE_FAILURES = (
+    psycopg.errors.InsufficientPrivilege("must be owner of table eod_warmer_ticker_status"),
+    psycopg.errors.LockNotAvailable("canceling statement due to lock timeout"),
+    psycopg.errors.InvalidSchemaName("no schema has been selected to create in"),
+    psycopg.errors.UndefinedTable("relation does not exist"),
+    psycopg.errors.WrongObjectType("is not a table"),
+    RuntimeError("eod_warmer_ticker_status has an unexpected shape: columns {'retry_after': None}"),
+)
+
+
+def status_table_isolation(module: Any) -> str | None:
+    """The bootstrap fails (permission, lock timeout, a missing schema, a wrong
+    shape found after it): the ring runs, nothing else of the history subsystem
+    does (no discovery, no history phase), the error is reported with its
+    stage, and the run ends normally."""
+    for exc in STATUS_TABLE_FAILURES:
+        def failing(c, exc=exc):
+            c.in_txn = True
+            raise exc
+        label = f"status table {type(exc).__name__}"
+        try:
+            result = run_entrypoint(module, lambda c, as_of: ["TSM"], status=failing)
+        except Exception as raised:           # noqa: BLE001
+            return f"{label}: the failure escaped run(): {type(raised).__name__}"
+        problem = _isolated(label, exc, result, {
+            "source": "error", "reason": type(exc).__name__, "stage": "status_table"}, history=False)
+        if problem:
+            return problem
+        if result.discovered:
+            return f"{label}: discovery ran against an unverified status table"
+    return None
+
+
+def history_phase_isolation(module: Any) -> str | None:
+    """A failure inside the history phase itself (planning, a status read or
+    write, anything unforeseen) is isolated the same way."""
+    for exc in (psycopg.errors.InsufficientPrivilege("permission denied"),
+                psycopg.errors.OperationalError("server closed the connection"),
+                RuntimeError("unexpected shape")):
+        def failing(*a, exc=exc, **k):
+            raise exc
+        label = f"history phase {type(exc).__name__}"
+        try:
+            result = run_entrypoint(module, lambda c, as_of: ["TSM"], cover=failing)
+        except Exception as raised:           # noqa: BLE001
+            return f"{label}: the failure escaped run(): {type(raised).__name__}"
+        problem = _isolated(label, exc, result, {
+            "source": "error", "reason": type(exc).__name__, "stage": "history"}, history=True)
+        if problem:
+            return problem
+    return None
+
+
+class _Stop(Exception):
+    pass
+
+
+class _RecordingCursor:
+    def __init__(self, log: list) -> None:
+        self.log = log
+
+    def __enter__(self) -> _RecordingCursor:
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+    def execute(self, query: Any, params: Any = None) -> None:
+        self.log.append((str(query), params))
+        if len(self.log) >= 2:
+            raise _Stop
+
+
+class _ProbeConn(FakeConn):
+    def __init__(self) -> None:
+        super().__init__()
+        self.log: list = []
+
+    def cursor(self) -> _RecordingCursor:
+        return _RecordingCursor(self.log)
+
+
+def status_table_timeouts(module: Any) -> str | None:
+    """The bootstrap's first statement bounds its own lock wait and statements
+    (the documented 5 s and 30 s) for the transaction only."""
+    if (module.STATUS_TABLE_LOCK_TIMEOUT_MS, module.STATUS_TABLE_STATEMENT_TIMEOUT_MS) != (5_000, 30_000):
+        return (f"timeouts are {module.STATUS_TABLE_LOCK_TIMEOUT_MS} / "
+                f"{module.STATUS_TABLE_STATEMENT_TIMEOUT_MS}, documented 5000 / 30000")
+    conn = _ProbeConn()
+    try:
+        module.ensure_status_table(conn)
+    except _Stop:
+        pass
+    first = conn.log[0] if conn.log else ("", None)
+    if "lock_timeout" not in first[0] or "statement_timeout" not in first[0] or "true" not in first[0]:
+        return f"the bootstrap's first statement was {first[0][:80]!r}"
+    if first[1] != ("5000ms", "30000ms"):
+        return f"the bootstrap's timeouts were {first[1]}"
     return None
 
 
 def source_states(module: Any) -> str | None:
-    stats, _, fetched, covers = run_entrypoint(module, lambda c, as_of: [])
-    got = stats.get("foreign_history")
+    result = run_entrypoint(module, lambda c, as_of: [])
+    got = result.stats.get("foreign_history")
     if (not isinstance(got, dict) or got.get("source") != "empty"
             or got.get("source_tickers") != 0 or got.get("completed") != 0
-            or got.get("processed") != 0 or covers or fetched != ["AAA", "BBB"]):
+            or got.get("processed") != 0 or result.covers or result.fetched != ["AAA", "BBB"]):
         return f"an empty source reported {got}"
-    stats, *_ = run_entrypoint(module, lambda c, as_of: None)
-    if stats.get("foreign_history") != {"source": "absent"}:
-        return f"an absent resolver reported {stats.get('foreign_history')}"
-    stats, _, _, covers = run_entrypoint(module, lambda c, as_of: ["TSM"])
-    if len(covers) != 1 or stats.get("foreign_history") != {"processed": 1}:
-        return f"a source with tickers reported {stats.get('foreign_history')}"
+    result = run_entrypoint(module, lambda c, as_of: None)
+    if result.stats.get("foreign_history") != {"source": "absent"}:
+        return f"an absent resolver reported {result.stats.get('foreign_history')}"
+    result = run_entrypoint(module, lambda c, as_of: ["TSM"])
+    if len(result.covers) != 1 or result.stats.get("foreign_history") != {"processed": 1}:
+        return f"a source with tickers reported {result.stats.get('foreign_history')}"
+    if "foreign_history_errors" in result.stats:
+        return "a healthy run reported an error counter"
     return None
