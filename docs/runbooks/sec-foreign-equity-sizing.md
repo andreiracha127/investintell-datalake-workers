@@ -59,6 +59,10 @@ establishes 1/1.
 The shared internal count election retains W1's latest stated date, availability,
 acceptance timestamp and accession ordering, together with its exact competing
 count rules. W1's existing public share functions retain their previous answers.
+`sec_cover_share_election_at` owns that election. Only the new sizing API invokes
+`sec_cover_sizing_share_detail_at` to evaluate the elected filing's labels, units,
+class census and audit evidence. The legacy class and ticker APIs do not execute
+or plan this sizing-only work, including for domestic equities.
 A conflicting freshest count cannot be replaced with an older convenient count.
 The selected count's own accession supplies its class census; a later filing
 cannot validate an older total.

@@ -536,8 +536,52 @@ def test_new_point_functions_have_no_set_and_inline_without_sec_function_scans(d
                       "FROM pg_catalog.pg_proc p WHERE p.oid IN ("
                       "'public.sec_cover_ticker_size_basis_at(text,bigint,text[],date,integer)'::regprocedure,"
                       "'public.sec_cover_share_election_at(bigint,text,text,text[],date,text,text)'::regprocedure,"
+                      "'public.sec_cover_sizing_share_detail_at(bigint,text,text[],date,text)'::regprocedure,"
                       "'public.sec_foreign_listing_context_at(bigint,text,date,date)'::regprocedure)").fetchall()
-    assert len(rows) == 3 and all(row == (None, False, "s", "s") for row in rows)
+    assert len(rows) == 4 and all(row == (None, False, "s", "s") for row in rows)
+
+
+@pytest.mark.parametrize("api", ("class", "ticker"))
+def test_legacy_share_plans_prune_sizing_labels_and_filing_proof(db, api):
+    # The all-equity W1 callers need election and ticker binding only. Running
+    # the foreign-size label/census work on every old candidate was an order of
+    # magnitude regression; check the work in the plan, not wall-clock timing.
+    import json
+
+    adsh = observe(db, ticker="DOM", member=A, title="Class A ordinary shares", form="10-K")
+    count(db, adsh=adsh, member=A, form="10-K")
+    if api == "class":
+        query = "SELECT * FROM public.sec_cover_class_shares_at(1,%s,%s)"
+        params = (A, DAY)
+    else:
+        query = "SELECT * FROM public.sec_cover_ticker_shares_at('DOM',1,%s)"
+        params = (DAY,)
+    plan = db.execute("EXPLAIN (VERBOSE, FORMAT JSON) " + query, params).fetchone()[0]
+    rendered = json.dumps(plan)
+    assert "sec_first_label(" not in rendered
+    assert "sec_class_label(" not in rendered
+    assert "jsonb_build_object(" not in rendered
+
+    def proof_expressions(node):
+        for expression in node.get("Output", []):
+            yield expression
+        for key in ("Filter", "Join Filter", "One-Time Filter"):
+            if key in node:
+                yield node[key]
+        for child in node.get("Plans", []):
+            yield from proof_expressions(child)
+
+    assert not any("bool_and(" in expression and "filing_complete" in expression
+                   for expression in proof_expressions(plan[0]["Plan"]))
+    assert db.execute(query, params).fetchone()[0] == "resolved"
+    if api == "class":
+        def relations(node):
+            result = {node["Relation Name"]} if "Relation Name" in node else set()
+            for child in node.get("Plans", []):
+                result.update(relations(child))
+            return result
+
+        assert "sec_ticker_cik_observations" not in relations(plan[0]["Plan"])
 
 
 def test_legacy_count_apis_match_pristine_v3_across_ambiguity_age_and_foreign_gates(db):
@@ -564,3 +608,40 @@ def test_legacy_count_apis_match_pristine_v3_across_ambiguity_age_and_foreign_ga
             actual = db.execute("SELECT * FROM public.sec_cover_ticker_shares_at(%s,%s,%s)", (ticker, cik, day)).fetchone()
             baseline = db.execute("SELECT * FROM public.b2_reference_sec_cover_ticker_shares_at(%s,%s,%s)", (ticker, cik, day)).fetchone()
             assert actual == baseline
+
+
+def test_class_count_ambiguity_includes_all_values_in_elected_filing(db):
+    # Class W1 never partitions a filing's competing numeric values by its
+    # foreign-policy annotation. Mixed versions must stay ambiguous even when
+    # the elected annotation is domestic and another value was marked foreign.
+    adsh = observe(db, ticker="DOM", form="10-K")
+    count(db, adsh=adsh, shares=100, form="20-F", available="2025-03-02")
+    count(db, adsh=adsh, shares=101, form="10-K", available="2025-03-03")
+    row = db.execute("SELECT * FROM public.sec_cover_class_shares_at(1,'',%s)", (DAY,)).fetchone()
+    assert row[0] == "ambiguous" and row[1] is None and row[4] is None
+
+
+@pytest.mark.parametrize("shares", ("0", "NaN", "Infinity", "10000000000000000000000000000000000000003"))
+def test_legacy_election_retains_numeric_edge_values_exactly(db, shares):
+    import re
+
+    v3 = (ROOT / "schemas" / "sec_ticker_cik_history_v3.sql").read_text(encoding="utf-8")
+    for name in ("sec_cover_class_shares_at", "sec_cover_ticker_shares_at"):
+        body = re.search(r"CREATE OR REPLACE FUNCTION " + name + r"\(.*?\$fn\$;", v3, re.S).group(0)
+        db.execute(body.replace(name, "b2_reference_" + name, 1))
+    adsh = observe(db, ticker="DOM", member=A, form="10-K")
+    count(db, adsh=adsh, member=A, shares=Decimal(shares), form="10-K")
+    # PostgreSQL numeric NaN compares equal to itself; Python Decimal NaN does
+    # not. Compare every output column using PostgreSQL's null-safe row rules.
+    assert db.execute(
+        "SELECT n IS NOT DISTINCT FROM o "
+        "FROM public.sec_cover_class_shares_at(1,%s,%s) n "
+        "CROSS JOIN public.b2_reference_sec_cover_class_shares_at(1,%s,%s) o",
+        (A, DAY, A, DAY),
+    ).fetchone() == (True,)
+    assert db.execute(
+        "SELECT n IS NOT DISTINCT FROM o "
+        "FROM public.sec_cover_ticker_shares_at('DOM',1,%s) n "
+        "CROSS JOIN public.b2_reference_sec_cover_ticker_shares_at('DOM',1,%s) o",
+        (DAY, DAY),
+    ).fetchone() == (True,)

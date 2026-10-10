@@ -112,6 +112,7 @@ SELECT
     (SELECT h.refusal FROM chosen h) AS refusal
 $fn$;
 
+DROP FUNCTION IF EXISTS public.sec_cover_sizing_share_detail_at(bigint,text,text[],date,text);
 DROP FUNCTION IF EXISTS public.sec_cover_share_election_at(bigint,text,text,text[],date,text,text);
 DROP FUNCTION IF EXISTS public.sec_foreign_class_key(text);
 

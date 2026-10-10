@@ -586,9 +586,11 @@ RETURNS TABLE (
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
-WITH candidates AS (
+WITH candidates AS NOT MATERIALIZED (
     SELECT c.adsh, c.stated_on, c.available_on, c.accepted, c.shares,
-           c.class_key, c.form, c.fact_hash, c.source_package,
+           c.class_key, c.form,
+           CASE WHEN p_selection = 'sizing' THEN c.fact_hash END AS fact_hash,
+           CASE WHEN p_selection = 'sizing' THEN c.source_package END AS source_package,
            CASE WHEN c.class_key = '' THEN 'sole_class_total' ELSE 'class' END AS basis,
            CASE WHEN p_selection = 'class' AND p_class_key = ''
                           AND regexp_replace(c.form, '/A$', '') IN ('20-F', '40-F', '6-K', '20-FR')
@@ -600,14 +602,11 @@ WITH candidates AS (
                 WHEN p_selection = 'sizing' AND c.class_key <> ''
                      AND c.class_key ~* '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$))'
                      THEN 'ordinary_class_shares_unavailable'
-           END AS policy_refusal,
-           labels.count_label, labels.label_ambiguous, labels.ordinary_unit,
-           labels.preferred_unit, l.exchange_name
+           END AS policy_refusal
     FROM public.sec_share_counts_at(p_as_of, false) c
-    CROSS JOIN LATERAL (
-        SELECT bool_or(o.security_kind = 'depositary'
-                       AND c.class_key ~* '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$))') AS depositary,
-               CASE WHEN count(DISTINCT o.exchange) = 1 THEN min(o.exchange COLLATE "C") END AS exchange_name
+    LEFT JOIN LATERAL (
+        SELECT count(*) > 0 AS bound, bool_or(o.security_kind = 'depositary'
+                       AND c.class_key ~* '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$))') AS depositary
         FROM public.sec_observations_at(p_as_of, false) o
         WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.available_on <= p_as_of
           AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
@@ -618,27 +617,9 @@ WITH candidates AS (
                    WHEN p_selection = 'sizing' THEN
                        o.class_key = ANY(p_line_members)
                    ELSE false END
-        HAVING count(*) > 0 OR p_selection = 'class'
-    ) l
-    CROSS JOIN LATERAL (
-        SELECT CASE WHEN count(DISTINCT x.label) = 1 THEN min(x.label COLLATE "C") END AS count_label,
-               count(DISTINCT x.label) > 1 AS label_ambiguous,
-               c.class_key ~* '(common|ordinary)'
-                   OR COALESCE(bool_or(x.ordinary_unit), false) AS ordinary_unit,
-               c.class_key ~* '(preferred|preference)'
-                   OR COALESCE(bool_or(x.preferred_unit), false) AS preferred_unit
-        FROM (
-            SELECT public.sec_class_label(NULL, c.class_key) AS label,
-                   false AS ordinary_unit, false AS preferred_unit
-            UNION ALL
-            SELECT public.sec_class_label(o.security_title, o.class_key),
-                   o.security_kind = 'equity' AND o.security_title ~* '(common|ordinary)',
-                   o.security_kind = 'preferred' OR o.security_title ~* '(preferred|preference)'
-            FROM public.sec_observations_at(p_as_of, false) o
-            WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.class_key = c.class_key
-        ) x
-    ) labels
+    ) l ON true
     WHERE c.cik = p_cik AND c.stated_on <= p_as_of
+      AND (p_selection = 'class' OR l.bound)
       AND CASE WHEN p_selection = 'class' THEN c.class_key = p_class_key
                WHEN p_selection = 'ticker' THEN true
                WHEN p_selection = 'sizing' THEN
@@ -673,59 +654,132 @@ WITH candidates AS (
 ), chosen AS (
     SELECT k.* FROM candidates k
     ORDER BY k.stated_on DESC, k.available_on DESC, k.accepted DESC NULLS LAST,
-             k.adsh COLLATE "C" DESC, k.basis COLLATE "C", k.policy_refusal IS NOT NULL
+             k.adsh COLLATE "C" DESC, k.basis COLLATE "C",
+             CASE WHEN p_selection <> 'class' THEN k.policy_refusal IS NOT NULL END
     LIMIT 1
-), elected AS (
+), elected AS NOT MATERIALIZED (
     SELECT k.* FROM candidates k, chosen h
     WHERE k.adsh = h.adsh AND k.stated_on = h.stated_on AND k.basis = h.basis
-      AND k.policy_refusal IS NOT DISTINCT FROM h.policy_refusal
+      AND (p_selection = 'class' OR k.policy_refusal IS NOT DISTINCT FROM h.policy_refusal)
 ), count_values AS (
     SELECT DISTINCT k.shares FROM elected k
-), census AS (
-    SELECT COALESCE(bool_and(o.filing_equity_classes = 1 AND o.filing_complete), false) AS one_class,
-           count(DISTINCT o.class_key) FILTER (
-               WHERE o.security_kind IN ('equity', 'unknown')
-           ) AS ordinary_observed_classes,
-           CASE WHEN count(DISTINCT public.sec_class_label(o.security_title, o.class_key)) = 1
-                THEN min(public.sec_class_label(o.security_title, o.class_key) COLLATE "C") END AS sole_label
-    FROM public.sec_observations_at(p_as_of, false) o, chosen h
-    WHERE o.adsh = h.adsh AND o.cik = p_cik
-), count_census AS (
-    SELECT count(DISTINCT c.class_key) AS count_classes
-    FROM public.sec_share_counts_at(p_as_of, false) c, chosen h
-    WHERE c.adsh = h.adsh AND c.cik = p_cik
-), detail AS (
-    SELECT h.*,
-           COALESCE(h.count_label,
-                    CASE WHEN h.class_key = '' THEN s.sole_label END) AS label,
-           h.class_key <> '' AND h.class_key ~* '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$))' AS ads_unit,
-           s.one_class AND k.count_classes = 1
-               AND regexp_replace(h.form, '/A$', '') = '20-F' AS sole_proven,
-           (SELECT count(DISTINCT e.class_key) FROM elected e) > 1
-               OR COALESCE((SELECT bool_or(e.label_ambiguous) FROM elected e), false)
-               OR (SELECT count(DISTINCT e.count_label) FROM elected e) > 1 AS different_classes
-    FROM chosen h CROSS JOIN census s CROSS JOIN count_census k
+), count_result AS (
+    -- Return aggregate Vars so the inlined legacy status/share projections
+    -- reuse one count, rather than duplicating scalar count InitPlans.
+    SELECT count(*) AS value_count, min(k.shares) AS sole_value FROM count_values k
 )
-SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM chosen) THEN 'missing'
-            WHEN (SELECT count(*) FROM count_values) > 1 THEN 'ambiguous'
+SELECT CASE WHEN h.adsh IS NULL THEN 'missing'
+            WHEN v.value_count > 1 THEN 'ambiguous'
             ELSE 'resolved' END,
-       CASE WHEN (SELECT count(*) FROM count_values) = 1 THEN (SELECT v.shares FROM count_values v) END,
-       d.stated_on, d.adsh, d.basis, d.policy_refusal, d.class_key, d.label,
-       CASE WHEN d.ads_unit THEN 'ads' WHEN d.preferred_unit THEN 'preferred'
-            WHEN d.ordinary_unit OR (d.class_key = '' AND d.sole_proven) THEN 'ordinary'
-            WHEN d.adsh IS NOT NULL THEN 'unknown' END,
-       COALESCE(d.sole_proven, false), d.exchange_name, COALESCE(d.different_classes, false),
-       jsonb_build_object(
+       CASE WHEN v.value_count = 1 THEN v.sole_value END,
+       h.stated_on, h.adsh, h.basis, h.policy_refusal, h.class_key,
+       NULL::text, NULL::text, false, NULL::text,
+       CASE WHEN p_selection = 'sizing'
+            THEN (SELECT count(DISTINCT e.class_key) FROM elected e) > 1 ELSE false END,
+       CASE WHEN p_selection = 'sizing' THEN jsonb_build_object(
+           'chosen_fact_hash', h.fact_hash,
            'count_fact_hashes', COALESCE((SELECT jsonb_agg(DISTINCT e.fact_hash ORDER BY e.fact_hash) FROM elected e), '[]'::jsonb),
            'count_source_packages', COALESCE((SELECT jsonb_agg(DISTINCT e.source_package ORDER BY e.source_package) FROM elected e), '[]'::jsonb),
-           'count_class_keys', COALESCE((SELECT jsonb_agg(DISTINCT e.class_key ORDER BY e.class_key) FROM elected e), '[]'::jsonb),
-           'count_labels', COALESCE((SELECT jsonb_agg(DISTINCT e.count_label ORDER BY e.count_label) FILTER (WHERE e.count_label IS NOT NULL) FROM elected e), '[]'::jsonb),
+           'count_class_keys', COALESCE((SELECT jsonb_agg(DISTINCT e.class_key ORDER BY e.class_key) FROM elected e), '[]'::jsonb))
+            ELSE NULL::jsonb END
+FROM count_result v LEFT JOIN chosen h ON true
+$fn$;
+
+-- Only the foreign sizing API asks for units, labels, filing scope, exchange and
+-- audit JSON. Keep that work outside the shared count election so the existing
+-- W1 class/ticker APIs do not plan or execute it on domestic equity requests.
+CREATE OR REPLACE FUNCTION public.sec_cover_sizing_share_detail_at(
+    p_cik bigint, p_ticker text, p_line_members text[], p_as_of date,
+    p_underlying_label text
+)
+RETURNS TABLE (
+    source_status text, shares numeric, shares_as_of date, adsh text,
+    basis text, legacy_refusal text, count_class_key text, count_label text,
+    share_unit text, sole_class_proven boolean, exchange_name text,
+    identity_ambiguous boolean, evidence jsonb
+)
+LANGUAGE sql STABLE PARALLEL SAFE
+AS $fn$
+WITH election AS (
+    SELECT e.* FROM public.sec_cover_share_election_at(
+        p_cik, p_ticker, NULL, p_line_members, p_as_of, 'sizing', p_underlying_label
+    ) e
+), elected AS (
+    SELECT c.*, labels.count_label, labels.label_ambiguous,
+           labels.ordinary_unit, labels.preferred_unit
+    FROM election e
+    CROSS JOIN LATERAL public.sec_share_counts_at(p_as_of, false) c
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN count(DISTINCT x.label) = 1 THEN min(x.label COLLATE "C") END AS count_label,
+               count(DISTINCT x.label) > 1 AS label_ambiguous,
+               c.class_key ~* '(common|ordinary)'
+                   OR COALESCE(bool_or(x.ordinary_unit), false) AS ordinary_unit,
+               c.class_key ~* '(preferred|preference)'
+                   OR COALESCE(bool_or(x.preferred_unit), false) AS preferred_unit
+        FROM (
+            SELECT public.sec_class_label(NULL, c.class_key) AS label,
+                   false AS ordinary_unit, false AS preferred_unit
+            UNION ALL
+            SELECT public.sec_class_label(o.security_title, o.class_key),
+                   o.security_kind = 'equity' AND o.security_title ~* '(common|ordinary)',
+                   o.security_kind = 'preferred' OR o.security_title ~* '(preferred|preference)'
+            FROM public.sec_observations_at(p_as_of, false) o
+            WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.class_key = c.class_key
+        ) x
+    ) labels
+    WHERE c.cik = p_cik AND c.adsh = e.adsh AND c.stated_on = e.shares_as_of
+      AND e.evidence -> 'count_fact_hashes' ? c.fact_hash
+), census AS (
+    SELECT COALESCE(bool_and(o.filing_equity_classes = 1 AND o.filing_complete), false) AS one_class,
+           CASE WHEN count(DISTINCT public.sec_class_label(o.security_title, o.class_key)) = 1
+                THEN min(public.sec_class_label(o.security_title, o.class_key) COLLATE "C") END AS sole_label
+    FROM public.sec_observations_at(p_as_of, false) o, election e
+    WHERE o.adsh = e.adsh AND o.cik = p_cik
+), count_census AS (
+    SELECT count(DISTINCT c.class_key) AS count_classes
+    FROM public.sec_share_counts_at(p_as_of, false) c, election e
+    WHERE c.adsh = e.adsh AND c.cik = p_cik
+), chosen_detail AS (
+    SELECT c.* FROM elected c, election e
+    WHERE c.fact_hash = e.evidence ->> 'chosen_fact_hash'
+    LIMIT 1
+), detail AS (
+    SELECT e.*, c.form,
+           COALESCE(c.count_label,
+                    CASE WHEN e.count_class_key = '' THEN s.sole_label END) AS label,
+           e.count_class_key <> ''
+               AND e.count_class_key ~* '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$))' AS ads_unit,
+           c.preferred_unit, c.ordinary_unit,
+           s.one_class AND k.count_classes = 1
+               AND regexp_replace(c.form, '/A$', '') = '20-F' AS sole_proven,
+           e.identity_ambiguous
+               OR COALESCE((SELECT bool_or(x.label_ambiguous) FROM elected x), false)
+               OR (SELECT count(DISTINCT x.count_label) FROM elected x) > 1 AS different_classes,
+           s.one_class, k.count_classes
+    FROM election e LEFT JOIN chosen_detail c ON true
+    CROSS JOIN census s CROSS JOIN count_census k
+), exchange_fact AS (
+    SELECT CASE WHEN count(DISTINCT o.exchange) = 1 THEN min(o.exchange COLLATE "C") END AS exchange_name
+    FROM public.sec_observations_at(p_as_of, false) o, election e
+    WHERE o.cik = p_cik AND o.adsh = e.adsh
+      AND o.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
+      AND o.class_key = ANY(p_line_members)
+)
+SELECT d.source_status, d.shares, d.shares_as_of, d.adsh, d.basis,
+       d.legacy_refusal, d.count_class_key, d.label,
+       CASE WHEN d.ads_unit THEN 'ads' WHEN d.preferred_unit THEN 'preferred'
+            WHEN d.ordinary_unit OR (d.count_class_key = '' AND d.sole_proven) THEN 'ordinary'
+            WHEN d.adsh IS NOT NULL THEN 'unknown' END,
+       COALESCE(d.sole_proven, false), x.exchange_name, COALESCE(d.different_classes, false),
+       d.evidence || jsonb_build_object(
+           'count_labels', COALESCE((SELECT jsonb_agg(DISTINCT e.count_label ORDER BY e.count_label)
+                                    FILTER (WHERE e.count_label IS NOT NULL) FROM elected e), '[]'::jsonb),
            'count_labels_ambiguous', COALESCE(d.different_classes, false),
-           'filing_equity_classes_one', (SELECT s.one_class FROM census s),
-           'filing_count_classes', (SELECT k.count_classes FROM count_census k),
+           'filing_equity_classes_one', d.one_class,
+           'filing_count_classes', d.count_classes,
            'count_form', d.form,
            'efm_per_class_mandatory', regexp_replace(d.form, '/A$', '') = '20-F')
-FROM (SELECT 1) one LEFT JOIN detail d ON true
+FROM detail d CROSS JOIN exchange_fact x
 $fn$;
 
 -- Both legacy functions use the same selected-source election and keep their
@@ -795,8 +849,8 @@ WITH listing AS (
                      THEN 'explicit'
                 WHEN e.sole_class_proven THEN 'sole_ordinary_class_proven'
                 ELSE 'ambiguous' END AS binding
-    FROM listing l CROSS JOIN LATERAL public.sec_cover_share_election_at(
-        p_cik, p_ticker, NULL, p_line_members, p_as_of, 'sizing',
+    FROM listing l CROSS JOIN LATERAL public.sec_cover_sizing_share_detail_at(
+        p_cik, p_ticker, p_line_members, p_as_of,
         CASE WHEN l.listed_type = 'ads' THEN l.ratio_label ELSE l.listing_label END
     ) e
 ), decided AS (
@@ -915,6 +969,7 @@ REVOKE ALL ON FUNCTION public.sec_foreign_listing_election_at(bigint, text, date
     public.sec_foreign_listing_at(bigint, text, date),
     public.sec_foreign_class_key(text),
     public.sec_cover_share_election_at(bigint,text,text,text[],date,text,text),
+    public.sec_cover_sizing_share_detail_at(bigint,text,text[],date,text),
     public.sec_cover_class_shares_at(bigint,text,date,integer),
     public.sec_cover_ticker_shares_at(text,bigint,date,integer),
     public.sec_cover_ticker_size_basis_at(text,bigint,text[],date,integer) FROM PUBLIC;
@@ -929,6 +984,7 @@ BEGIN
         'sec_foreign_listing_at(bigint,text,date)',
         'sec_foreign_class_key(text)',
         'sec_cover_share_election_at(bigint,text,text,text[],date,text,text)',
+        'sec_cover_sizing_share_detail_at(bigint,text,text[],date,text)',
         'sec_cover_class_shares_at(bigint,text,date,integer)',
         'sec_cover_ticker_shares_at(text,bigint,date,integer)',
         'sec_cover_ticker_size_basis_at(text,bigint,text[],date,integer)'

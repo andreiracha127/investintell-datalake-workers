@@ -157,7 +157,12 @@ def test_reapply_and_rollback_restore_exact_functions_keep_rows_and_loader_works
         db.execute(migration.replace("BEGIN;", "").replace("COMMIT;", ""))
     for signature, original in core_database[1].items():
         assert db.execute("SELECT pg_catalog.pg_get_functiondef(%s::regprocedure)", (signature,)).fetchone() == (original,)
-    for signature in (CORE_SIGNATURE, ELECTION_SIGNATURE):
+    for signature in (
+        CORE_SIGNATURE,
+        ELECTION_SIGNATURE,
+        "public.sec_cover_share_election_at(bigint,text,text,text[],date,text,text)",
+        "public.sec_cover_sizing_share_detail_at(bigint,text,text[],date,text)",
+    ):
         assert db.execute("SELECT pg_catalog.to_regprocedure(%s)", (signature,)).fetchone() == (None,)
     assert db.execute("SELECT tableoid,ctid,id,fact_hash FROM public.sec_foreign_listing_evidence ORDER BY id").fetchall() == before
     assert db.execute(
