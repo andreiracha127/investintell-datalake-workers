@@ -309,15 +309,23 @@ def compare(args: argparse.Namespace) -> int:
                                                        or row.get("ratio_effectiveness_confirmation_text"))]})
     old_confirmations = [row for row in baseline["evidence"] if row.get("ratio_effectiveness_confirmation_text")]
     new_confirmations = [row for row in candidate["evidence"] if row.get("ratio_effectiveness_confirmation_text")]
-    new_keys = {confirmation_key(row) for row in new_confirmations}
-    old_keys = {confirmation_key(row) for row in old_confirmations}
-    removed = [row for row in old_confirmations if confirmation_key(row) not in new_keys]
-    added = [row for row in new_confirmations if confirmation_key(row) not in old_keys]
+    old_by_key: dict[tuple, list[dict]] = defaultdict(list)
+    new_by_key: dict[tuple, list[dict]] = defaultdict(list)
+    for row in old_confirmations:
+        old_by_key[confirmation_key(row)].append(row)
+    for row in new_confirmations:
+        new_by_key[confirmation_key(row)].append(row)
+    removed, added = [], []
+    for key in sorted(old_by_key.keys() | new_by_key.keys()):
+        old_rows, new_rows = old_by_key[key], new_by_key[key]
+        paired_count = min(len(old_rows), len(new_rows))
+        removed.extend(old_rows[paired_count:])
+        added.extend(new_rows[paired_count:])
     confirmation_report = {
         "before_text_rows": len(old_confirmations), "after_text_rows": len(new_confirmations),
         "before_confirmed_rows": baseline["confirmed_rows"], "after_confirmed_rows": candidate["confirmed_rows"],
         "removed_or_replaced_extractions": len(removed), "added_or_replaced_extractions": len(added),
-        "identity_note": "Pairs source/program/class/ratio/date/evidence text, ignoring parser version and fact hash; a narrowed narrative extraction may replace an old broad row.",
+        "identity_note": "Pairs source/program/class/ratio/date/evidence text one row at a time, preserving duplicate multiplicity and ignoring parser version and fact hash; a narrowed narrative extraction may replace an old broad row.",
         "removed_or_replaced": [{"manual_review_status": "required", **row} for row in removed],
         "added_or_replaced": added,
         "all_before": old_confirmations, "all_after": new_confirmations,

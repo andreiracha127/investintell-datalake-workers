@@ -73,7 +73,7 @@ _RATIO_CHANGE_OBJECT = rf"(?:(?:(?:first|second|proposed|planned|concurrent)\s+)
 _EVENT_DETERMINER = r"(?:(?:the|a|an|its|our|this|that)\s+)?"
 _RATIO_OBJECT_TAIL = r"(?=$|[.,;:()\"'\u201c\u201d\u2018\u2019\ufffd]|\s+(?:from|to|of|in|on|effective|whereby|which|that|with|and|as|for|representing|proportionate|so)\b)"
 _FINANCIAL_CONFIRMATION = re.compile(
-    r"\b(?:weighted\s+average|(?:basic|diluted)\s+(?:(?:net\s+)?(?:income|loss|earnings)|and\s+diluted)|"
+    r"\b(?:EPS|weighted\s+average|(?:basic|diluted)\s+(?:(?:net\s+)?(?:income|loss|earnings)|and\s+diluted)|"
     r"(?:income|loss|earnings)\s+per\s+(?:(?:ordinary|equivalent)\s+)?(?:shares?|ADS)|fair\s+value\s+measurement|"
     r"total\s+(?:assets|liabilities)|cash\s+flows?)\b", re.I,
 )
@@ -844,7 +844,7 @@ def _6k_completed_event_dates(own: str) -> _DateEvidence:
             boundary = re.search(r"[.!?;](?!\d)(?:\s|$)", own[declaration.end():])
             end = declaration.end() + boundary.end() if boundary else len(own)
             accounting = re.search(
-                r",?\s+and\s+(?:basic\b|diluted\b|all\s+(?:ADS|per[- ]ADS)\b)", own[start:end], re.I,
+                r",?\s+and\s+(?:basic\b|diluted\b|EPS\b|all\s+(?:ADS|per[- ]ADS)\b)", own[start:end], re.I,
             )
             if (accounting and re.search(r"\b(?:revised|adjusted|retrospective\w*)\b", own[start + accounting.end():end], re.I)
                     and not re.search(r"\b(?:assuming|assumed|hypothetical\w*|pro\s+forma|presentation\s+only)\b", own[start:end], re.I)):
@@ -1039,8 +1039,8 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
             r"\b(class|series)\s+([A-Z]|[IVX]{1,4}|\d{1,3})\b", fragment, re.I))
         return len(named) <= 1 and (stated is None or stated == current_class)
 
-    def same_event(fragment: str) -> bool:
-        if _FINANCIAL_CONFIRMATION.search(fragment) or not same_class(fragment):
+    def same_event(fragment: str, *, allow_financial_lead: bool = False) -> bool:
+        if (not allow_financial_lead and _FINANCIAL_CONFIRMATION.search(fragment)) or not same_class(fragment):
             return False
         def receipt_programs(value: str) -> set[str]:
             programs = set()
@@ -1129,7 +1129,7 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
 
     def affirmative_statement(statement: str) -> bool:
         return not re.search(
-            r"\b(?:if|assuming|assumed|hypothetical(?:ly)?|pro\s+forma|financial\s+statement\s+presentation|"
+            r"\b(?:if|assuming|assumed|assumptions?|hypothetical(?:ly)?|pro\s+forma|financial\s+statement\s+presentation|"
             r"would|could|should|not|never|preparations?|budgets?|filings?|notices?)\b", statement, re.I,
         )
 
@@ -1206,16 +1206,26 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
         confirmed_conditions.add("ratio_effective")
     elif completed.unique == effective:
         rejected_confirmation = True
-    past_effect = re.search(
-        rf"\b(?:{_RATIO_CHANGE_OBJECT}|{_RATIO_NOUN})\b"
-        r"(?:\s+(?:for|of|to|on|from)\b(?:[^.;]|\.(?=\d)){0,450}?)?"
+    past_pattern = re.compile(
+        rf"\b(?P<object>{_RATIO_CHANGE_OBJECT}|{_RATIO_NOUN})\b"
+        r"(?:,?\s+(?:for|of|to|on|from)\b(?:[^.;]|\.(?=\d)){0,450}?)?"
         r"(?:,?\s+(?:that|which|this))?\s+(?:was|became|has\s+become)\s+effective\b[^.;]{0,120}",
-        context, re.I,
+        re.I,
     )
+    candidates = [past_pattern.match(context, candidate.start()) for candidate in re.finditer(
+        "(?=" + past_pattern.pattern + ")", context, re.I,
+    )]
+    # The immediate ratio subject owns its effective predicate. An earlier
+    # table's ratio label cannot span a later, separate legal ratio object.
+    # Keep ADS + ratio-change together when their object ends are identical.
+    past_effect = max(candidates, key=lambda candidate: (candidate.end("object"), -candidate.start()), default=None)
     past_statement = statement_for(past_effect) if past_effect else ""
     past_dates = _operative_date_evidence(past_statement)
     past_start = text.find(past_statement, max(0, match.start() - len(context)), match.end() + len(context)) if past_statement else -1
     past_owns_ratio = past_start >= 0 and past_start <= match.start() and match.end() <= past_start + len(past_statement)
+    legal_start = text.find(past_effect.group(), max(0, match.start() - len(context)), match.end() + len(context)) if past_effect else -1
+    legal_clause_owns_ratio = bool(legal_start >= 0 and legal_start <= match.start()
+                                  and match.end() <= legal_start + len(past_effect.group()))
     own_relative = match.start() - own_start if own_start >= 0 else -1
     own_introductions = list(re.finditer(
         rf"\b(?:Each\s+{_ADS}|The\s+Company|On\s+\w+\s+\d{{1,2}}|Effective\s+\w+\s+\d{{1,2}})\b",
@@ -1228,8 +1238,10 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
         r"\bConcurrently\s+with\s+(?:the\s+)?(?:reverse\s+(?:share\s+|stock\s+)?split|Share\s+(?:Consolidation|Subdivision))\b",
         own, re.I,
     ))
-    if (past_effect and same_event(past_statement) and affirmative_statement(past_statement)
-            and (not _FINANCIAL_CONFIRMATION.search(own) or past_owns_ratio or own_narrative_ratio)
+    if (past_effect and same_event(past_statement, allow_financial_lead=legal_clause_owns_ratio)
+            and affirmative_statement(past_statement)
+            and (not _FINANCIAL_CONFIRMATION.search(own) or past_owns_ratio or own_narrative_ratio
+                 or legal_clause_owns_ratio)
             and (past_dates.unique == effective or (not past_dates.dates and linked_completed_date))):
         # Identity guards inspect the complete sentence; stored dated proofs
         # end at the operative date rather than swallowing an adjacent table.
@@ -1904,12 +1916,15 @@ def parse_filing(
                 effectiveness = _6k_effectiveness_metadata(text, match, own, context, class_text, named_event,
                                                           effective, event_name, ratio=ratio,
                                                           program_symbol=symbol)
-                if (effectiveness.get("ratio_effectiveness_pending")
+                if (_FINANCIAL_CONFIRMATION.search(own) and not effectiveness.get("ratio_effectiveness_confirmed")):
+                    # Arithmetic assumptions and prospective financial-table
+                    # clauses cannot enter SQL as unconditional announcements.
+                    continue
+                if (not dates.conflict and effectiveness.get("ratio_effectiveness_pending")
                         and effectiveness.get("ratio_effectiveness_conditions") == ["unknown_condition"]
-                        and (_FINANCIAL_CONFIRMATION.search(own)
-                             or (narrative_completion.dates and not re.search(
-                                 r"\b(?:plans?\s+to|expects?\s+to|expected\s+to|subject\s+to|conditional|contingent)\b",
-                                 own, re.I)))):
+                        and narrative_completion.dates and not re.search(
+                            r"\b(?:plans?\s+to|expects?\s+to|expected\s+to|subject\s+to|conditional|contingent)\b",
+                            own, re.I)):
                     # An unsupported table/former-side observation is not an
                     # announced transition. Do not manufacture a control that
                     # could override the independently stated completion.
