@@ -103,10 +103,14 @@ class FakeDatabase:
     operator's preflight before any instrument."""
 
     def __init__(self, items, *, planner=None, remaining=0, check_errors=None,
-                 clock_errors=0):
+                 clock_errors=0, clock_pattern=None, count_error=None):
         self.items, self.planner, self.remaining = items, planner, remaining
         self.check_errors = dict(check_errors or {})
         self.clock_errors = clock_errors
+        # ``clock_pattern``: one bool per repair call (True = preflight fails),
+        # consumed first; ``count_error`` is raised by the final recount.
+        self.clock_pattern = list(clock_pattern or [])
+        self.count_error = count_error
         self.plans: list[dict] = []
         self.applies: list[dict] = []
         self.checks: list[dict | None] = []
@@ -133,12 +137,18 @@ class FakeDatabase:
     def repair(self, plan, ids, sha, limits, client, validate_only):
         self.applies.append({"ids": list(ids), "sha": sha, "plan": len(self.plans) - 1,
                              "limits": limits.canonical(), "body": plan})
-        conn = StubConn(clock_error=self.clock_errors > 0)
-        self.clock_errors -= 1
+        if self.clock_pattern:
+            fail = self.clock_pattern.pop(0)
+        else:
+            fail = self.clock_errors > 0
+            self.clock_errors -= 1
+        conn = StubConn(clock_error=fail)
         return repair.run_repair(conn, plan, instrument_ids=ids, supplied_sha256=sha,
                                  limits=limits, client=client, validate_only=validate_only)
 
     def count_bad(self):
+        if self.count_error is not None:
+            raise self.count_error
         return self.remaining
 
     def close(self):
@@ -378,6 +388,31 @@ def test_three_failed_batches_in_a_row_stop_without_blaming_an_instrument(script
     assert {tuple(a["ids"]) for a in db.applies} == {tuple(ids[:20])}
     assert (summary["failed_instruments"], summary["remaining_instruments"]) == (0, 45)
     assert summary["pending_batch_failure"] == "DATABASE_ERROR"
+
+
+def test_a_successful_batch_without_progress_still_resets_the_failure_streak(script):
+    ids = _ids(60)
+    for iid in ids[:20]:  # the retry of chunk A succeeds but only skips: no progress
+        script[iid] = [skipped("LEVEL_MISMATCH")]
+    # A fails, A retried (skips only), B fails twice, B succeeds, C succeeds.
+    db = FakeDatabase([_item(i) for i in ids],
+                      clock_pattern=[True, False, True, True, False, False])
+    code, summary, _, _ = _run(db)
+    # Without the reset the streak would read 3 after B's second failure.
+    assert summary["stop_code"] is None
+    assert [a["ids"] for a in db.applies] == [
+        ids[:20], ids[:20], ids[20:40], ids[20:40], ids[20:40], ids[40:]]
+    assert (summary["committed_instruments"], summary["pending_batch_failure"]) == (40, None)
+    assert summary["skipped_rows_by_code"] == {"LEVEL_MISMATCH": 20}
+
+
+def test_an_interrupt_during_the_final_recount_is_an_interrupted_stop(script):
+    db = FakeDatabase([_item(i) for i in _ids(5)], count_error=KeyboardInterrupt())
+    code, summary, _, _ = _run(db)
+    assert (code, summary["status"], summary["stop_code"]) == (
+        driver.EXIT_INTERRUPTED, "stopped", "INTERRUPTED")
+    assert summary["remaining_bad_rows"] is None and summary["clean"] is True
+    assert db.closed
 
 
 def _lane_run(monkeypatch, db, env):

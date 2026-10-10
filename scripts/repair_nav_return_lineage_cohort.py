@@ -523,8 +523,10 @@ class _Cohort:
                 exit_status = EXIT_FAILED
             raise DriverStop(code or "OPERATOR_STOP", exit_status)
         if exit_status == EXIT_OK:
-            # A requeued chunk leads the queue: this batch was its retry.
+            # A requeued chunk leads the queue: this batch was its retry. Any
+            # successful batch (even all noop or skipped) ends a failure streak.
             self.pending_batch_failure = None
+            self.failed_streak = 0
         else:
             # run_repair gives no outcome for the instrument it failed on. Past
             # its preflight (``clock_skew_ms`` set) that is the first untried
@@ -586,7 +588,8 @@ class _Cohort:
         try:
             self.remaining_bad_rows = self.db.count_bad()
         except KeyboardInterrupt:
-            return
+            # SIGTERM during the recount is an interrupted run, not a clean one.
+            raise DriverStop("INTERRUPTED", EXIT_INTERRUPTED) from None
         except Exception as exc:
             self.errors_by_code["RECOUNT_FAILED:" + type(exc).__name__] += 1
 
@@ -703,6 +706,9 @@ def run_cohort(
                 close()
     try:
         cohort.recount(stop)
+    except DriverStop as exc:
+        if stop is None:
+            stop = exc
     finally:
         cohort.db.close()
     return cohort.summary(stop)
