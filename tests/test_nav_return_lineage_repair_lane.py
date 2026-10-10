@@ -74,13 +74,19 @@ def _item(iid: str, rows: int = 1, reasons=()) -> dict:
 
 
 class StubConn:
-    """Just enough connection for run_repair's idle and clock-skew preflight."""
+    """Just enough connection for run_repair's idle and clock-skew preflight;
+    ``clock_error`` makes the clock query fail like a dropped connection."""
 
     closed = False
     info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
 
+    def __init__(self, clock_error=False):
+        self.clock_error = clock_error
+
     def execute(self, query, params=None):
         assert query == "SELECT clock_timestamp()", query
+        if self.clock_error:
+            raise psycopg.OperationalError("server closed the connection " + SECRET_DSN)
         now = dt.datetime.now(dt.timezone.utc)
         return SimpleNamespace(fetchone=lambda: (now,))
 
@@ -89,17 +95,31 @@ class StubConn:
 
 
 class FakeDatabase:
-    """The driver's database seam; ``repair`` is the real operator entry point."""
+    """The driver's database seam; ``repair`` is the real operator entry point.
 
-    def __init__(self, items, *, planner=None, remaining=0):
+    ``check_errors[n]`` is raised by the n-th ``check`` call (0 = before the
+    plan, 1 = before batch 1, ...); ``clock_errors`` repair calls fail in the
+    operator's preflight before any instrument."""
+
+    def __init__(self, items, *, planner=None, remaining=0, check_errors=None,
+                 clock_errors=0):
         self.items, self.planner, self.remaining = items, planner, remaining
+        self.check_errors = dict(check_errors or {})
+        self.clock_errors = clock_errors
         self.plans: list[dict] = []
         self.applies: list[dict] = []
-        self.checked = 0
+        self.checks: list[dict | None] = []
         self.closed = False
 
-    def check(self):
-        self.checked += 1
+    @property
+    def checked(self):
+        return len(self.checks)
+
+    def check(self, plan=None):
+        self.checks.append(plan)
+        error = self.check_errors.get(len(self.checks) - 1)
+        if error is not None:
+            raise error
 
     def plan(self, limits):
         items = self.planner(len(self.plans)) if self.planner else self.items
@@ -112,7 +132,9 @@ class FakeDatabase:
     def repair(self, plan, ids, sha, limits, client, validate_only):
         self.applies.append({"ids": list(ids), "sha": sha, "plan": len(self.plans) - 1,
                              "limits": limits.canonical()})
-        return repair.run_repair(StubConn(), plan, instrument_ids=ids, supplied_sha256=sha,
+        conn = StubConn(clock_error=self.clock_errors > 0)
+        self.clock_errors -= 1
+        return repair.run_repair(conn, plan, instrument_ids=ids, supplied_sha256=sha,
                                  limits=limits, client=client, validate_only=validate_only)
 
     def count_bad(self):
@@ -196,7 +218,9 @@ def test_one_plan_then_allowlists_of_at_most_20_with_the_plan_limits(script):
     assert {a["sha"] for a in db.applies} == {repair.sha256(plan)}
     assert {json.dumps(a["limits"], sort_keys=True) for a in db.applies} == {
         json.dumps(plan["limits"], sort_keys=True)}
-    assert len(clients) == 1 and db.checked == 1 and db.closed
+    assert len(clients) == 1 and db.closed
+    # Schema/access before the plan, then schema/access and pins before each batch.
+    assert db.checks[0] is None and db.checks[1:] == [plan] * 3
     assert [line["event"] for line in lines] == ["plan", "batch", "batch", "batch"]
     assert (lines[0]["to_apply"], lines[0]["max_requests"]) == (45, 20)
     assert set(summary) == SUMMARY_KEYS
@@ -317,21 +341,67 @@ def test_lock_busy_before_any_commit_keeps_exit_4(script):
     assert (code, summary["stop_code"], summary["remaining_instruments"]) == (4, "LOCK_BUSY", 3)
 
 
-def test_failed_batches_record_the_failing_instrument_and_three_in_a_row_stop(script):
+def test_a_batch_that_fails_before_any_instrument_is_retried_whole(script):
     ids = _ids(45)
-    for failing in (ids[0], ids[21], ids[22], ids[23]):
-        script[failing] = [raises(repair.RepairError("UNEXPECTED_NAV_CHANGE"))]
+    db = FakeDatabase([_item(i) for i in ids], clock_errors=1)
+    code, summary, lines, _ = _run(db)
+    # The operator's clock query failed: nobody to blame, the same chunk again.
+    assert lines[1]["code"] == "DATABASE_ERROR" and lines[1]["exit"] == 2
+    assert [a["ids"] for a in db.applies] == [ids[:20], ids[:20], ids[20:40], ids[40:]]
+    assert (code, summary["status"], summary["clean"]) == (0, "completed", True)
+    assert (summary["committed_instruments"], summary["failed_instruments"]) == (45, 0)
+    assert "s3cr3t" not in json.dumps([lines, summary])
+
+
+def test_an_unreachable_database_at_the_batch_check_is_retried(script):
+    ids = _ids(25)
+    db = FakeDatabase([_item(i) for i in ids],
+                      check_errors={1: psycopg.OperationalError("down " + SECRET_DSN)})
+    code, summary, lines, _ = _run(db)
+    assert [a["ids"] for a in db.applies] == [ids[:20], ids[20:]]
+    assert lines[1]["code"] == "DATABASE_ERROR" and summary["batches"] == 3
+    assert (code, summary["committed_instruments"]) == (0, 25)
+
+
+def test_three_failed_batches_in_a_row_stop_without_blaming_an_instrument(script):
+    ids = _ids(45)
+    db = FakeDatabase([_item(i) for i in ids], clock_errors=3)
+    code, summary, _, _ = _run(db)
+    assert (code, summary["stop_code"], len(db.applies)) == (2, "CONSECUTIVE_FAILED_BATCHES", 3)
+    assert {tuple(a["ids"]) for a in db.applies} == {tuple(ids[:20])}
+    assert (summary["failed_instruments"], summary["remaining_instruments"]) == (0, 45)
+
+
+def test_an_instrument_the_operator_fails_on_is_retried_once_then_recorded(script):
+    ids = _ids(45)
+    flaky, broken = ids[3], ids[30]
+    script[flaky] = [raises(psycopg.OperationalError("connection reset"))]
+    script[broken] = [raises(repair.RepairError("UNEXPECTED_NAV_CHANGE"))] * 2
     db = FakeDatabase([_item(i) for i in ids])
     code, summary, _, _ = _run(db)
-    # b1 fails at ids[0]; b2 progresses (resets); b3..b5 fail -> stop at the third.
-    assert (code, summary["stop_code"], len(db.applies)) == (2, "CONSECUTIVE_FAILED_BATCHES", 5)
-    assert [a["ids"][0] for a in db.applies] == [ids[0], ids[1], ids[21], ids[22], ids[23]]
-    for failing in (ids[0], ids[21], ids[22], ids[23]):  # never sent after its failure
-        batches = [n for n, a in enumerate(db.applies) if failing in a["ids"]]
-        assert db.applies[batches[-1]]["ids"][0] == failing
-    assert (summary["failed_instruments"], summary["committed_instruments"]) == (4, 20)
-    assert summary["failed_by_code"] == {"UNEXPECTED_NAV_CHANGE": 4}
-    assert summary["remaining_instruments"] == 45 - 24
+    sent = [i for a in db.applies for i in a["ids"]]
+    assert (sent.count(flaky), sent.count(broken)) == (2, 2)
+    # Each failing batch puts the culprit and everything untried back in front.
+    assert [a["ids"][0] for a in db.applies] == [ids[0], flaky, ids[23], broken, ids[31]]
+    assert summary["failed_by_code"] == {"UNEXPECTED_NAV_CHANGE": 1}
+    assert (summary["committed_instruments"], summary["remaining_instruments"]) == (44, 0)
+    assert (code, summary["status"], summary["stop_code"]) == (2, "completed", None)
+
+
+@pytest.mark.parametrize("error", [
+    repair.RepairError("SCHEMA_ACCESS_INCOMPATIBLE", 3),  # not ready, or pins moved
+    psycopg.errors.lookup("42501")(),  # access revoked under the check
+])
+def test_schema_or_access_change_between_batches_stops_with_exit_3(script, error):
+    ids = _ids(45)
+    db = FakeDatabase([_item(i) for i in ids], check_errors={2: error})
+    code, summary, lines, _ = _run(db)
+    assert (code, summary["status"], summary["stop_code"]) == (
+        3, "stopped", "SCHEMA_ACCESS_INCOMPATIBLE")
+    assert [a["ids"] for a in db.applies] == [ids[:20]]  # earlier commits stay
+    assert (summary["committed_instruments"], summary["remaining_instruments"]) == (20, 25)
+    assert summary["batches"] == 1  # the refused batch never ran
+    assert [line["event"] for line in lines] == ["plan", "batch"]
 
 
 def test_operator_contract_errors_stop_at_once(script, monkeypatch):
@@ -368,6 +438,33 @@ def test_plan_stale_skips_are_replanned_once_and_only_they_are_retried(script):
     assert (code, summary["status"], summary["clean"]) == (0, "completed", True)
     assert (summary["plans"], summary["passes"], summary["committed_instruments"]) == (2, 2, 30)
     assert summary["skipped_rows_by_code"] == {}
+
+
+def test_replan_reconciles_stale_items_no_longer_bad_and_keeps_new_reasons(script):
+    ids = _ids(10)
+    gone, held, retried = ids[2], ids[5], ids[8]
+
+    def planner(index):
+        if index == 0:
+            return [_item(i) for i in ids]
+        # gone: repaired concurrently; held: now under a reexpression hold.
+        return [_item(held, 2, ["OPEN_REEXPRESSION"]), _item(retried)]
+
+    for iid in (gone, held, retried):
+        script[iid] = [skipped("PLAN_STALE")]
+    db = FakeDatabase([], planner=planner)
+    code, summary, _, _ = _run(db)
+    assert [a["ids"] for a in db.applies if a["plan"] == 1] == [[retried]]
+    assert (summary["already_repaired"], summary["committed_instruments"]) == (1, 8)
+    assert summary["skipped_rows_by_code"] == {"OPEN_REEXPRESSION": 2}
+    assert (code, summary["status"], summary["clean"]) == (2, "completed", False)
+    # Only the concurrently repaired one: a clean run.
+    script[gone] = [skipped("PLAN_STALE")]
+    db = FakeDatabase([], planner=lambda index: [_item(i) for i in ids] if index == 0 else [])
+    code, summary, _, _ = _run(db)
+    assert (len(db.plans), summary["already_repaired"], summary["skipped_rows_by_code"]) == (
+        2, 1, {})
+    assert (code, summary["status"], summary["clean"]) == (0, "completed", True)
 
 
 def test_still_stale_after_the_replan_is_a_residual_and_no_third_plan(script):

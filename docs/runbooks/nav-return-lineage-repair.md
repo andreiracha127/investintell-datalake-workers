@@ -23,11 +23,17 @@ about 9,600 instruments.
    Allowlists hold at most 20 instruments whose bad rows fit `max_requests` and
    half of `NAV_LINEAGE_REPAIR_MAX_SECONDS` at the configured rate.
 3. **Second pass.** Instruments skipped as `PLAN_STALE` are re-planned once
-   and retried, only after a pass that committed something.
-4. **Stops.** Operator exit 3, exit 4 (exit 5 once the run has written), exit
-   5 (`TIME_BUDGET`, `REQUEST_BUDGET`, `PROVIDER_UNAVAILABLE`,
-   `PROVIDER_BUDGET`, `INTERRUPTED`, `LOCK_BUSY` after work), `CLOCK_SKEW`,
-   `COMMIT_UNKNOWN`, or 3 failed batches in a row. Earlier commits stay.
+   and retried, only after a pass that committed something. One the fresh plan
+   no longer finds bad counts as already repaired; one now ineligible is a
+   residual with its plan reason.
+4. **Stops.** Before every batch the schema/access check and the plan's schema
+   pins are re-verified; a change stops with exit 3. Also operator exit 3,
+   exit 4 (exit 5 once the run has written), exit 5 (`TIME_BUDGET`,
+   `REQUEST_BUDGET`, `PROVIDER_UNAVAILABLE`, `PROVIDER_BUDGET`, `INTERRUPTED`,
+   `LOCK_BUSY` after work), `CLOCK_SKEW`, `COMMIT_UNKNOWN`, or 3 failed batches
+   in a row. A batch that fails before any instrument is retried whole; an
+   instrument the operator fails on twice is recorded failed. Earlier commits
+   stay.
 5. **Recount.** `remaining_bad_rows` re-counts the bad predicate, read-only.
 
 ## When to run

@@ -14,14 +14,18 @@ The driver only sequences those calls and counts their results:
 * **Apply**: allowlists of <= 20 whose bad rows fit one batch's request budget
   (``max_requests`` is per ``run_repair`` call, not per instrument) and, paced at
   ``--rate-per-second``, half of ``--max-seconds``; a larger item goes alone.
-  One ``run_repair`` per allowlist on a connection that is idle in between.
+  Before each allowlist the schema/access check and the plan's schema pins are
+  re-verified; then one ``run_repair`` on a connection idle in between.
 * **Second pass**: per-instrument ``PLAN_STALE`` skips are re-planned ONCE after
-  a first pass that made progress, and only those instruments are retried.
+  a first pass that made progress, and only those instruments are retried; one
+  the fresh plan no longer finds bad counts as repaired, one now ineligible as
+  a residual with its plan reason.
 * **Stops**: operator exit 3, 4 (5 when this run already wrote), 5 (budget,
   interrupt, ``PROVIDER_UNAVAILABLE``, ``PROVIDER_BUDGET``, lock after work),
   ``CLOCK_SKEW``, ``COMMIT_UNKNOWN``, a driver-contract code, or
-  ``--max-failed-batches`` failed batches in a row. A failed batch records its
-  failing instrument (never retried) and puts the untried ones back in front.
+  ``--max-failed-batches`` failed batches in a row. A batch that failed before
+  any instrument is retried whole; an instrument the operator failed on twice
+  is recorded failed, and the untried ones go back in front.
 
 Stdout: one sanitized JSON line per plan and per batch, then the summary
 (counts by code; never a DSN, URL, payload, exception text or id list). The one
@@ -68,6 +72,7 @@ MAX_REQUESTS = 10000
 DEFAULT_MAX_SECONDS = 900.0
 DEFAULT_RATE_PER_SECOND = 1.0
 DEFAULT_MAX_FAILED_BATCHES = 3
+MAX_INSTRUMENT_ATTEMPTS = 2  # the operator failed on it twice: record it failed
 PACING_SHARE = 0.5  # pacing of one batch's requests may use half its time budget
 
 DSN_ENV = "NAV_READINESS_DATABASE_URL"
@@ -190,13 +195,15 @@ class PostgresDatabase:
     def __init__(self, dsn: str, schema: str) -> None:
         self.dsn, self.schema, self.conn = dsn, schema, None
 
-    def check(self) -> None:
+    def check(self, plan: dict | None = None) -> None:
+        """Schema and access on a fresh autocommit connection, as the operator
+        CLI checks them on every invocation; with a plan, also its pins."""
         with psycopg.connect(self.dsn, autocommit=True, connect_timeout=5) as conn:
             try:
                 ready = schema_operator._check(conn, self.schema)["ready"]
             except (schema_operator.PrerequisiteBlocked, ValueError):
                 ready = False
-        if not ready:
+        if not ready or (plan is not None and plan.get("schema_pins") != _schema_pins()):
             raise repair.RepairError("SCHEMA_ACCESS_INCOMPATIBLE", EXIT_INCOMPATIBLE)
 
     def _connection(self) -> psycopg.Connection:
@@ -301,6 +308,7 @@ class _Cohort:
         self.beyond_cap = 0  # eligible but past --max-instruments-total
         self.submitted: set[str] = set()
         self.final: dict[str, dict] = {}  # last outcome per instrument
+        self.attempts: Counter[str] = Counter()  # in-loop batch failures per instrument
         self.stale: list[str] = []  # PLAN_STALE skips of the current pass
         self.pass_progress = 0
         self.requests = 0
@@ -330,8 +338,19 @@ class _Cohort:
             candidates = eligible[: self.config.max_instruments_total]
             self.beyond_cap = len(eligible) - len(candidates)
         else:
+            present = {item["instrument_id"]: item for item in plan["items"]}
+            for iid in scope:
+                item = present.get(iid)
+                if item is None:  # no longer bad: repaired after its stale skip
+                    self.final[iid] = {"status": "noop", "code": "ALREADY_REPAIRED", "rows": 0}
+                elif item["reasons"]:  # a residual now, with its real reason
+                    self.final[iid] = {
+                        "status": "skipped",
+                        "code": _code(item["reasons"][0]),
+                        "rows": len(item["rows"]),
+                    }
             candidates = [item for item in eligible if item["instrument_id"] in scope]
-        oversized = [item for item in candidates if len(item["rows"]) > MAX_REQUESTS]
+        oversized =[item for item in candidates if len(item["rows"]) > MAX_REQUESTS]
         for item in oversized:  # could never fit one run_repair call
             self.final[item["instrument_id"]] = {
                 "status": "skipped", "code": OVERSIZED, "rows": len(item["rows"])
@@ -381,10 +400,16 @@ class _Cohort:
         planned = self.planned
         assert planned is not None
         ids = [item["instrument_id"] for item in chunk]
-        self.submitted.update(ids)
-        self.batches += 1
         began = self.monotonic()
+        counted = False
         try:
+            # Schema, access and plan pins before EVERY batch, as the operator
+            # CLI checks them per invocation: a multi-hour run must notice a
+            # migration or an access-profile change (exit 3).
+            self.db.check(planned.plan)
+            self.batches += 1
+            counted = True
+            self.submitted.update(ids)
             result = self.db.repair(
                 planned.plan,
                 ids,
@@ -393,9 +418,15 @@ class _Cohort:
                 self._client(planned.limits),
                 self.config.validate_only,
             )
+        except psycopg.Error as exc:  # never str(exc): it may carry connection text
+            stop = _psycopg_stop(exc)
+            if stop.exit_status == EXIT_INCOMPATIBLE:
+                self.queue.extendleft(reversed(chunk))
+                raise stop from None
+            # The database was unreachable: a batch failure before any instrument.
+            self.batches += 0 if counted else 1
+            result = {"status": "failed", "code": stop.code, "exit_code": EXIT_FAILED}
         except BaseException:
-            # run_repair reports its own failures; reaching here means the
-            # connection could not be (re)opened or an interrupt: a run stop.
             self.queue.extendleft(reversed(chunk))  # report them as remaining
             raise
         outcomes: dict[str, dict] = {}
@@ -461,14 +492,19 @@ class _Cohort:
                 exit_status = EXIT_FAILED
             raise DriverStop(code or "OPERATOR_STOP", exit_status)
         if exit_status != EXIT_OK:
-            # The operator stopped at the instrument it was working on (the
-            # first without an outcome): record it, retry the rest in order.
-            if untried:
-                failing, rest = untried[0], untried[1:]
-                self.final[failing["instrument_id"]] = {
-                    "status": "failed", "code": code or "NONE", "rows": len(failing["rows"])
-                }
-                self.queue.extendleft(reversed(rest))
+            # run_repair gives no outcome for the instrument it failed on. Past
+            # its preflight (``clock_skew_ms`` set) that is the first untried
+            # one: retry it once, then record it failed. A failure before any
+            # instrument blames none: the whole chunk is retried.
+            if untried and "clock_skew_ms" in result:
+                culprit = untried[0]
+                self.attempts[culprit["instrument_id"]] += 1
+                if self.attempts[culprit["instrument_id"]] >= MAX_INSTRUMENT_ATTEMPTS:
+                    self.final[culprit["instrument_id"]] = {
+                        "status": "failed", "code": code or "NONE", "rows": len(culprit["rows"])
+                    }
+                    untried = untried[1:]
+            self.queue.extendleft(reversed(untried))
             if not progress:
                 self.failed_streak += 1
                 if self.failed_streak >= self.config.max_failed_batches:

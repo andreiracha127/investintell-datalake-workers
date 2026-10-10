@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from scripts import fund_nav_readiness_schema as schema_operator
 from scripts import repair_nav_return_lineage_cohort as driver
 from src.workers import nav_return_lineage_repair as repair
 from src.workers import nav_return_lineage_repair_lane as lane
@@ -83,3 +86,49 @@ def test_lane_repairs_the_seeded_cohort_and_recounts_what_remains(
         planned_again = repair.build_plan(conn, schema=schema)["items"]
         assert sorted(item["instrument_id"] for item in planned_again) == sorted(
             str(iid) for iid in (mismatch, no_ticker))
+
+
+@pytest.mark.parametrize("change", ["access_not_ready", "schema_pins_moved"])
+def test_schema_change_between_batches_stops_with_exit_3_and_keeps_commits(
+    test_dsn, schema, monkeypatch, change
+):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        tickers = {str(_seed(conn, ticker=t)[0]): t for t in ("ALPHA", "BRAVO")}
+        first, second = sorted(tickers)  # plan order
+        untouched = _rows(conn, second)
+        conn.rollback()
+    calls = {"check": 0, "pins": 0}
+    real_check, real_pins = schema_operator._check, driver._schema_pins
+
+    def check(conn, name):  # before the plan, before batch 1, then flips
+        calls["check"] += 1
+        result = real_check(conn, name)
+        return {**result, "ready": False} if (
+            change == "access_not_ready" and calls["check"] > 2) else result
+
+    def pins():  # the plan's, batch 1's, then flips
+        calls["pins"] += 1
+        result = real_pins()
+        return {**result, "sql_sha256": "0" * 64} if (
+            change == "schema_pins_moved" and calls["pins"] > 2) else result
+
+    monkeypatch.setattr(schema_operator, "_check", check)
+    monkeypatch.setattr(driver, "_schema_pins", pins)
+    fake = FakeProvider()
+    lines: list[dict] = []
+    code, summary = driver.run_cohort(
+        # rows_per_batch = floor(4 s * 0.5/s * 0.5) = 1: one instrument per batch.
+        driver.CohortConfig(schema=schema, max_seconds=4, rate_per_second=0.5),
+        dsn=test_dsn, client_factory=lambda limits: fake, emit=lines.append,
+    )
+    assert test_dsn not in json.dumps([lines, summary])
+    assert (code, summary["status"], summary["stop_code"]) == (
+        3, "stopped", "SCHEMA_ACCESS_INCOMPATIBLE")
+    assert [line["event"] for line in lines] == ["plan", "batch"]
+    assert (summary["batches"], summary["committed_instruments"]) == (1, 1)
+    assert (summary["remaining_instruments"], summary["remaining_bad_rows"]) == (1, 1)
+    assert [ticker for _, ticker, _, _ in fake.calls] == [tickers[first]]
+    with base._connect(test_dsn, schema) as conn:
+        assert _rows(conn, second) == untouched
+        assert _ledger(conn) == (1, 1, 1, 1, 1, 0)
