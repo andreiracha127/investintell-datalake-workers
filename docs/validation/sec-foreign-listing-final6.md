@@ -10,11 +10,12 @@ production was not accessed.
 
 Parser version: `foreign-listing-v10`, SHA-256
 `a3adecae5d80d8bcb0c2c4f8dd02ac63674a0f0786d77bebc0ae6700107f2587`.
-The schema is unchanged from the applied final5 schema:
+For B1, the schema was unchanged from the applied final5 schema:
 `f334d08d3d3b496bd613495d59ee2a3a12365f58c422b3d51bd77530e61d2957`.
 SQL settlement still requires a different later accession, publication by the
 query date, and compatible program, exact class and ratio. No migration change
-or new production operation is part of B1.
+or new production operation was part of B1. B1b adds the v2 restatement migration
+and verifies final6 applied over the loaded final5, as measured below.
 
 | Required fix | Regression |
 |---|---|
@@ -174,7 +175,8 @@ The same 3,036 lines were queried at 2010, 2015, 2020 and 2025 year-ends,
 plus the same 17 acceptance cases. Cohorts overlap those year-end queries;
 there are 12,155 distinct line/date queries. Final5 and final6 were each
 initially loaded into separate databases in one task-owned disposable PG18
-container. Final6 was never reconciled onto final5 for historical comparison.
+container for B1. B1b additionally reconciles final6 onto final5 after v2 DDL;
+that production-sequence measurement follows below.
 
 Exactly **2/12,155** semantic answers change, both at the 2025 year-end. Both changes are explicitly source-justified and return no numeric ratio. All nine raw-source checksums passed; all admitted facts and quoted witnesses were public before D. A later 2026 issuer-wide audit document is excluded from the 2025 answers. VSA remains resolved 5/1.
 
@@ -208,6 +210,83 @@ comparison helper is `scripts/validate_sec_foreign_listing_final6.py`; it
 requires an explicit disposable local database, verifies the exact loaded
 manifest/facts, preserves the frozen cohorts and emits all semantic changes.
 
+## B1b: v2 applied over the loaded final5
+
+The project's restatement rule is now implemented in
+`schemas/sec_foreign_listing_evidence_v2.sql`. Same-byte parser corrections
+make the old reading invisible at every date and inherit its prior availability;
+source changes remain prospective. The base SQL remains byte-identical to the
+production v1. Both facts and source metadata already store parser versions.
+
+| Governed SQL | SHA-256 |
+|---|---|
+| v1 base | `f334d08d3d3b496bd613495d59ee2a3a12365f58c422b3d51bd77530e61d2957` |
+| v2 | `e17d0523885bc67cc3495e1c9dda1405084f02027c2a6cfc135d5e1e0d5f1a7c` |
+| v2 rollback | `136a5baa8b75591d1564ce9dbd5749e13e90b9cb738c63d30b2d4fd071e23c9f` |
+
+The local replay used one task-owned `timescale/timescaledb:2.27.2-pg18`
+container, PostgreSQL 18.4, limited to two CPUs and 3 GB RAM. It installed v1,
+applied final5 with the main loader in `w1c-prod` and `--observed-on 2026-10-09`,
+applied v2 DDL, then applied final6 with this branch's loader and
+`--observed-on 2026-10-10`. Neither application reparsed or fetched sources.
+The main checkout was `2905146afd69c4c27cc0e71c34f13ab383d000e9`; its loader
+SHA-256 was `d56c54172645b656363d968c9653bdf39fee745a0a48d9682bd27f19db7a5762`.
+
+All **12,155/12,155** queries in the immutable final6 snapshot match its isolated
+final6 semantic answer, with **zero mismatches**. Exactly two historical answers
+change from the measured v1/final5 baseline: TRIB (888721) and SVRE (1894693)
+at 2025-12-31, both `ambiguous` to `none`. Both retain resolved ADS listings and
+return no ratio. Their source quotes and explanations remain the ones above.
+This fixes the v1 probe's zero historical changes without changing the resolver's
+ratio-admission rules.
+
+| Measurement | After v1/final5 | After v2/final6 |
+|---|---:|---:|
+| Sources | 47,329 | 47,329 |
+| Total fact versions | 29,709 | 59,364 |
+| Active fact versions | 29,709 | 29,655 |
+| Retired: `parser_correction` | 0 | 29,709 |
+| Retired: `source` | 0 | 0 |
+| Retired: NULL | 0 | 0 |
+
+The final6 application reports 29,655 inserted, 29,709 retired and zero unchanged
+facts; parser-version hashes re-version the whole set. Every one of the 47,329
+source-package hashes agrees between the two manifests. Every active fact's
+`available_on` equals its governed `source_available_on`, rather than the replay
+date. The retained readings record `foreign-listing-v8`; active readings record
+`foreign-listing-v10`. Before/after hashes confirm neither manifest, JSONL,
+snapshot nor universe changed.
+
+The two later queries also match a separately initialized v1/final6 database
+loaded with the main loader in the same container:
+
+| Line at 2026-10-11 | Applied v2/final6 | Isolated final6 |
+|---|---|---|
+| TRIB / 888721 | `ambiguous`; ADS listing resolved, ratio ambiguous, no ratio | Same |
+| SVRE / 1894693 | `none`; ADS listing resolved, ratio none, no ratio | Same |
+
+The reported expectation that isolated TRIB would return `none` at this later
+date is not reproduced with these exact pinned inputs. Its 2026 F-6 contains
+both assertions below, which become public on 2026-01-28 and are excluded at
+2025-12-31. The unchanged resolver preserves their exact-ratio conflict, so
+both load sequences return `ambiguous` after publication. This is source
+evidence, independent of load history.
+
+> Each American Depositary Share shall represent one Share
+
+> At the date hereof, each American Depositary Share represents twenty shares
+
+Source: [Trinity F-6 deposit agreement](https://www.sec.gov/Archives/edgar/data/890836/000101915526000024/trinityda.htm),
+accession `0001019155-26-000024`, filed 2026-01-27; original raw SHA-256
+`22d345b973c116eb5215f070d983ebc684234902a94f7761684d12c783538809` was verified
+offline. The two final6 facts carry ratios 1/1 and 20/1 on that same accession.
+
+The complete result and future witness packet are
+`C:/investintell-data/w1c-b1b-work/report.json` and
+`future-trib-source-witnesses.json`. The reproducible local sequence is
+`C:/investintell-data/w1c-b1b-work/restate_acceptance.py` (`preload`, then `replay`),
+with all new artifacts on C:. The input caches remain read-only.
+
 ## Acceptance, precision and tests
 
 **17/17 acceptance, 30/30 frozen precision and 10/10 changed precision passed**, with no resampling. Final cohort provenance verifies **186/186** supporting source hashes across the same 113 originals; all source/class/ratio/date/text identities are retained from final5. Only OTLY loses five financial extractions. All contiguous/composed quote components and W1 annotations remain verified. AMBR 5/1 on 2025-12-31, FRLN 15/1 on 2023-06-01 and 2025-12-31, and ANPC ambiguous on 2022-12-16 then 20/1 on 2022-12-17 remain unchanged. Year-end resolved counts are 2 / 83 / 513 / 1,151; ambiguous counts are 0 / 1 / 26 / 79; 819 of the saved current refusals remain resolved in 2025.
@@ -240,5 +319,29 @@ Focused Ruff and whitespace/LF checks passed. Logs are under
 removed after validation. The unrelated pre-existing containers were preserved.
 
 The [runbook](../runbooks/sec-foreign-listing-evidence.md) targets final6 with
-its exact artifact and unchanged schema pins. Final6 has not been loaded into
-production by B1. The PR is not merged; no Railway changes were made.
+its exact artifact and v2 schema pins. Final6 has not been loaded into
+production by B1 or B1b. The PRs are not merged; no Railway changes were made.
+
+B1b ran the same two files sequentially with `PYTEST_WORKERS=2` and plugin
+autoload disabled, using the one disposable PG18 container above:
+
+| B1b suite | Result |
+|---|---|
+| `tests/test_sec_foreign_listing_evidence.py` | 421 passed, 0 failed/errors/skipped |
+| `tests/test_sec_foreign_listing_loader.py` | 153 passed, 0 failed/errors/skipped |
+
+The migration cycle covers loaded v1 -> v2 -> idempotent v2 -> rollback -> v2,
+including no table rewrite and exact v1 resolver bytes, comments, owners,
+privileges and behavior after rollback. As W1b does, rollback retains reason
+data and its CHECK as audit; the loader rejects the restored v1 resolver.
+Unit and SQL regressions cover source versus parser retirement, removed and
+added confirmations, publication floors, inherited republication availability,
+empty parses, new-document protection and eight downstream resolver branches.
+An existing idempotence test initially left the shared connection running v1;
+it now reapplies base plus v2 and checks the resolver definition. Loader tests
+also install both governed files independently.
+Focused Ruff and whitespace/LF checks passed. The test logs and acceptance
+artifacts are under `C:/investintell-data/w1c-b1b-work/`.
+The runbook's read-only 12,155-query check was also executed against the applied
+local database and passed with zero mismatches. The task-owned PG18 container
+was removed after validation; unrelated existing containers were preserved.

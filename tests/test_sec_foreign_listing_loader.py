@@ -937,7 +937,7 @@ def test_apply_preserves_class_and_ordinary_candidate_metadata(metadata, expecte
             return []
 
         def fetchone(self):
-            return None
+            return (True,)
 
     class Connection:
         def __init__(self):
@@ -964,14 +964,24 @@ def test_load_key_never_needs_a_secret_cli_argument(tmp_path, monkeypatch):
     assert loader.load_key(path) == "preferred"
 
 
-@pytest.fixture
-def db():
+@pytest.fixture(scope="module")
+def loader_sql_database():
     dsn = os.environ.get("SEC_TEST_DATABASE_URL")
     if not dsn:
         pytest.skip("SEC_TEST_DATABASE_URL is unset")
     assert urlsplit(dsn).hostname in {"127.0.0.1", "localhost"}, "Tests require disposable local Postgres"
     psycopg = pytest.importorskip("psycopg")
-    connection = psycopg.connect(dsn)
+    schema_dir = Path(__file__).resolve().parents[1] / "schemas"
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        for name in ("sec_foreign_listing_evidence.sql", "sec_foreign_listing_evidence_v2.sql"):
+            connection.execute((schema_dir / name).read_text(encoding="utf-8"))
+    return dsn
+
+
+@pytest.fixture
+def db(loader_sql_database):
+    psycopg = pytest.importorskip("psycopg")
+    connection = psycopg.connect(loader_sql_database)
     connection.execute("TRUNCATE public.sec_foreign_listing_evidence, public.sec_foreign_listing_sources")
     try:
         yield connection
@@ -1004,6 +1014,172 @@ def _manifest(*sources):
             "documents": list(sources)}
 
 
+@pytest.mark.parametrize("same_bytes,replaced_available,expected_reason,expected_available", [
+    (True, date(2020, 3, 2), "parser_correction", date(2020, 3, 2)),
+    (True, date(2026, 10, 9), "parser_correction", date(2026, 10, 9)),
+    (True, None, None, date(2020, 3, 2)),
+    (False, date(2020, 3, 2), "source", date(2026, 10, 10)),
+])
+def test_apply_classifies_bytes_and_inherits_the_replaced_reading_date(
+    same_bytes, replaced_available, expected_reason, expected_available
+):
+    source = {**_source(), "source_sha256": ("a" if same_bytes else "b") * 64, "parser_version": "test-v2"}
+    fact = _fact(source, revision="2")
+
+    class Cursor:
+        rowcount = 0
+
+        def __init__(self):
+            self.query = ""
+            self.inserted = None
+            self.retired = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def execute(self, query, parameters=()):
+            self.query = query
+
+        def fetchone(self):
+            return (True,)
+
+        def fetchall(self):
+            if "FROM public.sec_foreign_listing_sources" in self.query:
+                return [(source["source_package"], 123, source["adsh"], "a" * 64, date(2026, 10, 9))]
+            if "FROM public.sec_foreign_listing_evidence" in self.query and replaced_available:
+                return [(source["source_package"], "c" * 32, replaced_available)]
+            return []
+
+        def executemany(self, query, parameters):
+            if query.startswith("INSERT INTO public.sec_foreign_listing_evidence"):
+                self.inserted = dict(zip(loader.FACT_COLUMNS, parameters[0]))
+            elif query.startswith("UPDATE public.sec_foreign_listing_evidence"):
+                self.retired.extend(parameters)
+                self.rowcount = len(parameters)
+
+    class Connection:
+        result = Cursor()
+
+        def cursor(self):
+            return self.result
+
+    connection = Connection()
+    result = loader.apply_evidence(connection, _manifest(source), [fact], date(2026, 10, 10))
+    assert connection.result.inserted["available_on"] == expected_available
+    assert connection.result.inserted["parser_version"] == "test-v2"
+    assert result["retired"] == int(replaced_available is not None)
+    assert connection.result.retired == (
+        [(date(2026, 10, 10), expected_reason, source["source_package"], ["c" * 32])]
+        if replaced_available else []
+    )
+
+
+@pytest.mark.parametrize("v2_loaded", [False, None])
+def test_apply_refuses_a_missing_or_v1_schema_before_reconciliation(v2_loaded):
+    class Cursor:
+        queries = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def execute(self, query, parameters=()):
+            self.queries.append(query)
+
+        def fetchone(self):
+            return (v2_loaded,)
+
+    class Connection:
+        result = Cursor()
+
+        def cursor(self):
+            return self.result
+
+    connection = Connection()
+    with pytest.raises(RuntimeError, match="schema is not v2"):
+        loader.apply_evidence(connection, _manifest(_source()), [_fact(_source())], date(2026, 10, 10))
+    assert len(connection.result.queries) == 1
+    assert "pg_advisory_xact_lock" not in connection.result.queries[0]
+
+
+def test_apply_refuses_v1_and_the_v2_rollback_even_with_audit_columns(db):
+    # Keep the DDL within this fixture's transaction: both audit columns and
+    # resolver return to v2 when the fixture rolls back.
+    rollback = (Path(__file__).resolve().parents[1] / "schemas" / "sec_foreign_listing_evidence_v2.rollback.sql").read_text(
+        encoding="utf-8"
+    )
+    db.execute(rollback.replace("BEGIN;", "").replace("COMMIT;", ""))
+    source = _source()
+    with pytest.raises(RuntimeError, match="schema is not v2"):
+        loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 10))
+    db.execute("ALTER TABLE public.sec_foreign_listing_evidence DROP COLUMN retired_reason")
+    with pytest.raises(RuntimeError, match="schema is not v2"):
+        loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 10))
+    assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone() == (0,)
+    assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_sources").fetchone() == (0,)
+
+
+def test_parser_correction_replaces_the_historical_reading_at_every_date(db):
+    source = _source()
+    loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 9))
+    corrected = {**source, "parser_version": "test-v2"}
+    loader.apply_evidence(db, _manifest(corrected), [_fact(corrected, listed_type="ads", revision="2")], date(2026, 10, 10))
+    assert db.execute(
+        "SELECT listed_type,available_on,retired_on,retired_reason,parser_version "
+        "FROM public.sec_foreign_listing_evidence ORDER BY id"
+    ).fetchall() == [
+        ("ordinary_direct", date(2020, 3, 2), date(2026, 10, 10), "parser_correction", "test-v1"),
+        ("ads", date(2020, 3, 2), None, None, "test-v2"),
+    ]
+    for as_of in ("2020-03-02", "2025-12-31", "2026-10-11"):
+        assert db.execute("SELECT listed_type FROM public.sec_foreign_listing_at(123,'ABC',%s)", (as_of,)).fetchone() == ("ads",)
+    assert db.execute("SELECT parser_version FROM public.sec_foreign_listing_sources").fetchone() == ("test-v2",)
+
+
+def test_parser_correction_of_republished_content_preserves_its_republication_date(db):
+    source = _source()
+    loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 8))
+    republished = {**source, "source_sha256": "b" * 64}
+    loader.apply_evidence(db, _manifest(republished), [_fact(republished, revision="2")], date(2026, 10, 9))
+    corrected = {**republished, "parser_version": "test-v2"}
+    loader.apply_evidence(db, _manifest(corrected), [_fact(corrected, listed_type="ads", revision="3")], date(2026, 10, 10))
+    assert db.execute(
+        "SELECT listed_type,available_on,retired_on,retired_reason FROM public.sec_foreign_listing_evidence ORDER BY id"
+    ).fetchall() == [
+        ("ordinary_direct", date(2020, 3, 2), date(2026, 10, 9), "source"),
+        ("ordinary_direct", date(2026, 10, 9), date(2026, 10, 10), "parser_correction"),
+        ("ads", date(2026, 10, 9), None, None),
+    ]
+    assert db.execute("SELECT listed_type FROM public.sec_foreign_listing_at(123,'ABC','2025-12-31')").fetchone() == ("ordinary_direct",)
+    assert db.execute("SELECT listed_type FROM public.sec_foreign_listing_at(123,'ABC','2026-10-09')").fetchone() == ("ads",)
+
+
+def test_parser_addition_to_same_zero_fact_document_uses_public_date_after_noop_replay(db):
+    source = _source(count=0)
+    loader.apply_evidence(db, _manifest(source), [], date(2026, 10, 8))
+    loader.apply_evidence(db, _manifest(source), [], date(2026, 10, 9))
+    corrected = {**source, "evidence_count": 1, "parser_version": "test-v2"}
+    loader.apply_evidence(db, _manifest(corrected), [_fact(corrected)], date(2026, 10, 10))
+    assert db.execute("SELECT available_on,retired_reason FROM public.sec_foreign_listing_evidence").fetchone() == (date(2020, 3, 2), None)
+    assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2025-12-31')").fetchone() == ("resolved",)
+
+
+def test_parser_correction_honors_publication_floor(db):
+    source = _source(filed="2020-07-10", publication_floor_on="2023-07-26")
+    loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 9))
+    corrected = {**source, "parser_version": "test-v2"}
+    loader.apply_evidence(db, _manifest(corrected), [_fact(corrected, listed_type="ads", revision="2")], date(2026, 10, 10))
+    assert db.execute("SELECT available_on,source_available_on FROM public.sec_foreign_listing_evidence WHERE retired_on IS NULL").fetchone() == (
+        date(2023, 7, 26), date(2023, 7, 26))
+    assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2023-07-25')").fetchone() == ("none",)
+    assert db.execute("SELECT listed_type FROM public.sec_foreign_listing_at(123,'ABC','2023-07-26')").fetchone() == ("ads",)
+
+
 def test_initial_batch_multiple_exhibits_preserves_original_availability(db):
     first, second = _source(), _source("source-b")
     result = loader.apply_evidence(db, _manifest(first, second), [_fact(first), _fact(second)], date(2026, 10, 9))
@@ -1024,18 +1200,24 @@ def test_new_exhibit_after_zero_fact_accession_is_a_correction(db):
 def test_correction_retains_previous_version_and_withdrawal_is_dated(db):
     source = _source()
     loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 9))
-    loader.apply_evidence(db, _manifest(source), [_fact(source, listed_type="ads", revision="2")], date(2026, 10, 10))
-    rows = db.execute("SELECT listed_type,available_on,retired_on FROM public.sec_foreign_listing_evidence ORDER BY id").fetchall()
-    assert rows == [("ordinary_direct", date(2020, 3, 2), date(2026, 10, 10)), ("ads", date(2026, 10, 10), None)]
+    changed = {**source, "source_sha256": "b" * 64}
+    loader.apply_evidence(db, _manifest(changed), [_fact(changed, listed_type="ads", revision="2")], date(2026, 10, 10))
+    rows = db.execute("SELECT listed_type,available_on,retired_on,retired_reason "
+                      "FROM public.sec_foreign_listing_evidence ORDER BY id").fetchall()
+    assert rows == [("ordinary_direct", date(2020, 3, 2), date(2026, 10, 10), "source"),
+                    ("ads", date(2026, 10, 10), None, None)]
     assert db.execute("SELECT listed_type FROM public.sec_foreign_listing_at(123,'ABC','2025-12-31')").fetchone()[0] == "ordinary_direct"
-    loader.apply_evidence(db, _manifest(_source(count=0)), [], date(2026, 10, 11))
+    withdrawn = {**changed, "source_sha256": "c" * 64, "evidence_count": 0}
+    loader.apply_evidence(db, _manifest(withdrawn), [], date(2026, 10, 11))
+    assert db.execute("SELECT retired_reason FROM public.sec_foreign_listing_evidence WHERE listed_type='ads'").fetchone() == ("source",)
     assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2026-10-11')").fetchone()[0] == "none"
 
 
 def test_same_day_correction_before_source_availability_never_exposes_old_fact(db):
     source = _source(filed="2026-10-09")
     loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 9))
-    loader.apply_evidence(db, _manifest(source), [_fact(source, listed_type="ads", revision="2")], date(2026, 10, 9))
+    changed = {**source, "source_sha256": "b" * 64}
+    loader.apply_evidence(db, _manifest(changed), [_fact(changed, listed_type="ads", revision="2")], date(2026, 10, 9))
     rows = db.execute("SELECT listed_type,available_on,retired_on FROM public.sec_foreign_listing_evidence ORDER BY id").fetchall()
     assert rows == [("ordinary_direct", date(2026, 10, 10), date(2026, 10, 9)),
                     ("ads", date(2026, 10, 10), None)]
@@ -1050,7 +1232,8 @@ def test_initial_load_and_correction_honor_publication_floor(db):
         date(2023, 7, 26), date(2023, 7, 26), date(2020, 7, 11))
     assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2020-12-31')").fetchone()[0] == "none"
     assert db.execute("SELECT status FROM public.sec_foreign_listing_at(123,'ABC','2023-07-26')").fetchone()[0] == "resolved"
-    loader.apply_evidence(db, _manifest(source), [_fact(source, listed_type="ads", revision="2")], date(2026, 10, 10))
+    changed = {**source, "source_sha256": "b" * 64}
+    loader.apply_evidence(db, _manifest(changed), [_fact(changed, listed_type="ads", revision="2")], date(2026, 10, 10))
     assert db.execute("SELECT available_on FROM public.sec_foreign_listing_evidence WHERE retired_on IS NULL").fetchone()[0] == date(2026, 10, 10)
 
 
@@ -1059,6 +1242,14 @@ def test_fact_filing_date_must_match_the_authoritative_manifest(db):
     wrong = {**_fact(source), "filed": "2020-02-28"}
     with pytest.raises(ValueError, match="filing date does not match"):
         loader.apply_evidence(db, _manifest(source), [wrong], date(2026, 10, 9))
+
+
+def test_fact_source_bytes_must_match_the_manifest_used_to_classify_retirements(db):
+    source = _source()
+    wrong = {**_fact(source), "source_sha256": "b" * 64}
+    with pytest.raises(ValueError, match="source hash does not match"):
+        loader.apply_evidence(db, _manifest(source), [wrong], date(2026, 10, 9))
+    assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone() == (0,)
 
 
 def test_reconciliation_rejects_backdated_source_observation(db):
@@ -1092,6 +1283,9 @@ def test_apply_reads_snapshots_once_and_bounds_write_batches(monkeypatch):
         def fetchall(self):
             return []
 
+        def fetchone(self):
+            return (True,)
+
     class Connection:
         def __init__(self):
             self.result = Cursor()
@@ -1103,7 +1297,7 @@ def test_apply_reads_snapshots_once_and_bounds_write_batches(monkeypatch):
     connection = Connection()
     result = loader.apply_evidence(connection, _manifest(*sources), [_fact(source) for source in sources], date(2026, 10, 9))
     assert result == {"inserted": 5, "retired": 0, "unchanged": 0, "sources": 5}
-    assert len(connection.result.reads) == 3  # advisory lock + two snapshots
+    assert len(connection.result.reads) == 4  # v2 gate + advisory lock + two snapshots
     fact_batches = [size for query, size in connection.result.batches if "INSERT INTO public.sec_foreign_listing_evidence" in query]
     source_batches = [size for query, size in connection.result.batches if "INSERT INTO public.sec_foreign_listing_sources" in query]
     assert fact_batches == source_batches == [2, 2, 1]
@@ -1117,6 +1311,7 @@ def test_batched_corrections_preserve_retirement_counts(db, monkeypatch):
     assert result == {"inserted": 5, "retired": 5, "unchanged": 0, "sources": 5}
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence WHERE retired_on IS NULL").fetchone()[0] == 5
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence WHERE retired_on='2026-10-10'").fetchone()[0] == 5
+    assert db.execute("SELECT DISTINCT retired_reason FROM public.sec_foreign_listing_evidence WHERE retired_on IS NOT NULL").fetchall() == [("parser_correction",)]
 
 
 def test_late_validation_failure_rolls_back_already_flushed_batches(db, monkeypatch):
@@ -1430,6 +1625,54 @@ def _gate_ratio_fact(source, *, ratio, effective, **metadata):
     fact.pop("fact_hash")
     fact["fact_hash"] = loader.hashlib.md5(loader.canonical_json(fact).encode(), usedforsecurity=False).hexdigest()
     return fact
+
+
+@pytest.mark.parametrize("old_confirmed,new_confirmed", [(True, False), (False, True)])
+def test_parser_correction_removes_or_adds_confirmation_at_the_public_date(db, old_confirmed, new_confirmed):
+    source = _source("confirmation-reading", filed="2022-11-10")
+    proof = "The shareholders approved and the Company completed the ADS ratio change on November 4."
+
+    def reading(document, confirmed):
+        return _gate_ratio_fact(
+            document, ratio=20, effective="2022-11-04", form="6-K", source_kind="ratio_change_6k",
+            ratio_effectiveness_confirmed=confirmed,
+            ratio_effectiveness_confirmation_text=proof if confirmed else None,
+            ratio_effectiveness_confirmed_conditions=["ratio_effective"] if confirmed else None,
+        )
+
+    loader.apply_evidence(db, _manifest(source), [reading(source, old_confirmed)], date(2026, 10, 9))
+    old_id = db.execute("SELECT id FROM public.sec_foreign_listing_evidence").fetchone()[0]
+    corrected = {**source, "parser_version": "test-v2"}
+    result = loader.apply_evidence(db, _manifest(corrected), [reading(corrected, new_confirmed)], date(2026, 10, 10))
+    assert (result["retired"], result["inserted"]) == (1, 1)
+    assert db.execute(
+        "SELECT ratio_effectiveness_confirmed,available_on,retired_on,retired_reason "
+        "FROM public.sec_foreign_listing_evidence ORDER BY id"
+    ).fetchall() == [
+        (old_confirmed, date(2022, 11, 11), date(2026, 10, 10), "parser_correction"),
+        (new_confirmed, date(2022, 11, 11), None, None),
+    ]
+    for as_of in ("2022-11-11", "2025-12-31", "2026-10-11"):
+        evidence_ids = db.execute("SELECT evidence_ids FROM public.sec_foreign_listing_at(123,'ABC',%s)", (as_of,)).fetchone()[0]
+        assert old_id not in evidence_ids
+
+
+def test_parser_correction_withdraws_an_invalid_confirmation_at_every_date(db):
+    source = _source("withdrawn-confirmation", filed="2022-11-10")
+    fact = _gate_ratio_fact(
+        source, ratio=20, effective="2022-11-04", form="6-K", source_kind="ratio_change_6k",
+        ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="The Company completed the ADS ratio change on November 4.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+    )
+    loader.apply_evidence(db, _manifest(source), [fact], date(2026, 10, 9))
+    corrected = {**source, "evidence_count": 0, "parser_version": "test-v2"}
+    assert loader.apply_evidence(db, _manifest(corrected), [], date(2026, 10, 10))["retired"] == 1
+    assert db.execute("SELECT retired_on,retired_reason FROM public.sec_foreign_listing_evidence").fetchone() == (
+        date(2026, 10, 10), "parser_correction")
+    for as_of in ("2022-11-11", "2025-12-31", "2026-10-11"):
+        assert db.execute("SELECT status,evidence_ids FROM public.sec_foreign_listing_at(123,'ABC',%s)", (as_of,)).fetchone() == ("none", [])
+    assert db.execute("SELECT evidence_count,parser_version FROM public.sec_foreign_listing_sources").fetchone() == (0, "test-v2")
 
 
 def test_gate_apply_preserves_conflicting_operative_date_proof(db):

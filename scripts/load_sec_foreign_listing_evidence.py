@@ -1143,13 +1143,44 @@ FACT_COLUMNS = ("fact_hash", "cik", "symbol", "adsh", "form", "filed", "source_u
 APPLY_BATCH_SIZE = 1000
 
 
+def require_schema(cursor: Any) -> None:
+    """Require both the v2 retirement audit and its exact public resolver.
+
+    The v2 rollback deliberately keeps audit rows and their reason column. A
+    column-only check would therefore accept the restored v1 visibility rule.
+    Schema installation remains an explicit operation by the database owner.
+    """
+    schema = (Path(__file__).resolve().parents[1] / "schemas" / "sec_foreign_listing_evidence_v2.sql").read_text(
+        encoding="utf-8"
+    )
+    body = re.search(r"AS \$fn\$(.*?)\$fn\$;", schema, re.DOTALL)
+    if body is None:
+        raise RuntimeError("The checked-in foreign-listing schema v2 has no resolver body")
+    cursor.execute(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a "
+        "WHERE a.attrelid = to_regclass('public.sec_foreign_listing_evidence') "
+        "AND a.attname = 'retired_reason' AND NOT a.attisdropped) "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c "
+        "WHERE c.conrelid = to_regclass('public.sec_foreign_listing_evidence') "
+        "AND c.conname = 'sec_foreign_listing_evidence_retired_reason_check' AND c.contype = 'c') "
+        "AND COALESCE((SELECT p.prosrc = %s FROM pg_catalog.pg_proc p "
+        "WHERE p.oid = to_regprocedure('public.sec_foreign_listing_at(bigint,text,date)')), false)",
+        (body.group(1),),
+    )
+    if cursor.fetchone() != (True,):
+        raise RuntimeError("The foreign-listing schema is not v2: apply "
+                           "schemas/sec_foreign_listing_evidence.sql, then "
+                           "schemas/sec_foreign_listing_evidence_v2.sql as the database owner first")
+
+
 def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observed_on: date) -> dict:
     """Reconcile complete source documents transactionally, retaining old versions.
 
     Passing a DB connection is deliberate: offline collection never creates one.
-    An initial source uses filing+1 availability; additions to an already-loaded
-    source become public no earlier than the reconciliation date. Missing files
-    cannot retire facts. A successfully parsed empty document can retire them.
+    Same source bytes restate a parser's reading: retired readings are never
+    visible, and replacements inherit the reading's original availability.
+    Other source revisions stay prospective. Missing files cannot retire facts.
+    A successfully parsed empty document can retire them.
     """
     if not manifest.get("complete") or not manifest.get("parse_complete"):
         raise ValueError("Only a complete discovery and parse manifest can be applied")
@@ -1161,24 +1192,27 @@ def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observ
     require_authoritative_filing_dates(manifest)
     counters = {"inserted": 0, "retired": 0, "unchanged": 0, "sources": 0}
     with connection.cursor() as cursor:
+        require_schema(cursor)
         cursor.execute("SELECT pg_advisory_xact_lock(79311, 173)")
         # Snapshot before inserting any document: all documents of an accession
         # in its first batch inherit the source date. A later-added exhibit is a
-        # correction even if its individual source_package has never been seen.
-        cursor.execute("SELECT source_package,cik,adsh,last_loaded_on FROM public.sec_foreign_listing_sources FOR UPDATE")
+        # source revision even if its individual source_package has never been seen.
+        cursor.execute("SELECT source_package,cik,adsh,source_sha256,last_loaded_on "
+                       "FROM public.sec_foreign_listing_sources FOR UPDATE")
         prior_sources = {}
         prior_accessions = {}
-        for package, cik, adsh, loaded in cursor.fetchall():
-            prior_sources[package] = loaded
+        for package, cik, adsh, source_sha256, loaded in cursor.fetchall():
+            prior_sources[package] = (source_sha256, loaded)
             key = (int(cik), adsh)
             prior_accessions[key] = max(loaded, prior_accessions.get(key, loaded))
-        cursor.execute("SELECT source_package,fact_hash FROM public.sec_foreign_listing_evidence WHERE retired_on IS NULL")
-        current: dict[str, set[str]] = {}
-        for package, fact_hash in cursor.fetchall():
-            current.setdefault(package, set()).add(fact_hash)
+        cursor.execute("SELECT source_package,fact_hash,available_on "
+                       "FROM public.sec_foreign_listing_evidence WHERE retired_on IS NULL")
+        current: dict[str, dict[str, date]] = {}
+        for package, fact_hash, available_on in cursor.fetchall():
+            current.setdefault(package, {})[fact_hash] = available_on
         insert_sql = ("INSERT INTO public.sec_foreign_listing_evidence (" + ",".join(FACT_COLUMNS) + ") VALUES ("
                       + ",".join(["%s"] * len(FACT_COLUMNS)) + ")")
-        retire_sql = ("UPDATE public.sec_foreign_listing_evidence SET retired_on=%s "
+        retire_sql = ("UPDATE public.sec_foreign_listing_evidence SET retired_on=%s,retired_reason=%s "
                       "WHERE source_package=%s AND retired_on IS NULL AND fact_hash=ANY(%s)")
         source_sql = """INSERT INTO public.sec_foreign_listing_sources
             (source_package,adsh,cik,source_url,source_sha256,parser_version,first_loaded_on,last_loaded_on,evidence_count)
@@ -1205,15 +1239,18 @@ def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observ
                 raise ValueError("Evidence count does not match source manifest")
             previous = prior_sources.get(package)
             prior_accession = prior_accessions.get((int(document["cik"]), document["adsh"]))
-            if (previous and previous > observed_on) or (prior_accession and prior_accession > observed_on):
+            if (previous and previous[1] > observed_on) or (prior_accession and prior_accession > observed_on):
                 raise ValueError("Reconciliation date cannot precede prior load")
-            existing = current.get(package, set())
+            reason = "parser_correction" if previous and previous[0] == document["source_sha256"] else "source"
+            previous_facts = current.get(package, {})
+            existing = set(previous_facts)
             incoming = {row["fact_hash"] for row in facts}
             if len(incoming) != len(facts):
                 raise ValueError("Evidence artifact contains duplicate facts")
             removed = existing - incoming
+            replaced_available = max((previous_facts[fact_hash] for fact_hash in removed), default=None)
             if removed:
-                retire_batch.append((observed_on, package, sorted(removed)))
+                retire_batch.append((observed_on, reason, package, sorted(removed)))
                 if len(retire_batch) >= APPLY_BATCH_SIZE:
                     flush(retire_sql, retire_batch, retirement=True)
             for fact in facts:
@@ -1221,13 +1258,20 @@ def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observ
                     raise ValueError("Evidence filing date does not match its authoritative source manifest")
                 if fact.get("publication_floor_on") != document.get("publication_floor_on"):
                     raise ValueError("Evidence publication floor does not match its source manifest")
+                if fact["source_sha256"] != document["source_sha256"]:
+                    raise ValueError("Evidence source hash does not match its source manifest")
                 if fact["fact_hash"] in existing:
                     counters["unchanged"] += 1
                     continue
                 source_available = date.fromisoformat(str(fact["filed"])) + timedelta(days=1)
                 if fact.get("publication_floor_on"):
                     source_available = max(source_available, date.fromisoformat(str(fact["publication_floor_on"])))
-                available = max(source_available, observed_on) if prior_accession else source_available
+                if reason == "parser_correction":
+                    # As W1/W1b: inherit a replaced reading's actual date, including
+                    # republication; a reading replacing none uses the public date.
+                    available = max(source_available, replaced_available or source_available)
+                else:
+                    available = max(source_available, observed_on) if prior_accession else source_available
                 values = {"ordinary_candidate": True, "effective_date_explicit": False,
                           **fact, "available_on": available, "loaded_on": observed_on}
                 insert_batch.append(tuple(values.get(column) for column in FACT_COLUMNS))

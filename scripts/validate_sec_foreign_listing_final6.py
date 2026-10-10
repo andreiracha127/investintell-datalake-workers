@@ -2,7 +2,8 @@
 
 This helper performs read-only database work and never loads an artifact. Load
 each artifact into a fresh database in the same disposable container first:
-reconciling final6 onto final5 would preserve historical answers by design.
+the B1 isolated comparison is preserved independently of B1b's applied-over-final5
+restatement acceptance.
 The saved final5 cohorts are the query and reviewed-answer oracle. All generated
 reports must be written to C:, outside the repository and original raw cache.
 """
