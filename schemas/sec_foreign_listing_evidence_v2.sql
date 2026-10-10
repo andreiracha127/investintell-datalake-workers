@@ -23,6 +23,8 @@
 -- Rollback: schemas/sec_foreign_listing_evidence_v2.rollback.sql.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
+-- Serialize DDL with apply before either checks the installed resolver.
+SELECT pg_advisory_xact_lock(79311, 173);
 
 ALTER TABLE public.sec_foreign_listing_evidence
     ADD COLUMN IF NOT EXISTS retired_reason text;

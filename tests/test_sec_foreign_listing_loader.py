@@ -1103,8 +1103,9 @@ def test_apply_refuses_a_missing_or_v1_schema_before_reconciliation(v2_loaded):
     connection = Connection()
     with pytest.raises(RuntimeError, match="schema is not v2"):
         loader.apply_evidence(connection, _manifest(_source()), [_fact(_source())], date(2026, 10, 10))
-    assert len(connection.result.queries) == 1
-    assert "pg_advisory_xact_lock" not in connection.result.queries[0]
+    assert len(connection.result.queries) == 2
+    assert connection.result.queries[0] == "SELECT pg_advisory_xact_lock(79311, 173)"
+    assert "pg_catalog.pg_attribute" in connection.result.queries[1]
 
 
 def test_apply_refuses_v1_and_the_v2_rollback_even_with_audit_columns(db):
@@ -1122,6 +1123,135 @@ def test_apply_refuses_v1_and_the_v2_rollback_even_with_audit_columns(db):
         loader.apply_evidence(db, _manifest(source), [_fact(source)], date(2026, 10, 10))
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone() == (0,)
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_sources").fetchone() == (0,)
+
+
+def _wait_for_reconciliation_lock(observer, queued, application_name, blocking_pid):
+    import time
+
+    deadline = time.monotonic() + 4
+    while True:
+        waiting = observer.execute(
+            "SELECT l.granted,%s = ANY(pg_catalog.pg_blocking_pids(a.pid)) "
+            "FROM pg_catalog.pg_stat_activity a JOIN pg_catalog.pg_locks l ON l.pid=a.pid "
+            "WHERE a.application_name=%s AND l.locktype='advisory' "
+            "AND l.classid=79311 AND l.objid=173 AND l.objsubid=2",
+            (blocking_pid, application_name),
+        ).fetchone()
+        if waiting == (False, True):
+            return
+        if queued.done():
+            queued.result()
+            pytest.fail("Queued operation returned before blocking on the owner's reconciliation lock")
+        if time.monotonic() >= deadline:
+            pytest.fail("Queued operation did not block on the owner's reconciliation lock within 4 seconds")
+        time.sleep(0.01)
+
+
+def test_loader_waiting_for_reconciliation_lock_refuses_a_committed_v2_rollback(loader_sql_database):
+    from concurrent.futures import ThreadPoolExecutor
+    from uuid import uuid4
+
+    psycopg = pytest.importorskip("psycopg")
+    schema_dir = Path(__file__).resolve().parents[1] / "schemas"
+    v2 = (schema_dir / "sec_foreign_listing_evidence_v2.sql").read_text(encoding="utf-8")
+    rollback = (schema_dir / "sec_foreign_listing_evidence_v2.rollback.sql").read_text(encoding="utf-8")
+    source = _source("rollback-race")
+    corrected = {**source, "parser_version": "test-v2"}
+    application_name = "w1c_schema_guard_" + uuid4().hex
+    facts_query = "SELECT to_jsonb(e) FROM public.sec_foreign_listing_evidence e ORDER BY id"
+    sources_query = "SELECT to_jsonb(s) FROM public.sec_foreign_listing_sources s ORDER BY source_package"
+
+    def queued_load():
+        # Bound failures as well as lock waits, so teardown cannot leave a
+        # blocked thread or session behind if the ordering assertion fails.
+        with psycopg.connect(loader_sql_database, application_name=application_name,
+                             options="-c statement_timeout=10000") as connection:
+            return loader.apply_evidence(
+                connection, _manifest(corrected), [_fact(corrected, listed_type="ads", revision="2")],
+                date(2026, 10, 10),
+            )
+
+    # Use committed connections rather than db: its per-test TRUNCATE remains
+    # uncommitted and would itself block the concurrent DDL and loader.
+    with psycopg.connect(loader_sql_database, autocommit=True) as observer:
+        observer.execute("TRUNCATE public.sec_foreign_listing_evidence, public.sec_foreign_listing_sources")
+        with psycopg.connect(loader_sql_database) as initial:
+            loader.apply_evidence(initial, _manifest(source), [_fact(source)], date(2026, 10, 9))
+        before_facts = observer.execute(facts_query).fetchall()
+        before_sources = observer.execute(sources_query).fetchall()
+        with psycopg.connect(loader_sql_database) as owner:
+            owner.execute("SELECT pg_advisory_xact_lock(79311, 173)")
+            pool = ThreadPoolExecutor(max_workers=1)
+            queued = pool.submit(queued_load)
+            try:
+                _wait_for_reconciliation_lock(observer, queued, application_name, owner.info.backend_pid)
+                assert not queued.done()
+                # Run the actual rollback inside the owner's held transaction,
+                # then publish v1 and release its shared lock together.
+                owner.execute(rollback.replace("BEGIN;", "").replace("COMMIT;", ""))
+                owner.commit()
+                with pytest.raises(RuntimeError, match="schema is not v2"):
+                    queued.result(timeout=10)
+                assert observer.execute(
+                    "SELECT p.prosrc LIKE '%parser_correction%' FROM pg_catalog.pg_proc p "
+                    "WHERE p.oid = to_regprocedure('public.sec_foreign_listing_at(bigint,text,date)')"
+                ).fetchone() == (False,)
+                assert observer.execute(facts_query).fetchall() == before_facts
+                assert observer.execute(sources_query).fetchall() == before_sources
+                assert observer.execute(
+                    "SELECT listed_type FROM public.sec_foreign_listing_at(123,'ABC','2025-12-31')"
+                ).fetchone() == ("ordinary_direct",)
+            finally:
+                owner.rollback()
+                pool.shutdown(wait=True)
+                observer.execute(v2)
+                observer.execute("TRUNCATE public.sec_foreign_listing_evidence, public.sec_foreign_listing_sources")
+
+
+@pytest.mark.parametrize("migration_name", [
+    "sec_foreign_listing_evidence_v2.sql", "sec_foreign_listing_evidence_v2.rollback.sql",
+])
+def test_v2_migration_and_rollback_share_the_reconciliation_lock(loader_sql_database, migration_name):
+    from concurrent.futures import ThreadPoolExecutor
+    from uuid import uuid4
+
+    psycopg = pytest.importorskip("psycopg")
+    schema_dir = Path(__file__).resolve().parents[1] / "schemas"
+    migration = (schema_dir / migration_name).read_text(encoding="utf-8")
+    v2 = (schema_dir / "sec_foreign_listing_evidence_v2.sql").read_text(encoding="utf-8")
+    application_name = "w1c_ddl_lock_" + uuid4().hex
+
+    def queued_ddl():
+        with psycopg.connect(loader_sql_database, application_name=application_name,
+                             options="-c statement_timeout=10000") as connection:
+            connection.execute(migration)
+
+    with psycopg.connect(loader_sql_database, autocommit=True) as observer:
+        before = observer.execute(
+            "SELECT pg_catalog.pg_get_functiondef('public.sec_foreign_listing_at(bigint,text,date)'::regprocedure)"
+        ).fetchone()
+        with psycopg.connect(loader_sql_database) as owner:
+            owner.execute("SELECT pg_advisory_xact_lock(79311, 173)")
+            pool = ThreadPoolExecutor(max_workers=1)
+            queued = pool.submit(queued_ddl)
+            try:
+                _wait_for_reconciliation_lock(observer, queued, application_name, owner.info.backend_pid)
+                assert not queued.done()
+                assert observer.execute(
+                    "SELECT pg_catalog.pg_get_functiondef('public.sec_foreign_listing_at(bigint,text,date)'::regprocedure)"
+                ).fetchone() == before
+                owner.commit()
+                queued.result(timeout=10)
+                with observer.cursor() as cursor:
+                    if migration_name.endswith(".rollback.sql"):
+                        with pytest.raises(RuntimeError, match="schema is not v2"):
+                            loader.require_schema(cursor)
+                    else:
+                        loader.require_schema(cursor)
+            finally:
+                owner.rollback()
+                pool.shutdown(wait=True)
+                observer.execute(v2)
 
 
 def test_parser_correction_replaces_the_historical_reading_at_every_date(db):

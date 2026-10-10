@@ -9,6 +9,8 @@
 -- Apply as the role that applied v2, with psql -v ON_ERROR_STOP=1.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
+-- Serialize DDL with apply before either checks the installed resolver.
+SELECT pg_advisory_xact_lock(79311, 173);
 
 CREATE OR REPLACE FUNCTION public.sec_foreign_listing_at(
     p_cik bigint, p_symbol text, p_as_of date

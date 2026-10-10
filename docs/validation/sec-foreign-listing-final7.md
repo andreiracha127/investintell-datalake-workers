@@ -561,3 +561,145 @@ name-filter inventory is empty. Unrelated pre-existing containers were preserved
 document receives only the pointer at its top. Round2 changes no schema,
 database apply code or runbook. The PR remains open without merge, and no
 production access or Railway operation was performed.
+
+
+## B1b round 2: v2 applied over the loaded final5
+
+This section records the stacked schema/loader acceptance separately from the
+B1 detector replay above. It supersedes the production target in the historical
+[final6 B1b measurement](sec-foreign-listing-final6.md#b1b-v2-applied-over-the-loaded-final5).
+That measurement and both immutable artifacts remain preserved. The original
+B1 final7 report above is unchanged.
+
+The project's restatement rule remains the one documented for W1 and W1b:
+same-byte parser corrections make the old reading invisible at every date and
+inherit the replaced reading's availability; source changes remain prospective.
+Both facts and source metadata already record parser versions. The base SQL
+remains byte-identical to production v1. Every resolver branch descends from the
+single reason-filtered `issuer_observed` CTE, including downstream publication
+ordering and public-by-registration date bounds.
+
+| Governed SQL | SHA-256 |
+|---|---|
+| v1 base | `f334d08d3d3b496bd613495d59ee2a3a12365f58c422b3d51bd77530e61d2957` |
+| v2 | `4eca964a6a3edbcfa328628904a324dfa6a363d82f4a5dd46f8b76d0012d7158` |
+| v2 rollback | `1aef8c8168c40af826fb0f6b90440569c6933d0ff01ce74ee59c305e999a7bc2` |
+
+The v2 resolver body remains MD5 `60f5d1bf86a645a41fb7e23328c7ab8a`.
+Both migration and rollback now acquire transaction advisory lock `(79311, 173)`
+shared with evidence application. The loader acquires it before checking the
+exact v2 schema/resolver, so a loader queued behind rollback observes the
+restored v1 resolver and refuses application. Rollback preserves the additive
+reason data/CHECK while restoring exact v1 resolver bytes, comments, ownership,
+grants and behavior. No production schema was accessed or applied.
+
+The local sequence installed v1, applied final5 with the main loader in
+`E:/investintell-datalake-workers-sep/.worktrees/w1c-prod` and
+`--observed-on 2026-10-09`, applied v2 DDL, then applied pinned final7 with this
+branch's loader and `--observed-on 2026-10-10`. The main checkout remained
+`2905146afd69c4c27cc0e71c34f13ab383d000e9`; its loader SHA-256 was
+`d56c54172645b656363d968c9653bdf39fee745a0a48d9682bd27f19db7a5762`.
+This mirrors the proposed production operation. The final7 manifest/evidence
+pins are the ones in the artifact table above. All 47,329 source-package hashes
+agree between final5 and final7; no fetch or reparse occurred during application.
+
+All **12,155/12,155** queries in
+`C:/investintell-data/w1c-final7/validation/final7/snapshot.json` match the
+isolated final7 semantic answers, with **zero mismatches**. The applied database
+reproduces exactly the eight changed queries across seven lines listed under
+[Changed answers](#changed-answers), including OSN's distinct ratio-status
+changes at 2020 and 2025 year-ends. Every corrected after-answer returns a NULL
+numeric ratio. The source quotations and verdicts above explain those changes;
+no extra difference is introduced by the application history.
+
+| Measurement | After v1/final5 | After v2/final7 |
+|---|---:|---:|
+| Sources | 47,329 | 47,329 |
+| Total fact versions | 29,709 | 59,345 |
+| Active fact versions | 29,709 | 29,636 |
+| Retired: `parser_correction` | 0 | 29,709 |
+| Retired: `source` | 0 | 0 |
+| Retired: NULL | 0 | 0 |
+
+Final7 application reports 29,636 inserted, 29,709 retired and zero unchanged
+facts, as parser-version hashes re-version the full fact set. Every active fact
+has `available_on = source_available_on`, rather than the replay date. Retired
+readings record `foreign-listing-v8`; active readings record
+`foreign-listing-v11`. Input hash checks confirm the immutable manifests, JSONL,
+snapshot and universe remain unchanged.
+
+All **7/7** changed lines also match an independently initialized isolated
+v1/final7 database at **2026-10-11**, after reconciliation. Each row below has
+NULL numeric ratio in both databases:
+
+| Line / CIK | Applied and isolated overall status | Listed type | Listing status | Ratio status |
+|---|---|---|---|---|
+| TRIB / 888721 | ambiguous | ads | resolved | ambiguous |
+| NTES / 1110646 | none | ads | resolved | none |
+| OSN / 1485538 | ambiguous | NULL | ambiguous | none |
+| VSA / 1592560 | ambiguous | ads | resolved | ambiguous |
+| BNR / 1792267 | ambiguous | ads | resolved | ambiguous |
+| SVRE / 1894693 | none | ads | resolved | none |
+| AIXI / 1935172 | ambiguous | ads | resolved | ambiguous |
+
+TRIB's later ambiguity is the same pinned 2026 F-6 conflict documented in the
+preserved final6 B1b measurement: “Each American Depositary Share shall represent
+one Share” versus “each American Depositary Share represents twenty shares.”
+Those later-public assertions are absent at 2025-12-31, when its corrected
+answer is `none`, but remain an exact-ratio conflict at 2026-10-11. Thus the
+later answer also depends on source evidence rather than load history.
+Source: [Trinity F-6 deposit agreement](https://www.sec.gov/Archives/edgar/data/890836/000101915526000024/trinityda.htm),
+accession `0001019155-26-000024`, filed 2026-01-27, public 2026-01-28; raw SHA-256
+`22d345b973c116eb5215f070d983ebc684234902a94f7761684d12c783538809`.
+
+The complete applied/isolated comparison is
+`C:/investintell-data/w1c-b1b-work/round2/report.json`; its reproducible sequence
+is `restate_acceptance.py` (`preload`, then `replay`) in that same directory.
+All new artifacts are on C:; final5, final6 and final7 remain read-only inputs.
+The [runbook](../runbooks/sec-foreign-listing-evidence.md#exact-production-procedure-not-executed-by-this-pr)
+now specifies: verify v1/final5, apply the pinned v2 DDL, apply the pinned final7
+artifact, then read back all 12,155 historical and seven later semantic answers
+and the reason counts. No production access, Railway change, deployment,
+admission switch or merge was performed by this acceptance.
+
+
+B1b ran the two required test files sequentially on
+`timescale/timescaledb:2.27.2-pg18`, PostgreSQL 18.4, with `PYTEST_WORKERS=2`
+and at most one task-owned PG container. All temporary/test artifacts are on C:.
+
+| B1b round 2 suite | Result | Elapsed |
+|---|---|---:|
+| `tests/test_sec_foreign_listing_evidence.py` | 952 passed, 0 failed/errors/skipped | 9.50 s |
+| `tests/test_sec_foreign_listing_loader.py` | 156 passed, 0 failed/errors/skipped | 2.84 s |
+
+The migration cycle still covers loaded v1 -> v2 -> idempotent v2 -> rollback
+-> v2, preserving relation filenodes and restoring exact v1 resolver bytes,
+comments, ownership, privileges and behavior. Source-versus-parser retirement,
+removed/added confirmation, republication availability, source publication
+floors, empty parses, new-document protection and downstream resolver branches
+remain covered.
+
+Three new concurrency cases exercise the shared lock on actual PostgreSQL:
+`test_loader_waiting_for_reconciliation_lock_refuses_a_committed_v2_rollback`
+and both parametrized cases of
+`test_v2_migration_and_rollback_share_the_reconciliation_lock`. They observe
+an ungranted advisory lock on the blocked backend before releasing the holder;
+they do not infer serialization from elapsed time. A loader queued behind an
+actual committed rollback must then reject the restored v1 resolver.
+
+The stale-guard regression was also run with the pre-fix loader at
+`c6313b8`: it fails with `DID NOT RAISE RuntimeError` (1 expected failure,
+155 deselected, 0.75 s), because its guard executes before waiting. The current
+full loader suite then passes all 156 cases, including the three concurrency
+cases. The red/green proof and full test logs are
+`C:/investintell-data/w1c-b1b-work/round2/p2-old-guard.log`,
+`test_sec_foreign_listing_evidence.log` and `test_sec_foreign_listing_loader.log`.
+The updated runbook's read-only checker verified final7 manifest/evidence/snapshot
+pins, the unchanged v2 resolver body and owner, all counts and retirement reasons,
+12,155/12,155 historical answers and 7/7 later answers with zero mismatches.
+Its code is mirrored exactly in `C:/investintell-data/w1c-b1b-work/readback.py`
+and the Round2 artifact copy; the result is `round2/readback.log`.
+Focused Ruff, whitespace and LF checks passed. The one task-owned PG18 container
+was removed after validation (`round2/container-cleanup.log`); unrelated existing
+containers were preserved. The final handoff is
+`E:/investintell-handoffs/limitations-program/B1B-REPORT.md`, Round 2.

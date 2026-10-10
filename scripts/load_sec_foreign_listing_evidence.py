@@ -1192,8 +1192,11 @@ def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observ
     require_authoritative_filing_dates(manifest)
     counters = {"inserted": 0, "retired": 0, "unchanged": 0, "sources": 0}
     with connection.cursor() as cursor:
-        require_schema(cursor)
         cursor.execute("SELECT pg_advisory_xact_lock(79311, 173)")
+        # Migration and rollback share this lock. Check the resolver only after
+        # acquiring it, so a rollback committed while waiting cannot stale the
+        # guard before any source snapshot or evidence write.
+        require_schema(cursor)
         # Snapshot before inserting any document: all documents of an accession
         # in its first batch inherit the source date. A later-added exhibit is a
         # source revision even if its individual source_package has never been seen.
