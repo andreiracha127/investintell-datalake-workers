@@ -404,25 +404,29 @@ def test_secapi_download_window_bounds_the_load_from_a_persistent_cache(tmp_path
 
 def test_http_client_preserves_user_agent_and_request_spacing_without_network(monkeypatch):
     requests = []
-    sleeps = []
+    permits = []
+
+    class Scheduler:
+        def acquire(self, url, product=None):
+            permits.append((insider.urllib.parse.urlsplit(url).hostname, product))
+
+        def cooldown(self, *_args, **_kwargs):
+            pytest.fail("Successful requests should not trigger cooldown")
 
     def fake_open(request, timeout):
         requests.append(request)
         assert timeout == 90
         return object()
 
-    monkeypatch.setattr(insider.urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(insider, "ProviderScheduler", Scheduler)
     monkeypatch.setattr(insider.urllib.request, "build_opener", lambda *args: SimpleNamespace(open=fake_open))
-    monkeypatch.setattr(insider.time, "sleep", sleeps.append)
-    monkeypatch.setattr(insider.time, "monotonic", lambda: 0.0)
     client = insider.HttpClient("fixture-test-key", spacing=0)
     client.request("https://www.sec.gov/files/2006q1_form345.zip")
     client.request("https://api.sec-api.io/datasets/form-3-files/2003/2003-05.zip", authenticated=True)
     assert all(request.get_header("User-agent") == insider.USER_AGENT for request in requests)
     assert requests[0].get_header("Authorization") is None
     assert requests[1].get_header("Authorization") == "fixture-test-key"
-    assert all(wait >= 0.1 for wait in sleeps)
-    assert sleeps[-1] >= 0.5
+    assert permits == [("www.sec.gov", None), ("api.sec-api.io", None)]
     with pytest.raises(ValueError, match="another host"):
         client.request("https://example.invalid/archive.zip", authenticated=True)
 
@@ -445,7 +449,10 @@ def test_secapi_archive_streaming_400_is_retried_but_sec_400_is_not(tmp_path, mo
 
     monkeypatch.setattr(insider.urllib.request, "build_opener", lambda *args: SimpleNamespace(open=open_url))
     monkeypatch.setattr(insider.urllib.request, "urlopen", open_url)
-    monkeypatch.setattr(insider.time, "sleep", lambda seconds: None)
+    scheduler = SimpleNamespace(acquire=lambda *_args, **_kwargs: None,
+                                cooldown=lambda *_args, **_kwargs: None,
+                                sleep=lambda *_args: None)
+    monkeypatch.setattr(insider, "ProviderScheduler", lambda: scheduler)
     client = insider.HttpClient("fixture-test-key", spacing=0)
     target = tmp_path / "form-4-files" / "2003" / "2003-05.zip"
     client.download("https://api.sec-api.io/datasets/form-4-files/2003/2003-05.zip", target,
@@ -453,7 +460,7 @@ def test_secapi_archive_streaming_400_is_retried_but_sec_400_is_not(tmp_path, mo
     assert hosts == ["api.sec-api.io"] * 3
     assert target.read_bytes() == data
     hosts.clear()
-    with pytest.raises(RuntimeError, match="HTTP request failed"):
+    with pytest.raises(RuntimeError, match="SEC provider HTTP 400"):
         client.download("https://www.sec.gov/files/2006q1_form345.zip", tmp_path / "2006q1_form345.zip")
     assert hosts == ["www.sec.gov"]
 

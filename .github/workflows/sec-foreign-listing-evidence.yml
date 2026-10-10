@@ -7,7 +7,10 @@ on:
       - 'requirements.txt'
       - 'schemas/sec_foreign_listing_evidence*'
       - 'scripts/*sec_foreign_listing*'
+      - 'scripts/sec_provider_transport.py'
+      - 'scripts/sec_parse_resources.py'
       - 'tests/test_sec_foreign_listing*'
+      - 'tests/test_sec_provider_transport.py'
       - 'tests/fixtures/sec_foreign_listing_evidence/**'
   push:
     branches: [main]
@@ -16,7 +19,10 @@ on:
       - 'requirements.txt'
       - 'schemas/sec_foreign_listing_evidence*'
       - 'scripts/*sec_foreign_listing*'
+      - 'scripts/sec_provider_transport.py'
+      - 'scripts/sec_parse_resources.py'
       - 'tests/test_sec_foreign_listing*'
+      - 'tests/test_sec_provider_transport.py'
       - 'tests/fixtures/sec_foreign_listing_evidence/**'
 
 permissions:
@@ -51,3 +57,6 @@ jobs:
         run: |
           python -m pytest tests/test_sec_foreign_listing_evidence.py -q
           python -m pytest tests/test_sec_foreign_listing_loader.py -q
+          python -m pytest tests/test_sec_provider_transport.py -q
+          python -m pytest tests/test_sec_foreign_listing_throughput.py -q
+          python -m pytest tests/test_sec_foreign_listing_shard_plans.py -q

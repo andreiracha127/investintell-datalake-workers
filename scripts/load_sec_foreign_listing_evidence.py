@@ -9,15 +9,17 @@ to the caller's external cache directory. No downloaded content is executable.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import csv
 from datetime import date, datetime, timedelta, timezone
 import gzip
 import hashlib
 from html import escape, unescape
+from http.client import IncompleteRead
 import io
 import json
 import lzma
+import multiprocessing
 import os
 from pathlib import Path
 import re
@@ -30,8 +32,12 @@ import time
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlsplit
-from urllib.request import Request, urlopen
 from uuid import uuid4
+
+if __package__:
+    from .sec_parse_resources import resolve_parse_workers
+else:
+    from sec_parse_resources import resolve_parse_workers
 
 USER_AGENT = "InvestIntell-SEP-Ingestion/1.0 (+https://hub.investintell.com)"
 QUERY_URL = "https://api.sec-api.io"
@@ -251,46 +257,65 @@ def indexed_relocation(cache_dir: Path, url: str) -> tuple[str, dict] | None:
     return matches[0]
 
 
-class SecClient:
-    """Thread-safe rate limiter shared by searches and SEC/access-layer downloads."""
+def require_document_content(data: bytes) -> None:
+    beginning = data[:4000].lower()
+    rejected = (b"request rate threshold exceeded", b"your request originates from an undeclared automated tool",
+                b"<title>sec.gov | page not found", b"<title>sec.gov | website maintenance",
+                b"<title>service unavailable", b"<title>maintenance")
+    if len(data) < 100 or any(marker in beginning for marker in rejected):
+        raise ValueError("SEC returned an empty document, maintenance page or rate-limit page")
 
-    def __init__(self, cache: Path, key: str = "", *, offline: bool = False, requests_per_second: float = 5):
+
+class SecClient:
+    """Verified raw cache and machine-governed SEC provider downloads."""
+
+    def __init__(self, cache: Path, key: str = "", *, offline: bool = False, requests_per_second: float = 5,
+                 raw_cache_dir: Path | None = None):
         if not 0 < requests_per_second <= 10:
             raise ValueError("SEC request rate must be in (0, 10]")
         self.cache, self.key, self.offline = cache, key, offline
+        if raw_cache_dir is not None and not offline:
+            raise ValueError("Separate raw cache requires offline mode")
+        if raw_cache_dir is not None and cache.resolve().is_relative_to(raw_cache_dir.resolve()):
+            raise ValueError("Staging cache must be outside the read-only raw cache")
+        self.raw_cache_dir = raw_cache_dir or cache
         self.interval = 1 / requests_per_second
-        self.lock = threading.Lock()
-        self.next_request = 0.0
         self.disk_full = threading.Event()
         self.recovery_proofs: dict[str, dict] = {}
+        self.transport = None
 
     def request(self, url: str, payload: dict | None = None) -> bytes:
         if self.offline:
             raise RuntimeError("Offline mode cannot make network requests")
-        for attempt in range(5):
-            with self.lock:
-                delay = self.next_request - time.monotonic()
-                if delay > 0:
-                    time.sleep(delay)
-                self.next_request = time.monotonic() + self.interval
-            headers = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"}
-            if urlsplit(url).hostname in {"api.sec-api.io", "archive.sec-api.io", "edgar-mirror.sec-api.io"}:
-                headers["Authorization"] = self.key
-            body = None if payload is None else canonical_json(payload).encode()
-            if body:
-                headers["Content-Type"] = "application/json"
+        if __package__:
+            from .sec_provider_transport import ProviderScheduler, ProviderTransport
+        else:
+            from sec_provider_transport import ProviderScheduler, ProviderTransport
+        if self.transport is None:
+            rps = 1 / self.interval
+            government = (rps, 1.0) if rps >= 1 else (1, 1 / rps)
+            self.transport = ProviderTransport(USER_AGENT, api_key=self.key,
+                                              scheduler=ProviderScheduler(limits={"government": government}))
+        body = None if payload is None else canonical_json(payload).encode()
+        headers = {"Accept-Encoding": "gzip"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        with self.transport.open(
+                url, data=body, headers=headers, timeout=90, max_attempts=5,
+                retry_statuses=frozenset({408, 429, 500, 502, 503, 504})) as response:
             try:
-                with urlopen(Request(url, data=body, headers=headers), timeout=90) as response:
-                    data = response.read()
-                    return gzip.decompress(data) if data.startswith(b"\x1f\x8b") else data
-            except HTTPError as exc:
-                if exc.code not in {408, 429, 500, 502, 503, 504} or attempt == 4:
-                    raise RuntimeError(f"SEC HTTP {exc.code}") from None
-            except (URLError, TimeoutError, OSError):
-                if attempt == 4:
-                    raise RuntimeError("SEC transport failed after five attempts") from None
-            time.sleep(min(2 ** attempt, 16))
-        raise RuntimeError("SEC transport retries exhausted")
+                data = response.read()
+            except IncompleteRead:
+                raise ValueError("SEC response content length mismatch") from None
+            declared = response.headers.get("Content-Length")
+            if declared is not None:
+                try:
+                    expected_length = int(declared)
+                except (TypeError, ValueError):
+                    raise ValueError("SEC response content length is invalid") from None
+                if len(data) != expected_length:
+                    raise ValueError("SEC response content length mismatch")
+        return gzip.decompress(data) if data.startswith(b"\x1f\x8b") else data
 
     def search(self, url: str, payload: dict) -> dict:
         key = digest(canonical_json({"url": url, "payload": payload}).encode())
@@ -307,12 +332,25 @@ class SecClient:
                           "sha256": digest(canonical_json(response).encode())})
         return response
 
+    def _download_document(self, preferred_url: str, canonical_url: str) -> bytes:
+        try:
+            data = self.request(preferred_url)
+            require_document_content(data)
+            return data
+        except (RuntimeError, ValueError, OSError, HTTPError, URLError):
+            if preferred_url == canonical_url:
+                raise
+        # Exactly one fallback destination, governed by the shared government
+        # budget. Paid-provider speed never carries over to sec.gov.
+        data = self.request(canonical_url)
+        require_document_content(data)
+        return data
+
     def document(self, url: str, *, expected_sha256: str | None = None,
                  _allow_sgml_recovery: bool = True) -> tuple[bytes, str]:
         url = canonical_sec_url(url)
-        parts = urlsplit(url)
         key = digest(url.encode())
-        directory = self.cache / "documents"
+        directory = self.raw_cache_dir / "documents"
         path = directory / (key + ".bin.xz")
         gzip_path = directory / (key + ".bin.gz")
         legacy_path = directory / (key + ".bin")
@@ -335,17 +373,26 @@ class SecClient:
             if meta.get("url") != url or meta.get("sha256") != digest(data):
                 raise ValueError("Document cache integrity mismatch: " + key)
         else:
+            # Offline recovery may derive a missing primary only from verified
+            # cached submission/index sources. All recovered bytes are staged
+            # beside outputs, never written into a separate read-only raw root.
+            directory = self.cache / "documents"
+            meta_path = directory / (key + ".json")
             directory.mkdir(parents=True, exist_ok=True)
             if self.disk_full.is_set() or shutil.disk_usage(directory).free < 64 * 1024 * 1024:
                 self.disk_full.set()
                 raise OSError("Insufficient cache disk space; resume after freeing space")
-            download_url = "https://archive.sec-api.io/" + parts.path.split("/data/", 1)[1] if self.key else url
+            if __package__:
+                from .sec_provider_transport import filing_download_url
+            else:
+                from sec_provider_transport import filing_download_url
+            download_url = filing_download_url(url, self.key)
             recovery = {}
             try:
-                data = self.request(download_url)
-                if len(data) < 100 or b"Request Rate Threshold Exceeded" in data[:2000]:
-                    raise ValueError("SEC returned an empty document or rate-limit page")
-            except (RuntimeError, ValueError):
+                if self.offline:
+                    raise FileNotFoundError("Offline document cache missing: " + key)
+                data = self._download_document(download_url, url)
+            except (RuntimeError, ValueError, OSError):
                 locator = sgml_recovery_locator(url) if _allow_sgml_recovery else None
                 if locator is None:
                     raise
@@ -357,7 +404,7 @@ class SecClient:
                                 "recovery_filename": filename, "recovery_accession": accession,
                                 "recovery_document_type": document_type}
                 except (RuntimeError, ValueError, OSError):
-                    relocated = indexed_relocation(self.cache, url)
+                    relocated = indexed_relocation(self.raw_cache_dir, url)
                     if relocated is None:
                         raise
                     actual_url, recovery = relocated
@@ -370,8 +417,9 @@ class SecClient:
                         data, document_type = extract_sgml_document(submission, accession=accession, filename=filename)
                         recovery.update({"recovery_retrieval_url": actual_submission, "recovery_source_url": actual_submission,
                                          "recovery_source_sha256": submission_sha, "recovery_document_type": document_type})
-            if len(data) < 100 or b"Request Rate Threshold Exceeded" in data[:2000]:
-                raise ValueError("SEC returned an empty document or rate-limit page")
+            require_document_content(data)
+            if expected_sha256 and expected_sha256 != digest(data):
+                raise ValueError("Manifest/document SHA256 mismatch: " + key)
             compressed = lzma.compress(data, preset=3)
             if shutil.disk_usage(directory).free < len(compressed) + 64 * 1024 * 1024:
                 self.disk_full.set()
@@ -570,7 +618,9 @@ def discover(client: SecClient, universe: list[dict], start: date, end: date, wo
             write_json(client.cache / "manifest-history" / (prior_hash + ".json"), old)
     docs = {row["source_package"]: row for row in manifest["documents"]}
     pending = {cik: lines for cik, lines in by_cik.items() if manifest["issuers"].get(str(cik), {}).get("status") != "complete"}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    # Parsing can use a larger process budget; retain the existing discovery
+    # thread ceiling while provider scheduling governs every network attempt.
+    with ThreadPoolExecutor(max_workers=min(workers, 8)) as pool:
         futures = {pool.submit(discover_issuer, client, lines, start, end): cik for cik, lines in pending.items()}
         for future in as_completed(futures):
             cik = futures[future]
@@ -578,6 +628,11 @@ def discover(client: SecClient, universe: list[dict], start: date, end: date, wo
                 rows = future.result()
                 docs.update({row["source_package"]: row for row in rows})
                 manifest["issuers"][str(cik)] = {"status": "complete", "documents": len(rows)}
+            except _provider_auth_error():
+                # Rejected credentials fail the run; queued issuers must not reuse them.
+                for queued in futures:
+                    queued.cancel()
+                raise
             except Exception as exc:
                 manifest["issuers"][str(cik)] = {"status": "failed", "error": type(exc).__name__ + ": " + str(exc)[:200]}
             manifest["documents"] = [docs[key] for key in sorted(docs)]
@@ -754,7 +809,9 @@ def f6_attachment_binding_proof(client: SecClient, document: dict, sources: list
     for candidate in candidates:
         try:
             raw, sha256 = client.document(candidate["source_url"], expected_sha256=candidate.get("source_sha256"))
-        except (ValueError, RuntimeError, OSError):
+        except (ValueError, RuntimeError, OSError) as exc:
+            if client.offline and isinstance(exc, FileNotFoundError):
+                raise
             continue
         if verify_f6_issuer(raw.decode("utf-8-sig", errors="replace"), issuer_name):
             recovery = getattr(client, "recovery_proofs", {}).get(candidate["source_url"], {})
@@ -876,9 +933,108 @@ def require_authoritative_filing_dates(manifest: dict) -> None:
             raise ValueError("Source publication floor has no matching provenance")
 
 
+_PARSE_CLIENT: SecClient | None = None
+_PARSE_OBSERVATIONS: dict = {}
+_PARSE_BINDINGS: dict = {}
+
+
+def _configure_parse_worker(client: SecClient, observations: list[dict], bindings: list[dict]) -> None:
+    global _PARSE_CLIENT, _PARSE_OBSERVATIONS, _PARSE_BINDINGS
+    _PARSE_CLIENT = client
+    _PARSE_OBSERVATIONS, _PARSE_BINDINGS = {}, {}
+    for row in observations:
+        _PARSE_OBSERVATIONS.setdefault((int(row["cik"]), row["adsh"]), []).append(row)
+    for row in bindings:
+        _PARSE_BINDINGS.setdefault((int(row["cik"]), row["adsh"]), []).append(row)
+
+
+def _initialize_parse_worker(context_path: str, cache: str, raw_cache: str, key: str,
+                             offline: bool, requests_per_second: float) -> None:
+    # The parent-wide binding input is loaded once per spawned process. Tasks
+    # contain only the candidates for one URL, never the full parent manifest.
+    context = json.loads(Path(context_path).read_text(encoding="utf-8"))
+    client = SecClient(Path(cache), key, offline=offline, requests_per_second=requests_per_second,
+                       raw_cache_dir=Path(raw_cache) if offline else None)
+    _configure_parse_worker(client, context["observations"], context["bindings"])
+
+
+def _parse_url_task(url: str, candidates: list[dict]) -> list[dict]:
+    client = _PARSE_CLIENT
+    if client is None:
+        raise RuntimeError("Parse worker was not initialized")
+    expected = {item["source_sha256"] for item in candidates if item.get("source_sha256")}
+    if len(expected) > 1:
+        raise ValueError("Conflicting content hashes for a shared document URL")
+    downloaded = client.document(url, expected_sha256=next(iter(expected), None))
+    updated_documents = []
+    for document in candidates:
+        try:
+            filing = (int(document["cik"]), document["adsh"])
+            updated, rows = parse_document(client, document, _PARSE_OBSERVATIONS.get(filing),
+                                          downloaded=downloaded, binding_sources=_PARSE_BINDINGS.get(filing, []))
+            updated.pop("error", None)
+            payload = "".join(canonical_json(row) + "\n" for row in rows).encode("utf-8")
+            write_bytes(client.cache / "parsed" / (document["source_package"] + ".jsonl"), payload)
+            updated_documents.append(updated)
+        except _provider_auth_error():
+            raise  # a refused secondary fetch aborts the run like a refused primary
+        except Exception as exc:
+            updated_documents.append({**document, "status": "failed",
+                                      "error": type(exc).__name__ + ": " + str(exc)[:200]})
+    return updated_documents
+
+
+def _provider_auth_error() -> type[Exception]:
+    if __package__:
+        from .sec_provider_transport import ProviderAuthError
+    else:
+        from sec_provider_transport import ProviderAuthError
+    return ProviderAuthError
+
+
+def _bounded_parse_results(client: SecClient, by_url: dict, workers: int, context_path: Path):
+    # A provider refusal is a run failure, never one failed source among many.
+    refused = _provider_auth_error()
+    if workers == 1:
+        for url, candidates in by_url.items():
+            try:
+                yield url, _parse_url_task(url, candidates), None
+            except refused:
+                raise
+            except Exception as exc:
+                yield url, None, exc
+        return
+    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_initialize_parse_worker,
+                             initargs=(str(context_path), str(client.cache), str(client.raw_cache_dir),
+                                       client.key, client.offline, 1 / client.interval)) as pool:
+        items = iter(by_url.items())
+        pending = {}
+        while True:
+            while len(pending) < workers * 2:
+                item = next(items, None)
+                if item is None:
+                    break
+                url, candidates = item
+                pending[pool.submit(_parse_url_task, url, candidates)] = url
+            if not pending:
+                break
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                url = pending.pop(future)
+                try:
+                    yield url, future.result(), None
+                except refused:
+                    raise
+                except Exception as exc:
+                    yield url, None, exc
+
+
 def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int = 4,
                    observations: list[dict] | None = None,
                    binding_sources: list[dict] | None = None) -> dict:
+    if client.raw_cache_dir.resolve() != client.cache.resolve() and output.resolve().is_relative_to(client.raw_cache_dir.resolve()):
+        raise ValueError("Evidence output must be outside the read-only raw cache")
     require_authoritative_filing_dates(manifest)
     # A URL can be associated with two issuer candidates. One worker downloads
     # and parses all its candidates, retaining at most one original per worker.
@@ -899,12 +1055,10 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
     manifest["excluded_forms"] = excluded
     documents = [row for row in documents if row not in excluded]
     manifest["documents"] = documents
-    observations_by_filing: dict[tuple[int, str], list[dict]] = {}
-    for observation in observations or []:
-        observations_by_filing.setdefault((int(observation["cik"]), observation["adsh"]), []).append(observation)
-    binding_sources_by_filing: dict[tuple[int, str], list[dict]] = {}
-    for source in binding_sources if binding_sources is not None else documents:
-        binding_sources_by_filing.setdefault((int(source["cik"]), source["adsh"]), []).append(source)
+    sources = binding_sources if binding_sources is not None else documents
+    workers = resolve_parse_workers(workers)
+    print(canonical_json({"event": "parse_resources", "workers": workers,
+                          "max_outstanding_tasks": workers * 2, "start_method": "spawn"}), flush=True)
     by_url: dict[str, list[dict]] = {}
     for document in documents:
         by_url.setdefault(document["source_url"], []).append(document)
@@ -912,38 +1066,15 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
     spool.mkdir(parents=True, exist_ok=True)
     results: dict[str, dict] = {}
 
-    def download_and_parse(url: str, candidates: list[dict]) -> list[dict]:
-        expected = {item["source_sha256"] for item in candidates if item.get("source_sha256")}
-        if len(expected) > 1:
-            raise ValueError("Conflicting content hashes for a shared document URL")
-        downloaded = client.document(url, expected_sha256=next(iter(expected), None))
-        updated_documents = []
-        for document in candidates:
-            try:
-                filing_observations = observations_by_filing.get((int(document["cik"]), document["adsh"]))
-                filing_sources = binding_sources_by_filing.get((int(document["cik"]), document["adsh"]), [])
-                updated, rows = parse_document(client, document, filing_observations,
-                                               downloaded=downloaded, binding_sources=filing_sources)
-                updated.pop("error", None)
-                # Always reparse and replace the spool, even on offline replay.
-                # It is an output staging file, never an input/cache authority.
-                payload = "".join(canonical_json(row) + "\n" for row in rows).encode("utf-8")
-                write_bytes(spool / (document["source_package"] + ".jsonl"), payload)
-                updated_documents.append(updated)
-            except Exception as exc:
-                updated_documents.append({**document, "status": "failed", "error": type(exc).__name__ + ": " + str(exc)[:200]})
-        # Futures retain only small metadata. Original bytes and parsed rows are
-        # released inside this worker before another unique URL is scheduled.
-        return updated_documents
-
+    context_path = client.cache / "parse-context" / (uuid4().hex + ".json")
+    if workers > 1:
+        write_json(context_path, {"observations": observations or [], "bindings": sources})
+    else:
+        _configure_parse_worker(client, observations or [], sources)
     errors = 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(download_and_parse, url, candidates): url for url, candidates in by_url.items()}
-        for index, future in enumerate(as_completed(futures), 1):
-            url = futures.pop(future)
-            try:
-                updated_documents = future.result()
-            except Exception as exc:
+    try:
+        for index, (url, updated_documents, exc) in enumerate(_bounded_parse_results(client, by_url, workers, context_path), 1):
+            if exc is not None:
                 updated_documents = [{**document, "status": "failed", "error": type(exc).__name__ + ": " + str(exc)[:200]}
                                      for document in by_url[url]]
             for updated in updated_documents:
@@ -961,8 +1092,23 @@ def parse_manifest(client: SecClient, manifest: dict, output: Path, workers: int
             if index % 100 == 0 or index == len(by_url):
                 print(canonical_json({"event": "download", "completed": index, "total": len(by_url),
                                       "parsed_documents": len(results), "errors": errors}), flush=True)
+    except BaseException:
+        # An aborted parse (provider refusal, broken pool, interrupt) must not
+        # leave an earlier staging manifest claiming a complete parse.
+        manifest["parse_complete"] = False
+        write_json(client.cache / "manifest.json", manifest)
+        raise
+    finally:
+        context_path.unlink(missing_ok=True)
     documents = [results[key] for key in sorted(results)]
     manifest["documents"] = documents
+    if errors:
+        manifest["parse_complete"] = False
+        write_json(client.cache / "manifest.json", manifest)
+        return {"documents": len(documents), "evidence_rows": sum(row.get("evidence_count", 0) for row in documents),
+                "failed_documents": errors, "unverified_bindings": 0,
+                "rejected_description_candidates": 0, "discovery_complete": manifest["complete"],
+                "parse_complete": False, "output_published": False}
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + "." + uuid4().hex + ".tmp")
     count = 0
@@ -1104,6 +1250,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--universe", type=Path, required=True)
     parser.add_argument("--cache-dir", type=Path, required=True)
+    parser.add_argument("--raw-cache-dir", type=Path, help="Read-only raw cache for offline replay; staging remains in cache-dir")
+    parser.add_argument("--manifest", type=Path, help="Read-only input manifest; the updated manifest is staged in cache-dir")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--observations", type=Path, help="Read-only W1 JSON export for same-accession historical symbol binding")
     parser.add_argument("--discover", action="store_true")
@@ -1113,7 +1261,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-date", type=date.fromisoformat, default=date(1993, 1, 1))
     parser.add_argument("--end-date", type=date.fromisoformat, default=datetime.now(timezone.utc).date())
     parser.add_argument("--dotenv", type=Path, default=Path("E:/investintell-light/backend/.env"))
-    parser.add_argument("--workers", type=int, choices=range(1, 9), default=4)
+    parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--requests-per-second", type=float, default=5)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--database-url-env", default="FOREIGN_EVIDENCE_DATABASE_URL")
@@ -1126,13 +1274,21 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("cache-dir must be outside the repository")
     if args.offline and args.discover:
         parser.error("--offline and --discover are mutually exclusive")
+    if args.workers < 1:
+        parser.error("--workers must be positive")
+    if args.raw_cache_dir is not None:
+        if not args.offline:
+            parser.error("--raw-cache-dir requires --offline")
+        if args.raw_cache_dir.resolve() == args.cache_dir.resolve():
+            parser.error("raw-cache-dir and staging cache-dir must differ")
     if args.refresh_discovery and not args.discover:
         parser.error("--refresh-discovery requires --discover")
     universe = read_universe(args.universe)
     args.cache_dir.mkdir(parents=True, exist_ok=True)
     key = load_key(args.dotenv) if not args.offline and (args.discover or args.download) else ""
-    client = SecClient(args.cache_dir, key, offline=args.offline, requests_per_second=args.requests_per_second)
-    manifest_path = args.cache_dir / "manifest.json"
+    client = SecClient(args.cache_dir, key, offline=args.offline, requests_per_second=args.requests_per_second,
+                       raw_cache_dir=args.raw_cache_dir)
+    manifest_path = args.manifest or args.cache_dir / "manifest.json"
     observations = json.loads(args.observations.read_text(encoding="utf-8-sig")) if args.observations else None
     manifest = discover(client, universe, args.start_date, args.end_date, args.workers,
                         refresh=args.refresh_discovery, observations=observations) if args.discover else json.loads(manifest_path.read_text(encoding="utf-8"))

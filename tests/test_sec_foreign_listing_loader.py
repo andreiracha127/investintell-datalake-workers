@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from scripts import load_sec_foreign_listing_evidence as loader
+from scripts.sec_provider_transport import ProviderAuthError, ProviderTransport
 
 
 def _date_authority(filed="2020-03-01", adsh="0001234567-20-000001", publication_floor_on=None):
@@ -173,6 +174,18 @@ def test_full_text_overstated_unique_page_is_not_success():
     hits = [{"accessionNo": name, "filingUrl": f"https://www.sec.gov/Archives/edgar/data/123/{name}.htm"} for name in ("a", "b")]
     with pytest.raises(ValueError, match="do not match declared total"):
         loader.search_text(SearchClient([response(hits, 1)]), "ratio", ["6-K"], date(2020, 1, 1), date(2020, 12, 31))
+
+
+def test_discovery_stops_on_rejected_provider_credentials(tmp_path, monkeypatch):
+    universe = [{"cik": 123, "symbol": "ABC", "issuer_name": ""}]
+    client = loader.SecClient(tmp_path, offline=True)
+
+    def refuse(*_args):
+        raise ProviderAuthError("SEC provider HTTP 401: https://api.sec-api.io/full-text-search")
+
+    monkeypatch.setattr(loader, "discover_issuer", refuse)
+    with pytest.raises(ProviderAuthError):
+        loader.discover(client, universe, date(2020, 1, 1), date(2020, 12, 31), workers=1)
 
 
 def test_discovery_version_requires_explicit_refresh_and_retains_old_manifest(tmp_path, monkeypatch):
@@ -461,7 +474,7 @@ def test_sec_inline_viewer_url_has_one_canonical_source_and_cache(tmp_path, monk
     monkeypatch.setattr(client, "request", request)
     assert client.document(viewer) == client.document(canonical)
     assert len(calls) == 1
-    assert calls[0] == "https://archive.sec-api.io/313216/000031321618000007/report.htm"
+    assert calls[0] == "https://edgar-mirror.sec-api.io/313216/000031321618000007/report.htm"
 
 
 @pytest.mark.parametrize("url", [
@@ -526,23 +539,62 @@ def test_pipeline_downloads_shared_url_once_and_reparses_deterministically(tmp_p
     monkeypatch.setattr(client, "document", download)
     monkeypatch.setattr(loader, "parse_document", parse)
     output = tmp_path / "evidence.jsonl"
-    summary = loader.parse_manifest(client, manifest, output, workers=2)
+    summary = loader.parse_manifest(client, manifest, output, workers=1)
     assert summary["evidence_rows"] == 3
     assert len(downloads) == 2  # two issuer candidates share one original
     first_hash = manifest["evidence_sha256"]
     rows = [json.loads(line) for line in output.read_text().splitlines()]
     assert [row["source_package"] for row in rows] == sorted(row["source_package"] for row in rows)
     generation[0] = 2
-    loader.parse_manifest(client, manifest, output, workers=2)
+    loader.parse_manifest(client, manifest, output, workers=1)
     assert len(parse_calls) == 6
     assert manifest["evidence_sha256"] != first_hash
     assert {json.loads(line)["revision"] for line in output.read_text().splitlines()} == {2}
-    # Old spool data for a source that now fails must never leak into output.
+    # A failed reparse must preserve the previous complete publication.
+    previous_output = output.read_bytes()
     fail_cik[0] = 456
-    summary = loader.parse_manifest(client, manifest, output, workers=2)
+    summary = loader.parse_manifest(client, manifest, output, workers=1)
     assert summary["failed_documents"] == 1
     assert not summary["parse_complete"]
-    assert {json.loads(line)["cik"] for line in output.read_text().splitlines()} == {123, 789}
+    assert output.read_bytes() == previous_output
+
+
+def test_provider_refusal_aborts_parse_and_marks_staging_incomplete(tmp_path, monkeypatch):
+    url = "https://www.sec.gov/Archives/edgar/data/123/report.htm"
+    document = {"adsh": "0001234567-20-000001", "cik": 123, "source_url": url, "source_package": "pkg",
+                "binding": "registrant_cik", "symbols": ["ABC"], **_date_authority(), "form": "20-F"}
+    manifest = {"complete": True, "parse_complete": True, "documents": [document],
+                "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"}}
+    client = loader.SecClient(tmp_path, offline=True)
+
+    def refuse(_url, **_kwargs):
+        raise ProviderAuthError("SEC provider HTTP 401: https://edgar-mirror.sec-api.io/123/report.htm")
+
+    monkeypatch.setattr(client, "document", refuse)
+    output = tmp_path / "evidence.jsonl"
+    output.write_bytes(b"previous complete evidence" + bytes([10]))
+    with pytest.raises(ProviderAuthError):
+        loader.parse_manifest(client, manifest, output, workers=1)
+    assert output.read_bytes() == b"previous complete evidence" + bytes([10])
+    assert json.loads((tmp_path / "manifest.json").read_text())["parse_complete"] is False
+
+
+def test_provider_refusal_in_secondary_fetch_aborts_parse(tmp_path, monkeypatch):
+    url = "https://www.sec.gov/Archives/edgar/data/123/report.htm"
+    document = {"adsh": "0001234567-20-000001", "cik": 123, "source_url": url, "source_package": "pkg",
+                "binding": "registrant_cik", "symbols": ["ABC"], **_date_authority(), "form": "20-F"}
+    manifest = {"complete": True, "parse_complete": True, "documents": [document],
+                "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"}}
+    client = loader.SecClient(tmp_path, offline=True)
+    monkeypatch.setattr(client, "document", lambda _url, **_kwargs: (b"cached primary", "a" * 64))
+
+    def parse(*_args, **_kwargs):
+        raise ProviderAuthError("SEC provider HTTP 403: https://edgar-mirror.sec-api.io/123/exhibit.htm")
+
+    monkeypatch.setattr(loader, "parse_document", parse)
+    with pytest.raises(ProviderAuthError):
+        loader.parse_manifest(client, manifest, tmp_path / "evidence.jsonl", workers=1)
+    assert json.loads((tmp_path / "manifest.json").read_text())["parse_complete"] is False
 
 
 def test_f6_search_name_is_not_sufficient_issuer_binding():
@@ -1077,8 +1129,11 @@ def test_late_validation_failure_rolls_back_already_flushed_batches(db, monkeypa
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_sources").fetchone()[0] == 0
 
 
-def _completed_shard_artifacts(tmp_path, *, binding="registrant_cik"):
+def _completed_shard_artifacts(tmp_path, monkeypatch, *, binding="registrant_cik"):
     from scripts import run_sec_foreign_listing_evidence_shards as shards
+    from scripts import sec_parse_resources as resources
+    # Artifact identity tests require two shards regardless of host capacity.
+    monkeypatch.setattr(resources, "parse_resource_budget", lambda _mb: {"max_workers": 2})
     documents = []
     for number in range(6):
         source = {**_source(), "source_url": f"https://www.sec.gov/Archives/edgar/data/123/report-{number}.htm",
@@ -1108,8 +1163,8 @@ def _completed_shard_artifacts(tmp_path, *, binding="registrant_cik"):
     return shards, parent, result
 
 
-def test_shard_combine_exact_coverage_and_deterministic_order(tmp_path):
-    shards, parent, preparation = _completed_shard_artifacts(tmp_path)
+def test_shard_combine_exact_coverage_and_deterministic_order(tmp_path, monkeypatch):
+    shards, parent, preparation = _completed_shard_artifacts(tmp_path, monkeypatch)
     output = tmp_path / "combined.jsonl"
     summary = shards.combine(tmp_path, output)
     first = output.read_bytes()
@@ -1135,8 +1190,8 @@ def test_shard_combine_exact_coverage_and_deterministic_order(tmp_path):
     ("parent", "parent identity"), ("count", "per-document counts"),
     ("incomplete", "incomplete"), ("observations", "observation hashes"),
 ])
-def test_shard_combine_rejects_incomplete_or_changed_artifacts(tmp_path, mutation, match):
-    shards, _, _ = _completed_shard_artifacts(tmp_path)
+def test_shard_combine_rejects_incomplete_or_changed_artifacts(tmp_path, monkeypatch, mutation, match):
+    shards, _, _ = _completed_shard_artifacts(tmp_path, monkeypatch)
     child_path = tmp_path / "parts" / "0" / "manifest.json"
     child = json.loads(child_path.read_text())
     if mutation == "missing":
@@ -1183,7 +1238,7 @@ def test_shard_partition_keeps_all_issuer_bindings_of_same_url_together():
 ])
 def test_shards_reject_changed_parsing_and_binding_metadata_before_collection_and_combine(
         tmp_path, monkeypatch, field, value):
-    shards, _, _ = _completed_shard_artifacts(tmp_path, binding="issuer_name_in_f6")
+    shards, _, _ = _completed_shard_artifacts(tmp_path, monkeypatch, binding="issuer_name_in_f6")
     directory = tmp_path / "parts" / "0"
     input_path = directory / "input-manifest.json"
     child_path = directory / "manifest.json"
@@ -1276,7 +1331,7 @@ def test_offline_sgml_recovery_is_audited_and_retains_primary_identity(tmp_path,
     source.document(submission)
     # An offline primary miss recovers solely from the already verified complete
     # submission. The actual HTTP primitive must never be reached.
-    monkeypatch.setattr(loader, "urlopen", lambda *_, **__: pytest.fail("Offline recovery attempted HTTP"))
+    monkeypatch.setattr(ProviderTransport, "open", lambda *_, **__: pytest.fail("Offline recovery attempted HTTP"))
     offline = loader.SecClient(tmp_path, offline=True)
     data, sha = offline.document(primary)
     assert data == original and sha == loader.digest(original)
@@ -1308,7 +1363,10 @@ def test_sgml_fallback_does_not_recurse_or_decode_binary_pdf(tmp_path, monkeypat
     monkeypatch.setattr(client, "request", request)
     with pytest.raises(ValueError, match="empty document"):
         client.document("https://www.sec.gov/Archives/edgar/data/123/000123456720000001/" + filename)
-    assert len(calls) == 1
+    assert calls == [
+        "https://edgar-mirror.sec-api.io/123/000123456720000001/" + filename,
+        "https://www.sec.gov/Archives/edgar/data/123/000123456720000001/" + filename,
+    ]
 
 
 def _write_relocation_index(cache, *, duplicate=False):
@@ -1344,7 +1402,7 @@ def test_offline_index_recovery_preserves_identity_and_binding_provenance(tmp_pa
     seed = loader.SecClient(tmp_path, "fake")
     monkeypatch.setattr(seed, "request", lambda *_: raw)
     seed.document(actual)
-    monkeypatch.setattr(loader, "urlopen", lambda *_, **__: pytest.fail("Offline relocation attempted HTTP"))
+    monkeypatch.setattr(ProviderTransport, "open", lambda *_, **__: pytest.fail("Offline relocation attempted HTTP"))
     client = loader.SecClient(tmp_path, offline=True)
     assert client.document(primary) == (raw, loader.digest(raw))
     proof = client.recovery_proofs[primary]
