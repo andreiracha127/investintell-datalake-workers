@@ -91,30 +91,56 @@ extend with positive same-filing census evidence from the 20-F cover's statement
 of outstanding shares for each issuer class. No census source, parser or new
 evidence relation is added here. `sole_class_proven` remains false in phase 1.
 
-Unit and class proof belong to each elected count's own accession, CIK, member
-and `dimh`. Observation titles from another context supply neither units nor
-class identity. Every elected count must have its own unique identity and agree
-on ordinary units; equal numerical values cannot lend one count's proof to
-another. Audit `count_unit_contexts` retains each count's context, labels, unit
-and conflicting evidence flags.
+Positive unit and class proof belong to each elected count's own accession, CIK,
+member and `dimh`. Observation titles from another context supply neither units
+nor class identity. Every elected count must have its own unique identity and
+agree on ordinary units; equal numerical values cannot lend one count's proof
+to another. Audit `count_unit_contexts` retains each count's context, proof labels,
+unit and veto flags.
 
-Explicit depositary evidence includes observation kind/title and raw or
-normalized ADS/ADR member wording, including numbered member forms. An ADS-only
-context returns `ordinary_class_shares_unavailable`. Conflicting ordinary,
-depositary or preferred evidence returns `share_count_unit_unverified`. A Common
-or Ordinary spelling hint cannot prove ordinary units in a filing with explicit
-depositary evidence: that count needs a positive ordinary observation on its own
-context. A separately evidenced ordinary count below an ADS line remains
-admissible. Preferred and unknown units also fail closed.
+Veto evidence has a separate, filing-wide rule. An observation linked by raw
+member or canonical class key vetoes non-ordinary units regardless of its `dimh`.
+Every non-equity kind and explicit depositary, preferred, preference, deferred,
+founder, unknown or conflicting wording blocks admission. Count-side canonical
+keys include its member identities and strict-valid own-context title identities.
+Observation-side negative keys also include explicitly declared identities in
+nondepositary titles. Those declarations only establish veto associations; they
+never supply positive count proof. Depositary kind, member or title wording
+disables title-derived negative keys, since an ADS title may name its underlying
+ordinary class. A generic ADS member therefore cannot acquire that class key.
+`count_unit_veto_evidence` records the exact facts, keys and link flags.
 
-Sizing collects every Class and Series identity from each count member and its
-own context's source titles, including coordinated names such as Class A and B.
-Two distinct identities, an unrecognized explicit identity, or an elected count
-without its own identity proof refuses `foreign_listing_class_ambiguous`.
-`count_labels` retains the complete recognized set, and `count_scope_unverified`
-and `count_labels_ambiguous` expose insufficient proof. Class and Series remain
-distinct namespaces; Roman numerals use the existing canonical normalization.
-The legacy W1 label and share functions retain their bodies and outputs.
+An ADS classification requires depositary evidence on the count's own member or
+exact context; that evidence returns `ordinary_class_shares_unavailable`.
+An ADS veto from another context denies ordinary admission but cannot assign ADS
+units to the count. It returns `share_count_unit_unverified`. Conflicting
+ordinary/depositary evidence and every other linked unit veto also return
+`share_count_unit_unverified`. A Common/Ordinary member hint can support units
+only in a filing without depositary evidence and without a linked veto. It must
+be a whole word in the raw member or its member-only W1 normalization; the
+canonical lexer cannot create proof from substrings such as Commonly. The 75
+Round 4 unit refusals remain; safe recovery needs positive source attestation
+attached to the elected count in a separate migration. A separately evidenced
+ordinary count beneath an ADS line remains admissible when it has no veto.
+
+Count titles use a whole-title whitelist: Class or Series, one identifier,
+optional ordinary/common/voting descriptors, then share, shares or stock.
+Tokenization lowercases raw titles and normalizes whitespace; it does not use
+the legacy camel-case normalizer. Quotes may enclose the identifier. Generic
+titles, bare identities, coordinators, separators, unmatched prefixes, par-value
+trailers and other residue supply no proof. At least one strict-valid own title
+is required, and every nonempty own title must match the whitelist.
+
+Member identities use a separate case-insensitive lexer. Class and Series remain
+distinct, and Roman numerals retain the existing canonical equivalence. The union
+of member and valid own-title identities must contain exactly one class per count.
+A linked observation's declared class set outside the count's proven class set,
+or coordination between identity-like title tokens, is a scope veto across
+contexts. Generic outside titles alone create neither proof nor contradiction.
+`count_labels` contains proof labels only; rejected raw titles remain in
+`count_title_evidence`. `count_class_scope_veto_evidence`, `count_scope_unverified`
+and `count_labels_ambiguous` expose contradictory or absent scope proof, which
+refuses `foreign_listing_class_ambiguous`. Frozen legacy W1 bodies are unchanged.
 
 ## Refusals and Light's remaining gates
 

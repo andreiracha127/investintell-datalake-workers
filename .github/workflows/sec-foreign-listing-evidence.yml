@@ -65,6 +65,7 @@ jobs:
           python -m pytest tests/test_sec_foreign_listing_loader.py -q
           python -m pytest tests/test_sec_foreign_equity_sizing_core.py -q
           python -m pytest tests/test_sec_foreign_equity_sizing.py -q
+          python -m pytest tests/test_sec_foreign_equity_sizing_fuzz.py -q
           python -m pytest tests/test_sec_provider_transport.py -q
           python -m pytest tests/test_sec_foreign_listing_throughput.py -q
           python -m pytest tests/test_sec_foreign_listing_shard_plans.py -q
