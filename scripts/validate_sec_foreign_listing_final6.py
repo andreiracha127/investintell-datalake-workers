@@ -293,6 +293,9 @@ def compare(args: argparse.Namespace) -> int:
             old["answer"]["status"] == "resolved" and new["answer"]["status"] in {"ambiguous", "none"}
         ) or (
             old["answer"]["status"] == "none" and new["answer"]["status"] == "ambiguous"
+        ) or (
+            old["answer"]["ratio_status"] == "resolved" and
+            new["answer"]["ratio_status"] in {"ambiguous", "none"}
         )
         changes.append({"cik": key[0], "symbol": key[1], "as_of": key[2], "groups": old["groups"],
                         "before": old["answer"], "after": new["answer"],
@@ -347,7 +350,10 @@ def compare(args: argparse.Namespace) -> int:
     lines = [f"| CIK | Line | Date | {baseline['label']} | {candidate['label']} | Direction |",
              "|---|---|---|---|---|---|"]
     def describe(answer: dict) -> str:
-        return f"{answer['status']} {answer['listed_type'] or ''} {answer['ratio'] or ''}".strip()
+        description = f"{answer['status']} {answer['listed_type'] or ''} {answer['ratio'] or ''}".strip()
+        if answer["ratio_status"] != answer["status"]:
+            description += f" (ratio_status={answer['ratio_status']})"
+        return description
 
     for row in changes:
         lines.append(f"| {row['cik']} | {row['symbol']} | {row['as_of']} | {describe(row['before'])} | "

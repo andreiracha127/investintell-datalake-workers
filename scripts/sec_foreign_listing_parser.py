@@ -43,6 +43,20 @@ _RATIO_COMPACT_TRANSITION = re.compile(
     rf"(?P<unit>CUFS|(?:ordinary|common)\s+shares?)-to-{_ADS}\s+ratio\s+to\s+(?:a\s+)?"
     rf"(?P<ordinary>{_QUANTITY})\s*-\s*to\s*-\s*(?P<adsn>{_QUANTITY})\s+ratio\b", re.I,
 )
+_RATIO_NAMED_COMPACT = (
+    re.compile(
+        rf"\bratio(?:\s+change)?\s+(?:of\s+)?(?:(?:its|our|the)\s+)?"
+        rf"(?:ordinary|common)\s+shares?(?:\s*\([^)]{{0,40}}\))?\s+to\s+(?:common\s+)?{_ADS}"
+        rf"(?:\s*\([^)]{{0,40}}\))?[^.;]{{0,140}}?\bfrom\s+{_QUANTITY}\s*:\s*{_QUANTITY}\s+to\s+"
+        rf"(?P<ordinary>{_QUANTITY})\s*:\s*(?P<adsn>{_QUANTITY})\b", re.I,
+    ),
+    re.compile(
+        rf"\bratio(?:\s+change)?\s+(?:of\s+)?(?:(?:its|our|the)\s+)?(?:common\s+)?{_ADS}"
+        rf"(?:\s*\([^)]{{0,40}}\))?\s+to\s+(?:(?:its|our|the)\s+)?(?:ordinary|common)\s+shares?"
+        rf"(?:\s*\([^)]{{0,40}}\))?[^.;]{{0,140}}?\bfrom\s+{_QUANTITY}\s*:\s*{_QUANTITY}\s+to\s+"
+        rf"(?P<adsn>{_QUANTITY})\s*:\s*(?P<ordinary>{_QUANTITY})\b", re.I,
+    ),
+)
 _RATIO_CHANGE = re.compile(
     r"\b(?:ratio|exchange\s+(?:ratio|rate))\b[^.;]{0,180}\b(?:chang|amend|adjust)\w*\b"
     r"|\b(?:chang|amend|adjust)\w*\b[^.;]{0,180}\b(?:ratio|exchange\s+(?:ratio|rate))\b"
@@ -69,13 +83,13 @@ _HTML_TOKEN = re.compile(
 # These are grammatical objects, not proximity searches. Completing a budget,
 # preparations, or notices for a ratio change does not complete the change.
 _RATIO_NOUN = rf"(?:{_ADS}(?:\s*\([^)]{{0,40}}\))?(?:[\s-]+to[\s-]+{_SHARES})?[\s-]+)?ratio"
-_RATIO_CHANGE_OBJECT = rf"(?:(?:(?:first|second|proposed|planned|concurrent)\s+)?{_RATIO_NOUN}\s+change|change\s+(?:of|in|to)\s+(?:(?:the|a)\s+)?(?:new\s+)?{_RATIO_NOUN})"
+_RATIO_CHANGE_OBJECT = rf"(?:previously\s+announced\s+)?(?:(?:(?:first|second|proposed|planned|concurrent)\s+)?{_RATIO_NOUN}\s+change|(?:corresponding\s+)?change\s+(?:of|in|to)\s+(?:(?:the|a)\s+)?(?:new\s+)?{_RATIO_NOUN})"
 _EVENT_DETERMINER = r"(?:(?:the|a|an|its|our|this|that)\s+)?"
 _RATIO_OBJECT_TAIL = rf"(?=$|[.,;:()\"'\u201c\u201d\u2018\u2019\ufffd]|\s+(?:from|to|of|in|on|effective|whereby|which|that|with|and|as|for|representing|proportionate|so)\b|\s+(?:our|its|the)\s+{_ADS}\b)"
 _FINANCIAL_CONFIRMATION = re.compile(
     r"\b(?:EPS|weighted\s+average|(?:basic|diluted)\s+(?:(?:net\s+)?(?:income|loss|earnings)|and\s+diluted)|"
-    r"(?:income|loss|earnings)\s+per\s+(?:(?:ordinary|equivalent)\s+)?(?:shares?|ADS)|fair\s+value\s+measurement|"
-    r"total\s+(?:assets|liabilities)|cash\s+flows?)\b", re.I,
+    r"(?:income|loss|earnings)\s+per\s+(?:(?:basic|diluted|ordinary|equivalent)\s+)?(?:shares?|ADS)|fair\s+value\s+measurement|"
+    r"total\s+(?:assets|liabilities)|cash\s+flows?|market\s+prices?)\b", re.I,
 )
 # Modal and negative words must govern an event predicate. An ancillary clause
 # saying new ADSs will be available, or ownership does not change, is not a
@@ -116,9 +130,30 @@ _NEGATED_RATIO_EVENT = re.compile(
 )
 
 
+def _confirmation_has_premise(statement: str) -> bool:
+    """Screen full narrative premises while ignoring exact Form 6-K checkboxes."""
+    for proof in _CONFIRMATION_PREMISE.finditer(statement):
+        if proof.group().casefold() == "if":
+            prefix, suffix = statement[max(0, proof.start() - 45):proof.start()], statement[proof.end():]
+            form_checkbox = bool(re.search(r"\bindicate\s+by\s+check\s+mark\s+$", prefix, re.I)
+                                 and re.match(r"\s+the\s+registrant\s+(?:is\s+submitting\s+the\s+Form\s+6-K\s+in\s+paper|"
+                                              r"by\s+furnishing\s+the\s+information)\b", suffix, re.I))
+            file_number_checkbox = bool(re.match(
+                r"\s*[\"'\u201c\u201d\u2018\u2019]*Yes[\"'\u201c\u201d\u2018\u2019]*\s+is\s+marked,?\s+"
+                r"indicate\s+below\s+the\s+file\s+number\b", suffix, re.I))
+            if form_checkbox or file_number_checkbox:
+                continue
+        return True
+    return False
+
+
 def _confirmation_is_affirmative(statement: str) -> bool:
     """Reject a qualified event predicate or an accounting premise."""
-    return not (_CONFIRMATION_QUALIFIER.search(statement) or _CONFIRMATION_PREMISE.search(statement)
+    # Premise words are handled above, so a checkbox's IF does not invalidate
+    # an otherwise affirmative narrative when HTML blocks have been flattened.
+    qualifiers = [proof for proof in _CONFIRMATION_QUALIFIER.finditer(statement)
+                  if proof.group().casefold() not in {"if", "unless", "assume", "assuming", "assumed", "suppose", "supposing"}]
+    return not (qualifiers or _confirmation_has_premise(statement)
                 or _NEGATED_RATIO_EVENT.search(statement))
 
 
@@ -527,7 +562,7 @@ def _ratios(text: str, *, unit_definition_text: str | None = None):
     named_class_units: dict[str, tuple[str, str] | None] = {}
     reciprocal = _reciprocal_matches(text)
     former_table = _old_new_ratio_spans(text) | _transition_former_ratio_spans(text, reciprocal)
-    for pattern in (_RATIO_RECIPROCAL, _RATIO_COMPACT_TRANSITION, _RATIO, _RATIO_TITLE):
+    for pattern in (_RATIO_RECIPROCAL, _RATIO_COMPACT_TRANSITION, *_RATIO_NAMED_COMPACT, _RATIO, _RATIO_TITLE):
         for match in reciprocal if pattern is _RATIO_RECIPROCAL else pattern.finditer(text):
             if any(start <= match.start() and match.end() <= end for start, end in former_table):
                 continue
@@ -874,7 +909,9 @@ def _6k_completed_event_dates(own: str) -> _DateEvidence:
         r"anticipat\w*|not|never|if|will|would|could|should|may|might)\b", re.I,
     )
     patterns = (
-        rf"\b(?:On|Effective(?:\s+(?:on|as\s+of|from))?)\s+(?P<date>{date_value})\s*,?\s*"
+        rf"\b(?:On|Effective(?:\s+(?:on|as\s+of|from))?)\s+"
+        rf"(?:the\s+morning\s+of\s+(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+)?)?"
+        rf"(?P<date>{date_value})\s*,?\s*"
         rf"(?P<subject>[^.;]{{0,100}}?)\b(?:{completion}|{adjustment})",
         rf"(?P<subject>[^.;]{{0,100}}?)\b{completion}"
         rf"(?:[^.;]|\.(?=\d)){{0,450}}?\bon\s+(?P<date>{date_value})",
@@ -907,6 +944,13 @@ def _6k_completed_event_dates(own: str) -> _DateEvidence:
                 start += narrative_subject.start() if narrative_subject else len(subject)
             boundary = re.search(r"[.!?;](?!\d)(?:\s|$)", own[declaration.end():])
             end = declaration.end() + boundary.end() if boundary else len(own)
+            future_result = re.search(r",?\s+so\s+that\s+", own[start:end], re.I)
+            if future_result and any(pattern.search(own[start:start + future_result.start()])
+                                     for pattern in _RATIO_NAMED_COMPACT):
+                # The completed, explicitly numbered transition owns this
+                # clause. A following availability/entitlement consequence
+                # does not replace its past completion with a future plan.
+                end = start + future_result.start()
             accounting = re.search(
                 r",?\s+and\s+(?:basic\b|diluted\b|EPS\b|all\s+(?:ADS|per[- ]ADS)\b)", own[start:end], re.I,
             )
@@ -1155,6 +1199,11 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
             rf"\bratio\b[^.;]{{0,100}}?(?P<left>{_QUANTITY})\s*(?:[:/]|[- ]to[- ])\s*(?P<right>{_QUANTITY})\b",
             fragment, re.I,
         ):
+            if any(proof.start() <= compact.start() and compact.end() <= proof.end()
+                   for pattern in _RATIO_NAMED_COMPACT for proof in pattern.finditer(fragment)):
+                # This explicitly directed old-to-new transition was already
+                # read above. Its former numeric side is not a second target.
+                continue
             left, right = _number(compact.group("left")), _number(compact.group("right"))
             if not right or not left:
                 return False
@@ -1210,14 +1259,15 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
     def affirmative_statement(statement: str) -> bool:
         return _confirmation_is_affirmative(statement)
 
-    def actual_named_date() -> bool:
+    def actual_named_date(*, completed_only: bool = False) -> bool:
         if not named_event:
             return False
         for start, end in named_event.spans:
             proof = re.compile(re.escape(text[start:end])).match(text, start, end)
             if proof:
                 statement = statement_for(proof, source=text, trim_financial=False)
-                if _CONFIRMATION_PREMISE.search(statement) or _NEGATED_RATIO_EVENT.search(statement):
+                if (_confirmation_has_premise(statement) or _NEGATED_RATIO_EVENT.search(statement)
+                        or (completed_only and not affirmative_statement(statement))):
                     return False
         return True
 
@@ -1277,7 +1327,7 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
     # A completed legal ratio event, not an announced/proposed action, is
     # affirmative evidence that its operative prerequisite was met.
     rejected_confirmation = bool(
-        _CONFIRMATION_PREMISE.search(own) or _NEGATED_RATIO_EVENT.search(own)
+        _confirmation_has_premise(own) or _NEGATED_RATIO_EVENT.search(own)
         or re.search(rf"\b{_RATIO_NOUN}\s+(?:change\s+)?"
                      r"(?:announcements?|estimates?|notices?|filings?|agreements?|budgets?|preparations?|plans?)\b", own, re.I)
         or re.search(rf"\b{_RATIO_CHANGE_OBJECT}\b[^.;]{{0,450}}\b"
@@ -1292,11 +1342,11 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
     completion_lead = own[:min((start for start, _ in completed.spans), default=0)]
     completion_identity = completed.proof if _FINANCIAL_CONFIRMATION.search(completion_lead) else own
     conditional_completion = bool(
-        re.search(r"\b(?:if|assuming|assumed|hypothetical)\b", completion_lead, re.I)
+        _confirmation_has_premise(completion_lead)
         or re.search(r"\b(?:would|could|should|not|never)\b", completion_lead[-40:], re.I)
     )
     if (completed.unique == effective and completion_owns_ratio and same_event(completed.proof)
-            and not conditional_completion and not _CONFIRMATION_PREMISE.search(own)
+            and not conditional_completion and not _confirmation_has_premise(own)
             and not _NEGATED_RATIO_EVENT.search(own)
             and affirmative_statement(completed.proof)
             and same_event(completion_identity, allow_financial_lead=True)):
@@ -1338,12 +1388,13 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
         own, re.I,
     ))
     if (past_effect and same_event(past_statement, allow_financial_lead=legal_clause_owns_ratio)
-            and not _CONFIRMATION_PREMISE.search(full_past_statement)
+            and not _confirmation_has_premise(full_past_statement)
             and not _NEGATED_RATIO_EVENT.search(full_past_statement)
             and affirmative_statement(past_statement)
             and (not _FINANCIAL_CONFIRMATION.search(own) or past_owns_ratio or own_narrative_ratio
                  or legal_clause_owns_ratio)
-            and (past_dates.unique == effective or (not past_dates.dates and linked_completed_date))):
+            and (past_dates.unique == effective or (not past_dates.dates and linked_completed_date
+                                                    and actual_named_date(completed_only=True)))):
         # Identity guards inspect the complete sentence; stored dated proofs
         # end at the operative date rather than swallowing an adjacent table.
         proof_start = max(0, past_statement.find(past_effect.group()))
@@ -1352,6 +1403,16 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
         confirmed_conditions.add("ratio_effective")
     elif past_effect and not _BOILERPLATE_CONDITION.search(own):
         rejected_confirmation = True
+    linked_ratio_completion = re.search(
+        rf"\b(?:completed|effected|implemented)\s+{_EVENT_DETERMINER}{_RATIO_CHANGE_OBJECT}\b{_RATIO_OBJECT_TAIL}",
+        own, re.I,
+    )
+    if (linked_ratio_completion and linked_completed_date and actual_named_date(completed_only=True)
+            and same_event(own) and affirmative_statement(own)):
+        # An explicit concurrent bridge binds a completed ratio operation to
+        # its own actual consolidation date, including a following date sentence.
+        confirmation = _clean(own + " " + named_event.proof)
+        confirmed_conditions.add("ratio_effective")
     # Some meeting results report a completed ratio change as taking effect
     # concurrently on the same day as an already-dated share subdivision.
     # Preserve that literal same-day link; do not infer it from nearby dates.
