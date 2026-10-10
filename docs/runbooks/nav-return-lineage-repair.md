@@ -23,9 +23,13 @@ about 9,600 instruments.
    Allowlists hold at most 20 instruments whose bad rows fit `max_requests` and
    half of `NAV_LINEAGE_REPAIR_MAX_SECONDS` at the configured rate.
 3. **Second pass.** Instruments skipped as `PLAN_STALE` are re-planned once
-   and retried, only after a pass that committed something. One the fresh plan
-   no longer finds bad counts as already repaired; one now ineligible is a
-   residual with its plan reason.
+   and retried, only after a pass that committed something. One now
+   ineligible is a residual with its plan reason. One the fresh plan no longer
+   finds goes back through the operator with its first-pass item (a
+   `reconcile: true` batch, no request, no write): `ALREADY_REPAIRED` only when
+   the rows hold the intended values under an attributed clear, otherwise a
+   `UNATTRIBUTED_CLEAR` or `PLAN_STALE` residual. These batches count against
+   `NAV_LINEAGE_REPAIR_MAX_BATCHES`.
 4. **Stops.** Before every batch the schema/access check and the plan's schema
    pins are re-verified; a change stops with exit 3. Also operator exit 3,
    exit 4 (exit 5 once the run has written), exit 5 (`TIME_BUDGET`,
@@ -33,7 +37,8 @@ about 9,600 instruments.
    `LOCK_BUSY` after work), `CLOCK_SKEW`, `COMMIT_UNKNOWN`, or 3 failed batches
    in a row. A batch that fails before any instrument is retried whole; an
    instrument the operator fails on twice is recorded failed. Earlier commits
-   stay.
+   stay. A failed batch whose retry never ran (the batch cap came first) leaves
+   the run red, not `limit_reached` and green.
 5. **Recount.** `remaining_bad_rows` re-counts the bad predicate, read-only.
 
 ## When to run
@@ -103,7 +108,9 @@ do not retry them.
 
 Key fields: `committed_instruments`/`committed_rows`, `validated_*`,
 `skipped_rows_by_code`, `failed_by_code`, `unknown_instruments`, `stop_code`,
-`remaining_instruments` (eligible, never finished) and `remaining_bad_rows`.
+`remaining_instruments` (eligible, never finished), `pending_batch_failure`
+(code of a failed batch not yet retried successfully; non-null means exit 2)
+and `remaining_bad_rows`.
 A `COMMIT_UNKNOWN` batch line names the instrument and its run ids: check
 whether those runs committed before restarting.
 

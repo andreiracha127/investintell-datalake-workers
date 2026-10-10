@@ -18,14 +18,19 @@ The driver only sequences those calls and counts their results:
   re-verified; then one ``run_repair`` on a connection idle in between.
 * **Second pass**: per-instrument ``PLAN_STALE`` skips are re-planned ONCE after
   a first pass that made progress, and only those instruments are retried; one
-  the fresh plan no longer finds bad counts as repaired, one now ineligible as
-  a residual with its plan reason.
+  now ineligible is a residual with its plan reason. One the fresh plan no
+  longer finds goes back through ``run_repair`` with its pass-1 item (a
+  reconcile plan: the pass-1 plan with only those items): the operator's
+  resume branch, with no request and no write, returns ``ALREADY_REPAIRED``
+  only when the stored rows hold the intended values under an attributed
+  clear, otherwise ``UNATTRIBUTED_CLEAR`` or ``PLAN_STALE`` (residuals).
 * **Stops**: operator exit 3, 4 (5 when this run already wrote), 5 (budget,
   interrupt, ``PROVIDER_UNAVAILABLE``, ``PROVIDER_BUDGET``, lock after work),
   ``CLOCK_SKEW``, ``COMMIT_UNKNOWN``, a driver-contract code, or
   ``--max-failed-batches`` failed batches in a row. A batch that failed before
   any instrument is retried whole; an instrument the operator failed on twice
-  is recorded failed, and the untried ones go back in front.
+  is recorded failed, and the untried ones go back in front. A failed batch
+  stays unresolved (``pending_batch_failure``) until a later batch succeeds.
 
 Stdout: one sanitized JSON line per plan and per batch, then the summary
 (counts by code; never a DSN, URL, payload, exception text or id list). The one
@@ -34,8 +39,8 @@ its run ids: they are needed to reconcile before any retry.
 
 Exit: 0 every submitted instrument committed/validated/already repaired (or a
 requested cap was reached cleanly), or dry run; 2 residual skips, failed or
-unknown instruments, or a driver-level stop; 3/4/5 as the stopping operator
-call. Readiness is NOT republished here: the daily chain does it.
+unknown instruments, an unresolved failed batch (also when a cap ended the
+run), or a driver-level stop; 3/4/5 as the stopping operator call. Readiness is NOT republished here: the daily chain does it.
 
 Run from the repository root: ``python -m scripts.repair_nav_return_lineage_cohort``.
 """
@@ -284,6 +289,22 @@ class _Planned:
     sha256: str
     limits: repair.RepairLimits
     queue: tuple[dict, ...]
+    reconcile: bool = False
+
+
+def reconcile_plan(source: _Planned, instrument_ids: Iterable[str]) -> _Planned | None:
+    """The plan for stale items a re-plan no longer finds: ``source`` (the plan
+    they went stale under: version, schema, pins, as_of, limits) with only
+    their ORIGINAL items, in plan order. ``run_repair`` resumes such an item in
+    its read-only branch: ``ALREADY_REPAIRED`` only when the stored rows hold
+    the intended values and the clear is attributed, otherwise
+    ``UNATTRIBUTED_CLEAR`` or ``PLAN_STALE``."""
+    wanted = set(instrument_ids)
+    items = [item for item in source.plan["items"] if item["instrument_id"] in wanted]
+    if not items:
+        return None
+    plan = {**source.plan, "items": items}
+    return _Planned(plan, repair.sha256(plan), source.limits, tuple(items), reconcile=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -305,7 +326,11 @@ class _Cohort:
         self.first: dict | None = None  # summarize() of the first plan
         self.planned: _Planned | None = None
         self.queue: deque[dict] = deque()
+        self.deferred = 0  # queued in a later segment of the current pass
         self.beyond_cap = 0  # eligible but past --max-instruments-total
+        # Code of the last failed batch whose chunk went back in the queue;
+        # cleared once a later batch (the retry) succeeds.
+        self.pending_batch_failure: str | None = None
         self.submitted: set[str] = set()
         self.final: dict[str, dict] = {}  # last outcome per instrument
         self.attempts: Counter[str] = Counter()  # in-loop batch failures per instrument
@@ -328,12 +353,16 @@ class _Cohort:
         return any(o["status"] in ("committed", "unknown") for o in self.final.values())
 
     # -- plan ------------------------------------------------------------------
-    def make_plan(self, pass_no: int, scope: set[str] | None) -> _Planned:
+    def make_plan(self, pass_no: int, scope: set[str] | None) -> list[_Planned]:
+        """Plan once; the pass's segments in order (pass 2: the reconcile of the
+        stale items the fresh plan no longer finds, then the fresh queue)."""
         began = self.monotonic()
         self.plans += 1
+        previous = self.planned  # the plan the scoped items went stale under
         plan = self.db.plan(self.config.limits())
         summary = repair.summarize(plan)
         eligible = [item for item in plan["items"] if not item["reasons"]]
+        reconcile = None
         if scope is None:
             candidates = eligible[: self.config.max_instruments_total]
             self.beyond_cap = len(eligible) - len(candidates)
@@ -341,16 +370,18 @@ class _Cohort:
             present = {item["instrument_id"]: item for item in plan["items"]}
             for iid in scope:
                 item = present.get(iid)
-                if item is None:  # no longer bad: repaired after its stale skip
-                    self.final[iid] = {"status": "noop", "code": "ALREADY_REPAIRED", "rows": 0}
-                elif item["reasons"]:  # a residual now, with its real reason
+                if item is not None and item["reasons"]:  # a residual now, real reason
                     self.final[iid] = {
                         "status": "skipped",
                         "code": _code(item["reasons"][0]),
                         "rows": len(item["rows"]),
                     }
+            # No longer bad: only the operator can tell an attributed repair
+            # from an unattributed clear, against the item it went stale under.
+            assert previous is not None
+            reconcile = reconcile_plan(previous, scope - set(present))
             candidates = [item for item in eligible if item["instrument_id"] in scope]
-        oversized =[item for item in candidates if len(item["rows"]) > MAX_REQUESTS]
+        oversized = [item for item in candidates if len(item["rows"]) > MAX_REQUESTS]
         for item in oversized:  # could never fit one run_repair call
             self.final[item["instrument_id"]] = {
                 "status": "skipped", "code": OVERSIZED, "rows": len(item["rows"])
@@ -374,6 +405,7 @@ class _Cohort:
                 "source_counts": _codes(summary["source_counts"]),
                 "to_apply": len(queue),
                 "to_apply_rows": sum(len(item["rows"]) for item in queue),
+                "to_reconcile": len(reconcile.queue) if reconcile else 0,
                 "over_request_cap": len(oversized),
                 "max_requests": limits.max_requests,
                 "rows_per_batch": rows_per_batch(limits),
@@ -381,7 +413,7 @@ class _Cohort:
             }
         )
         self.planned = _Planned(plan, sha, limits, queue)
-        return self.planned
+        return [reconcile, self.planned] if reconcile else [self.planned]
 
     # -- apply -------------------------------------------------------------------
     def next_chunk(self, limits) -> list[dict]:
@@ -396,9 +428,7 @@ class _Cohort:
             rows += n
         return chunk
 
-    def apply(self, pass_no: int, chunk: list[dict]) -> None:
-        planned = self.planned
-        assert planned is not None
+    def apply(self, pass_no: int, planned: _Planned, chunk: list[dict]) -> None:
         ids = [item["instrument_id"] for item in chunk]
         began = self.monotonic()
         counted = False
@@ -463,6 +493,7 @@ class _Cohort:
             "event": "batch",
             "pass": pass_no,
             "batch": self.batches,
+            "reconcile": planned.reconcile,
             "plan_sha256": planned.sha256,
             "size": len(chunk),
             "rows": sum(len(item["rows"]) for item in chunk),
@@ -491,7 +522,10 @@ class _Cohort:
             if exit_status not in STOP_EXITS:
                 exit_status = EXIT_FAILED
             raise DriverStop(code or "OPERATOR_STOP", exit_status)
-        if exit_status != EXIT_OK:
+        if exit_status == EXIT_OK:
+            # A requeued chunk leads the queue: this batch was its retry.
+            self.pending_batch_failure = None
+        else:
             # run_repair gives no outcome for the instrument it failed on. Past
             # its preflight (``clock_skew_ms`` set) that is the first untried
             # one: retry it once, then record it failed. A failure before any
@@ -505,6 +539,10 @@ class _Cohort:
                     }
                     untried = untried[1:]
             self.queue.extendleft(reversed(untried))
+            # Requeued work is unresolved until its retry succeeds: a batch cap
+            # or a stop that ends the run first must not read as clean. With
+            # nothing requeued, the failure is already a recorded outcome.
+            self.pending_batch_failure = (code or "NONE") if untried else None
             if not progress:
                 self.failed_streak += 1
                 if self.failed_streak >= self.config.max_failed_batches:
@@ -513,29 +551,33 @@ class _Cohort:
     def _batch_cap_reached(self) -> bool:
         return self.config.max_batches is not None and self.batches >= self.config.max_batches
 
-    def run_pass(self, pass_no: int, planned: _Planned) -> None:
+    def run_pass(self, pass_no: int, segments: list[_Planned]) -> None:
+        """Apply each segment's queue under its own plan, in order; what a cap
+        or a stop leaves (this segment's queue, later segments) is remaining."""
         self.passes += 1
-        self.queue = deque(planned.queue)
         self.stale = []
         self.pass_progress = 0
-        while self.queue:
-            if self._batch_cap_reached():
-                return
-            self.apply(pass_no, self.next_chunk(planned.limits))
+        self.deferred = sum(len(planned.queue) for planned in segments)
+        for planned in segments:
+            self.deferred -= len(planned.queue)
+            self.queue = deque(planned.queue)
+            while self.queue:
+                if self._batch_cap_reached():
+                    return
+                self.apply(pass_no, planned, self.next_chunk(planned.limits))
 
     # -- run ---------------------------------------------------------------------
     def run(self) -> None:
         self.db.check()
-        planned = self.make_plan(1, None)
+        segments = self.make_plan(1, None)
         if self.config.dry_run:
-            self.queue = deque(planned.queue)
+            self.queue = deque(self.planned.queue)
             return
-        self.run_pass(1, planned)
+        self.run_pass(1, segments)
         # Re-plan ONCE, only after a pass that made progress, and retry only
         # the instruments whose plan went stale under them.
         if self.stale and self.pass_progress and not self._batch_cap_reached():
-            planned = self.make_plan(2, set(self.stale))
-            self.run_pass(2, planned)
+            self.run_pass(2, self.make_plan(2, set(self.stale)))
 
     def recount(self, stop: DriverStop | None) -> None:
         """Remaining bad rows, read-only, with the operator's own predicate."""
@@ -561,8 +603,12 @@ class _Cohort:
                 skipped_rows[outcome["code"] or "NONE"] += outcome["rows"]
             elif outcome["status"] == "failed":
                 failed_by_code[outcome["code"] or "NONE"] += 1
-        remaining = len(self.queue) + self.beyond_cap
-        clean =not self.errors_by_code and all(o["status"] in DONE for o in self.final.values())
+        remaining = len(self.queue) + self.deferred + self.beyond_cap
+        clean = (
+            not self.errors_by_code
+            and self.pending_batch_failure is None
+            and all(o["status"] in DONE for o in self.final.values())
+        )
         if self.config.dry_run and stop is None:
             status, exit_status = "planned", EXIT_OK
         elif stop is not None:
@@ -601,6 +647,7 @@ class _Cohort:
             "failed_by_code": dict(sorted(failed_by_code.items())),
             "unknown_instruments": by_status["unknown"],
             "remaining_instruments": remaining,
+            "pending_batch_failure": self.pending_batch_failure,
             "requests_used": self.requests,
             "errors_by_code": dict(sorted(self.errors_by_code.items())),
             "remaining_bad_rows": self.remaining_bad_rows,

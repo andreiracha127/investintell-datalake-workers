@@ -9,6 +9,7 @@ database guards as the operator's DB suite (loopback ``NAV_W1_TEST_DSN``,
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 import pytest
@@ -21,10 +22,14 @@ from tests import test_fund_nav_readiness_db as base
 from tests.test_nav_return_lineage_repair_db import (  # noqa: F401 - autouse fixture
     FakeProvider,
     _ledger,
+    _limits,
+    _plan,
     _rows,
     _seed,
+    _set_flag,
     no_network,
 )
+from tests.test_nav_return_lineage_repair_db import _run as _run_repair
 
 test_dsn = base.test_dsn
 schema = base.schema
@@ -132,3 +137,74 @@ def test_schema_change_between_batches_stops_with_exit_3_and_keeps_commits(
     with base._connect(test_dsn, schema) as conn:
         assert _rows(conn, second) == untouched
         assert _ledger(conn) == (1, 1, 1, 1, 1, 0)
+
+
+def _move_neighbour(dsn, schema, iid, day):
+    """The row after the bad date changes (not the bad row): the plan goes stale."""
+    with base._connect(dsn, schema) as other:
+        other.execute("SET LOCAL session_replication_role = replica")
+        other.execute(
+            "UPDATE nav_timeseries SET aum_usd=654321 WHERE instrument_id=%s AND nav_date=%s",
+            (iid, day + dt.timedelta(days=1)),
+        )
+        other.commit()
+
+
+@pytest.mark.parametrize("cleared_by", ["operator", "raw_update", "trigger_bypass"])
+def test_a_stale_item_the_replan_no_longer_finds_is_reconciled_by_its_attribution(
+    test_dsn, schema, monkeypatch, cleared_by
+):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        _seed(conn, ticker="GOOD")
+        stale, day = _seed(conn, ticker="STALE")
+        conn.rollback()
+    real_plan = driver.PostgresDatabase.plan
+    after_clear: dict = {}
+
+    def plan(self, limits):
+        if self.conn is not None:  # the re-plan: STALE's flag was cleared meanwhile
+            with base._connect(test_dsn, schema) as other:
+                if cleared_by == "operator":  # another run of the operator: attributed
+                    other_run = _run_repair(
+                        other, _plan(other, schema, _limits()), [stale], FakeProvider())
+                    assert other_run["changed_rows"] == 1, other_run
+                else:  # raw UPDATE (unattributed revision) or trigger bypass (none)
+                    _set_flag(other, stale, day, None,
+                              bypass_triggers=cleared_by == "trigger_bypass")
+                after_clear.update(rows=_rows(other, stale), ledger=_ledger(other))
+        planned = real_plan(self, limits)
+        if not after_clear:  # pass 1 will find STALE's neighbourhood moved
+            _move_neighbour(test_dsn, schema, stale, day)
+        return planned
+
+    monkeypatch.setattr(driver.PostgresDatabase, "plan", plan)
+    fake = FakeProvider()
+    lines: list[dict] = []
+    code, summary = driver.run_cohort(
+        driver.CohortConfig(schema=schema, rate_per_second=2.5),
+        dsn=test_dsn, client_factory=lambda limits: fake, emit=lines.append,
+    )
+    assert test_dsn not in json.dumps([lines, summary])
+    plans = [line for line in lines if line["event"] == "plan"]
+    batches = [line for line in lines if line["event"] == "batch"]
+    assert [(p["pass"], p["to_apply"], p["to_reconcile"]) for p in plans] == [
+        (1, 2, 0), (2, 0, 1)]
+    assert batches[0]["residual_counts"] == {"PLAN_STALE": 1}
+    # The reconcile batch: STALE's pass-1 item, no request, nothing written.
+    assert (batches[1]["reconcile"], batches[1]["size"], batches[1]["requests"]) == (True, 1, 0)
+    assert [ticker for _, ticker, _, _ in fake.calls] == ["GOOD"]
+    assert (summary["requests_used"], summary["committed_instruments"]) == (1, 1)
+    with base._connect(test_dsn, schema) as conn:
+        assert _rows(conn, stale) == after_clear["rows"]
+        assert _ledger(conn) == after_clear["ledger"]
+    assert summary["remaining_bad_rows"] == 0  # the predicate no longer finds STALE
+    if cleared_by == "operator":
+        assert batches[1]["residual_counts"] == {}
+        assert (summary["already_repaired"], summary["skipped_rows_by_code"]) == (1, {})
+        assert (code, summary["status"], summary["clean"]) == (0, "completed", True)
+    else:
+        assert batches[1]["residual_counts"] == {"UNATTRIBUTED_CLEAR": 1}
+        assert summary["already_repaired"] == 0
+        assert summary["skipped_rows_by_code"] == {"UNATTRIBUTED_CLEAR": 1}
+        assert (code, summary["status"], summary["clean"]) == (2, "completed", False)
