@@ -50,18 +50,21 @@ def no_network(monkeypatch):
 
 
 class FakeProvider:
-    def __init__(self, *, price=101.0, kind="adjusted", by_ticker=None):
+    def __init__(self, *, price=101.0, kind="adjusted", by_ticker=None, clock=None):
         self.price = price
         self.kind = kind
         self.by_ticker = by_ticker or {}  # ticker -> (status, price)
+        self.clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
         self.calls = []
+        self.instants = []
 
     def fetch(self, provider, ticker, start, end, *, remaining):
         assert provider in ("tiingo", "yahoo")
         assert start == end, "repair must validate just the stored date"
         assert callable(remaining) and remaining() > 0
         self.calls.append((provider, ticker, start, end))
-        now = dt.datetime.now(dt.timezone.utc)
+        now = self.clock()  # an instant response: attempted_at == finished_at
+        self.instants.append(now)
         status, price = self.by_ticker.get(ticker, ("success_new", self.price))
         observations = ((NavObservation(start, price, self.kind),)
                         if status in ingest.SUCCESS_ATTEMPTS else ())
@@ -237,7 +240,33 @@ def _set_flag(conn, iid, day, value, *, bypass_triggers):
     conn.commit()
 
 
-@pytest.mark.parametrize("clear", ["raw_update", "trigger_bypass", "bypass_after_repair"])
+def _attributed_level_round_trip(conn, iid, day):
+    """Two provider-attributed LEVEL revisions (aum out and back, same-xid
+    success attempt) that leave the stored row byte-identical."""
+    run = uuid.uuid4()
+    conn.execute("INSERT INTO nav_ingestion_runs (run_id,requested_end,status) "
+                 "VALUES (%s,%s,'running')", (run, day))
+    conn.commit()
+    conn.execute(
+        "INSERT INTO nav_ingestion_attempts (run_id,instrument_id,ticker,provider,"
+        "requested_start,requested_end,attempted_at,finished_at,status,"
+        "newest_observed_date,row_count) VALUES (%s,%s,'SYN','tiingo',%s,%s,"
+        "clock_timestamp()-interval '1 minute',clock_timestamp(),'success_new',%s,1)",
+        (run, iid, day, day, day),
+    )
+    conn.execute("SELECT set_config('nav.ingestion_run_id',%s,true)", (str(run),))
+    conn.execute("SELECT set_config('nav.ingestion_provider','tiingo',true)")
+    for aum in (654321, 123456):
+        conn.execute("UPDATE nav_timeseries SET aum_usd=%s "
+                     "WHERE instrument_id=%s AND nav_date=%s", (aum, iid, day))
+    conn.commit()
+    conn.execute("UPDATE nav_ingestion_runs SET status='completed' WHERE run_id=%s", (run,))
+    conn.commit()
+
+
+@pytest.mark.parametrize("clear", [
+    "raw_update", "trigger_bypass", "bypass_after_repair", "raw_update_then_attributed_level",
+])
 def test_cleared_row_without_attributed_revision_is_not_already_repaired(
     test_dsn, schema, clear,
 ):
@@ -253,7 +282,19 @@ def test_cleared_row_without_attributed_revision_is_not_already_repaired(
         plan = _plan(conn, schema, _limits())
         assert len(plan["items"]) == 1
         # A raw UPDATE writes an unattributed derived revision; a bypass none.
-        _set_flag(conn, iid, day, None, bypass_triggers=clear != "raw_update")
+        _set_flag(conn, iid, day, None, bypass_triggers=clear not in (
+            "raw_update", "raw_update_then_attributed_level"))
+        if clear == "raw_update_then_attributed_level":
+            # The latest revision of ANY kind is now attributed, but readiness
+            # reads the latest derived one: still the unattributed clear.
+            _attributed_level_round_trip(conn, iid, day)
+            kinds = conn.execute(
+                "SELECT derived_return_only,source_run_id IS NOT NULL "
+                "FROM fund_nav_data_revisions WHERE instrument_id=%s AND nav_date=%s "
+                "AND revision_id>%s ORDER BY revision_id",
+                (iid, day, plan["items"][0]["revision_head"]),
+            ).fetchall()
+            assert kinds == [(True, False), (False, True), (False, True)]
         ledger = _ledger(conn)
         fake = FakeProvider()
         result = _run(conn, plan, [iid], fake)
@@ -356,6 +397,8 @@ def test_plan_digest_mismatch_refused_before_fetch(test_dsn, schema):
 
 def test_budget_stop_commits_one_instrument_and_resumes(test_dsn, schema):
     base._bootstrap(test_dsn, schema)
+    # The budget covers the largest instrument (one bad row) and runs out
+    # between instruments, never inside one.
     limits = _limits(requests=1)
     with base._connect(test_dsn, schema) as conn:
         first, _ = _seed(conn, ticker="FIRST")
@@ -375,6 +418,30 @@ def test_budget_stop_commits_one_instrument_and_resumes(test_dsn, schema):
         assert resumed["changed_rows"] == 1
         assert _plan(conn, schema, limits)["items"] == []
         assert _ledger(conn) == (2, 2, 2, 2, 2, 0)
+
+
+@pytest.mark.parametrize("validate_only", [False, True])
+def test_instrument_larger_than_request_budget_is_refused_before_any_fetch(
+    test_dsn, schema, validate_only,
+):
+    base._bootstrap(test_dsn, schema)
+    limits = _limits(requests=1)
+    with base._connect(test_dsn, schema) as conn:
+        small, _ = _seed(conn, ticker="SMALL")
+        large, day = _seed(conn, ticker="LARGE")
+        _add_earlier_bad_date(conn, large, day)
+        before = {iid: _rows(conn, iid) for iid in (small, large)}
+        plan = _plan(conn, schema, limits)
+        assert sorted(len(i["rows"]) for i in plan["items"]) == [1, 2]
+        fake = FakeProvider()
+        result = _run(conn, plan, [small, large], fake, limits=limits,
+                      validate_only=validate_only)
+        assert result["exit_code"] == 2, result
+        assert (result["status"], result["code"]) == ("failed", "REQUEST_BUDGET_TOO_SMALL")
+        assert result["requests"] == 0 and fake.calls == []
+        assert result["instruments"] == [] and result["unprocessed_instruments"] == 2
+        assert {iid: _rows(conn, iid) for iid in (small, large)} == before
+        assert _ledger(conn) == (0, 0, 0, 0, 0, 0)
 
 
 def test_validate_only_fetches_without_writing_ledgers(test_dsn, schema):
@@ -614,6 +681,62 @@ def test_host_clock_behind_or_within_tolerance_applies(test_dsn, schema, offset_
         assert abs(result["clock_skew_ms"] - offset_ms) < 100
 
 
+def test_tolerated_skew_waits_for_the_database_clock_before_the_attempt(test_dsn, schema):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        iid, _ = _seed(conn)
+        plan = _plan(conn, schema, _limits())
+        # Host (and so the provider timestamps) 200 ms ahead: tolerated by the
+        # preflight, and an instant response is still in the database's future
+        # when phase B inserts the attempt.
+        clock = _calibrated_clock(conn, dt.timedelta(milliseconds=200))
+        fake = FakeProvider(clock=clock)
+        result = _run(conn, plan, [iid], fake, clock=clock)
+        assert result["exit_code"] == 0, result
+        assert result["changed_rows"] == 1
+        assert 100 < result["clock_skew_ms"] < 250
+        stored = conn.execute(
+            """SELECT a.attempted_at,a.finished_at,a.persisted_at>=a.finished_at,
+                      r.recorded_at>=a.finished_at
+               FROM nav_ingestion_attempts a
+               JOIN fund_nav_data_revisions r ON r.source_run_id=a.run_id
+                 AND r.instrument_id=a.instrument_id
+               WHERE a.instrument_id=%s""", (iid,),
+        ).fetchone()
+        assert stored[2:] == (True, True)
+        # The provider's own timestamps, never rewritten.
+        assert stored[0] == stored[1] == fake.instants[0]
+
+
+def test_provider_finish_beyond_the_wait_cap_is_refused_with_nothing_written(
+    test_dsn, schema,
+):
+    keys = [LOCK_INSTRUMENT_INGESTION, LOCK_FUND_NAV_READINESS]
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        iid, _ = _seed(conn)
+        before = _rows(conn, iid)
+        plan = _plan(conn, schema, _limits())
+        # The preflight sees an accurate clock; the provider timestamps are 2 s
+        # in the database's future, beyond the 1 s phase-B wait cap.
+        fake = FakeProvider(clock=_calibrated_clock(conn, dt.timedelta(seconds=2)))
+        result = _run(conn, plan, [iid], fake,
+                      clock=_calibrated_clock(conn, dt.timedelta(0)))
+        assert result["exit_code"] == 2, result
+        assert (result["status"], result["code"]) == ("failed", "CLOCK_SKEW")
+        assert abs(result["clock_skew_ms"]) < 100
+        assert result["requests"] == 1 and len(fake.calls) == 1
+        assert result["instruments"] == [] and result["unprocessed_instruments"] == 1
+        assert _rows(conn, iid) == before
+        assert _ledger(conn) == (0, 0, 0, 0, 0, 0)
+        with psycopg.connect(test_dsn, autocommit=True) as probe:
+            assert probe.execute(
+                "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND pid=%s "
+                "AND classid=0 AND objid::bigint = ANY(%s)",
+                (conn.info.backend_pid, keys),
+            ).fetchone()[0] == 0
+
+
 def test_interrupt_after_actual_commit_reports_unknown_with_reconciliation_ids(
     test_dsn, schema,
 ):
@@ -716,3 +839,38 @@ def test_cli_plan_validate_apply_with_real_schema_check(
         assert _rows(conn, iid) == expected
         assert _ledger(conn) == (1, 1, 1, 1, 1, 0)
         assert plan_file.read_bytes() == artifact
+
+
+def test_missing_tiingo_key_stops_as_provider_unavailable_with_the_real_adapter(
+    test_dsn, schema, monkeypatch, tmp_path, capsys,
+):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        iid, _ = _seed(conn, provider="tiingo")
+        before = _rows(conn, iid)
+        conn.rollback()
+        monkeypatch.delenv("TIINGO_API_KEY", raising=False)
+        monkeypatch.setenv("NAV_READINESS_DATABASE_URL", test_dsn)
+        plan_file = tmp_path / "reviewed-plan.json"
+        common = ["--schema", schema, "--plan-file", str(plan_file)]
+        capsys.readouterr()
+        assert cli.main(common) == 0
+        planned = json.loads(capsys.readouterr().out)
+        conn.rollback()
+        # Default client factory: the real ProviderClient and TiingoClient.
+        exit_code = cli.main(common + [
+            "--mode", "apply", "--plan-sha256", planned["plan_sha256"],
+            "--instrument-id", str(iid), "--confirm", repair.CONFIRM_TOKEN,
+        ])
+        captured = capsys.readouterr()
+        output = json.loads(captured.out)
+        assert exit_code == 5, output
+        assert captured.err == ""
+        assert (output["status"], output["code"]) == ("stopped", "PROVIDER_UNAVAILABLE")
+        assert [(o["instrument_id"], o["status"], o["code"]) for o in output["instruments"]] == [
+            (str(iid), "stopped", "PROVIDER_UNAVAILABLE")]
+        assert output["unprocessed_instruments"] == 1
+        assert output["changed_rows"] == 0 and output["residual_counts"] == {}
+        assert "TIINGO_API_KEY" not in captured.out and "not set" not in captured.out
+        assert _rows(conn, iid) == before
+        assert _ledger(conn) == (0, 0, 0, 0, 0, 0)

@@ -15,9 +15,12 @@ held across a provider call, so daily lock holders are not starved.
 
 The attempt timestamps come from the operator host clock while persistence
 times come from the database, so a host clock ahead of the database is refused
-(CLOCK_SKEW) before any fetch. Run apply BEFORE the daily ingestion chain: when
-no run is pinned, readiness picks the winning attempt by attempted_at DESC, and
-a repair attempt (historical requested_end) could otherwise become the latest.
+(CLOCK_SKEW) before any fetch. Within the tolerance, phase B waits before each
+attempt insert until the database clock passes the provider's finished_at (at
+most 1 s, else CLOCK_SKEW with nothing written). Run apply BEFORE the daily
+ingestion chain: when no run is pinned, readiness picks the winning attempt by
+attempted_at DESC, and a repair attempt (historical requested_end) could
+otherwise become the latest.
 """
 
 from __future__ import annotations
@@ -50,6 +53,10 @@ BAD = """return_1d IS NULL AND return_source_boundary IS NOT NULL
 # stay in the reviewed plan as inventory but never make an item stale.
 INFORMATIONAL_FIELDS = ("revision_head", "last_nav_date", "history_older_than_30_days")
 MAX_CLOCK_AHEAD = dt.timedelta(milliseconds=250)
+# Phase B waits, under the locks, until the database clock has passed the
+# provider's finished_at (a success attempt needs persisted_at >= finished_at).
+PERSIST_WAIT_MARGIN = dt.timedelta(milliseconds=5)
+MAX_PERSIST_WAIT = dt.timedelta(seconds=1)
 # Non-success provider statuses that are facts about the data of that date:
 # a per-instrument residual. Every other non-success status (rate_limited,
 # not_configured, transient_error, ...) is an outage and stops the run.
@@ -74,7 +81,8 @@ class RepairLimits:
     def validate(self):
         if not 1 <= self.batch_size <= 20:
             raise RepairError("BATCH_SIZE_INVALID")
-        if not 0 <= self.max_requests <= 10000:
+        # An instrument is repaired atomically: a zero budget can never progress.
+        if not 1 <= self.max_requests <= 10000:
             raise RepairError("MAX_REQUESTS_INVALID")
         if not math.isfinite(self.max_seconds) or self.max_seconds <= 0:
             raise RepairError("MAX_SECONDS_INVALID")
@@ -223,7 +231,12 @@ def summarize(plan):
 
 
 class ProviderClient:
-    """Lazy adapters to the ingestor's typed provider paths, one request per call."""
+    """Lazy adapters to the ingestor's typed provider paths, one request per call.
+
+    A missing credential is the provider's own non-success ``not_configured``
+    result (an outage that stops the run), never an exception: its message
+    must not reach stdout, and nothing was requested. Yahoo needs no key and
+    EODHD is never constructed (``eodhd_key=''``)."""
     def __init__(self, limits):
         self.limits, self.clients = limits, {}
 
@@ -231,8 +244,15 @@ class ProviderClient:
         if provider == "tiingo":
             from src.workers._tiingo import TiingoClient, TokenBucket
             if provider not in self.clients:
-                self.clients[provider] = TiingoClient(bucket=TokenBucket(
-                    max_tokens=1, refill_rate=self.limits.rate_per_second))
+                try:
+                    client = TiingoClient(bucket=TokenBucket(
+                        max_tokens=1, refill_rate=self.limits.rate_per_second))
+                except RuntimeError:
+                    # _tiingo.api_key(): TIINGO_API_KEY unset. Only the
+                    # constructor is guarded: the deadline and 429-budget
+                    # errors of a fetch are RuntimeErrors with their own path.
+                    return NavFetchResult("not_configured")
+                self.clients[provider] = client
             return self.clients[provider].fetch_daily_observations(
                 ticker, start, end, max_attempts=1, remaining=remaining)
         if provider == "yahoo":
@@ -295,6 +315,8 @@ def _validate(row, fetched):
                         abs_tol=ingest.ADJUSTED_OVERLAP_ABS_TOL):
         return "LEVEL_MISMATCH"
     if (fetched.attempted_at is None or fetched.finished_at is None
+            or fetched.attempted_at.utcoffset() is None
+            or fetched.finished_at.utcoffset() is None
             or fetched.finished_at < fetched.attempted_at):
         return "PROVIDER_INVALID_TIMESTAMPS"
     return None
@@ -304,6 +326,30 @@ def _sql_budget(conn, budget):
     budget.check()
     conn.execute("SELECT set_config('statement_timeout',%s,true)",
                  (str(max(1, min(120000, int(budget.remaining() * 1000)))),))
+
+
+def _db_clock(conn, budget):
+    _sql_budget(conn, budget)
+    return conn.execute("SELECT clock_timestamp()").fetchone()[0]
+
+
+def _await_persistable(conn, finished_at, budget):
+    """Inside the phase-B transaction, before an attempt insert: wait until the
+    database clock passes the provider's finished_at, so the server-assigned
+    persisted_at (and later revision recorded_at) are not earlier than it.
+    The provider timestamps are never rewritten. A gap above MAX_PERSIST_WAIT
+    is CLOCK_SKEW; a wait the time budget cannot cover is TIME_BUDGET."""
+    db_now = _db_clock(conn, budget)
+    if finished_at <= db_now:
+        return
+    wait = finished_at - db_now + PERSIST_WAIT_MARGIN
+    if wait > MAX_PERSIST_WAIT:
+        raise RepairError("CLOCK_SKEW")
+    if wait.total_seconds() >= budget.remaining():
+        raise RepairError("TIME_BUDGET", 5)
+    time.sleep(wait.total_seconds())
+    if finished_at > _db_clock(conn, budget):
+        raise RepairError("CLOCK_SKEW")
 
 
 def _assert_changes(conn, iid, before, selected, runs, old_head, budget):
@@ -342,10 +388,13 @@ def _assert_changes(conn, iid, before, selected, runs, old_head, budget):
 
 
 def _attributed_clear(conn, iid, approved):
-    """Each formerly bad date's latest revision is newer than the plan's head
-    and attributed to a same-xid successful attempt. An unattributed clear (a
-    raw UPDATE, or a trigger bypass that left an older revision latest) still
-    invalidates readiness lineage, and the bad predicate can no longer find it."""
+    """Each formerly bad date's latest derived-return revision is newer than
+    the plan's head and attributed to a same-xid successful attempt. That is
+    the revision readiness reads for return lineage: a later level or calendar
+    revision does not hide an earlier unattributed clear. An unattributed clear
+    (a raw UPDATE, or a trigger bypass that left an older derived revision
+    latest, or none) still invalidates readiness lineage, and the bad predicate
+    can no longer find it."""
     dates = [dt.date.fromisoformat(r["nav_date"]) for r in approved["rows"]]
     with conn.cursor() as cur:
         cur.execute("""SELECT DISTINCT ON (r.nav_date) r.nav_date, r.revision_id,
@@ -356,7 +405,7 @@ def _attributed_clear(conn, iid, approved):
                          AND a.provider=r.source_provider AND a.status=ANY(%s)
                          AND a.commit_xid=r.source_attempt_xid)
             FROM fund_nav_data_revisions r
-            WHERE r.instrument_id=%s AND r.nav_date=ANY(%s)
+            WHERE r.instrument_id=%s AND r.nav_date=ANY(%s) AND r.derived_return_only
             ORDER BY r.nav_date, r.revision_id DESC""",
                     (list(ingest.SUCCESS_ATTEMPTS), iid, dates))
         latest = {day: (rev, ok) for day, rev, ok in cur.fetchall()}
@@ -454,6 +503,8 @@ def _apply_instrument(conn, approved, as_of, client, budget, validate_only):
                             VALUES (%s,%s,'running','normal')""", (run, row["nav_date"]))
             attempt = ingest.TickerPlan(current["identity"]["ticker"].strip(), row["nav_date"],
                                         ((uuid.UUID(iid), row["currency"]),), None)
+            _await_persistable(conn, fetched.finished_at, budget)
+            _sql_budget(conn, budget)
             ingest._insert_attempt_tx(conn, run, attempt, row["source"], fetched, row["nav_date"])
             _sql_budget(conn, budget)
             written = ingest._write_instrument_nav_tx(
@@ -535,6 +586,11 @@ def run_repair(conn, plan, *, instrument_ids, supplied_sha256, limits, client,
         items = {i["instrument_id"]: i for i in plan["items"]}
         if not set(ids) <= set(items):
             raise RepairError("ALLOWLIST_OUTSIDE_PLAN")
+        # One request per bad date and nothing is written for a partly
+        # validated instrument, so an instrument with more planned rows than
+        # the (immutable) request budget could never commit on any resume.
+        if any(len(items[i]["rows"]) > limits.max_requests for i in ids):
+            raise RepairError("REQUEST_BUDGET_TOO_SMALL")
         if conn.info.transaction_status != TransactionStatus.IDLE:
             raise RepairError("CONNECTION_NOT_IDLE")
         # Attempt timestamps use this host's clock, persistence times the

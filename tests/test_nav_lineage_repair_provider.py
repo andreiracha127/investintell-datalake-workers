@@ -6,10 +6,22 @@ from unittest.mock import Mock
 import pytest
 
 from src.workers import _fallback_nav as fb
+from src.workers import nav_return_lineage_repair as repair
 from src.workers._tiingo import TiingoDeadlineExceeded
 
 
 DAY = dt.date(2026, 9, 25)
+
+
+def test_missing_tiingo_key_is_a_not_configured_outage(monkeypatch):
+    monkeypatch.delenv("TIINGO_API_KEY", raising=False)
+    client = repair.ProviderClient(repair.RepairLimits())
+    result = client.fetch("tiingo", "TEST", DAY, DAY, remaining=lambda: 60.0)
+    assert result.status == "not_configured"
+    assert client.clients == {}, "no HTTP client without a key"
+    row = {"nav_date": DAY, "source_nav_kind": "adjusted", "source_nav": 101}
+    assert repair._validate(row, result) == repair.PROVIDER_UNAVAILABLE
+    client.close()
 
 
 @pytest.mark.parametrize("outcome,status", [

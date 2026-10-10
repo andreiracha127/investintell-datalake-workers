@@ -62,6 +62,13 @@ def test_apply_digest_mismatch_is_sanitized_before_database(offline, tmp_path, c
     offline[1].assert_not_called()
 
 
+def test_zero_request_budget_is_refused_before_database(offline, capsys):
+    assert cli.main(["--max-requests", "0"]) == 2
+    _output(capsys, 2, "MAX_REQUESTS_INVALID")
+    offline[0].assert_not_called()
+    offline[1].assert_not_called()
+
+
 def test_missing_dsn_is_sanitized(offline, capsys):
     assert cli.main([]) == 2
     _output(capsys, 2, "DSN_REQUIRED")
