@@ -39,6 +39,10 @@
 #                           Incremental (max(date)−5d → today); needs
 #                           TIINGO_API_KEY. Keep cadence < eod_staleness_hours
 #                           (API default 24h) so /stocks/* never serves stale.
+#                           After the ring it brings W1c-resolved US-listed
+#                           foreign lines to full Tiingo history (<= 250
+#                           tickers/run; EOD_HISTORY_TICKERS_PER_RUN, 0 = off).
+#                           docs/runbooks/eod-foreign-listing-history.md
 #   screener_metrics     -> daily after eod_prices_warmer; computes price-derived
 #                           fields from eod_prices and fundamentals directly from
 #                           company_characteristics_monthly, then refreshes

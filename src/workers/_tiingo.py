@@ -261,6 +261,17 @@ class TiingoClient:
         (full OHLCV+adj rows for eod_prices)."""
         return self._request_bars(ticker, start_date, end_date)[1]
 
+    def fetch_daily_bars_result(self, ticker: str, start_date: _dt.date,
+                                end_date: _dt.date | None = None) -> tuple[str, list[dict]]:
+        """``fetch_daily_bars`` with the request outcome kept.
+
+        ``(status, bars)``: ``success_new`` (bars), ``empty`` (Tiingo has no bar
+        in the window), ``not_found`` (404), or a failure — ``rate_limited``,
+        ``transient_error``, ``invalid_payload``, ``not_configured``. A caller
+        that records "this window is complete" must tell an empty window from a
+        failed request; ``fetch_daily_bars`` returns ``[]`` for both."""
+        return self._request_bars(ticker, start_date, end_date)
+
     def _request_bars(self, ticker: str, start_date: _dt.date,
                       end_date: _dt.date | None = None, *,
                       max_attempts: int | None = None,
@@ -379,6 +390,17 @@ class TiingoClient:
         same 30×429 breaker as ``_get_bars``. Returns ``None`` for an unknown
         ticker (404) or any error/non-object body so the caller can record
         ``source_status='not_found'`` without crashing the sweep."""
+        return self.fetch_meta_result(ticker)[1]
+
+    def fetch_meta_result(self, ticker: str) -> tuple[str, dict | None]:
+        """``fetch_meta`` with the outcome kept: ``(status, payload)``.
+
+        ``found`` (a JSON object), ``not_found`` (404: Tiingo does not know the
+        ticker), ``invalid_payload`` (another 4xx, an unparseable body, or a
+        non-object body) or ``transient_error`` (transport errors, 5xx or 429s
+        after every retry). Only ``not_found`` says the ticker does not exist;
+        the failures are worth retrying on a later run. Same pacing and 30×429
+        breaker as ``fetch_meta``."""
         url = f"{TIINGO_BASE_URL}/tiingo/daily/{ticker}"
         for sleep_s in _RETRY_SLEEPS:
             self._bucket.acquire()
@@ -397,17 +419,20 @@ class TiingoClient:
                 continue
             self.consecutive_429 = 0
             if resp.status_code == 404:
-                return None
+                return "not_found", None
             if resp.status_code >= 500:
                 time.sleep(sleep_s)
                 continue
             if resp.status_code >= 400:
-                return None
-            payload = resp.json()
+                return "invalid_payload", None
+            try:
+                payload = resp.json()
+            except (ValueError, TypeError):
+                return "invalid_payload", None
             if not isinstance(payload, dict):  # error body, e.g. unknown ticker
-                return None
-            return payload
-        return None
+                return "invalid_payload", None
+            return "found", payload
+        return "transient_error", None
 
     def fetch_supported_asset_types(self) -> dict[str, str]:
         """Tiingo's own asset type per ticker, from ``supported_tickers.zip``.

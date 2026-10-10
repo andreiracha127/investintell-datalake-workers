@@ -17,17 +17,56 @@ tickers: existing tickers fetch from ``max(date) − overlap`` (revisions), whil
 new tickers fetch enough history for screener beta_2y. ``eod_prices`` upserts
 land on recent uncompressed chunks once the initial cold load is done.
 
+Second source — W1c foreign listings, full history. Light sizes historical
+equity priors as SEC share counts × ``eod_prices`` closes, so a US-listed foreign
+line (ADS or direct ordinary listing) needs its whole price history, not two
+years. Each run reads the distinct symbols whose
+``public.sec_foreign_listing_at(cik, symbol, d)`` answer has ``listing_status =
+'resolved'`` at the run date or at any of the 2010/2015/2020/2025 year-ends,
+over the ``(cik, symbol)`` pairs of the active W1c evidence facts, restricted to
+US-exchange ticker shapes (one bounded query, JIT off). The screener universe
+(``universe_constituents``) does not change. For these tickers the cold start is
+Tiingo's own ``startDate``:
+
+* no ``eod_prices`` rows → Tiingo meta seeds ``instruments`` (name, exchange,
+  start/end dates; existing non-null fields are never overwritten, NULLs are
+  filled) and the whole history ``startDate → as_of`` is inserted. Such a ticker
+  is kept out of the ring that run, so it never takes the 745-day window.
+* rows that start after ``startDate`` (the screener's 745-day cohort) → only the
+  missing older window ``startDate → min(date) − 1`` is fetched and inserted.
+  Existing rows are not rewritten; the ring's overlap upsert stays the only
+  writer of existing keys.
+
+History rows go through ``INSERT … ON CONFLICT DO NOTHING`` for keys strictly
+older than the ticker's existing rows. That lands in old, compressed chunks of
+the ``eod_prices`` hypertable (segmentby ticker, orderby date DESC) without
+decompressing any existing batch, so the TimescaleDB per-transaction
+decompression limit is never approached; the columnstore policy recompresses
+the partial chunks. The phase runs after the ring, on the same token bucket,
+and stops at ``HISTORY_TICKERS_PER_RUN`` tickers (env
+``EOD_HISTORY_TICKERS_PER_RUN``; never more than ``limit``). Progress lives in
+``eod_warmer_ticker_status`` (``history_complete`` / ``tiingo_unknown``) plus the
+rows themselves, so the next run resumes where this one stopped. Once a ticker
+has rows the ``eod_prices`` term of the universe keeps it fresh daily. Tickers
+Tiingo does not know are recorded, reported and re-checked after
+``UNKNOWN_RECHECK_DAYS``; they are not errors.
+
 NOTE vs ``instrument_ingestion`` (which refreshes ``nav_timeseries`` for the fund
 catalog): this worker targets ``eod_prices`` (stock/ETF OHLCV the /stocks/* API
 reads). They cover different tables — do not conflate.
 
-Contract:  run(dsn, *, calc_date=None, limit=None) -> {"fetched", "upserted", ...}
-``limit`` caps the number of tickers (smoke runs). Env: TIINGO_API_KEY.
+Contract:  run(dsn, *, calc_date=None, limit=None, history_limit=None)
+-> {"fetched", "upserted", ..., "foreign_history": {...}}
+``limit`` caps the number of ring tickers (smoke runs) and the history phase;
+``history_limit`` overrides the history cap. Env: TIINGO_API_KEY.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import os
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from src.db import LOCK_EOD_PRICES_WARMER, advisory_lock, connect
@@ -131,6 +170,186 @@ SEED_EXTRA_INSTRUMENT_SQL = """
     ON CONFLICT (ticker) DO NOTHING
 """
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Second source: W1c-resolved US-listed foreign lines, full history
+# ──────────────────────────────────────────────────────────────────────────────
+FOREIGN_LISTING_SOURCE = "w1c_foreign_listing"
+# The run date is always probed too; these are the year-ends Light sizes priors at.
+FOREIGN_LISTING_YEAR_ENDS: tuple[_dt.date, ...] = (
+    _dt.date(2010, 12, 31), _dt.date(2015, 12, 31),
+    _dt.date(2020, 12, 31), _dt.date(2025, 12, 31),
+)
+# US-exchange ticker shape: 1-5 letters, optionally one class letter (BRK-B).
+# Drops home-market codes (SANB11, VIVT3), note lines (AMX22) and preferred or
+# warrant suffixes (NM-PG, ALLG-WS). Tiingo still decides existence.
+US_LISTING_TICKER_PATTERN = r"^[A-Z]{1,5}(-[A-Z])?$"
+_US_LISTING_TICKER = re.compile(US_LISTING_TICKER_PATTERN)
+# Full-history tickers per run (each costs <= 2 requests: meta + prices). With
+# the production ring (WORKER_LIMIT=2000, three runs a day) 250 adds <= 500
+# requests per run on the shared bucket; a ~1.6k-ticker backlog clears in ~2 days.
+HISTORY_TICKERS_PER_RUN = 250
+HISTORY_LIMIT_ENV = "EOD_HISTORY_TICKERS_PER_RUN"
+UNKNOWN_RECHECK_DAYS = 30
+# Tiingo's startDate may fall on a non-trading day; rows starting within this
+# many days of it are the full history.
+HISTORY_START_TOLERANCE_DAYS = 5
+_W1C_RESOLVER = "public.sec_foreign_listing_at(bigint,text,date)"
+
+# One bounded query: the active-fact (cik, symbol) pairs of the US ticker shape,
+# each probed at the run date and the year-ends; a line counts once its listing
+# resolved at any probe. sec_foreign_listing_at is a large SQL function that the
+# planner inlines, so the caller disables JIT for the transaction (CI servers
+# have a JIT provider; production does not).
+FOREIGN_LISTING_SQL = """
+    WITH lines AS MATERIALIZED (
+        SELECT DISTINCT cik, symbol
+        FROM public.sec_foreign_listing_evidence
+        WHERE retired_on IS NULL
+          AND symbol ~ %(pattern)s
+    ), probe AS (
+        SELECT DISTINCT unnest(%(dates)s::date[]) AS as_of
+    )
+    SELECT DISTINCT l.symbol
+    FROM lines l
+    CROSS JOIN probe p
+    CROSS JOIN LATERAL public.sec_foreign_listing_at(l.cik, l.symbol, p.as_of) r
+    WHERE r.listing_status = 'resolved'
+    ORDER BY 1
+"""
+
+_STATUS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS eod_warmer_ticker_status (
+    ticker         text        PRIMARY KEY,
+    source         text        NOT NULL,
+    status         text        NOT NULL
+                   CHECK (status IN ('history_complete', 'tiingo_unknown')),
+    detail         text,
+    history_start  date,
+    checked_at     timestamptz NOT NULL DEFAULT now()
+);
+"""
+
+RECORD_STATUS_SQL = """
+    INSERT INTO eod_warmer_ticker_status
+        (ticker, source, status, detail, history_start, checked_at)
+    VALUES (%s, %s, %s, %s, %s, now())
+    ON CONFLICT (ticker) DO UPDATE SET
+        source = EXCLUDED.source,
+        status = EXCLUDED.status,
+        detail = EXCLUDED.detail,
+        history_start = EXCLUDED.history_start,
+        checked_at = EXCLUDED.checked_at
+"""
+
+# Insert a Tiingo-described instrument, or fill only the NULL metadata of an
+# existing row: a non-null field is never overwritten, asset_type of an existing
+# row is left alone, and a row with nothing to fill is not touched at all.
+SEED_LISTING_INSTRUMENT_SQL = """
+    INSERT INTO instruments
+        (ticker, name, exchange_code, asset_type, tiingo_start_date, tiingo_end_date)
+    VALUES (%(ticker)s, %(name)s, %(exchange_code)s, 'stock', %(start)s, %(end)s)
+    ON CONFLICT (ticker) DO UPDATE SET
+        name = COALESCE(instruments.name, EXCLUDED.name),
+        exchange_code = COALESCE(instruments.exchange_code, EXCLUDED.exchange_code),
+        tiingo_start_date = COALESCE(instruments.tiingo_start_date, EXCLUDED.tiingo_start_date),
+        tiingo_end_date = COALESCE(instruments.tiingo_end_date, EXCLUDED.tiingo_end_date),
+        updated_at = now()
+    WHERE (instruments.name IS NULL AND EXCLUDED.name IS NOT NULL)
+       OR (instruments.exchange_code IS NULL AND EXCLUDED.exchange_code IS NOT NULL)
+       OR (instruments.tiingo_start_date IS NULL AND EXCLUDED.tiingo_start_date IS NOT NULL)
+       OR (instruments.tiingo_end_date IS NULL AND EXCLUDED.tiingo_end_date IS NOT NULL)
+    RETURNING (xmax = 0) AS inserted
+"""
+
+# History rows are keys older than everything the ticker already has, so there
+# is never a conflict to update; DO NOTHING keeps existing rows untouched even
+# if a window ever overlapped. Brand-new keys in a compressed chunk match no
+# compressed batch (segmentby ticker, date min/max), so nothing is decompressed.
+EOD_HISTORY_INSERT_SQL = """
+    INSERT INTO eod_prices (
+        ticker, date, open, high, low, close, volume,
+        adj_open, adj_high, adj_low, adj_close, adj_volume, div_cash, split_factor
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (ticker, date) DO NOTHING
+"""
+
+
+@dataclass(frozen=True)
+class HistoryTask:
+    """One W1c-covered ticker whose full history is not yet known complete."""
+
+    ticker: str
+    instrument: dict[str, Any] | None  # name, exchange_code, tiingo_start/end_date
+    min_date: _dt.date | None          # earliest eod_prices row, None = no rows
+
+    @property
+    def needs_meta(self) -> bool:
+        inst = self.instrument
+        return inst is None or any(
+            inst.get(col) is None
+            for col in ("exchange_code", "tiingo_start_date", "tiingo_end_date")
+        )
+
+
+def history_window(
+    start: _dt.date, min_date: _dt.date | None, as_of: _dt.date
+) -> tuple[_dt.date, _dt.date] | None:
+    """Full-history fetch window for a covered ticker, or None when complete.
+
+    No rows → ``start → as_of`` (the cold start is Tiingo's startDate, not the
+    screener's 745 days). Rows that begin after ``start`` → only the missing
+    older part, ``start → min_date − 1``. Rows that already reach ``start``
+    (within the non-trading-day tolerance) → nothing to fetch."""
+    if min_date is None:
+        return (start, as_of) if start <= as_of else None
+    if min_date <= start + _dt.timedelta(days=HISTORY_START_TOLERANCE_DAYS):
+        return None
+    return start, min_date - _dt.timedelta(days=1)
+
+
+def classify_history_task(task: HistoryTask) -> str:
+    """``new`` / ``needs_meta`` / ``truncated`` / ``complete`` (DB-only view).
+
+    ``needs_meta`` is a ticker with rows whose instruments row lacks the
+    Tiingo dates, so whether its history is truncated is only known after the
+    meta call (the screener's 745-day cohort)."""
+    if task.min_date is None:
+        return "new"
+    start = (task.instrument or {}).get("tiingo_start_date")
+    if start is None:
+        return "needs_meta"
+    if history_window(start, task.min_date, _dt.date.max) is None:
+        return "complete"
+    return "truncated"
+
+
+def history_cap(history_limit: int | None, limit: int | None) -> int:
+    """Per-run full-history ticker cap: explicit > env > default, never above ``limit``."""
+    cap = history_limit
+    if cap is None:
+        raw = os.getenv(HISTORY_LIMIT_ENV, "").strip()
+        if raw:
+            try:
+                cap = int(raw)
+            except ValueError as exc:
+                raise ValueError(f"{HISTORY_LIMIT_ENV}={raw!r} is not an integer") from exc
+        else:
+            cap = HISTORY_TICKERS_PER_RUN
+    if cap < 0:
+        raise ValueError(f"history cap must be >= 0 (got {cap})")
+    if limit:
+        cap = min(cap, limit)
+    return cap
+
+
+def _parse_meta_date(value: Any) -> _dt.date | None:
+    if not value:
+        return None
+    try:
+        return _dt.date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pure helpers
@@ -157,7 +376,11 @@ def build_eod_rows(ticker: str, bars: list[dict[str, Any]]) -> list[tuple[Any, .
 # DB I/O
 # ──────────────────────────────────────────────────────────────────────────────
 def warming_universe(conn, *, extra: tuple[str, ...] = INDEX_TICKERS) -> list[str]:
-    """Active screener tickers + already-known EOD tickers + benchmark ETFs."""
+    """Active screener tickers + already-known EOD tickers + benchmark ETFs.
+
+    W1c-covered foreign lines join through the ``eod_prices`` term once the
+    full-history phase has given them rows; ``run()`` keeps a covered line
+    without rows out of the ring so it never takes the 745-day cold start."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -255,14 +478,261 @@ def upsert_eod_prices(conn, rows: list[tuple[Any, ...]]) -> int:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# W1c foreign-listing source + full-history phase (DB I/O)
+# ──────────────────────────────────────────────────────────────────────────────
+def foreign_listing_tickers(conn, as_of: _dt.date) -> list[str] | None:
+    """Distinct US-shaped symbols of W1c lines resolved at ``as_of`` or a year-end.
+
+    ``None`` when the W1c resolver is not installed (the ring still runs). JIT
+    is off for this transaction only."""
+    dates = sorted({as_of, *FOREIGN_LISTING_YEAR_ENDS})
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regprocedure(%s) IS NOT NULL", (_W1C_RESOLVER,))
+            if not cur.fetchone()[0]:
+                return None
+            cur.execute("SET LOCAL jit = off")
+            cur.execute(
+                FOREIGN_LISTING_SQL,
+                {"pattern": US_LISTING_TICKER_PATTERN, "dates": dates},
+            )
+            symbols = [r[0] for r in cur.fetchall()]
+    # The SQL filter is authoritative; this keeps the Python constant honest.
+    return [s for s in symbols if _US_LISTING_TICKER.match(s)]
+
+
+def ensure_status_table(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(_STATUS_SCHEMA_SQL)
+    conn.commit()
+
+
+def read_ticker_status(conn, tickers: list[str]) -> dict[str, dict[str, Any]]:
+    """Recorded history/unknown state per ticker; ``{}`` before the table exists
+    (a read-only preview never creates it)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('eod_warmer_ticker_status') IS NOT NULL")
+        if not cur.fetchone()[0]:
+            return {}
+        cur.execute(
+            """SELECT ticker, status, detail, history_start, checked_at
+               FROM eod_warmer_ticker_status WHERE ticker = ANY(%s)""",
+            (tickers,),
+        )
+        return {
+            r[0]: {"status": r[1], "detail": r[2], "history_start": r[3], "checked_at": r[4]}
+            for r in cur.fetchall()
+        }
+
+
+def plan_foreign_history(
+    conn, tickers: list[str], *, now: _dt.datetime
+) -> dict[str, Any]:
+    """Split the covered tickers into done / unknown / pending (read-only).
+
+    ``complete``: recorded ``history_complete`` and still has rows.
+    ``unknown``: Tiingo did not know it within the last ``UNKNOWN_RECHECK_DAYS``.
+    ``pending``: everything else, as ``HistoryTask``s sorted by ticker — the
+    resume point is simply whatever is still pending."""
+    status = read_ticker_status(conn, tickers)
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT ticker, name, exchange_code, tiingo_start_date, tiingo_end_date
+               FROM instruments WHERE ticker = ANY(%s)""",
+            (tickers,),
+        )
+        instruments = {
+            r[0]: {"name": r[1], "exchange_code": r[2],
+                   "tiingo_start_date": r[3], "tiingo_end_date": r[4]}
+            for r in cur.fetchall()
+        }
+        cur.execute(
+            "SELECT ticker, min(date) FROM eod_prices WHERE ticker = ANY(%s) GROUP BY ticker",
+            (tickers,),
+        )
+        mins = {r[0]: r[1] for r in cur.fetchall() if r[1] is not None}
+    recheck_before = now - _dt.timedelta(days=UNKNOWN_RECHECK_DAYS)
+    complete: list[str] = []
+    unknown: list[str] = []
+    pending: list[HistoryTask] = []
+    for ticker in sorted(set(tickers)):
+        state = status.get(ticker)
+        if state and state["status"] == "history_complete" and ticker in mins:
+            complete.append(ticker)
+        elif (state and state["status"] == "tiingo_unknown"
+              and state["checked_at"] > recheck_before):
+            unknown.append(ticker)
+        else:
+            pending.append(HistoryTask(ticker, instruments.get(ticker), mins.get(ticker)))
+    return {"complete": complete, "unknown": unknown, "pending": pending}
+
+
+def record_ticker_status(
+    conn, ticker: str, status: str, *, detail: str | None = None,
+    history_start: _dt.date | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            RECORD_STATUS_SQL,
+            (ticker, FOREIGN_LISTING_SOURCE, status, detail, history_start),
+        )
+    conn.commit()
+
+
+def seed_listing_instrument(conn, ticker: str, meta: dict[str, Any]) -> str | None:
+    """``inserted`` / ``filled`` / None (existing row had nothing to fill)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            SEED_LISTING_INSTRUMENT_SQL,
+            {
+                "ticker": ticker,
+                "name": (meta.get("name") or None),
+                "exchange_code": (meta.get("exchangeCode") or None),
+                "start": _parse_meta_date(meta.get("startDate")),
+                "end": _parse_meta_date(meta.get("endDate")),
+            },
+        )
+        row = cur.fetchone()
+    conn.commit()
+    if row is None:
+        return None
+    return "inserted" if row[0] else "filled"
+
+
+def insert_history_rows(conn, rows: list[tuple[Any, ...]]) -> int:
+    """Chunked ``INSERT … DO NOTHING`` of history rows; returns rows inserted.
+
+    Short per-chunk transactions, like ``upsert_eod_prices``."""
+    inserted = 0
+    with conn.cursor() as cur:
+        for i in range(0, len(rows), UPSERT_CHUNK):
+            chunk = rows[i:i + UPSERT_CHUNK]
+            try:
+                cur.executemany(EOD_HISTORY_INSERT_SQL, chunk)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            inserted += max(cur.rowcount, 0)
+    return inserted
+
+
+def cover_foreign_history(
+    conn,
+    tiingo: TiingoClient,
+    tickers: list[str],
+    *,
+    as_of: _dt.date,
+    cap: int,
+    prefer: frozenset[str] = frozenset(),
+    now: _dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Bring up to ``cap`` covered tickers to full history (meta + one fetch each).
+
+    ``prefer`` (tickers the ring also serves) go first. A ticker that needs no
+    request (its rows already reach the instruments startDate) is recorded
+    complete without spending the cap. A budget abort stops the phase and is
+    reported as ``aborted``; whatever is still pending resumes next run."""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    ensure_status_table(conn)
+    plan = plan_foreign_history(conn, tickers, now=now)
+    queue = sorted(plan["pending"], key=lambda t: (t.ticker not in prefer, t.ticker))
+    stats: dict[str, Any] = {
+        "source_tickers": len(set(tickers)),
+        "already_complete": len(plan["complete"]),
+        "known_unknown": len(plan["unknown"]),
+        "pending": len(queue),
+        "processed": 0, "meta_requests": 0, "history_fetches": 0,
+        "instruments_inserted": 0, "instruments_filled": 0,
+        "history_rows": 0, "completed": 0, "errors": 0,
+    }
+    unknown_now: list[str] = []
+    errors: dict[str, str] = {}
+    spent = 0
+    for task in queue:
+        if spent >= cap:
+            break
+        ticker = task.ticker
+        start = (task.instrument or {}).get("tiingo_start_date")
+        try:
+            if task.needs_meta:
+                spent += 1
+                stats["meta_requests"] += 1
+                status, meta = tiingo.fetch_meta_result(ticker)
+                if status == "not_found":
+                    record_ticker_status(conn, ticker, "tiingo_unknown", detail="not_found")
+                    unknown_now.append(ticker)
+                    continue
+                if status != "found" or meta is None:
+                    errors[ticker] = f"meta:{status}"
+                    continue
+                meta_start = _parse_meta_date(meta.get("startDate"))
+                if meta_start is None:
+                    record_ticker_status(conn, ticker, "tiingo_unknown", detail="no_start_date")
+                    unknown_now.append(ticker)
+                    continue
+                seeded = seed_listing_instrument(conn, ticker, meta)
+                if seeded:
+                    stats[f"instruments_{seeded}"] += 1
+                start = meta_start
+            window = history_window(start, task.min_date, as_of)
+            if window is None:
+                record_ticker_status(conn, ticker, "history_complete", history_start=start)
+                stats["completed"] += 1
+                continue
+            if not task.needs_meta:
+                spent += 1
+            stats["history_fetches"] += 1
+            status, bars = tiingo.fetch_daily_bars_result(ticker, *window)
+            if status == "not_found":
+                record_ticker_status(conn, ticker, "tiingo_unknown", detail="prices_not_found")
+                unknown_now.append(ticker)
+                continue
+            if status not in ("success_new", "empty"):
+                errors[ticker] = f"prices:{status}"
+                continue
+            rows = build_eod_rows(ticker, bars)
+            if task.min_date is not None:
+                rows = [r for r in rows if r[1] < task.min_date]
+            elif not rows:
+                # Known ticker, but not one usable bar: nothing for the ring to
+                # refresh either. Re-checked like an unknown ticker.
+                record_ticker_status(conn, ticker, "tiingo_unknown", detail="no_prices")
+                unknown_now.append(ticker)
+                continue
+            stats["history_rows"] += insert_history_rows(conn, rows)
+            record_ticker_status(conn, ticker, "history_complete", history_start=start)
+            stats["completed"] += 1
+        except TiingoBudgetExceeded as exc:
+            # No price row was written for this ticker; it stays pending.
+            stats["aborted"] = str(exc)
+            break
+        finally:
+            if "aborted" not in stats:
+                stats["processed"] += 1
+    stats["errors"] = len(errors)
+    if errors:
+        stats["error_tickers"] = dict(sorted(errors.items())[:50])
+    stats["tiingo_unknown"] = len(unknown_now)
+    if unknown_now:
+        stats["tiingo_unknown_tickers"] = sorted(unknown_now)[:100]
+    stats["deferred"] = len(queue) - stats["processed"]
+    return stats
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Public entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
-def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict:
-    """Refresh eod_prices from Tiingo for every ticker in the warming universe."""
+def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
+        history_limit: int | None = None) -> dict:
+    """Refresh eod_prices from Tiingo for every ticker in the warming universe,
+    then bring W1c-covered foreign listings to full history (capped per run)."""
     as_of = _dt.date.fromisoformat(calc_date) if calc_date else _dt.date.today()
+    cap = history_cap(history_limit, limit)
     fetched = upserted = skipped_rows = 0
     aborted: str | None = None
     last_done: str | None = None
+    history: dict[str, Any] | None = None
 
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_EOD_PRICES_WARMER) as got:
@@ -270,14 +740,21 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 return {"fetched": 0, "upserted": 0, "skipped": "lock_busy"}
 
             instruments_seeded = ensure_instruments(conn)
+            foreign = foreign_listing_tickers(conn, as_of)
             resume_after = read_cursor(conn)
-            tickers = order_sweep(warming_universe(conn), resume_after=resume_after)
+            universe = warming_universe(conn)
+            tickers = order_sweep(universe, resume_after=resume_after)
+            watermarks = _ticker_watermarks(conn)
+            # A covered foreign line without rows is cold-started with its full
+            # history by the history phase below, never with the 745-day window.
+            foreign_cold = frozenset(t for t in (foreign or ()) if t not in watermarks)
+            tickers = [t for t in tickers if t not in foreign_cold]
             if limit:
                 tickers = tickers[:limit]
-            watermarks = _ticker_watermarks(conn)
             print(
                 f"eod_prices_warmer: {len(tickers)} tickers, as_of={as_of}, "
-                f"resume_after={resume_after or '-'}",
+                f"resume_after={resume_after or '-'}, "
+                f"foreign_listing={'absent' if foreign is None else len(foreign)}",
                 flush=True,
             )
 
@@ -310,8 +787,17 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                             f"upserted={upserted}",
                             flush=True,
                         )
-            if last_done is not None:
-                write_cursor(conn, last_done)
+                if last_done is not None:
+                    write_cursor(conn, last_done)
+                # Full history for W1c lines runs after the ring on the same
+                # bucket, so it only spends what the ring left and never delays
+                # the priority head. A ring that died on budget skips it.
+                if foreign and cap > 0 and aborted is None:
+                    history = cover_foreign_history(
+                        conn, tiingo, foreign, as_of=as_of, cap=cap,
+                        prefer=foreign_cold & frozenset(universe),
+                    )
+                    aborted = history.get("aborted")
             conn.commit()
 
     stats: dict[str, Any] = {
@@ -323,6 +809,15 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
         stats["skipped_rows"] = skipped_rows
     if last_done:
         stats["cursor"] = last_done
+    if foreign is None:
+        stats["foreign_history"] = {"source": "absent"}
+    elif history is not None:
+        stats["foreign_history"] = history
+    elif foreign:
+        stats["foreign_history"] = {
+            "source_tickers": len(foreign),
+            "skipped": "aborted" if aborted else "cap_zero",
+        }
     if aborted:
         stats["aborted"] = aborted
     return stats
