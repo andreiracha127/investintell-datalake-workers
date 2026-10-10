@@ -16,7 +16,7 @@ from html.parser import HTMLParser
 import re
 from typing import Iterable
 
-PARSER_VERSION = "foreign-listing-v8"
+PARSER_VERSION = "foreign-listing-v10"
 _SPACE = re.compile(r"\s+")
 _ADS = r"(?:(?:(?:American?|Global)\s+)?deposit[ao]ry\s+(?:shares?|receipts?)|American\s+shares?\s*\(evidenced\s+by\s+deposit[ao]ry\s+receipts\)|[AG]D[SR]s?)"
 _SHARES = r"(?:(?:(?:class|series)\s+[A-Z0-9]+\s+)?(?:ordinary|common)\s+shares?|shares?\s+of\s+common\s+stock|(?:class|series)\s+[A-Z0-9]+\s+shares?|shares?)"
@@ -65,6 +65,19 @@ _HTML_TOKEN = re.compile(
     r'''|<(?P<closing>/?)(?P<tag>[A-Za-z][A-Za-z0-9:_-]*)(?>[^"'<>]+|"[^"]*"|'[^']*')*>'''
     r'''|<![^>]*>|<\?[^>]*>''', re.S | re.I,
 )
+
+# These are grammatical objects, not proximity searches. Completing a budget,
+# preparations, or notices for a ratio change does not complete the change.
+_RATIO_NOUN = rf"(?:{_ADS}(?:\s*\([^)]{{0,40}}\))?(?:[\s-]+to[\s-]+{_SHARES})?[\s-]+)?ratio"
+_RATIO_CHANGE_OBJECT = rf"(?:(?:(?:first|second|proposed|planned|concurrent)\s+)?{_RATIO_NOUN}\s+change|change\s+(?:of|in|to)\s+(?:(?:the|a)\s+)?(?:new\s+)?{_RATIO_NOUN})"
+_EVENT_DETERMINER = r"(?:(?:the|a|an|its|our|this|that)\s+)?"
+_RATIO_OBJECT_TAIL = r"(?=$|[.,;:()\"'\u201c\u201d\u2018\u2019\ufffd]|\s+(?:from|to|of|in|on|effective|whereby|which|that|with|and|as|for|representing|proportionate|so)\b)"
+_FINANCIAL_CONFIRMATION = re.compile(
+    r"\b(?:weighted\s+average|(?:basic|diluted)\s+(?:(?:net\s+)?(?:income|loss|earnings)|and\s+diluted)|"
+    r"(?:income|loss|earnings)\s+per\s+(?:(?:ordinary|equivalent)\s+)?(?:shares?|ADS)|fair\s+value\s+measurement|"
+    r"total\s+(?:assets|liabilities)|cash\s+flows?)\b", re.I,
+)
+
 
 
 def _clean(value: str) -> str:
@@ -559,6 +572,14 @@ def _prior_ratio(text: str, offset: int) -> bool:
     ))
 
 
+def _6k_ratio_is_transition_target(text: str, match: re.Match) -> bool:
+    """A TO-current/new ratio is the target even though CURRENT alone is former."""
+    return bool(re.search(r"\bfrom\b", text[max(0, match.start() - 700):match.start()], re.I) and re.search(
+        r"\bto\s+(?:(?:the|a)\s+)?(?:current|new)\s+(?:ADS\s+)?ratio\s+(?:of\s+)?$",
+        text[max(0, match.start() - 100):match.start()], re.I,
+    ))
+
+
 def _superseded_ratio(text: str, start: int, end: int) -> bool:
     context = text[max(0, start - 700):end + 700]
     return _prior_ratio(text, start) and bool(re.search(
@@ -782,29 +803,58 @@ def _6k_reverse_split_date(text: str, match: re.Match, own: str, context: str) -
 
 def _6k_completed_event_dates(own: str) -> _DateEvidence:
     date_value = r"(?:[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})"
-    dates = set()
-    for declaration in re.finditer(
-        rf"\b(?:On|Effective(?:\s+(?:on|as\s+of|from))?)\s+(?P<date>{date_value})\s*,?\s*(?P<subject>[^.;]{{0,100}}?)\b"
-        r"(?:(?:effected|implemented|completed)\b[^.;]{0,100}\b(?:change\b[^.;]{0,80}\bratio\b|ratio\s+change\b)"
-        r"|(?:adjusted|changed|amended)\s+(?:(?:the|its|our)\s+)?(?:ADS\s+)?ratio\b)", own, re.I,
-    ):
-        if re.search(r"\b(?:announced|reported|said|disclosed|expect\w*|intend\w*|propos\w*|plan\w*|anticipat\w*|not|never|if|will|would|could|should|may|might)\b", declaration.group("subject"), re.I):
-            continue
-        value = _effective_date("effective on " + declaration.group("date"))
-        if value:
-            dates.add(value)
-    for declaration in re.finditer(
-        rf"(?P<subject>[^.;]{{0,100}}?)\b(?:completed|effected|implemented)\s+(?:(?:the|a)\s+)?"
-        rf"(?:change\b[^.;]{{0,70}}\bratio\b|(?:ADS\s+)?ratio\s+change\b)"
-        rf"(?:[^.;]|\.(?=\d)){{0,450}}?\bon\s+(?P<date>{date_value})", own, re.I,
-    ):
-        if re.search(r"\b(?:expect\w*|intend\w*|propos\w*|plan\w*|anticipat\w*|not|never|if|will|would|could|should|may|might)\b",
-                     declaration.group("subject"), re.I):
-            continue
-        value = _effective_date("effective on " + declaration.group("date"))
-        if value:
-            dates.add(value)
-    return _DateEvidence(tuple(sorted(dates)), own)
+    completion = rf"(?:completed|effected|implemented)\s+{_EVENT_DETERMINER}{_RATIO_CHANGE_OBJECT}\b{_RATIO_OBJECT_TAIL}"
+    adjustment = rf"(?:adjusted|changed|amended)\s+{_EVENT_DETERMINER}{_RATIO_NOUN}\b"
+    invalid_subject = re.compile(
+        r"\b(?:announced|reported|said|disclosed|expect\w*|intend\w*|propos\w*|plan\w*|"
+        r"anticipat\w*|not|never|if|will|would|could|should|may|might)\b", re.I,
+    )
+    patterns = (
+        rf"\b(?:On|Effective(?:\s+(?:on|as\s+of|from))?)\s+(?P<date>{date_value})\s*,?\s*"
+        rf"(?P<subject>[^.;]{{0,100}}?)\b(?:{completion}|{adjustment})",
+        rf"(?P<subject>[^.;]{{0,100}}?)\b{completion}"
+        rf"(?:[^.;]|\.(?=\d)){{0,450}}?\bon\s+(?P<date>{date_value})",
+        rf"(?P<subject>[^.;]{{0,100}}?)\b{adjustment}"
+        rf"(?:[^.;]|\.(?=\d)){{0,450}}?\beffective\s+(?:on\s+)?(?P<date>{date_value})",
+        rf"(?P<subject>(?:the\s+)?Company|we)\s+(?:has\s+)?(?:effected|completed|implemented)\s+"
+        rf"{_EVENT_DETERMINER}(?:(?:Ordinary|Common)\s+Share|Share)\s+Consolidation\b"
+        rf"(?:[^.;]|\.(?=\d)){{0,120}}?\balong\s+with\s+{_EVENT_DETERMINER}"
+        rf"(?!(?:planned|proposed|expected)\b){_RATIO_CHANGE_OBJECT}\b{_RATIO_OBJECT_TAIL}"
+        rf"(?:[^.;]|\.(?=\d)){{0,400}}?\b(?:this\s+)?(?:was|became)\s+effective\s+"
+        rf"(?:(?:on|from|as\s+of)\s+)?(?P<date>{date_value})",
+    )
+    dated = []
+    for pattern in patterns:
+        for declaration in re.finditer(pattern, own, re.I):
+            if invalid_subject.search(declaration.group("subject")):
+                continue
+            value = _effective_date("effective on " + declaration.group("date"))
+            if not value:
+                continue
+            # Keep the narrative declaration and its numerical transition, not
+            # the flattened financial table or heading before the declaration.
+            start = declaration.start()
+            if not re.match(r"\s*(?:On|Effective)\b", declaration.group(), re.I):
+                subject = declaration.group("subject")
+                narrative_subject = re.search(
+                    r"\b(?:(?:the|our)\s+)?(?:Company|we|[A-Z][A-Za-z0-9&.-]+)(?:\s+(?:has|had))?\s*$",
+                    subject, re.I,
+                )
+                start += narrative_subject.start() if narrative_subject else len(subject)
+            boundary = re.search(r"[.!?;](?!\d)(?:\s|$)", own[declaration.end():])
+            end = declaration.end() + boundary.end() if boundary else len(own)
+            accounting = re.search(
+                r",?\s+and\s+(?:basic\b|diluted\b|all\s+(?:ADS|per[- ]ADS)\b)", own[start:end], re.I,
+            )
+            if (accounting and re.search(r"\b(?:revised|adjusted|retrospective\w*)\b", own[start + accounting.end():end], re.I)
+                    and not re.search(r"\b(?:assuming|assumed|hypothetical\w*|pro\s+forma|presentation\s+only)\b", own[start:end], re.I)):
+                # The completed legal event remains factual when followed by
+                # a separate clause describing its retrospective EPS effect.
+                end = start + accounting.start()
+            dated.append((value, start, end))
+    return _DateEvidence(tuple(sorted({value for value, _, _ in dated})),
+                         " ".join(dict.fromkeys(own[start:end] for _, start, end in dated)),
+                         tuple((start, end) for _, start, end in dated))
 
 
 def _6k_completed_event_date(own: str) -> str | None:
@@ -967,7 +1017,8 @@ def _f6_ratio_date_scope(text: str, match: re.Match,
 
 def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: str,
                                class_text: str, named_event: _DateEvidence | None, effective: str,
-                               named_event_name: str | None = None) -> dict:
+                               named_event_name: str | None = None, ratio: Fraction | None = None,
+                               program_symbol: str | None = None) -> dict:
     """Distinguish an outstanding condition from an affirmative event result."""
     current_class = _underlying_class(class_text)
     # Contract boilerplate and pro-forma accounting assumptions are not
@@ -983,7 +1034,104 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
 
     def same_class(fragment: str) -> bool:
         stated = _underlying_class(fragment)
-        return stated is None or current_class is None or stated == current_class
+        # A named class cannot discharge a transition with unknown class.
+        named = set((kind.lower(), label.lower()) for kind, label in re.findall(
+            r"\b(class|series)\s+([A-Z]|[IVX]{1,4}|\d{1,3})\b", fragment, re.I))
+        return len(named) <= 1 and (stated is None or stated == current_class)
+
+    def same_event(fragment: str) -> bool:
+        if _FINANCIAL_CONFIRMATION.search(fragment) or not same_class(fragment):
+            return False
+        def receipt_programs(value: str) -> set[str]:
+            programs = set()
+            if re.search(r"\b(?:ADSs?|ADRs?|American\s+deposit[ao]ry\s+(?:shares?|receipts?))\b", value, re.I):
+                programs.add("american")
+            if re.search(r"\b(?:GDSs?|GDRs?|Global\s+deposit[ao]ry\s+(?:shares?|receipts?))\b", value, re.I):
+                programs.add("global")
+            return programs
+        stated_programs = receipt_programs(fragment)
+        current_programs = receipt_programs(class_text)
+        if stated_programs and not stated_programs.issubset(current_programs):
+            return False
+        stated_symbols = {_canonical_symbol(value) for value in _explicit_symbols(fragment)}
+        if stated_symbols and stated_symbols != {program_symbol}:
+            return False
+        # Explicit named programs must be established in this transition;
+        # generic references to the/its ADS program are anaphoric.
+        programs = re.findall(r"\b((?:Class|Series)\s+[A-Z0-9]+|[A-Z][A-Za-z0-9.-]{1,20})\s+(?:ADS\s+)?programs?\b", fragment, re.I)
+        own_programs = {value.casefold() for value in re.findall(r"\b((?:Class|Series)\s+[A-Z0-9]+|[A-Z][A-Za-z0-9.-]{1,20})\s+(?:ADS\s+)?programs?\b", own, re.I)}
+        programs = [value.casefold() for value in programs if value.casefold() not in
+                    {"ads", "adr", "gds", "gdr", "the", "its", "our", "this", "that"}]
+        if any(value not in own_programs for value in programs):
+            return False
+        stated_ratios = {value for proof, value in _ratios(fragment)
+                         if (not _prior_ratio(fragment, proof.start())
+                             or _6k_ratio_is_transition_target(fragment, proof))
+                         and not re.search(r"\bfrom\b", proof.group(), re.I)}
+        # “for every” can otherwise produce a reciprocal match spanning the
+        # OLD share quantity and the NEW ADS quantity. Read the direct units
+        # here so a 25 -> 5 transition cannot confirm the crossed 25/1 row.
+        direct = list(re.finditer(
+            rf"(?P<adsn>each|{_QUANTITY})\s+{_ADS}\s+for\s+every\s+"
+            rf"(?P<ordinary>{_QUANTITY})\s+{_SHARES}", fragment, re.I,
+        ))
+        if direct:
+            stated_ratios = {_number(proof.group("ordinary")) / _number(proof.group("adsn"))
+                            for proof in direct if not re.search(
+                                r"\bfrom\s+(?:(?:the|previous|old|former|current|existing)\s+)*$",
+                                fragment[max(0, proof.start() - 80):proof.start()], re.I)}
+        for compact in re.finditer(
+            rf"\bratio\b[^.;]{{0,100}}?(?P<left>{_QUANTITY})\s*(?:[:/]|[- ]to[- ])\s*(?P<right>{_QUANTITY})\b",
+            fragment, re.I,
+        ):
+            left, right = _number(compact.group("left")), _number(compact.group("right"))
+            if not right or not left:
+                return False
+            if re.search(rf"{_ADS}\s+to\s+(?:ordinary|common)\s+shares?", fragment, re.I):
+                stated_ratios.add(right / left)
+            elif re.search(rf"(?:ordinary|common)\s+shares?\s+to\s+{_ADS}", fragment, re.I):
+                stated_ratios.add(left / right)
+            else:
+                # A bare 20:1 does not establish which unit is the numerator.
+                return False
+        # An explicit unfamiliar numerical ratio is evidence to withhold, not
+        # a reason to treat the confirmation as omitting its ratio.
+        declared = re.search(rf"\bratio\s+(?:of\s+)?(?:{_QUANTITY})\b", fragment, re.I)
+        if declared and not stated_ratios:
+            return False
+        return ratio is None or not stated_ratios or stated_ratios == {ratio}
+
+    def statement_for(proof: re.Match) -> str:
+        boundaries = [0]
+        for boundary in re.finditer(r"[.!?;](?!\d)(?=\s|$)", context[:proof.start()]):
+            if context[boundary.start()] == "." and re.search(
+                    r"(?:\b(?:Co|Ltd|Inc|Corp|PLC)|\bU\.S|\bN\.A)$",
+                    context[max(0, boundary.start() - 12):boundary.start()], re.I):
+                continue
+            boundaries.append(boundary.end())
+        suffix = re.search(r"[.!?;](?!\d)(?:\s|$)", context[proof.end():])
+        end = proof.end() + suffix.end() if suffix else len(context)
+        start = boundaries[-1]
+        prefix = context[start:proof.start()]
+        if _FINANCIAL_CONFIRMATION.search(prefix):
+            # A prose footnote following flattened table cells has its own
+            # narrative subject. Numeric cells before that subject are not
+            # part of the statement asserting completion.
+            introductions = list(re.finditer(
+                rf"\b(?:Each\s+{_ADS}|The\s+(?:Company|change|ratio)|On\s+\w+\s+\d{{1,2}}|Effective\s+\w+\s+\d{{1,2}})\b",
+                prefix, re.I,
+            ))
+            if introductions:
+                candidate = start + introductions[-1].start()
+                if not _FINANCIAL_CONFIRMATION.search(context[candidate:proof.start()]):
+                    start = candidate
+        return context[start:end]
+
+    def affirmative_statement(statement: str) -> bool:
+        return not re.search(
+            r"\b(?:if|assuming|assumed|hypothetical(?:ly)?|pro\s+forma|financial\s+statement\s+presentation|"
+            r"would|could|should|not|never|preparations?|budgets?|filings?|notices?)\b", statement, re.I,
+        )
 
     def condition_codes(proof: str) -> set[str]:
         proof = re.split(r",\s+to\s+(?:change|amend)\b", proof, maxsplit=1, flags=re.I)[0]
@@ -1026,7 +1174,7 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
         linked = linked or bool(re.search(r"\b(?:this|the)\s+(?:foregoing\s+)?(?:ADS\s+)?(?:ratio\s+change|change\s+in\s+(?:the\s+)?ADS\s+ratio)\b", statement, re.I))
         linked = linked or bool(named_event and re.search(r"\bupon\s+(?:the\s+)?Share\s+Consolidation\b", own, re.I)
                                 and re.search(r"\bShare\s+Consolidation\b", proof.group("condition"), re.I))
-        if linked and same_class(proof.group("condition")):
+        if linked:
             conditions.append(proof.group("condition"))
     prospective_plan = None
     if not conditions and _RATIO_CHANGE.search(own):
@@ -1040,44 +1188,95 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
     confirmed_conditions: set[str] = set()
     # A completed legal ratio event, not an announced/proposed action, is
     # affirmative evidence that its operative prerequisite was met.
-    if _6k_completed_event_dates(own).unique == effective:
-        confirmation = own
-        confirmed_conditions.add("ratio_effective")
-    past_effect = re.search(
-        r"\b(?:ratio|ADS(?:s)?)\b[^.;]{0,140}\b(?:was|became|has\s+become)\s+effective\b[^.;]{0,120}", context, re.I,
+    rejected_confirmation = False
+    completed = _6k_completed_event_dates(own)
+    own_start = text.find(own, max(0, match.start() - len(own)), match.end() + len(own))
+    completion_owns_ratio = own_start >= 0 and any(
+        start <= match.start() - own_start and match.end() - own_start <= end
+        for start, end in completed.spans
     )
-    if past_effect and same_class(past_effect.group()) and _operative_date_evidence(past_effect.group()).unique == effective:
-        confirmation = past_effect.group()
+    completion_lead = own[:min((start for start, _ in completed.spans), default=0)]
+    conditional_completion = bool(
+        re.search(r"\b(?:if|assuming|assumed|hypothetical)\b", completion_lead, re.I)
+        or re.search(r"\b(?:would|could|should|not|never)\b", completion_lead[-40:], re.I)
+    )
+    if (completed.unique == effective and completion_owns_ratio and same_event(completed.proof)
+            and not conditional_completion and affirmative_statement(completed.proof)):
+        confirmation = completed.proof
         confirmed_conditions.add("ratio_effective")
+    elif completed.unique == effective:
+        rejected_confirmation = True
+    past_effect = re.search(
+        rf"\b(?:{_RATIO_CHANGE_OBJECT}|{_RATIO_NOUN})\b"
+        r"(?:\s+(?:for|of|to|on|from)\b(?:[^.;]|\.(?=\d)){0,450}?)?"
+        r"(?:,?\s+(?:that|which|this))?\s+(?:was|became|has\s+become)\s+effective\b[^.;]{0,120}",
+        context, re.I,
+    )
+    past_statement = statement_for(past_effect) if past_effect else ""
+    past_dates = _operative_date_evidence(past_statement)
+    past_start = text.find(past_statement, max(0, match.start() - len(context)), match.end() + len(context)) if past_statement else -1
+    past_owns_ratio = past_start >= 0 and past_start <= match.start() and match.end() <= past_start + len(past_statement)
+    own_relative = match.start() - own_start if own_start >= 0 else -1
+    own_introductions = list(re.finditer(
+        rf"\b(?:Each\s+{_ADS}|The\s+Company|On\s+\w+\s+\d{{1,2}}|Effective\s+\w+\s+\d{{1,2}})\b",
+        own[:max(0, own_relative)], re.I,
+    ))
+    own_narrative_ratio = bool(own_introductions and not _FINANCIAL_CONFIRMATION.search(
+        own[own_introductions[-1].start():],
+    ))
+    linked_completed_date = bool(named_event and named_event.unique == effective and re.search(
+        r"\bConcurrently\s+with\s+(?:the\s+)?(?:reverse\s+(?:share\s+|stock\s+)?split|Share\s+(?:Consolidation|Subdivision))\b",
+        own, re.I,
+    ))
+    if (past_effect and same_event(past_statement) and affirmative_statement(past_statement)
+            and (not _FINANCIAL_CONFIRMATION.search(own) or past_owns_ratio or own_narrative_ratio)
+            and (past_dates.unique == effective or (not past_dates.dates and linked_completed_date))):
+        # Identity guards inspect the complete sentence; stored dated proofs
+        # end at the operative date rather than swallowing an adjacent table.
+        proof_start = max(0, past_statement.find(past_effect.group()))
+        confirmation = (past_statement[proof_start:max(end for _, end in past_dates.spans)] if past_dates.spans
+                        else named_event.proof + " " + past_statement[proof_start:])
+        confirmed_conditions.add("ratio_effective")
+    elif past_effect and not _BOILERPLATE_CONDITION.search(own):
+        rejected_confirmation = True
     # Some meeting results report a completed ratio change as taking effect
     # concurrently on the same day as an already-dated share subdivision.
     # Preserve that literal same-day link; do not infer it from nearby dates.
     taken_effect = re.search(
-        r"\b(?:change\b[^.;]{0,140}\bratio|ratio)\b[^.;]{0,260}\bhas\s+taken\s+effect\b", own, re.I,
+        rf"\b{_RATIO_CHANGE_OBJECT}\b{_RATIO_OBJECT_TAIL}[^.;]{{0,450}}\bhas\s+taken\s+effect\b", own, re.I,
     )
     same_day_link = re.search(r"\bconcurrently\b[^.;]{0,80}\b(?:on\s+)?the\s+same\s+day\b", own, re.I)
     context_dates = _operative_date_evidence(context)
-    if (taken_effect and same_day_link and same_class(taken_effect.group())
+    if (taken_effect and same_day_link and same_event(own) and affirmative_statement(own)
             and context_dates.unique == effective):
         date_proof = " ".join(context[start:end] for start, end in context_dates.spans)
         confirmation = _clean(date_proof + " " + taken_effect.group())
         confirmed_conditions.add("ratio_effective")
     depositary = re.search(
-        r"\b(?:the\s+)?Depositary\s+(?:has\s+)?(?:announced|confirmed|notified)\b[^.;]{0,250}\bratio\b[^.;]{0,180}\beffective\b[^.;]{0,100}",
-        context, re.I,
+        rf"\b(?:the\s+)?Depositary\s+(?:has\s+)?(?:announced|confirmed|notified)\s+"
+        rf"(?:that\s+)?{_EVENT_DETERMINER}(?:{_RATIO_CHANGE_OBJECT}|{_RATIO_NOUN})\b"
+        r"(?:\s+(?:of|for|to)\b[^.;]{0,120}?)?\s+(?:(?:is|was|will\s+be|became|has\s+become)\s+)?"
+        r"effective\b[^.;]{0,100}", context, re.I,
     )
-    if depositary and same_class(depositary.group()) and _operative_date_evidence(depositary.group()).unique == effective:
-        confirmation = depositary.group()
+    depositary_statement = statement_for(depositary) if depositary else ""
+    if (depositary and same_event(depositary_statement) and affirmative_statement(depositary_statement)
+            and _operative_date_evidence(depositary_statement).unique == effective):
+        confirmation = depositary_statement
         confirmed_conditions.add("depositary_notice")
     # ANTE's meeting result explicitly fulfils the named consolidation
     # approval. A proposed RESOLVED THAT or Board approval is not that result.
     if named_event and re.search(r"\bupon\s+(?:the\s+)?Share\s+Consolidation\b", own, re.I):
         for approval in re.finditer(
-            r"\b(?:the\s+)?shareholders\s+(?:have\s+)?(?:approved|resolved|adopted|passed)\b(?:[^.;]|\.(?=\d)){0,700}\bShare\s+Consolidation\b[^.;]{0,80}",
+            r"\b(?:the\s+)?shareholders\s+(?:have\s+)?(?:"
+            rf"(?:approved|adopted|passed)\s+(?:(?:the|a|an|proposed)\s+)*Share\s+Consolidation\b{_RATIO_OBJECT_TAIL}"
+            r"|resolved\s+(?:by\s+ordinary\s+resolution\s+)?to\s+consolidate\s+"
+            rf"(?:every\s+{_QUANTITY}\s+of\s+(?:the\s+)?(?:authori[sz]ed\s+(?:\([^)]{{0,60}}\)\s+)?)?shares"
+            r"|(?:(?:the|issued|ordinary|common|outstanding)\s+)*shares)\b"
+            r"(?:[^.;]|\.(?=\d)){0,700}?\bShare\s+Consolidation\b)[^.;]{0,80}",
             text[max(0, match.start() - 2500):match.end() + 2500], re.I,
         ):
             lead = text[max(0, match.start() - 2500):match.end() + 2500][max(0, approval.start() - 40):approval.start()]
-            if not re.search(r"\b(?:if|assuming|when|once|will|would|should|propos\w*)\b", lead, re.I) and same_class(approval.group()):
+            if not re.search(r"\b(?:if|assuming|when|once|will|would|should|propos\w*)\b", lead, re.I) and same_event(approval.group()):
                 confirmation = approval.group() + " " + named_event.proof + " " + own
                 confirmed_conditions.update(("shareholder_approval", "consolidation"))
     # TCOM's meeting-result 6-K states that resolutions submitted for
@@ -1091,21 +1290,25 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
         window = text[window_start:window_end]
         adopted = re.search(
             r"\bproposed\s+resolutions?\s+submitted\s+for\s+shareholder\s+approval\b"
-            r"(?:(?![.!?;](?!\d))[^\n]){0,700}?\b(?:has|have)\s+been\s+adopted\b"
-            r"(?:(?![.!?;](?!\d))[^\n]){0,700}?\bShare\s+Subdivision\b", window, re.I,
+            r"(?:(?![.!?;](?!\d))[^\n]){0,700}?\b(?:has|have)\s+been\s+adopted\s+as\s+an?\s+ordinary\s+resolution\b"
+            r"(?:(?![.!?;](?!\d))[^\n]){0,300}?:\s*Each\b"
+            r"(?:[^.;]|\.(?=\d)){0,350}?\bordinary\s+shares\b"
+            r"(?:[^.;]|\.(?=\d)){0,200}?\bbe\s+and\s+is\s+hereby\s+subdivided\s+into\b"
+            r"(?:[^.;]|\.(?=\d)){0,300}?\bShare\s+Subdivision\b", window, re.I,
         )
-        if adopted and same_class(adopted.group()):
+        if adopted and same_event(adopted.group()):
             confirmation = adopted.group() + " " + named_event.proof + " " + own
             confirmed_conditions.update(("shareholder_approval", "consolidation"))
     direct_approval = re.search(
-        r"\b(?:the\s+)?shareholders\s+(?:have\s+)?(?:approved|resolved|adopted|passed)\b(?P<object>[^.;]{0,200})"
-        r"\b(?:(?:ADS\s+)?ratio\s+change|change\s+(?:of|in|to)\s+(?:the\s+)?(?:ADS\s+)?ratio)\b[^.;]{0,120}",
+        rf"\b(?:the\s+)?shareholders\s+(?:have\s+)?(?:approved|resolved|adopted|passed)\s+"
+        rf"{_EVENT_DETERMINER}(?:proposed\s+)?{_RATIO_CHANGE_OBJECT}\b{_RATIO_OBJECT_TAIL}[^.;]{{0,350}}",
         context, re.I,
     )
-    if direct_approval and same_class(direct_approval.group()) and not re.search(r"\b(?:if|assuming|when|once|will|would|should|propos\w*)\b",
-            context[max(0, direct_approval.start() - 40):direct_approval.start()], re.I) and not re.search(
-                r"\b(?:unrelated|another|separate|but|will|plan\w*|intend\w*)\b", direct_approval.group("object"), re.I):
-        confirmation = direct_approval.group()
+    approval_statement = statement_for(direct_approval) if direct_approval else ""
+    if (direct_approval and same_event(approval_statement) and affirmative_statement(approval_statement) and not re.search(
+            r"\b(?:if|assuming|when|once|will|would|should|propos\w*)\b",
+            context[max(0, direct_approval.start() - 40):direct_approval.start()], re.I)):
+        confirmation = approval_statement
         confirmed_conditions.add("shareholder_approval")
     if (prospective_plan and not ({"ratio_effective", "depositary_notice"} & confirmed_conditions)
             and effective is not None and _operative_date_evidence(context).unique == effective):
@@ -1120,6 +1323,10 @@ def _6k_effectiveness_metadata(text: str, match: re.Match, own: str, context: st
         return {"ratio_effectiveness_pending": True,
                 "ratio_effectiveness_pending_text": _clean(" ".join(dict.fromkeys(proof for proof, _ in outstanding))),
                 "ratio_effectiveness_conditions": sorted({code for _, codes in outstanding for code in codes})}
+    if not confirmation and rejected_confirmation:
+        return {"ratio_effectiveness_pending": True,
+                "ratio_effectiveness_pending_text": _clean(own),
+                "ratio_effectiveness_conditions": ["unknown_condition"]}
     if confirmation:
         return {"ratio_effectiveness_confirmed": True,
                 "ratio_effectiveness_confirmation_text": _clean(confirmation),
@@ -1619,7 +1826,8 @@ def parse_filing(
                     r"\b(?:Depositary\s+(?:has\s+)?(?:announced|confirmed|notified)|(?:ratio|ADS(?:s)?)\b[^.;]{0,140}\b(?:was|became|has\s+become)\s+effective|(?:effected|implemented|completed)\b[^.;]{0,100}\bratio)\b",
                     date_scope, re.I,
                 ):
-                    affirmative = _6k_effectiveness_metadata(text, match, date_scope, date_scope, class_text, None, effective)
+                    affirmative = _6k_effectiveness_metadata(text, match, date_scope, date_scope, class_text, None, effective,
+                                                            ratio=ratio, program_symbol=symbol)
                     fulfilled_notice = bool({"depositary_notice", "ratio_effective"}
                                             & set(affirmative.get("ratio_effectiveness_confirmed_conditions", [])))
                     if affirmative.get("ratio_effectiveness_confirmed") and not affirmative.get("ratio_effectiveness_pending") and (
@@ -1639,8 +1847,17 @@ def parse_filing(
             if scope is None:
                 continue
             context, own = scope
+            narrative_completion = _6k_completed_event_dates(own)
+            own_offset = text.find(own, max(0, match.start() - len(own)), match.end() + len(own))
+            if narrative_completion.dates and own_offset >= 0 and not any(
+                    start <= match.start() - own_offset and match.end() - own_offset <= end
+                    for start, end in narrative_completion.spans):
+                # Flattened financial tables can share a punctuation-delimited
+                # scope with a later prose footnote. Their numeric ADS counts
+                # are not the footnote's ratio transition or a pending event.
+                continue
             # In 'from one ADS ... to one ADS ...', retain only the new side.
-            dated_current = (re.search(r"\bcurrent\b[^.;]{0,60}\bratio\b[^.;]{0,30}$",
+            dated_current = _6k_ratio_is_transition_target(text, match) or (re.search(r"\bcurrent\b[^.;]{0,60}\bratio\b[^.;]{0,30}$",
                                        text[max(0, match.start() - 120):match.start()], re.I)
                              and not _RATIO_FROM.search(context))
             if _prior_ratio(text, match.start()) and not dated_current:
@@ -1685,7 +1902,18 @@ def parse_filing(
             for symbol in local_symbols if len(set(local_symbols)) == 1 else [None]:
                 class_text = _6k_ratio_class(match, context)
                 effectiveness = _6k_effectiveness_metadata(text, match, own, context, class_text, named_event,
-                                                          effective, event_name)
+                                                          effective, event_name, ratio=ratio,
+                                                          program_symbol=symbol)
+                if (effectiveness.get("ratio_effectiveness_pending")
+                        and effectiveness.get("ratio_effectiveness_conditions") == ["unknown_condition"]
+                        and (_FINANCIAL_CONFIRMATION.search(own)
+                             or (narrative_completion.dates and not re.search(
+                                 r"\b(?:plans?\s+to|expects?\s+to|expected\s+to|subject\s+to|conditional|contingent)\b",
+                                 own, re.I)))):
+                    # An unsupported table/former-side observation is not an
+                    # announced transition. Do not manufacture a control that
+                    # could override the independently stated completion.
+                    continue
                 if dates.conflict:
                     effectiveness.pop("ratio_effectiveness_confirmed", None)
                     effectiveness.pop("ratio_effectiveness_confirmation_text", None)
