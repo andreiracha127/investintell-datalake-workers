@@ -93,9 +93,34 @@ evidence, not as an official filing date.
 
 Version `sec-official-filing-date-v2` and matching per-document date/floor proofs
 are required before parsing, combining shards or applying evidence. Initial
-imports retain the resulting source availability. Corrections to an accession
-already loaded become available no earlier than the reconciliation date, while
-retired versions remain queryable at earlier dates. Explicit ratio effective
+imports retain the resulting source availability. Reconciliation preserves fact
+versions and records `retired_reason` (schema v2), using the project's
+restatement rule, as in W1 and W1b:
+
+- `source` (or NULL on rows retired before v2): **the public record changed**.
+  Different source bytes or a genuinely new document on an accession already
+  loaded become known no earlier than reconciliation. The old version stays
+  visible before its retirement.
+- `parser_correction`: **our reading changed, not the public record**. The same
+  document bytes (the same `source_sha256`) read by another parser version.
+  The old reading was never true and is visible at no date. The new reading is
+  known when the reading it replaces was: from `source_available_on` for a
+  document first loaded with its accession, from the republication date for
+  republished content. A reading that replaces none is known from the filing's
+  public date, including its governed publication floor. A parser addition on
+  already loaded bytes therefore restates history; a genuinely new source
+  document retains the first-loaded protection.
+
+Facts and sources already record `parser_version`; `loaded_on`, `retired_on`,
+and source load dates retain the reconciliation audit. Every resolver branch
+excludes parser-corrected old readings. A row is visible at D iff
+`available_on <= D`, its reason is not `parser_correction`, and `retired_on` is
+NULL or after D. The loader requires the v2 column, CHECK and exact resolver;
+it refuses both a v1 installation and a v2 rollback.
+
+The governed schema is applied in order: `schemas/sec_foreign_listing_evidence.sql`
+(the unchanged production v1), then `schemas/sec_foreign_listing_evidence_v2.sql`.
+Explicit ratio effective
 dates are separate: a known future change is not in force before its stated date.
 `effective_date_explicit` distinguishes a date stated in the document from the
 filing-plus-one fallback. An F-6 using that fallback is deferred when a 6-K
@@ -286,7 +311,8 @@ and combine that same cache. On systems supporting symbolic links, a directory
 symlink to the shared originals can replace the Windows junction.
 
 In a separate writer shell without the production read-only `PGOPTIONS`, apply
-the additive schema to a disposable `timescale/timescaledb:2.27.2-pg18` database,
+the base schema and v2 migration, in that order, to a disposable
+`timescale/timescaledb:2.27.2-pg18` database,
 then set `FOREIGN_EVIDENCE_DATABASE_URL` to that local database. Load the already combined
 artifact with `--apply` alone; it verifies the artifact hash and date/floor
 proofs, without another parse or any network operation:
@@ -303,9 +329,10 @@ upgraded parent. The observed-on date defaults to the actual UTC date.
 Do not choose an earlier date to make a correction appear historically known.
 The database operation is one transaction; unchanged facts remain unchanged,
 and changed or removed facts create or retire versions.
-For initial historical-coverage validation, use fresh disposable tables. Loading
-a corrected date artifact over an earlier incorrect import would intentionally
-retain that earlier history as part of the bitemporal correction record.
+Validate parser corrections by applying the v2 migration and corrected artifact
+over the previously loaded artifact in disposable tables. The corrected reading
+must match an isolated import at every query date; source revisions retain their
+prospective history.
 
 ```powershell
 $env:SEC_FOREIGN_TEST_DATABASE_URL = $env:FOREIGN_EVIDENCE_DATABASE_URL
@@ -340,10 +367,12 @@ of today's symbols.
 ## Exact production procedure (not executed by this PR)
 
 1. Review this evidence PR and the superseding
-   [final6 validation report](../validation/sec-foreign-listing-final6.md),
-   which replaces the earlier
+   [final7 validation report](../validation/sec-foreign-listing-final7.md),
+   which replaces final6 for production artifact selection. The historical
+   [final6 report](../validation/sec-foreign-listing-final6.md) retains the first
+   B1b applied-over-final5 measurement; the
    [run2 final5 report](../validation/sec-foreign-listing-20261009-run2-final5.md)
-   for production artifact selection.
+   identifies the loaded starting state.
    Keep admission/sizing integration in its separately reviewed PR after
    Workers #173. No scheduled worker is installed by this change.
 2. Outside 06:00-08:30 UTC, take fresh read-only W1 exports with `mcp_ro`, host
@@ -351,30 +380,50 @@ of today's symbols.
    `PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=30000'`.
    Keep the query text, extraction timestamp and JSON hashes with the run.
 3. Use the reviewed owner-load artifact at
-   `C:/investintell-data/w1c-final6`, preserving the loaded final5, final4 and run1.
+   `C:/investintell-data/w1c-final7`, preserving the loaded final5 and the
+   immutable final6, final4 and run1 inputs.
    Verify `SHA256SUMS` and these exact SHA-256 values before loading:
 
    - `manifest.json`:
-     `0c6e6d776c2df22c7738ac6ce748ceee65539204fbedaf92179eaa700fbe53a1`
+     `3ebbe15ed8339f59abe3bd0b85f74445b25b391c8eba8f74e9d5e790b9458aa4`
    - `evidence.jsonl`:
-     `2636dbb882829faf23167f34b88decfe097e3bbd67130ea5803d3cb53355044a`
+     `5580abc486d88c872d42fd5b53a51aaf04a942b66ca0c6b5c853174b1ab2b977`
+   - `SHA256SUMS`:
+     `91f44eb8f6eaf3555cda777e62d6baaebada55dd3aaa00f732d00ed20e8de241`
 
    The complete manifest contains 47,329 source entries and the JSONL contains
-   29,655 evidence rows. Its fixed universe is the preserved
+   29,636 evidence rows. Its fixed universe is the preserved
    `E:/investintell-data/w1c-20261009-baseline/universe.json`, SHA-256
    `06d052a96fdc8759c6d443f67fbf20ecaacac4655dd7cb306e31f558e5c5b43b`.
-   Review the final6 coverage, source audits and the 30+10 precision
+   Review the final7 coverage, source audits and the 30+10 precision
    results. Fresh read-only W1 exports are reconciliation evidence; a changed
    universe requires a new reviewed collection rather than replacing this
    artifact's pinned input.
-4. In a separate shell with an explicitly authorized production writer and
-   without the read-only `PGOPTIONS`, verify the unchanged schema pin; if installing into a new environment, apply only this reviewed schema:
-   `psql -X -v ON_ERROR_STOP=1 -f schemas/sec_foreign_listing_evidence.sql`.
-   The reviewed schema SHA-256 is
-   `f334d08d3d3b496bd613495d59ee2a3a12365f58c422b3d51bd77530e61d2957`;
-   it is unchanged from final5 and retains the existing operative-date-conflict and conditional-effectiveness controls.
-   Supply the production connection through the operator's normal credential
-   mechanism. Do not use the read-only `mcp_ro` role for this step.
+4. Verify the loaded v1 resolver and final5 counts before migrating. The v1
+   file remains SHA-256
+   `f334d08d3d3b496bd613495d59ee2a3a12365f58c422b3d51bd77530e61d2957`.
+   Its `pg_proc.prosrc` MD5 is `111f988c5bede3442fa60a7d6e983172`;
+   read back the owner, reader grants and comments against that governed v1
+   definition. Verify 47,329 sources, 29,709 active facts and no retired facts
+   for the final5 starting state. Any different starting state needs an
+   accounted-for reconciliation before proceeding.
+   In a separate shell with the authorized owner connection in `DATABASE_URL`
+   and without the read-only `PGOPTIONS`, verify and apply v2:
+
+   ```powershell
+   Get-FileHash schemas/sec_foreign_listing_evidence_v2.sql -Algorithm SHA256
+   psql -X -v ON_ERROR_STOP=1 --dbname=$env:DATABASE_URL --file=schemas/sec_foreign_listing_evidence_v2.sql
+   ```
+
+   v2 SHA-256:
+   `4eca964a6a3edbcfa328628904a324dfa6a363d82f4a5dd46f8b76d0012d7158`.
+   It is one idempotent transaction, adds the nullable reason/CHECK without
+   rewriting evidence rows, and retains `worker_writer` ownership, revoked
+   PUBLIC privileges and the three reader roles. Both v2 and its rollback take
+   the loader's transaction advisory lock `(79311, 173)`. The loader checks the
+   schema after acquiring that lock, so an application queued behind rollback
+   sees the restored v1 resolver and refuses it. Fresh environments first
+   install the unchanged base SQL, then v2. Do not reapply v1 over v2.
 5. Set `FOREIGN_EVIDENCE_DATABASE_URL` securely to that authorized writer.
    Run the following apply-only command with the reviewed universe, complete
    verified cache and exact combined JSONL artifact. Its manifest must have v2
@@ -384,18 +433,160 @@ of today's symbols.
    ```powershell
    python scripts/load_sec_foreign_listing_evidence.py `
      --universe E:/investintell-data/w1c-20261009-baseline/universe.json `
-     --cache-dir C:/investintell-data/w1c-final6 `
-     --output C:/investintell-data/w1c-final6/evidence.jsonl --apply
+     --cache-dir C:/investintell-data/w1c-final7 `
+     --output C:/investintell-data/w1c-final7/evidence.jsonl --apply
    ```
 
-6. With `mcp_ro`, read back source/fact counts and execute the dated resolver
-   checks and year-end report. Confirm existing W1 refusal behavior is unchanged.
-   The fresh local initial-import result was 47,329 sources and 29,655 facts;
-   both-resolved year-end counts were 2, 83, 513 and 1,151 for 2010, 2015, 2020
-   and 2025. The 2025 overlap was 819 of the preserved 1,373 refusals. Production
-   reconciliation must account for existing versions and the actual load date;
-   these local results do not assert production acceptance.
-   No Railway change, deployment, or admission switch is part of these steps.
+6. With `mcp_ro`, read back source/fact counts by `retired_reason` and execute
+   all 12,155 saved line/date queries against final7's expected answers. Also
+   query all seven changed lines at 2026-10-11, including the original TRIB
+   (888721) and SVRE (1894693) controls. The local production-sequence replay
+   matches 12,155/12,155 historical and 7/7 later answers, with zero mismatches.
+   It reproduces all eight historical changes across seven lines versus final5;
+   every corrected after-answer supplies no numeric ratio. The full source
+   verdicts and applied-over-final5 measurement are in the final7 report.
+   For the verified final5 starting state, expect 47,329 sources, 59,345 total
+   facts, 29,636 active facts and 29,709 retired facts, all `parser_correction`;
+   expect zero `source` or NULL retirements. Every active fact retains
+   `available_on = source_available_on`. Confirm existing W1 refusal behavior
+   is unchanged. Year-end counts with both statuses resolved are 2, 83, 513 and
+   1,149 for 2010, 2015, 2020 and 2025. The 2025 overlap remains 819 of the
+   preserved 1,373 refusals. Production reconciliation must account for the
+   actual starting versions and load date; these local results do not assert
+   production acceptance. No Railway change, deployment, or admission switch
+   is part of these steps.
+
+   Later answers at 2026-10-11 must match these exact semantic states; every
+   row below has NULL ratio numerator and denominator:
+
+   | Line / CIK | Overall status | Listed type | Listing status | Ratio status |
+   |---|---|---|---|---|
+   | TRIB / 888721 | ambiguous | ads | resolved | ambiguous |
+   | NTES / 1110646 | none | ads | resolved | none |
+   | OSN / 1485538 | ambiguous | NULL | ambiguous | none |
+   | VSA / 1592560 | ambiguous | ads | resolved | ambiguous |
+   | BNR / 1792267 | ambiguous | ads | resolved | ambiguous |
+   | SVRE / 1894693 | none | ads | resolved | none |
+   | AIXI / 1935172 | ambiguous | ads | resolved | ambiguous |
+
+   TRIB's later `ambiguous` state preserves the exact-ratio conflict in its
+   pinned 2026 F-6; the preserved final6 B1b measurement quotes both 1/1 and
+   20/1 source assertions. It is distinct from its `none` historical answer
+   at 2025-12-31 and agrees under both load sequences.
+
+   In that separate read-only shell, configure `W1C_READBACK_DATABASE_URL` with
+   the operator's `mcp_ro` connection and retain these query results:
+
+   ```sql
+   SELECT md5(prosrc) AS resolver_body_md5, pg_get_userbyid(proowner) AS owner
+   FROM pg_proc WHERE oid = 'public.sec_foreign_listing_at(bigint,text,date)'::regprocedure;
+   -- v1 before migration: 111f988c5bede3442fa60a7d6e983172
+   -- v2 after migration:  60f5d1bf86a645a41fb7e23328c7ab8a
+   SELECT count(*) AS sources FROM public.sec_foreign_listing_sources;
+   SELECT count(*) AS total,
+          count(*) FILTER (WHERE retired_on IS NULL) AS active,
+          count(*) FILTER (WHERE retired_on IS NOT NULL) AS retired
+   FROM public.sec_foreign_listing_evidence;
+   SELECT retired_reason, count(*) FROM public.sec_foreign_listing_evidence
+   WHERE retired_on IS NOT NULL GROUP BY retired_reason;
+   -- Eight changed historical queries and each changed line after replay.
+   WITH probes(cik, symbol, as_of) AS (
+       VALUES
+       (888721::bigint, 'TRIB'::text, DATE '2025-12-31'),
+       (1110646, 'NTES', DATE '2025-12-31'),
+       (1485538, 'OSN', DATE '2020-12-31'),
+       (1485538, 'OSN', DATE '2025-12-31'),
+       (1592560, 'VSA', DATE '2025-12-31'),
+       (1792267, 'BNR', DATE '2025-12-31'),
+       (1894693, 'SVRE', DATE '2025-12-31'),
+       (1935172, 'AIXI', DATE '2025-12-31'),
+       (888721, 'TRIB', DATE '2026-10-11'),
+       (1110646, 'NTES', DATE '2026-10-11'),
+       (1485538, 'OSN', DATE '2026-10-11'),
+       (1592560, 'VSA', DATE '2026-10-11'),
+       (1792267, 'BNR', DATE '2026-10-11'),
+       (1894693, 'SVRE', DATE '2026-10-11'),
+       (1935172, 'AIXI', DATE '2026-10-11')
+   )
+   SELECT p.symbol, p.as_of, r.* FROM probes p
+   CROSS JOIN LATERAL public.sec_foreign_listing_at(p.cik, p.symbol, p.as_of) r
+   ORDER BY p.as_of, p.symbol;
+   ```
+
+   This read-only PowerShell check verifies the final7 artifact pins, v2 body,
+   counts, all saved semantic answers and seven later probes without reparsing
+   or writing the pinned artifacts:
+
+   ```powershell
+   @'
+   import hashlib, json, os
+   from pathlib import Path
+   import psycopg
+   from psycopg.rows import dict_row
+   from scripts.validate_sec_foreign_listing_final6 import semantic_answer
+   artifact = Path('C:/investintell-data/w1c-final7')
+   for relative, pin in (
+       ('manifest.json', '3ebbe15ed8339f59abe3bd0b85f74445b25b391c8eba8f74e9d5e790b9458aa4'),
+       ('evidence.jsonl', '5580abc486d88c872d42fd5b53a51aaf04a942b66ca0c6b5c853174b1ab2b977'),
+       ('validation/final7/snapshot.json', '00b7930353fd3c026e6e133cdb5c1530e37a824d3b6a07e9b8e9cee06e45328d'),
+   ):
+       assert hashlib.sha256((artifact / relative).read_bytes()).hexdigest() == pin, relative
+   queries = json.loads(Path('C:/investintell-data/w1c-final7/validation/final7/snapshot.json').read_text(encoding='utf-8'))['results']
+   expected = {(q['cik'], q['symbol'], q['as_of']): q['answer'] for q in queries}
+   assert len(queries) == len(expected) == 12155
+   mismatches = []
+   later_mismatches = []
+   later = (
+       (888721, 'TRIB', 'ambiguous', 'ads', 'resolved', 'ambiguous'),
+       (1110646, 'NTES', 'none', 'ads', 'resolved', 'none'),
+       (1485538, 'OSN', 'ambiguous', None, 'ambiguous', 'none'),
+       (1592560, 'VSA', 'ambiguous', 'ads', 'resolved', 'ambiguous'),
+       (1792267, 'BNR', 'ambiguous', 'ads', 'resolved', 'ambiguous'),
+       (1894693, 'SVRE', 'none', 'ads', 'resolved', 'none'),
+       (1935172, 'AIXI', 'ambiguous', 'ads', 'resolved', 'ambiguous'),
+   )
+   with psycopg.connect(os.environ['W1C_READBACK_DATABASE_URL'], row_factory=dict_row,
+                         options='-c default_transaction_read_only=on -c statement_timeout=30000') as conn:
+       body = conn.execute("SELECT md5(prosrc) AS md5, pg_get_userbyid(proowner) AS owner FROM pg_proc WHERE oid='public.sec_foreign_listing_at(bigint,text,date)'::regprocedure").fetchone()
+       assert body == {'md5': '60f5d1bf86a645a41fb7e23328c7ab8a', 'owner': 'worker_writer'}, body
+       counts = conn.execute('SELECT (SELECT count(*) FROM public.sec_foreign_listing_sources) AS sources, count(*) AS total, count(*) FILTER (WHERE retired_on IS NULL) AS active, count(*) FILTER (WHERE retired_on IS NOT NULL) AS retired, count(*) FILTER (WHERE retired_on IS NULL AND available_on=source_available_on) AS active_at_source_date FROM public.sec_foreign_listing_evidence').fetchone()
+       assert counts == {'sources': 47329, 'total': 59345, 'active': 29636, 'retired': 29709, 'active_at_source_date': 29636}, counts
+       reasons = conn.execute("SELECT coalesce(retired_reason,'NULL') AS reason, count(*) AS n FROM public.sec_foreign_listing_evidence WHERE retired_on IS NOT NULL GROUP BY retired_reason").fetchall()
+       reasons = {row['reason']: row['n'] for row in reasons}
+       assert reasons == {'parser_correction': 29709}, reasons
+       for offset in range(0, len(queries), 100):
+           batch = [{k: q[k] for k in ('cik', 'symbol', 'as_of')} for q in queries[offset:offset+100]]
+           rows = conn.execute('SELECT q.cik,q.symbol,q.as_of,r.* FROM jsonb_to_recordset(%s::jsonb) AS q(cik bigint,symbol text,as_of date) CROSS JOIN LATERAL public.sec_foreign_listing_at(q.cik,q.symbol,q.as_of) r', (json.dumps(batch),)).fetchall()
+           assert len(rows) == len(batch)
+           for row in rows:
+               key = (row['cik'], row['symbol'], row['as_of'].isoformat())
+               if semantic_answer(row) != expected[key]:
+                   mismatches.append({'key': key, 'expected': expected[key], 'actual': semantic_answer(row)})
+       for cik, symbol, status, kind, listing_status, ratio_status in later:
+           row = conn.execute('SELECT * FROM public.sec_foreign_listing_at(%s,%s,%s)', (cik, symbol, '2026-10-11')).fetchone()
+           wanted = dict(status=status, listed_type=kind, listing_status=listing_status, ratio_status=ratio_status, ratio=None)
+           if semantic_answer(row) != wanted:
+               later_mismatches.append({'key': [cik, symbol, '2026-10-11'], 'expected': wanted, 'actual': semantic_answer(row)})
+   print(json.dumps({'counts': counts, 'retired_by_reason': reasons, 'queries': len(queries), 'matches': len(queries)-len(mismatches), 'mismatches': mismatches, 'later_queries': len(later), 'later_matches': len(later)-len(later_mismatches), 'later_mismatches': later_mismatches}, indent=2))
+   raise SystemExit(bool(mismatches or later_mismatches))
+   '@ | python -
+   ```
+
+To roll back only v2, use
+`schemas/sec_foreign_listing_evidence_v2.rollback.sql`, SHA-256
+`1aef8c8168c40af826fb0f6b90440569c6933d0ff01ce74ee59c305e999a7bc2`,
+with the exact command:
+
+```powershell
+psql -X -v ON_ERROR_STOP=1 --dbname=$env:DATABASE_URL --file=schemas/sec_foreign_listing_evidence_v2.rollback.sql
+```
+
+As W1b does, it restores the exact v1 resolver, comments and privileges while
+retaining rows and the reason column/CHECK as audit data. V1 ignores the reason:
+parser-corrected old readings become visible before retirement again. The v2
+loader refuses the rolled-back resolver. Rollback uses the same transaction
+advisory lock as application; a queued loader checks the restored resolver after
+that lock is released. Reapply v2 to restore the rule.
 
 If an authorized operator needs to remove this evidence-only installation,
 apply `schemas/sec_foreign_listing_evidence.rollback.sql` with

@@ -625,7 +625,8 @@ def sql_database():
     if info.get("port") == "65432" or info.get("user") == "mcp_ro":
         pytest.fail("Refusing production connection for SQL tests")
     with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute((ROOT / "schemas" / "sec_foreign_listing_evidence.sql").read_text(encoding="utf-8"))
+        for name in ("sec_foreign_listing_evidence.sql", "sec_foreign_listing_evidence_v2.sql"):
+            conn.execute((ROOT / "schemas" / name).read_text(encoding="utf-8"))
         yield conn
 
 
@@ -642,6 +643,7 @@ def db(sql_database):
 
 def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=None,
         filed="2020-01-01", effective=None, available=None, retired=None, until=None,
+        retired_reason=None, schema="public",
         symbol="TSM", underlying_class=None, ordinary_candidate=True, cik=1046179,
         publication_floor_on=None, effective_date_explicit=None,
         adsh="0001193125-20-000001", form="20-F",
@@ -682,7 +684,10 @@ def add(db, *, kind="listed_type", listed_type="ads", source="cover_12b", ratio=
         available_on=available or max(tomorrow, publication_floor_on or tomorrow), retired_on=retired,
         loaded_on="2026-10-09", source_package=uuid4().hex,
     )
-    stmt = sql.SQL("INSERT INTO public.sec_foreign_listing_evidence ({}) VALUES ({}) RETURNING id").format(
+    if retired_reason is not None:
+        row["retired_reason"] = retired_reason
+    stmt = sql.SQL("INSERT INTO {} ({}) VALUES ({}) RETURNING id").format(
+        sql.Identifier(schema, "sec_foreign_listing_evidence"),
         sql.SQL(",").join(map(sql.Identifier, row)),
         sql.SQL(",").join(sql.Placeholder() for _ in row),
     )
@@ -706,8 +711,10 @@ def insert_real_parsed_rows(db, name):
     return ids
 
 
-def resolve(db, day, *, cik=1046179, symbol="TSM"):
-    row = db.execute("SELECT * FROM public.sec_foreign_listing_at(%s, %s, %s::date)", [cik, symbol, day]).fetchone()
+def resolve(db, day, *, cik=1046179, symbol="TSM", schema="public"):
+    from psycopg import sql
+    stmt = sql.SQL("SELECT * FROM {}(%s, %s, %s::date)").format(sql.Identifier(schema, "sec_foreign_listing_at"))
+    row = db.execute(stmt, [cik, symbol, day]).fetchone()
     assert row is not None
     return row
 
@@ -1193,10 +1200,20 @@ def test_nonordinary_later_corroboration_does_not_hide_a_genuine_ordinary_confli
 
 def test_foreign_evidence_schema_replay_is_additive_and_idempotent(sql_database):
     before = sql_database.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone()[0]
-    schema = (ROOT / "schemas" / "sec_foreign_listing_evidence.sql").read_text(encoding="utf-8")
-    sql_database.execute(schema)
-    sql_database.execute(schema)
+    before_resolver = sql_database.execute(
+        "SELECT pg_get_functiondef('public.sec_foreign_listing_at(bigint,text,date)'::regprocedure)"
+    ).fetchone()
+    schemas = [(ROOT / "schemas" / name).read_text(encoding="utf-8")
+               for name in ("sec_foreign_listing_evidence.sql", "sec_foreign_listing_evidence_v2.sql")]
+    # Fresh installations and replays require base followed by v2. Replaying
+    # base alone deliberately restores the v1 resolver and leaks into later tests.
+    for _ in range(2):
+        for schema in schemas:
+            sql_database.execute(schema)
     assert sql_database.execute("SELECT count(*) FROM public.sec_foreign_listing_evidence").fetchone()[0] == before
+    assert sql_database.execute(
+        "SELECT pg_get_functiondef('public.sec_foreign_listing_at(bigint,text,date)'::regprocedure)"
+    ).fetchone() == before_resolver
     constraints = sql_database.execute(
         "SELECT conname FROM pg_catalog.pg_constraint "
         "WHERE conrelid = 'public.sec_foreign_listing_evidence'::regclass "
@@ -3388,6 +3405,314 @@ def test_b1_financial_prospective_relative_clause_is_not_an_unconditional_announ
     )
     assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
     assert not rows or all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+def _restatement_conditional_program(db):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    pending = add_ratio(
+        db, (20, 1), filed="2022-10-24", symbol=None,
+        ratio_effectiveness_pending=True,
+        ratio_effectiveness_pending_text="Effective on the date announced by the Depositary.",
+        adsh="0001193125-22-000124",
+    )
+    conditional = add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-10-18",
+        effective="2022-11-04", adsh="0001193125-22-000123",
+        ratio_effectiveness_pending=True,
+        ratio_effectiveness_pending_text="Subject to shareholder approval.",
+        ratio_effectiveness_conditions=["shareholder_approval"],
+    )
+    return pending, conditional
+
+
+def _restatement_confirmation(db, **kwargs):
+    return add_ratio(
+        db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-10",
+        effective="2022-11-04", adsh="0001193125-22-000125",
+        ratio_effectiveness_confirmed=True,
+        ratio_effectiveness_confirmation_text="This ADS ratio change was completed on November 4.",
+        ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("reason", [None, "source", "parser_correction"])
+def test_v2_retirement_reason_controls_historical_listing_visibility(db, reason):
+    old = add(
+        db, listed_type="ordinary_direct", retired="2026-10-10",
+        retired_reason=reason,
+    )
+    new = add(
+        db, available="2020-01-02" if reason == "parser_correction" else "2026-10-10",
+    )
+    for day in ("2020-01-02", "2025-12-31", "2026-10-09"):
+        answer = resolve(db, day)
+        if reason == "parser_correction":
+            assert answer[1] == "ads" and new in answer[-1] and old not in answer[-1]
+        else:
+            assert answer[:4] == ("resolved", "ordinary_direct", 1, 1)
+            assert answer[-1] == [old]
+    answer = resolve(db, "2026-10-10")
+    assert answer[1] == "ads" and new in answer[-1] and old not in answer[-1]
+
+
+@pytest.mark.parametrize("reason", [None, "source", "parser_correction"])
+def test_v2_removed_confirmation_restates_only_a_parser_correction(db, reason):
+    pending, conditional = _restatement_conditional_program(db)
+    confirmation = _restatement_confirmation(
+        db, retired="2026-10-10", retired_reason=reason,
+    )
+    assert resolve(db, "2022-11-10")[0] == "ambiguous"
+    for day in ("2022-11-11", "2025-12-31", "2026-10-09"):
+        answer = resolve(db, day)
+        if reason == "parser_correction":
+            assert answer[0] == "ambiguous" and conditional in answer[-1]
+            assert confirmation not in answer[-1] and pending not in answer[-1]
+        else:
+            assert answer[:4] == ("resolved", "ads", 20, 1)
+            assert confirmation in answer[-1] and pending in answer[-1]
+    for day in ("2026-10-10", "2026-10-11"):
+        answer = resolve(db, day)
+        assert answer[0] == "ambiguous" and conditional in answer[-1]
+        assert confirmation not in answer[-1] and pending not in answer[-1]
+
+
+def test_v2_added_parser_confirmation_uses_public_availability_in_every_historical_answer(db):
+    pending, conditional = _restatement_conditional_program(db)
+    # The former parser read the same document as a bare ratio corroboration.
+    # The corrected reading adds the actual-completion proof at its public date.
+    obsolete = add_ratio(
+        db, (20, 1), source="cover_footnote", filed="2022-11-10",
+        adsh="0001193125-22-000125", retired="2026-10-10",
+        retired_reason="parser_correction",
+    )
+    confirmation = _restatement_confirmation(db, available="2022-11-11")
+    assert resolve(db, "2022-11-10")[0] == "ambiguous"
+    for day in ("2022-11-11", "2025-12-31", "2026-10-09", "2026-10-10", "2026-10-11"):
+        answer = resolve(db, day)
+        assert answer[:4] == ("resolved", "ads", 20, 1)
+        assert pending in answer[-1] and confirmation in answer[-1]
+        assert obsolete not in answer[-1]
+    assert db.execute(
+        "SELECT source_available_on, available_on, loaded_on "
+        "FROM public.sec_foreign_listing_evidence WHERE id = %s", [confirmation],
+    ).fetchone() == (dt.date(2022, 11, 11), dt.date(2022, 11, 11), dt.date(2026, 10, 9))
+
+
+@pytest.mark.parametrize("branch", [
+    "listed_type", "registration", "cover_corroboration", "confirmation",
+    "settling_authority", "same_day_confirmation", "future_date_bound", "complete_cover",
+])
+def test_v2_parser_retired_reading_is_equivalent_to_absence_in_all_resolver_branches(db, branch):
+    # Compare to physical absence so a hidden old reading cannot participate in
+    # supersession, authority matching, future bounds, or returned evidence IDs.
+    if branch == "listed_type":
+        add(db)
+        corrected = add(db, listed_type="ordinary_direct")
+        days = ("2020-01-02", "2025-12-31", "2026-10-11")
+    elif branch in {"registration", "cover_corroboration"}:
+        add(db)
+        registration = add_ratio(db)
+        corroboration = add_ratio(db, source="cover_footnote")
+        corrected = registration if branch == "registration" else corroboration
+        days = ("2020-01-02", "2025-12-31", "2026-10-11")
+    elif branch == "confirmation":
+        _restatement_conditional_program(db)
+        corrected = _restatement_confirmation(db)
+        days = ("2022-11-11", "2025-12-31", "2026-10-11")
+    elif branch == "settling_authority":
+        _gate_old_ratio_pair(db)
+        _gate_conflicted_f6_registration(db)
+        corrected = add_ratio(
+            db, (20, 1), source="ratio_change_6k", form="6-K", filed="2025-02-21",
+            effective="2025-02-19", adsh="0001193125-25-000456",
+            ratio_effectiveness_confirmed=True,
+            ratio_effectiveness_confirmation_text="This ADS ratio change was completed on February 19.",
+            ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+        )
+        days = ("2025-02-22", "2025-12-31", "2026-10-11")
+    elif branch == "same_day_confirmation":
+        add(db, filed="2022-01-01", underlying_class="class_a")
+        add_ratio(db, (2, 1), filed="2022-01-01", underlying_class="class_a")
+        add_ratio(db, (2, 1), source="cover_footnote", filed="2022-01-01", underlying_class="class_a")
+        _pending_ratio_registration(db, (20, 1), filed="2022-11-28", underlying_class="class_a")
+        corrected = add_ratio(
+            db, (20, 1), source="ratio_change_6k", form="6-K", filed="2022-11-30",
+            effective="2022-11-28", underlying_class="class_a", adsh="0001193125-22-000456",
+            ratio_effectiveness_confirmed=True,
+            ratio_effectiveness_confirmation_text="This ADS ratio change was completed on November 28.",
+            ratio_effectiveness_confirmed_conditions=["ratio_effective"],
+        )
+        days = ("2022-12-01", "2025-12-31", "2026-10-11")
+    elif branch == "future_date_bound":
+        _future_ratio_program(db)
+        corrected = add_ratio(
+            db, (20, 1), source="ratio_change_6k", filed="2022-10-18",
+            effective="2022-11-04", underlying_class="class_a",
+        )
+        days = ("2022-10-25", "2022-11-03", "2022-11-04", "2026-10-11")
+    else:
+        add(db, listed_type="ordinary_direct")
+        corrected = add(db, listed_type="ordinary_direct", symbol="NEW", filed="2025-01-01")
+        days = ("2025-01-02", "2025-12-31", "2026-10-11")
+    before = [resolve(db, day) for day in days]
+    db.execute(
+        "UPDATE public.sec_foreign_listing_evidence "
+        "SET retired_on = DATE '2026-10-10', retired_reason = 'parser_correction' WHERE id = %s",
+        [corrected],
+    )
+    restated = [resolve(db, day) for day in days]
+    db.execute("DELETE FROM public.sec_foreign_listing_evidence WHERE id = %s", [corrected])
+    absent = [resolve(db, day) for day in days]
+    assert restated == absent
+    assert any(old != new for old, new in zip(before, absent)), branch
+    assert all(corrected not in answer[-1] for answer in restated)
+
+
+def _restatement_catalog(conn, schema):
+    tables = conn.execute(
+        "SELECT c.relname, pg_get_userbyid(c.relowner), c.relacl::text, obj_description(c.oid, 'pg_class') "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = %s AND c.relname IN "
+        "('sec_foreign_listing_sources', 'sec_foreign_listing_evidence', 'sec_foreign_listing_evidence_id_seq') "
+        "ORDER BY c.relname", [schema],
+    ).fetchall()
+    function = conn.execute(
+        "SELECT pg_get_functiondef(p.oid), pg_get_userbyid(p.proowner), p.proacl::text, "
+        "obj_description(p.oid, 'pg_proc') "
+        "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+        "WHERE n.nspname = %s AND p.proname = 'sec_foreign_listing_at'", [schema],
+    ).fetchall()
+    return tables, function
+
+
+def test_v2_migration_is_idempotent_and_rollback_restores_exact_loaded_v1(sql_database):
+    psycopg = pytest.importorskip("psycopg")
+    from psycopg import sql
+
+    conn = sql_database
+    base_path = ROOT / "schemas" / "sec_foreign_listing_evidence.sql"
+    assert hashlib.sha256(base_path.read_bytes()).hexdigest() == (
+        "f334d08d3d3b496bd613495d59ee2a3a12365f58c422b3d51bd77530e61d2957"
+    )
+    schema = "sec_foreign_v1_" + uuid4().hex
+    conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    for role in ("worker_writer", "app_runtime", "app_analytics_ro", "mcp_ro"):
+        if not conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", [role]).fetchone():
+            conn.execute(sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role)))
+    v1, v2, rollback = (
+        (ROOT / "schemas" / name).read_text(encoding="utf-8").replace("public.", schema + ".")
+        for name in ("sec_foreign_listing_evidence.sql", "sec_foreign_listing_evidence_v2.sql",
+                     "sec_foreign_listing_evidence_v2.rollback.sql")
+    )
+    evidence = sql.Identifier(schema, "sec_foreign_listing_evidence")
+    sources = sql.Identifier(schema, "sec_foreign_listing_sources")
+    rows = sql.SQL("SELECT to_jsonb(e) - 'retired_reason' FROM {} e ORDER BY id").format(evidence)
+    audit_rows = sql.SQL("SELECT to_jsonb(e) FROM {} e ORDER BY id").format(evidence)
+    source_rows = sql.SQL("SELECT to_jsonb(s) FROM {} s ORDER BY source_package").format(sources)
+    try:
+        conn.execute(v1)
+        current = add(conn, schema=schema, symbol="KEEP", listed_type="ordinary_direct")
+        add(conn, schema=schema, symbol="GONE", listed_type="ordinary_direct", retired="2025-01-01")
+        conn.execute(
+            sql.SQL(
+                "INSERT INTO {} (source_package, adsh, cik, source_url, source_sha256, parser_version, "
+                "first_loaded_on, last_loaded_on, evidence_count) "
+                "VALUES ('loaded-v1', '0001193125-20-000001', 1046179, "
+                "'https://www.sec.gov/Archives/edgar/data/test', %s, 'test-v1', "
+                "DATE '2026-10-09', DATE '2026-10-09', 2)"
+            ).format(sources), ["a" * 64],
+        )
+        loaded = conn.execute(rows).fetchall()
+        loaded_sources = conn.execute(source_rows).fetchall()
+        v1_catalog = _restatement_catalog(conn, schema)
+        days = ("2020-01-02", "2024-12-31", "2025-01-01", "2026-10-09")
+        answers = [resolve(conn, day, symbol=symbol, schema=schema)
+                   for symbol in ("KEEP", "GONE") for day in days]
+        filenode = conn.execute("SELECT pg_relation_filenode(%s::regclass)",
+                                [schema + ".sec_foreign_listing_evidence"]).fetchone()
+        conn.execute(v2)
+        v2_catalog = _restatement_catalog(conn, schema)
+        conn.execute(v2)
+        assert _restatement_catalog(conn, schema) == v2_catalog
+        assert conn.execute(rows).fetchall() == loaded
+        assert conn.execute(source_rows).fetchall() == loaded_sources
+        assert conn.execute("SELECT pg_relation_filenode(%s::regclass)",
+                            [schema + ".sec_foreign_listing_evidence"]).fetchone() == filenode
+        assert conn.execute(sql.SQL("SELECT count(*) FROM {} WHERE retired_reason IS NOT NULL").format(evidence)
+                            ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT convalidated FROM pg_constraint WHERE conrelid = %s::regclass "
+            "AND conname = 'sec_foreign_listing_evidence_retired_reason_check'",
+            [schema + ".sec_foreign_listing_evidence"],
+        ).fetchall() == [(False,)]
+        assert [resolve(conn, day, symbol=symbol, schema=schema)
+                for symbol in ("KEEP", "GONE") for day in days] == answers
+        for bad_reason, retired_on in (("other", "2026-10-10"), ("parser_correction", None)):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                with conn.transaction():
+                    conn.execute(
+                        sql.SQL("UPDATE {} SET retired_reason = %s, retired_on = %s WHERE id = %s").format(evidence),
+                        [bad_reason, retired_on, current],
+                    )
+        assert conn.execute(
+            "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = %s::regclass",
+            [schema + ".sec_foreign_listing_evidence"],
+        ).fetchone() == ("worker_writer",)
+        assert conn.execute(
+            "SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid = %s::regprocedure",
+            [schema + ".sec_foreign_listing_at(bigint,text,date)"],
+        ).fetchone() == ("worker_writer",)
+        for reader in ("app_runtime", "app_analytics_ro", "mcp_ro"):
+            for table in ("sec_foreign_listing_evidence", "sec_foreign_listing_sources"):
+                assert conn.execute(
+                    "SELECT has_table_privilege(%s, %s, 'SELECT'), has_table_privilege(%s, %s, 'INSERT'), "
+                    "has_table_privilege(%s, %s, 'UPDATE'), has_table_privilege(%s, %s, 'DELETE')",
+                    [reader, schema + "." + table] * 4,
+                ).fetchone() == (True, False, False, False)
+            assert conn.execute(
+                "SELECT has_function_privilege(%s, %s, 'EXECUTE')",
+                [reader, schema + ".sec_foreign_listing_at(bigint,text,date)"],
+            ).fetchone() == (True,)
+        assert conn.execute(
+            "SELECT count(*) FROM pg_class c "
+            "CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a "
+            "WHERE c.oid = ANY(%s::regclass[]) AND a.grantee = 0",
+            [[schema + ".sec_foreign_listing_evidence", schema + ".sec_foreign_listing_sources"]],
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT count(*) FROM pg_proc p "
+            "CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a "
+            "WHERE p.oid = %s::regprocedure AND a.grantee = 0",
+            [schema + ".sec_foreign_listing_at(bigint,text,date)"],
+        ).fetchone() == (0,)
+        conn.execute(
+            sql.SQL("UPDATE {} SET retired_on = DATE '2026-10-10', retired_reason = 'parser_correction' "
+                    "WHERE id = %s").format(evidence), [current],
+        )
+        assert resolve(conn, "2024-12-31", symbol="KEEP", schema=schema)[0] == "none"
+        corrected = conn.execute(audit_rows).fetchall()
+        conn.execute(rollback)
+        # W1b-style rollback retains its audit column, reason values, and CHECK.
+        # Every v1 object's definition, comment, ownership, and ACL is exact.
+        assert _restatement_catalog(conn, schema) == v1_catalog
+        assert conn.execute(audit_rows).fetchall() == corrected
+        assert conn.execute(source_rows).fetchall() == loaded_sources
+        assert conn.execute(
+            "SELECT count(*) FROM pg_constraint WHERE conrelid = %s::regclass "
+            "AND conname = 'sec_foreign_listing_evidence_retired_reason_check'",
+            [schema + ".sec_foreign_listing_evidence"],
+        ).fetchone() == (1,)
+        assert [resolve(conn, day, symbol=symbol, schema=schema)
+                for symbol in ("KEEP", "GONE") for day in days] == answers
+        assert resolve(conn, "2026-10-11", symbol="KEEP", schema=schema)[0] == "none"
+        conn.execute(v2)
+        assert resolve(conn, "2024-12-31", symbol="KEEP", schema=schema)[0] == "none"
+        assert conn.execute(audit_rows).fetchall() == corrected
+    finally:
+        conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
 
 
 @pytest.mark.parametrize("sentence", [
