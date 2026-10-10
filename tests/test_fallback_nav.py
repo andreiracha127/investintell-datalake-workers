@@ -90,9 +90,11 @@ def test_typed_yahoo_preserves_adjusted_raw_boundary():
     series = fb.parse_yahoo_observations(payload)
     assert [o.kind for o in series] == ["adjusted", "raw"]
     rows = ii.build_rows(series, [("iid", "USD")], source="yahoo")
-    assert rows[1]["return_source_boundary"] is True
-    assert rows[1]["return_start_date"] is None
+    # No return across the kind switch, so no lineage either (source-lineage-v1).
     assert rows[1]["return_1d"] is None
+    assert all(rows[1][field] is None for field in (
+        "return_start_date", "return_source_boundary", "return_uses_repaired_nav",
+        "return_semantics", "return_verification_status"))
 
 
 def test_typed_fallback_distinguishes_http_failure_and_malformed_payload(monkeypatch):

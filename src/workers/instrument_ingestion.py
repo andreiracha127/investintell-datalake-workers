@@ -175,7 +175,7 @@ def build_rows(series: list[tuple[_dt.date, float | None]] | tuple[NavObservatio
                 "source_nav_kind": obs.kind,
                 "nav_repair_kind": repair,
                 "return_start_date": prev_date if compatible else None,
-                "return_source_boundary": (prev_kind != obs.kind if prev_kind is not None else None),
+                "return_source_boundary": (prev_kind != obs.kind) if compatible else None,
                 "return_uses_repaired_nav": (prev_repaired or clean.repaired[idx]) if compatible else None,
                 "return_semantics": "observed_interval_log_ratio" if compatible else None,
                 "return_verification_status": "unverified" if compatible else None,
@@ -586,8 +586,9 @@ def _write_instrument_nav_tx(conn, rows: list[dict[str, Any]], *,
                                if compatible else None)
                         values = (
                             ret, prev["nav_date"] if compatible else None,
-                            boundary, (prev["nav_repair_kind"] in REPAIRED_NAV_KINDS
-                                       or persisted["nav_repair_kind"] in REPAIRED_NAV_KINDS)
+                            boundary if compatible else None,
+                            (prev["nav_repair_kind"] in REPAIRED_NAV_KINDS
+                             or persisted["nav_repair_kind"] in REPAIRED_NAV_KINDS)
                             if compatible else None,
                             "observed_interval_log_ratio" if compatible else None,
                             "unverified" if compatible else None,
