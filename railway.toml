@@ -239,6 +239,22 @@
 #                           republished by re-running nav-current-daily-chain.
 #                           Exit 0 only when every planned fund reconciled.
 #                           Runbook: docs/runbooks/nav-rebase-cohort.md.
+#   nav_return_lineage_repair_lane
+#                        -> NO CRON, EVER. One-off governed return-lineage flag
+#                           repair on `maintenance-runner` (next to the DB, ~9,600
+#                           instruments). Calls the unchanged operator library
+#                           in-process: one plan, allowlists of <= 20, one re-plan
+#                           for PLAN_STALE, stop on exit 3/4/5, CLOCK_SKEW,
+#                           COMMIT_UNKNOWN or 3 failed batches in a row. REFUSES to
+#                           run unless NAV_LINEAGE_REPAIR_CONFIRM=
+#                           nav_return_lineage_repair_v1. Unset it after the run.
+#                           Env: WORKER=nav_return_lineage_repair_lane,
+#                           NAV_LINEAGE_REPAIR_CONFIRM, TIINGO_API_KEY, and the DSN:
+#                           NAV_READINESS_DATABASE_URL, or DATABASE_URL only with
+#                           NAV_LINEAGE_REPAIR_ALLOW_DATABASE_URL=1. Canary:
+#                           WORKER_LIMIT=20 with NAV_LINEAGE_REPAIR_VALIDATE_ONLY=1.
+#                           Run BEFORE the daily chain and shortly before a full
+#                           risk run. Runbook: docs/runbooks/nav-return-lineage-repair.md.
 #
 # nixpacks auto-detects Python via requirements.txt.
 

@@ -164,6 +164,7 @@ jobs:
             tests/test_rr1_ingestion.py
             tests/test_run_worker_calc_date.py
             tests/test_nav_rebase_cohort.py
+            tests/test_nav_return_lineage_repair_lane.py
             tests/test_nav_coverage.py
             tests/test_sec_derived_work_units.py
             tests/test_sec_regulatory_contract.py
@@ -653,6 +654,7 @@ jobs:
               tests/test_nav_economic_rebase_db.py
               tests/test_nav_rebase_cohort_db.py
               tests/test_nav_return_lineage_repair_db.py
+              tests/test_nav_return_lineage_repair_lane_db.py
               tests/test_instrument_ingestion.py
               tests/test_nav_snapshot_lifecycle_db.py
               tests/test_nav_provider_session_db.py
