@@ -1,0 +1,112 @@
+[
+  {
+    "symbol": "NVO",
+    "cik": 353278,
+    "adsh": "0001628280-25-003920",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/353278/000162828025003920/nvo-20241231.htm",
+    "source_sha256": "dba04b7273b4c0c2602854153c739b088a2a6fda0ace3256f2ab3c5a310d214c",
+    "source_text": "Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the Annual Report: A shares, nominal value DKK 0.10 each: 1,074,872,000 B shares, nominal value DKK 0.10 each: 3,390,128,000 ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "fd582019fdbc865ca5d685ec8e17bca1fbcbbe27b1a2c1b23a8d9de27dfc6bab"
+  },
+  {
+    "symbol": "ASML",
+    "cik": 937966,
+    "adsh": "0000937966-25-000009",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/937966/000093796625000009/asml-20241231.htm",
+    "source_sha256": "48cd4fa41bcd63245bfd1b071e434e7d1bdefb81111fc00a2b99587372ee62d3",
+    "source_text": "Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report. 393,283,720 Ordinary Shares (nominal value €0.09 per share) ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "bc8c5bd54361b2f2b5581bae687a64633590471dc2f1d061ac2f9a241cdf4462"
+  },
+  {
+    "symbol": "SAP",
+    "cik": 1000184,
+    "adsh": "0001104659-25-017815",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1000184/000110465925017815/sap-20241224x20f.htm",
+    "source_sha256": "4e5e5ee1f3ffd50be0fbbed2faaaee69fb6d12b87270f19369fbe7373333fd3a",
+    "source_text": "Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report: Ordinary Shares, without nominal value: 1,228,504,232 (as of December 31, 2024)** ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "a952ba8d1b2ae91ca2bc1ad9672cb3a2d2f545b5bd0b55a503ebac72b8d06317"
+  },
+  {
+    "symbol": "QGEN",
+    "cik": 1015820,
+    "adsh": "0001015820-25-000027",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1015820/000101582025000027/qgen-20241231.htm",
+    "source_sha256": "833673ced90e45b278e32aae9df4304e64b3f6723bc52f53d9d58b0c24221b8d",
+    "source_text": "[cover prompt absent] qgen-20241231 UNITED STATES SECURITIES AND EXCHANGE COMMISSION Washington, D.C. 20549 FORM 20-F ☐ REGISTRATION STATEMENT PURSUANT TO SECTION 12(b) OR (g) OF THE SECURITIES EXCHANGE ACT OF 1934 or ☒ ANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934 For the fiscal year ended December 31 , 2024 or ☐ TRANSITION REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934 For the transition period from to or ☐ SHELL COMPANY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934 Date of event requiring this shell company report Commission File Number 001-38332 QIAGEN N.V. (Exact name of Registrant as specified in its charter) n/a (Translation of Registrant’s name in English) The Netherlands (Jurisdiction of incorporation or organization) Hulsterweg 82 5912 PL Venlo The Netherlands 011-31-77-355-6600 (Address of principal executive offices) _____________________________________________ Roland Sackers , Tel: 011-31-77-355-6600, Fax: 011-31-77-355-6658 QIAGEN N.V., Hulsterweg 82 , 5912 PL Venlo , The Netherlands (Name, Telephone, E-mail and/or Facsimile number and Address of Company Contact Person) _____________________________________________ Securities registered or to be registered pursuant to Section 12(b) of the Act: Title of class: Trading Symbol Name of each exchange on which registered: Common Shares, par value EUR 0.01 per share QGEN New York Stock Exchange Securities registered or to be registered pursuant to Section 12(g) of the Act: None Securities for which there is a reporting obligation pursuant to Section 15(d) of the Act: None _____________________________________________ The number of outstanding Common Shares as of December 31, 2024 was 222,290,848 . Indicate by check mark if the registrant is a well-known seasoned issuer, as defined in Rule 405 of the Securities Act. ☒ Yes ☐ No If this report is an annual or transition report, indicate by check mark if the registrant is not require",
+    "prompt_found": false,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "4d66fe0d50d1acba8a194b159ad414127c52d8cec56ac63fb19e8af4dafccdfa"
+  },
+  {
+    "symbol": "CNQ",
+    "cik": 1017413,
+    "adsh": "0001017413-25-000024",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1017413/000101741325000024/cnq-20241231.htm",
+    "source_sha256": "6c4bcb3f9b75cc14ae25cbe375628222327234b3a1e5a779251c3426059275c6",
+    "source_text": "Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report. 2,102,996,000 Common Shares outstanding as of December 31, 2024 ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "0c5282773f38f6318a182876a30de41a47b789945acc415c090a8d596eb37115"
+  },
+  {
+    "symbol": "TSM",
+    "cik": 1046179,
+    "adsh": "0001193125-25-083423",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1046179/000119312525083423/d896993d20f.htm",
+    "source_sha256": "8239f280b4e9b70fedddd536db181f6ea96fd898ceb2b93cacd730c6aaae2c1e",
+    "source_text": "Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report. As of December 31, 2024, 25,932,733,242 Common Shares, par value NT$10 each were outstanding. ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "346b842922d4ce213f3e780329ef076277afe7828c8f0af5e8f693ea9e46dd02"
+  },
+  {
+    "symbol": "NTES",
+    "cik": 1110646,
+    "adsh": "0001410578-25-000728",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1110646/000141057825000728/ntes-20241231x20f.htm",
+    "source_sha256": "700b5e8dcbf9a8e77c16f1ee73af968b732d6e88a6ba3701a5ddcf185fd244e8",
+    "source_text": "Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report: 3,167,959,016 ordinary shares, par value US$0.0001 per share. ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "b770da543a9194265205e44cfc2cbc3a1df7a7a042e2ce0e899c1d2595eda47e"
+  },
+  {
+    "symbol": "BIDU",
+    "cik": 1329099,
+    "adsh": "0001193125-25-066199",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1329099/000119312525066199/d853848d20f.htm",
+    "source_sha256": "ed3260c2dea5525912126b1f7dadb05f840969e0825e1b761fabd7d037636d67",
+    "source_text": "Indicate the number of outstanding shares of each of the Issuer’s classes of capital or common stock as of the close of the period covered by the annual report 2,239,234,372 Class A ordinary shares and 524,340,320 Class B ordinary shares, par value US$0.000000625 per share, as of December 31, 2024. ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "bd5e7c04cb9cf06aa4a936557fea5ecf090026ffaa748acefbcac4fd706e1a40"
+  },
+  {
+    "symbol": "ZIM",
+    "cik": 1654126,
+    "adsh": "0001178913-25-000793",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1654126/000117891325000793/zk2532795.htm",
+    "source_sha256": "008c0d2e1cc0a5880b10e13a077c62d290d47b2e124fa0132581c56caa6d1ee2",
+    "source_text": "Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report: 120,423,333 . ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "26e36df3f2be9bb209e09651c0492154cabe26402094b756c81dbd6194d9cf0d"
+  },
+  {
+    "symbol": "DLO",
+    "cik": 1846832,
+    "adsh": "0000950170-25-058197",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/1846832/000095017025058197/dlo-20241231.htm",
+    "source_sha256": "127764a1b5c0d43842f858f3082d313edd83b94239f5f0cb29443a8770947ce6",
+    "source_text": "Indicate the number of outstanding shares of each of the issuer’s classes of capital or common stock as of the close of the period covered by the annual report: 285,475,136 Class A and Class B common shares, as of December 31, 2024 ",
+    "prompt_found": true,
+    "period_end": "2024-12-31",
+    "excerpt_sha256": "65028cbdff7d6ec5496a557a0d3e72e42bdc75d20b32d03c7569c3127a3f59c2"
+  }
+]

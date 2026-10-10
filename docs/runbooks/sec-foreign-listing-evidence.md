@@ -593,3 +593,18 @@ apply `schemas/sec_foreign_listing_evidence.rollback.sql` with
 `psql -X -v ON_ERROR_STOP=1`. It removes only the new function and two tables;
 it does not modify any W1 table or function. Retain the immutable external
 source artifacts and validation report before removing database history.
+
+## Positive cover share-class census
+
+The separate [share census runbook](sec-foreign-share-census.md) documents the
+20-F/40-F capital-stock statement, completeness and conflict rules, and the
+additive `sec_foreign_share_census_at(cik,D)` evidence API. Its offline loader
+reads this pipeline's verified raw cache and manifest with no discovery or
+network access. Census publication can use that loader's apply-only path.
+
+An authorized combined publication may supply `--census-manifest` and `--census`
+to this loader together with `--apply`. Both artifacts are verified and
+reconciled in one transaction under the existing advisory lock. A census
+failure rolls back that transaction. Omitting these options preserves the
+existing listing-evidence apply path. This addition changes no sizing API;
+incomplete or conflicting census evidence cannot establish class scope.
