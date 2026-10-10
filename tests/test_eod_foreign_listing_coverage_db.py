@@ -535,11 +535,12 @@ def test_truncated_history_is_backfilled_into_compressed_chunks_without_rewrites
     assert snapshot(db, "TRNC", *untouched) == existing       # nothing rewritten
     prefix = len(list(bdays(D(2005, 1, 3), D(2024, 5, 31))))
     assert status_of(db, "TRNC") == (
-        "history_complete", f"inserted {prefix} missing sessions", D(2005, 1, 3))
+        "history_complete", f"inserted {prefix} missing sessions; history_from=2005-01-03",
+        D(2005, 1, 3))
     # Rows that reach the start still get the pass: verified, nothing inserted.
     assert tiingo.of("prices", "CMPL")[-1] == ("prices", "CMPL", D(2010, 1, 4), AS_OF)
     assert status_of(db, "CMPL")[0] == "history_complete"
-    assert status_of(db, "CMPL")[1].endswith("0 missing")
+    assert status_of(db, "CMPL")[1].endswith("0 missing; history_from=2010-01-04")
     assert stats["foreign_history"]["completed"] == 2
     assert stats["foreign_history"]["verified_without_insert"] == 1
 
@@ -562,14 +563,18 @@ def test_interrupted_load_commits_nothing_and_resume_refetches_everything(db, ti
     tiingo.listings["TRNC"] = {"start": D(2000, 1, 3), "end": AS_OF}
     prefix_days = list(bdays(D(2000, 1, 3), D(2024, 1, 1)))
     poison = prefix_days[700]                     # inside the second batch
-    tiingo.bad[("TRNC", poison)] = {"volume": 10**20}   # bigint overflow: the load dies
+    # A valid bar the database refuses: the load dies mid-way. (An out-of-range
+    # value no longer reaches the insert; the validator bounds it.)
+    db.conn.execute(sql.SQL(
+        "ALTER TABLE eod_prices ADD CONSTRAINT poison CHECK (NOT (ticker = 'TRNC' AND date = {}))"
+    ).format(sql.Literal(poison)))
 
     stats = run(db)["foreign_history"]          # the phase survives the failure
     assert history_of(db, "TRNC")[0] == D(2024, 1, 2)       # batch one rolled back too
-    assert status_of(db, "TRNC")[:2] == ("history_incomplete", "unexpected:NumericValueOutOfRange")
-    assert stats["error_tickers"] == {"TRNC": "unexpected:NumericValueOutOfRange"}
+    assert status_of(db, "TRNC")[:2] == ("history_incomplete", "unexpected:CheckViolation")
+    assert stats["error_tickers"] == {"TRNC": "unexpected:CheckViolation"}
 
-    del tiingo.bad[("TRNC", poison)]
+    db.conn.execute("ALTER TABLE eod_prices DROP CONSTRAINT poison")
     db.conn.execute("UPDATE eod_warmer_ticker_status SET retry_after = now() - interval '1 second'")
     tiingo.requests.clear()
     stats = run(db)["foreign_history"]
@@ -596,7 +601,8 @@ def test_partial_history_from_an_older_writer_is_verified_not_assumed(db, tiingo
     stats = run(db)["foreign_history"]
     assert stats["history_fetches"] == 1
     assert ("prices", "PART", start, AS_OF) in tiingo.requests
-    assert status_of(db, "PART")[:2] == ("history_complete", "inserted 700 missing sessions")
+    assert status_of(db, "PART")[:2] == (
+        "history_complete", "inserted 700 missing sessions; history_from=2019-01-02")
     assert missing_dates(db, "PART", start, AS_OF) == []
 
 
@@ -749,8 +755,10 @@ def test_raw_close_difference_is_a_conflict(db, tiingo):
     resolved_lines(db, "RAWD")
     instruments_row(db, "RAWD", name="Raw Co")
     store_rows(db, "RAWD", D(2024, 6, 11), D(2026, 10, 2))
-    db.conn.execute("UPDATE eod_prices SET close = close * 2"
-                    " WHERE ticker = 'RAWD' AND date = '2025-03-03'")
+    # A coherent stored bar on another raw basis (an incoherent one would be
+    # refused earlier, as stored_bar_invalid).
+    db.conn.execute("UPDATE eod_prices SET open = open * 2, high = high * 2, low = low * 2,"
+                    " close = close * 2 WHERE ticker = 'RAWD' AND date = '2025-03-03'")
     tiingo.listings["RAWD"] = {"start": D(2005, 1, 3), "end": AS_OF}
 
     stats = run(db)["foreign_history"]
@@ -1442,3 +1450,92 @@ def test_gate3_completion_and_history_rows_are_written_only_by_promote(db, tiing
     assert seen["history_insert"] >= 1 and seen["complete_write"] == 2
     assert status_of(db, "PLOD")[0] == status_of(db, "PVER")[0] == "history_complete"
     assert status_of(db, "PBAD")[0] == "history_incomplete"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Gate 4: the whole stored row, retained-bar validation, the calendar domain
+# ──────────────────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize(("col", "value"), [
+    ("volume", -1), ("adj_volume", -1), ("div_cash", 0.5), ("split_factor", 0)])
+def test_gate4_promote_refuses_a_concurrent_change_to_any_stored_column(db, col, value):
+    """Gate 4 repro: after the verification snapshot, another writer (Light's
+    ingest order: the instruments upsert, then the price row, one transaction)
+    changes a column outside OHLC and commits. promote() re-reads all twelve
+    columns under its lock and refuses."""
+    instruments_row(db, "SNAP", name="baseline")
+    store_rows(db, "SNAP", AS_OF, AS_OF)
+    with psycopg.connect(db.dsn) as conn, psycopg.connect(db.dsn) as writer:
+        w.ensure_status_table(conn)
+        conn.commit()
+        snap = w._stored_rows(conn, "SNAP", through=AS_OF)
+        provider = [{"date": AS_OF.isoformat(), **{key: snap[AS_OF][c] for c, key in v.EOD_FIELDS}}]
+        verdict = v.validate_series("SNAP", (AS_OF, AS_OF), provider, snap, v.xnys_calendar())
+        assert verdict.status == v.VERDICT_COMPLETE
+        writer.execute("UPDATE instruments SET name = 'light metadata' WHERE ticker = 'SNAP'")
+        writer.execute(sql.SQL("UPDATE eod_prices SET {} = %s WHERE ticker = 'SNAP'").format(
+            sql.Identifier(col)), (value,))
+        writer.commit()
+        assert w.promote(conn, "SNAP", verdict, through=AS_OF, history_start=AS_OF) is None
+    assert status_of(db, "SNAP") is None
+
+
+def test_gate4_promote_refuses_a_concurrent_change_through_the_entrypoint(db, tiingo):
+    """The same, end to end: the change lands while the price request is in
+    flight; the ticker is recorded stored_rows_changed_during_pass."""
+    gate_line(db, tiingo, "SNPE", stored=True)
+
+    def other_writer(start, end):
+        if start == G_START:
+            db.conn.execute("UPDATE eod_prices SET div_cash = 0.5"
+                            " WHERE ticker = 'SNPE' AND date = %s", (D(2026, 8, 20),))
+
+    tiingo.hooks["SNPE"] = other_writer
+    run(db)
+    assert status_of(db, "SNPE")[:2] == ("history_incomplete", "stored_rows_changed_during_pass")
+
+
+@pytest.mark.parametrize(("update", "problem"), [
+    ("high = open * 0.9999995", "ohlc_order"),           # within 1e-6 of Tiingo, incoherent
+    ("close = 'Infinity'", "non_numeric_close"),
+    ("adj_close = 'Infinity'", "non_numeric_adjClose"),
+    ("high = 'Infinity'", "non_numeric_high"),
+    ("volume = -1", "negative"),
+    ("split_factor = 0", "non_positive"),
+])
+def test_gate4_an_invalid_retained_stored_bar_is_a_conflict(db, tiingo, update, problem):
+    gate_line(db, tiingo, "SINV", stored=True)
+    day = D(2026, 8, 20)                                  # outside the ring's overlap
+    db.conn.execute(f"UPDATE eod_prices SET {update} WHERE ticker = 'SINV' AND date = %s", (day,))
+    stats = run(db)["foreign_history"]
+    assert status_of(db, "SINV")[:2] == ("history_conflict", f"stored_bar_invalid: {problem} on {day}")
+    assert stats["fail_closed"] == 1 and stats["completed"] == 0
+
+
+def test_gate4_history_before_1970_is_not_requested_and_not_an_error(db, tiingo):
+    """Tiingo's startDate is 1962-01-02: the pass requests from 1970-01-01 (the
+    certified calendar domain), loads from the first session (1970-01-02),
+    certifies and records the effective start and Tiingo's own.
+
+    The history phase runs as of 1970-12-31 (``cover_foreign_history``, the
+    function run() calls; run()'s W1c source set has no 1970 listings) so the
+    promotion touches 12 monthly chunks: a 1970-to-date promotion locks ~690
+    chunks in one transaction, which fits production's lock table (256 x 100
+    connections) but not the CI service container's (128 x 25)."""
+    instruments_row(db, "OLDT", name="Old Co")
+    tiingo.listings["OLDT"] = {"start": D(1962, 1, 2), "end": AS_OF}
+    as_of = D(1970, 12, 31)
+    with psycopg.connect(db.dsn) as conn, w.TiingoClient() as client:
+        w.ensure_status_table(conn)
+        conn.commit()
+        stats = w.cover_foreign_history(conn, client, ["OLDT"], as_of=as_of, cap=25)
+    assert ("prices", "OLDT", D(1970, 1, 1), as_of) in tiingo.requests
+    assert not [r for r in tiingo.of("prices", "OLDT") if r[2] < D(1970, 1, 1)]
+    n = len(bdays(D(1970, 1, 1), as_of))
+    assert history_of(db, "OLDT") == (D(1970, 1, 2), as_of, n)
+    assert status_of(db, "OLDT") == (
+        "history_complete",
+        f"inserted {n} missing sessions; history_from=1970-01-01;"
+        " tiingo_start=1962-01-02 (earlier history not certified)",
+        D(1970, 1, 1))
+    assert completion_of(db, "OLDT") == ("history_complete", as_of)
+    assert stats["completed"] == 1 and "error_tickers" not in stats

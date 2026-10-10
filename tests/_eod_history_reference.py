@@ -1,11 +1,20 @@
 """Deliberately simple reference for ``validate_series`` (tests only).
 
 Written independently of ``src/workers/eod_history_validation.py``: its own
-date parser, its own bar predicate, its own session sets straight from
-``exchange_calendars``, plain set arithmetic, and the same written rule order
-(module docstring of the production validator). Returns
-``(status, code, rows)`` where ``code`` is the reason's leading token and
-``rows`` maps each date to insert to its twelve eod_prices price fields.
+date parser, its own bar predicate with its own exact (``Fraction``)
+tolerance arithmetic and bounds, its own session calendar, plain set
+arithmetic, and the same written rule order (production module docstring).
+
+Calendar independence: the reference does NOT use exchange_calendars. Its
+sessions are weekdays minus a hard-coded list of NYSE closures, written from
+the exchange's published holiday schedules, for the years in ``HOLIDAYS``
+only (a weekday rule plus holidays and special closures such as 2001-09-11..14,
+2012-10-29/30, 1985-09-27, 1973-01-25, 2025-01-09; in 1970 Saturday holidays
+were observed on the Friday except at a month end, so 1970-07-03 is closed and
+1970-05-29 is not). Fuzz intervals are drawn
+from those years, so production's exchange_calendars sessions are checked
+against an independent source there; other years remain dependent on
+exchange_calendars alone. Returns ``(status, code, rows)``.
 """
 
 from __future__ import annotations
@@ -13,23 +22,46 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
+from fractions import Fraction
 
-import exchange_calendars as xcals
+SUPPORTED_FROM = dt.date(1970, 1, 1)
+HOLIDAYS = {
+    1970: "01-01 02-23 03-27 07-03 09-07 11-26 12-25",
+    1973: "01-01 01-25 02-19 04-20 05-28 07-04 09-03 11-22 12-25",
+    1974: "01-01 02-18 04-12 05-27 07-04 09-02 11-28 12-25",
+    1982: "01-01 02-15 04-09 05-31 07-05 09-06 11-25 12-24",
+    1985: "01-01 02-18 04-05 05-27 07-04 09-02 09-27 11-28 12-25",
+    2001: "01-01 01-15 02-19 04-13 05-28 07-04 09-03 09-11 09-12 09-13 09-14 11-22 12-25",
+    2012: "01-02 01-16 02-20 04-06 05-28 07-04 09-03 10-29 10-30 11-22 12-25",
+    2023: "01-02 01-16 02-20 04-07 05-29 06-19 07-04 09-04 11-23 12-25",
+    2024: "01-01 01-15 02-19 03-29 05-27 06-19 07-04 09-02 11-28 12-25",
+    2025: "01-01 01-09 01-20 02-17 04-18 05-26 06-19 07-04 09-01 11-27 12-25",
+    2026: "01-01 01-19 02-16 04-03 05-25 06-19 07-03 09-07 11-26 12-25",
+}
+YEARS = tuple(sorted(HOLIDAYS))
+_CLOSED = {dt.date(y, int(md[:2]), int(md[3:])) for y, s in HOLIDAYS.items() for md in s.split()}
 
-_CAL = xcals.get_calendar("XNYS", start="1900-01-01")
 KEYS = ("open", "high", "low", "close", "volume", "adjOpen", "adjHigh", "adjLow",
         "adjClose", "adjVolume", "divCash", "splitFactor")
+COLS = ("open", "high", "low", "close", "volume", "adj_open", "adj_high", "adj_low",
+        "adj_close", "adj_volume", "div_cash", "split_factor")
 PAIRS_RAW = [("open", "open"), ("high", "high"), ("low", "low"), ("close", "close")]
 PAIRS_ADJ = [("adjOpen", "adj_open"), ("adjHigh", "adj_high"), ("adjLow", "adj_low"),
              ("adjClose", "adj_close")]
 
 
 def ref_sessions(a: dt.date, b: dt.date):
-    if a < _CAL.first_session.date() or b > _CAL.last_session.date():
+    """Weekdays minus listed closures; None outside the supported domain."""
+    if a < SUPPORTED_FROM:
         return None
     out = set()
-    for ts in _CAL.sessions_in_range(str(a), str(b)):
-        out.add(dt.date(ts.year, ts.month, ts.day))
+    d = a
+    while d <= b:
+        if d.year not in HOLIDAYS:
+            raise AssertionError(f"reference calendar has no data for {d.year}")
+        if d.weekday() < 5 and d not in _CLOSED:
+            out.add(d)
+        d += dt.timedelta(days=1)
     return out
 
 
@@ -44,35 +76,50 @@ def ref_date(x):
         return None
 
 
-def ref_bar_ok(b) -> bool:
-    if type(b) is not dict:
-        return False
-    if ref_date(b.get("date")) is None:
-        return False
+def ref_values_ok(v: dict) -> bool:
     for k in KEYS:
-        if k not in b or type(b[k]) not in (int, float) or not math.isfinite(b[k]):
+        x = v.get(k, "missing")
+        if type(x) not in (int, float):
             return False
-    for k in ("open", "high", "low", "close", "adjOpen", "adjHigh", "adjLow", "adjClose",
-              "splitFactor"):
-        if not b[k] > 0:
+        try:
+            if not math.isfinite(x):
+                return False
+        except OverflowError:
             return False
-    for k in ("volume", "adjVolume", "divCash"):
-        if b[k] < 0:
-            return False
-    if not (b["low"] <= b["open"] <= b["high"] and b["low"] <= b["close"] <= b["high"]):
+    prices = [v[k] for k in ("open", "high", "low", "close", "adjOpen", "adjHigh", "adjLow", "adjClose")]
+    if min(prices) <= 0 or v["splitFactor"] <= 0:
         return False
-    if not (b["adjLow"] <= b["adjOpen"] <= b["adjHigh"]
-            and b["adjLow"] <= b["adjClose"] <= b["adjHigh"]):
+    if v["volume"] < 0 or v["adjVolume"] < 0 or v["divCash"] < 0:
         return False
-    f = b["adjClose"] / b["close"]
+    if max(prices) > 10**7 or v["volume"] > 10**13 or v["adjVolume"] > 10**13:
+        return False
+    if v["divCash"] > 10**7 or v["splitFactor"] > 10**4:
+        return False
+    if not (v["low"] <= v["open"] <= v["high"] and v["low"] <= v["close"] <= v["high"]):
+        return False
+    if not (v["adjLow"] <= v["adjOpen"] <= v["adjHigh"]
+            and v["adjLow"] <= v["adjClose"] <= v["adjHigh"]):
+        return False
+    # Same factor within 1%: |adj/raw - adjClose/close| <= adjClose/close / 100,
+    # checked as fractions so nothing overflows.
+    f = Fraction(v["adjClose"]) / Fraction(v["close"])
     for r, a in (("open", "adjOpen"), ("high", "adjHigh"), ("low", "adjLow")):
-        if abs(b[a] / b[r] - f) > 0.01 * f:
+        if abs(Fraction(v[a]) / Fraction(v[r]) - f) * 100 > f:
             return False
     return True
 
 
+def ref_bar_ok(b) -> bool:
+    return type(b) is dict and ref_date(b.get("date")) is not None and ref_values_ok(b)
+
+
+def ref_stored_ok(row: dict) -> bool:
+    return ref_values_ok({k: row[c] for k, c in zip(KEYS, COLS) if c in row})
+
+
 def _eq(a, b) -> bool:
-    return abs(a - b) <= 1e-6 * max(abs(a), abs(b))
+    fa, fb = Fraction(a), Fraction(b)
+    return abs(fa - fb) * 1_000_000 <= max(abs(fa), abs(fb))
 
 
 def reference_verdict(start, end, bars, stored, gaps=frozenset()):
@@ -98,6 +145,9 @@ def reference_verdict(start, end, bars, stored, gaps=frozenset()):
     for d in prov:
         if d not in exp:
             return "history_incomplete", "off_session_bar", {}
+    for d in stored:
+        if not ref_stored_ok(stored[d]):
+            return "history_conflict", "stored_bar_invalid", {}
     common = set(prov) & set(stored)
     for d in common:
         for k, s in PAIRS_RAW:

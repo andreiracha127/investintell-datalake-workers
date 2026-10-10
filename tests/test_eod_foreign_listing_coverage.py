@@ -9,6 +9,7 @@ Tiingo outcome mapping without a network or a database.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 
 import pytest
@@ -73,13 +74,9 @@ def series(a=START, b=END, *, skip=(), factor=1.0):
 
 
 def stored_of(bars):
-    out = {}
-    for b in bars:
-        d = v.parse_bar_date(b["date"])
-        out[d] = {"open": b["open"], "high": b["high"], "low": b["low"], "close": b["close"],
-                  "adj_open": b["adjOpen"], "adj_high": b["adjHigh"], "adj_low": b["adjLow"],
-                  "adj_close": b["adjClose"]}
-    return out
+    """eod_prices rows as the warmer reads them: every STORED_FIELDS column."""
+    return {v.parse_bar_date(b["date"]): {col: b[key] for col, key in v.EOD_FIELDS}
+            for b in bars}
 
 
 def V(bars, stored=None, start=START, end=END, gaps=frozenset()):
@@ -95,6 +92,29 @@ def test_the_interval_is_fixed_before_the_fetch():
     stored = stored_of(series(D(2026, 9, 1)))
     assert w.verification_interval(START, D(2026, 9, 18), stored, AS_OF) == (START, AS_OF)
     assert w.verification_interval(START, None, {}, AS_OF) == (START, AS_OF)
+
+
+def test_gate4_interval_starts_at_the_certified_calendar_domain():
+    """A Tiingo startDate before 1970 is floored at CALENDAR_SUPPORTED_FROM;
+    stored rows before it are out of scope for the end as well."""
+    assert v.CALENDAR_SUPPORTED_FROM == D(1970, 1, 1)
+    assert w.verification_interval(D(1962, 1, 2), AS_OF, {}, AS_OF) == (D(1970, 1, 1), AS_OF)
+    assert w.verification_interval(D(1962, 1, 2), None, {D(1965, 6, 1): {}}, AS_OF) == (
+        D(1970, 1, 1), AS_OF)
+    assert w.verification_interval(D(1973, 5, 3), D(1990, 1, 2), {}, AS_OF) == (
+        D(1973, 5, 3), D(1990, 1, 2))
+
+
+def test_gate4_an_interval_floored_at_1970_is_inside_the_calendar():
+    """The library's first session is 1970-01-02 and it refuses a range that
+    starts before it; the floored interval must still validate."""
+    assert CAL.sessions(D(1970, 1, 1), D(1970, 1, 9)) == frozenset(sessions(D(1970, 1, 2), D(1970, 1, 9)))
+    assert CAL.sessions(D(1970, 1, 1), D(1970, 1, 1)) == frozenset()
+    old = [bar(d) for d in sessions(D(1970, 1, 2), D(1970, 2, 27))]
+    verdict = V(old, start=D(1970, 1, 1), end=D(1970, 2, 27))
+    assert verdict.status == v.VERDICT_LOAD and verdict.rows[0][1] == D(1970, 1, 2)
+    for start in (D(1969, 12, 31), D(1899, 12, 1)):
+        assert V(old, start=start, end=D(1970, 2, 27)).reason.startswith("interval_outside_calendar")
 
 
 def test_historical_interval_is_capped_at_as_of():
@@ -136,9 +156,10 @@ def test_gate3_finding1_a_bar_on_a_sunday_is_rejected():
 
 
 def test_gate3_finding1_the_calendar_guard_applies_to_the_interval_itself():
-    verdict = V([bar(D(1899, 12, 1)), bar(END)], start=D(1899, 12, 1))
-    nothing_written(verdict)
-    assert verdict.reason.startswith("interval_outside_calendar")
+    for start in (D(1899, 12, 1), D(1969, 12, 31)):
+        verdict = V([bar(start), bar(END)], start=start)
+        nothing_written(verdict)
+        assert verdict.reason.startswith("interval_outside_calendar")
 
 
 @pytest.mark.parametrize("over", [
@@ -261,8 +282,9 @@ def test_battery_g_calendar_reaches_the_oldest_histories_and_never_clamps():
     assert CAL.sessions(D(1985, 9, 27), D(1985, 9, 27)) == frozenset()        # Hurricane Gloria
     old = [bar(d) for d in sessions(D(1974, 7, 26), D(1974, 8, 30))]
     assert V(old, start=D(1974, 7, 26), end=D(1974, 8, 30)).status == v.VERDICT_LOAD
-    with pytest.raises(ValueError, match="outside XNYS"):
-        CAL.sessions(D(1899, 12, 1), D(1900, 1, 5))
+    for first in (D(1899, 12, 1), D(1969, 12, 31)):
+        with pytest.raises(ValueError, match="outside XNYS"):
+            CAL.sessions(first, D(1970, 1, 5))
 
 
 def test_evidenced_gaps_are_an_explicit_input_and_empty_by_default():
@@ -275,8 +297,94 @@ def test_the_verdict_names_the_snapshot_it_judged():
     stored = stored_of(series(D(2026, 9, 1)))
     verdict = V(series(), stored)
     assert verdict.digest == v.stored_digest(stored)
-    stored[END]["adj_close"] *= 1.0000001
-    assert v.stored_digest(stored) != verdict.digest
+    assert v.STORED_FIELDS == ("open", "high", "low", "close", "volume", "adj_open", "adj_high",
+                               "adj_low", "adj_close", "adj_volume", "div_cash", "split_factor")
+    for col in v.STORED_FIELDS:                       # the whole stored row, every column
+        changed = {**stored, END: {**stored[END], col: stored[END][col] + 0.5}}
+        assert v.stored_digest(changed) != verdict.digest, col
+
+
+# Gate 4: retained stored bars, numeric safety, exact edges --------------------------
+FLAT = {"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1000,
+        "adjOpen": 100.0, "adjHigh": 100.0, "adjLow": 100.0, "adjClose": 100.0,
+        "adjVolume": 1000.0, "divCash": 0.0, "splitFactor": 1.0}
+
+
+def one(day=END, **over):
+    return {"date": day.isoformat(), **FLAT, **over}
+
+
+def V1(provider_bar, stored_row=None):
+    stored = {END: stored_row} if stored_row is not None else {}
+    return v.validate_series("X", (END, END), [provider_bar], stored, CAL)
+
+
+@pytest.mark.parametrize(("col", "value", "problem"), [
+    ("high", 99.99995, "ohlc_order"),           # gate: within 1e-6 of the provider, incoherent
+    ("close", math.inf, "non_numeric_close"), ("adj_close", math.inf, "non_numeric_adjClose"),
+    ("high", math.inf, "non_numeric_high"), ("open", math.nan, "non_numeric_open"),
+    ("volume", -1, "negative"), ("adj_volume", -1.0, "negative"), ("div_cash", -0.5, "negative"),
+    ("split_factor", 0.0, "non_positive"), ("adj_low", None, "non_numeric_adjLow"),
+    ("close", 2e7, "value_out_of_bounds"), ("volume", 10**14, "value_out_of_bounds"),
+])
+def test_gate4_every_retained_stored_bar_is_validated(col, value, problem):
+    verdict = V1(one(), {**stored_of([one()])[END], col: value})
+    nothing_written(verdict, v.VERDICT_CONFLICT)
+    assert verdict.reason == f"stored_bar_invalid: {problem} on {END}"
+
+
+def test_gate4_extreme_magnitudes_never_reach_a_float_quotient():
+    gate = one(open=1e-308, high=1e-308, low=1e-308, close=1e-308,
+               adjOpen=1e307, adjHigh=1e308, adjLow=1e307, adjClose=1e308)
+    assert V1(gate).reason == "unusable_bar: value_out_of_bounds at index 0"
+    # in bounds, but adj/raw overflows a float: only exact arithmetic sees the 10x
+    overflow = one(open=1e-308, high=1e-308, low=1e-308, close=1e-308,
+                   adjOpen=1e6, adjHigh=1e7, adjLow=1e6, adjClose=1e7)
+    assert V1(overflow).reason == "unusable_bar: adjustment_factor at index 0"
+    coherent = one(open=1e-308, high=1e-308, low=1e-308, close=1e-308,
+                   adjOpen=1e7, adjHigh=1e7, adjLow=1e7, adjClose=1e7)
+    assert V1(coherent).status == v.VERDICT_LOAD
+    assert V1(one(volume=10**400)).reason == "unusable_bar: non_numeric_volume at index 0"
+
+
+@pytest.mark.parametrize(("over", "ok"), [
+    ({k: 1e7 for k in v._PRICES}, True),
+    ({k: math.nextafter(1e7, math.inf) for k in v._PRICES}, False),
+    ({"volume": 10**13, "adjVolume": 1e13}, True), ({"volume": 10**13 + 1}, False),
+    ({"adjVolume": math.nextafter(1e13, math.inf)}, False),
+    ({"divCash": 1e7}, True), ({"divCash": math.nextafter(1e7, math.inf)}, False),
+    ({"splitFactor": 1e4}, True), ({"splitFactor": math.nextafter(1e4, math.inf)}, False),
+])
+def test_gate4_magnitude_bounds_are_inclusive(over, ok):
+    verdict = V1(one(**over))
+    if ok:
+        assert verdict.status == v.VERDICT_LOAD
+    else:
+        assert verdict.reason == "unusable_bar: value_out_of_bounds at index 0"
+
+
+@pytest.mark.parametrize(("adj_open", "status"), [
+    (101.0, v.VERDICT_LOAD), (math.nextafter(101.0, 0), v.VERDICT_LOAD),
+    (math.nextafter(101.0, math.inf), v.VERDICT_INCOMPLETE),
+    (99.0, v.VERDICT_LOAD), (math.nextafter(99.0, 0), v.VERDICT_INCOMPLETE),
+])
+def test_gate4_factor_tolerance_edge_is_exact(adj_open, status):
+    """|adjOpen/open - adjClose/close| == 1% of adjClose/close is accepted; one
+    ulp beyond is not."""
+    bar_ = one(high=200.0, low=50.0, adjHigh=200.0, adjLow=50.0, adjOpen=adj_open)
+    assert V1(bar_).status == status
+
+
+@pytest.mark.parametrize(("stored_close", "status"), [
+    (999999.0, v.VERDICT_COMPLETE), (math.nextafter(999999.0, math.inf), v.VERDICT_COMPLETE),
+    (math.nextafter(999999.0, 0), v.VERDICT_CONFLICT),
+])
+def test_gate4_stored_tolerance_edge_is_exact(stored_close, status):
+    """|stored - provider| == 1e-6 * max(|stored|, |provider|) is accepted."""
+    provider = one(open=1e6, high=2e6, low=5e5, close=1e6,
+                   adjOpen=1e6, adjHigh=2e6, adjLow=5e5, adjClose=1e6)
+    stored = {**stored_of([provider])[END], "close": stored_close}
+    assert V1(provider, stored).status == status
 
 
 def test_preview_classification():

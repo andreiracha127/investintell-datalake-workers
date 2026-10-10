@@ -101,6 +101,7 @@ from src.workers._tiingo import (
     TokenBucket,
 )
 from src.workers.eod_history_validation import (
+    CALENDAR_SUPPORTED_FROM,
     STORED_FIELDS,
     SUCCESS_VERDICTS,
     VERDICT_CONFLICT,
@@ -390,14 +391,14 @@ def verification_interval(
     as_of: _dt.date,
 ) -> tuple[_dt.date, _dt.date]:
     """The interval a verification pass must cover, fixed BEFORE the fetch:
-    ``[startDate, min(as_of, max(meta endDate, last stored date <= as_of))]``
-    (``as_of`` when neither exists). The request asks for exactly this
-    interval, and ``validate_series`` holds the response to it. Nothing after
-    ``as_of`` is in scope: a historical run never requests, compares or inserts
-    a later date."""
-    in_scope = [d for d in stored if d <= as_of]
+    ``[max(startDate, CALENDAR_SUPPORTED_FROM), min(as_of, max(meta endDate,
+    last stored date in scope))]`` (``as_of`` when neither exists). The request
+    asks for exactly this interval, and ``validate_series`` holds the response
+    to it. Nothing after ``as_of`` or before the certified calendar domain is in
+    scope: those dates are never requested, compared or inserted."""
+    in_scope = [d for d in stored if CALENDAR_SUPPORTED_FROM <= d <= as_of]
     ends = [d for d in (meta_end, max(in_scope) if in_scope else None) if d is not None]
-    return start, min(as_of, max(ends)) if ends else as_of
+    return max(start, CALENDAR_SUPPORTED_FROM), min(as_of, max(ends)) if ends else as_of
 
 
 def classify_history_task(task: HistoryTask) -> str:
@@ -796,14 +797,16 @@ def seed_listing_instrument(conn, ticker: str, meta: dict[str, Any]) -> str | No
 
 def promote(
     conn, ticker: str, verdict: Verdict, *, through: _dt.date, history_start: _dt.date,
-    complete_through: _dt.date | None = None,
+    complete_through: _dt.date | None = None, since: _dt.date = CALENDAR_SUPPORTED_FROM,
+    note: str | None = None,
 ) -> int | None:
     """Certify a successful verdict: the ONLY writer of history rows and of
     ``history_complete`` / ``complete_through``.
 
     One transaction: lock the ticker's ``instruments`` row ``FOR UPDATE``
     (other writers' foreign-key inserts into ``eod_prices`` for the ticker and
-    Light's metadata upsert wait), re-read the stored rows through ``through``
+    Light's metadata upsert wait), re-read the stored rows in
+    ``[since, through]`` — the same twelve-field projection the verdict judged —
     and recompute their digest. If it differs from the snapshot the verdict
     judged, nothing is written and None is returned (the caller records
     ``stored_rows_changed_during_pass``). Otherwise insert exactly the
@@ -818,7 +821,8 @@ def promote(
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM instruments WHERE ticker = %s FOR UPDATE", (ticker,))
-            if stored_digest(_stored_rows(conn, ticker, through=through)) != verdict.digest:
+            current = _stored_rows(conn, ticker, since=since, through=through)
+            if stored_digest(current) != verdict.digest:
                 conn.rollback()
                 return None
             for i in range(0, len(verdict.rows), UPSERT_CHUNK):
@@ -827,9 +831,12 @@ def promote(
             if inserted != len(verdict.rows):  # a row appeared despite the lock
                 conn.rollback()
                 return None
+            detail = f"{verdict.reason}; history_from={history_start}"
+            if note:
+                detail += f"; {note}"
             cur.execute(
                 RECORD_STATUS_SQL,
-                (ticker, FOREIGN_LISTING_SOURCE, STATUS_COMPLETE, verdict.reason, history_start,
+                (ticker, FOREIGN_LISTING_SOURCE, STATUS_COMPLETE, detail, history_start,
                  complete_through, None, 0),
             )
         conn.commit()
@@ -840,15 +847,17 @@ def promote(
 
 
 def _stored_rows(
-    conn, ticker: str, *, through: _dt.date | None = None,
-) -> dict[_dt.date, dict[str, float]]:
+    conn, ticker: str, *, through: _dt.date, since: _dt.date = CALENDAR_SUPPORTED_FROM,
+) -> dict[_dt.date, dict[str, Any]]:
+    """The stored-row snapshot: every ``STORED_FIELDS`` column of the ticker's
+    rows in ``[since, through]``. The verification read and promote's locked
+    re-read both use exactly this projection."""
     with conn.cursor() as cur:
         cur.execute(
             psycopg.sql.SQL(
-                "SELECT date, {} FROM eod_prices"
-                " WHERE ticker = %s AND (%s::date IS NULL OR date <= %s::date)"
+                "SELECT date, {} FROM eod_prices WHERE ticker = %s AND date BETWEEN %s AND %s"
             ).format(psycopg.sql.SQL(", ").join(map(psycopg.sql.Identifier, STORED_FIELDS))),
-            (ticker, through, through),
+            (ticker, since, through),
         )
         return {r[0]: dict(zip(STORED_FIELDS, r[1:])) for r in cur.fetchall()}
 
@@ -937,7 +946,8 @@ def cover_foreign_history(
                 continue
             # The interval, and so every obligation, is fixed before the fetch.
             # Rows after as_of are outside this run: never compared or touched.
-            stored = _stored_rows(conn, ticker, through=as_of)
+            stored = _stored_rows(conn, ticker, since=CALENDAR_SUPPORTED_FROM, through=as_of)
+            tiingo_start = start
             start, end = verification_interval(start, meta_end, stored, as_of)
             # A historical run that stops before Tiingo's end completes only
             # through its interval end; a later run re-verifies the tail.
@@ -967,8 +977,11 @@ def cover_foreign_history(
                                      history_start=start, retry_after=recheck)
                 fail_closed[ticker] = verdict.reason
                 continue
-            inserted = promote(conn, ticker, verdict, through=as_of, history_start=start,
-                               complete_through=complete_through)
+            inserted = promote(
+                conn, ticker, verdict, through=as_of, history_start=start,
+                complete_through=complete_through, since=CALENDAR_SUPPORTED_FROM,
+                note=(f"tiingo_start={tiingo_start} (earlier history not certified)"
+                      if tiingo_start < start else None))
             if inserted is None:
                 retry_later(task, start, "stored_rows_changed_during_pass")
                 continue
