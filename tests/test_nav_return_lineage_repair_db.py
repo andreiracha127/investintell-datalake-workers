@@ -50,9 +50,10 @@ def no_network(monkeypatch):
 
 
 class FakeProvider:
-    def __init__(self, *, price=101.0, kind="adjusted"):
+    def __init__(self, *, price=101.0, kind="adjusted", by_ticker=None):
         self.price = price
         self.kind = kind
+        self.by_ticker = by_ticker or {}  # ticker -> (status, price)
         self.calls = []
 
     def fetch(self, provider, ticker, start, end, *, remaining):
@@ -61,9 +62,10 @@ class FakeProvider:
         assert callable(remaining) and remaining() > 0
         self.calls.append((provider, ticker, start, end))
         now = dt.datetime.now(dt.timezone.utc)
-        return NavFetchResult(
-            "success_new", (NavObservation(start, self.price, self.kind),), now, now
-        )
+        status, price = self.by_ticker.get(ticker, ("success_new", self.price))
+        observations = ((NavObservation(start, price, self.kind),)
+                        if status in ingest.SUCCESS_ATTEMPTS else ())
+        return NavFetchResult(status, observations, now, now)
 
 
 def _limits(*, requests=20):
@@ -201,6 +203,8 @@ def test_stored_row_only_attributed_repair_and_idempotency(test_dsn, schema, pro
         ledger = _ledger(conn)
         replay = _run(conn, plan, [iid], fake)
         assert replay["exit_code"] == 0, replay
+        assert [(o["status"], o["code"]) for o in replay["instruments"]] == [
+            ("noop", "ALREADY_REPAIRED")]
         assert replay["changed_rows"] == 0
         assert replay["requests"] == 0
         assert _rows(conn, iid) == expected
@@ -221,6 +225,91 @@ def test_provider_mismatch_has_zero_writes(test_dsn, schema, price, kind):
         assert result["instruments"], "residual must be reported"
         assert _rows(conn, iid) == before
         assert _ledger(conn) == (0, 0, 0, 0, 0, 0)
+
+
+def _set_flag(conn, iid, day, value, *, bypass_triggers):
+    if bypass_triggers:
+        conn.execute("SET LOCAL session_replication_role = replica")
+    conn.execute(
+        "UPDATE nav_timeseries SET return_source_boundary=%s "
+        "WHERE instrument_id=%s AND nav_date=%s", (value, iid, day),
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize("clear", ["raw_update", "trigger_bypass", "bypass_after_repair"])
+def test_cleared_row_without_attributed_revision_is_not_already_repaired(
+    test_dsn, schema, clear,
+):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        iid, day = _seed(conn)
+        if clear == "bypass_after_repair":
+            # This operator's attributed revision predates the new plan's head,
+            # so it cannot prove who cleared the flag afterwards.
+            repaired = _run(conn, _plan(conn, schema, _limits()), [iid], FakeProvider())
+            assert repaired["changed_rows"] == 1, repaired
+            _set_flag(conn, iid, day, True, bypass_triggers=True)
+        plan = _plan(conn, schema, _limits())
+        assert len(plan["items"]) == 1
+        # A raw UPDATE writes an unattributed derived revision; a bypass none.
+        _set_flag(conn, iid, day, None, bypass_triggers=clear != "raw_update")
+        ledger = _ledger(conn)
+        fake = FakeProvider()
+        result = _run(conn, plan, [iid], fake)
+        assert result["exit_code"] == 0, result
+        assert [(o["status"], o["code"]) for o in result["instruments"]] == [
+            ("skipped", "UNATTRIBUTED_CLEAR")]
+        assert result["residual_counts"] == {"UNATTRIBUTED_CLEAR": 1}
+        assert result["requests"] == 0 and fake.calls == []
+        assert _ledger(conn) == ledger
+
+
+@pytest.mark.parametrize("status,validate_only", [
+    ("rate_limited", False), ("transient_error", False), ("not_configured", False),
+    ("rate_limited", True),
+])
+def test_provider_outage_stops_the_run_and_keeps_earlier_commits(
+    test_dsn, schema, status, validate_only,
+):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        ids = [_seed(conn, ticker=ticker)[0] for ticker in ("FIRST", "SECOND", "THIRD")]
+        untouched = {iid: _rows(conn, iid) for iid in ids[1:]}
+        plan = _plan(conn, schema, _limits())
+        fake = FakeProvider(by_ticker={"SECOND": (status, None)})
+        result = _run(conn, plan, ids, fake, validate_only=validate_only)
+        assert result["exit_code"] == 5, result
+        assert (result["status"], result["code"]) == ("stopped", "PROVIDER_UNAVAILABLE")
+        first = "validated" if validate_only else "committed"
+        assert [(o["instrument_id"], o["status"], o["code"]) for o in result["instruments"]] == [
+            (str(ids[0]), first, None), (str(ids[1]), "stopped", "PROVIDER_UNAVAILABLE")]
+        assert result["unprocessed_instruments"] == 2
+        assert result["residual_counts"] == {}
+        assert [ticker for _, ticker, _, _ in fake.calls] == ["FIRST", "SECOND"]
+        assert {iid: _rows(conn, iid) for iid in ids[1:]} == untouched
+        assert _ledger(conn) == ((0,) * 6 if validate_only else (1, 1, 1, 1, 1, 0))
+
+
+@pytest.mark.parametrize("status,price,code", [
+    ("empty", None, "PROVIDER_DATE_MISSING"), ("success_new", 150.0, "LEVEL_MISMATCH"),
+])
+def test_provider_data_residual_skips_and_the_batch_continues(
+    test_dsn, schema, status, price, code,
+):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        first, _ = _seed(conn, ticker="FIRST")
+        second, _ = _seed(conn, ticker="SECOND")
+        plan = _plan(conn, schema, _limits())
+        result = _run(conn, plan, [first, second],
+                      FakeProvider(by_ticker={"FIRST": (status, price)}))
+        assert result["exit_code"] == 0, result
+        assert [(o["status"], o["code"]) for o in result["instruments"]] == [
+            ("skipped", code), ("committed", None)]
+        assert result["residual_counts"] == {code: 1}
+        assert result["unprocessed_instruments"] == 0
+        assert _ledger(conn) == (1, 1, 1, 1, 1, 0)
 
 
 def test_open_detected_event_is_a_database_only_skip(test_dsn, schema):

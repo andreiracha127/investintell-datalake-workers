@@ -50,6 +50,12 @@ BAD = """return_1d IS NULL AND return_source_boundary IS NOT NULL
 # stay in the reviewed plan as inventory but never make an item stale.
 INFORMATIONAL_FIELDS = ("revision_head", "last_nav_date", "history_older_than_30_days")
 MAX_CLOCK_AHEAD = dt.timedelta(milliseconds=250)
+# Non-success provider statuses that are facts about the data of that date:
+# a per-instrument residual. Every other non-success status (rate_limited,
+# not_configured, transient_error, ...) is an outage and stops the run.
+DATA_STATUS_CODES = {"empty": "PROVIDER_DATE_MISSING", "not_found": "PROVIDER_NOT_FOUND",
+                     "invalid_payload": "PROVIDER_INVALID_PAYLOAD"}
+PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
 
 
 class RepairError(Exception):
@@ -270,10 +276,10 @@ class _Budget:
 
 
 def _validate(row, fetched):
+    """None when the stored row is confirmed, a data residual code, or
+    PROVIDER_UNAVAILABLE for an operational provider failure."""
     if fetched.status not in ingest.SUCCESS_ATTEMPTS:
-        return {"empty": "PROVIDER_DATE_MISSING", "not_found": "PROVIDER_NOT_FOUND",
-                "rate_limited": "PROVIDER_RATE_LIMITED", "not_configured": "PROVIDER_NOT_CONFIGURED",
-                "invalid_payload": "PROVIDER_INVALID_PAYLOAD"}.get(fetched.status, "PROVIDER_ERROR")
+        return DATA_STATUS_CODES.get(fetched.status, PROVIDER_UNAVAILABLE)
     matches = [o for o in fetched.observations if o.date == row["nav_date"]]
     if not matches:
         return "PROVIDER_DATE_MISSING"
@@ -335,17 +341,45 @@ def _assert_changes(conn, iid, before, selected, runs, old_head, budget):
         cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
 
-def _decide(iid, current, before, approved):
-    """Outcome that needs no write, or None. Phases A and B both use it."""
+def _attributed_clear(conn, iid, approved):
+    """Each formerly bad date's latest revision is newer than the plan's head
+    and attributed to a same-xid successful attempt. An unattributed clear (a
+    raw UPDATE, or a trigger bypass that left an older revision latest) still
+    invalidates readiness lineage, and the bad predicate can no longer find it."""
+    dates = [dt.date.fromisoformat(r["nav_date"]) for r in approved["rows"]]
+    with conn.cursor() as cur:
+        cur.execute("""SELECT DISTINCT ON (r.nav_date) r.nav_date, r.revision_id,
+                   r.source_run_id IS NOT NULL AND r.source_provider IS NOT NULL
+                   AND r.source_attempt_xid IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM nav_ingestion_attempts a
+                       WHERE a.run_id=r.source_run_id AND a.instrument_id=r.instrument_id
+                         AND a.provider=r.source_provider AND a.status=ANY(%s)
+                         AND a.commit_xid=r.source_attempt_xid)
+            FROM fund_nav_data_revisions r
+            WHERE r.instrument_id=%s AND r.nav_date=ANY(%s)
+            ORDER BY r.nav_date, r.revision_id DESC""",
+                    (list(ingest.SUCCESS_ATTEMPTS), iid, dates))
+        latest = {day: (rev, ok) for day, rev, ok in cur.fetchall()}
+    return all(day in latest and latest[day][0] > approved["revision_head"] and latest[day][1]
+               for day in dates)
+
+
+def _decide(conn, iid, current, before, approved):
+    """Outcome that needs no write, or None. Phases A and B both use it inside
+    their (read-only or locked) transaction."""
     if current is None:
         # Resume the same reviewed plan only if its formerly bad rows have
-        # exactly the intended values. Nothing is written in this branch.
+        # exactly the intended values, cleared by an attributed write (this
+        # operator's earlier commit). Nothing is written in this branch.
         stored = {str(r["nav_date"]): _json(r) for r in before}
-        if all(stored.get(r["nav_date"]) == {**r, "return_source_boundary": None}
-               for r in approved["rows"]):
-            return {"instrument_id": iid, "status": "noop", "code": "ALREADY_REPAIRED", "rows": 0}
-        return {"instrument_id": iid, "status": "skipped", "code": "PLAN_STALE",
-                "rows": len(approved["rows"])}
+        if not all(stored.get(r["nav_date"]) == {**r, "return_source_boundary": None}
+                   for r in approved["rows"]):
+            return {"instrument_id": iid, "status": "skipped", "code": "PLAN_STALE",
+                    "rows": len(approved["rows"])}
+        if not _attributed_clear(conn, iid, approved):
+            return {"instrument_id": iid, "status": "skipped", "code": "UNATTRIBUTED_CLEAR",
+                    "rows": len(approved["rows"])}
+        return {"instrument_id": iid, "status": "noop", "code": "ALREADY_REPAIRED", "rows": 0}
     if _repair_key(current) != _repair_key(approved):
         return {"instrument_id": iid, "status": "skipped", "code": "PLAN_STALE",
                 "rows": len(approved["rows"])}
@@ -363,10 +397,10 @@ def _apply_instrument(conn, approved, as_of, client, budget, validate_only):
         conn.execute("SET TRANSACTION READ ONLY")
         _sql_budget(conn, budget)
         current, before = _load_item(conn, iid, as_of, full_state=True)
+        decided = _decide(conn, iid, current, before, approved)
     finally:
         if not conn.closed:
             conn.rollback()
-    decided = _decide(iid, current, before, approved)
     if decided:
         return decided
     # The typed stored rows equal the approved plan rows here (_repair_key).
@@ -379,6 +413,10 @@ def _apply_instrument(conn, approved, as_of, client, budget, validate_only):
                                remaining=budget.remaining)
         budget.check()
         reason = _validate(row, fetched)
+        if reason == PROVIDER_UNAVAILABLE:
+            # An outage is not a fact about this row: stop instead of letting
+            # the batch finish as complete. Nothing is written for it.
+            return {"instrument_id": iid, "status": "stopped", "code": reason, "rows": count}
         if reason:
             return {"instrument_id": iid, "status": "skipped", "code": reason, "rows": count}
         # Persist the actual single-date observation in the attempt only, with
@@ -398,7 +436,7 @@ def _apply_instrument(conn, approved, as_of, client, budget, validate_only):
             if not conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (lock,)).fetchone()[0]:
                 raise RepairError("LOCK_BUSY", 4)
         current, before = _load_item(conn, iid, as_of, full_state=True)
-        decided = _decide(iid, current, before, approved)
+        decided = _decide(conn, iid, current, before, approved)
         selected = [r for r in before if _is_bad(r)]
         if not decided and {r["nav_date"] for r in selected} != set(fetched_by_date):
             decided = {"instrument_id": iid, "status": "skipped", "code": "PLAN_STALE",
@@ -520,6 +558,8 @@ def run_repair(conn, plan, *, instrument_ids, supplied_sha256, limits, client,
             elif outcome["status"] == "unknown":
                 result["possibly_changed_rows"] = outcome["rows"]
                 raise RepairError("COMMIT_UNKNOWN")
+            elif outcome["status"] == "stopped":
+                raise RepairError(outcome["code"], 5)
     except (RepairError, TiingoDeadlineExceeded, TiingoBudgetExceeded, KeyboardInterrupt) as exc:
         if isinstance(exc, RepairError):
             code, exit_code = exc.code, exc.exit_code
@@ -539,6 +579,8 @@ def run_repair(conn, plan, *, instrument_ids, supplied_sha256, limits, client,
         result.update(status="failed", code="VALIDATION_OR_PROVIDER_ERROR", exit_code=2)
     finally:
         result["requests"] = budget.requests
-    completed_ids = _normalized_ids(i["instrument_id"] for i in result["instruments"])
+    # A stopped instrument has an outcome but still needs the resumed run.
+    completed_ids = _normalized_ids(i["instrument_id"] for i in result["instruments"]
+                                    if i["status"] != "stopped")
     result["unprocessed_instruments"] = len(_normalized_ids(instrument_ids) - completed_ids)
     return result
