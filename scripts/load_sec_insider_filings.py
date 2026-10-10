@@ -33,7 +33,6 @@ import os
 import re
 import sys
 import tempfile
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,6 +44,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
 from typing import Iterator
 from zoneinfo import ZoneInfo
+from scripts.sec_provider_transport import ProviderScheduler, ProviderTransport
 
 # W1's contract module is imported read-only: extra filer-text rules live here.
 from scripts.load_sec_ticker_cik_history import (
@@ -558,19 +558,15 @@ def load_package(conn, path: Path, *, source: str | None = None,
             "retired_reason": reason}
 
 
-class _SecApiRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        parsed = urllib.parse.urlsplit(newurl)
-        if parsed.hostname != "api.sec-api.io" or parsed.scheme != "https":
-            raise ValueError("refusing to forward sec-api credentials through a cross-origin redirect")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 class HttpClient:
-    """Sequential, rate-limited HTTP with bounded retries and safe error output."""
+    """Sequential downloads with machine-shared limits and bounded safe retries."""
 
-    def __init__(self, api_key: str | None = None, *, spacing: float = 0.3):
-        self.api_key, self.spacing, self.last_request = api_key, max(0.11, spacing), 0.0
+    def __init__(self, api_key: str | None = None, *, spacing: float = 0.0, scheduler=None):
+        # ``spacing`` remains accepted for callers of the former local limiter.
+        # Effective limits belong to the shared scheduler's product policies.
+        self.api_key = api_key
+        self.scheduler = scheduler or ProviderScheduler()
+        self.transport = ProviderTransport(USER_AGENT, api_key=api_key or "", scheduler=self.scheduler)
         if api_key:
             _SECRETS.add(api_key)
 
@@ -580,26 +576,12 @@ class HttpClient:
         parsed = urllib.parse.urlsplit(url)
         if authenticated and (parsed.hostname != "api.sec-api.io" or parsed.scheme != "https"):
             raise ValueError("refusing to send sec-api credentials to another host")
-        for attempt in range(4):
-            spacing = max(0.5, self.spacing) if urllib.parse.urlsplit(url).hostname == "api.sec-api.io" else self.spacing
-            time.sleep(max(0.0, spacing - (time.monotonic() - self.last_request)))
-            headers = {"User-Agent": USER_AGENT}
-            if authenticated:
-                if not self.api_key:
-                    raise ValueError("sec-api download requires an API key")
-                headers["Authorization"] = self.api_key
-            request = urllib.request.Request(url, headers=headers, method=method)
-            self.last_request = time.monotonic()
-            try:
-                if authenticated:
-                    return urllib.request.build_opener(_SecApiRedirect()).open(request, timeout=90)
-                return urllib.request.urlopen(request, timeout=90)
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-                status = getattr(exc, "code", None)
-                if attempt == 3 or (status and status != 429 and status < 500 and status not in retry_statuses):
-                    raise RuntimeError(f"HTTP request failed for {urllib.parse.urlsplit(url).path}: {scrub(exc)}") from None
-                time.sleep(min(2**attempt, 10))
-        raise AssertionError("unreachable")
+        if authenticated and not self.api_key:
+            raise ValueError("sec-api download requires an API key")
+        # Product/account limits replace the old blanket government spacing on
+        # paid downloads. Every retry and redirect is reserved by the transport.
+        return self.transport.open(url, method=method, authenticated=authenticated,
+                                   timeout=90, max_attempts=4, retry_statuses=retry_statuses)
 
     def json(self, url: str) -> dict:
         with self.request(url) as response:

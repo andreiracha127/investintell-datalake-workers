@@ -55,18 +55,23 @@ import datetime as dt
 import gzip
 import hashlib
 import html
+import http.client
 import io
 import json
+import os
 import re
+import tempfile
 import time
 import zipfile
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import IO, Iterable
 
 from src.db import LOCK_SEC_TICKER_CIK_HISTORY, connect
+from scripts.sec_provider_transport import ProviderScheduler, ProviderTransport, filing_download_url
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PACKAGES_DIR = Path("E:/Edgard/fsn")
@@ -1175,22 +1180,35 @@ def quarters_through(today: dt.date) -> list[tuple[int, int]]:
     return out
 
 
-def sec_client():
+def sec_client(*, scheduler=None):
     """An HTTP client that identifies itself to the SEC as fair access requires."""
     import httpx
 
-    return httpx.Client(headers={"User-Agent": USER_AGENT}, follow_redirects=True,
-                        timeout=600.0)
+    scheduler = scheduler or ProviderScheduler()
+
+    def reserve(request):
+        scheduler.acquire(str(request.url))
+
+    def observe(response):
+        if response.status_code == 429:
+            scheduler.cooldown(str(response.request.url), response.headers.get("retry-after"))
+
+    client = httpx.Client(headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"},
+                          follow_redirects=True, timeout=600.0,
+                          event_hooks={"request": [reserve], "response": [observe]})
+    client._sec_scheduler = scheduler
+    return client
 
 
 def fetch_form_index(client, year: int, quarter: int, target: Path) -> Path:
     """Download one quarter's form.gz, validated before it replaces ``target``."""
     response = client.get(EDGAR_INDEX_URL.format(year=year, quarter=quarter))
     response.raise_for_status()
-    partial = target.with_name(target.name + ".part")
-    partial.write_bytes(response.content)
-    gzip.decompress(partial.read_bytes())
-    partial.replace(target)
+    with tempfile.TemporaryDirectory(dir=target.parent, prefix=".form-index-") as directory:
+        partial = Path(directory) / "form.gz"
+        partial.write_bytes(response.content)
+        gzip.decompress(partial.read_bytes())
+        partial.replace(target)
     time.sleep(DOWNLOAD_SPACING_S)
     return target
 
@@ -1770,7 +1788,8 @@ class EventDocuments:
     file that is not the submission is ignored and fetched again."""
 
     def __init__(self, cache_dir: Path, client=None, *, spacing: float | None = None,
-                 retries: int = 6, budget: int | None = None) -> None:
+                 retries: int = 6, budget: int | None = None,
+                 api_key: str | None = None, scheduler=None) -> None:
         self.cache_dir = cache_dir
         self.client = client
         self.spacing = FILING_SPACING_S if spacing is None else spacing
@@ -1783,6 +1802,8 @@ class EventDocuments:
         self.rejected = 0
         self.deferred = 0
         self._last = 0.0
+        self.api_key = os.environ.get("SEC_API_IO_KEY", "").strip() if api_key is None else api_key
+        self.scheduler = scheduler or getattr(client, "_sec_scheduler", None) or ProviderScheduler()
 
     @property
     def remaining(self) -> int | None:
@@ -1814,6 +1835,23 @@ class EventDocuments:
         except ImportError:  # a client that is not httpx
             transport_errors = (OSError,)
         url = EDGAR_FILING_URL.format(cik=cik, folder=adsh.replace("-", ""), adsh=adsh)
+        # Paid routing changes transport only: the accession, SEC provenance and
+        # original submission bytes remain the cache identity. A failed paid
+        # attempt falls back once to the separately governed government path.
+        if self.api_key:
+            transport = ProviderTransport(USER_AGENT, api_key=self.api_key, scheduler=self.scheduler)
+            try:
+                with transport.open(filing_download_url(url, self.api_key),
+                                    max_attempts=min(2, self.retries)) as response:
+                    raw = response.read()
+                    expected = int(response.headers.get("Content-Length", "0"))
+                text = raw.decode("latin-1")
+                if (not expected or len(raw) == expected) and is_submission(text, adsh):
+                    self._store(target, raw)
+                    self.fetched += 1
+                    return text
+            except (RuntimeError, OSError, ValueError, http.client.HTTPException):
+                pass  # bounded canonical fallback; provider errors are scrubbed
         not_submission = False
         for attempt in range(self.retries):
             wait = self.spacing - (time.monotonic() - self._last)
@@ -1822,10 +1860,17 @@ class EventDocuments:
             self._last = time.monotonic()
             backoff = min(60.0, 2.0 ** attempt)
             try:
+                if not getattr(self.client, "_sec_scheduler", None):
+                    self.scheduler.acquire(url)
                 response = self.client.get(url)
             except transport_errors:
                 time.sleep(backoff)
                 continue
+            except RuntimeError:
+                # Scheduler exhaustion is a run failure, never a missing filing
+                # that silently permits publication of incomplete evidence.
+                self.failed += 1
+                raise RuntimeError(f"SEC provider budget unavailable for filing {adsh}") from None
             if response.status_code == 200:
                 text = response.content.decode("latin-1")
                 if not is_submission(text, adsh):
@@ -1834,16 +1879,23 @@ class EventDocuments:
                         break
                     time.sleep(backoff)
                     continue
-                self.cache_dir.mkdir(parents=True, exist_ok=True)
-                partial = target.with_name(target.name + ".part")
-                partial.write_bytes(response.content)
-                partial.replace(target)
+                expected = int(response.headers.get("content-length", "0"))
+                if expected and len(response.content) != expected:
+                    time.sleep(backoff)
+                    continue
+                self._store(target, response.content)
                 self.fetched += 1
                 return text
             not_submission = False
-            if response.status_code in (429, 500, 502, 503, 504):
-                retry_after = response.headers.get("retry-after", "")
-                time.sleep(float(retry_after) if retry_after.isdigit() else backoff)
+            if response.status_code == 429:
+                if not getattr(self.client, "_sec_scheduler", None):
+                    self.scheduler.cooldown(url, response.headers.get("retry-after", ""))
+                # The next permit acquisition enforces numeric/date cooldowns
+                # and the scheduler's bounded maximum wait. Never sleep an
+                # arbitrary provider Retry-After directly in this loader.
+                continue
+            if response.status_code in (500, 502, 503, 504):
+                time.sleep(backoff)
                 continue
             break  # 404 or another HTTP error: not fetched
         if not_submission:
@@ -1851,6 +1903,19 @@ class EventDocuments:
         else:
             self.failed += 1
         return None
+
+    def _store(self, target: Path, raw: bytes) -> None:
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Distinct staging files prevent independent invocations from replacing
+        # or deleting each other's partial downloads for the same accession.
+        with tempfile.NamedTemporaryFile(dir=self.cache_dir, prefix=target.name + ".",
+                                         suffix=".part", delete=False) as staged:
+            partial = Path(staged.name)
+            staged.write(raw)
+        try:
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
 
 
 def _event_key(event: RegistrationEvent) -> tuple[str, int, str, dt.date]:
@@ -2646,32 +2711,54 @@ def list_package_urls(client) -> list[str]:
 def fetch_package(client, url: str, target: Path) -> tuple[str | None, str | None]:
     """Stream one FSN zip to disk; it replaces ``target`` only once it opens.
     Returns the SEC's (ETag, Last-Modified) of the bytes fetched."""
-    partial = target.with_name(target.name + ".part")
-    with client.stream("GET", url) as response:
-        response.raise_for_status()
-        validators = (response.headers.get("etag"), response.headers.get("last-modified"))
-        with partial.open("wb") as fh:
-            for chunk in response.iter_bytes(1 << 20):
-                fh.write(chunk)
-    with zipfile.ZipFile(partial):
-        pass
-    partial.replace(target)
-    time.sleep(DOWNLOAD_SPACING_S)
+    with tempfile.TemporaryDirectory(dir=target.parent, prefix=".fsn-download-") as directory:
+        partial = Path(directory) / "package.zip"
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            validators = (response.headers.get("etag"), response.headers.get("last-modified"))
+            with partial.open("wb") as fh:
+                for chunk in response.iter_bytes(1 << 20):
+                    fh.write(chunk)
+            expected = int(response.headers.get("content-length", "0"))
+        if expected and partial.stat().st_size != expected:
+            raise ValueError(f"{target.name}: short download")
+        with zipfile.ZipFile(partial):
+            pass
+        partial.replace(target)
     return validators
 
 
-def download_packages(packages_dir: Path) -> list[Path]:
-    """Fetch every listed FSN package not already present (sequential, SEC UA)."""
+def download_packages(packages_dir: Path, *, workers: int | None = None) -> list[Path]:
+    """Fetch missing packages with bounded I/O threads and one shared SEC budget.
+
+    Default one thread is appropriate until deployment resources are measured;
+    an explicit count is capped at four and at the available CPU budget.
+    """
     packages_dir.mkdir(parents=True, exist_ok=True)
     fetched: list[Path] = []
+    workers = int(os.environ.get("SEC_DOWNLOAD_WORKERS", "1")) if workers is None else workers
+    if workers < 1:
+        raise ValueError("download workers must be positive")
+    workers = min(workers, 4, max(1, (os.cpu_count() or 1) - 4))
     with sec_client() as client:
-        for url in list_package_urls(client):
+        pending = []
+        for url in dict.fromkeys(list_package_urls(client)):
             target = packages_dir / url.rsplit("/", 1)[1]
             if target.exists():
                 continue
+            pending.append((url, target))
+
+        def fetch(item):
+            url, target = item
             fetch_package(client, url, target)
-            fetched.append(target)
-            print(json.dumps({"downloaded": target.name, "bytes": target.stat().st_size}))
+            return target
+
+        # map preserves source order when downloads finish out of order.
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for start in range(0, len(pending), workers):
+                for target in pool.map(fetch, pending[start:start + workers]):
+                    fetched.append(target)
+                    print(json.dumps({"downloaded": target.name, "bytes": target.stat().st_size}))
     return fetched
 
 

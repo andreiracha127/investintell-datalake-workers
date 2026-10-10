@@ -1,19 +1,19 @@
-"""Run two local foreign-evidence collectors, then verify and combine their output.
+"""Run configurable local foreign-evidence collectors and combine verified output.
 
 prepare snapshots a complete discovery manifest and partitions canonical source
-URLs. collect handles one partition at four requests/second. combine publishes
-the complete local evidence artifact only after both partitions pass integrity
+URLs and pins a total parsing budget. collect handles one partition under shared
+provider scheduling. combine publishes only after all partitions pass integrity
 and coverage checks. This wrapper has no database operation or apply option.
 """
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import heapq
 import json
 import os
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 if __package__:
@@ -22,7 +22,7 @@ else:
     import load_sec_foreign_listing_evidence as loader
 
 PART_COUNT = 2
-PLAN_VERSION = 1
+PLAN_VERSION = 2
 SUCCESS_STATUSES = {"parsed", "issuer_binding_unverified", "not_securities_description"}
 # Only these fields are produced or refreshed while parsing original bytes.
 # All other discovery metadata remains pinned to the immutable parent snapshot,
@@ -41,6 +41,8 @@ def file_sha256(path: Path) -> str:
 
 
 def partition(document: dict, count: int = PART_COUNT) -> int:
+    if type(count) is not int or count < 1:
+        raise ValueError("Shard count must be a positive integer")
     url = loader.canonical_sec_url(document["source_url"])
     return int(loader.digest(url.encode("utf-8")), 16) % count
 
@@ -64,10 +66,24 @@ def _matches_parent_metadata(document: dict, parent: dict) -> bool:
             and (not parent.get("source_sha256") or document.get("source_sha256") == parent["source_sha256"]))
 
 
-def _load_plan(cache: Path) -> tuple[dict, dict]:
+def _plan_hash(plan: dict) -> str:
+    return loader.digest(loader.canonical_json({key: value for key, value in plan.items()
+                                               if key != "plan_sha256"}).encode())
+
+
+def _load_plan(cache: Path, parts: int | None = None) -> tuple[dict, dict]:
     plan = json.loads((cache / "shards" / "plan.json").read_text(encoding="utf-8"))
-    if plan["version"] != PLAN_VERSION or plan["parts"] != PART_COUNT:
+    if plan.get("version") not in (1, PLAN_VERSION) or type(plan.get("parts")) is not int or plan["parts"] < 1:
         raise ValueError("Unsupported shard plan")
+    if plan["version"] == 1 and plan["parts"] != PART_COUNT:
+        raise ValueError("Unsupported legacy shard plan")
+    if parts is not None and parts != plan["parts"]:
+        raise ValueError("Requested shard count differs from immutable plan")
+    if plan["version"] == PLAN_VERSION:
+        if plan.get("plan_sha256") != _plan_hash(plan):
+            raise ValueError("Immutable shard plan identity mismatch")
+        if type(plan.get("total_workers")) is not int or plan["total_workers"] < 1:
+            raise ValueError("Invalid total parsing worker budget")
     parent_file = cache / "shards" / ("parent-" + plan["parent_manifest_sha256"] + ".json")
     if file_sha256(parent_file) != plan["parent_manifest_sha256"]:
         raise ValueError("Immutable parent manifest hash mismatch")
@@ -75,14 +91,62 @@ def _load_plan(cache: Path) -> tuple[dict, dict]:
     if not parent.get("complete") or parent.get("universe_sha256") != plan["universe_sha256"]:
         raise ValueError("Parent discovery is incomplete or its universe hash changed")
     loader.require_authoritative_filing_dates(parent)
+    if len(_parent_documents(parent)) != plan["documents"]:
+        raise ValueError("Parent document count differs from immutable plan")
     return plan, parent
 
 
 def _shard_identity(plan: dict, part: int) -> dict:
-    return {"parent_manifest_sha256": plan["parent_manifest_sha256"], "index": part, "count": PART_COUNT}
+    identity = {"parent_manifest_sha256": plan["parent_manifest_sha256"], "index": part, "count": plan["parts"]}
+    if plan["version"] == PLAN_VERSION:
+        identity["plan_sha256"] = plan["plan_sha256"]
+    return identity
 
 
-def prepare(cache: Path) -> dict:
+@contextmanager
+def _collect_lock(directory: Path):
+    """Permit one active collector per shard; the OS releases locks on exit.
+
+    Keep the lock file permanently: unlinking it lets another process lock a
+    different inode while the original collector still holds the old one.
+    """
+    with (directory / "collect.lock").open("a+b") as handle:
+        if handle.seek(0, os.SEEK_END) == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            def acquire():
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+            def release():
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            def acquire():
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def release():
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        try:
+            acquire()
+        except OSError:
+            raise ValueError("Shard collection is already active or its exclusive lock is unavailable") from None
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            release()
+
+
+def prepare(cache: Path, parts: int | None = None, *, workers: int | None = None) -> dict:
+    plan_path = cache / "shards" / "plan.json"
+    existing = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else None
+    if parts is None:
+        parts = existing["parts"] if existing else PART_COUNT
+    if type(parts) is not int or parts < 1:
+        raise ValueError("Shard count must be a positive integer")
     raw = (cache / "manifest.json").read_bytes()
     parent = json.loads(raw)
     if not parent.get("complete"):
@@ -90,10 +154,16 @@ def prepare(cache: Path) -> dict:
     loader.require_authoritative_filing_dates(parent)
     documents = _parent_documents(parent)
     parent_hash = loader.digest(raw)
-    plan = {"version": PLAN_VERSION, "parts": PART_COUNT, "parent_manifest_sha256": parent_hash,
-            "universe_sha256": parent["universe_sha256"], "documents": len(documents)}
-    plan_path = cache / "shards" / "plan.json"
-    if plan_path.exists() and json.loads(plan_path.read_text(encoding="utf-8")) != plan:
+    total_workers = (existing["total_workers"]
+                     if existing and workers is None and existing.get("version") == PLAN_VERSION
+                     else loader.resolve_parse_workers(workers))
+    plan = {"version": PLAN_VERSION, "parts": parts, "parent_manifest_sha256": parent_hash,
+            "universe_sha256": parent["universe_sha256"], "documents": len(documents),
+            "total_workers": total_workers}
+    if parts > plan["total_workers"]:
+        raise ValueError("Shard count exceeds the total parsing worker budget")
+    plan["plan_sha256"] = _plan_hash(plan)
+    if existing is not None and existing != plan:
         raise ValueError("Existing shard plan belongs to a different parent snapshot")
     snapshot = cache / "shards" / ("parent-" + parent_hash + ".json")
     if snapshot.exists() and file_sha256(snapshot) != parent_hash:
@@ -105,10 +175,10 @@ def prepare(cache: Path) -> dict:
     shared_documents.mkdir(parents=True, exist_ok=True)
     links_required = []
     sizes = []
-    for part in range(PART_COUNT):
+    for part in range(plan["parts"]):
         directory = cache / "parts" / str(part)
         directory.mkdir(parents=True, exist_ok=True)
-        selected = [documents[key] for key in sorted(documents) if partition(documents[key]) == part]
+        selected = [documents[key] for key in sorted(documents) if partition(documents[key], plan["parts"]) == part]
         child = {**parent, "documents": selected, "complete": False, "parse_complete": False,
                  "shard": _shard_identity(plan, part)}
         for key in ("evidence_sha256", "evidence_count", "shard_provenance"):
@@ -132,14 +202,21 @@ def prepare(cache: Path) -> dict:
 
 
 def collect(cache: Path, part: int, observations: Path | None = None, *, offline: bool = False,
-            dotenv: Path | None = None, workers: int = 8) -> dict:
-    if part not in range(PART_COUNT):
+            dotenv: Path | None = None, workers: int | None = None, parts: int | None = None,
+            raw_cache_dir: Path | None = None) -> dict:
+    plan, parent = _load_plan(cache, parts)
+    if type(part) is not int or part not in range(plan["parts"]):
         raise ValueError("Invalid shard index")
-    plan, parent = _load_plan(cache)
+    if plan["version"] == PLAN_VERSION and workers is not None and workers != plan["total_workers"]:
+        raise ValueError("Requested worker budget differs from immutable plan")
+    total_workers = plan.get("total_workers", workers or 8)
+    allocation = loader.resolve_parse_workers(total_budget=total_workers, shard_count=plan["parts"], shard_index=part)
+    if allocation < 1:
+        raise ValueError("Current resource budget cannot allocate a worker to this shard")
     directory = cache / "parts" / str(part)
     manifest = json.loads((directory / "input-manifest.json").read_text(encoding="utf-8"))
     parent_documents = _parent_documents(parent)
-    expected = {key for key, source in parent_documents.items() if partition(source) == part}
+    expected = {key for key, source in parent_documents.items() if partition(source, plan["parts"]) == part}
     if (manifest.get("shard") != _shard_identity(plan, part) or manifest.get("complete") is not False
             or {row["source_package"] for row in manifest["documents"]} != expected
             or len(manifest["documents"]) != len(expected)):
@@ -147,13 +224,14 @@ def collect(cache: Path, part: int, observations: Path | None = None, *, offline
     if any(loader.canonical_json(document) != loader.canonical_json(parent_documents[document["source_package"]])
            for document in manifest["documents"]):
         raise ValueError("Child input parsing or binding metadata differs from its immutable parent")
-    if (directory / "documents").resolve() != (cache / "documents").resolve():
+    if raw_cache_dir is None and (directory / "documents").resolve() != (cache / "documents").resolve():
         raise ValueError("Create the child's documents link to the shared original cache before collection")
     observation_rows = json.loads(observations.read_text(encoding="utf-8-sig")) if observations else None
-    key = "" if offline else loader.load_key(dotenv)
-    client = loader.SecClient(directory, key, offline=offline, requests_per_second=8 / PART_COUNT)
-    result = loader.parse_manifest(client, manifest, directory / "evidence.jsonl", workers, observation_rows,
-                                   binding_sources=parent["documents"])
+    with _collect_lock(directory):
+        key = "" if offline else loader.load_key(dotenv)
+        client = loader.SecClient(directory, key, offline=offline, raw_cache_dir=raw_cache_dir)
+        result = loader.parse_manifest(client, manifest, directory / "evidence.jsonl", allocation, observation_rows,
+                                       binding_sources=parent["documents"])
     # parse_manifest preserves complete=False. No partial partition can pass the
     # ordinary loader's apply_evidence complete-manifest requirement.
     return {"part": part, "parent_manifest_sha256": plan["parent_manifest_sha256"], **result}
@@ -168,7 +246,7 @@ def _validate_child(cache: Path, plan: dict, parent_documents: dict, part: int) 
     if not child.get("parse_complete") or child.get("universe_sha256") != plan["universe_sha256"]:
         raise ValueError("Child parsing is incomplete or universe hash mismatches")
     loader.require_authoritative_filing_dates(child)
-    expected = {key for key, source in parent_documents.items() if partition(source) == part}
+    expected = {key for key, source in parent_documents.items() if partition(source, plan["parts"]) == part}
     documents = {row["source_package"]: row for row in child["documents"]}
     if len(documents) != len(child["documents"]) or set(documents) != expected:
         raise ValueError("Child source package coverage is missing, extra, or duplicated")
@@ -208,10 +286,10 @@ def _validate_child(cache: Path, plan: dict, parent_documents: dict, part: int) 
     return child, evidence
 
 
-def combine(cache: Path, output: Path) -> dict:
-    plan, parent = _load_plan(cache)
+def combine(cache: Path, output: Path, *, parts: int | None = None) -> dict:
+    plan, parent = _load_plan(cache, parts)
     parent_documents = _parent_documents(parent)
-    children = [_validate_child(cache, plan, parent_documents, part) for part in range(PART_COUNT)]
+    children = [_validate_child(cache, plan, parent_documents, part) for part in range(plan["parts"])]
     observation_hashes = {child.get("observations_sha256") for child, _ in children}
     if len(observation_hashes) != 1 or (parent.get("observations_sha256") is not None
                                       and parent["observations_sha256"] not in observation_hashes):
@@ -236,7 +314,7 @@ def combine(cache: Path, output: Path) -> dict:
 
     count = 0
     try:
-        for part in range(PART_COUNT):
+        for part in range(plan["parts"]):
             advance(part)
         with temporary.open("wb") as handle:
             while pending:
@@ -257,6 +335,9 @@ def combine(cache: Path, output: Path) -> dict:
         {"index": index, "evidence_sha256": child["evidence_sha256"], "evidence_count": child["evidence_count"]}
         for index, (child, _) in enumerate(children)
     ]}
+    if plan["version"] == PLAN_VERSION:
+        provenance.update(plan_sha256=plan["plan_sha256"], count=plan["parts"],
+                          total_workers=plan["total_workers"])
     complete = {**parent, "documents": sorted(all_documents, key=lambda row: row["source_package"]),
                 "complete": True, "parse_complete": True, "evidence_count": count,
                 "evidence_sha256": file_sha256(output), "observations_sha256": next(iter(observation_hashes)),
@@ -274,25 +355,26 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "collect", "combine"))
     parser.add_argument("--cache-dir", type=Path, required=True)
-    parser.add_argument("--parts", type=int, choices=(PART_COUNT,), default=PART_COUNT)
-    parser.add_argument("--part", type=int, choices=range(PART_COUNT))
+    parser.add_argument("--parts", type=int, help="Preparation shard count (default 2); optional assertion on resume")
+    parser.add_argument("--part", type=int)
     parser.add_argument("--observations", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--offline", action="store_true")
-    parser.add_argument("--workers", type=int, choices=range(1, 9), default=8)
+    parser.add_argument("--workers", type=int, help="Total parsing budget across all shards, pinned at preparation")
+    parser.add_argument("--raw-cache-dir", type=Path, help="Read-only original raw cache; requires --offline")
     parser.add_argument("--dotenv", type=Path, default=Path("E:/investintell-light/backend/.env"))
     args = parser.parse_args(argv)
     if args.command == "prepare":
-        result = prepare(args.cache_dir)
+        result = prepare(args.cache_dir, args.parts, workers=args.workers)
         code = 2 if result["links_required"] else 0
     elif args.command == "collect":
         if args.part is None:
             parser.error("collect requires --part")
         result = collect(args.cache_dir, args.part, args.observations, offline=args.offline,
-                         dotenv=args.dotenv, workers=args.workers)
+                         dotenv=args.dotenv, workers=args.workers, parts=args.parts, raw_cache_dir=args.raw_cache_dir)
         code = 0 if result["parse_complete"] else 2
     else:
-        result = combine(args.cache_dir, args.output or args.cache_dir / "evidence.jsonl")
+        result = combine(args.cache_dir, args.output or args.cache_dir / "evidence.jsonl", parts=args.parts)
         code = 0
     print(loader.canonical_json(result), flush=True)
     return code

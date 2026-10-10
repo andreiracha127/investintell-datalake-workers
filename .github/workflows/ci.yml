@@ -173,6 +173,8 @@ jobs:
             tests/test_sec_ticker_cik_history.py
             tests/test_sec_ticker_cik_history_v3.py
             tests/test_sec_insider_ticker_evidence.py
+            tests/test_sec_provider_transport.py
+            tests/test_sec_loader_transport.py
             tests/test_bond_default_contracts.py
             tests/test_bond_default_edgar.py
             tests/test_bond_default_ncen.py
@@ -869,6 +871,8 @@ jobs:
             tests/test_sec_ticker_cik_history.py
             tests/test_sec_ticker_cik_history_v3.py
             tests/test_sec_insider_ticker_evidence.py
+            tests/test_sec_provider_transport.py
+            tests/test_sec_loader_transport.py
           )
           printf 'environment_mode=timescale-pg18\nselected_scope=%s\n' "${tests[*]}"
           python -m pytest "${tests[@]}" --collect-only -q | tee collect.log
@@ -973,6 +977,8 @@ jobs:
           tests/test_sec_ticker_cik_history.py
           tests/test_sec_ticker_cik_history_v3.py
           tests/test_sec_insider_ticker_evidence.py
+          tests/test_sec_provider_transport.py
+          tests/test_sec_loader_transport.py
           -q
 
       - name: Lint N-PORT modules
@@ -1033,6 +1039,8 @@ jobs:
           tests/test_sec_ticker_cik_history.py
           tests/test_sec_ticker_cik_history_v3.py
           tests/test_sec_insider_ticker_evidence.py
+          tests/test_sec_provider_transport.py
+          tests/test_sec_loader_transport.py
 
       - name: Compile N-PORT modules
         if: steps.changes.outputs.nport_changed == 'true'
