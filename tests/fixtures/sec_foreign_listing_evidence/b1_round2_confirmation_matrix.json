@@ -1,0 +1,2542 @@
+{
+  "description": "Synthetic B1 round 2 confirmation entry point and disqualifier matrix. Positive controls assert genuine legal completion; each negative also requires dropped or pending dated targets.",
+  "baseline_commit": "546904287e05c6ca081e8dd520ebc3f44fbae97c",
+  "negative_count": 335,
+  "positive_count": 27,
+  "cases": [
+    {
+      "entry": "completion_after_date/completed",
+      "category": "genuine",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "accounting",
+      "text": "For purposes of EPS, it is assumed that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "accounting",
+      "text": "For purposes of the financial statements, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "hypothetical",
+      "text": "As though the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "hypothetical",
+      "text": "As if the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "hypothetical",
+      "text": "Assuming that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "hypothetical",
+      "text": "Hypothetically, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "conditional",
+      "text": "If the required regulatory approval is granted, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "conditional_long_lead",
+      "text": "For purposes of the financial model, subject to the final regulatory approval after all documentary requirements are satisfied, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "accounting_suffix",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, but this was only an assumption for EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "accounting_suffix",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, for purposes of EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "hypothetical_suffix",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, as if the ratio had been effective.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "conditional_suffix",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, subject to shareholder approval.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "negation_suffix",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, but the ratio change has not yet been effected.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/completed",
+      "category": "future_suffix",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_before_date/completed",
+      "category": "future_owning",
+      "text": "On November 4, 2022, the Company completed the ADS ratio change so that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_before_date/completed",
+      "category": "expected_owning",
+      "text": "On November 4, 2022, the Company completed the ADS ratio change so that each ADS is expected to represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "genuine",
+      "text": "The Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "accounting",
+      "text": "For purposes of EPS, it is assumed that the Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "accounting",
+      "text": "For purposes of the financial statements, the Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "hypothetical",
+      "text": "As though the Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "hypothetical",
+      "text": "As if the Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "hypothetical",
+      "text": "Assuming that the Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "hypothetical",
+      "text": "Hypothetically, the Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "conditional",
+      "text": "If the required regulatory approval is granted, the Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "conditional_long_lead",
+      "text": "For purposes of the financial model, subject to the final regulatory approval after all documentary requirements are satisfied, the Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "accounting_suffix",
+      "text": "The Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, but this was only an assumption for EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "accounting_suffix",
+      "text": "The Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, for purposes of EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "hypothetical_suffix",
+      "text": "The Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, as if the ratio had been effective.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "conditional_suffix",
+      "text": "The Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, subject to shareholder approval.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "negation_suffix",
+      "text": "The Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, but the ratio change has not yet been effected.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/effected",
+      "category": "future_suffix",
+      "text": "The Company effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_before_date/effected",
+      "category": "future_owning",
+      "text": "On November 4, 2022, the Company effected the ADS ratio change so that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_before_date/effected",
+      "category": "expected_owning",
+      "text": "On November 4, 2022, the Company effected the ADS ratio change so that each ADS is expected to represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "genuine",
+      "text": "The Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "accounting",
+      "text": "For purposes of EPS, it is assumed that the Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "accounting",
+      "text": "For purposes of the financial statements, the Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "hypothetical",
+      "text": "As though the Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "hypothetical",
+      "text": "As if the Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "hypothetical",
+      "text": "Assuming that the Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "hypothetical",
+      "text": "Hypothetically, the Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "conditional",
+      "text": "If the required regulatory approval is granted, the Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "conditional_long_lead",
+      "text": "For purposes of the financial model, subject to the final regulatory approval after all documentary requirements are satisfied, the Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "accounting_suffix",
+      "text": "The Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, but this was only an assumption for EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "accounting_suffix",
+      "text": "The Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, for purposes of EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "hypothetical_suffix",
+      "text": "The Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, as if the ratio had been effective.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "conditional_suffix",
+      "text": "The Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, subject to shareholder approval.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "negation_suffix",
+      "text": "The Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, but the ratio change has not yet been effected.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date/implemented",
+      "category": "future_suffix",
+      "text": "The Company implemented the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_before_date/implemented",
+      "category": "future_owning",
+      "text": "On November 4, 2022, the Company implemented the ADS ratio change so that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_before_date/implemented",
+      "category": "expected_owning",
+      "text": "On November 4, 2022, the Company implemented the ADS ratio change so that each ADS is expected to represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "genuine",
+      "text": "The Company adjusted the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "non_ratio_object/announcement",
+      "text": "On November 4, 2022, the Company adjusted its ADS ratio announcement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "non_ratio_object/estimates",
+      "text": "On November 4, 2022, the Company adjusted its ADS ratio estimates to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "non_ratio_object/notice",
+      "text": "On November 4, 2022, the Company adjusted its ADS ratio notice to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "non_ratio_object/filing",
+      "text": "On November 4, 2022, the Company adjusted its ADS ratio filing to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "non_ratio_object/agreement",
+      "text": "On November 4, 2022, the Company adjusted its ADS ratio agreement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "non_ratio_object/change announcement",
+      "text": "On November 4, 2022, the Company adjusted its ADS ratio change announcement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "non_ratio_object/change agreement",
+      "text": "On November 4, 2022, the Company adjusted its ADS ratio change agreement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "non_ratio_object/change notice",
+      "text": "On November 4, 2022, the Company adjusted its ADS ratio change notice to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "accounting_prefix",
+      "text": "As though the Company adjusted the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "accounting_prefix",
+      "text": "For purposes of EPS, the Company adjusted the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "accounting_prefix",
+      "text": "It was assumed that the Company adjusted the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/adjusted",
+      "category": "accounting_prefix",
+      "text": "It is assumed that the Company adjusted the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "genuine",
+      "text": "The Company changed the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "non_ratio_object/announcement",
+      "text": "On November 4, 2022, the Company changed its ADS ratio announcement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "non_ratio_object/estimates",
+      "text": "On November 4, 2022, the Company changed its ADS ratio estimates to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "non_ratio_object/notice",
+      "text": "On November 4, 2022, the Company changed its ADS ratio notice to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "non_ratio_object/filing",
+      "text": "On November 4, 2022, the Company changed its ADS ratio filing to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "non_ratio_object/agreement",
+      "text": "On November 4, 2022, the Company changed its ADS ratio agreement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "non_ratio_object/change announcement",
+      "text": "On November 4, 2022, the Company changed its ADS ratio change announcement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "non_ratio_object/change agreement",
+      "text": "On November 4, 2022, the Company changed its ADS ratio change agreement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "non_ratio_object/change notice",
+      "text": "On November 4, 2022, the Company changed its ADS ratio change notice to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "accounting_prefix",
+      "text": "As though the Company changed the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "accounting_prefix",
+      "text": "For purposes of EPS, the Company changed the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "accounting_prefix",
+      "text": "It was assumed that the Company changed the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/changed",
+      "category": "accounting_prefix",
+      "text": "It is assumed that the Company changed the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "genuine",
+      "text": "The Company amended the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "non_ratio_object/announcement",
+      "text": "On November 4, 2022, the Company amended its ADS ratio announcement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "non_ratio_object/estimates",
+      "text": "On November 4, 2022, the Company amended its ADS ratio estimates to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "non_ratio_object/notice",
+      "text": "On November 4, 2022, the Company amended its ADS ratio notice to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "non_ratio_object/filing",
+      "text": "On November 4, 2022, the Company amended its ADS ratio filing to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "non_ratio_object/agreement",
+      "text": "On November 4, 2022, the Company amended its ADS ratio agreement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "non_ratio_object/change announcement",
+      "text": "On November 4, 2022, the Company amended its ADS ratio change announcement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "non_ratio_object/change agreement",
+      "text": "On November 4, 2022, the Company amended its ADS ratio change agreement to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "non_ratio_object/change notice",
+      "text": "On November 4, 2022, the Company amended its ADS ratio change notice to state that each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "accounting_prefix",
+      "text": "As though the Company amended the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "accounting_prefix",
+      "text": "For purposes of EPS, the Company amended the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "accounting_prefix",
+      "text": "It was assumed that the Company amended the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment/amended",
+      "category": "accounting_prefix",
+      "text": "It is assumed that the Company amended the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "genuine",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio change was effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "former/former",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The former ADS ratio was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "former/previous",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The previous ADS ratio was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "former/prior",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The prior ADS ratio was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "former/old",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The old ADS ratio was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "former/existing",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The existing ADS ratio was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "former/current-before-change",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The current-before-change ADS ratio was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "former/pre-existing",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The pre-existing ADS ratio was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "former/original",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The original ADS ratio was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "hypothetical",
+      "text": "For purposes of EPS, it is assumed that the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "hypothetical",
+      "text": "As though the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "hypothetical",
+      "text": "As if the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "hypothetical",
+      "text": "For purposes of presentation, the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "hypothetical",
+      "text": "Retrospectively adjusted as though the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "qualifier/was assumed to be",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares was assumed to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "qualifier/had been",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "qualifier/would have been",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares would have been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "qualifier/did not become",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares did not become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/was effective",
+      "category": "qualifier/has not become",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares has not become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "genuine",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio change became effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "former/former",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The former ADS ratio became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "former/previous",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The previous ADS ratio became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "former/prior",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The prior ADS ratio became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "former/old",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The old ADS ratio became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "former/existing",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The existing ADS ratio became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "former/current-before-change",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The current-before-change ADS ratio became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "former/pre-existing",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The pre-existing ADS ratio became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "former/original",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The original ADS ratio became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "hypothetical",
+      "text": "For purposes of EPS, it is assumed that the ADS ratio of one ADS representing twenty ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "hypothetical",
+      "text": "As though the ADS ratio of one ADS representing twenty ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "hypothetical",
+      "text": "As if the ADS ratio of one ADS representing twenty ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "hypothetical",
+      "text": "For purposes of presentation, the ADS ratio of one ADS representing twenty ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "hypothetical",
+      "text": "Retrospectively adjusted as though the ADS ratio of one ADS representing twenty ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "qualifier/was assumed to be",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares was assumed to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "qualifier/had been",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "qualifier/would have been",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares would have been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "qualifier/did not become",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares did not become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/became effective",
+      "category": "qualifier/has not become",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares has not become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "genuine",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio change has become effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "former/former",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The former ADS ratio has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "former/previous",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The previous ADS ratio has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "former/prior",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The prior ADS ratio has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "former/old",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The old ADS ratio has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "former/existing",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The existing ADS ratio has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "former/current-before-change",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The current-before-change ADS ratio has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "former/pre-existing",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The pre-existing ADS ratio has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "former/original",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The original ADS ratio has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "hypothetical",
+      "text": "For purposes of EPS, it is assumed that the ADS ratio of one ADS representing twenty ordinary shares has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "hypothetical",
+      "text": "As though the ADS ratio of one ADS representing twenty ordinary shares has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "hypothetical",
+      "text": "As if the ADS ratio of one ADS representing twenty ordinary shares has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "hypothetical",
+      "text": "For purposes of presentation, the ADS ratio of one ADS representing twenty ordinary shares has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "hypothetical",
+      "text": "Retrospectively adjusted as though the ADS ratio of one ADS representing twenty ordinary shares has become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "qualifier/was assumed to be",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares was assumed to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "qualifier/had been",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "qualifier/would have been",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares would have been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "qualifier/did not become",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares did not become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past/has become effective",
+      "category": "qualifier/has not become",
+      "text": "The ADS ratio of one ADS representing twenty ordinary shares has not become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "genuine",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "qualifier/will be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary confirmed that this ADS ratio change will be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "qualifier/is expected to be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary confirmed that this ADS ratio change is expected to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "qualifier/is assumed to be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary confirmed that this ADS ratio change is assumed to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "qualifier/would be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary confirmed that this ADS ratio change would be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "qualifier/is not",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary confirmed that this ADS ratio change is not effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "qualifier/had been",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary confirmed that this ADS ratio change had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. For purposes of EPS, the Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. As though the Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. As if the Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/confirmed",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. It is assumed that the Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "genuine",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary has announced that this ADS ratio change is effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "qualifier/will be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary has announced that this ADS ratio change will be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "qualifier/is expected to be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary has announced that this ADS ratio change is expected to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "qualifier/is assumed to be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary has announced that this ADS ratio change is assumed to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "qualifier/would be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary has announced that this ADS ratio change would be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "qualifier/is not",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary has announced that this ADS ratio change is not effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "qualifier/had been",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary has announced that this ADS ratio change had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. For purposes of EPS, the Depositary has announced that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. As though the Depositary has announced that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. As if the Depositary has announced that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/has announced",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. It is assumed that the Depositary has announced that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "genuine",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary notified that this ADS ratio change is effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "qualifier/will be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary notified that this ADS ratio change will be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "qualifier/is expected to be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary notified that this ADS ratio change is expected to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "qualifier/is assumed to be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary notified that this ADS ratio change is assumed to be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "qualifier/would be",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary notified that this ADS ratio change would be effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "qualifier/is not",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary notified that this ADS ratio change is not effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "qualifier/had been",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Depositary notified that this ADS ratio change had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. For purposes of EPS, the Depositary notified that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. As though the Depositary notified that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. As if the Depositary notified that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "depositary/notified",
+      "category": "hypothetical_prefix",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. It is assumed that the Depositary notified that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "genuine",
+      "text": "The shareholders approved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the shareholders approved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "hypothetical_prefix",
+      "text": "As though the shareholders approved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "hypothetical_prefix",
+      "text": "As if the shareholders approved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "hypothetical_prefix",
+      "text": "Assuming that the shareholders approved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "hypothetical_prefix",
+      "text": "If the Company obtains final approval, the shareholders approved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "negation_prefix",
+      "text": "The shareholders have not approved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "non_ratio_object",
+      "text": "The shareholders approved the ADS ratio change announcement from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/approved",
+      "category": "future_suffix",
+      "text": "The shareholders approved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022, so each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "genuine",
+      "text": "The shareholders adopted the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the shareholders adopted the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "hypothetical_prefix",
+      "text": "As though the shareholders adopted the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "hypothetical_prefix",
+      "text": "As if the shareholders adopted the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "hypothetical_prefix",
+      "text": "Assuming that the shareholders adopted the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "hypothetical_prefix",
+      "text": "If the Company obtains final approval, the shareholders adopted the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "negation_prefix",
+      "text": "The shareholders have not adopted the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "non_ratio_object",
+      "text": "The shareholders adopted the ADS ratio change announcement from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/adopted",
+      "category": "future_suffix",
+      "text": "The shareholders adopted the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022, so each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "genuine",
+      "text": "The shareholders passed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the shareholders passed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "hypothetical_prefix",
+      "text": "As though the shareholders passed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "hypothetical_prefix",
+      "text": "As if the shareholders passed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "hypothetical_prefix",
+      "text": "Assuming that the shareholders passed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "hypothetical_prefix",
+      "text": "If the Company obtains final approval, the shareholders passed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "negation_prefix",
+      "text": "The shareholders have not passed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "non_ratio_object",
+      "text": "The shareholders passed the ADS ratio change announcement from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/passed",
+      "category": "future_suffix",
+      "text": "The shareholders passed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022, so each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "genuine",
+      "text": "The shareholders resolved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the shareholders resolved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "hypothetical_prefix",
+      "text": "As though the shareholders resolved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "hypothetical_prefix",
+      "text": "As if the shareholders resolved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "hypothetical_prefix",
+      "text": "Assuming that the shareholders resolved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "hypothetical_prefix",
+      "text": "If the Company obtains final approval, the shareholders resolved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "negation_prefix",
+      "text": "The shareholders have not resolved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "non_ratio_object",
+      "text": "The shareholders resolved the ADS ratio change announcement from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "approval/resolved",
+      "category": "future_suffix",
+      "text": "The shareholders resolved the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022, so each ADS will represent twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "other_identity/Class B program",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio for the Class B program became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "other_identity/Global Depositary Share program",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio for the Global Depositary Share program became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "other_identity/different ADS program",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio for the different ADS program became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "other_identity/Class B ordinary shares",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio for the Class B ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "other_identity/Series B ordinary shares",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio for the Series B ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "other_identity/Class AA ordinary shares",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio for the Class AA ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "other_identity/Class AB ordinary shares",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio for the Class AB ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "other_identity/Series AA ordinary shares",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The ADS ratio for the Series AA ordinary shares became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the shareholders approved the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "As though the shareholders approved the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "As if the shareholders approved the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "It is assumed that the shareholders approved the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "If no regulatory concern arises after all the consultations and extensive procedural steps have concluded, the shareholders approved the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "negation_suffix",
+      "text": "The shareholders approved the Share Consolidation, but approval has not yet been obtained. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the shareholders adopted the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "As though the shareholders adopted the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "As if the shareholders adopted the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "It is assumed that the shareholders adopted the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "If no regulatory concern arises after all the consultations and extensive procedural steps have concluded, the shareholders adopted the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "negation_suffix",
+      "text": "The shareholders adopted the Share Consolidation, but approval has not yet been obtained. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the shareholders passed the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "As though the shareholders passed the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "As if the shareholders passed the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "It is assumed that the shareholders passed the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "If no regulatory concern arises after all the consultations and extensive procedural steps have concluded, the shareholders passed the Share Consolidation. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "negation_suffix",
+      "text": "The shareholders passed the Share Consolidation, but approval has not yet been obtained. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the shareholders resolved by ordinary resolution to consolidate every twenty of the shares into one share (the Share Consolidation). The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "As though the shareholders resolved by ordinary resolution to consolidate every twenty of the shares into one share (the Share Consolidation). The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "As if the shareholders resolved by ordinary resolution to consolidate every twenty of the shares into one share (the Share Consolidation). The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "It is assumed that the shareholders resolved by ordinary resolution to consolidate every twenty of the shares into one share (the Share Consolidation). The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "hypothetical_prefix",
+      "text": "If no regulatory concern arises after all the consultations and extensive procedural steps have concluded, the shareholders resolved by ordinary resolution to consolidate every twenty of the shares into one share (the Share Consolidation). The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation",
+      "category": "negation_suffix",
+      "text": "The shareholders resolved by ordinary resolution to consolidate every twenty of the shares into one share (the Share Consolidation), but approval has not yet been obtained. The Share Consolidation will be effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. ",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adopted_subdivision",
+      "category": "hypothetical_prefix",
+      "text": "For purposes of EPS, it is assumed that the proposed resolutions submitted for shareholder approval have been adopted as an ordinary resolution: Each ordinary share be and is hereby subdivided into twenty ordinary shares, effective on November 4, 2022 (Share Subdivision). Concurrently with the effectiveness of the Share Subdivision, the ADS ratio will be adjusted from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adopted_subdivision",
+      "category": "hypothetical_prefix",
+      "text": "As though the proposed resolutions submitted for shareholder approval have been adopted as an ordinary resolution: Each ordinary share be and is hereby subdivided into twenty ordinary shares, effective on November 4, 2022 (Share Subdivision). Concurrently with the effectiveness of the Share Subdivision, the ADS ratio will be adjusted from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adopted_subdivision",
+      "category": "hypothetical_prefix",
+      "text": "As if the proposed resolutions submitted for shareholder approval have been adopted as an ordinary resolution: Each ordinary share be and is hereby subdivided into twenty ordinary shares, effective on November 4, 2022 (Share Subdivision). Concurrently with the effectiveness of the Share Subdivision, the ADS ratio will be adjusted from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adopted_subdivision",
+      "category": "hypothetical_prefix",
+      "text": "It is assumed that the proposed resolutions submitted for shareholder approval have been adopted as an ordinary resolution: Each ordinary share be and is hereby subdivided into twenty ordinary shares, effective on November 4, 2022 (Share Subdivision). Concurrently with the effectiveness of the Share Subdivision, the ADS ratio will be adjusted from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adopted_subdivision",
+      "category": "hypothetical_prefix",
+      "text": "If no regulatory concern arises after all the consultations and extensive procedural steps have concluded, the proposed resolutions submitted for shareholder approval have been adopted as an ordinary resolution: Each ordinary share be and is hereby subdivided into twenty ordinary shares, effective on November 4, 2022 (Share Subdivision). Concurrently with the effectiveness of the Share Subdivision, the ADS ratio will be adjusted from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/has not yet been effected",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has not yet been effected on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/did not become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares did not become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/has not become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has not become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/had been effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/will become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares will become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/is expected to become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares is expected to become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/did not change",
+      "text": "The Company did not change its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/has not amended",
+      "text": "The Company has not amended its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/has not adjusted",
+      "text": "The Company has not adjusted its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "uncertain/would have changed",
+      "text": "The Company would have changed its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_unconfirmed",
+      "category": "uncertain/assuming that",
+      "text": "Earnings per ADS were retrospectively adjusted assuming that the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_unconfirmed",
+      "category": "uncertain/as though",
+      "text": "Earnings per ADS were retrospectively adjusted as though the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_unconfirmed",
+      "category": "uncertain/as if",
+      "text": "Earnings per ADS were retrospectively adjusted as if the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_unconfirmed",
+      "category": "uncertain/for purposes of EPS",
+      "text": "Earnings per ADS were retrospectively adjusted for purposes of EPS the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares had been effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "scope_truncation",
+      "category": "hypothetical_long_prefix/800",
+      "text": "For purposes of EPS, it is assumed, after considering operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details , that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "scope_truncation",
+      "category": "hypothetical_long_suffix/800",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, after considering accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details , but this is only assumed for purposes of EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "scope_truncation",
+      "category": "hypothetical_long_prefix/1300",
+      "text": "For purposes of EPS, it is assumed, after considering operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details , that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "scope_truncation",
+      "category": "hypothetical_long_suffix/1300",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, after considering accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details , but this is only assumed for purposes of EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "scope_truncation",
+      "category": "hypothetical_long_prefix/2200",
+      "text": "For purposes of EPS, it is assumed, after considering operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details operational details , that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "scope_truncation",
+      "category": "hypothetical_long_suffix/2200",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, after considering accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details accounting details , but this is only assumed for purposes of EPS.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "negation_scope/The Company denied that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Company denied that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "negation_scope/The Company disputed whether ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Company disputed whether the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "negation_scope/There is no evidence that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. There is no evidence that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "negation_scope/There is no confirmation that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. There is no confirmation that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "negation_scope/Without establishing whether ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. Without establishing whether the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "negation_scope/The Company could not confirm that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Company could not confirm that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "negation_scope/The Company has yet to confirm that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The Company has yet to confirm that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "negation_scope/The Company denied that ",
+      "text": "The Company denied that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "negation_scope/There is no evidence that ",
+      "text": "There is no evidence that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "negation_scope/The Company disputed whether ",
+      "text": "The Company disputed whether the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "negation_scope/The statement incorrectly suggests that ",
+      "text": "The statement incorrectly suggests that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation_date",
+      "category": "uncertain_named_date/For purposes of EPS, it is assumed that ",
+      "text": "The shareholders approved the Share Consolidation. For purposes of EPS, it is assumed that the Share Consolidation was effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation_date",
+      "category": "uncertain_named_date/As though ",
+      "text": "The shareholders approved the Share Consolidation. As though the Share Consolidation was effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation_date",
+      "category": "uncertain_named_date/It is assumed that ",
+      "text": "The shareholders approved the Share Consolidation. It is assumed that the Share Consolidation was effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation_date",
+      "category": "uncertain_named_date/The Company denied that ",
+      "text": "The shareholders approved the Share Consolidation. The Company denied that the Share Consolidation was effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "named_consolidation_date",
+      "category": "uncertain_named_date/There is no evidence that ",
+      "text": "The shareholders approved the Share Consolidation. There is no evidence that the Share Consolidation was effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_purpose_variants",
+      "category": "accounting/For the purpose of EPS, ",
+      "text": "For the purpose of EPS, the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "accounting/For the purpose of EPS, ",
+      "text": "For the purpose of EPS, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_purpose_variants",
+      "category": "accounting/For the purposes of EPS, ",
+      "text": "For the purposes of EPS, the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "accounting/For the purposes of EPS, ",
+      "text": "For the purposes of EPS, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_purpose_variants",
+      "category": "accounting/For EPS purposes, ",
+      "text": "For EPS purposes, the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "accounting/For EPS purposes, ",
+      "text": "For EPS purposes, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_purpose_variants",
+      "category": "accounting/For accounting purposes, ",
+      "text": "For accounting purposes, the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "accounting/For accounting purposes, ",
+      "text": "For accounting purposes, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "accounting_purpose_variants",
+      "category": "accounting/For financial reporting purposes, ",
+      "text": "For financial reporting purposes, the ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "accounting/For financial reporting purposes, ",
+      "text": "For financial reporting purposes, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/hasn't yet been effected",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares hasn't yet been effected on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/haven't become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares haven't become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/wasn't effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares wasn't effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/didn't become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares didn't become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/hasn’t yet been effected",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares hasn’t yet been effected on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/wasn’t effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares wasn’t effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/didn’t become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares didn’t become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/didn't change",
+      "text": "The Company didn't change its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/hasn't amended",
+      "text": "The Company hasn't amended its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/hasn't adjusted",
+      "text": "The Company hasn't adjusted its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/didn’t change",
+      "text": "The Company didn’t change its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "contraction",
+      "category": "negation/hasn’t adjusted",
+      "text": "The Company hasn’t adjusted its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "hypothetical_variants",
+      "category": "hypothetical/Suppose that ",
+      "text": "Suppose that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "hypothetical/Suppose that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. Suppose that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "hypothetical_variants",
+      "category": "hypothetical/Supposing that ",
+      "text": "Supposing that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "hypothetical/Supposing that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. Supposing that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "hypothetical_variants",
+      "category": "hypothetical/Assume that ",
+      "text": "Assume that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "hypothetical/Assume that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. Assume that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "hypothetical_variants",
+      "category": "hypothetical/Let us assume that ",
+      "text": "Let us assume that the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past",
+      "category": "hypothetical/Let us assume that ",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. Let us assume that the ADS ratio change became effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_with_unrelated_future",
+      "category": "genuine/. ",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on May 12, 2023. new ADSs will be available to holders on May 15, 2023.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_with_unrelated_future",
+      "category": "genuine/; ",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on May 12, 2023; new ADSs will be available to holders on May 15, 2023.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_with_unrelated_future",
+      "category": "genuine/, and ",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on May 12, 2023, and new ADSs will be available to holders on May 15, 2023.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_with_unrelated_negative",
+      "category": "genuine/, which did not alter the underlying ordinary shares",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on May 12, 2023, which did not alter the underlying ordinary shares.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_with_unrelated_negative",
+      "category": "genuine/, and no physical action by ADS holders was required",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on May 12, 2023, and no physical action by ADS holders was required.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_with_unrelated_negative",
+      "category": "genuine/, which does not change the proportionate ownership interest of ADS holders",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on May 12, 2023, which does not change the proportionate ownership interest of ADS holders.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "past_numbered_former",
+      "category": "former/former",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The former ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past_numbered_former",
+      "category": "former/previous",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The previous ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past_numbered_former",
+      "category": "former/prior",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The prior ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past_numbered_former",
+      "category": "former/old",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The old ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past_numbered_former",
+      "category": "former/existing",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The existing ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "past_numbered_former",
+      "category": "former/current-before-change",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The current-before-change ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment_explicit_new",
+      "category": "genuine/previous",
+      "text": "The Company changed its ADS ratio from the previous ratio of one ADS representing one ordinary share to the current ratio of one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "adjustment_explicit_new",
+      "category": "genuine/current",
+      "text": "The Company changed its ADS ratio from the current ratio of one ADS representing one ordinary share to the current ratio of one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "genuine",
+      "text": "Effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has taken effect concurrently on the same day.",
+      "positive": true,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "hypothetical/For purposes of EPS, ",
+      "text": "For purposes of EPS, effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has taken effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "hypothetical/Assume that ",
+      "text": "Assume that effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has taken effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "hypothetical/As though ",
+      "text": "As though effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has taken effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "hypothetical/If the required approval is obtained, ",
+      "text": "If the required approval is obtained, effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has taken effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "hypothetical/There is no evidence that ",
+      "text": "There is no evidence that effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has taken effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "uncertain/has not yet taken effect",
+      "text": "Effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has not yet taken effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "uncertain/hasn't yet taken effect",
+      "text": "Effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares hasn't yet taken effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "uncertain/did not take effect",
+      "text": "Effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares did not take effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "uncertain/may take effect",
+      "text": "Effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares may take effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "taken_effect",
+      "category": "uncertain/would take effect",
+      "text": "Effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares would take effect concurrently on the same day.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "genuine",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. The Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": true,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "hypothetical/For purposes of EPS, it is assumed that ",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. For purposes of EPS, it is assumed that the Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "hypothetical/As though ",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. As though the Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "hypothetical/Assume that ",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. Assume that the Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "hypothetical/There is no evidence that ",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. There is no evidence that the Depositary confirmed that this ADS ratio change is effective on November 4, 2022.",
+      "positive": false,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "genuine",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. The ADS ratio change was effective on November 4, 2022.",
+      "positive": true,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "hypothetical/For purposes of EPS, it is assumed that ",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. For purposes of EPS, it is assumed that the ADS ratio change was effective on November 4, 2022.",
+      "positive": false,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "hypothetical/As though ",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. As though the ADS ratio change was effective on November 4, 2022.",
+      "positive": false,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "hypothetical/Assume that ",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. Assume that the ADS ratio change was effective on November 4, 2022.",
+      "positive": false,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "f6_reused_metadata",
+      "category": "hypothetical/There is no evidence that ",
+      "text": "Effective on the date announced by the Depositary, each ADS shall represent twenty ordinary shares. There is no evidence that the ADS ratio change was effective on November 4, 2022.",
+      "positive": false,
+      "form": "F-6 POS"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "conditional/, provided that the SEC approves the ratio change",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, provided that the SEC approves the ratio change.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "conditional/, on condition that shareholders approve the ratio change",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, on condition that shareholders approve the ratio change.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "conditional/, pending regulatory approval of the ratio change",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, pending regulatory approval of the ratio change.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "completion_after_date",
+      "category": "conditional/, awaiting shareholder approval of the ratio change",
+      "text": "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022, awaiting shareholder approval of the ratio change.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "negation_modifiers/has not actually been effected",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has not actually been effected on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "negation_modifiers/has not yet legally become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has not yet legally become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "negation_modifiers/did not in fact become effective",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares did not in fact become effective on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    },
+    {
+      "entry": "no_positive_surface",
+      "category": "negation_modifiers/has never actually been effected",
+      "text": "The ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares has never actually been effected on November 4, 2022.",
+      "positive": false,
+      "form": "6-K"
+    }
+  ]
+}

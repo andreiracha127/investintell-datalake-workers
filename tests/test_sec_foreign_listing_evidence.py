@@ -1535,10 +1535,9 @@ def test_original_tal_transition_retains_explicit_class_a_share_antecedent():
             for row in rows} == {(1, 3, "2017-08-16", "class_a")}
 
 
-def test_original_dated_current_ratio_is_kept_without_an_old_numeric_side():
+def test_original_dated_current_ratio_in_retroactive_market_prices_is_not_legal_completion():
     rows = _parse_ratio_transition_fixture("osn_2017_dated_current_ratio")
-    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"])
-            for row in rows} == {(3, 1, "2016-08-22")}
+    assert not rows
 
 
 @pytest.mark.parametrize("name,ratio,effective", [
@@ -2970,3 +2969,696 @@ def test_gate_conflicting_operative_dates_still_conflict_when_completion_dates_e
     assert {tuple(row["operative_date_candidates"]) for row in rows} == {("2024-08-05", "2024-08-06")}
 
 
+
+
+# B1 re-gate scenarios deliberately use synthetic filings: the object and
+# identity boundaries remain independent of the production artifact's answers.
+@pytest.mark.parametrize("fixture", [
+    "b1_preparations_completion", "b1_different_class_confirmation", "b1_budget_approval",
+])
+def test_b1_regate_invalid_completion_or_approval_cannot_confirm(fixture):
+    rows = _parse_gate_source((FIXTURES / (fixture + ".html")).read_text(encoding="utf-8"),
+                              form="6-K", filed="2022-11-10")
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    if fixture != "b1_preparations_completion":
+        assert rows and all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+def test_b1_regate_numeric_financial_table_never_confirms_but_narrative_footnote_does():
+    rows = _parse_gate_source((FIXTURES / "b1_financial_table_confirmation.html").read_text(encoding="utf-8"),
+                              form="6-K", filed="2022-11-10")
+    assert len(rows) == 1
+    confirmed = [row for row in rows if row.get("ratio_effectiveness_confirmed")]
+    assert len(confirmed) == 1
+    assert confirmed[0]["ratio_effectiveness_confirmation_text"].startswith("On November 4, 2022")
+    assert "Weighted average" not in confirmed[0]["ratio_effectiveness_confirmation_text"]
+    assert "loss per ADS" not in confirmed[0]["ratio_effectiveness_confirmation_text"]
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+@pytest.mark.parametrize("object_text", [
+    "preparations for the ADS ratio change", "filings for the ADS ratio change",
+    "notices for the ADS ratio change", "a budget for the ADS ratio change",
+    "plans for the ADS ratio change", "the ADS ratio change preparations",
+    "the ADS ratio change administrative budget", "the change of the ratio filing",
+])
+def test_b1_completion_requires_the_ratio_change_as_its_completed_object(object_text):
+    rows = _parse_gate_source(
+        f"On November 4, 2022, the Company completed {object_text} for changing its ratio "
+        "from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+@pytest.mark.parametrize("statement", [
+    "The GDS ratio became effective on November 4, 2022.",
+    "The ADS ratio for the Alpha program became effective on November 4, 2022.",
+    "The ADS ratio for the alpha program became effective on November 4, 2022.",
+    "The ADS ratio for the second program became effective on November 4, 2022.",
+    "The ADS ratio for the Class A and Series A programs became effective on November 4, 2022.",
+    "The ADS ratio of 10:1 became effective on November 4, 2022.",
+    "The ADS ratio of 20:1 became effective on November 4, 2022.",
+    "The ADS to ordinary share ratio of 20:1 became effective on November 4, 2022.",
+    "The ratio of ADSs to ordinary shares of 20:1 became effective on November 4, 2022.",
+    "The ADS ratio of 10/1 became effective on November 4, 2022.",
+    "The ADS ratio of ten to one became effective on November 4, 2022.",
+    "The ADS ratio of 1 ADS:10 ordinary shares became effective on November 4, 2022.",
+    "The Depositary announced completion of preparations for the ADS ratio change effective on November 4, 2022.",
+    "The Depositary confirmed the filings for the ADS ratio change effective on November 4, 2022.",
+    "If the ADS ratio became effective on November 4, 2022, investors would receive the proposed entitlement.",
+    "For financial statement presentation only, we assumed that the ADS ratio became effective on November 4, 2022.",
+    "The ADS ratio became effective on November 4, 2022, following the implementation of the operational measures announced for investors and the registration processing instructions published by the Depositary, for the Class B program.",
+])
+def test_b1_confirmation_cannot_inherit_another_program_ratio_or_preparatory_notice(statement):
+    rows = _parse_gate_source(
+        "The Company plans to change the ratio of its American Depositary Shares to ordinary shares "
+        "from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, "
+        "effective on November 4, 2022. " + statement,
+        form="6-K", filed="2022-11-10",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+@pytest.mark.parametrize("approval_object", [
+    "the administrative budget for the ADS ratio change", "the ADS ratio change administrative budget",
+    "the filings for the ADS ratio change", "the Share Consolidation budget",
+])
+def test_b1_shareholder_approval_requires_ratio_change_or_consolidation_object(approval_object):
+    rows = _parse_gate_source(
+        _GATE_CONDITIONAL_NOTICE + f" The shareholders approved {approval_object}.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+@pytest.mark.parametrize("underlying", ["ordinary shares", "Class A ordinary shares"])
+def test_b1_differently_named_voting_class_does_not_erase_a_direct_condition(underlying):
+    rows = _parse_gate_source(
+        "The Company will change the ratio of its American Depositary Shares to " + underlying +
+        " from one ADS representing one " + underlying.rstrip("s") +
+        " to one ADS representing twenty " + underlying +
+        ", effective on November 4, 2022, subject to approval of the Class B shareholders.",
+        form="6-K", filed="2022-10-18",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") for row in rows)
+    assert all(row["ratio_effectiveness_conditions"] == ["shareholder_approval"] for row in rows)
+
+
+@pytest.mark.parametrize("completion", [
+    "On November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+    "On November 4, 2022, the Company effected the change of the ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+    "The Company changed the ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+    "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective November 4, 2022. The ratio change became effective on November 4, 2022.",
+])
+def test_b1_genuine_direct_ratio_completion_is_still_confirmation(completion):
+    rows = _parse_gate_source(completion, form="6-K", filed="2022-11-10")
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all("ratio_effective" in row["ratio_effectiveness_confirmed_conditions"] for row in rows)
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+def test_b1_narrative_completion_proof_does_not_include_an_unlabelled_numeric_table():
+    text = "<table><tr><td>Net earnings</td><td>2023</td><td>2022</td></tr>" + (
+        "<tr><td>100</td><td>200</td><td>300</td></tr>" * 15
+    ) + "</table><p>The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.</p>"
+    rows = _parse_gate_source(text, form="6-K", filed="2022-11-10")
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all(row["ratio_effectiveness_confirmation_text"].startswith("The Company completed") for row in rows)
+
+
+@pytest.mark.parametrize("fixture", [
+    "b1_preparations_completion", "b1_different_class_confirmation", "b1_budget_approval",
+])
+def test_b1_regate_false_confirmation_keeps_conditional_ratio_ambiguous_in_sql(db, fixture):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    conditional = _parse_gate_source(_GATE_CONDITIONAL_NOTICE, form="6-K", filed="2022-10-18")
+    _insert_gate_parsed_rows(db, conditional, "b1-conditional-ratio-announcement")
+    pending = _parse_gate_source(_GATE_PENDING_F6, form="F-6 POS", filed="2022-10-24",
+                                 adsh="0001193125-22-000124")
+    _insert_gate_parsed_rows(db, pending, "b1-pending-registration")
+    later = _parse_gate_source((FIXTURES / (fixture + ".html")).read_text(encoding="utf-8"),
+                               form="6-K", filed="2022-11-10", adsh="0001193125-22-000125")
+    _insert_gate_parsed_rows(db, later, "b1-invalid-later-confirmation")
+    for day in ("2022-11-04", "2022-11-10", "2022-11-11", "2025-12-31"):
+        assert resolve(db, day)[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+
+
+def test_b1_genuine_anpc_completion_still_settles_after_publication(db):
+    # Settlement needs the actual registered 20/1 entitlement as well as its
+    # public completion. The completion cannot create an F-6 registration.
+    for name in ("anpc_2022_cover", "anpc_2019_f6_full", "anpc_2022_f6_undated_amendment_full"):
+        insert_real_parsed_rows(db, name)
+    _insert_gate_parsed_rows(db, _parse_independent_listing_fixture("anpc_2022_plan_expected_ratio"),
+                             "b1-anpc-announced-plan")
+    assert resolve(db, "2022-12-16", cik=1786511, symbol="ANPC")[0] == "ambiguous"
+    completed = _insert_gate_parsed_rows(db, _parse_independent_listing_fixture("anpc_2022_ratio_completion"),
+                                         "b1-anpc-genuine-completion")
+    assert resolve(db, "2022-12-16", cik=1786511, symbol="ANPC")[0] == "ambiguous"
+    answer = resolve(db, "2022-12-17", cik=1786511, symbol="ANPC")
+    assert answer[:4] == ("resolved", "ads", 20, 1)
+    assert set(completed).intersection(answer[-1])
+
+
+@pytest.mark.parametrize("suffix", [
+    "but only hypothetically for pro forma presentation",
+    "for financial statement presentation only",
+])
+def test_b1_hypothetical_accounting_completion_is_not_public_completion(suffix):
+    rows = _parse_gate_source(
+        "The Company completed the ADS ratio change from one ADS representing one ordinary share "
+        "to one ADS representing twenty ordinary shares on November 4, 2022, " + suffix + ".",
+        form="6-K", filed="2022-11-10",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+@pytest.mark.parametrize("approval", [
+    "The shareholders approved the Share Consolidation administrative budget.",
+    "The shareholders resolved by ordinary resolution to consolidate the administrative budgets for the Share Consolidation.",
+])
+def test_b1_budget_approval_cannot_fulfil_named_consolidation(approval):
+    rows = _parse_gate_source(
+        approval + " The Share Consolidation will be effective on December 9, 2022. "
+        "Upon the Share Consolidation, the ratio of its American Depositary Shares to ordinary shares "
+        "will be amended from one ADS representing ten ordinary shares to one ADS representing one ordinary share.",
+        form="6-K", filed="2022-11-30",
+    )
+    assert rows and not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+@pytest.mark.parametrize("object_text", ["regarding the administrative budget for", "unrelated to"])
+def test_b1_adopted_resolutions_must_actually_approve_the_share_operation(object_text):
+    rows = _parse_gate_source(
+        "The proposed resolutions submitted for shareholder approval have been adopted " + object_text +
+        " the Share Subdivision. The Share Subdivision will be effective on March 18, 2021. "
+        "Concurrently with the effectiveness of the Share Subdivision, the Company will change the ratio "
+        "of its ADSs to ordinary shares from one ADS representing two ordinary shares to one ADS "
+        "representing one ordinary share.",
+        form="6-K", filed="2021-03-18",
+    )
+    assert rows and not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+
+def test_b1_preparations_and_budget_effect_cannot_confirm_a_ratio_linked_to_subdivision():
+    rows = _parse_gate_source(
+        "The Share Subdivision became effective on November 4, 2022. Concurrently with the Share "
+        "Subdivision, the Company plans to change its ADS ratio from one ADS representing one "
+        "ordinary share to one ADS representing twenty ordinary shares, and the preparations for "
+        "this ratio change have been approved while the ratio change administrative budget has "
+        "taken effect concurrently on the same day.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert rows and not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+@pytest.mark.parametrize("planned_class", [None, "Class A"])
+def test_b1_following_named_class_confirmation_never_discharges_unknown_or_other_class_plan(planned_class):
+    unit = ((planned_class + " ") if planned_class else "") + "ordinary"
+    rows = _parse_gate_source(
+        "The Company plans to change the ADS ratio from one ADS representing one " + unit +
+        " share to one ADS representing twenty " + unit +
+        " shares, effective on November 4, 2022. The ADS ratio for the Class B program became "
+        "effective on November 4, 2022.", form="6-K", filed="2022-11-10",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+def test_b1_explicit_target_ratio_cannot_confirm_a_different_numerical_transition():
+    rows = _parse_gate_source(
+        "The Company plans to change the ADS ratio from one ADS representing one ordinary share "
+        "to one ADS representing twenty ordinary shares, effective on November 4, 2022, while "
+        "the ADS ratio of one ADS representing ten ordinary shares became effective on November 4, 2022.",
+        form="6-K", filed="2022-11-10",
+    )
+    planned = [row for row in rows if (row["ratio_numerator"], row["ratio_denominator"]) == (20, 1)]
+    assert planned and all(row.get("ratio_effectiveness_pending") for row in planned)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in planned)
+
+
+@pytest.mark.parametrize("text,ratio,underlying_class,effective", [
+    ("Effective April 22, 2026, the Company changed its ADS ratio from the previous ratio of one ADS representing three Class A ordinary shares to the current ratio of one ADS representing thirty Class A ordinary shares.", (30, 1), "class_a", "2026-04-22"),
+    ("The Company changed the ratio of its ADSs to its Class A ordinary shares from the previous ADS ratio of one ADS to eight Class A ordinary shares to the current ADS Ratio of one ADS to forty-eight Class A ordinary shares, effective on May 23, 2022.", (48, 1), "class_a", "2022-05-23"),
+    ("On January 9, 2023, we effected a ratio change so that each ADS now represents 600 ordinary shares (representing a 10-for-1 reverse split).", (600, 1), None, "2023-01-09"),
+    ("On May 20, 2022, the Company effected a change to a new ratio of one ADS to five Class A ordinary shares, which had the same effect as a one-for-five reverse share split.", (5, 1), "class_a", "2022-05-20"),
+    ("On February 20, 2024, we effected a change of the ADS to Class A ordinary share ratio from one ADS representing two Class A ordinary shares to one ADS representing twenty Class A ordinary shares.", (20, 1), "class_a", "2024-02-20"),
+    ("On June 11, 2025, the Company effected the change in the ratio of each ADS to Ordinary Shares from one ADS representing one thousand two hundred Ordinary Shares, to one ADS representing three thousand six hundred Ordinary Shares.", (3600, 1), None, "2025-06-11"),
+    ("The Company previously announced its plan to change the ratio of its ADSs to ordinary shares from one ADS representing one ordinary share to one ADS representing five ordinary shares. The ratio change on the ADS trading price on the Nasdaq Capital Market became effective as of the opening of trading on May 16, 2024.", (5, 1), None, "2024-05-16"),
+    ("The Company effected the consolidation along with a change in the ADS ratio from one ADS representing twenty-five Ordinary Shares to the new ratio of one ADS representing five Ordinary Shares, this was effective from 27 March 2023.", (5, 1), None, "2023-03-27"),
+    ("The reverse share split went effective on October 16, 2020. Concurrently with the reverse share split, a change to the ratio of its ADSs to its ordinary shares was effective pursuant to which each ADS representing forty ordinary shares changed to each ADS representing one hundred forty ordinary shares.", (140, 1), None, "2020-10-16"),
+])
+def test_b1_literal_completed_ratio_variants_preserve_only_the_new_target(text, ratio, underlying_class, effective):
+    rows = _parse_gate_source(text, form="6-K", filed="2026-09-01")
+    assert rows
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["underlying_class"], row["effective_from"]) for row in rows} == {(*ratio, underlying_class, effective)}
+    assert all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+@pytest.mark.parametrize("footnote,ratio,effective", [
+    ("(1) Each ADS represents eight ordinary shares, which reflects the share subdivision and ADS ratio change that became effective on July 30, 2019.", (8, 1), "2019-07-30"),
+    ("(1) On July 3, 2023, the Company plans to change its ADS ratio from one ADS representing one ordinary share to one ADS representing fifty ordinary shares. The change in the ADS ratio was effective on July 13, 2023.", (50, 1), "2023-07-13"),
+])
+def test_b1_genuine_narrative_footnote_survives_a_preceding_financial_table(footnote, ratio, effective):
+    text = "<table><tr><td>Weighted average number of ordinary shares</td><td>60,000,000</td></tr><tr><td>Basic and diluted loss per ADS</td><td>(3.14)</td></tr></table><p>" + footnote + "</p>"
+    rows = _parse_gate_source(text, form="6-K", filed="2025-03-01")
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"]) for row in rows} == {(*ratio, effective)}
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+    assert all("Weighted average" not in row["ratio_effectiveness_confirmation_text"] and "loss per ADS" not in row["ratio_effectiveness_confirmation_text"] for row in rows)
+
+
+def test_b1_completion_clause_remains_valid_when_followed_by_its_eps_accounting_effect():
+    rows = _parse_gate_source(
+        "The Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022. Basic and diluted earnings per ADS have been revised retrospectively for all periods presented.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all("basic and diluted" not in row["ratio_effectiveness_confirmation_text"] for row in rows)
+
+
+def test_b1_market_price_table_cells_do_not_enter_the_narrative_confirmation():
+    rows = _parse_gate_source(
+        "<table><tr><td>High Low 2014 First Quarter</td><td>$ 4.11</td><td>$ 3.24</td></tr></table><p>The table below sets forth the prices, adjusted to reflect the current ADS-to-ordinary share ratio of one ADS to three ordinary shares, which became effective on August 22, 2016, for all periods presented):</p><table><tr><td>High Low 2017 January</td><td>$ 2.14</td></tr></table>",
+        form="6-K", filed="2017-08-02",
+    )
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all("High Low" not in row["ratio_effectiveness_confirmation_text"] for row in rows)
+    assert all("$" not in row["ratio_effectiveness_confirmation_text"] for row in rows)
+
+
+
+def test_b1_effected_consolidation_with_actual_coordinated_ratio_change_confirms_new_target():
+    rows = _parse_gate_source(
+        "Following notification that the Company was not in compliance with the Nasdaq minimum "
+        "bid price requirement, the Company effected an Ordinary Share consolidation on a one for "
+        "twenty basis along with a change in ADS ratio from one ADS representing twenty-five Ordinary "
+        "Shares to the new ratio of one ADS representing five Ordinary Shares, this was effective "
+        "from 27 March 2023.", form="6-K", filed="2023-04-28",
+    )
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"]) for row in rows} == {(5, 1, "2023-03-27")}
+    assert all(row["ratio_effectiveness_confirmation_text"].lower().startswith("the company effected") for row in rows)
+    assert not any(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+@pytest.mark.parametrize("ratio_object", [
+    "preparations for a change in ADS ratio", "the budget for a change in ADS ratio",
+    "a planned change in ADS ratio", "a proposed ADS ratio change",
+])
+def test_b1_effected_consolidation_does_not_complete_a_preparatory_or_planned_ratio_object(ratio_object):
+    rows = _parse_gate_source(
+        "The Company effected an Ordinary Share consolidation on a one for twenty basis along "
+        "with " + ratio_object + " from one ADS representing twenty-five Ordinary Shares to the new "
+        "ratio of one ADS representing five Ordinary Shares, this was effective from 27 March 2023, "
+        "subject to Depositary confirmation of the ratio change.", form="6-K", filed="2023-04-28",
+    )
+    assert rows and not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+def test_b1_completed_consolidation_alone_cannot_confirm_a_separate_ratio_plan():
+    rows = _parse_gate_source(
+        "The Company effected an Ordinary Share consolidation on March 27, 2023. It plans to "
+        "change the ADS ratio from one ADS representing twenty-five Ordinary Shares to one ADS "
+        "representing five Ordinary Shares, effective March 27, 2023.", form="6-K", filed="2023-04-28",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+
+def test_b1_accounting_relative_clause_requires_a_separate_legal_completion():
+    rows = _parse_gate_source(
+        "The weighted average number of ADS and earnings per ADS have been retrospectively adjusted "
+        "to reflect the ADS ratio change from one ADS representing one Class A ordinary share to "
+        "one ADS representing five Class A ordinary shares, which became effective on December 23, 2021.",
+        form="6-K", filed="2022-04-08",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+@pytest.mark.parametrize("premise", ["assuming", "as if", "on the assumption that"])
+def test_b1_assumed_ratio_effective_relative_clause_never_confirms(premise):
+    rows = _parse_gate_source(
+        "The weighted average number of ADS and earnings per ADS have been retrospectively adjusted "
+        + premise + " the ADS ratio change from one ADS representing one Class A ordinary share to "
+        "one ADS representing five Class A ordinary shares, which became effective on December 23, "
+        "2021, occurred at the beginning of the earliest period presented.",
+        form="6-K", filed="2022-04-08",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+def test_b1_numeric_table_ratio_outside_an_actual_relative_clause_does_not_inherit_confirmation():
+    rows = _parse_gate_source(
+        "<table><tr><td>Weighted average ADS (1 ADS representing 5 Class A ordinary shares)</td><td>60,000,000</td></tr></table>"
+        "<p>The weighted average ADS and earnings per ADS have been retrospectively adjusted to reflect "
+        "the ADS ratio change from one ADS representing one Class A ordinary share to one ADS "
+        "representing five Class A ordinary shares, which became effective on December 23, 2021.</p>",
+        form="6-K", filed="2022-04-08",
+    )
+    confirmed = [row for row in rows if row.get("ratio_effectiveness_confirmed")]
+    assert not confirmed
+
+
+@pytest.mark.parametrize("identity", [
+    "the Class B ADS program", "the GDS program", "the second ADS program",
+])
+def test_b1_actual_relative_clause_does_not_clear_another_class_or_program(identity):
+    rows = _parse_gate_source(
+        "The Company plans to change the ADS ratio from one ADS representing one Class A ordinary "
+        "share to one ADS representing five Class A ordinary shares, effective December 23, 2021. "
+        "The weighted average ADS and earnings per ADS have been revised to reflect the ratio change "
+        "for " + identity + ", which became effective on December 23, 2021.",
+        form="6-K", filed="2022-04-08",
+    )
+    assert rows and not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+def test_b1_actual_relative_clause_with_another_target_ratio_cannot_confirm_the_plan():
+    rows = _parse_gate_source(
+        "The Company plans to change the ADS ratio from one ADS representing one Class A ordinary "
+        "share to one ADS representing five Class A ordinary shares, effective December 23, 2021, "
+        "and weighted average ADS have been revised to reflect the ratio change from one ADS "
+        "representing one Class A ordinary share to one ADS representing ten Class A ordinary "
+        "shares, which became effective on December 23, 2021.",
+        form="6-K", filed="2022-04-08",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+
+def test_b1_a_numeric_table_ratio_label_cannot_span_a_later_actual_ratio_subject():
+    rows = _parse_gate_source(
+        "<table><tr><td>Weighted average ADS ratio of one ADS representing five ordinary shares</td><td>60,000,000</td></tr></table>"
+        "<p>EPS have been retrospectively adjusted to reflect the ADS ratio change from one ADS "
+        "representing one ordinary share to one ADS representing five ordinary shares, which became "
+        "effective on December 23, 2021.</p>", form="6-K", filed="2022-04-08",
+    )
+    confirmed = [row for row in rows if row.get("ratio_effectiveness_confirmed")]
+    assert not confirmed
+
+
+
+def test_b1_accounting_relative_clause_with_comma_requires_separate_legal_completion():
+    rows = _parse_gate_source(
+        "Net loss per ADS has been retrospectively adjusted for the ADS ratio change, from two ADS "
+        "to five Class A ordinary shares to one ADS to twenty Class A ordinary shares, that became "
+        "effective on October 30, 2020.", form="6-K", filed="2020-11-18",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+@pytest.mark.parametrize("predicate", ["would become", "might become", "could become", "will become"])
+def test_b1_financial_prospective_relative_clause_is_not_an_unconditional_announcement(predicate):
+    rows = _parse_gate_source(
+        "The weighted average ADS have been adjusted to reflect the ADS ratio change from one ADS "
+        "representing one ordinary share to one ADS representing five ordinary shares, which "
+        + predicate + " effective on December 23, 2021.", form="6-K", filed="2021-12-01",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert not rows or all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+@pytest.mark.parametrize("sentence", [
+    "For purposes of EPS, it is assumed that the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+    "The earnings per ADS figures have been retrospectively adjusted as though the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+    "Assuming the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022, earnings per ADS have been restated.",
+    "The Company's ADS ratio of one ADS representing twenty ordinary shares had been effective on November 4, 2022 for purposes of EPS.",
+    "For tax purposes, the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+])
+def test_b1_round2_full_accounting_sentence_cannot_confirm(sentence):
+    rows = _parse_gate_source(sentence, form="6-K", filed="2022-11-10")
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert not rows or all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+@pytest.mark.parametrize("verb,object_text,predicate", [
+    ("amended", "ADS ratio change announcement", "will represent"),
+    ("adjusted", "ADS ratio estimates", "represents"),
+    ("amended", "ADS ratio notice", "represents"),
+    ("changed", "ADS ratio filing", "represents"),
+    ("amended", "ADS ratio agreement", "represents"),
+    ("adjusted", "ADS ratio", "will represent"),
+    ("amended", "ADS ratio", "is expected to represent"),
+])
+def test_b1_round2_adjustment_requires_ratio_object_and_completed_predicate(verb, object_text, predicate):
+    rows = _parse_gate_source(
+        "On November 4, 2022, the Company " + verb + " its " + object_text +
+        " to state that each ADS " + predicate + " twenty ordinary shares.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+@pytest.mark.parametrize("former", [
+    "former", "previous", "prior", "old", "existing", "current-before-change",
+    "initial", "pre-change", "pre-split", "pre-adjustment", "unchanged", "legacy", "earlier", "outgoing",
+])
+def test_b1_round2_numberless_former_ratio_cannot_confirm_target(former):
+    rows = _parse_gate_source(
+        "The Company plans to change the ADS ratio from one ADS representing one ordinary share "
+        "to one ADS representing twenty ordinary shares, effective on November 4, 2022. "
+        "The " + former + " ADS ratio was effective on November 4, 2022.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert rows and all(row.get("ratio_effectiveness_pending") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+def test_b1_round2_baidu_representing_class_a_keeps_completed_reciprocal_ratio():
+    rows = _parse_gate_source(
+        "Effective on May 12, 2010, Baidu adjusted the ratio of its American depositary shares "
+        "('ADSs') representing Class A ordinary shares from one (1) ADS for one (1) share to "
+        "ten (10) ADSs for one (1) share. All earnings per ADS figures in this announcement "
+        "give effect to the foregoing ADS to share ratio change.",
+        form="6-K", filed="2010-07-26", adsh="0000950123-10-067501",
+    )
+    assert rows
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["underlying_class"], row["effective_from"]) for row in rows} == {(1, 10, "class_a", "2010-05-12")}
+    assert all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all("earnings per ADS" not in row["ratio_effectiveness_confirmation_text"] for row in rows)
+
+
+@pytest.mark.parametrize("transition", [
+    "from the previous one ADS for every twenty-five ordinary shares to one ADS for every five ordinary shares",
+    "from the previous twenty-five ordinary shares for every one ADS to five ordinary shares for every one ADS",
+])
+def test_b1_round2_for_every_ratio_directions_keep_only_completed_target(transition):
+    rows = _parse_gate_source(
+        "Effective October 1, 2020, the Company changed the ratio of its American depositary "
+        "shares ('ADSs'), representing ordinary shares, " + transition + ". The data "
+        "throughout this announcement have been revised to reflect the ratio change as if it "
+        "had occurred throughout the periods presented herein.",
+        form="6-K", filed="2020-11-20",
+    )
+    assert rows
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"]) for row in rows} == {(5, 1, "2020-10-01")}
+    assert all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all("as if" not in row["ratio_effectiveness_confirmation_text"] for row in rows)
+
+
+@pytest.mark.parametrize("verb", ["completed", "effected", "implemented", "amended", "adjusted", "changed"])
+def test_b1_round2_legal_completion_and_separate_eps_sentence_still_confirm(verb):
+    object_text = "the ADS ratio change" if verb in {"completed", "effected", "implemented"} else "the ADS ratio"
+    rows = _parse_gate_source(
+        "On November 4, 2022, the Company " + verb + " " + object_text +
+        " from one ADS representing one Class A ordinary share to one ADS representing twenty "
+        "Class A ordinary shares. For purposes of EPS, the figures have been retrospectively "
+        "adjusted as though the ratio had been effective for all periods presented.",
+        form="6-K", filed="2022-11-10",
+    )
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert all("EPS" not in row["ratio_effectiveness_confirmation_text"] for row in rows)
+
+
+def test_b1_round2_ordinal_completion_footnote_does_not_inherit_financial_table_classes():
+    rows = _parse_gate_source(
+        "<table><tr><td>Loss per ADS - basic and diluted</td><td>(9.78)</td></tr>"
+        "<tr><td>Weighted average Class A ordinary shares</td><td>2,773,677,803</td></tr>"
+        "<tr><td>Weighted average Class B ordinary shares</td><td>65,387,845</td></tr></table>"
+        "<p>* On March 26, 2025, LGHL implemented the second ADS Ratio change, from one (1) ADS "
+        "representing fifty (50) Share to one (1) ADS representing two thousand and five hundred "
+        "(2,500) shares.</p>", form="6-K", filed="2025-09-15",
+    )
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["underlying_class"], row["effective_from"]) for row in rows} == {(2500, 1, None, "2025-03-26")}
+    assert all(row["ratio_effectiveness_confirmation_text"].startswith("On March 26, 2025") for row in rows)
+
+
+_B1_ROUND2_MATRIX = json.loads((FIXTURES / "b1_round2_confirmation_matrix.json").read_text(encoding="utf-8"))["cases"]
+
+
+@pytest.mark.parametrize("case", [case for case in _B1_ROUND2_MATRIX if not case["positive"]],
+                         ids=lambda case: case["entry"] + "/" + case["category"])
+def test_b1_round2_adversarial_confirmation_matrix(case):
+    rows = _parse_gate_source(case["text"], form=case["form"], filed="2022-11-10")
+    target = [row for row in rows if (row["ratio_numerator"], row["ratio_denominator"]) == (20, 1)]
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in target)
+    # An unconfirmed unconditional row could independently activate a dated
+    # announced change in SQL. Every surviving rejected target stays pending.
+    assert all(row.get("ratio_effectiveness_pending") for row in target)
+
+
+@pytest.mark.parametrize("case", [case for case in _B1_ROUND2_MATRIX if case["positive"]],
+                         ids=lambda case: case["entry"] + "/" + case["category"])
+def test_b1_round2_confirmation_matrix_genuine_controls(case):
+    rows = _parse_gate_source(case["text"], form=case["form"], filed="2023-11-10")
+    target = [row for row in rows if (row["ratio_numerator"], row["ratio_denominator"]) == (20, 1)]
+    assert any(row.get("ratio_effectiveness_confirmed") for row in target)
+
+
+@pytest.mark.parametrize("later_text", [
+    "For purposes of EPS, it is assumed that the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+    "On November 4, 2022, the Company amended its ADS ratio change announcement to state that each ADS will represent twenty ordinary shares.",
+    "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The former ADS ratio was effective on November 4, 2022.",
+    "The shareholders approved the Share Consolidation. For purposes of EPS, it is assumed that the Share Consolidation was effective on November 4, 2022. Upon the Share Consolidation, the ratio of its ADSs representing ordinary shares will be amended from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+    "The Company did not change its ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+])
+def test_b1_round2_rejected_later_authority_keeps_sql_ratio_ambiguous(db, later_text):
+    add(db, filed="2022-01-01")
+    add_ratio(db, (1, 1), filed="2021-01-01")
+    add_ratio(db, (1, 1), source="cover_footnote", filed="2022-01-01")
+    _insert_gate_parsed_rows(db, _parse_gate_source(_GATE_CONDITIONAL_NOTICE, form="6-K", filed="2022-10-18"),
+                             "b1-round2-conditional-ratio-announcement")
+    _insert_gate_parsed_rows(db, _parse_gate_source(_GATE_PENDING_F6, form="F-6 POS", filed="2022-10-24",
+                                                  adsh="0001193125-22-000124"), "b1-round2-pending-registration")
+    later = _parse_gate_source(later_text, form="6-K", filed="2022-11-10", adsh="0001193125-22-000125")
+    _insert_gate_parsed_rows(db, later, "b1-round2-rejected-later-authority")
+    for day in ("2022-11-04", "2022-11-10", "2022-11-11", "2025-12-31"):
+        assert resolve(db, day)[:6] == ("ambiguous", "ads", None, None, "resolved", "ambiguous")
+
+
+@pytest.mark.parametrize("predicate", ["effected", "plans to effect", "did not effect", "would have effected"])
+def test_b1_round2_explicit_concurrent_completed_ratio_uses_actual_following_split_date(predicate):
+    rows = _parse_gate_source(
+        "Concurrently with the reverse split, the Company " + predicate + " a corresponding "
+        "change in the ratio of ordinary shares to each of the Company's ADSs, such that its "
+        "ratio of ADSs to ordinary shares has changed from one ADS representing fifty ordinary "
+        "shares to a new ratio of one ADS representing one ordinary share. The effective date "
+        "of this reverse split was June 29, 2020.", form="6-K", filed="2020-10-19",
+    )
+    assert rows
+    target = [row for row in rows if (row["ratio_numerator"], row["ratio_denominator"]) == (1, 1)]
+    assert target and all(row["effective_from"] == "2020-06-29" for row in target)
+    if predicate == "effected":
+        assert all(row.get("ratio_effectiveness_confirmed") for row in target)
+        assert all("corresponding change" in row["ratio_effectiveness_confirmation_text"] for row in target)
+    else:
+        assert not any(row.get("ratio_effectiveness_confirmed") for row in target)
+        assert all(row.get("ratio_effectiveness_pending") for row in target)
+
+
+@pytest.mark.parametrize("qualifier", ["For purposes of EPS, it is assumed that ", "", "The Company denied that "])
+def test_b1_round2_concurrent_completion_requires_actual_named_split_date(qualifier):
+    rows = _parse_gate_source(
+        "Concurrently with the reverse split, the Company effected a corresponding change in "
+        "the ADS ratio from one ADS representing fifty ordinary shares to one ADS representing "
+        "one ordinary share. " + qualifier + "the effective date of this reverse split was "
+        "June 29, 2020.", form="6-K", filed="2020-10-19",
+    )
+    assert bool(any(row.get("ratio_effectiveness_confirmed") for row in rows)) == (qualifier == "")
+    if qualifier:
+        assert not rows or all(row.get("ratio_effectiveness_pending") for row in rows)
+    else:
+        assert rows
+
+
+@pytest.mark.parametrize("earnings", ["Net loss per basic ADS", "Net income per diluted ADS"])
+def test_b1_round2_per_basic_and_diluted_ads_accounting_is_never_a_pending_control(earnings):
+    rows = _parse_gate_source(
+        earnings + " was US$0.17 (retrospectively adjusted to reflect the current ADS to ordinary "
+        "share ratio of one ADS to fifty ordinary shares effective on June 15, 2015).",
+        form="6-K", filed="2015-11-19",
+    )
+    assert not rows
+
+
+def test_b1_round2_retroactively_adjusted_market_prices_are_never_a_pending_control():
+    rows = _parse_gate_source(
+        "The table below shows the high and low market prices for the ADSs and all prices have "
+        "been retroactively adjusted to reflect the current ADS-to-ordinary share ratio of one "
+        "ADS to three ordinary shares, which became effective on August 22, 2016, for all "
+        "periods presented.", form="6-K", filed="2017-08-02",
+    )
+    assert not rows
+
+
+@pytest.mark.parametrize("completion", [
+    "On November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+    "The Company announces a ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022.",
+])
+def test_b1_round2_form_6k_checkboxes_cannot_supply_ratio_conditions(completion):
+    boilerplate = (
+        'Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): No '
+        'Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): No '
+        'If "Yes" is marked, indicate below the file number assigned to the registrant in connection with Rule 12g3-2(b): n/a '
+    )
+    plain = _parse_gate_source(completion, form="6-K", filed="2022-11-10")
+    prefixed = _parse_gate_source(boilerplate + completion, form="6-K", filed="2022-11-10")
+    assert plain and prefixed
+    for field in ("ratio_effectiveness_confirmed", "ratio_effectiveness_pending", "ratio_effectiveness_conditions"):
+        assert [row.get(field) for row in prefixed] == [row.get(field) for row in plain]
+
+
+@pytest.mark.parametrize("operation", ["completed", "assumed it completed", "amended the announcement for"])
+def test_b1_round2_completed_numbered_arbk_transition_owns_its_future_result(operation):
+    rows = _parse_gate_source(
+        "The Company announces that on the morning of Friday, December 12, 2025, the Company "
+        + operation + " its previously announced ratio change of its ordinary shares ('Shares') "
+        "to American Depositary Shares ('ADSs'), to adjust the ratio from 10:1 to 2,160:1, so that "
+        "one ADS will represent 2,160 Shares.", form="6-K", filed="2025-12-12",
+    )
+    if operation == "completed":
+        assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+        assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"]) for row in rows} == {(2160, 1, "2025-12-12")}
+        assert all("will represent" not in row["ratio_effectiveness_confirmation_text"] for row in rows)
+    else:
+        assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+        assert not rows or all(row.get("ratio_effectiveness_pending") for row in rows)
+
+
+@pytest.mark.parametrize("transition", [
+    "ratio of our common shares to common ADSs from 1:1 to 2:1",
+    "ratio of our ADSs to common shares from 1:1 to 1:2",
+])
+def test_b1_round2_explicit_common_share_compact_transition_preserves_unit_direction(transition):
+    rows = _parse_gate_source("Effective January 12, 2016, we changed the " + transition + ".",
+                              form="6-K", filed="2016-05-13")
+    assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
+    assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"]) for row in rows} == {(2, 1, "2016-01-12")}
+
+
+def test_b1_round2_full_sentence_qualifier_survives_dotted_depositary_abbreviation():
+    rows = _parse_gate_source(
+        "The Company's ADS ratio of one ADS representing twenty ordinary shares was effective "
+        "on November 4, 2022 through the N.A. depositary, as if the change had occurred for "
+        "purposes of EPS.", form="6-K", filed="2022-11-10",
+    )
+    assert not rows or all(row.get("ratio_effectiveness_pending") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+_B1_ROUND2_ADMISSION_MATRIX = json.loads((FIXTURES / "b1_round2_admission_matrix.json").read_text(encoding="utf-8"))["cases"]
+
+
+@pytest.mark.parametrize("case", _B1_ROUND2_ADMISSION_MATRIX,
+                         ids=lambda case: case["family"] + "/" + case["category"])
+def test_b1_round2_new_compact_and_checkbox_admission_matrix(case):
+    rows = _parse_gate_source(case["text"], form="6-K", filed="2022-11-10")
+    target = [row for row in rows if (row["ratio_numerator"], row["ratio_denominator"]) == tuple(case["expected"])]
+    if case["positive"]:
+        assert any(row.get("ratio_effectiveness_confirmed") for row in target)
+    else:
+        assert not any(row.get("ratio_effectiveness_confirmed") for row in target)
+        assert all(row.get("ratio_effectiveness_pending") for row in target)
