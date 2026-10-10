@@ -88,6 +88,7 @@ def main(*, monthly_source_validator: Callable[[str], dict] | None = None) -> No
             "|macro_ingestion"
             "|macro_vintage|treasury_ingestion|benchmark_ingest|instrument_ingestion"
             "|fund_nav_readiness|nav_current_daily_chain|nav_rebase_cohort"
+            "|nav_return_lineage_repair_lane"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
             "|sec_13f_publication_chain"
             "|sec_company_tickers_mf|nport_cusip_enrichment"
