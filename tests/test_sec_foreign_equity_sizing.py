@@ -175,35 +175,93 @@ def test_one_normalizer_keeps_class_series_and_roman_semantics(db, raw, expected
     assert db.execute("SELECT public.sec_foreign_class_key(%s)", (raw,)).fetchone()[0] == expected
 
 
-def test_tsm_mislabelled_ordinary_cover_uses_entire_ordinary_count_and_five_to_one(db):
+def test_tsm_mislabelled_ordinary_cover_total_refuses_even_with_five_to_one(db):
     adsh = observe(db, ticker="TSM", kind="equity", title="Common Shares")
     count(db, adsh=adsh)
     ads_contract(db)
     row = resolve(db)
-    assert row["status"] == "resolved"
-    assert row["ordinary_shares"] == Decimal(1_000_000)
-    assert row["listed_type"] == "ads"
-    assert row["class_binding"] == "sole_ordinary_class_proven"
-    assert row["canonical_underlying_class_id"] == "ordinary"
-    assert row["share_unit"] == "ordinary" and row["basis"] == "sole_class_total"
-    assert (row["ratio_numerator"], row["ratio_denominator"]) == (5, 1)
-    assert (row["count_ratio_numerator"], row["count_ratio_denominator"]) == (5, 1)
-    assert row["ordinary_shares"] * 100 * row["ratio_denominator"] / row["ratio_numerator"] == 20_000_000
-    assert row["exchange_name"] == "New York Stock Exchange"
-    # The phase-1 admission does not alter either legacy W1 public answer.
+    refused(row, "share_total_class_scope_unverified")
+    assert row["listed_type"] == "ads" and row["basis"] == "sole_class_total"
+    assert row["class_binding"] is row["canonical_underlying_class_id"] is None
+    assert row["evidence"]["listing_ratio_numerator"] == 5
+    # Stricter sizing does not alter the legacy W1 foreign policy.
     assert db.execute("SELECT status,shares,refusal FROM public.sec_cover_ticker_shares_at('TSM',1,%s)", (DAY,)).fetchone() == (
         "refused", None, "foreign_issuer_listing_unverified")
 
 
+def test_explicit_ordinary_class_under_mislabelled_cover_keeps_five_to_one_arithmetic(db):
+    adsh = observe(db, ticker="TSM", member=A, kind="equity", title="Class A Common Shares")
+    count(db, adsh=adsh, member=A)
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[A])
+    assert row["status"] == "resolved"
+    assert row["ordinary_shares"] == Decimal(1_000_000)
+    assert row["listed_type"] == "ads"
+    assert row["class_binding"] == "explicit"
+    assert row["canonical_underlying_class_id"] == "class:a"
+    assert row["share_unit"] == "ordinary" and row["basis"] == "class"
+    assert (row["ratio_numerator"], row["ratio_denominator"]) == (5, 1)
+    assert (row["count_ratio_numerator"], row["count_ratio_denominator"]) == (5, 1)
+    assert row["ordinary_shares"] * 100 * row["ratio_denominator"] / row["ratio_numerator"] == 20_000_000
+    assert row["exchange_name"] == "New York Stock Exchange"
+
+
 @pytest.mark.parametrize("ticker", ["ZIM", "QGEN"])
-def test_ordinary_direct_worldwide_sole_class_total_is_one_to_one(db, ticker):
+def test_ordinary_direct_worldwide_unbound_total_refuses(db, ticker):
     adsh = observe(db, ticker=ticker)
     count(db, adsh=adsh)
     listing(db, ticker=ticker, listed_type="ordinary_direct")
     row = resolve(db, ticker=ticker)
-    assert row["status"] == "resolved"
+    refused(row, "share_total_class_scope_unverified")
+    assert row["evidence"]["listing_ratio_numerator"] == 1
+    assert row["evidence"]["listing_ratio_denominator"] == 1
+
+
+@pytest.mark.parametrize("ticker", ["ZIM", "QGEN"])
+def test_ordinary_direct_explicit_class_count_is_one_to_one(db, ticker):
+    adsh = observe(db, ticker=ticker, member=A, title="Class A Common Shares")
+    count(db, adsh=adsh, member=A)
+    listing(db, ticker=ticker, listed_type="ordinary_direct", class_token="class_a")
+    row = resolve(db, ticker=ticker, members=[A])
+    assert row["status"] == "resolved" and row["class_binding"] == "explicit"
     assert row["ordinary_shares"] == 1_000_000
     assert (row["ratio_numerator"], row["ratio_denominator"]) == (1, 1)
+
+
+@pytest.mark.parametrize("class_token", [None, "class_a"])
+@pytest.mark.parametrize("listed_type", ["ordinary_direct", "ads"])
+def test_dlo_incomplete_tagged_census_never_binds_an_undimensioned_ab_total(db, class_token, listed_type):
+    # The accepted 20-F has only the listed A title in W1's tagged observations.
+    # Untagged B supply is real: 151,420,944 A + 134,054,192 B = 285,475,136.
+    # An EFM per-class requirement cannot make that incomplete census complete.
+    cik, adsh = 1846832, "0000950170-25-058197"
+    observe(db, ticker="DLO", cik=cik, adsh=adsh, classes=1,
+            title="Class A common shares", filed="2025-04-25")
+    count(db, cik=cik, adsh=adsh, shares=285_475_136, filed="2025-04-25")
+    if listed_type == "ads":
+        ads_contract(db, ticker="DLO", cik=cik, class_token=class_token)
+    else:
+        listing(db, ticker="DLO", cik=cik, listed_type=listed_type, class_token=class_token)
+    row = resolve(db, ticker="DLO", cik=cik)
+    refused(row, "share_total_class_scope_unverified")
+    assert row["adsh"] == adsh and row["count_class_key"] == ""
+    assert row["class_binding"] is row["canonical_underlying_class_id"] is None
+    assert row["evidence"]["class_proof"] is False
+    assert row["evidence"]["class_binding_valid"] is False
+    assert row["evidence"]["filing_count_classes"] == 1
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert db.execute("SELECT count(*) FROM public.sec_ticker_cik_observations "
+                      "WHERE cik=%s AND adsh=%s", (cik, adsh)).fetchone() == (1,)
+
+
+def test_null_ratio_class_needs_positive_proof_even_with_one_tagged_class(db):
+    adsh = observe(db, member=A, title="Class A ordinary shares", classes=1)
+    count(db, adsh=adsh, member=A)
+    ads_contract(db)
+    row = resolve(db, members=[A])
+    refused(row, "foreign_listing_class_ambiguous")
+    assert row["evidence"]["class_proof"] is True
+    assert row["class_binding"] is None
 
 
 def test_cnq_40f_explicit_ordinary_class_count_resolves_but_optional_total_refuses(db):
@@ -335,8 +393,8 @@ def test_sole_proof_is_from_selected_counts_own_filing_never_a_later_filing(db):
     assert row["adsh"] == old
 
 
-@pytest.mark.parametrize("form", ["40-F", "6-K", "20-FR"])
-def test_forms_without_mandatory_per_class_cover_counts_cannot_prove_a_total(db, form):
+@pytest.mark.parametrize("form", ["20-F", "40-F", "6-K", "20-FR"])
+def test_foreign_forms_cannot_prove_unbound_total_scope_from_tagging_obligations(db, form):
     adsh = observe(db, form=form)
     count(db, adsh=adsh, form=form)
     ads_contract(db)
@@ -352,28 +410,28 @@ def test_two_share_count_classes_fail_total_proof_even_with_incorrect_census_one
 
 
 def test_future_public_count_or_ratio_does_not_change_the_earlier_cutoff(db):
-    adsh = observe(db, available="2026-01-02")
-    count(db, adsh=adsh, available="2026-01-02")
-    ads_contract(db)
-    refused(resolve(db), "class_shares_unavailable")
-    row = resolve(db, day="2026-01-02")
+    adsh = observe(db, member=A, title="Class A ordinary shares", available="2026-01-02")
+    count(db, adsh=adsh, member=A, available="2026-01-02")
+    ads_contract(db, class_token="class_a")
+    refused(resolve(db, members=[A]), "class_shares_unavailable")
+    row = resolve(db, members=[A], day="2026-01-02")
     assert row["status"] == "resolved"
     # Independent future-public ratio cannot manufacture a 2025 entitlement.
     listing(db, kind="ads_ratio", source="ratio_change_6k", ratio=(10, 1),
-            filed="2025-12-30", available="2026-01-02", effective="2025-06-01")
-    assert resolve(db)["ratio_numerator"] is None
+            class_token="class_a", filed="2025-12-30", available="2026-01-02", effective="2025-06-01")
+    assert resolve(db, members=[A])["ratio_numerator"] is None
     assert db.execute("SELECT ratio_numerator FROM public.sec_foreign_listing_context_at(1,'TSM',%s,%s)", (DAY, DAY)).fetchone()[0] == 5
 
 
 def test_count_economic_date_uses_cutoff_knowledge_after_an_ads_only_ratio_change(db):
-    adsh = observe(db)
-    count(db, adsh=adsh)
-    ads_contract(db, ratio=(25, 1))
+    adsh = observe(db, member=A, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=A)
+    ads_contract(db, ratio=(25, 1), class_token="class_a")
     listing(db, kind="ads_ratio", source="ratio_change_6k", ratio=(5, 1),
-            filed="2025-05-01", effective="2025-06-01")
+            class_token="class_a", filed="2025-05-01", effective="2025-06-01")
     listing(db, kind="ads_ratio", source="f6", ratio=(5, 1),
-            filed="2025-05-01", effective="2025-06-01")
-    row = resolve(db)
+            class_token="class_a", filed="2025-05-01", effective="2025-06-01")
+    row = resolve(db, members=[A])
     assert row["status"] == "resolved" and row["ordinary_shares"] == 1_000_000
     assert (row["ratio_numerator"], row["ratio_denominator"]) == (5, 1)
     assert (row["count_ratio_numerator"], row["count_ratio_denominator"]) == (25, 1)
@@ -382,13 +440,13 @@ def test_count_economic_date_uses_cutoff_knowledge_after_an_ads_only_ratio_chang
 
 
 def test_historical_ratio_can_be_learned_after_count_date_but_by_cutoff(db):
-    adsh = observe(db)
-    count(db, adsh=adsh)
-    listing(db)
+    adsh = observe(db, member=A, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=A)
+    listing(db, class_token="class_a")
     for source in ("f6", "item_12d"):
         listing(db, kind="ads_ratio", source=source, ratio=(5, 1),
-                filed="2025-02-01", effective="2020-01-02")
-    row = resolve(db)
+                class_token="class_a", filed="2025-02-01", effective="2020-01-02")
+    row = resolve(db, members=[A])
     assert row["status"] == "resolved"
     assert (row["count_ratio_numerator"], row["count_ratio_denominator"]) == (5, 1)
     assert db.execute("SELECT ratio_status FROM public.sec_foreign_listing_at(1,'TSM','2024-12-31')").fetchone()[0] == "none"
@@ -396,13 +454,13 @@ def test_historical_ratio_can_be_learned_after_count_date_but_by_cutoff(db):
 
 @pytest.mark.parametrize("control", ["pending", "conflict"])
 def test_pending_or_conflicting_ratio_plans_stay_ambiguous(db, control):
-    adsh = observe(db)
-    count(db, adsh=adsh)
-    ads_contract(db)
+    adsh = observe(db, member=A, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=A)
+    ads_contract(db, class_token="class_a")
     listing(db, kind="ads_ratio", source="ratio_change_6k", ratio=(10, 1),
-            filed="2025-05-01", effective="2025-06-01",
+            class_token="class_a", filed="2025-05-01", effective="2025-06-01",
             pending=control == "pending", conflict=control == "conflict")
-    row = resolve(db)
+    row = resolve(db, members=[A])
     refused(row, "foreign_listing_ambiguous")
     assert row["ratio_status"] == "ambiguous"
 
@@ -440,12 +498,46 @@ def test_historical_competing_programs_null_count_ratio_for_light_equality_gate(
     assert row["evidence"]["count_ratio_numerator"] == 5
 
 
+@pytest.mark.parametrize("historical_class,binding", [
+    (None, "ambiguous"), ("class_b", "mismatch"), ("class_a", "explicit"),
+])
+def test_historical_ratio_binds_selected_a_count_before_numeric_equality(db, historical_class, binding):
+    # Both numeric ratios are 5/1. The historical program must still describe
+    # the selected A ordinary count; a NULL or B class cannot pass by equality.
+    adsh = observe(db, member=A, title="Class A ordinary shares", classes=2)
+    observe(db, ticker="UNLISTED", member=B, title="Class B ordinary shares", classes=2, adsh=adsh)
+    count(db, adsh=adsh, member=A, shares=1_000_000)
+    count(db, adsh=adsh, member=B, shares=200_000)
+    listing(db, class_token=historical_class, until="2025-06-01")
+    for source in ("f6", "item_12d"):
+        listing(db, kind="ads_ratio", source=source, ratio=(5, 1),
+                class_token=historical_class, until="2025-06-01")
+    # A 12(b) cover takes effect on filing+1; explicit future effective dates
+    # belong to ratio evidence, rather than to the cover's listing assertion.
+    listing(db, class_token="class_a", filed="2025-05-31")
+    for source in ("f6", "item_12d"):
+        listing(db, kind="ads_ratio", source=source, ratio=(5, 1),
+                class_token="class_a", filed="2025-05-01", effective="2025-06-01")
+    row = resolve(db, members=[A])
+    assert row["status"] == "resolved" and row["ordinary_shares"] == 1_000_000
+    assert (row["ratio_numerator"], row["ratio_denominator"]) == (5, 1)
+    assert row["evidence"]["count_class_binding_status"] == binding
+    assert row["evidence"]["count_class_binding_valid"] is (binding == "explicit")
+    assert row["evidence"]["count_ratio_status"] == "resolved"
+    assert row["evidence"]["count_listing_contract_status"] == "resolved"
+    assert row["evidence"]["count_ratio_class"] == historical_class
+    assert row["evidence"]["count_listing_class"] == historical_class
+    assert (row["evidence"]["count_ratio_numerator"], row["evidence"]["count_ratio_denominator"]) == (5, 1)
+    expected = (5, 1) if binding == "explicit" else (None, None)
+    assert (row["count_ratio_numerator"], row["count_ratio_denominator"]) == expected
+
+
 def test_exchange_comes_from_latest_line_observation_at_cutoff_not_old_count(db):
-    adsh = observe(db, exchange="New York Stock Exchange")
-    count(db, adsh=adsh)
-    ads_contract(db)
-    newer = observe(db, filed="2025-09-01", exchange="OTC Markets")
-    row = resolve(db)
+    adsh = observe(db, member=A, title="Class A ordinary shares", exchange="New York Stock Exchange")
+    count(db, adsh=adsh, member=A)
+    ads_contract(db, class_token="class_a")
+    newer = observe(db, member=A, title="Class A ordinary shares", filed="2025-09-01", exchange="OTC Markets")
+    row = resolve(db, members=[A])
     assert row["status"] == "resolved"
     assert row["adsh"] == adsh and row["exchange_name"] == "OTC Markets"
     assert row["evidence"]["exchange_adsh"] == newer
@@ -453,12 +545,12 @@ def test_exchange_comes_from_latest_line_observation_at_cutoff_not_old_count(db)
 
 
 def test_competing_latest_line_exchanges_return_no_currency_proxy(db):
-    adsh = observe(db)
-    count(db, adsh=adsh)
-    ads_contract(db)
-    newer = observe(db, filed="2025-09-01", exchange="New York Stock Exchange")
-    observe(db, filed="2025-09-01", exchange="OTC Markets", adsh=newer)
-    row = resolve(db)
+    adsh = observe(db, member=A, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=A)
+    ads_contract(db, class_token="class_a")
+    newer = observe(db, member=A, title="Class A ordinary shares", filed="2025-09-01", exchange="New York Stock Exchange")
+    observe(db, member=A, title="Class A ordinary shares", filed="2025-09-01", exchange="OTC Markets", adsh=newer)
+    row = resolve(db, members=[A])
     assert row["status"] == "resolved" and row["exchange_name"] is None
     assert row["evidence"]["exchange_ambiguous"] is True
 
@@ -484,10 +576,10 @@ def test_latest_stated_date_then_filing_conflict_does_not_fall_back(db):
 
 @pytest.mark.parametrize("age,expected", [(400, "resolved"), (401, "stale")])
 def test_count_age_boundary_is_inclusive(db, age, expected):
-    adsh = observe(db)
-    count(db, adsh=adsh, stated=(dt.date.fromisoformat(DAY) - dt.timedelta(days=age)).isoformat())
-    ads_contract(db)
-    row = resolve(db)
+    adsh = observe(db, member=A, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=A, stated=(dt.date.fromisoformat(DAY) - dt.timedelta(days=age)).isoformat())
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[A])
     assert row["status"] == expected
     if expected == "stale":
         refused(row, "stale")
@@ -513,24 +605,24 @@ def test_negative_count_and_invalid_ratio_are_rejected_by_evidence_constraints(d
 
 def test_fractional_ratio_and_huge_integer_count_remain_exact_numeric(db):
     huge = Decimal("10000000000000000000000000000000000000003")
-    adsh = observe(db)
-    count(db, adsh=adsh, shares=huge)
-    ads_contract(db, ratio=(3, 2))
-    row = resolve(db)
+    adsh = observe(db, member=A, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=A, shares=huge)
+    ads_contract(db, ratio=(3, 2), class_token="class_a")
+    row = resolve(db, members=[A])
     assert row["status"] == "resolved" and row["ordinary_shares"] == huge
     assert (row["ratio_numerator"], row["ratio_denominator"]) == (3, 2)
     value = db.execute("SELECT ordinary_shares * 3 * ratio_denominator / ratio_numerator "
-                       "FROM public.sec_cover_ticker_size_basis_at('TSM',1,ARRAY[''],%s)", (DAY,)).fetchone()[0]
+                       "FROM public.sec_cover_ticker_size_basis_at('TSM',1,%s,%s)", ([A], DAY)).fetchone()[0]
     assert value == Decimal(int(huge) * 2)
 
 
 def test_new_point_functions_have_no_set_and_inline_without_sec_function_scans(db):
-    adsh = observe(db)
-    count(db, adsh=adsh)
-    ads_contract(db)
+    adsh = observe(db, member=A, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=A)
+    ads_contract(db, class_token="class_a")
     assert db.execute("SHOW jit").fetchone()[0] == "off"
     plan = db.execute("EXPLAIN SELECT b.* FROM (VALUES ('TSM'::text,1::bigint)) r(t,c) "
-                      "CROSS JOIN LATERAL public.sec_cover_ticker_size_basis_at(r.t,r.c,ARRAY[''],%s) b", (DAY,)).fetchall()
+                      "CROSS JOIN LATERAL public.sec_cover_ticker_size_basis_at(r.t,r.c,%s,%s) b", ([A], DAY)).fetchall()
     assert not any("Function Scan on sec_" in line[0] for line in plan)
     rows = db.execute("SELECT p.proconfig,p.prosecdef,p.provolatile,p.proparallel "
                       "FROM pg_catalog.pg_proc p WHERE p.oid IN ("

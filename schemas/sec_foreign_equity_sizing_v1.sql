@@ -729,12 +729,6 @@ WITH election AS (
     ) labels
     WHERE c.cik = p_cik AND c.adsh = e.adsh AND c.stated_on = e.shares_as_of
       AND e.evidence -> 'count_fact_hashes' ? c.fact_hash
-), census AS (
-    SELECT COALESCE(bool_and(o.filing_equity_classes = 1 AND o.filing_complete), false) AS one_class,
-           CASE WHEN count(DISTINCT public.sec_class_label(o.security_title, o.class_key)) = 1
-                THEN min(public.sec_class_label(o.security_title, o.class_key) COLLATE "C") END AS sole_label
-    FROM public.sec_observations_at(p_as_of, false) o, election e
-    WHERE o.adsh = e.adsh AND o.cik = p_cik
 ), count_census AS (
     SELECT count(DISTINCT c.class_key) AS count_classes
     FROM public.sec_share_counts_at(p_as_of, false) c, election e
@@ -745,19 +739,16 @@ WITH election AS (
     LIMIT 1
 ), detail AS (
     SELECT e.*, c.form,
-           COALESCE(c.count_label,
-                    CASE WHEN e.count_class_key = '' THEN s.sole_label END) AS label,
+           c.count_label AS label,
            e.count_class_key <> ''
                AND e.count_class_key ~* '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$))' AS ads_unit,
            c.preferred_unit, c.ordinary_unit,
-           s.one_class AND k.count_classes = 1
-               AND regexp_replace(c.form, '/A$', '') = '20-F' AS sole_proven,
            e.identity_ambiguous
                OR COALESCE((SELECT bool_or(x.label_ambiguous) FROM elected x), false)
                OR (SELECT count(DISTINCT x.count_label) FROM elected x) > 1 AS different_classes,
-           s.one_class, k.count_classes
+           k.count_classes
     FROM election e LEFT JOIN chosen_detail c ON true
-    CROSS JOIN census s CROSS JOIN count_census k
+    CROSS JOIN count_census k
 ), exchange_fact AS (
     SELECT CASE WHEN count(DISTINCT o.exchange) = 1 THEN min(o.exchange COLLATE "C") END AS exchange_name
     FROM public.sec_observations_at(p_as_of, false) o, election e
@@ -768,17 +759,18 @@ WITH election AS (
 SELECT d.source_status, d.shares, d.shares_as_of, d.adsh, d.basis,
        d.legacy_refusal, d.count_class_key, d.label,
        CASE WHEN d.ads_unit THEN 'ads' WHEN d.preferred_unit THEN 'preferred'
-            WHEN d.ordinary_unit OR (d.count_class_key = '' AND d.sole_proven) THEN 'ordinary'
+            WHEN d.ordinary_unit THEN 'ordinary'
             WHEN d.adsh IS NOT NULL THEN 'unknown' END,
-       COALESCE(d.sole_proven, false), x.exchange_name, COALESCE(d.different_classes, false),
+       -- Reserved for a later positive same-filing census contract. A tagged
+       -- class count or an EFM tagging obligation cannot prove total scope.
+       false, x.exchange_name, COALESCE(d.different_classes, false),
        d.evidence || jsonb_build_object(
            'count_labels', COALESCE((SELECT jsonb_agg(DISTINCT e.count_label ORDER BY e.count_label)
                                     FILTER (WHERE e.count_label IS NOT NULL) FROM elected e), '[]'::jsonb),
            'count_labels_ambiguous', COALESCE(d.different_classes, false),
-           'filing_equity_classes_one', d.one_class,
            'filing_count_classes', d.count_classes,
            'count_form', d.form,
-           'efm_per_class_mandatory', regexp_replace(d.form, '/A$', '') = '20-F')
+           'scope_rule', 'explicit_class_dimension_only')
 FROM detail d CROSS JOIN exchange_fact x
 $fn$;
 
@@ -837,9 +829,9 @@ WITH listing AS (
     FROM public.sec_foreign_listing_election_at(p_cik, p_ticker, p_as_of, p_as_of) l
 ), selected AS (
     SELECT l.*, e.*,
-           e.basis = 'class'
-               OR e.basis = 'sole_class_total' AND e.sole_class_proven AS class_proof,
-           CASE WHEN e.identity_ambiguous THEN 'ambiguous'
+           e.basis = 'class' AS class_proof,
+           CASE WHEN e.basis IS DISTINCT FROM 'class' THEN 'ambiguous'
+                WHEN e.identity_ambiguous THEN 'ambiguous'
                 WHEN e.count_label IS NOT NULL
                      AND ((l.ratio_label IS NOT NULL AND l.ratio_label <> e.count_label)
                           OR (l.listing_label IS NOT NULL AND l.listing_label <> e.count_label))
@@ -859,6 +851,8 @@ WITH listing AS (
       WHEN s.source_status IS DISTINCT FROM 'resolved' THEN 'ambiguous'
       WHEN s.shares IS NULL OR s.shares <= 0 OR s.shares::text IN ('NaN', 'Infinity', '-Infinity')
         THEN 'nonpositive_share_count'
+      -- Phase 1 has no positive census. Extend this one scope branch when a
+      -- later migration can bind an unbound total using its own filing census.
       WHEN s.class_proof IS DISTINCT FROM true THEN 'share_total_class_scope_unverified'
       WHEN s.share_unit = 'ads' THEN 'ordinary_class_shares_unavailable'
       WHEN s.share_unit IS DISTINCT FROM 'ordinary' THEN 'share_count_unit_unverified'
@@ -878,15 +872,41 @@ WITH listing AS (
     FROM selected s
 ), historical AS (
     SELECT d.*,
-           CASE WHEN c.program_ambiguous IS NOT DISTINCT FROM false THEN c.ratio_numerator END AS count_numerator,
-           CASE WHEN c.program_ambiguous IS NOT DISTINCT FROM false THEN c.ratio_denominator END AS count_denominator,
+           CASE WHEN b.binding IN ('explicit', 'sole_ordinary_class_proven')
+                          AND c.program_ambiguous IS NOT DISTINCT FROM false
+                     THEN c.ratio_numerator END AS count_numerator,
+           CASE WHEN b.binding IN ('explicit', 'sole_ordinary_class_proven')
+                          AND c.program_ambiguous IS NOT DISTINCT FROM false
+                     THEN c.ratio_denominator END AS count_denominator,
            c.ratio_numerator AS raw_count_numerator, c.ratio_denominator AS raw_count_denominator,
            c.status AS count_listing_contract_status, c.ratio_status AS count_ratio_status,
+           c.listing_status AS count_listing_status, c.listed_type AS count_listed_type,
            c.evidence_ids AS count_evidence_ids, c.ratio_class AS count_ratio_class,
+           c.listing_class AS count_listing_class,
+           c.ratio_effective_from AS count_ratio_effective_from, c.ratio_effective_to AS count_ratio_effective_to,
+           n.ratio_label AS count_ratio_label, n.listing_label AS count_listing_label,
+           b.binding AS count_class_binding,
            c.program_key AS count_program_key, c.program_ambiguous AS count_program_ambiguous
     FROM decided d CROSS JOIN LATERAL public.sec_foreign_listing_election_at(
         p_cik, p_ticker, d.shares_as_of, p_as_of
     ) c
+    CROSS JOIN LATERAL (
+        SELECT public.sec_foreign_class_key(c.ratio_class) AS ratio_label,
+               public.sec_foreign_class_key(c.listing_class) AS listing_label
+    ) n
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN d.class_proof IS DISTINCT FROM true THEN 'ambiguous'
+                    WHEN d.identity_ambiguous THEN 'ambiguous'
+                    WHEN d.count_label IS NOT NULL
+                         AND ((n.ratio_label IS NOT NULL AND n.ratio_label <> d.count_label)
+                              OR (n.listing_label IS NOT NULL AND n.listing_label <> d.count_label))
+                         THEN 'mismatch'
+                    WHEN d.count_label IS NOT NULL
+                         AND (CASE WHEN c.listed_type = 'ads' THEN n.ratio_label ELSE n.listing_label END) = d.count_label
+                         THEN 'explicit'
+                    WHEN d.sole_class_proven THEN 'sole_ordinary_class_proven'
+                    ELSE 'ambiguous' END AS binding
+    ) b
 ), exchange_filing AS (
     SELECT o.adsh, o.source_available_on
     FROM public.sec_observations_at(p_as_of, false) o
@@ -955,9 +975,16 @@ SELECT CASE WHEN h.refusal_code IS NULL THEN 'resolved'
            'listing_evidence_ids', h.evidence_ids,
            'count_ratio_status', h.count_ratio_status,
            'count_listing_contract_status', h.count_listing_contract_status,
+           'count_listing_status', h.count_listing_status, 'count_listed_type', h.count_listed_type,
+           'count_listing_class', h.count_listing_class,
            'count_ratio_class', h.count_ratio_class, 'count_program_key', h.count_program_key,
+           'count_ratio_label', h.count_ratio_label, 'count_listing_label', h.count_listing_label,
+           'count_class_binding_status', h.count_class_binding,
+           'count_class_binding_valid', h.count_class_binding IN ('explicit', 'sole_ordinary_class_proven')
+               AND h.count_program_ambiguous IS NOT DISTINCT FROM false,
            'count_program_ambiguous', h.count_program_ambiguous,
            'count_ratio_numerator', h.raw_count_numerator, 'count_ratio_denominator', h.raw_count_denominator,
+           'count_ratio_effective_from', h.count_ratio_effective_from, 'count_ratio_effective_to', h.count_ratio_effective_to,
            'count_listing_evidence_ids', h.count_evidence_ids,
            'phase', 1)
 FROM historical h CROSS JOIN exchange_fact x

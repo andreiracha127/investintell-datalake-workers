@@ -524,9 +524,11 @@ of today's symbols.
    ```
 
    This read-only PowerShell check verifies the final7 artifact pins, the approved
-   v2 or sizing v1 resolver composition (including ABI/settings/ACLs), counts,
+   v2 or sizing v1 resolver composition (including ABI, non-STRICT behavior,
+   SQL/STABLE/PARALLEL SAFE/SECURITY INVOKER flags, settings and ACLs), counts,
    all saved semantic answers and seven later probes without reparsing
-   or writing the pinned artifacts:
+   or writing the pinned artifacts. It uses one repeatable-read read-only
+   snapshot with JIT off and bounded statement, lock and idle timeouts:
 
    ```powershell
    @'
@@ -557,8 +559,11 @@ of today's symbols.
        (1894693, 'SVRE', 'none', 'ads', 'resolved', 'none'),
        (1935172, 'AIXI', 'ambiguous', 'ads', 'resolved', 'ambiguous'),
    )
-   with psycopg.connect(os.environ['W1C_READBACK_DATABASE_URL'], row_factory=dict_row,
-                         options='-c default_transaction_read_only=on -c statement_timeout=30000') as conn:
+   with psycopg.connect(os.environ['W1C_READBACK_DATABASE_URL'], row_factory=dict_row, autocommit=True,
+                         options='-c default_transaction_read_only=on -c jit=off -c statement_timeout=30000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=60000') as conn:
+       conn.execute('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+       snapshot_settings = conn.execute("SELECT current_setting('transaction_isolation') AS isolation, current_setting('transaction_read_only') AS read_only, current_setting('jit') AS jit, current_setting('statement_timeout') AS statement_timeout, current_setting('lock_timeout') AS lock_timeout, current_setting('idle_in_transaction_session_timeout') AS idle_timeout").fetchone()
+       assert snapshot_settings == {'isolation': 'repeatable read', 'read_only': 'on', 'jit': 'off', 'statement_timeout': '30s', 'lock_timeout': '5s', 'idle_timeout': '1min'}, snapshot_settings
        body = conn.execute("SELECT md5(prosrc) AS md5, pg_get_userbyid(proowner) AS owner FROM pg_proc WHERE oid='public.sec_foreign_listing_at(bigint,text,date)'::regprocedure").fetchone()
        assert body['owner'] == 'worker_writer', body
        assert body['md5'] in ('60f5d1bf86a645a41fb7e23328c7ab8a',
@@ -590,7 +595,7 @@ of today's symbols.
            wanted = dict(status=status, listed_type=kind, listing_status=listing_status, ratio_status=ratio_status, ratio=None)
            if semantic_answer(row) != wanted:
                later_mismatches.append({'key': [cik, symbol, '2026-10-11'], 'expected': wanted, 'actual': semantic_answer(row)})
-   print(json.dumps({'counts': counts, 'retired_by_reason': reasons, 'queries': len(queries), 'matches': len(queries)-len(mismatches), 'mismatches': mismatches, 'later_queries': len(later), 'later_matches': len(later)-len(later_mismatches), 'later_mismatches': later_mismatches}, indent=2))
+   print(json.dumps({'snapshot_settings': snapshot_settings, 'counts': counts, 'retired_by_reason': reasons, 'queries': len(queries), 'matches': len(queries)-len(mismatches), 'mismatches': mismatches, 'later_queries': len(later), 'later_matches': len(later)-len(later_mismatches), 'later_mismatches': later_mismatches}, indent=2))
    raise SystemExit(bool(mismatches or later_mismatches))
    '@ | python -
    ```
@@ -623,3 +628,6 @@ The additive inlinable core and ordinary-count sizing contract are documented in
 [Foreign equity sizing basis](sec-foreign-equity-sizing.md). Install sizing DDL,
 then the matching loader guard, then run this composite readback. The sizing
 rollback restores the exact v2 resolver and remains compatible with that guard.
+Only explicit class-dimensioned ordinary counts bound to the listing's class
+resolve in phase 1. Undimensioned foreign totals remain refused; tagged class
+counts and titles do not prove that an unlisted class is absent.

@@ -1149,9 +1149,10 @@ def require_schema(cursor: Any) -> None:
     Accept either the original v2 resolver or sizing v1's legacy projection
     together with its context projection and one authoritative W1c election. The v2 rollback deliberately
     retains the audit column, so column presence alone cannot prove semantics.
-    Check the inlinable composition's settings too: an altered core or a second
-    copied resolver is not an approved sizing state. Installation remains an
-    explicit owner operation, serialized by the caller's reconciliation lock.
+    Check each component's NULL behavior, security, volatility, parallel safety
+    and settings too: an altered core or a second copied resolver is not an
+    approved sizing state. Installation remains an explicit owner operation,
+    serialized by the caller's reconciliation lock.
     """
     schema_dir = Path(__file__).resolve().parents[1] / "schemas"
     v2_schema = (schema_dir / "sec_foreign_listing_evidence_v2.sql").read_text(encoding="utf-8")
@@ -1172,7 +1173,8 @@ def require_schema(cursor: Any) -> None:
         return (
             "p.proargnames = " + "ARRAY[" + ",".join("'" + name + "'" for name in arguments) + "] "
             "AND pg_catalog.pg_get_function_result(p.oid) = '" + result + "' "
-            "AND NOT p.prosecdef AND p.provolatile = 's' AND p.proparallel = 's' "
+            "AND NOT p.proisstrict AND NOT p.prosecdef "
+            "AND p.provolatile = 's' AND p.proparallel = 's' "
             "AND l.lanname = 'sql' "
             "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles owner_role "
             "WHERE owner_role.rolname = 'worker_writer' AND owner_role.oid <> p.proowner) "

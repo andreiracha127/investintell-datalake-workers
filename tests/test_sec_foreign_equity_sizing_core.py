@@ -1,11 +1,13 @@
 """W1c core composition, loader guard and exact B2 rollback on loopback PG18."""
 from __future__ import annotations
 
+import ast
 from datetime import date
 import hashlib
 import os
 from pathlib import Path
 import re
+import textwrap
 from urllib.parse import urlsplit
 
 import pytest
@@ -36,6 +38,39 @@ def test_rollback_sources_are_exact_v2_and_v3_bodies():
     assert _body(ROLLBACK, "sec_foreign_listing_at") == _body(v2, "sec_foreign_listing_at")
     for name in ("sec_cover_class_shares_at", "sec_cover_ticker_shares_at"):
         assert _body(ROLLBACK, name) == _body(w3, name)
+
+
+def test_executable_production_readback_uses_bounded_read_only_snapshot():
+    runbook = (ROOT / "docs/runbooks/sec-foreign-listing-evidence.md").read_text(encoding="utf-8")
+    snippets = [textwrap.dedent(match) for match in re.findall(
+        r"@'\n(.*?)\n\s*'@ \| python -", runbook, re.DOTALL,
+    ) if "W1C_READBACK_DATABASE_URL" in match]
+    assert len(snippets) == 1
+    tree = ast.parse(snippets[0])
+    connections = [node for node in ast.walk(tree) if isinstance(node, ast.With)
+                   and any(isinstance(item.context_expr, ast.Call)
+                           and isinstance(item.context_expr.func, ast.Attribute)
+                           and item.context_expr.func.attr == "connect"
+                           for item in node.items)]
+    assert len(connections) == 1
+    connection = connections[0]
+    keywords = {keyword.arg: ast.literal_eval(keyword.value)
+                for keyword in connection.items[0].context_expr.keywords
+                if keyword.arg in {"options", "autocommit"}}
+    assert keywords["autocommit"] is True
+    options = keywords["options"]
+    for setting in ("default_transaction_read_only=on", "jit=off",
+                    "statement_timeout=30000", "lock_timeout=5000",
+                    "idle_in_transaction_session_timeout=60000"):
+        assert "-c " + setting in options
+    begin = connection.body[0]
+    assert isinstance(begin, ast.Expr) and isinstance(begin.value, ast.Call)
+    assert isinstance(begin.value.func, ast.Attribute) and begin.value.func.attr == "execute"
+    assert ast.literal_eval(begin.value.args[0]) == "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+    for node in ast.walk(connection):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "execute"):
+            assert ast.literal_eval(node.args[0]).split()[0] in {"SELECT", "BEGIN"}
 
 
 @pytest.fixture(scope="module")
@@ -131,6 +166,37 @@ def test_loader_refuses_function_configuration_changes(db, signature):
     db.execute("ALTER FUNCTION " + signature + " SET search_path TO pg_catalog, public")
     with pytest.raises(RuntimeError, match="schema is not v2"):
         _check_loader(db)
+
+
+@pytest.mark.parametrize("signature", [LEGACY_SIGNATURE, CORE_SIGNATURE, ELECTION_SIGNATURE])
+@pytest.mark.parametrize("alteration", ["STRICT", "SECURITY DEFINER", "VOLATILE", "PARALLEL UNSAFE"])
+def test_loader_refuses_behavior_and_inlining_flag_drift(db, signature, alteration):
+    _check_loader(db)
+    db.execute("ALTER FUNCTION " + signature + " " + alteration)
+    with pytest.raises(RuntimeError, match="schema is not v2"):
+        _check_loader(db)
+
+
+def test_loader_refuses_strict_drift_after_rollback_to_original_v2(db):
+    db.execute(ROLLBACK.replace("BEGIN;", "").replace("COMMIT;", ""))
+    _check_loader(db)
+    db.execute("ALTER FUNCTION " + LEGACY_SIGNATURE + " STRICT")
+    with pytest.raises(RuntimeError, match="schema is not v2"):
+        _check_loader(db)
+
+
+def test_non_strict_composition_keeps_one_row_for_null_inputs_and_inlines(db):
+    _check_loader(db)
+    signatures = (("sec_foreign_listing_at", "NULL::bigint,NULL::text,NULL::date"),
+                  ("sec_foreign_listing_context_at", "NULL::bigint,NULL::text,NULL::date,NULL::date"),
+                  ("sec_foreign_listing_election_at", "NULL::bigint,NULL::text,NULL::date,NULL::date"))
+    db.execute("SET LOCAL jit = off")
+    for name, arguments in signatures:
+        assert db.execute("SELECT count(*) FROM public." + name + "(" + arguments + ")").fetchone() == (1,)
+        plan = "\n".join(row[0] for row in db.execute(
+            "EXPLAIN SELECT * FROM public." + name + "(" + arguments + ")",
+        ).fetchall())
+        assert not re.search(r"Function Scan on sec_", plan), plan
 
 
 @pytest.mark.parametrize("signature", [CORE_SIGNATURE, ELECTION_SIGNATURE])
