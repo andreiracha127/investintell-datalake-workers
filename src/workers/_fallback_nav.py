@@ -26,9 +26,12 @@ import datetime as _dt
 import math
 import os
 import time
-from typing import Any
+from typing import Any, Callable
 
-from src.workers._tiingo import NavFetchResult, NavObservation, TokenBucket, parse_nav_observations
+from src.workers._tiingo import (
+    NavFetchResult, NavObservation, TiingoDeadlineExceeded, TokenBucket,
+    parse_nav_observations,
+)
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 YAHOO_BASE_URL = "https://query1.finance.yahoo.com"
@@ -135,22 +138,51 @@ class FallbackNav:
         return self._get_json_result(url, params=params, headers=headers, bucket=bucket)[1]
 
     def _get_json_result(self, url: str, *, params: dict | None = None,
-                         headers: dict | None = None, bucket: TokenBucket) -> tuple[str, Any]:
+                         headers: dict | None = None, bucket: TokenBucket,
+                         max_attempts: int | None = None,
+                         remaining: Callable[[], float] | None = None) -> tuple[str, Any]:
+        """Optional operator bounds leave the historical retry policy intact."""
+        if max_attempts is not None and max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
         failure = "transient_error"
-        for sleep_s in (1.0, 4.0):
-            bucket.acquire()
+        sleeps = (1.0, 4.0)
+        if max_attempts is not None:
+            sleeps = sleeps[:max_attempts]
+        for attempt, sleep_s in enumerate(sleeps):
+            if max_attempts is not None and attempt == len(sleeps) - 1:
+                sleep_s = 0.0
+            request_kwargs: dict = {}
+            if remaining is None:
+                bucket.acquire()
+            else:
+                left = remaining()
+                if left <= 0:
+                    raise TiingoDeadlineExceeded("budget exhausted before pacing")
+                bucket.acquire(max_wait=left)
+                left = remaining()
+                if left <= 0:
+                    raise TiingoDeadlineExceeded("budget exhausted before the request")
+                request_kwargs["timeout"] = min(left, 30.0)
+
+            def retry_wait() -> None:
+                delay = sleep_s
+                if remaining is not None:
+                    delay = min(delay, max(0.0, remaining()))
+                if delay > 0:
+                    time.sleep(delay)
+
             try:
-                resp = self._http().get(url, params=params, headers=headers)
+                resp = self._http().get(url, params=params, headers=headers, **request_kwargs)
             except Exception:
-                time.sleep(sleep_s)
+                retry_wait()
                 continue
             if resp.status_code == 429:
                 failure = "rate_limited"
-                time.sleep(sleep_s)
+                retry_wait()
                 continue
             if resp.status_code >= 500:
                 failure = "transient_error"
-                time.sleep(sleep_s)
+                retry_wait()
                 continue
             if resp.status_code == 404:
                 return "not_found", None
@@ -164,9 +196,19 @@ class FallbackNav:
         return failure, None
 
     def fetch_observations(self, ticker: str, start: _dt.date,
-                           end: _dt.date) -> tuple[NavFetchResult, str | None,
+                           end: _dt.date, *, max_attempts: int | None = None,
+                           remaining: Callable[[], float] | None = None,
+                           ) -> tuple[NavFetchResult, str | None,
                                                    list[tuple[str, NavFetchResult]]]:
-        """NAV-only typed path; legacy fetch() retains its public list contract."""
+        """Typed path with optional per-provider request and deadline bounds.
+
+        A caller requiring Yahoo alone constructs ``FallbackNav(eodhd_key='')``.
+        """
+        request_bounds: dict = {}
+        if max_attempts is not None:
+            request_bounds["max_attempts"] = max_attempts
+        if remaining is not None:
+            request_bounds["remaining"] = remaining
         attempts: list[tuple[str, NavFetchResult]] = []
         if not self._eodhd_key:
             attempts.append(("eodhd", NavFetchResult("not_configured")))
@@ -177,14 +219,14 @@ class FallbackNav:
                     f"{EODHD_BASE_URL}/eod/{eodhd_symbol(ticker)}",
                     params={"api_token": self._eodhd_key, "fmt": "json",
                             "from": start.isoformat(), "to": end.isoformat(), "period": "d"},
-                    bucket=self._eodhd_bucket)
+                    bucket=self._eodhd_bucket, **request_bounds)
             else:
                 p1 = int(_dt.datetime.combine(start, _dt.time.min, _dt.timezone.utc).timestamp())
                 p2 = int(_dt.datetime.combine(end, _dt.time.min, _dt.timezone.utc).timestamp()) + 86400
                 status, payload = self._get_json_result(
                     f"{YAHOO_BASE_URL}/v8/finance/chart/{ticker}",
                     params={"period1": p1, "period2": p2, "interval": "1d", "events": "div,splits"},
-                    headers=_YAHOO_HEADERS, bucket=self._yahoo_bucket)
+                    headers=_YAHOO_HEADERS, bucket=self._yahoo_bucket, **request_bounds)
             if payload is None:
                 result = NavFetchResult(status)
             else:
