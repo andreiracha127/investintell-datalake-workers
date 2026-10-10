@@ -227,6 +227,7 @@ jobs:
             tests/test_db_tls.py
             tests/test_eod_prices_warmer.py
             tests/test_eod_foreign_listing_coverage.py
+            tests/test_eod_history_fuzz.py
             tests/test_fallback_nav.py
             tests/test_fi_style_metrics.py
             tests/test_form345_ingestion.py

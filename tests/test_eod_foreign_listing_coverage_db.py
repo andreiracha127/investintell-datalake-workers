@@ -18,6 +18,7 @@ budget abort and resume.
 
 from __future__ import annotations
 
+import collections
 import datetime as dt
 import json
 import os
@@ -25,6 +26,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import exchange_calendars as xcals
 import httpx
 import psycopg
 import pytest
@@ -32,6 +34,7 @@ from psycopg import errors, sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from src.workers import _tiingo
+from src.workers import eod_history_validation as v
 from src.workers import eod_prices_warmer as w
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,12 +169,14 @@ def resolved_lines(db, *symbols, cik=None):
 # ──────────────────────────────────────────────────────────────────────────────
 # Tiingo mock
 # ──────────────────────────────────────────────────────────────────────────────
+_XNYS = xcals.get_calendar("XNYS", start="1900-01-01")
+
+
 def bdays(a, b):
-    d = a
-    while d <= b:
-        if d.weekday() < 5:
-            yield d
-        d += dt.timedelta(days=1)
+    """XNYS sessions in [a, b]: the provider's and the store's trading days."""
+    if a > b:
+        return []
+    return [ts.date() for ts in _XNYS.sessions_in_range(a.isoformat(), b.isoformat())]
 
 
 def raw_close(ticker, d):
@@ -198,6 +203,7 @@ class FakeTiingo:
         self.omit: set[tuple[str, dt.date]] = set()
         self.raw_prices: dict[str, object] = {}
         self.no_key = False
+        self.hooks: dict[str, object] = {}   # ticker -> f(start, end) run during a price request
         self.requests: list[tuple] = []
 
     def listing(self, ticker):
@@ -235,6 +241,8 @@ class FakeTiingo:
         start = D.fromisoformat(params["startDate"][0])
         end = D.fromisoformat(params["endDate"][0]) if "endDate" in params else AS_OF
         self.requests.append(("prices", ticker, start, end))
+        if ticker in self.hooks:
+            self.hooks[ticker](start, end)
         status = self.price_status.get(ticker)
         if status:
             return httpx.Response(status, json={"detail": "status"})
@@ -317,6 +325,13 @@ def store_rows(db, ticker, a, b, *, adj_factor=1.0):
 def snapshot(db, ticker, a, b):
     return db.one("SELECT count(*), sum(close), sum(adj_close), sum(volume) FROM eod_prices"
                   " WHERE ticker = %s AND date BETWEEN %s AND %s", (ticker, a, b))
+
+
+def certify(conn, ticker, rows, start):
+    """promote() a load verdict for ``rows`` judged on the current store."""
+    stored = w._stored_rows(conn, ticker, through=AS_OF)
+    verdict = v.Verdict(v.VERDICT_LOAD, "test", tuple(rows), v.stored_digest(stored))
+    return w.promote(conn, ticker, verdict, through=AS_OF, history_start=start)
 
 
 def _chunk_of(db, ticker, day):
@@ -463,10 +478,12 @@ def test_covered_cold_start_is_full_history_and_screener_stays_745_days(db, tiin
     assert tiingo.of("prices", "SCRN") == [("prices", "SCRN", screener_start, AS_OF)]
     assert tiingo.of("meta", "SCRN") == []
     assert history_of(db, "SCRN")[0] >= screener_start
-    # Covered lines without rows: never the ring's 745 days (not even BOTH, a
-    # screener constituent); one Tiingo startDate -> as_of request instead.
+    # A covered line outside the screener: one Tiingo startDate -> as_of request.
     assert tiingo.of("prices", "FRGN") == [("prices", "FRGN", D(1997, 10, 9), AS_OF)]
-    assert tiingo.of("prices", "BOTH") == [("prices", "BOTH", D(2000, 5, 1), AS_OF)]
+    # A covered screener line without rows keeps its 745-day ring warming; the
+    # history phase then extends it backward through the same verification.
+    assert tiingo.of("prices", "BOTH") == [
+        ("prices", "BOTH", screener_start, AS_OF), ("prices", "BOTH", D(2000, 5, 1), AS_OF)]
     assert history_of(db, "FRGN")[:2] == (D(1997, 10, 9), AS_OF)
     assert missing_dates(db, "FRGN", D(1997, 10, 9), AS_OF) == []
     assert history_of(db, "BOTH")[:2] == (D(2000, 5, 1), AS_OF)
@@ -568,7 +585,7 @@ def test_partial_history_from_an_older_writer_is_verified_not_assumed(db, tiingo
     startDate. The pass must fetch, find the 700 missing dates and fill them."""
     resolved_lines(db, "PART")
     instruments_row(db, "PART", name="Partial Co")
-    start = D(2019, 5, 1)
+    start = D(2019, 1, 2)
     prefix = list(bdays(start, D(2024, 1, 1)))[:1200]
     store_rows(db, "PART", prefix[0], prefix[499])
     store_rows(db, "PART", prefix[1199] + dt.timedelta(days=1), D(2026, 10, 2))
@@ -626,7 +643,8 @@ def test_a_truncated_response_cannot_insert_a_seam_before_the_stored_tail(db, ti
 
     stats = run(db, history_limit=250)["foreign_history"]
     assert ("prices", "TRUN", D(2026, 8, 3), AS_OF) in tiingo.requests   # the request's interval
-    assert status_of(db, "TRUN")[:2] == ("history_incomplete", "no_shared_sessions")
+    assert status_of(db, "TRUN")[:2] == (
+        "history_incomplete", "stored_sessions_missing=15 first=2026-09-21")
     assert stats["completed"] == 0 and stats["history_rows"] == 0
     assert history_of(db, "TRUN")[0] == D(2026, 9, 21)
     assert snapshot(db, "TRUN", D(2026, 1, 1), AS_OF) == before
@@ -643,7 +661,7 @@ def test_a_truncated_response_never_verifies_a_stored_series(db, tiingo):
     stats = run(db, history_limit=250)["foreign_history"]
     status, detail, _ = status_of(db, "TAIL")
     assert status == "history_incomplete"
-    assert detail.startswith("ends_before_interval_end: last=2026-09-18")
+    assert detail == "stored_sessions_missing=15 first=2026-09-21"
     assert stats["completed"] == 0 and stats["verified_without_insert"] == 0
 
 
@@ -656,7 +674,7 @@ def test_stored_rows_before_an_advanced_start_date_fail_closed(db, tiingo):
     stats = run(db, history_limit=250)["foreign_history"]
     status, detail, _ = status_of(db, "ADVS")
     assert status == "history_conflict"
-    assert detail.startswith("stored_outside_provider_range: 23 stored sessions")
+    assert detail.startswith("stored_outside_provider_range: 22 stored sessions")  # July 3 is a holiday
     assert stats["fail_closed"] == 1
 
 
@@ -685,14 +703,14 @@ def test_malformed_bodies_back_off_and_never_stop_the_phase(db, tiingo):
 
 def test_an_unexpected_exception_is_contained_to_its_ticker(db, tiingo, monkeypatch):
     resolved_lines(db, "BOOM", "CALM")
-    real = w.verify_history
+    real = w.validate_series
 
-    def flaky(fetched, stored, *, start, end):
-        if fetched and fetched[0][0] == "BOOM":
+    def flaky(ticker, *args, **kwargs):
+        if ticker == "BOOM":
             raise ValueError("surprise")
-        return real(fetched, stored, start=start, end=end)
+        return real(ticker, *args, **kwargs)
 
-    monkeypatch.setattr(w, "verify_history", flaky)
+    monkeypatch.setattr(w, "validate_series", flaky)
     stats = run(db, history_limit=250)["foreign_history"]
     assert status_of(db, "BOOM")[:2] == ("history_incomplete", "unexpected:ValueError")
     assert stats["error_tickers"] == {"BOOM": "unexpected:ValueError"}
@@ -749,9 +767,10 @@ def test_an_unusable_bar_leaves_the_ticker_incomplete_and_retryable(db, tiingo):
     tiingo.bad[("DROP", D(2000, 1, 4))] = {"adjClose": None}
 
     stats = run(db)["foreign_history"]
-    assert status_of(db, "DROP")[:2] == ("history_incomplete", "unusable_bars=1")
+    reason = "unusable_bar: non_numeric_adjClose at index 1"
+    assert status_of(db, "DROP")[:2] == ("history_incomplete", reason)
     assert stats["errors"] == 1
-    assert stats["error_tickers"] == {"DROP": "unusable_bars=1"}
+    assert stats["error_tickers"] == {"DROP": reason}
     assert stats["completed"] == 0
     assert history_of(db, "DROP") == (None, None, 0)    # nothing partial
 
@@ -778,7 +797,7 @@ def test_a_response_starting_after_meta_start_is_incomplete(db, tiingo):
     stats = run(db)["foreign_history"]
     status, detail, _ = status_of(db, "EMPT")
     assert status == "history_incomplete"
-    assert detail.startswith("starts_after_start_date: first=2024-06-11 sessions_skipped=")
+    assert detail.startswith("sessions_missing=") and detail.endswith("first=2005-01-03")
     assert stats["errors"] == 1
     assert stats["completed"] == 0
 
@@ -850,18 +869,24 @@ def test_cap_zero_warms_a_zero_row_screener_line_through_the_ring(db, tiingo):
     assert tiingo.of("meta") == []
 
 
-def test_only_this_runs_history_batch_is_kept_out_of_the_ring(db, tiingo):
-    resolved_lines(db, "SCVA", "SCVB")
-    db.conn.execute("INSERT INTO universe_constituents VALUES"
-                    " ('SCVA', 'A', 'active'), ('SCVB', 'B', 'active')")
-    screener_start = AS_OF - dt.timedelta(days=w.NEW_TICKER_LOOKBACK_DAYS)
+def test_gate3_finding7_a_cold_screener_line_is_warmed_even_when_the_ring_aborts(db, tiingo):
+    """Gate 3 #7 / Codex 4237696273: nothing keeps a covered zero-row screener
+    line out of the ring any more. The breaker aborts the ring (and so the
+    history phase) after COLD was served, and COLD has its 745-day rows."""
+    resolved_lines(db, "COLD")
+    failing = [f"SF{chr(65 + i)}" for i in range(11)]
+    db.conn.execute("INSERT INTO universe_constituents VALUES ('COLD', 'Cold', 'active')")
+    for t in failing:
+        db.conn.execute("INSERT INTO universe_constituents VALUES (%s, %s, 'active')", (t, t))
+    for t in (*w.INDEX_TICKERS, *failing):
+        tiingo.price_status[t] = 429
 
-    run(db, history_limit=1)
-    # SCVA is this run's history batch: whole series, never 745 days.
-    assert tiingo.of("prices", "SCVA") == [("prices", "SCVA", D(1993, 1, 29), AS_OF)]
-    assert history_of(db, "SCVA")[0] == D(1993, 1, 29)
-    # SCVB is beyond the cap: normal ring warming now, history on a later run.
-    assert tiingo.of("prices", "SCVB") == [("prices", "SCVB", screener_start, AS_OF)]
+    stats = run(db)
+    screener_start = AS_OF - dt.timedelta(days=w.NEW_TICKER_LOOKBACK_DAYS)
+    assert stats["aborted"].startswith("30 consecutive 429s")
+    assert stats["foreign_history"] == {"source_tickers": 1, "skipped": "aborted"}
+    assert tiingo.of("prices", "COLD") == [("prices", "COLD", screener_start, AS_OF)]
+    assert history_of(db, "COLD")[0] >= screener_start
 
 
 def test_unsettled_tickers_stay_deferred_and_a_missing_key_records_nothing(db, tiingo):
@@ -890,9 +915,11 @@ def test_out_of_range_field_values_are_unusable_not_a_crash(db, tiingo):
         tiingo.listings[t] = {"start": D(2000, 1, 3), "end": AS_OF}
 
     stats = run(db, history_limit=250)["foreign_history"]
-    assert stats["error_tickers"] == {t: "unusable_bars=1" for t in bad}
+    assert set(stats["error_tickers"]) == set(bad)
     for t in bad:
-        assert status_of(db, t)[:2] == ("history_incomplete", "unusable_bars=1")
+        status, detail, _ = status_of(db, t)
+        assert status == "history_incomplete" and detail.startswith("unusable_bar: ")
+        assert stats["error_tickers"][t] == detail
         assert history_of(db, t) == (None, None, 0)
     assert status_of(db, "VZOK")[0] == "history_complete"
 
@@ -933,6 +960,17 @@ def test_status_table_schema_is_migrated_and_verified(db):
                         " VALUES ('BOGX', 's', 'bogus')")
     assert db.one("SELECT count(*) FROM eod_warmer_ticker_status"
                   " WHERE ticker = '__status_probe__'")[0] == 0
+
+    # Gate 3 #8: a nullable status column is restored to NOT NULL and verified.
+    db.conn.execute("ALTER TABLE eod_warmer_ticker_status ALTER COLUMN status DROP NOT NULL")
+    with psycopg.connect(db.dsn) as conn:
+        w.ensure_status_table(conn)
+    assert db.one("SELECT is_nullable FROM information_schema.columns WHERE table_schema = %s"
+                  " AND table_name = 'eod_warmer_ticker_status' AND column_name = 'status'",
+                  (db.schema,)) == ("NO",)
+    with pytest.raises(errors.NotNullViolation):
+        db.conn.execute("INSERT INTO eod_warmer_ticker_status (ticker, source, status)"
+                        " VALUES ('NULX', 's', NULL)")
 
     # A column of another type cannot be migrated in place: fail loud.
     db.conn.execute("DROP TABLE eod_warmer_ticker_status")
@@ -992,13 +1030,12 @@ def test_history_insert_into_compressed_chunks_decompresses_no_batch(db):
                            " -c timescaledb.max_tuples_decompressed_per_dml_transaction=1")
     with psycopg.connect(strict) as conn:
         w.ensure_status_table(conn)
-        # One transaction per ticker (~1.7k and ~1.9k rows) at a limit of 1.
-        assert w.load_ticker_history(conn, "NEW1", new_rows,
-                                     history_start=D(2020, 1, 2)) == len(new_rows)
-        assert w.load_ticker_history(conn, "MID", mid_rows,
-                                     history_start=D(2019, 1, 2)) == len(mid_rows)
-        # Replaying the same keys inserts nothing and still decompresses nothing.
-        assert w.load_ticker_history(conn, "MID", mid_rows, history_start=D(2019, 1, 2)) == 0
+        # One promotion per ticker (~1.7k and ~1.9k rows) at a limit of 1.
+        assert certify(conn, "NEW1", new_rows, D(2020, 1, 2)) == len(new_rows)
+        assert certify(conn, "MID", mid_rows, D(2019, 1, 2)) == len(mid_rows)
+        # A stale verdict (the snapshot it judged is gone) writes nothing.
+        stale = v.Verdict(v.VERDICT_LOAD, "stale", tuple(mid_rows), v.stored_digest({}))
+        assert w.promote(conn, "MID", stale, through=AS_OF, history_start=D(2019, 1, 2)) is None
         # Positive control: the ring's DO UPDATE on one existing compressed key
         # must decompress its batch, so the limit trips. The measurement sees it.
         with pytest.raises(errors.ConfigurationLimitExceeded):
@@ -1017,8 +1054,7 @@ def test_history_insert_into_compressed_chunks_decompresses_no_batch(db):
     # An interior gap is inside GAPT's own compressed batch: at the production
     # limit only that batch is decompressed, bounded by GAPT's rows in the chunk.
     with psycopg.connect(db.dsn) as conn:
-        assert w.load_ticker_history(conn, "GAPT", rows("GAPT", gap_day, gap_day),
-                                     history_start=D(2026, 3, 2)) == 1
+        assert certify(conn, "GAPT", rows("GAPT", gap_day, gap_day), D(2026, 3, 2)) == 1
     gap_chunk = _chunk_of(db, "GAPT", gap_day)
     heap_tickers = dict(db.q(f"SELECT ticker, count(*) FROM ONLY {gap_chunk} GROUP BY ticker"))
     gapt_in_chunk = db.one(f"SELECT count(*) FROM {gap_chunk} WHERE ticker = 'GAPT'")[0]
@@ -1223,21 +1259,21 @@ def test_battery_i_a_concurrent_insert_between_verification_and_load(db, tiingo,
     instruments_row(db, "RACE", name="Race Co")
     store_rows(db, "RACE", D(2026, 9, 1), D(2026, 10, 2))
     tiingo.listings["RACE"] = {"start": D(2026, 1, 2), "end": AS_OF}
-    real = w.verify_history
+    real = w.validate_series
 
-    def racing(fetched, stored, *, start, end):
-        verdict = real(fetched, stored, start=start, end=end)
-        if fetched and fetched[0][0] == "RACE":
+    def racing(ticker, *args, **kwargs):
+        verdict = real(ticker, *args, **kwargs)
+        if ticker == "RACE":
             store_rows(db, "RACE", D(2026, 1, 2), D(2026, 1, 2))   # the other writer
         return verdict
 
-    monkeypatch.setattr(w, "verify_history", racing)
+    monkeypatch.setattr(w, "validate_series", racing)
     run(db)
     assert status_of(db, "RACE")[:2] == ("history_incomplete", "stored_rows_changed_during_pass")
     assert history_of(db, "RACE")[0] == D(2026, 1, 2)
     assert len(missing_dates(db, "RACE", D(2026, 1, 2), D(2026, 8, 31))) > 100  # ours rolled back
 
-    monkeypatch.setattr(w, "verify_history", real)
+    monkeypatch.setattr(w, "validate_series", real)
     db.conn.execute("UPDATE eod_warmer_ticker_status SET retry_after = now() - interval '1 second'")
     run(db)
     assert status_of(db, "RACE")[0] == "history_complete"
@@ -1262,3 +1298,141 @@ def test_battery_j_an_aged_completion_is_reverified_against_a_moved_start(db, ti
     assert completion_of(db, "AGED") == ("history_complete", None)
     assert history_of(db, "AGED")[0] == D(2005, 1, 3)
     assert missing_dates(db, "AGED", D(2005, 1, 3), AS_OF) == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Gate 3: whole-ticker validation and the single promotion path, end to end
+# ──────────────────────────────────────────────────────────────────────────────
+G_START = D(2026, 8, 3)   # 49 XNYS sessions to AS_OF
+
+
+def gate_line(db, tiingo, ticker, *, stored=False):
+    resolved_lines(db, ticker)
+    instruments_row(db, ticker, name=ticker)
+    if stored:
+        store_rows(db, ticker, G_START, AS_OF)
+    tiingo.listings[ticker] = {"start": G_START, "end": AS_OF}
+
+
+def test_gate3_finding1_endpoint_only_and_off_session_responses_write_nothing(db, tiingo):
+    gate_line(db, tiingo, "ENDP")
+    tiingo.raw_prices["ENDP"] = [tiingo.bar("ENDP", G_START), tiingo.bar("ENDP", AS_OF)]
+    gate_line(db, tiingo, "SUND")
+    tiingo.raw_prices["SUND"] = ([tiingo.bar("SUND", d) for d in bdays(G_START, AS_OF)]
+                                 + [tiingo.bar("SUND", D(2026, 8, 9))])
+    gate_line(db, tiingo, "HOLE")
+    tiingo.omit.add(("HOLE", D(2026, 9, 15)))
+    run(db)
+    assert status_of(db, "ENDP")[:2] == ("history_incomplete", "sessions_missing=47 first=2026-08-04")
+    assert status_of(db, "SUND")[:2] == ("history_incomplete", "off_session_bar: 1 first=2026-08-09")
+    assert status_of(db, "HOLE")[:2] == ("history_incomplete", "sessions_missing=1 first=2026-09-15")
+    for t in ("ENDP", "SUND", "HOLE"):
+        assert history_of(db, t) == (None, None, 0)
+
+
+def test_gate3_finding2_a_verified_store_that_changes_mid_pass_is_not_certified(db, tiingo):
+    """All 49 sessions stored; while the price request is in flight another
+    transaction doubles the last stored close. The provider series is the
+    original one, so the verdict is complete_nothing_to_insert — and promote
+    must still refuse it."""
+    gate_line(db, tiingo, "MIDC", stored=True)
+
+    def other_writer(start, end):
+        if start == G_START:
+            db.conn.execute("UPDATE eod_prices SET close = close * 2"
+                            " WHERE ticker = 'MIDC' AND date = %s", (AS_OF,))
+
+    tiingo.hooks["MIDC"] = other_writer
+    stats = run(db)["foreign_history"]
+    assert status_of(db, "MIDC")[:2] == ("history_incomplete", "stored_rows_changed_during_pass")
+    assert stats["completed"] == 0 and stats["verified_without_insert"] == 0
+
+
+def test_gate3_findings3_4_incoherent_bar_and_malformed_date_write_nothing(db, tiingo):
+    gate_line(db, tiingo, "INCO")
+    tiingo.bad[("INCO", D(2026, 8, 20))] = {"high": 1.0, "low": 100.0, "adjHigh": 1.0,
+                                            "adjLow": 100.0}
+    gate_line(db, tiingo, "GARB")
+    tiingo.bad[("GARB", D(2026, 8, 10))] = {"date": "2026-08-10garbage"}
+    stats = run(db)["foreign_history"]
+    assert status_of(db, "INCO")[:2] == ("history_incomplete", "unusable_bar: ohlc_order at index 13")
+    assert status_of(db, "GARB")[:2] == ("history_incomplete", "unusable_bar: malformed_date at index 5")
+    assert stats["completed"] == 0
+    assert history_of(db, "INCO") == history_of(db, "GARB") == (None, None, 0)
+
+
+def test_gate3_finding5_a_mixed_adjusted_basis_is_never_complete(db, tiingo):
+    gate_line(db, tiingo, "MIXB", stored=True)
+    db.conn.execute("UPDATE eod_prices SET adj_open = adj_open / 2, adj_high = adj_high / 2,"
+                    " adj_low = adj_low / 2, adj_close = adj_close / 2"
+                    " WHERE ticker = 'MIXB' AND date = %s", (AS_OF - dt.timedelta(days=7),))
+    tiingo.listings["MIXB"]["end"] = AS_OF - dt.timedelta(days=7)   # keep the ring off it
+    run(db)
+    status, detail, _ = status_of(db, "MIXB")
+    assert status == "adjustment_rebase_required"
+    assert detail.startswith("adjusted_moved: ratio=2.000000 on 1/")
+
+
+def test_gate3_finding6_the_entrypoint_migrates_an_older_status_table(db, tiingo):
+    db.conn.execute(
+        """CREATE TABLE eod_warmer_ticker_status (
+               ticker text PRIMARY KEY, source text NOT NULL, status text NOT NULL,
+               detail text, history_start date, retry_after timestamptz,
+               attempts integer NOT NULL DEFAULT 0,
+               checked_at timestamptz NOT NULL DEFAULT now())""")
+    resolved_lines(db, "MIGR")
+    stats = run(db, history_limit=25)
+    assert "aborted" not in stats
+    assert db.one("SELECT status, complete_through FROM eod_warmer_ticker_status"
+                  " WHERE ticker = 'MIGR'") == ("history_complete", None)
+
+
+def test_gate3_completion_and_history_rows_are_written_only_by_promote(db, tiingo, monkeypatch):
+    """Dynamic half of the single-promotion-path rule: every statement the real
+    entrypoint sends is inspected; the history insert and any history_complete
+    status write must happen inside promote()."""
+    gate_line(db, tiingo, "PLOD")                    # a load
+    gate_line(db, tiingo, "PVER", stored=True)       # complete_nothing_to_insert
+    gate_line(db, tiingo, "PBAD")                    # a refusal
+    tiingo.omit.add(("PBAD", D(2026, 9, 15)))
+    depth = {"promote": 0}
+    seen = collections.Counter()
+    real_promote = w.promote
+
+    def tracked(*args, **kwargs):
+        depth["promote"] += 1
+        try:
+            return real_promote(*args, **kwargs)
+        finally:
+            depth["promote"] -= 1
+
+    def guard(query, params):
+        text = query.as_string(None) if hasattr(query, "as_string") else str(query)
+        if text.strip() == w.EOD_HISTORY_INSERT_SQL.strip():
+            assert depth["promote"], "history insert outside promote()"
+            seen["history_insert"] += 1
+        if text.strip() == w.RECORD_STATUS_SQL.strip():
+            rows = params if isinstance(params, list) else [params]
+            for row in rows:
+                if row and w.STATUS_COMPLETE in row:
+                    assert depth["promote"], "history_complete written outside promote()"
+                    seen["complete_write"] += 1
+
+    real_execute, real_executemany = psycopg.Cursor.execute, psycopg.Cursor.executemany
+
+    def execute(self, query, params=None, **kwargs):
+        guard(query, params)
+        return real_execute(self, query, params, **kwargs)
+
+    def executemany(self, query, params_seq, **kwargs):
+        params_seq = list(params_seq)
+        guard(query, params_seq)
+        return real_executemany(self, query, params_seq, **kwargs)
+
+    monkeypatch.setattr(w, "promote", tracked)
+    monkeypatch.setattr(psycopg.Cursor, "execute", execute)
+    monkeypatch.setattr(psycopg.Cursor, "executemany", executemany)
+    run(db)
+    assert seen["history_insert"] >= 1 and seen["complete_write"] == 2
+    assert status_of(db, "PLOD")[0] == status_of(db, "PVER")[0] == "history_complete"
+    assert status_of(db, "PBAD")[0] == "history_incomplete"
