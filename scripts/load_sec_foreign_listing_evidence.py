@@ -1311,9 +1311,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--requests-per-second", type=float, default=5)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--census-manifest", type=Path, help="Verified census replay manifest to reconcile with --apply")
+    parser.add_argument("--census", type=Path, help="Census JSONL artifact; requires --census-manifest and --apply")
     parser.add_argument("--database-url-env", default="FOREIGN_EVIDENCE_DATABASE_URL")
     parser.add_argument("--observed-on", type=date.fromisoformat, default=datetime.now(timezone.utc).date())
     args = parser.parse_args(argv)
+    if bool(args.census_manifest) != bool(args.census) or (args.census and not args.apply):
+        parser.error("--census and --census-manifest must be supplied together with --apply")
     if args.start_date > args.end_date:
         parser.error("start-date must be <= end-date")
     repository = Path(__file__).resolve().parents[1]
@@ -1355,6 +1359,15 @@ def main(argv: list[str] | None = None) -> int:
         with psycopg.connect(dsn) as connection:
             with args.output.open(encoding="utf-8") as handle:
                 result = apply_evidence(connection, manifest, (json.loads(line) for line in handle if line.strip()), args.observed_on)
+            if args.census:
+                if __package__:
+                    from .load_sec_foreign_share_census import apply_census, verified_artifact
+                else:
+                    from load_sec_foreign_share_census import apply_census, verified_artifact
+                census_manifest, census_rows = verified_artifact(args.census_manifest, args.census)
+                census_result = apply_census(connection, census_manifest, census_rows, args.observed_on)
+        if args.census:
+            print(canonical_json({"event": "census_applied", **census_result}), flush=True)
         print(canonical_json({"event": "applied", **result}), flush=True)
     return 0 if manifest.get("complete") and (not (args.download or args.offline or args.apply) or manifest.get("parse_complete")) else 2
 

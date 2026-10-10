@@ -6,24 +6,32 @@ on:
       - '.github/workflows/sec-foreign-listing-evidence.yml'
       - 'requirements.txt'
       - 'schemas/sec_foreign_listing_evidence*'
+      - 'schemas/sec_foreign_share_census*'
       - 'scripts/*sec_foreign_listing*'
+      - 'scripts/*sec_foreign_share_census*'
       - 'scripts/sec_provider_transport.py'
       - 'scripts/sec_parse_resources.py'
       - 'tests/test_sec_foreign_listing*'
+      - 'tests/test_sec_foreign_share_census*'
       - 'tests/test_sec_provider_transport.py'
       - 'tests/fixtures/sec_foreign_listing_evidence/**'
+      - 'tests/fixtures/sec_foreign_share_census/**'
   push:
     branches: [main]
     paths:
       - '.github/workflows/sec-foreign-listing-evidence.yml'
       - 'requirements.txt'
       - 'schemas/sec_foreign_listing_evidence*'
+      - 'schemas/sec_foreign_share_census*'
       - 'scripts/*sec_foreign_listing*'
+      - 'scripts/*sec_foreign_share_census*'
       - 'scripts/sec_provider_transport.py'
       - 'scripts/sec_parse_resources.py'
       - 'tests/test_sec_foreign_listing*'
+      - 'tests/test_sec_foreign_share_census*'
       - 'tests/test_sec_provider_transport.py'
       - 'tests/fixtures/sec_foreign_listing_evidence/**'
+      - 'tests/fixtures/sec_foreign_share_census/**'
 
 permissions:
   contents: read
@@ -60,3 +68,8 @@ jobs:
           python -m pytest tests/test_sec_provider_transport.py -q
           python -m pytest tests/test_sec_foreign_listing_throughput.py -q
           python -m pytest tests/test_sec_foreign_listing_shard_plans.py -q
+          python -m pytest tests/test_sec_foreign_share_census_parser.py -q
+          python -m pytest tests/test_sec_foreign_share_census_reading.py -q
+          python -m pytest tests/test_sec_foreign_share_census_validation.py -q
+          python -m pytest tests/test_sec_foreign_share_census.py -q
+          python -m pytest tests/test_sec_foreign_share_census_loader.py -q
