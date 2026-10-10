@@ -232,7 +232,7 @@ class ProviderTransport:
                 if status == 429:
                     self.scheduler.cooldown(retry_url, exc.headers.get("Retry-After"), product=product if urllib.parse.urlsplit(retry_url).hostname == parsed.hostname else None, fallback=min(2**attempt, 16))
                 exc.close()
-                if status in {401, 403}:
+                if status in {401, 403} and authenticated:
                     raise ProviderAuthError(f"SEC provider HTTP {status}: {scrub(safe_url(url), (self.api_key,))}") from None
                 if attempt == max_attempts-1 or (status not in {408, 429, 500, 502, 503, 504} and status not in retry_statuses):
                     raise RuntimeError(f"SEC provider HTTP {status}: {scrub(safe_url(url), (self.api_key,))}") from None

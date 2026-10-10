@@ -56,9 +56,11 @@ The government policy follows the [SEC webmaster guidance](https://www.sec.gov/f
 including the shared account-download bucket. All waiting callers recheck it
 before sending. A pause exceeding the configured maximum permit wait (600
 seconds by default) fails that operation instead of truncating `Retry-After`.
-HTTP authentication and plan errors such as `401` and `403` stop immediately: the transport
-raises `ProviderAuthError`, which no loader fallback catches, so a refused paid request never
-retries through sec.gov and an aborted W1c parse marks its staging manifest incomplete.
+Paid-provider authentication and plan errors (`401`/`403` on an authenticated request) stop
+immediately: the transport raises `ProviderAuthError`, which no loader fallback, discovery or
+parse loop absorbs, so a refused paid request never retries through sec.gov and an aborted W1c
+parse marks its staging manifest incomplete. An unauthenticated sec.gov denial carries no
+credential and stays an ordinary transport failure that may enter cache recovery.
 Retryable transport failures, `408`, `429` and selected `5xx` statuses have a
 bounded attempt count; endpoint-specific statuses can be explicitly added.
 

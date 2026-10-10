@@ -176,6 +176,18 @@ def test_full_text_overstated_unique_page_is_not_success():
         loader.search_text(SearchClient([response(hits, 1)]), "ratio", ["6-K"], date(2020, 1, 1), date(2020, 12, 31))
 
 
+def test_discovery_stops_on_rejected_provider_credentials(tmp_path, monkeypatch):
+    universe = [{"cik": 123, "symbol": "ABC", "issuer_name": ""}]
+    client = loader.SecClient(tmp_path, offline=True)
+
+    def refuse(*_args):
+        raise ProviderAuthError("SEC provider HTTP 401: https://api.sec-api.io/full-text-search")
+
+    monkeypatch.setattr(loader, "discover_issuer", refuse)
+    with pytest.raises(ProviderAuthError):
+        loader.discover(client, universe, date(2020, 1, 1), date(2020, 12, 31), workers=1)
+
+
 def test_discovery_version_requires_explicit_refresh_and_retains_old_manifest(tmp_path, monkeypatch):
     universe = [{"cik": 123, "symbol": "ABC", "issuer_name": ""}]
     client = loader.SecClient(tmp_path, offline=True)

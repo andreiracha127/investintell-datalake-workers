@@ -628,6 +628,11 @@ def discover(client: SecClient, universe: list[dict], start: date, end: date, wo
                 rows = future.result()
                 docs.update({row["source_package"]: row for row in rows})
                 manifest["issuers"][str(cik)] = {"status": "complete", "documents": len(rows)}
+            except _provider_auth_error():
+                # Rejected credentials fail the run; queued issuers must not reuse them.
+                for queued in futures:
+                    queued.cancel()
+                raise
             except Exception as exc:
                 manifest["issuers"][str(cik)] = {"status": "failed", "error": type(exc).__name__ + ": " + str(exc)[:200]}
             manifest["documents"] = [docs[key] for key in sorted(docs)]

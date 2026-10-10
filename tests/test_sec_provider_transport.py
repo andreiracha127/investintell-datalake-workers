@@ -203,9 +203,11 @@ def test_http_retries_redirects_and_permanent_failure(tmp_path):
         assert retry_times[1]-retry_times[0] >= 1
         assert len(events) == 4  # both initial requests and both redirect destinations
         assert all(agent == "Tests contact@example.com" for _, _, agent in events)
-        with pytest.raises(ProviderAuthError) as caught:
+        with pytest.raises(RuntimeError) as caught:
             client.open(base + "/forbidden?token=top-secret", max_attempts=5)
         assert "top-secret" not in str(caught.value)
+        # No credential was sent, so a denial is an ordinary transport failure.
+        assert not isinstance(caught.value, ProviderAuthError)
         assert sum(path.startswith("/forbidden") for path, _, _ in events) == 1
     finally:
         server.shutdown()
