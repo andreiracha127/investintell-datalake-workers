@@ -1373,7 +1373,8 @@ def test_gate3_finding5_a_mixed_adjusted_basis_is_never_complete(db, tiingo):
     assert detail.startswith("adjusted_moved: ratio=2.000000 on 1/")
 
 
-def test_gate3_finding6_the_entrypoint_migrates_an_older_status_table(db, tiingo):
+@pytest.mark.parametrize("cap", [0, 25])
+def test_gate3_finding6_the_entrypoint_migrates_an_older_status_table(db, tiingo, cap):
     db.conn.execute(
         """CREATE TABLE eod_warmer_ticker_status (
                ticker text PRIMARY KEY, source text NOT NULL, status text NOT NULL,
@@ -1381,10 +1382,15 @@ def test_gate3_finding6_the_entrypoint_migrates_an_older_status_table(db, tiingo
                attempts integer NOT NULL DEFAULT 0,
                checked_at timestamptz NOT NULL DEFAULT now())""")
     resolved_lines(db, "MIGR")
-    stats = run(db, history_limit=25)
+    stats = run(db, history_limit=cap)
     assert "aborted" not in stats
+    # Migrated by the entrypoint even with the history phase off (dark rollout).
+    assert db.one("SELECT data_type, is_nullable FROM information_schema.columns"
+                  " WHERE table_schema = %s AND table_name = 'eod_warmer_ticker_status'"
+                  " AND column_name = 'complete_through'", (db.schema,)) == ("date", "YES")
+    expected = ("history_complete", None) if cap else None
     assert db.one("SELECT status, complete_through FROM eod_warmer_ticker_status"
-                  " WHERE ticker = 'MIGR'") == ("history_complete", None)
+                  " WHERE ticker = 'MIGR'") == expected
 
 
 def test_gate3_completion_and_history_rows_are_written_only_by_promote(db, tiingo, monkeypatch):
