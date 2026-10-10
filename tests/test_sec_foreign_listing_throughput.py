@@ -173,6 +173,23 @@ def test_separate_raw_cache_cannot_be_used_online(tmp_path):
         loader.SecClient(tmp_path / "output", raw_cache_dir=tmp_path / "raw")
 
 
+@pytest.mark.parametrize("cpus,expected_workers", [(1, 1), (2, 1), (4, 1), (8, 4)])
+def test_cpu_budget_preserves_four_core_reserve_on_small_hosts(monkeypatch, cpus, expected_workers):
+    class Process:
+        def cpu_affinity(self):
+            return list(range(cpus))
+    fake_psutil = SimpleNamespace(virtual_memory=lambda: SimpleNamespace(available=16 * 1024**3, total=32 * 1024**3),
+                                 Process=Process, Error=OSError)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(resources.os, "cpu_count", lambda: cpus)
+    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda _pid: set(range(cpus)), raising=False)
+    monkeypatch.setattr(resources.Path, "read_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()))
+    monkeypatch.delenv("SEC_PARSE_MEMORY_RESERVE_MB", raising=False)
+    monkeypatch.delenv("SEC_PARSE_WORKER_MEMORY_MB", raising=False)
+    assert resources.parse_resource_budget()["max_workers"] == expected_workers
+    assert resources.resolve_parse_workers(20) == expected_workers
+
+
 @pytest.mark.parametrize("available_mb,container_mb,expected_workers", [(3700, None, 2), (1024, 1024, 1), (700, 1024, 0), (500, None, 0)])
 def test_memory_budget_preserves_reserve_and_scales_small_container(monkeypatch, available_mb, container_mb, expected_workers):
     class Process:
@@ -182,6 +199,7 @@ def test_memory_budget_preserves_reserve_and_scales_small_container(monkeypatch,
                                  Process=Process, Error=OSError)
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
     monkeypatch.setattr(resources.os, "cpu_count", lambda: 24)
+    monkeypatch.setattr(resources.os, "sched_getaffinity", lambda _pid: set(range(24)), raising=False)
     monkeypatch.setattr(resources.Path, "read_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()))
     def read_limit(path):
         if container_mb is not None and path == "/sys/fs/cgroup/memory.max":

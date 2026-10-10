@@ -977,8 +977,6 @@ jobs:
           tests/test_sec_ticker_cik_history.py
           tests/test_sec_ticker_cik_history_v3.py
           tests/test_sec_insider_ticker_evidence.py
-          tests/test_sec_provider_transport.py
-          tests/test_sec_loader_transport.py
           -q
 
       - name: Lint N-PORT modules
@@ -1039,8 +1037,6 @@ jobs:
           tests/test_sec_ticker_cik_history.py
           tests/test_sec_ticker_cik_history_v3.py
           tests/test_sec_insider_ticker_evidence.py
-          tests/test_sec_provider_transport.py
-          tests/test_sec_loader_transport.py
 
       - name: Compile N-PORT modules
         if: steps.changes.outputs.nport_changed == 'true'

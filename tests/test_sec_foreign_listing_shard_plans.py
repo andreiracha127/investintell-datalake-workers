@@ -7,15 +7,12 @@ import pytest
 
 from scripts import load_sec_foreign_listing_evidence as loader
 from scripts import run_sec_foreign_listing_evidence_shards as shards
+from scripts import sec_parse_resources as resources
 
 
 @pytest.fixture(autouse=True)
 def fixed_budget(monkeypatch):
-    def resolve(requested=None, *, total_budget=None, shard_count=1, shard_index=0, **kwargs):
-        total = min(7, requested or 7, total_budget or 7)
-        quotient, remainder = divmod(total, shard_count)
-        return quotient + (shard_index < remainder)
-    monkeypatch.setattr(loader, "resolve_parse_workers", resolve)
+    monkeypatch.setattr(resources, "parse_resource_budget", lambda _mb: {"max_workers": 7})
 
 
 def parent_manifest(cache):
@@ -133,6 +130,24 @@ def test_collect_uses_parent_wide_bindings_and_one_total_worker_budget(tmp_path,
 def test_invalid_shard_counts_rejected(tmp_path, count):
     with pytest.raises(ValueError, match="positive integer"):
         shards.prepare(tmp_path, count)
+
+
+def test_low_resource_budget_rejects_plan_and_collect_without_allocation(tmp_path, monkeypatch):
+    parent_manifest(tmp_path)
+    monkeypatch.setattr(resources, "parse_resource_budget", lambda _mb: {"max_workers": 1})
+    with pytest.raises(ValueError, match="exceeds the total parsing worker budget"):
+        shards.prepare(tmp_path, 2, workers=7)
+    assert not (tmp_path / "shards" / "plan.json").exists()
+    assert shards.prepare(tmp_path, 1, workers=7)["total_workers"] == 1
+
+    other = tmp_path / "other"
+    parent_manifest(other)
+    monkeypatch.setattr(resources, "parse_resource_budget", lambda _mb: {"max_workers": 7})
+    shards.prepare(other, 3, workers=7)
+    monkeypatch.setattr(resources, "parse_resource_budget", lambda _mb: {"max_workers": 1})
+    monkeypatch.setattr(loader, "SecClient", lambda *_args, **_kwargs: pytest.fail("Unallocated shard reached client"))
+    with pytest.raises(ValueError, match="cannot allocate a worker"):
+        shards.collect(other, 1, offline=True, raw_cache_dir=other)
 
 
 def _hold_collect_lock(directory, pipe):

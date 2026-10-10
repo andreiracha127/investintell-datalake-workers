@@ -1079,8 +1079,11 @@ def test_late_validation_failure_rolls_back_already_flushed_batches(db, monkeypa
     assert db.execute("SELECT count(*) FROM public.sec_foreign_listing_sources").fetchone()[0] == 0
 
 
-def _completed_shard_artifacts(tmp_path, *, binding="registrant_cik"):
+def _completed_shard_artifacts(tmp_path, monkeypatch, *, binding="registrant_cik"):
     from scripts import run_sec_foreign_listing_evidence_shards as shards
+    from scripts import sec_parse_resources as resources
+    # Artifact identity tests require two shards regardless of host capacity.
+    monkeypatch.setattr(resources, "parse_resource_budget", lambda _mb: {"max_workers": 2})
     documents = []
     for number in range(6):
         source = {**_source(), "source_url": f"https://www.sec.gov/Archives/edgar/data/123/report-{number}.htm",
@@ -1110,8 +1113,8 @@ def _completed_shard_artifacts(tmp_path, *, binding="registrant_cik"):
     return shards, parent, result
 
 
-def test_shard_combine_exact_coverage_and_deterministic_order(tmp_path):
-    shards, parent, preparation = _completed_shard_artifacts(tmp_path)
+def test_shard_combine_exact_coverage_and_deterministic_order(tmp_path, monkeypatch):
+    shards, parent, preparation = _completed_shard_artifacts(tmp_path, monkeypatch)
     output = tmp_path / "combined.jsonl"
     summary = shards.combine(tmp_path, output)
     first = output.read_bytes()
@@ -1137,8 +1140,8 @@ def test_shard_combine_exact_coverage_and_deterministic_order(tmp_path):
     ("parent", "parent identity"), ("count", "per-document counts"),
     ("incomplete", "incomplete"), ("observations", "observation hashes"),
 ])
-def test_shard_combine_rejects_incomplete_or_changed_artifacts(tmp_path, mutation, match):
-    shards, _, _ = _completed_shard_artifacts(tmp_path)
+def test_shard_combine_rejects_incomplete_or_changed_artifacts(tmp_path, monkeypatch, mutation, match):
+    shards, _, _ = _completed_shard_artifacts(tmp_path, monkeypatch)
     child_path = tmp_path / "parts" / "0" / "manifest.json"
     child = json.loads(child_path.read_text())
     if mutation == "missing":
@@ -1185,7 +1188,7 @@ def test_shard_partition_keeps_all_issuer_bindings_of_same_url_together():
 ])
 def test_shards_reject_changed_parsing_and_binding_metadata_before_collection_and_combine(
         tmp_path, monkeypatch, field, value):
-    shards, _, _ = _completed_shard_artifacts(tmp_path, binding="issuer_name_in_f6")
+    shards, _, _ = _completed_shard_artifacts(tmp_path, monkeypatch, binding="issuer_name_in_f6")
     directory = tmp_path / "parts" / "0"
     input_path = directory / "input-manifest.json"
     child_path = directory / "manifest.json"
