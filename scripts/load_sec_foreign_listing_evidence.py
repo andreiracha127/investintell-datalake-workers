@@ -971,6 +971,8 @@ def _parse_url_task(url: str, candidates: list[dict]) -> list[dict]:
             payload = "".join(canonical_json(row) + "\n" for row in rows).encode("utf-8")
             write_bytes(client.cache / "parsed" / (document["source_package"] + ".jsonl"), payload)
             updated_documents.append(updated)
+        except _provider_auth_error():
+            raise  # a refused secondary fetch aborts the run like a refused primary
         except Exception as exc:
             updated_documents.append({**document, "status": "failed",
                                       "error": type(exc).__name__ + ": " + str(exc)[:200]})

@@ -567,6 +567,24 @@ def test_provider_refusal_aborts_parse_and_marks_staging_incomplete(tmp_path, mo
     assert json.loads((tmp_path / "manifest.json").read_text())["parse_complete"] is False
 
 
+def test_provider_refusal_in_secondary_fetch_aborts_parse(tmp_path, monkeypatch):
+    url = "https://www.sec.gov/Archives/edgar/data/123/report.htm"
+    document = {"adsh": "0001234567-20-000001", "cik": 123, "source_url": url, "source_package": "pkg",
+                "binding": "registrant_cik", "symbols": ["ABC"], **_date_authority(), "form": "20-F"}
+    manifest = {"complete": True, "parse_complete": True, "documents": [document],
+                "filing_date_enrichment": {"complete": True, "version": "sec-official-filing-date-v2"}}
+    client = loader.SecClient(tmp_path, offline=True)
+    monkeypatch.setattr(client, "document", lambda _url, **_kwargs: (b"cached primary", "a" * 64))
+
+    def parse(*_args, **_kwargs):
+        raise ProviderAuthError("SEC provider HTTP 403: https://edgar-mirror.sec-api.io/123/exhibit.htm")
+
+    monkeypatch.setattr(loader, "parse_document", parse)
+    with pytest.raises(ProviderAuthError):
+        loader.parse_manifest(client, manifest, tmp_path / "evidence.jsonl", workers=1)
+    assert json.loads((tmp_path / "manifest.json").read_text())["parse_complete"] is False
+
+
 def test_f6_search_name_is_not_sufficient_issuer_binding():
     text = "ACME Corp (Exact name of issuer of deposited securities) OtherCo Ltd is a customer"
     assert loader.verify_f6_issuer(text, "ACME Corp")
