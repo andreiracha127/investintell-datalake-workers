@@ -5,6 +5,19 @@ Never present fetched levels to the writer. A normal ingestion ledger run per
 actual date fetch avoids inventing a full-window attempt or claiming the Tiingo
 economic-rebase contract. Writer mode='rebase' only recomputes the stored row.
 All runs, attempts, writes and final-head evidence commit together per instrument.
+
+Per instrument, phase A reads the stored state lock-free (a read-only
+transaction that ends before any HTTP), then fetches and validates every bad
+date with no lock and no open transaction. Phase B (apply only) takes the two
+writer locks, re-checks the lock-time state against the approved plan and
+writes with the pre-fetched provider timestamps. The global locks are never
+held across a provider call, so daily lock holders are not starved.
+
+The attempt timestamps come from the operator host clock while persistence
+times come from the database, so a host clock ahead of the database is refused
+(CLOCK_SKEW) before any fetch. Run apply BEFORE the daily ingestion chain: when
+no run is pinned, readiness picks the winning attempt by attempted_at DESC, and
+a repair attempt (historical requested_end) could otherwise become the latest.
 """
 
 from __future__ import annotations
@@ -33,6 +46,10 @@ CONFIRM_TOKEN = "repair_nav_return_lineage_v1"
 BAD = """return_1d IS NULL AND return_source_boundary IS NOT NULL
  AND return_start_date IS NULL AND return_uses_repaired_nav IS NULL
  AND return_semantics IS NULL AND return_verification_status IS NULL"""
+# Plan fields that every daily ingestion of an active instrument moves. They
+# stay in the reviewed plan as inventory but never make an item stale.
+INFORMATIONAL_FIELDS = ("revision_head", "last_nav_date", "history_older_than_30_days")
+MAX_CLOCK_AHEAD = dt.timedelta(milliseconds=250)
 
 
 class RepairError(Exception):
@@ -166,6 +183,12 @@ def _load_item(conn, iid: str, as_of: dt.date, *, full_state=False):
         "reasons": reasons,
     }
     return _json(item), state
+
+
+def _repair_key(item):
+    """What the repair depends on: identity, the bad rows' full values, open
+    reexpression events, the neighbourhood digest and the reasons."""
+    return {k: v for k, v in item.items() if k not in INFORMATIONAL_FIELDS}
 
 
 def build_plan(conn, *, schema="public", limits=None, schema_pins=None):
@@ -312,8 +335,61 @@ def _assert_changes(conn, iid, before, selected, runs, old_head, budget):
         cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
 
+def _decide(iid, current, before, approved):
+    """Outcome that needs no write, or None. Phases A and B both use it."""
+    if current is None:
+        # Resume the same reviewed plan only if its formerly bad rows have
+        # exactly the intended values. Nothing is written in this branch.
+        stored = {str(r["nav_date"]): _json(r) for r in before}
+        if all(stored.get(r["nav_date"]) == {**r, "return_source_boundary": None}
+               for r in approved["rows"]):
+            return {"instrument_id": iid, "status": "noop", "code": "ALREADY_REPAIRED", "rows": 0}
+        return {"instrument_id": iid, "status": "skipped", "code": "PLAN_STALE",
+                "rows": len(approved["rows"])}
+    if _repair_key(current) != _repair_key(approved):
+        return {"instrument_id": iid, "status": "skipped", "code": "PLAN_STALE",
+                "rows": len(approved["rows"])}
+    if current["reasons"]:
+        return {"instrument_id": iid, "status": "skipped", "code": current["reasons"][0],
+                "rows": len(current["rows"])}
+    return None
+
+
 def _apply_instrument(conn, approved, as_of, client, budget, validate_only):
     iid = approved["instrument_id"]
+    budget.check()
+    # Phase A: no lock, and the read-only snapshot transaction ends before HTTP.
+    try:
+        conn.execute("SET TRANSACTION READ ONLY")
+        _sql_budget(conn, budget)
+        current, before = _load_item(conn, iid, as_of, full_state=True)
+    finally:
+        if not conn.closed:
+            conn.rollback()
+    decided = _decide(iid, current, before, approved)
+    if decided:
+        return decided
+    # The typed stored rows equal the approved plan rows here (_repair_key).
+    count = len(current["rows"])
+    ticker = current["identity"]["ticker"].strip()
+    fetched_by_date = {}
+    for row in (r for r in before if _is_bad(r)):
+        budget.request()
+        fetched = client.fetch(row["source"], ticker, row["nav_date"], row["nav_date"],
+                               remaining=budget.remaining)
+        budget.check()
+        reason = _validate(row, fetched)
+        if reason:
+            return {"instrument_id": iid, "status": "skipped", "code": reason, "rows": count}
+        # Persist the actual single-date observation in the attempt only, with
+        # the provider's own timestamps. Provider levels never enter the NAV
+        # writer or the row-evidence helper.
+        fetched_by_date[row["nav_date"]] = NavFetchResult("success_no_new", tuple(
+            o for o in fetched.observations if o.date == row["nav_date"]),
+            fetched.attempted_at, fetched.finished_at)
+    if validate_only:
+        return {"instrument_id": iid, "status": "validated", "code": None, "rows": count}
+    # Phase B: locks, lock-time re-check against the approved plan, writes.
     try:
         budget.check()
         conn.execute("SET LOCAL lock_timeout='2s'")
@@ -322,43 +398,18 @@ def _apply_instrument(conn, approved, as_of, client, budget, validate_only):
             if not conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (lock,)).fetchone()[0]:
                 raise RepairError("LOCK_BUSY", 4)
         current, before = _load_item(conn, iid, as_of, full_state=True)
-        if current is None:
-            # Resume the same reviewed plan only if its formerly bad rows have
-            # exactly the intended values. Nothing is written in this branch.
-            stored = {str(r["nav_date"]): _json(r) for r in before}
-            if any(stored.get(r["nav_date"]) != {**r, "return_source_boundary": None}
-                   for r in approved["rows"]):
-                raise RepairError("PLAN_STALE")
-            conn.rollback()
-            return {"instrument_id": iid, "status": "noop", "code": "ALREADY_REPAIRED", "rows": 0}
-        if current != approved:
-            raise RepairError("PLAN_STALE")
-        count = len(current["rows"])
-        if current["reasons"]:
-            conn.rollback()
-            return {"instrument_id": iid, "status": "skipped", "code": current["reasons"][0], "rows": count}
+        decided = _decide(iid, current, before, approved)
         selected = [r for r in before if _is_bad(r)]
-        validated = []
-        for row in selected:
-            budget.request()
-            fetched = client.fetch(row["source"], current["identity"]["ticker"].strip(),
-                                   row["nav_date"], row["nav_date"], remaining=budget.remaining)
-            budget.check()
-            reason = _validate(row, fetched)
-            if reason:
-                conn.rollback()
-                return {"instrument_id": iid, "status": "skipped", "code": reason, "rows": count}
-            # Persist the actual single-date observation in the attempt only.
-            # Provider levels never enter the NAV writer or row-evidence helper.
-            fetched = NavFetchResult("success_no_new", tuple(
-                o for o in fetched.observations if o.date == row["nav_date"]),
-                fetched.attempted_at, fetched.finished_at)
-            validated.append((row, fetched))
-        if validate_only:
+        if not decided and {r["nav_date"] for r in selected} != set(fetched_by_date):
+            decided = {"instrument_id": iid, "status": "skipped", "code": "PLAN_STALE",
+                       "rows": len(approved["rows"])}
+        if decided:
             conn.rollback()
-            return {"instrument_id": iid, "status": "validated", "code": None, "rows": count}
+            return decided
+        head = current["revision_head"]  # read under the lock, never the plan's
         runs = []
-        for row, fetched in validated:
+        for row in selected:
+            fetched = fetched_by_date[row["nav_date"]]
             _sql_budget(conn, budget)
             run = uuid.uuid4()
             conn.execute("""INSERT INTO nav_ingestion_runs (run_id,requested_end,status,operation)
@@ -379,7 +430,7 @@ def _apply_instrument(conn, approved, as_of, client, budget, validate_only):
                                            provider=row["source"], rows=[row])
             conn.execute("""UPDATE nav_ingestion_runs SET status='completed',
                             reason_code='RETURN_LINEAGE_REPAIR' WHERE run_id=%s""", (run,))
-        _assert_changes(conn, iid, before, selected, runs, current["revision_head"], budget)
+        _assert_changes(conn, iid, before, selected, runs, head, budget)
         _sql_budget(conn, budget)
     except BaseException:
         if not conn.closed:
@@ -399,7 +450,34 @@ def _apply_instrument(conn, approved, as_of, client, budget, validate_only):
             "rows": len(selected), "run_ids": [str(run) for run, _, _ in runs]}
 
 
-def run_repair(conn, plan, *, instrument_ids, supplied_sha256, limits, client, validate_only=False):
+def _utc_now():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def _clock_skew(conn, clock):
+    """Host minus database clock, estimated at the round-trip midpoint."""
+    try:
+        t0 = clock()
+        db_now = conn.execute("SELECT clock_timestamp()").fetchone()[0]
+        t1 = clock()
+    finally:
+        if not conn.closed:
+            conn.rollback()
+    return t0 + (t1 - t0) / 2 - db_now
+
+
+def _normalized_ids(values):
+    out = set()
+    for value in values:
+        try:
+            out.add(str(uuid.UUID(str(value))))
+        except ValueError:
+            out.add(str(value))
+    return out
+
+
+def run_repair(conn, plan, *, instrument_ids, supplied_sha256, limits, client,
+               validate_only=False, clock=None):
     result = {"status": "completed", "code": None, "exit_code": 0, "instruments": [],
               "changed_rows": 0, "validated_rows": 0, "requests": 0, "residual_counts": {},
               "plan_sha256": sha256(plan), "validate_only": validate_only}
@@ -410,7 +488,10 @@ def run_repair(conn, plan, *, instrument_ids, supplied_sha256, limits, client, v
             raise RepairError("PLAN_DIGEST_MISMATCH")
         if plan.get("limits") != limits.canonical():
             raise RepairError("PLAN_LIMITS_MISMATCH")
-        ids = [str(uuid.UUID(i)) for i in instrument_ids]
+        try:
+            ids = [str(uuid.UUID(str(i))) for i in instrument_ids]
+        except ValueError:
+            raise RepairError("ALLOWLIST_INVALID") from None
         if not ids or len(set(ids)) != len(ids) or len(ids) > limits.batch_size:
             raise RepairError("ALLOWLIST_INVALID")
         items = {i["instrument_id"]: i for i in plan["items"]}
@@ -418,6 +499,13 @@ def run_repair(conn, plan, *, instrument_ids, supplied_sha256, limits, client, v
             raise RepairError("ALLOWLIST_OUTSIDE_PLAN")
         if conn.info.transaction_status != TransactionStatus.IDLE:
             raise RepairError("CONNECTION_NOT_IDLE")
+        # Attempt timestamps use this host's clock, persistence times the
+        # database's: an ahead host would fail every apply at the attempt or
+        # revision CHECK. Refused before any fetch; timestamps are never rewritten.
+        skew = _clock_skew(conn, clock or _utc_now)
+        result["clock_skew_ms"] = round(skew.total_seconds() * 1000, 1)
+        if skew > MAX_CLOCK_AHEAD:
+            raise RepairError("CLOCK_SKEW")
         for iid in ids:
             outcome = _apply_instrument(conn, items[iid], dt.date.fromisoformat(plan["as_of"]),
                                         client, budget, validate_only)
@@ -451,6 +539,6 @@ def run_repair(conn, plan, *, instrument_ids, supplied_sha256, limits, client, v
         result.update(status="failed", code="VALIDATION_OR_PROVIDER_ERROR", exit_code=2)
     finally:
         result["requests"] = budget.requests
-    completed_ids = {i["instrument_id"] for i in result["instruments"]}
-    result["unprocessed_instruments"] = len(set(instrument_ids) - completed_ids)
+    completed_ids = _normalized_ids(i["instrument_id"] for i in result["instruments"])
+    result["unprocessed_instruments"] = len(_normalized_ids(instrument_ids) - completed_ids)
     return result

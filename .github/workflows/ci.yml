@@ -245,8 +245,10 @@ jobs:
             tests/test_momentum_metrics.py
             tests/test_nav_economic_rebase.py
             tests/test_nav_identity_audit_contract.py
+            tests/test_nav_lineage_repair_provider.py
             tests/test_nav_policy_v3_reconcile.py
             tests/test_nav_policy_v3_replay.py
+            tests/test_nav_return_lineage_repair_cli.py
             tests/test_nav_sanitize.py
             tests/test_nav_timeseries_provenance_schema.py
             tests/test_nport_fixed_income_secapi_fallback.py
@@ -650,6 +652,7 @@ jobs:
               tests/test_fund_nav_access_profile_db.py
               tests/test_nav_economic_rebase_db.py
               tests/test_nav_rebase_cohort_db.py
+              tests/test_nav_return_lineage_repair_db.py
               tests/test_instrument_ingestion.py
               tests/test_nav_snapshot_lifecycle_db.py
               tests/test_nav_provider_session_db.py

@@ -2,23 +2,33 @@
 
 Plan (default) is DB-only, read-only, and writes a plan only to a NEW file.
 Apply requires the reviewed plan, SHA256, explicit instrument allowlist and
---confirm repair_nav_return_lineage_v1. --validate-only fetches but writes nothing.
-Budgets must equal the plan. Exit: 0 complete (including explicit residuals),
-2 guard/provider/SQL failure, 3 incompatible schema/access, 4 lock busy,
-5 budget/interrupt or lock stop after work. Stdout is one sanitized JSON object.
+--confirm repair_nav_return_lineage_v1. --validate-only fetches but takes no
+lock and writes nothing. Provider fetches run before, never under, the writer
+locks. Budgets must equal the plan. Exit: 0 complete (including explicit
+residuals), 2 guard/provider/SQL failure (CLOCK_SKEW: host clock more than
+250 ms ahead of the database, refused before any fetch), 3 incompatible
+schema/access, 4 lock busy, 5 budget/interrupt or lock stop after work.
+Stdout is one sanitized JSON object.
 
 Runbook: deploy the writer fix first. Plan, review the new artifact and digest,
 validate a small explicit sample, then apply budgeted allowlisted batches shortly
 BEFORE a full risk run. Historical revisions invalidate pinned risk publications.
-Keep budgets identical to the reviewed plan; a budget stop rolls back the current
-instrument and preserves earlier commits. Resume the same allowlist/plan or make
-a new plan for the remaining queue. A changed head/identity/target/neighbour needs
-a new plan. COMMIT_UNKNOWN includes run IDs: inspect those before retrying.
+Run apply BEFORE the daily ingestion chain: when no run is pinned, readiness picks
+the winning attempt by attempted_at DESC, and a repair attempt (historical
+requested_end) could otherwise become the latest. Prefer running apply from a
+Railway worker container (DB-local clock, no proxy latency). Keep budgets
+identical to the reviewed plan; a budget stop rolls back the current instrument
+and preserves earlier commits. Resume the same allowlist/plan or make a new plan
+for the remaining queue. Daily ingestion moving the head or last NAV date does
+not stale a plan; a changed identity, target row, neighbour, open event or reason
+skips that instrument as PLAN_STALE (re-plan it) while the batch continues.
+COMMIT_UNKNOWN includes run IDs: inspect those before retrying.
 
 Residual codes are intentional, not provider data to overwrite: inactive/missing
 ticker, open reexpression, NULL/unsupported kind, unknown provider, false flags,
-return-recomputation requirements, missing observations, and mismatched levels or
-kinds. Old last-NAV dates are inventoried separately: age alone is not a delisting.
+return-recomputation requirements, missing observations, mismatched levels or
+kinds, and stale plan items. Old last-NAV dates are inventoried separately: age
+alone is not a delisting.
 No risk, materialized view, calendar, policy, or readiness publication is performed.
 
 The ledger supports only normal and the contract-specific economic rebase. This

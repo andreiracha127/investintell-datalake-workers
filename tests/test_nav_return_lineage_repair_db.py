@@ -14,10 +14,12 @@ import math
 import socket
 import uuid
 
+import psycopg
 import pytest
 from psycopg.rows import dict_row
 
 from scripts import repair_nav_return_lineage_v1 as cli
+from src.db import LOCK_FUND_NAV_READINESS, LOCK_INSTRUMENT_INGESTION
 from src.workers import _fallback_nav
 from src.workers import fund_nav_readiness as readiness
 from src.workers import instrument_ingestion as ingest
@@ -111,6 +113,19 @@ def _seed(conn, *, ticker="SYN", provider="tiingo"):
     )
     conn.commit()
     return iid, day
+
+
+def _add_earlier_bad_date(conn, iid, day):
+    conn.execute("SET LOCAL session_replication_role = replica")
+    conn.execute(
+        """INSERT INTO nav_timeseries
+           (instrument_id,nav_date,nav,source_nav,source,currency,return_type,
+            source_nav_kind,nav_repair_kind,return_source_boundary)
+           VALUES (%s,%s,100,100,'tiingo','USD','log',NULL,NULL,NULL),
+                  (%s,%s,101,101,'tiingo','USD','log','adjusted','none',true)""",
+        (iid, day - dt.timedelta(days=3), iid, day - dt.timedelta(days=2)),
+    )
+    conn.commit()
 
 
 def _rows(conn, iid):
@@ -294,16 +309,7 @@ def test_two_dates_share_final_head_evidence_and_one_transaction(test_dsn, schem
     base._bootstrap(test_dsn, schema)
     with base._connect(test_dsn, schema) as conn:
         iid, day = _seed(conn)
-        conn.execute("SET LOCAL session_replication_role = replica")
-        conn.execute(
-            """INSERT INTO nav_timeseries
-               (instrument_id,nav_date,nav,source_nav,source,currency,return_type,
-                source_nav_kind,nav_repair_kind,return_source_boundary)
-               VALUES (%s,%s,100,100,'tiingo','USD','log',NULL,NULL,NULL),
-                      (%s,%s,101,101,'tiingo','USD','log','adjusted','none',true)""",
-            (iid, day - dt.timedelta(days=3), iid, day - dt.timedelta(days=2)),
-        )
-        conn.commit()
+        _add_earlier_bad_date(conn, iid, day)
         before = _rows(conn, iid)
         plan = _plan(conn, schema, _limits())
         fake = FakeProvider()
@@ -363,26 +369,160 @@ def test_unexpected_neighbour_change_rolls_back_nav_and_all_ledgers(
         assert _ledger(conn) == (0, 0, 0, 0, 0, 0)
 
 
-def test_stale_plan_refused_before_fetch_after_stored_level_changes(test_dsn, schema):
+def _change_stored_level(dsn, schema, iid, day):
+    with base._connect(dsn, schema) as other:
+        other.execute("SET LOCAL session_replication_role = replica")
+        other.execute(
+            "UPDATE nav_timeseries SET source='yahoo',nav=150,source_nav=150 "
+            "WHERE instrument_id=%s AND nav_date=%s", (iid, day),
+        )
+        other.commit()
+
+
+@pytest.mark.parametrize("changed", ["before_apply", "during_fetch"])
+def test_stale_instrument_is_skipped_and_the_batch_continues(test_dsn, schema, changed):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        first, day = _seed(conn, ticker="FIRST")
+        second, _ = _seed(conn, ticker="SECOND")
+        plan = _plan(conn, schema, _limits())
+
+        class ConcurrentChange(FakeProvider):
+            def fetch(self, provider, ticker, start, end, *, remaining):
+                if ticker == "FIRST":  # committed while phase A holds no lock
+                    _change_stored_level(test_dsn, schema, first, day)
+                return super().fetch(provider, ticker, start, end, remaining=remaining)
+
+        fake = ConcurrentChange() if changed == "during_fetch" else FakeProvider()
+        if changed == "before_apply":
+            _change_stored_level(test_dsn, schema, first, day)
+        # An upper-case allowlist entry is the same instrument once normalized.
+        result = _run(conn, plan, [str(first).upper(), second], fake)
+        assert result["exit_code"] == 0, result
+        assert result["status"] == "completed"
+        assert [(o["instrument_id"], o["status"], o["code"]) for o in result["instruments"]] == [
+            (str(first), "skipped", "PLAN_STALE"), (str(second), "committed", None)]
+        assert result["residual_counts"] == {"PLAN_STALE": 1}
+        assert result["changed_rows"] == 1
+        assert result["unprocessed_instruments"] == 0
+        tickers = [ticker for _, ticker, _, _ in fake.calls]
+        assert tickers == (["FIRST", "SECOND"] if changed == "during_fetch" else ["SECOND"])
+        stale_row = next(r for r in _rows(conn, first) if r["nav_date"] == day.isoformat())
+        assert (stale_row["nav"], stale_row["return_source_boundary"]) == (150, True)
+        assert _ledger(conn) == (1, 1, 1, 1, 1, 0)
+        assert conn.execute(
+            "SELECT count(*) FROM nav_ingestion_attempts WHERE instrument_id=%s", (first,),
+        ).fetchone()[0] == 0
+
+
+def test_daily_ingestion_moving_head_and_last_date_does_not_stale_the_plan(
+    test_dsn, schema,
+):
     base._bootstrap(test_dsn, schema)
     with base._connect(test_dsn, schema) as conn:
         iid, day = _seed(conn)
         plan = _plan(conn, schema, _limits())
-        conn.execute("SET LOCAL session_replication_role = replica")
-        conn.execute(
-            "UPDATE nav_timeseries SET source='yahoo',nav=150,source_nav=150 "
-            "WHERE instrument_id=%s AND nav_date=%s", (iid, day),
-        )
-        conn.commit()
+        base._provider_write(conn, ingest.build_rows(
+            (NavObservation(day + dt.timedelta(days=2), 103.0, "adjusted"),), [(iid, "USD")]))
+        approved, current = plan["items"][0], _plan(conn, schema, _limits())["items"][0]
+        assert current["revision_head"] != approved["revision_head"]
+        assert current["last_nav_date"] != approved["last_nav_date"]
+        assert current != approved
         before = _rows(conn, iid)
+        result = _run(conn, plan, [iid], FakeProvider())
+        assert result["exit_code"] == 0, result
+        assert result["instruments"][0]["status"] == "committed"
+        assert result["changed_rows"] == 1
+        expected = [dict(row) for row in before]
+        expected[1]["return_source_boundary"] = None
+        assert _rows(conn, iid) == expected
+
+
+def test_provider_fetch_runs_outside_the_writer_locks(test_dsn, schema, monkeypatch):
+    keys = [LOCK_INSTRUMENT_INGESTION, LOCK_FUND_NAV_READINESS]
+    held = ("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND pid=%s "
+            "AND classid=0 AND objid::bigint = ANY(%s)")
+    events = []
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        iid, day = _seed(conn)
+        _add_earlier_bad_date(conn, iid, day)
+        plan = _plan(conn, schema, _limits())
+        pid = conn.info.backend_pid
+
+        class LockProbe(FakeProvider):
+            def fetch(self, provider, ticker, start, end, *, remaining):
+                with psycopg.connect(test_dsn, autocommit=True) as probe:
+                    locks = probe.execute(held, (pid, keys)).fetchone()[0]
+                    state = probe.execute(
+                        "SELECT state FROM pg_stat_activity WHERE pid=%s", (pid,),
+                    ).fetchone()[0]
+                events.append(("fetch", locks, state))
+                return super().fetch(provider, ticker, start, end, remaining=remaining)
+
+        def probed(name):
+            original = getattr(ingest, name)
+
+            def wrapper(connection, *args, **kwargs):
+                own = connection.execute(held, (pid, keys)).fetchone()[0]
+                events.append((name, own, None))
+                return original(connection, *args, **kwargs)
+
+            monkeypatch.setattr(ingest, name, wrapper)
+
+        for name in ("_insert_attempt_tx", "_write_instrument_nav_tx", "_insert_row_evidence_tx"):
+            probed(name)
+        result = _run(conn, plan, [iid], LockProbe())
+        assert result["exit_code"] == 0, result
+        assert result["changed_rows"] == 2
+        assert events[:2] == [("fetch", 0, "idle")] * 2
+        assert [e[0] for e in events[2:]] == [
+            "_insert_attempt_tx", "_write_instrument_nav_tx",
+            "_insert_attempt_tx", "_write_instrument_nav_tx",
+            "_insert_row_evidence_tx", "_insert_row_evidence_tx"]
+        assert {e[1] for e in events[2:]} == {2}
+        with psycopg.connect(test_dsn, autocommit=True) as probe:
+            assert probe.execute(held, (pid, keys)).fetchone()[0] == 0
+
+
+def _calibrated_clock(conn, offset):
+    """This host's clock shifted so it reads ``offset`` ahead of the database."""
+    real = repair._clock_skew(conn, repair._utc_now)
+    return lambda: repair._utc_now() - real + offset
+
+
+@pytest.mark.parametrize("validate_only", [False, True])
+def test_host_clock_ahead_of_database_is_refused_before_any_fetch(
+    test_dsn, schema, validate_only,
+):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        iid, _ = _seed(conn)
+        before = _rows(conn, iid)
+        plan = _plan(conn, schema, _limits())
         fake = FakeProvider()
-        result = _run(conn, plan, [iid], fake)
+        clock = _calibrated_clock(conn, dt.timedelta(milliseconds=400))
+        result = _run(conn, plan, [iid], fake, clock=clock, validate_only=validate_only)
         assert result["exit_code"] == 2, result
-        assert result["code"] == "PLAN_STALE"
-        assert result["changed_rows"] == 0
-        assert fake.calls == []
+        assert (result["status"], result["code"]) == ("failed", "CLOCK_SKEW")
+        assert 250 < result["clock_skew_ms"] < 600
+        assert result["requests"] == 0 and fake.calls == []
+        assert result["instruments"] == [] and result["unprocessed_instruments"] == 1
         assert _rows(conn, iid) == before
         assert _ledger(conn) == (0, 0, 0, 0, 0, 0)
+
+
+@pytest.mark.parametrize("offset_ms", [-5000, 100])
+def test_host_clock_behind_or_within_tolerance_applies(test_dsn, schema, offset_ms):
+    base._bootstrap(test_dsn, schema)
+    with base._connect(test_dsn, schema) as conn:
+        iid, _ = _seed(conn)
+        plan = _plan(conn, schema, _limits())
+        clock = _calibrated_clock(conn, dt.timedelta(milliseconds=offset_ms))
+        result = _run(conn, plan, [iid], FakeProvider(), clock=clock)
+        assert result["exit_code"] == 0, result
+        assert result["changed_rows"] == 1
+        assert abs(result["clock_skew_ms"] - offset_ms) < 100
 
 
 def test_interrupt_after_actual_commit_reports_unknown_with_reconciliation_ids(
