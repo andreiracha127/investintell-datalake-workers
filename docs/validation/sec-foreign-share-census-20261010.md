@@ -1,8 +1,8 @@
 # B2 phase 2: foreign share-class census
 
-Date: 2026-10-10. Status: implemented, locally validated, PR opened when URL below is present; production procedure deferred.
+Date: 2026-10-10. Status: implemented and locally validated; production procedure deferred.
 
-Branch: `feat/sec-foreign-share-census`; base `origin/main` / `d8a2aae564aedf69655a5b1b37a87fe09dffc439`.
+Branch: `feat/sec-foreign-share-census`; created from `origin/main` at `d8a2aae564aedf69655a5b1b37a87fe09dffc439`.
 
 No production writes, deployment, Railway changes or merge occurred. Local database results below use one task-owned PG18 container and existing read-only W1 exports.
 
@@ -66,7 +66,7 @@ Coverage: **3,968 complete; 13,167 incomplete; 666 conflicting; 1,208 none**. Co
 | scripts/validate_sec_foreign_share_census.py | 4cbd4f24849ddb4c5bb78ace99ce1a0a2747b031dda784c45e7a456abda3f0e8 |
 | tests/fixtures/sec_foreign_share_census/named_cover_statements.json | 4f592985c7d60fb8c01f3b98ef00c6f31113cd261df18787480bc9aaf57f0d18 |
 | tests/test_sec_foreign_share_census.py | fe8caaf7bb51bac2f4fbe2d1f6cade683a36db383899215a75612027e6c83033 |
-| tests/test_sec_foreign_share_census_loader.py | b2798cc793ddd98ff5bdfe09644b26c9e04fdffd4f5d1b984f6ea950d4e524c2 |
+| tests/test_sec_foreign_share_census_loader.py | 4ee5628b828b765a45277df6c6d7cd020e38bac5b5d67ad17c7fce1c8b19a3bc |
 | tests/test_sec_foreign_share_census_parser.py | 90bea1f6e831e6b9db83cccbb83e2191050addbf83f372bda56653809cf58f2f |
 
 ## Named issuers and source quotes
@@ -244,6 +244,8 @@ These are class-scope/count potential, not newly admitted sizes. All positively 
 | tests/test_sec_foreign_listing_evidence.py | 952 | 9.85 |
 
 **1,313 passed, 0 failed**, file by file with `PYTEST_WORKERS=2`, on `timescale/timescaledb:2.27.2-pg18` / PostgreSQL 18.4. Coverage includes observed cover grammars, conflict totals, nil/preferred/deferred shares, multi-line tables, actual PDF bytes and page offsets, bitemporal/source/parser restatement, zero-fact reconciliation, migration cycle, inlining, owner/grants and forged-but-rehashed semantic refusal. Existing W1c evidence/loader regressions pass. CI is reported separately from these local results.
+
+The first focused CI sequence exposed a test-order assumption: its preservation fixture tried to create a W1c table left installed by the earlier suites. The fixture now snapshots an existing W1c table's rows and catalog definition, creating a dummy only when absent. No parser, loader or census artifact behavior changed. The corrected sequence is validated by the subsequent focused PG18 CI run; its observed result is recorded with the final PR snapshot.
 
 Full local apply/readback: 17,801 active census facts and 19,009 source metadata records; artifact classes/status/flags match, existing W1c history fingerprint unchanged. Readback ran as app_runtime, repeatable-read read-only, JIT off. Corpus-volume EXPLAIN contains zero census Function Scans. `local-census-readback.json` and `local-census-explain.json` retain the evidence.
 

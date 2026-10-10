@@ -602,10 +602,47 @@ def test_census_apply_does_not_call_or_mutate_existing_w1c_evidence(db, monkeypa
     def refuse_evidence_apply(*_args, **_kwargs):
         pytest.fail("Census reconciliation invoked the existing W1c evidence apply")
     monkeypatch.setattr(w1c, "apply_evidence", refuse_evidence_apply)
-    db.execute("CREATE TABLE public.sec_foreign_listing_evidence (proof text)")
-    db.execute("INSERT INTO public.sec_foreign_listing_evidence VALUES ('existing W1c evidence')")
+    if db.execute("SELECT pg_catalog.to_regclass('public.sec_foreign_listing_evidence')").fetchone()[0] is None:
+        db.execute("CREATE TABLE public.sec_foreign_listing_evidence (proof text)")
+        db.execute("INSERT INTO public.sec_foreign_listing_evidence VALUES ('existing W1c evidence')")
+
+    def snapshot_evidence():
+        # Earlier W1c suites can leave the real schema installed. Preserve its
+        # rows and definition as found instead of assuming a dummy proof column.
+        metadata = db.execute(
+            "SELECT oid,relfilenode,relkind,relowner,relacl,reloptions,relpersistence "
+            "FROM pg_catalog.pg_class WHERE oid='public.sec_foreign_listing_evidence'::regclass"
+        ).fetchall()
+        columns = db.execute(
+            "SELECT a.attnum,a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),"
+            "a.attnotnull,a.attidentity,a.attgenerated,a.attisdropped,a.attcollation,"
+            "pg_catalog.pg_get_expr(d.adbin,d.adrelid) "
+            "FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d "
+            "ON d.adrelid=a.attrelid AND d.adnum=a.attnum "
+            "WHERE a.attrelid='public.sec_foreign_listing_evidence'::regclass "
+            "AND a.attnum>0 ORDER BY a.attnum"
+        ).fetchall()
+        constraints = db.execute(
+            "SELECT conname,contype,pg_catalog.pg_get_constraintdef(oid,true) "
+            "FROM pg_catalog.pg_constraint "
+            "WHERE conrelid='public.sec_foreign_listing_evidence'::regclass "
+            "ORDER BY conname"
+        ).fetchall()
+        indexes = db.execute(
+            "SELECT indexrelid,pg_catalog.pg_get_indexdef(indexrelid) "
+            "FROM pg_catalog.pg_index "
+            "WHERE indrelid='public.sec_foreign_listing_evidence'::regclass "
+            "ORDER BY indexrelid"
+        ).fetchall()
+        rows = db.execute(
+            "SELECT pg_catalog.to_jsonb(e) FROM public.sec_foreign_listing_evidence e "
+            "ORDER BY pg_catalog.to_jsonb(e)::text"
+        ).fetchall()
+        return metadata, columns, constraints, indexes, rows
+
+    before = snapshot_evidence()
     apply(db)
-    assert db.execute("SELECT proof FROM public.sec_foreign_listing_evidence").fetchall() == [("existing W1c evidence",)]
+    assert snapshot_evidence() == before
 
 
 def test_new_loader_test_file_is_lf_only():
