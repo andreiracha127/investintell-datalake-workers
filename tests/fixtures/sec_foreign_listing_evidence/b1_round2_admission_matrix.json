@@ -1,0 +1,1109 @@
+{
+  "description": "Independent post-candidate compact ratio and complete checkbox admission probes, including modified nonratio objects and full-answer continuations.",
+  "baseline_commit": "c3f6588",
+  "baseline_parser_sha256": "d5eaa720ee0d6b79f9ee88efe2f2be27acb8a7749439504806915d3f012413ff",
+  "independent_cases": 110,
+  "additional_continuation_cases": 0,
+  "cases": [
+    {
+      "family": "linked corresponding completion",
+      "category": "genuine",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": true
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning qualifier/For purposes of EPS, it is assumed that ",
+      "text": "For purposes of EPS, it is assumed that concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning qualifier/Assume that ",
+      "text": "Assume that concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning qualifier/As though ",
+      "text": "As though concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning qualifier/The Company denied that ",
+      "text": "The Company denied that concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning qualifier/If shareholder approval is obtained, ",
+      "text": "If shareholder approval is obtained, concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "date qualifier/For purposes of EPS, it is assumed that ",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. For purposes of EPS, it is assumed that the effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "date qualifier/As though ",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. As though the effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "date qualifier/The Company denied that ",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The Company denied that the effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "date qualifier/If shareholder approval is obtained, ",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. If shareholder approval is obtained, the effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning predicate/will effect",
+      "text": "Concurrently with the reverse split, the Company will effect a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning predicate/did not effect",
+      "text": "Concurrently with the reverse split, the Company did not effect a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning predicate/hasn't effected",
+      "text": "Concurrently with the reverse split, the Company hasn't effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning predicate/plans to effect",
+      "text": "Concurrently with the reverse split, the Company plans to effect a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "owning predicate/would have effected",
+      "text": "Concurrently with the reverse split, the Company would have effected a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "wrong object/preparations for a corresponding change in",
+      "text": "Concurrently with the reverse split, the Company effected preparations for a corresponding change in the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "wrong object/a corresponding change in the announcement for",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the announcement for the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "wrong object/a corresponding change in the estimates of",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the estimates of the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "other identity/Class B ordinary shares",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio for the Class B ordinary shares from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "other identity/Class AA ordinary shares",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio for the Class AA ordinary shares from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "linked corresponding completion",
+      "category": "other identity/GDS program",
+      "text": "Concurrently with the reverse split, the Company effected a corresponding change in the ADS ratio for the GDS program from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. The effective date of this reverse split was November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "genuine",
+      "text": "On the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": true
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning qualifier/For purposes of EPS, it is assumed that ",
+      "text": "For purposes of EPS, it is assumed that on the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning qualifier/Assume that ",
+      "text": "Assume that on the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning qualifier/As if ",
+      "text": "As if on the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning qualifier/There is no evidence that ",
+      "text": "There is no evidence that on the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning qualifier/If shareholder approval is obtained, ",
+      "text": "If shareholder approval is obtained, on the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning predicate/would have completed",
+      "text": "On the morning of Friday, November 4, 2022, the Company would have completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning predicate/has not completed",
+      "text": "On the morning of Friday, November 4, 2022, the Company has not completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning predicate/hasn't completed",
+      "text": "On the morning of Friday, November 4, 2022, the Company hasn't completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning predicate/assumed it completed",
+      "text": "On the morning of Friday, November 4, 2022, the Company assumed it completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "owning predicate/plans to complete",
+      "text": "On the morning of Friday, November 4, 2022, the Company plans to complete its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "wrong object/completed the announcement for its",
+      "text": "On the morning of Friday, November 4, 2022, the Company completed the announcement for its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "wrong object/completed preparations for its",
+      "text": "On the morning of Friday, November 4, 2022, the Company completed preparations for its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "wrong object/amended the notice for its",
+      "text": "On the morning of Friday, November 4, 2022, the Company amended the notice for its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "wrong object/adjusted the estimates for its",
+      "text": "On the morning of Friday, November 4, 2022, the Company adjusted the estimates for its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "different future target/one ADS will represent thirty ordinary shares",
+      "text": "On the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent thirty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "different future target/one ADS will represent twenty Class B ordinary shares",
+      "text": "On the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Class B ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "different future target/the Class B program will represent twenty Shares",
+      "text": "On the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that the Class B program will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "weekday compact completion",
+      "category": "different future target/the GDS program will represent twenty Shares",
+      "text": "On the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that the GDS program will represent twenty Shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "genuine/ratio of our common shares to common ADSs from 1:1 to 20:1",
+      "text": "Effective November 4, 2022, we changed the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": true
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning qualifier/For EPS purposes, ",
+      "text": "For EPS purposes, effective November 4, 2022, we changed the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning qualifier/Suppose that ",
+      "text": "Suppose that effective November 4, 2022, we changed the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning qualifier/As though ",
+      "text": "As though effective November 4, 2022, we changed the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning qualifier/If shareholders approve the ratio change, ",
+      "text": "If shareholders approve the ratio change, effective November 4, 2022, we changed the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/did not change",
+      "text": "Effective November 4, 2022, we did not change the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/would have changed",
+      "text": "Effective November 4, 2022, we would have changed the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the announcement for",
+      "text": "Effective November 4, 2022, we amended the announcement for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/adjusted the estimates for",
+      "text": "Effective November 4, 2022, we adjusted the estimates for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the notices for",
+      "text": "Effective November 4, 2022, we amended the notices for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the filings for",
+      "text": "Effective November 4, 2022, we amended the filings for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/adjusted the budgets for",
+      "text": "Effective November 4, 2022, we adjusted the budgets for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the plans for",
+      "text": "Effective November 4, 2022, we amended the plans for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/completed preparations for",
+      "text": "Effective November 4, 2022, we completed preparations for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the agreements for",
+      "text": "Effective November 4, 2022, we amended the agreements for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/adjusted the administrative budget for",
+      "text": "Effective November 4, 2022, we adjusted the administrative budget for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/adjusted the revised estimates for",
+      "text": "Effective November 4, 2022, we adjusted the revised estimates for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the updated announcement for",
+      "text": "Effective November 4, 2022, we amended the updated announcement for the ratio of our common shares to common ADSs from 1:1 to 20:1.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "genuine/ratio of our ADSs to common shares from 1:1 to 1:20",
+      "text": "Effective November 4, 2022, we changed the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": true
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning qualifier/For EPS purposes, ",
+      "text": "For EPS purposes, effective November 4, 2022, we changed the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning qualifier/Suppose that ",
+      "text": "Suppose that effective November 4, 2022, we changed the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning qualifier/As though ",
+      "text": "As though effective November 4, 2022, we changed the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning qualifier/If shareholders approve the ratio change, ",
+      "text": "If shareholders approve the ratio change, effective November 4, 2022, we changed the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/did not change",
+      "text": "Effective November 4, 2022, we did not change the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/would have changed",
+      "text": "Effective November 4, 2022, we would have changed the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the announcement for",
+      "text": "Effective November 4, 2022, we amended the announcement for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/adjusted the estimates for",
+      "text": "Effective November 4, 2022, we adjusted the estimates for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the notices for",
+      "text": "Effective November 4, 2022, we amended the notices for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the filings for",
+      "text": "Effective November 4, 2022, we amended the filings for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/adjusted the budgets for",
+      "text": "Effective November 4, 2022, we adjusted the budgets for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the plans for",
+      "text": "Effective November 4, 2022, we amended the plans for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/completed preparations for",
+      "text": "Effective November 4, 2022, we completed preparations for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the agreements for",
+      "text": "Effective November 4, 2022, we amended the agreements for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/adjusted the administrative budget for",
+      "text": "Effective November 4, 2022, we adjusted the administrative budget for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/adjusted the revised estimates for",
+      "text": "Effective November 4, 2022, we adjusted the revised estimates for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "named compact direction",
+      "category": "owning predicate/amended the updated announcement for",
+      "text": "Effective November 4, 2022, we amended the updated announcement for the ratio of our ADSs to common shares from 1:1 to 1:20.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "genuine",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): No Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): No If \"Yes\" is marked, indicate below the file number assigned to the registrant in connection with Rule 12g3-2(b): n/a On November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": true
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "narrative qualifier/For purposes of EPS, it is assumed that ",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): No Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): No If \"Yes\" is marked, indicate below the file number assigned to the registrant in connection with Rule 12g3-2(b): n/a For purposes of EPS, it is assumed that on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "narrative qualifier/Assume that ",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): No Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): No If \"Yes\" is marked, indicate below the file number assigned to the registrant in connection with Rule 12g3-2(b): n/a Assume that on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "narrative qualifier/If shareholder approval is obtained, ",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): No Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): No If \"Yes\" is marked, indicate below the file number assigned to the registrant in connection with Rule 12g3-2(b): n/a If shareholder approval is obtained, on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "narrative qualifier/As though ",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): No Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): No If \"Yes\" is marked, indicate below the file number assigned to the registrant in connection with Rule 12g3-2(b): n/a As though on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "non-checkbox condition extending checkbox surface",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper and on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "non-checkbox condition extending file-number surface",
+      "text": "If \"Yes\" is marked, indicate below the file number and confirm that on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "compound conditional numerical class future result",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper and on the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Class B ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "full standard submission tail with conditional extension",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): No and on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "full standard file-number tail with conditional extension",
+      "text": "If \"Yes\" is marked, indicate below the file number assigned to the registrant in connection with Rule 12g3-2(b): n/a and on the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Class B ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K checkbox boundary",
+      "category": "numeric file-number answer with conditional extension",
+      "text": "If \"Yes\" is marked, indicate below the file number assigned to the registrant in connection with Rule 12g3-2(b): 001-32321 and confirm that on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K complete answer-list boundary",
+      "category": "conditional extension/Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): Yes [ ]",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): Yes [ ] and on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K complete answer-list boundary",
+      "category": "conditional extension/Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): Yes [ ] No [x]",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): Yes [ ] No [x] and on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K complete answer-list boundary",
+      "category": "genuine/Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): ",
+      "text": "Indicate by check mark if the registrant is submitting the Form 6-K in paper as permitted by Regulation S-T Rule 101(b)(1): Yes [ ] No [x] On November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": true
+    },
+    {
+      "family": "Form 6-K complete answer-list boundary",
+      "category": "conditional extension/Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): Yes [ ]",
+      "text": "Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): Yes [ ] and on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K complete answer-list boundary",
+      "category": "conditional extension/Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): Yes [ ] No [x]",
+      "text": "Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): Yes [ ] No [x] and on November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Form 6-K complete answer-list boundary",
+      "category": "genuine/Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): ",
+      "text": "Indicate by check mark if the registrant by furnishing the information contained in this Form is also thereby furnishing the information to the Commission pursuant to Rule 12g3-2(b): Yes [ ] No [x] On November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": true
+    },
+    {
+      "family": "Financial table lead with compact completion",
+      "category": "named class in future entitlement tail",
+      "text": "Weighted average number of ordinary shares 60,000,000 Basic and diluted loss per ADS (3.14) On the morning of Friday, November 4, 2022, the Company completed its previously announced ratio change of its ordinary shares ('Shares') to American Depositary Shares ('ADSs'), to adjust the ratio from 1:1 to 20:1, so that one ADS will represent twenty Class B ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Full owning sentence across semicolon",
+      "category": "accounting or hypothetical/For purposes of EPS, the Company assumes that the change has occurred",
+      "text": "For purposes of EPS, the Company assumes that the change has occurred; the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Full owning sentence across semicolon",
+      "category": "accounting or hypothetical/It is assumed that the change has occurred",
+      "text": "It is assumed that the change has occurred; the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Full owning sentence across semicolon",
+      "category": "accounting or hypothetical/The Company assumes that the change has occurred",
+      "text": "The Company assumes that the change has occurred; the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Full owning sentence across semicolon",
+      "category": "conditional prerequisite",
+      "text": "Provided shareholder approval is obtained; the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Full owning sentence accounting assumption",
+      "category": "simple present assumes",
+      "text": "The Company assumes that its ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Full owning sentence with separate EPS sentence",
+      "category": "genuine legal sentence followed by accounting sentence",
+      "text": "On November 4, 2022, the Company completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares. Earnings per ADS were retrospectively adjusted to reflect this change.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": true
+    },
+    {
+      "family": "Numberless other transition side",
+      "category": "former qualifier/initial",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The initial ADS ratio was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Numberless other transition side",
+      "category": "former qualifier/pre-change",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The pre-change ADS ratio was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Numberless other transition side",
+      "category": "former qualifier/pre-split",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The pre-split ADS ratio was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Numberless other transition side",
+      "category": "former qualifier/pre-adjustment",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The pre-adjustment ADS ratio was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Numberless other transition side",
+      "category": "former qualifier/unchanged",
+      "text": "The Company plans to change the ADS ratio from one ADS representing one ordinary share to one ADS representing twenty ordinary shares, effective on November 4, 2022. The unchanged ADS ratio was effective on November 4, 2022.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Negated or modal event with adverbs",
+      "category": "owning predicate/has not yet fully effected",
+      "text": "Effective on November 4, 2022, the Company has not yet fully effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Negated or modal event with adverbs",
+      "category": "owning predicate/has not yet completely effected",
+      "text": "Effective on November 4, 2022, the Company has not yet completely effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Negated or modal event with adverbs",
+      "category": "owning predicate/will have already completed",
+      "text": "Effective on November 4, 2022, the Company will have already completed the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Negated or modal event with adverbs",
+      "category": "owning predicate/may already have effected",
+      "text": "Effective on November 4, 2022, the Company may already have effected the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    },
+    {
+      "family": "Negated or modal event with adverbs",
+      "category": "will soon become effective",
+      "text": "Effective on November 4, 2022, the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares will soon become effective.",
+      "expected": [
+        20,
+        1
+      ],
+      "positive": false
+    }
+  ]
+}

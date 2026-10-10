@@ -3395,6 +3395,7 @@ def test_b1_financial_prospective_relative_clause_is_not_an_unconditional_announ
     "The earnings per ADS figures have been retrospectively adjusted as though the ADS ratio change from one ADS representing one ordinary share to one ADS representing twenty ordinary shares was effective on November 4, 2022.",
     "Assuming the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022, earnings per ADS have been restated.",
     "The Company's ADS ratio of one ADS representing twenty ordinary shares had been effective on November 4, 2022 for purposes of EPS.",
+    "For tax purposes, the Company's ADS ratio of one ADS representing twenty ordinary shares was effective on November 4, 2022.",
 ])
 def test_b1_round2_full_accounting_sentence_cannot_confirm(sentence):
     rows = _parse_gate_source(sentence, form="6-K", filed="2022-11-10")
@@ -3420,7 +3421,10 @@ def test_b1_round2_adjustment_requires_ratio_object_and_completed_predicate(verb
     assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
 
 
-@pytest.mark.parametrize("former", ["former", "previous", "prior", "old", "existing", "current-before-change"])
+@pytest.mark.parametrize("former", [
+    "former", "previous", "prior", "old", "existing", "current-before-change",
+    "initial", "pre-change", "pre-split", "pre-adjustment", "unchanged", "legacy", "earlier", "outgoing",
+])
 def test_b1_round2_numberless_former_ratio_cannot_confirm_target(former):
     rows = _parse_gate_source(
         "The Company plans to change the ADS ratio from one ADS representing one ordinary share "
@@ -3633,3 +3637,28 @@ def test_b1_round2_explicit_common_share_compact_transition_preserves_unit_direc
                               form="6-K", filed="2016-05-13")
     assert rows and all(row.get("ratio_effectiveness_confirmed") for row in rows)
     assert {(row["ratio_numerator"], row["ratio_denominator"], row["effective_from"]) for row in rows} == {(2, 1, "2016-01-12")}
+
+
+def test_b1_round2_full_sentence_qualifier_survives_dotted_depositary_abbreviation():
+    rows = _parse_gate_source(
+        "The Company's ADS ratio of one ADS representing twenty ordinary shares was effective "
+        "on November 4, 2022 through the N.A. depositary, as if the change had occurred for "
+        "purposes of EPS.", form="6-K", filed="2022-11-10",
+    )
+    assert not rows or all(row.get("ratio_effectiveness_pending") for row in rows)
+    assert not any(row.get("ratio_effectiveness_confirmed") for row in rows)
+
+
+_B1_ROUND2_ADMISSION_MATRIX = json.loads((FIXTURES / "b1_round2_admission_matrix.json").read_text(encoding="utf-8"))["cases"]
+
+
+@pytest.mark.parametrize("case", _B1_ROUND2_ADMISSION_MATRIX,
+                         ids=lambda case: case["family"] + "/" + case["category"])
+def test_b1_round2_new_compact_and_checkbox_admission_matrix(case):
+    rows = _parse_gate_source(case["text"], form="6-K", filed="2022-11-10")
+    target = [row for row in rows if (row["ratio_numerator"], row["ratio_denominator"]) == tuple(case["expected"])]
+    if case["positive"]:
+        assert any(row.get("ratio_effectiveness_confirmed") for row in target)
+    else:
+        assert not any(row.get("ratio_effectiveness_confirmed") for row in target)
+        assert all(row.get("ratio_effectiveness_pending") for row in target)
