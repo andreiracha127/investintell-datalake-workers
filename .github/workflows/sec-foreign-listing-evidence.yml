@@ -15,6 +15,7 @@ on:
       - 'tests/test_sec_foreign_equity_sizing*'
       - 'tests/test_sec_provider_transport.py'
       - 'tests/fixtures/sec_foreign_listing_evidence/**'
+      - 'tests/fixtures/sec_foreign_equity_sizing/**'
   push:
     branches: [main]
     paths:
@@ -30,6 +31,7 @@ on:
       - 'tests/test_sec_foreign_equity_sizing*'
       - 'tests/test_sec_provider_transport.py'
       - 'tests/fixtures/sec_foreign_listing_evidence/**'
+      - 'tests/fixtures/sec_foreign_equity_sizing/**'
 
 permissions:
   contents: read
@@ -66,6 +68,7 @@ jobs:
           python -m pytest tests/test_sec_foreign_equity_sizing_core.py -q
           python -m pytest tests/test_sec_foreign_equity_sizing.py -q
           python -m pytest tests/test_sec_foreign_equity_sizing_fuzz.py -q
+          python -m pytest tests/test_sec_foreign_equity_sizing_real.py -q
           python -m pytest tests/test_sec_provider_transport.py -q
           python -m pytest tests/test_sec_foreign_listing_throughput.py -q
           python -m pytest tests/test_sec_foreign_listing_shard_plans.py -q

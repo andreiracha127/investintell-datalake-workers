@@ -1134,7 +1134,9 @@ def test_common_member_spelling_without_own_ordinary_proof_under_ads_filing_refu
     refused(row, "share_count_unit_unverified")
     assert row["share_unit"] != "ordinary"
     assert row["evidence"]["count_labels"] == ["class:a"]
-    assert row["evidence"]["count_labels_ambiguous"] is True
+    # The explicit count member proves class A; ADS filing evidence still
+    # leaves this count's ordinary units unproven in its own context.
+    assert row["evidence"]["count_labels_ambiguous"] is False
 
 
 def test_every_elected_count_context_must_prove_its_own_class_identity(db):
@@ -1291,6 +1293,54 @@ def test_preferred_evidence_for_another_class_is_not_a_count_veto(db):
     assert row["class_binding"] == "explicit"
 
 
+@pytest.mark.parametrize("kind,title,other_member", [
+    ("preferred", "Class B preferred shares", "ClassOfStock=ClassB;"),
+    ("unknown", "Class B shares", "ClassOfStock=ClassB;"),
+    ("warrant", "Warrants to purchase Class A ordinary shares", "ClassOfStock=WarrantsToPurchaseClassAOrdinaryShares;"),
+    ("warrant", "Redeemable warrants, each exercisable for Class A ordinary shares", "ClassOfStock=RedeemableWarrants;"),
+    ("equity", "Class A common shares, Class B preferred shares", "ClassOfStock=OpaqueOther;"),
+    ("equity", "Class B preferred shares, Class A common shares", "ClassOfStock=OpaqueOther;"),
+])
+def test_nonordinary_other_security_does_not_become_count_stock_subject(db, kind, title, other_member):
+    """Another class or a warrant's target class is not the count's security."""
+    row = _round5_count_with_filing_observations(
+        db, own_positive=True, veto_kind=kind, veto_title=title,
+        veto_member=other_member, same_raw_member=False,
+    )
+    assert row["status"] == "resolved" and row["ordinary_shares"] == 100_000
+    assert row["canonical_underlying_class_id"] == "class:a"
+    assert row["evidence"]["count_unit_veto_evidence"] == []
+
+
+def test_nonordinary_second_subject_vetoes_only_its_own_stock_class(db):
+    """The mixed caption's preferred Class B words apply to B, not Class A."""
+    member, other = "ClassOfStock=ClassBCommonShares;", "ClassOfStock=OpaqueOther;"
+    adsh = observe(db, member=member, title="Class B ordinary shares")
+    count(db, adsh=adsh, member=member, shares=100_000)
+    caption = "Class A common shares, Class B preferred shares"
+    observe(db, ticker="UNLISTED", member=other, kind="equity", title=caption, adsh=adsh)
+    _round4_set_observation_context(db, adsh=adsh, member=other, title=caption, dimh="other-context")
+    ads_contract(db, class_token="class_b")
+    row = resolve(db, members=[member])
+    refused(row, "share_count_unit_unverified")
+    assert any(x["same_canonical_class"] for x in row["evidence"]["count_unit_veto_evidence"])
+
+
+@pytest.mark.parametrize("caption", [
+    'Class A" ordinary shares', 'Class "A ordinary shares', 'Class «A ordinary shares',
+])
+def test_malformed_other_class_caption_does_not_invent_a_canonical_veto(db, caption):
+    """A Class B unit cannot become Class A through a partial quoted caption."""
+    member, other = "ClassOfStock=CommonShares;", "ClassOfStock=ClassBCommonShares;"
+    adsh = observe(db, member=member, title="Class «A» ordinary shares")
+    count(db, adsh=adsh, member=member, shares=100_000)
+    observe(db, ticker="UNLISTED", member=other, kind="unit", title=caption, adsh=adsh)
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[member])
+    assert row["status"] == "resolved" and row["ordinary_shares"] == 100_000
+    assert row["evidence"]["count_unit_veto_evidence"] == []
+
+
 def test_ordinary_count_beneath_ads_line_retains_own_proof_without_linked_veto(db):
     member = "ClassOfStock=ClassACommonShares;"
     ordinary_title, ads_title = "Class A ordinary shares", "Class A American Depositary Shares"
@@ -1335,6 +1385,31 @@ def test_title_whitelist_never_discards_competing_or_unmatched_identities(db, ti
     assert row["class_binding"] is None
 
 
+@pytest.mark.parametrize("member", [
+    "ClassOfStock=AAndBCommonShares;",
+    "ClassOfStock=A and B Common Shares;",
+    "ClassOfStock=IIAndIIIOrdinaryShares;",
+])
+def test_own_bare_coordinated_member_cannot_borrow_a_single_title_identity(db, member):
+    """A valid own Class A caption cannot narrow a count member that names A+B."""
+    adsh = observe(db, member=member, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=member, shares=100_000)
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[member])
+    refused(row, "foreign_listing_class_ambiguous")
+    assert row["evidence"]["count_scope_unverified"] is True
+
+
+def test_own_opaque_member_does_not_invent_coordination_inside_standard(db):
+    member = "ClassOfStock=StandardCommonShares;"
+    adsh = observe(db, member=member, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=member, shares=100_000)
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[member])
+    assert row["status"] == "resolved" and row["ordinary_shares"] == 100_000
+    assert row["evidence"]["count_scope_unverified"] is False
+
+
 def test_mixed_case_single_roman_title_keeps_identity_without_legacy_camel_split(db):
     member = "ClassOfStock=ClassIICommonShares;"
     adsh = observe(db, member=member, kind="equity", title="cLaSs ii ordinary shares")
@@ -1365,7 +1440,8 @@ def test_member_and_single_ordinary_title_identity_must_agree(db):
     ("ClassOfStock=ClassACommonShares;", "ClassesOfShareCapital=cLaSsAOrdinaryShares;"),
     ("ClassOfStock=OpaqueMember;", "ClassOfStock=OpaqueMember;"),
 ])
-def test_linked_other_context_title_contradiction_is_a_scope_veto(db, member, other_member):
+def test_other_context_ordinary_title_does_not_change_count_owned_scope(db, member, other_member):
+    """A different context's class caption cannot broaden the count's own scope."""
     adsh = observe(db, member=member, title="Class A ordinary shares")
     count(db, adsh=adsh, member=member)
     observe(db, ticker="UNLISTED", member=other_member,
@@ -1374,11 +1450,11 @@ def test_linked_other_context_title_contradiction_is_a_scope_veto(db, member, ot
                                     title="Class B ordinary shares", dimh="other-context")
     ads_contract(db, class_token="class_a")
     row = resolve(db, members=[member])
-    refused(row, "foreign_listing_class_ambiguous")
+    assert row["status"] == "resolved" and row["refusal"] is None
     assert row["share_unit"] == "ordinary"
-    assert row["evidence"]["count_scope_unverified"] is True
-    assert any(x["dimh"] == "other-context" and "class:b" in x["declared_title_keys"]
-               for x in row["evidence"]["count_class_scope_veto_evidence"])
+    assert row["canonical_underlying_class_id"] == "class:a"
+    assert row["evidence"]["count_scope_unverified"] is False
+    assert row["evidence"]["count_class_scope_veto_evidence"] == []
 
 
 @pytest.mark.parametrize("member,kind", [
@@ -1409,6 +1485,11 @@ def test_own_title_canonical_class_links_veto_for_opaque_count_member(db, member
     ("equity", "Class A bonds"),
     ("equity", "Class A options"),
     ("preferred", "Class A preferred shares, par value $0.01"),
+    ("preferred", "Preferred Class A shares"),
+    ("equity", "Deferred Class A shares"),
+    ("preferred", "Preference Class A shares"),
+    ("equity", "Founder Class A shares"),
+    ("preferred", "Class A and B preferred shares"),
 ])
 def test_non_depositary_observation_caption_links_veto_for_opaque_member(db, kind, title):
     member, other = "ClassOfStock=ClassACommonShares;", "ClassOfStock=OpaqueNegative;"
@@ -1425,7 +1506,8 @@ def test_non_depositary_observation_caption_links_veto_for_opaque_member(db, kin
 
 @pytest.mark.parametrize("title", ["A and B ordinary shares", "Class A and B ordinary shares",
                                    "Class A and Series A ordinary shares"])
-def test_linked_coordinated_other_context_title_is_negative_scope_evidence(db, title):
+def test_other_context_coordinated_ordinary_title_does_not_veto_single_count(db, title):
+    """Coordination refuses only when it belongs to the count's own context."""
     member = "ClassOfStock=ClassACommonShares;"
     adsh = observe(db, member=member, title="Class A ordinary shares")
     count(db, adsh=adsh, member=member)
@@ -1433,8 +1515,10 @@ def test_linked_coordinated_other_context_title_is_negative_scope_evidence(db, t
     _round4_set_observation_context(db, adsh=adsh, member=member, title=title, dimh="other-context")
     ads_contract(db, class_token="class_a")
     row = resolve(db, members=[member])
-    refused(row, "foreign_listing_class_ambiguous")
-    assert row["evidence"]["count_class_scope_veto_evidence"]
+    assert row["status"] == "resolved" and row["refusal"] is None
+    assert row["canonical_underlying_class_id"] == "class:a"
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert row["evidence"]["count_class_scope_veto_evidence"] == []
 
 
 @pytest.mark.parametrize("member,expected", [

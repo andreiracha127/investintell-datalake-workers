@@ -1,9 +1,15 @@
 """Independent set-based admission oracle for synthetic foreign cover filings.
 
-The reference deliberately never calls a SQL label/unit helper, reads a resolver
-body, or imports its grammar. It models the written contract using Python token
-lists and sets. Every case calls the public sizing API, including its election,
-class binding and refusal precedence. COPY and rolled-back batches bound storage.
+The independent Round 6 specification is deliberately narrow: ordinary proof
+belongs to the count's own context; a nonordinary veto must concern that same
+raw member or its own stock subject class. An unrelated Class B, a warrant's
+target class, or another context's coordinated title cannot scope-veto a Class A
+count. Count-owned coordination remains ambiguous. Differential equality alone
+does not establish this specification; separate real-data golden floors do.
+
+The reference never calls SQL label/unit helpers, reads resolver bodies, or
+imports their grammar. Python token lists and sets implement this contract.
+Each case calls the public sizing API. COPY and rollback batches bound storage.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from test_sec_foreign_equity_sizing import sql_database
 
 
 SEED = 0xB2052026
-ORACLE_VERSION = 8
+ORACLE_VERSION = 10
 ADS_MEMBER = "ClassOfStock=AmericanDepositaryShares;"
 DAY = "2025-12-31"
 ROMANS = {
@@ -59,6 +65,8 @@ MEMBERS = (
     "ClassOfStock=ClassACommONlyHeldShares;",
     "ClassOfStock=ClassAExtraordinaryShares;",
     "ClassOfStock=Class A cOmMoN Shares;",
+    "ClassOfStock=AAndBCommonShares;", "ClassOfStock=A and B Common Shares;",
+    "ClassOfStock=IIAndIIIOrdinaryShares;",
 )
 TITLES = (
     "Class A ordinary shares", "Class A common shares", "Class A shares",
@@ -161,71 +169,115 @@ def _caption_identity(title: str | None, descriptors: set[str], terminals: set[s
 
 
 def strict_title_identity(title: str | None) -> str | None:
-    return _caption_identity(title, DESCRIPTORS, {"share", "shares", "stock"})
+    valid, label = own_title_scope(title)
+    return label if valid else None
 
 
-def negative_title_evidence(title: str | None) -> tuple[set[str], bool]:
-    # Broader than the positive whitelist, because these sets can only deny.
-    # Explicit declarations survive surrounding prose. Unprefixed continuation
-    # excludes prose words so "Class A, par value ..." does not invent Class PAR.
-    tokens = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)*|[&,/;]", (title or "").lower())
+def own_title_scope(title: str | None) -> tuple[bool, str | None]:
+    if not title:
+        return True, None
+    text = " ".join(title.lower().split())
+    text = re.sub(r"\*{1,4}$", "", text).rstrip()
+    if "," in text:
+        text, tail = text.split(",", 1)
+        tail = tail.strip()
+        if tail != "no par value" and not re.fullmatch(
+            r"(?:par|nominal) value\s+(?:us\$|\$)?\s*[0-9]+(?:\.[0-9]+)?(?:\s+(?:per share|pershare))?", tail,
+        ):
+            return False, None
+    text = re.sub(r"^(class|series)(?=[a-z0-9])", r"\1 ", text.strip())
+    label = _caption_identity(text, DESCRIPTORS, {"share", "shares", "stock"})
+    if label is not None:
+        return True, label
+    words = text.split()
+    generic = (len(words) >= 2 and words[0] in {"common", "ordinary"}
+               and words[-1] in {"share", "shares", "stock"}
+               and all(word in DESCRIPTORS for word in words[1:-1]))
+    return generic, None
+
+
+def stock_subjects(text: str | None, *, member: bool = False) -> list[tuple[set[str], str]]:
+    if not text:
+        return []
+    value = text.split("=", 1)[-1].rstrip(";") if member else text
+    tokens = member_tokens("=" + value) if member else re.findall(
+        r'''"[^"\n]*"|'[^'\n]*'|“[^”\n]*”|‘[^’\n]*’|«[^»\n]*»|[a-z0-9]+(?:-[a-z0-9]+)*|[&,/;]|["'“”‘’«»]''',
+        re.sub(r"\b(class|series)(?=[a-z0-9])", r"\1 ", value.lower()),
+    )
     prefixes = {"class", "classes", "series"}
-    reserved = DESCRIPTORS | NONORDINARY_WORDS | COORDINATORS | {
-        "class", "classes", "series", "capital", "share", "shares", "stock", "stocks",
-        "of", "the", "to", "in", "on", "as", "by", "no", "is",
-        "commonshares", "ordinaryshares",
-    }
-    prose = {"par", "value", "per", "each", "with", "nominal", "us", "usd", "dollar", "dollars"}
+    stock_descriptors = DESCRIPTORS | {"preferred", "preference", "deferred", "founder", "founders", "issuer", "capital"}
+    stop = DESCRIPTORS | NONORDINARY_WORDS | COORDINATORS | prefixes | {"share", "shares", "stock", "stocks", "member"}
 
-    def identity(index: int, *, explicit: bool = False) -> bool:
-        return (0 <= index < len(tokens) and tokens[index] not in reserved
-                and (explicit or tokens[index] not in prose)
-                and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", tokens[index]) is not None)
+    def identifier(index):
+        if index >= len(tokens):
+            return None
+        token = tokens[index]
+        pairs = {'"': '"', "'": "'", "“": "”", "‘": "’", "«": "»"}
+        quotes = set(pairs) | set(pairs.values())
+        if token[0] in pairs:
+            if len(token) < 3 or token[-1] != pairs[token[0]]:
+                return None
+            token = token[1:-1].strip()
+        elif token[0] in quotes or token[-1] in quotes or (index + 1 < len(tokens) and tokens[index + 1] in quotes):
+            return None
+        return token if token not in stop and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", token) else None
 
-    labels: set[str] = set()
-    explicit_positions: set[int] = set()
-    namespace, waiting, explicit, continuing = None, False, False, False
-    for index, token in enumerate(tokens):
-        if token in prefixes:
-            namespace, waiting, explicit, continuing = ("series" if token == "series" else "class"), True, True, False
-        elif token in COORDINATORS:
-            if continuing or (waiting and namespace is not None):
-                waiting, explicit, continuing = True, False, False
+    def start(index):
+        while index < len(tokens) and tokens[index] in stock_descriptors:
+            index += 1
+        return index if index < len(tokens) and tokens[index] in prefixes else None
+
+    first = start(0)
+    if first is None:
+        return []
+    result = []
+    cursor = first
+    modifier_start = 0
+    while cursor < len(tokens):
+        namespace = "series" if tokens[cursor] == "series" else "class"
+        cursor += 1
+        first_id = identifier(cursor)
+        if first_id is None:
+            break
+        keys = {namespace + ":" + canonical_id(first_id)}
+        cursor += 1
+        while cursor < len(tokens) and tokens[cursor] in COORDINATORS:
+            following = cursor + 1
+            while following < len(tokens) and tokens[following] in COORDINATORS:
+                following += 1
+            next_namespace = namespace
+            if following < len(tokens) and tokens[following] in prefixes:
+                next_namespace = "series" if tokens[following] == "series" else "class"
+                following += 1
+            next_id = identifier(following)
+            if next_id is not None:
+                keys.add(next_namespace + ":" + canonical_id(next_id))
+                cursor = following + 1
             else:
-                namespace, waiting, continuing = None, False, False
-        elif waiting:
-            if identity(index, explicit=explicit):
-                labels.add(namespace + ":" + canonical_id(token))
-                if explicit:
-                    explicit_positions.add(index)
-                waiting, continuing = False, True
-            else:
-                namespace, waiting, continuing = None, False, False
-        else:
-            namespace, continuing = None, False
-
-    coordinated = False
-    for index, token in enumerate(tokens):
-        if token not in COORDINATORS:
-            continue
-        left, right = index - 1, index + 1
-        while right < len(tokens) and tokens[right] in COORDINATORS:
-            right += 1
-        if right < len(tokens) and tokens[right] in prefixes:
-            right += 1
-        if identity(left, explicit=left in explicit_positions) and identity(right, explicit=right in explicit_positions):
-            coordinated = True
-    return labels, coordinated
+                break
+        body_start, next_subject, next_boundary = cursor, None, len(tokens)
+        for index in range(cursor, len(tokens)):
+            if tokens[index] in COORDINATORS:
+                candidate = start(index + 1)
+                if candidate is not None:
+                    next_subject, next_boundary = candidate, index
+                    break
+        wording = " ".join(tokens[modifier_start:next_boundary])
+        result.append((keys, wording))
+        if member or next_subject is None:
+            break
+        modifier_start, cursor = next_boundary + 1, next_subject
+    return result
 
 
 def negative_observation_evidence(observation: Observation) -> tuple[set[str], bool]:
-    keys = member_identities(observation.member)
+    keys = set().union(*(keys for keys, _ in stock_subjects(observation.member, member=True)))
     # Depositary captions describe underlying shares. Explicit member keys may
     # link a veto, but caption labels and coordinators never identify ADS units.
     if observation.kind == "depositary" or has_depositary(observation.member) or has_depositary(observation.title):
         return keys, False
-    declared, coordinated = negative_title_evidence(observation.title)
-    return keys | declared, coordinated
+    declared = set().union(*(keys for keys, _ in stock_subjects(observation.title)))
+    return keys | declared, False
 
 
 def negative_observation_keys(observation: Observation) -> set[str]:
@@ -263,6 +315,27 @@ def ordinary_member_hint(member: str) -> bool:
     return bool((raw_words | camel_words) & {"common", "ordinary"})
 
 
+def count_member_coordinated(member: str) -> bool:
+    value = member.split("=", 1)[-1].rstrip(";")
+    raw = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)*|[&,/;]", value.lower())
+    camel = [word.lower() for word in re.findall(
+        r"[A-Z]?[a-z]+[0-9]*|[A-Z]+(?![a-z])[0-9]*|[0-9]+|[&,/;]", value,
+    )]
+    excluded = DESCRIPTORS | NONORDINARY_WORDS | COORDINATORS | {
+        "class", "classes", "series", "share", "shares", "stock", "stocks", "member", "of", "the",
+    }
+    for tokens in (raw, camel):
+        for index, token in enumerate(tokens):
+            if token not in COORDINATORS or index == 0:
+                continue
+            following = index + 1
+            if following < len(tokens) and tokens[following] in {"class", "classes", "series"}:
+                following += 1
+            if following < len(tokens) and tokens[index - 1] not in excluded and tokens[following] not in excluded:
+                return True
+    return False
+
+
 def reference_decision(filing: Filing) -> str:
     """Brute-force positive set, contradictory set and strict scope set.
 
@@ -283,8 +356,15 @@ def reference_decision(filing: Filing) -> str:
         o.kind == "depositary" or has_depositary(o.title) or has_depositary(o.member) for o in own
     )
     other = has_nonordinary(" ".join(member_tokens(filing.member))) or any(
-        o.kind not in {"equity", "depositary"} or has_nonordinary(o.title)
-        or has_nonordinary(" ".join(member_tokens(o.member))) for o in linked
+        o.kind not in {"equity", "depositary"}
+        or ((o.kind == "depositary" or has_depositary(o.member) or has_depositary(o.title))
+            and has_nonordinary(o.title))
+        or ((o.member == filing.member or any(
+            positive_ids & keys for keys, _ in stock_subjects(o.member, member=True)
+        )) and has_nonordinary(" ".join(member_tokens(o.member))))
+        or any(positive_ids & keys and has_nonordinary(wording) for keys, wording in stock_subjects(o.title))
+        or (o.member == filing.member and not stock_subjects(o.title) and has_nonordinary(o.title))
+        for o in linked
     )
     filing_ads = filing.generic_ads_context or has_depositary(filing.member) or any(
         o.kind == "depositary" or has_depositary(o.title) or has_depositary(o.member)
@@ -300,19 +380,12 @@ def reference_decision(filing: Filing) -> str:
         # Negative related-context evidence blocks ordinary supply but cannot
         # positively establish the elected count's depositary units.
         return "ordinary_class_shares_unavailable" if own_ads else "share_count_unit_unverified"
-    # All own source titles must be independently admitted by the whitelist;
-    # the member may name the identity but cannot hide a malformed source title.
-    # An explicit contradictory identity is negative evidence even when its
-    # context cannot contribute positive proof. Generic other-context titles
-    # contribute neither proof nor a new identity; they are not scope vetoes.
-    if positive_ids and any(
-        not negative_observation_keys(o).issubset(positive_ids) or negative_observation_evidence(o)[1]
-        for o in linked
-    ):
+    own_scopes = [own_title_scope(o.title) for o in own if o.title and o.title.strip()]
+    if count_member_coordinated(filing.member) or any(not valid for valid, _ in own_scopes):
         return "foreign_listing_class_ambiguous"
-    if not title_labels or any(label is None for label in title_labels):
+    if any(label is None for _, label in own_scopes) and len(identities) != 1:
         return "foreign_listing_class_ambiguous"
-    identities.update(title_labels)
+    identities.update(label for valid, label in own_scopes if valid and label is not None)
     if len(identities) != 1:
         return "foreign_listing_class_ambiguous"
     if identities != {filing.line}:
@@ -393,6 +466,7 @@ def make_cases(size: int, seed: int = SEED) -> list[Filing]:
         Filing(a, "class:a", (Observation(a, "cover", "equity", valid),
                               Observation("ClassOfStock=OpaqueMember;", "other", "equity", "Class A options"))),
     ]
+    cases.extend(case for case, _ in narrow_acceptance_cases())
     while len(cases) < size:
         member = rng.choice(MEMBERS)
         observations = []
@@ -414,6 +488,39 @@ def make_cases(size: int, seed: int = SEED) -> list[Filing]:
         cases.append(Filing(member, rng.choice(("class:a", "class:a", "class:b", "class:2", "series:a")),
                             tuple(observations), bool(rng.randrange(2))))
     return cases[:size]
+
+
+def narrow_acceptance_cases() -> list[tuple[Filing, str]]:
+    a, b = MEMBERS[0], "ClassOfStock=ClassBCommonShares;"
+    own_a = Observation(a, "cover", "equity", "Class A ordinary shares")
+    own_b = Observation(b, "cover", "equity", "Class B ordinary shares")
+    opaque = "ClassOfStock=OpaqueNegative;"
+    mixed = "Class A common shares, Class B preferred shares"
+    return [
+        (Filing(a, "class:a", (own_a, Observation(b, "other", "preferred", "Class B preferred shares"))), "resolved"),
+        (Filing(a, "class:a", (own_a, Observation(b, "other", "unknown", "Class B ordinary shares"))), "resolved"),
+        (Filing(a, "class:a", (own_a, Observation(opaque, "other", "equity", "Class A and B ordinary shares"))), "resolved"),
+        (Filing(a, "class:a", (own_a, Observation(opaque, "other", "equity", mixed))), "resolved"),
+        (Filing(b, "class:b", (own_b, Observation(opaque, "other", "equity", mixed))), "share_count_unit_unverified"),
+        (Filing(a, "class:a", (own_a, Observation(opaque, "other", "preferred", "Class A and B preferred shares"))), "share_count_unit_unverified"),
+        (Filing(a, "class:a", (own_a, Observation(opaque, "other", "equity", "Preferred Class A shares"))), "share_count_unit_unverified"),
+        (Filing(a, "class:a", (own_a, Observation("ClassOfStock=WarrantsToPurchaseClassA;", "other", "warrant", "Warrants to purchase Class A ordinary shares"))), "resolved"),
+        (Filing(b, "class:b", (own_b, Observation("ClassOfStock=CommonClassAWarrantsToPurchaseClassB;", "other", "warrant", "Warrants to purchase Class B ordinary shares"))), "resolved"),
+        (Filing(a, "class:a", (Observation(b, "other", "preferred", "Class B preferred shares"),), False), "resolved"),
+        (Filing(a, "class:a", (own_a, Observation("ClassOfStock=ClassAPreferredShares;", "other", "equity", "Class A ordinary shares"))), "share_count_unit_unverified"),
+        (Filing(a, "class:a", (own_a, Observation("ClassOfStock=ClassAPreferredShares;", "other", "equity", None))), "share_count_unit_unverified"),
+        (Filing(b, "class:b", (own_b, Observation("ClassOfStock=ClassAAndClassBCommonShares;", "other", "unknown", None))), "share_count_unit_unverified"),
+        (Filing(a, "class:a", (own_a, Observation("ClassOfStock=ClassIIOrdinaryShares;", "other", "preferred", 'Class "A ordinary shares'))), "resolved"),
+        (Filing("ClassOfStock=AmericanDepositaryShares;", "class:a", (
+            Observation("ClassOfStock=AmericanDepositaryShares;", "cover", "depositary", "Class A unknown shares"),)), "share_count_unit_unverified"),
+        (Filing("ClassOfStock=AmericanDepositaryShares;", "class:a", (
+            Observation("ClassOfStock=AmericanDepositaryShares;", "other", "equity", "Class A founder shares"),)), "share_count_unit_unverified"),
+        *[(Filing(member, "class:a", (Observation(member, "cover", "equity", "Class A ordinary shares"),)),
+           "foreign_listing_class_ambiguous") for member in (
+               "ClassOfStock=AAndBCommonShares;", "ClassOfStock=A and B Common Shares;",
+               "ClassOfStock=IIAndIIIOrdinaryShares;",
+           )],
+    ]
 
 
 def _fact_hash(value: str) -> str:
@@ -539,3 +646,8 @@ def test_seeded_full_sizing_admission_matches_independent_set_oracle(sql_databas
     assert result["disagreements"] == 0, json.dumps(
         {"disagreements": result["disagreements"], "first_five": concise}, indent=2, default=str,
     )
+
+
+def test_narrow_specification_explicit_acceptance_controls():
+    for case, expected in narrow_acceptance_cases():
+        assert reference_decision(case) == expected, (case, expected)

@@ -713,29 +713,43 @@ WITH unit_vocabulary AS (
            '\m(' || v.other_words || ')\M' AS other_re,
            '(?!(?:class(?:es)?|series|common|ordinary|capital|' || v.other_words
                || '|voting|non-voting|nonvoting|subordinate|multiple|shares?|stocks?|member|and|or|of|the|to|in|on|as|by|no|is)\M)[[:alnum:]]+(?:-[[:alnum:]]+)*' AS id_re,
-           '\s*(?:,\s*(?:\mand\M|\mor\M)?|/|&|;|\mand\M|\mor\M)\s*' AS separator
+           '\s*(?:,\s*(?:\mand\M|\mor\M)?|/|&|;|\mand\M|\mor\M)\s*' AS separator,
+           '(?:,\s*(?:(?:par|nominal)\s+value\s+(?:(?:us)?\$)?\s*[0-9]+(?:\.[0-9]+)?'
+               || '(?:\s+per\s*share)?|no\s+par\s+value))?\*{0,4}$' AS metadata_tail
     FROM unit_vocabulary v
+), subject_identifiers AS (
+    SELECT g.*,
+           -- Subject association cannot truncate an invalid token such as A"
+           -- into Class A. Quoted IDs require their complete balanced pair.
+           '(?:' || g.id_re || '|"' || g.id_re || '"|''' || g.id_re || '''|“' || g.id_re || '”|‘'
+               || g.id_re || '’|«' || g.id_re || '»)(?=$|\s|[,;/&])' AS subject_id_re
+    FROM grammar g
 ), patterns AS (
     SELECT g.*,
            '\m(class(?:es)?|series)\M\s+((?:' || g.id_re || ')'
                || '(?:' || g.separator || '(?:' || g.id_re || '))*)' AS mentions_re,
-           '^(class|series)\s+(' || g.id_re || '|"' || g.id_re || '"|'''
+           '^(class|series)\s*(' || g.id_re || '|"' || g.id_re || '"|'''
                || g.id_re || '''|“' || g.id_re || '”|‘' || g.id_re || '’|«' || g.id_re || '»)'
                || '(?:\s+(?:ordinary|common|voting|non-voting|nonvoting|subordinate|multiple))*'
-               || '\s+(?:shares?|stock)$' AS title_re,
-           -- Bare continuation IDs exclude unit descriptors and par-value
-           -- prose. An explicit Class/Series prefix still declares its ID.
-           '(?!(?:par|value|per|each|with|nominal|us|usd|dollars?|commonshares|ordinaryshares|commonstock|ordinarystock)\M)'
-               || g.id_re AS bare_negative_id_re
-    FROM grammar g
-), negative_patterns AS (
+               || '\s+(?:shares?|stock)' || g.metadata_tail AS title_re,
+           '^(?:ordinary|common)(?:\s+(?:voting|non-voting|nonvoting|subordinate|multiple))*'
+               || '\s+(?:shares?|stock)' || g.metadata_tail AS generic_title_re,
+           '^\s*(?:(?:ordinary|common|capital|preferred|preference|deferred|founders?|voting|non-voting|nonvoting|'
+               || 'subordinate|multiple|shares?|stocks?|issuer)\s+)*((?:class(?:es)?|series)\M\s+(?:' || g.id_re || ')'
+               || '(?:' || g.separator || '(?:(?:class(?:es)?|series)\M\s+)?(?:' || g.id_re || '))*)' AS member_subject_re,
+           '^(?:(?:ordinary|common|preferred|preference|deferred|founders?|unknown|conflicting)\s+)*(?:class|series)\s*'
+               || g.subject_id_re AS subject_title_re,
+           '\m(?:' || g.id_re || ')' || g.separator || '(?:' || g.id_re || ')' AS member_coordinated_re
+    FROM subject_identifiers g
+), caption_patterns AS (
     SELECT g.*,
-           '\m(class(?:es)?|series)\M\s+((?:' || g.id_re || ')'
-               || '(?:' || g.separator || '(?:' || g.bare_negative_id_re || '))*)' AS declared_re,
-           '(?:\m(?:class(?:es)?|series)\M\s+(?:' || g.id_re || ')|\m(?:'
-               || g.bare_negative_id_re || '))' || g.separator
-               || '(?:\m(?:class(?:es)?|series)\M\s+(?:' || g.id_re || ')|\m(?:'
-               || g.bare_negative_id_re || '))' AS coordinated_re
+           '^((?:(?:ordinary|common|preferred|preference|deferred|founders?|unknown|conflicting)\s+)*'
+               || '((?:class|series)\s*' || g.subject_id_re
+               || '(?:' || g.separator || '(?:(?:class|series)\s*)?' || g.subject_id_re || ')*))'
+               AS subject_prefix_re,
+           '(?:[,;]|\mand\M|\mor\M|&)\s*(?='
+               || '(?:(?:ordinary|common|preferred|preference|deferred|founders?|unknown|conflicting)\s+)*'
+               || '(?:class|series)\s*' || g.subject_id_re || ')' AS caption_boundary_re
     FROM patterns g
 ), election AS (
     SELECT e.* FROM public.sec_cover_share_election_at(
@@ -767,18 +781,41 @@ WITH unit_vocabulary AS (
                || public.sec_label_norm(upper(i.id)) AS label
     FROM member_mentions m CROSS JOIN patterns g
     CROSS JOIN LATERAL pg_catalog.regexp_split_to_table(m.ids, g.separator) i(id)
-), member_details AS MATERIALIZED (
+), member_subject_identities AS (
+    -- Only the leading subject chain belongs to the observation. A later
+    -- Class B inside a Class A stock's warrant target is another instrument.
+    SELECT DISTINCT t.class_key,
+           (CASE WHEN m.value[1] = 'series' THEN 'series:' ELSE 'class:' END)
+               || public.sec_label_norm(upper(i.id)) AS label
+    FROM member_texts t CROSS JOIN patterns g
+    CROSS JOIN LATERAL pg_catalog.regexp_matches(t.text, g.member_subject_re) subject(value)
+    CROSS JOIN LATERAL pg_catalog.regexp_matches(subject.value[1], g.mentions_re, 'g') m(value)
+    CROSS JOIN LATERAL pg_catalog.regexp_split_to_table(m.value[2], g.separator) i(id)
+), member_label_sets AS (
     SELECT t.class_key, t.text,
            COALESCE((SELECT array_agg(i.label ORDER BY i.label COLLATE "C")
                      FROM member_identities i WHERE i.class_key = t.class_key AND i.label IS NOT NULL),
-                    ARRAY[]::text[]) AS labels,
+                    ARRAY[]::text[]) AS labels
+    FROM member_texts t
+), member_details AS MATERIALIZED (
+    SELECT t.*,
+           -- The observation's member must describe its own stock subject.
+           -- WarrantsToPurchaseClassA contains a target, not an owned Class A.
+           COALESCE((SELECT array_agg(i.label ORDER BY i.label COLLATE "C")
+                     FROM member_subject_identities i WHERE i.class_key = t.class_key AND i.label IS NOT NULL),
+                    ARRAY[]::text[]) AS subject_labels,
            -- A generic Class Ordinary member names units, not an identity.
            -- Every other explicit prefix must yield a recognized identifier.
            (SELECT count(*) FROM pg_catalog.regexp_matches(t.text,
                 '\m(?:class(?:es)?\M(?!\s+(?:common|ordinary|capital|preferred|preference|deferred|founders?|shares?|stocks?)\M)|series\M)', 'g'))
                > (SELECT count(*) FROM member_mentions m WHERE m.class_key = t.class_key)
                OR EXISTS (SELECT 1 FROM member_identities i
-                          WHERE i.class_key = t.class_key AND i.label IS NULL) AS scope_unverified,
+                          WHERE i.class_key = t.class_key AND i.label IS NULL)
+               -- Coordination needs real word/camel boundaries. The finite
+               -- class lexer must not turn Standard into St AND Ard.
+               OR regexp_replace(t.class_key, '[^;=]*=', ' ', 'g') ~* g.member_coordinated_re
+               OR public.sec_label_text(regexp_replace(t.class_key, '[^;=]*=', ' ', 'g'))
+                   ~* g.member_coordinated_re AS scope_unverified,
            t.class_key ~* g.ads_re OR t.text ~* g.ads_re AS depositary,
            t.text ~* g.other_re AS other_unit,
            t.text ~* '\m(preferred|preference)\M' AS preferred,
@@ -788,7 +825,7 @@ WITH unit_vocabulary AS (
            regexp_replace(t.class_key, '[^;=]*=', ' ', 'g') ~* '\m(common|ordinary)\M'
                OR public.sec_label_text(regexp_replace(t.class_key, '[^;=]*=', ' ', 'g'))
                    ~* '\m(common|ordinary)\M' AS ordinary_hint
-    FROM member_texts t CROSS JOIN patterns g
+    FROM member_label_sets t CROSS JOIN patterns g
 ), filing_units AS (
     -- Preserve the existing no-recovery rule: an ordinary spelling hint alone
     -- supplies no positive proof in any filing carrying depositary evidence.
@@ -805,11 +842,11 @@ WITH unit_vocabulary AS (
     ) AS filing_has_depositary
 ), elected AS (
     SELECT c.*, labels.count_label, labels.label_ambiguous, labels.all_labels, labels.title_evidence,
-           labels.scope_unverified OR veto.scope_veto AS scope_unverified,
+           labels.scope_unverified,
            units.ordinary_unit, veto.preferred AS preferred_unit,
            veto.ads AS ads_unit, veto.other_unit AS other_unit_veto, veto.evidence AS veto_evidence,
            member.depositary OR labels.observed_ads AS own_ads_unit,
-           veto.scope_veto AS class_scope_veto, veto.scope_evidence AS class_scope_veto_evidence,
+           false AS class_scope_veto, '[]'::jsonb AS class_scope_veto_evidence,
            CASE WHEN veto.other_unit OR (veto.ads AND units.ordinary_unit) THEN 'unknown'
                 -- A filing veto cannot classify a different count context.
                 WHEN veto.ads AND NOT (member.depositary OR labels.observed_ads) THEN 'unknown'
@@ -817,7 +854,7 @@ WITH unit_vocabulary AS (
                 WHEN units.ordinary_unit THEN 'ordinary' ELSE 'unknown' END AS count_unit,
            veto.other_unit OR (veto.ads AND units.ordinary_unit) AS unit_conflict
     FROM selected_counts c JOIN member_details member ON member.class_key = c.class_key
-    CROSS JOIN negative_patterns g CROSS JOIN filing_units f
+    CROSS JOIN caption_patterns g CROSS JOIN filing_units f
     -- Positive title and unit evidence belongs to the count's exact context.
     CROSS JOIN LATERAL (
         WITH own_observations AS MATERIALIZED (
@@ -829,6 +866,7 @@ WITH unit_vocabulary AS (
             WHERE NULLIF(btrim(regexp_replace(o.security_title, '\s+', ' ', 'g')), '') IS NOT NULL
         ), strict_titles AS (
             SELECT t.fact_hash, t.text, m.value[1] AS namespace,
+                   cardinality(member.labels) = 1 AND t.text ~ g.generic_title_re AS generic_valid,
                    public.sec_label_norm(upper(regexp_replace(m.value[2],
                        '^["''“‘«]|["''”’»]$', '', 'g'))) AS identifier
             FROM source_titles t
@@ -846,8 +884,13 @@ WITH unit_vocabulary AS (
         )
         SELECT CASE WHEN cardinality(l.labels) = 1 THEN l.labels[1] END AS count_label,
                cardinality(l.labels) > 1 AS label_ambiguous, l.labels AS all_labels,
-               member.scope_unverified OR NOT EXISTS (SELECT 1 FROM source_titles)
-                   OR EXISTS (SELECT 1 FROM strict_titles t WHERE t.identifier IS NULL) AS scope_unverified,
+               -- An explicit count-owned member can prove its own class even
+               -- when no title was preserved. A present title must be one
+               -- compatible identity or closed generic ordinary wording.
+               member.scope_unverified
+                   OR (NOT EXISTS (SELECT 1 FROM source_titles) AND cardinality(member.labels) IS DISTINCT FROM 1)
+                   OR EXISTS (SELECT 1 FROM strict_titles t
+                              WHERE t.identifier IS NULL AND t.generic_valid IS DISTINCT FROM true) AS scope_unverified,
                EXISTS (SELECT 1 FROM own_observations o WHERE o.security_kind = 'equity'
                        AND o.security_title ~* '\m(common|ordinary)\M') AS observed_ordinary,
                EXISTS (SELECT 1 FROM own_observations o WHERE o.security_kind = 'depositary'
@@ -857,58 +900,80 @@ WITH unit_vocabulary AS (
                    'class_key', o.class_key, 'dimh', o.dimh, 'security_kind', o.security_kind,
                    'security_title', o.security_title, 'strict_id', t.namespace || ':' || t.identifier,
                    'title_valid', CASE WHEN NULLIF(btrim(regexp_replace(o.security_title, '\s+', ' ', 'g')), '') IS NOT NULL
-                                       THEN t.identifier IS NOT NULL END)
+                                       THEN t.identifier IS NOT NULL OR t.generic_valid END)
                    ORDER BY o.fact_hash)
                    FROM own_observations o LEFT JOIN strict_titles t ON t.fact_hash = o.fact_hash),
                    '[]'::jsonb) AS title_evidence
         FROM label_set l
     ) labels
     -- A veto belongs to the filing, linked by raw member or the count's proven
-    -- canonical identities. A nondepositary observation's explicit declared
-    -- title identities establish negative association only, never proof.
-    -- ADS captions name an underlying
-    -- entitlement and cannot veto its separately evidenced ordinary class.
+    -- canonical identities. Only an observation's own stock subject supplies
+    -- an association key; another instrument's target supplies no stock key.
+    -- ADS captions name an underlying entitlement rather than their own stock.
     -- This relation has no dimh restriction and never lends positive proof.
     CROSS JOIN LATERAL (
         WITH linked AS (
-            SELECT o.*, m.labels AS member_labels,
+            SELECT o.*, m.subject_labels AS member_labels,
                    observation_keys.labels AS observation_labels,
                    title_keys.labels AS declared_title_labels,
-                   title_keys.coordinated AS coordinated_title,
                    o.class_key = c.class_key AS same_member,
                    observation_keys.labels && labels.all_labels AS same_canonical_class,
                    o.security_kind = 'depositary' OR o.security_title ~* g.ads_re
                        OR m.depositary AS ads,
                    o.security_kind NOT IN ('equity', 'depositary')
-                       OR o.security_title ~* g.other_re OR m.other_unit AS other_unit,
-                   o.security_kind = 'preferred' OR o.security_title ~* '\m(preferred|preference)\M'
+                       OR (CASE WHEN title_keys.has_subjects THEN title_keys.matched_other_units
+                                ELSE o.security_title ~* g.other_re END) OR m.other_unit AS other_unit,
+                   o.security_kind = 'preferred' OR (CASE WHEN title_keys.has_subjects THEN title_keys.matched_preferred
+                                                         ELSE o.security_title ~* '\m(preferred|preference)\M' END)
                        OR m.preferred AS preferred
             FROM filing_observations o JOIN member_details m ON m.class_key = o.class_key
             CROSS JOIN LATERAL (
-                SELECT regexp_replace(lower(regexp_replace(o.security_title, '\s+', ' ', 'g')),
-                                      '["''“”‘’«»]', '', 'g') AS text,
+                SELECT lower(btrim(regexp_replace(o.security_title, '\s+', ' ', 'g'))) AS text,
                        o.security_kind = 'depositary' OR COALESCE(o.security_title ~* g.ads_re, false)
                            OR m.depositary AS depositary
             ) title_source
             CROSS JOIN LATERAL (
-                WITH mentions AS (
-                    SELECT t.value[1] AS namespace, t.value[2] AS ids
-                    FROM pg_catalog.regexp_matches(title_source.text, g.declared_re, 'g') t(value)
-                    WHERE NOT title_source.depositary
+                WITH parts AS MATERIALIZED (
+                    SELECT t.n, btrim(t.text) AS text,
+                           pg_catalog.regexp_match(btrim(t.text), g.subject_prefix_re) AS prefix
+                    FROM pg_catalog.regexp_split_to_table(title_source.text, g.caption_boundary_re)
+                         WITH ORDINALITY t(text, n)
+                    WHERE NOT title_source.depositary AND title_source.text ~ g.subject_title_re
+                ), grouped AS (
+                    -- Identity-only fragments share the following typed
+                    -- fragment: Class A and Class B preferred shares.
+                    SELECT p.*, COALESCE(min(p.n) FILTER (
+                               WHERE NULLIF(btrim(substring(p.text FROM length(p.prefix[1]) + 1)), '') IS NOT NULL
+                                  OR p.prefix[1] ~* '\m(common|ordinary|preferred|preference|deferred|founders?|unknown|conflicting)\M')
+                               OVER (ORDER BY p.n ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING), p.n) AS unit_group
+                    FROM parts p WHERE p.prefix IS NOT NULL
+                ), subjects AS MATERIALIZED (
+                    SELECT p.n,
+                           COALESCE(substring(u.text FROM
+                               '^(.*?\m(?:shares?|stock|notes?|debentures?|bonds?|options?|warrants?|units?|rights?)\M)'),
+                               u.text) AS unit_text,
+                           regexp_replace(regexp_replace(p.prefix[2], '["''“”‘’«»]', '', 'g'),
+                                          '\m(class|series)(?=[[:alnum:]])', '\1 ', 'g') AS identities
+                    FROM grouped p JOIN parts u ON u.n = p.unit_group
                 ), identities AS (
-                    SELECT DISTINCT (CASE WHEN m.namespace = 'series' THEN 'series:' ELSE 'class:' END)
-                        || public.sec_label_norm(upper(i.id)) AS label
-                    FROM mentions m CROSS JOIN LATERAL pg_catalog.regexp_split_to_table(m.ids, g.separator) i(id)
+                    SELECT DISTINCT s.n,
+                           (CASE WHEN m.value[1] = 'series' THEN 'series:' ELSE 'class:' END)
+                               || public.sec_label_norm(upper(i.id)) AS label
+                    FROM subjects s CROSS JOIN LATERAL pg_catalog.regexp_matches(s.identities, g.mentions_re, 'g') m(value)
+                    CROSS JOIN LATERAL pg_catalog.regexp_split_to_table(m.value[2], g.separator) i(id)
                 )
-                SELECT COALESCE(array_agg(i.label ORDER BY i.label COLLATE "C")
-                                FILTER (WHERE i.label IS NOT NULL), ARRAY[]::text[]) AS labels,
-                       NOT title_source.depositary
-                           AND COALESCE(title_source.text ~ g.coordinated_re, false) AS coordinated
-                FROM identities i
+                SELECT COALESCE((SELECT array_agg(DISTINCT i.label ORDER BY i.label)
+                                 FROM identities i WHERE i.label IS NOT NULL), ARRAY[]::text[]) AS labels,
+                       EXISTS (SELECT 1 FROM subjects) AS has_subjects,
+                       EXISTS (SELECT 1 FROM subjects s JOIN identities i ON i.n = s.n
+                               WHERE i.label = ANY(labels.all_labels) AND s.unit_text ~* g.other_re) AS matched_other_units,
+                       EXISTS (SELECT 1 FROM subjects s JOIN identities i ON i.n = s.n
+                               WHERE i.label = ANY(labels.all_labels)
+                                 AND s.unit_text ~* '\m(preferred|preference)\M') AS matched_preferred
             ) title_keys
             CROSS JOIN LATERAL (
                 SELECT COALESCE(array_agg(k.label ORDER BY k.label COLLATE "C"), ARRAY[]::text[]) AS labels
-                FROM (SELECT unnest(m.labels) AS label UNION SELECT unnest(title_keys.labels)) k
+                FROM (SELECT unnest(m.subject_labels) AS label UNION SELECT unnest(title_keys.labels)) k
                 WHERE k.label IS NOT NULL
             ) observation_keys
             WHERE o.class_key = c.class_key OR observation_keys.labels && labels.all_labels
@@ -916,27 +981,12 @@ WITH unit_vocabulary AS (
         SELECT member.depositary OR COALESCE(bool_or(l.ads), false) AS ads,
                member.other_unit OR COALESCE(bool_or(l.other_unit), false) AS other_unit,
                member.preferred OR COALESCE(bool_or(l.preferred), false) AS preferred,
-               -- Any linked competing declaration or coordination vetoes
-               -- scope across contexts; none supplies positive class proof.
-               COALESCE(bool_or(l.coordinated_title OR (cardinality(labels.all_labels) > 0
-                                AND NOT l.observation_labels <@ labels.all_labels)), false) AS scope_veto,
-               COALESCE(jsonb_agg(jsonb_build_object(
-                   'fact_hash', l.fact_hash, 'adsh', l.adsh, 'cik', l.cik,
-                   'class_key', l.class_key, 'dimh', l.dimh, 'security_kind', l.security_kind,
-                   'security_title', l.security_title, 'coordinated_title', l.coordinated_title,
-                   'declared_title_keys', l.declared_title_labels,
-                   'canonical_member_keys', l.member_labels, 'canonical_observation_keys', l.observation_labels,
-                   'count_positive_keys', labels.all_labels,
-                   'same_member', l.same_member, 'same_canonical_class', l.same_canonical_class)
-                   ORDER BY l.fact_hash) FILTER (WHERE l.coordinated_title
-                       OR (cardinality(labels.all_labels) > 0 AND NOT l.observation_labels <@ labels.all_labels)),
-                   '[]'::jsonb) AS scope_evidence,
                COALESCE(jsonb_agg(jsonb_build_object(
                    'fact_hash', l.fact_hash, 'adsh', l.adsh, 'cik', l.cik,
                    'class_key', l.class_key, 'dimh', l.dimh, 'security_kind', l.security_kind,
                    'security_title', l.security_title, 'canonical_member_keys', l.member_labels,
                    'canonical_observation_keys', l.observation_labels,
-                   'declared_title_keys', l.declared_title_labels, 'coordinated_title', l.coordinated_title,
+                   'declared_title_keys', l.declared_title_labels,
                    'count_member_keys', member.labels, 'count_class_keys', labels.all_labels,
                    'same_member', l.same_member,
                    'same_canonical_class', l.same_canonical_class,
@@ -1014,7 +1064,7 @@ SELECT d.source_status, d.shares, d.shares_as_of, d.adsh, d.basis,
            'unit_rule', 'own_count_context_positive_proof_and_same_filing_member_or_class_veto',
            'filing_count_classes', d.count_classes,
            'count_form', d.form,
-           'scope_rule', 'explicit_class_dimension_and_strict_own_title')
+           'scope_rule', 'explicit_class_dimension_with_present_title_validation')
 FROM detail d CROSS JOIN exchange_fact x
 $fn$;
 

@@ -103,11 +103,16 @@ member or canonical class key vetoes non-ordinary units regardless of its `dimh`
 Every non-equity kind and explicit depositary, preferred, preference, deferred,
 founder, unknown or conflicting wording blocks admission. Count-side canonical
 keys include its member identities and strict-valid own-context title identities.
-Observation-side negative keys also include explicitly declared identities in
-nondepositary titles. Those declarations only establish veto associations; they
-never supply positive count proof. Depositary kind, member or title wording
-disables title-derived negative keys, since an ADS title may name its underlying
-ordinary class. A generic ADS member therefore cannot acquire that class key.
+Observation-side negative keys identify the security that the observation is
+about: a subject Class/Series identity at the start of its member or caption
+clause. In mixed captions, a title-derived unit contradiction applies to that
+clause's class; Class B preferred wording cannot veto Class A common shares.
+References to underlying stock in an ADS caption or stock purchasable through a
+warrant do not make those instruments the ordinary stock class. These keys only
+establish veto associations; they never supply positive count proof. Evidence
+about another class cannot veto this count. A linked observation with several
+class names cannot broaden a count's scope merely by its title; a linked
+non-ordinary kind still vetoes units.
 `count_unit_veto_evidence` records the exact facts, keys and link flags.
 
 An ADS classification requires depositary evidence on the count's own member or
@@ -126,21 +131,35 @@ ordinary count beneath an ADS line remains admissible when it has no veto.
 Count titles use a whole-title whitelist: Class or Series, one identifier,
 optional ordinary/common/voting descriptors, then share, shares or stock.
 Tokenization lowercases raw titles and normalizes whitespace; it does not use
-the legacy camel-case normalizer. Quotes may enclose the identifier. Generic
-titles, bare identities, coordinators, separators, unmatched prefixes, par-value
-trailers and other residue supply no proof. At least one strict-valid own title
-is required, and every nonempty own title must match the whitelist.
+the legacy camel-case normalizer. Quotes may enclose the identifier. The grammar
+accepts compact ClassA spelling and a closed par/nominal/no-par value suffix,
+including a numeric value, currency marker, per-share wording and footnote stars.
+These SEC cover qualifiers do not name another class. A generic common/ordinary
+title is allowed only when the count's own member supplies one class identity.
+Missing own-context titles do not invalidate that explicit member identity.
+Every nonempty own-context title must match the whitelist. Bare identities,
+coordinators between identities, unmatched prefixes and other residue refuse.
 
 Member identities use a separate case-insensitive lexer. Class and Series remain
 distinct, and Roman numerals retain the existing canonical equivalence. The union
 of member and valid own-title identities must contain exactly one class per count.
-A linked observation's declared class set outside the count's proven class set,
-or coordination between identity-like title tokens, is a scope veto across
-contexts. Generic outside titles alone create neither proof nor contradiction.
+Coordination in the count's own title or member refuses scope. A different
+observation's ordinary title, whether it names another class or several classes,
+does not veto the count's own single identity. The filing-wide veto is solely
+explicit non-ordinary unit evidence linked by the same member or canonical
+class; it is not a filing-wide class census.
 `count_labels` contains proof labels only; rejected raw titles remain in
-`count_title_evidence`. `count_class_scope_veto_evidence`, `count_scope_unverified`
-and `count_labels_ambiguous` expose contradictory or absent scope proof, which
+`count_title_evidence`. `count_class_scope_veto_evidence` remains an empty audit
+array for compatibility. `count_scope_unverified` and `count_labels_ambiguous`
+expose contradictory or absent count-owned scope proof, which
 refuses `foreign_listing_class_ambiguous`. Frozen legacy W1 bodies are unchanged.
+
+The small public SEC fixtures in `tests/fixtures/sec_foreign_equity_sizing/`
+preserve twelve issuer configurations and quoted Round 4 outcomes. The real-data
+acceptance floor is checked separately from the synthetic differential oracle:
+over the original 194 row-dates, every loss of a Round 4 resolved row needs a
+quoted, linked non-ordinary contradiction from that filing. The 75 earlier
+unit-proof refusals remain outside this recovery.
 
 ## Refusals and Light's remaining gates
 
