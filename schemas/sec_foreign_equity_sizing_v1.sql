@@ -824,9 +824,21 @@ RETURNS TABLE (
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
 WITH listing AS (
-    SELECT l.*, public.sec_foreign_class_key(l.ratio_class) AS ratio_label,
-           public.sec_foreign_class_key(l.listing_class) AS listing_label
+    SELECT l.*, n.ratio_label, n.listing_label,
+           CASE WHEN l.listed_type IS DISTINCT FROM 'ads' THEN n.listing_label
+                WHEN n.ratio_label IS NOT NULL THEN n.ratio_label
+                -- W1c binds elected ratio facts to this queried line. Listing
+                -- facts cannot carry program keys under the evidence CHECK;
+                -- their NULL key matches only an unkeyed, unambiguous ratio.
+                WHEN l.listing_status = 'resolved' AND l.ratio_status = 'resolved'
+                     AND l.program_key IS NULL
+                     AND l.program_ambiguous IS NOT DISTINCT FROM false
+                     THEN n.listing_label END AS desired_label
     FROM public.sec_foreign_listing_election_at(p_cik, p_ticker, p_as_of, p_as_of) l
+    CROSS JOIN LATERAL (
+        SELECT public.sec_foreign_class_key(l.ratio_class) AS ratio_label,
+               public.sec_foreign_class_key(l.listing_class) AS listing_label
+    ) n
 ), selected AS (
     SELECT l.*, e.*,
            e.basis = 'class' AS class_proof,
@@ -837,13 +849,13 @@ WITH listing AS (
                           OR (l.listing_label IS NOT NULL AND l.listing_label <> e.count_label))
                      THEN 'mismatch'
                 WHEN e.count_label IS NOT NULL
-                     AND (CASE WHEN l.listed_type = 'ads' THEN l.ratio_label ELSE l.listing_label END) = e.count_label
+                     AND l.desired_label = e.count_label
                      THEN 'explicit'
                 WHEN e.sole_class_proven THEN 'sole_ordinary_class_proven'
                 ELSE 'ambiguous' END AS binding
     FROM listing l CROSS JOIN LATERAL public.sec_cover_sizing_share_detail_at(
         p_cik, p_ticker, p_line_members, p_as_of,
-        CASE WHEN l.listed_type = 'ads' THEN l.ratio_label ELSE l.listing_label END
+        l.desired_label
     ) e
 ), decided AS (
     SELECT s.*, CASE
@@ -874,9 +886,11 @@ WITH listing AS (
     SELECT d.*,
            CASE WHEN b.binding IN ('explicit', 'sole_ordinary_class_proven')
                           AND c.program_ambiguous IS NOT DISTINCT FROM false
+                          AND c.listing_status = 'resolved' AND c.ratio_status = 'resolved'
                      THEN c.ratio_numerator END AS count_numerator,
            CASE WHEN b.binding IN ('explicit', 'sole_ordinary_class_proven')
                           AND c.program_ambiguous IS NOT DISTINCT FROM false
+                          AND c.listing_status = 'resolved' AND c.ratio_status = 'resolved'
                      THEN c.ratio_denominator END AS count_denominator,
            c.ratio_numerator AS raw_count_numerator, c.ratio_denominator AS raw_count_denominator,
            c.status AS count_listing_contract_status, c.ratio_status AS count_ratio_status,
@@ -886,13 +900,41 @@ WITH listing AS (
            c.ratio_effective_from AS count_ratio_effective_from, c.ratio_effective_to AS count_ratio_effective_to,
            n.ratio_label AS count_ratio_label, n.listing_label AS count_listing_label,
            b.binding AS count_class_binding,
-           c.program_key AS count_program_key, c.program_ambiguous AS count_program_ambiguous
+           c.program_key AS count_program_key, c.program_ambiguous AS count_program_ambiguous,
+           CASE
+             WHEN c.listing_status = 'ambiguous' OR c.ratio_status = 'ambiguous'
+               THEN format('foreign_listing_ambiguous: %s listing or ADS ratio is ambiguous at count date %s (known %s, listing %s, ratio %s)', p_ticker, d.shares_as_of, p_as_of, c.listing_status, c.ratio_status)
+             WHEN c.listing_status IS DISTINCT FROM 'resolved'
+               THEN format('foreign_issuer_listing_unverified: %s has no resolved listing at count date %s (known %s)', p_ticker, d.shares_as_of, p_as_of)
+             WHEN c.listed_type = 'ads' AND c.ratio_status IS DISTINCT FROM 'resolved'
+               THEN format('depositary_ratio_unsourced: %s has no resolved ADS ratio at count date %s (known %s)', p_ticker, d.shares_as_of, p_as_of)
+             WHEN c.ratio_status IS DISTINCT FROM 'resolved'
+                  OR c.ratio_numerator IS NULL OR c.ratio_denominator IS NULL
+                  OR c.ratio_numerator <= 0 OR c.ratio_denominator <= 0
+                  OR c.ratio_numerator::text IN ('NaN', 'Infinity', '-Infinity')
+                  OR c.ratio_denominator::text IN ('NaN', 'Infinity', '-Infinity')
+               THEN format('depositary_ratio_invalid: %s has no usable ordinary-per-listed-unit ratio at count date %s (known %s)', p_ticker, d.shares_as_of, p_as_of)
+             WHEN b.binding = 'mismatch'
+               THEN format('foreign_listing_class_mismatch: %s count-date ratio is for class %s but its count from %s is class %s', p_ticker, COALESCE(n.ratio_label, n.listing_label), d.adsh, d.count_label)
+             WHEN c.program_ambiguous IS DISTINCT FROM false
+                  OR b.binding NOT IN ('explicit', 'sole_ordinary_class_proven')
+               THEN format('foreign_listing_class_ambiguous: %s has no unique ordinary class for its ratio and count at count date %s (known %s)', p_ticker, d.shares_as_of, p_as_of)
+           END AS count_ratio_refusal
     FROM decided d CROSS JOIN LATERAL public.sec_foreign_listing_election_at(
         p_cik, p_ticker, d.shares_as_of, p_as_of
     ) c
     CROSS JOIN LATERAL (
-        SELECT public.sec_foreign_class_key(c.ratio_class) AS ratio_label,
-               public.sec_foreign_class_key(c.listing_class) AS listing_label
+        SELECT labels.*,
+               CASE WHEN c.listed_type IS DISTINCT FROM 'ads' THEN labels.listing_label
+                    WHEN labels.ratio_label IS NOT NULL THEN labels.ratio_label
+                    WHEN c.listing_status = 'resolved' AND c.ratio_status = 'resolved'
+                         AND c.program_key IS NULL
+                         AND c.program_ambiguous IS NOT DISTINCT FROM false
+                         THEN labels.listing_label END AS desired_label
+        FROM (
+            SELECT public.sec_foreign_class_key(c.ratio_class) AS ratio_label,
+                   public.sec_foreign_class_key(c.listing_class) AS listing_label
+        ) labels
     ) n
     CROSS JOIN LATERAL (
         SELECT CASE WHEN d.class_proof IS DISTINCT FROM true THEN 'ambiguous'
@@ -902,7 +944,7 @@ WITH listing AS (
                               OR (n.listing_label IS NOT NULL AND n.listing_label <> d.count_label))
                          THEN 'mismatch'
                     WHEN d.count_label IS NOT NULL
-                         AND (CASE WHEN c.listed_type = 'ads' THEN n.ratio_label ELSE n.listing_label END) = d.count_label
+                         AND n.desired_label = d.count_label
                          THEN 'explicit'
                     WHEN d.sole_class_proven THEN 'sole_ordinary_class_proven'
                     ELSE 'ambiguous' END AS binding
@@ -986,6 +1028,24 @@ SELECT CASE WHEN h.refusal_code IS NULL THEN 'resolved'
            'count_ratio_numerator', h.raw_count_numerator, 'count_ratio_denominator', h.raw_count_denominator,
            'count_ratio_effective_from', h.count_ratio_effective_from, 'count_ratio_effective_to', h.count_ratio_effective_to,
            'count_listing_evidence_ids', h.count_evidence_ids,
+           'count_ratio_refusal', h.count_ratio_refusal,
+           -- Audit only: preserve elected/control facts even when the core's
+           -- status already nulls its numerical projection. Never use this
+           -- array to infer a class label, binding, or usable entitlement.
+           'count_ratio_evidence_facts', COALESCE((
+               SELECT jsonb_agg(jsonb_build_object(
+                   'id', e.id, 'evidence_kind', e.evidence_kind, 'source_kind', e.source_kind,
+                   'symbol', e.symbol, 'underlying_class', e.underlying_class,
+                   'ratio_numerator', e.ratio_numerator, 'ratio_denominator', e.ratio_denominator,
+                   'program_key', e.ratio_change_program_key,
+                   'effective_from', e.effective_from, 'effective_to', e.effective_to,
+                   'ratio_effectiveness_pending', e.ratio_effectiveness_pending,
+                   'operative_date_conflict', e.operative_date_conflict,
+                   'adsh', e.adsh, 'filed', e.filed, 'available_on', e.available_on
+               ) ORDER BY e.id)
+               FROM public.sec_foreign_listing_evidence e
+               WHERE e.id = ANY(h.count_evidence_ids)
+           ), '[]'::jsonb),
            'phase', 1)
 FROM historical h CROSS JOIN exchange_fact x
 $fn$;

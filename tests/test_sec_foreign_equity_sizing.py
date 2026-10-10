@@ -307,6 +307,104 @@ def test_underlying_ordinary_member_can_bind_below_a_separate_ads_member(db):
     assert row["count_class_key"] == A and row["share_unit"] == "ordinary"
 
 
+def _dlo_ads_class_filing(db, *, b_count=True, total=False, total_only=False):
+    cik, adsh = 1846832, "0000950170-25-058197"
+    observe(db, ticker="DLO", cik=cik, member=ADS, kind="depositary", classes=2,
+            title="Class A American Depositary Shares", adsh=adsh, filed="2025-04-25")
+    if total_only:
+        count(db, cik=cik, adsh=adsh, shares=285_475_136, filed="2025-04-25")
+        return cik, adsh
+    for member, token in ((A, "A"), (B, "B")):
+        observe(db, ticker=f"UNLISTED{token}", cik=cik, member=member, classes=2,
+                title=f"Class {token} ordinary shares", adsh=adsh, filed="2025-04-25")
+    count(db, cik=cik, adsh=adsh, member=A, shares=151_420_944, filed="2025-04-25")
+    if b_count:
+        count(db, cik=cik, adsh=adsh, member=B, shares=134_054_192, filed="2025-04-25")
+    if total:
+        count(db, cik=cik, adsh=adsh, shares=285_475_136, filed="2025-04-25")
+    return cik, adsh
+
+
+@pytest.mark.parametrize("ratio_class,b_count,total", [
+    (None, True, False), (None, False, False), (None, True, True),
+    ("class_a", True, True),
+])
+def test_ads_listing_class_binds_null_ratio_class_and_selects_dlo_a_count(db, ratio_class, b_count, total):
+    # The ordinary A and B members belong to unlisted lines, not the ADS line.
+    # Null-class ratios from the same unkeyed program inherit elected listing A;
+    # their candidate election must select A, never B or DLO's A+B total.
+    cik, adsh = _dlo_ads_class_filing(db, b_count=b_count, total=total)
+    listing(db, ticker="DLO", cik=cik, class_token="class_a")
+    for source in ("f6", "item_12d"):
+        listing(db, ticker="DLO", cik=cik, kind="ads_ratio", source=source,
+                ratio=(5, 1), class_token=ratio_class)
+    row = resolve(db, ticker="DLO", cik=cik, members=[ADS])
+    assert row["status"] == "resolved" and row["refusal"] is None
+    assert row["ordinary_shares"] == 151_420_944 and row["adsh"] == adsh
+    assert row["basis"] == "class" and row["count_class_key"] == A
+    assert row["class_binding"] == "explicit" and row["canonical_underlying_class_id"] == "class:a"
+    assert (row["ratio_numerator"], row["ratio_denominator"]) == (5, 1)
+    assert (row["count_ratio_numerator"], row["count_ratio_denominator"]) == (5, 1)
+    assert row["evidence"]["listing_class"] == row["evidence"]["count_listing_class"] == "class_a"
+    assert row["evidence"]["ratio_class"] == row["evidence"]["count_ratio_class"] == ratio_class
+    assert row["evidence"]["class_binding_status"] == row["evidence"]["count_class_binding_status"] == "explicit"
+    assert row["evidence"]["count_class_keys"] == [A]
+    assert row["evidence"]["count_ratio_refusal"] is None
+    assert row["program_key"] is row["evidence"]["count_program_key"] is None
+
+
+def test_ads_listing_class_fallback_never_binds_dlo_unbound_total(db):
+    cik, adsh = _dlo_ads_class_filing(db, total_only=True)
+    listing(db, ticker="DLO", cik=cik, class_token="class_a")
+    for source in ("f6", "item_12d"):
+        listing(db, ticker="DLO", cik=cik, kind="ads_ratio", source=source, ratio=(5, 1))
+    row = resolve(db, ticker="DLO", cik=cik, members=[ADS])
+    refused(row, "share_total_class_scope_unverified")
+    assert row["adsh"] == adsh and row["count_class_key"] == ""
+    assert row["class_binding"] is row["canonical_underlying_class_id"] is None
+    assert row["evidence"]["class_proof"] is False
+    assert row["evidence"]["class_binding_valid"] is False
+
+
+def test_ads_listing_class_fallback_preserves_conflicting_nonnull_ratio_class(db):
+    cik, _ = _dlo_ads_class_filing(db, b_count=False)
+    listing(db, ticker="DLO", cik=cik, class_token="class_a")
+    for source in ("f6", "item_12d"):
+        listing(db, ticker="DLO", cik=cik, kind="ads_ratio", source=source,
+                ratio=(5, 1), class_token="class_b")
+    row = resolve(db, ticker="DLO", cik=cik, members=[ADS])
+    # The established listing/ratio ambiguity refusal precedes binding refusal.
+    refused(row, "foreign_listing_ambiguous")
+    assert row["evidence"]["listing_class"] == "class_a"
+    assert row["evidence"]["ratio_class"] == "class_b"
+    assert row["evidence"]["class_binding_status"] == "mismatch"
+    assert row["evidence"]["class_binding_valid"] is False
+
+
+@pytest.mark.parametrize("programs", [
+    ("old_cusip:123456789",), ("old_cusip:123456789", "old_cusip:987654321"),
+])
+def test_null_ratio_class_never_falls_back_from_another_or_ambiguous_program(db, programs):
+    cik, _ = _dlo_ads_class_filing(db, b_count=False)
+    listing(db, ticker="DLO", cik=cik, class_token="class_a")
+    for source in ("f6", "item_12d"):
+        listing(db, ticker="DLO", cik=cik, kind="ads_ratio", source=source, ratio=(5, 1))
+    for program in programs:
+        listing(db, ticker="DLO", cik=cik, kind="ads_ratio", source="ratio_change_6k",
+                ratio=(5, 1), filed="2023-01-01", effective="2023-06-01", program=program)
+    row = resolve(db, ticker="DLO", cik=cik, members=[ADS])
+    refused(row, "foreign_listing_class_ambiguous")
+    assert row["listing_status"] == row["ratio_status"] == "resolved"
+    assert row["program_key"] == (programs[0] if len(programs) == 1 else None)
+    assert row["evidence"]["program_ambiguous"] is (len(programs) > 1)
+    assert row["evidence"]["class_binding_status"] == "ambiguous"
+    assert row["evidence"]["class_binding_valid"] is False
+    # The data contract assigns keys only to ratio-change facts, never listings.
+    assert db.execute("SELECT bool_and(ratio_change_program_key IS NULL) "
+                      "FROM public.sec_foreign_listing_evidence "
+                      "WHERE cik=%s AND evidence_kind='listed_type'", (cik,)).fetchone() == (True,)
+
+
 def test_null_ratio_class_with_two_classes_is_ambiguous_even_when_ratios_match(db):
     adsh = observe(db, member=A, title="Class A ordinary shares", classes=2)
     observe(db, ticker="UNLISTED", member=B, title="Class B ordinary shares", classes=2, adsh=adsh)
@@ -737,3 +835,126 @@ def test_legacy_election_retains_numeric_edge_values_exactly(db, shares):
         "CROSS JOIN public.b2_reference_sec_cover_ticker_shares_at('DOM',1,%s) o",
         (DAY, DAY),
     ).fetchone() == (True,)
+
+
+@pytest.mark.parametrize("control", ["pending", "conflict", "listing_ambiguous", "resolved"])
+def test_count_date_ratio_requires_resolved_historical_listing_and_ratio(db, control):
+    # GitHub thread 4237461490: a same-number later entitlement cannot make
+    # the count-date contract resolved. On round 2 the core already withheld
+    # these numbers; the explicit sizing guards and named audit diagnostic
+    # make that requirement independently visible to the Light gate.
+    adsh = observe(db, member=A, title="Class A ordinary shares")
+    count(db, adsh=adsh, member=A)
+    ads_contract(db, ratio=(5, 1), class_token="class_a")
+    if control in {"pending", "conflict"}:
+        listing(db, kind="ads_ratio", source="ratio_change_6k", ratio=(5, 1),
+                class_token="class_a", filed="2024-05-01", effective="2024-06-01",
+                pending=control == "pending")
+        if control == "conflict":
+            # The earliest conflicted date must equal effective_from. The
+            # common listing helper's fixed 2025 candidates are not valid for
+            # this older control, so populate the legally consistent dates.
+            db.execute(
+                "UPDATE public.sec_foreign_listing_evidence "
+                "SET operative_date_conflict=true, "
+                "operative_date_candidates=ARRAY['2024-06-01'::date,'2024-06-02'::date], "
+                "operative_date_conflict_text='Conflicting operative dates' "
+                "WHERE source_kind='ratio_change_6k' AND filed='2024-05-01'"
+            )
+        listing(db, kind="ads_ratio", source="ratio_change_6k", ratio=(5, 1),
+                class_token="class_a", filed="2025-05-01", effective="2025-06-01")
+        db.execute(
+            "UPDATE public.sec_foreign_listing_evidence "
+            "SET ratio_effectiveness_confirmed=true, "
+            "ratio_effectiveness_confirmation_text='Event completed', "
+            "ratio_effectiveness_confirmed_conditions=ARRAY['ratio_effective'] "
+            "WHERE source_kind='ratio_change_6k' AND filed='2025-05-01'"
+        )
+        listing(db, kind="ads_ratio", source="f6", ratio=(5, 1),
+                class_token="class_a", filed="2025-05-01", effective="2025-06-01")
+    elif control == "listing_ambiguous":
+        # Same class, conflicting old listed types: the historical ratio is
+        # resolved but the historical listing is not. A later cover resolves D.
+        listing(db, listed_type="ordinary_direct", class_token="class_a")
+        listing(db, class_token="class_a", filed="2025-05-31")
+
+    row = resolve(db, members=[A])
+    audit = row["evidence"]
+    assert row["status"] == "resolved" and row["refusal"] is None
+    assert row["ordinary_shares"] == 1_000_000
+    assert (row["ratio_numerator"], row["ratio_denominator"]) == (5, 1)
+    assert row["listing_status"] == row["ratio_status"] == "resolved"
+    assert audit["count_class_binding_status"] == "explicit"
+    assert audit["count_class_binding_valid"] is True
+    assert audit["count_program_ambiguous"] is False
+    assert audit["count_listing_status"] == ("ambiguous" if control == "listing_ambiguous" else "resolved")
+    assert audit["count_ratio_status"] == ("ambiguous" if control in {"pending", "conflict"} else "resolved")
+    expected_ratio = (5, 1) if control == "resolved" else (None, None)
+    assert (row["count_ratio_numerator"], row["count_ratio_denominator"]) == expected_ratio
+    if control == "resolved":
+        assert audit["count_ratio_refusal"] is None
+    else:
+        assert audit["count_ratio_refusal"].startswith("foreign_listing_ambiguous: TSM ")
+        # The core's returned historical numerator/denominator are already
+        # NULL. Source-level numerical facts must survive for audit only.
+        assert audit["count_ratio_numerator"] is audit["count_ratio_denominator"] is None
+    facts = audit["count_ratio_evidence_facts"]
+    assert isinstance(facts, list) and facts
+    assert all(fact["id"] in audit["count_listing_evidence_ids"] for fact in facts)
+    assert any(
+        fact["evidence_kind"] == "ads_ratio"
+        and fact["source_kind"] == "f6"
+        and fact["underlying_class"] == "class_a"
+        and fact["ratio_numerator"] == 5
+        and fact["ratio_denominator"] == 1
+        for fact in facts
+    )
+
+
+@pytest.mark.parametrize("programs", [
+    ("old_cusip:123456789",), ("old_cusip:123456789", "old_cusip:987654321"),
+])
+def test_historical_null_ratio_class_cannot_borrow_listing_from_keyed_program(db, programs):
+    # D's unkeyed NULL-class ratio may borrow its elected listing A. At S the
+    # equal 5/1 ratio belongs to keyed programme facts, so that same fallback
+    # is unavailable even when the historical listing and ratio both resolve.
+    adsh = observe(db, member=ADS, kind="depositary", classes=2,
+                   title="Class A American Depositary Shares")
+    for member, token in ((A, "A"), (B, "B")):
+        observe(db, ticker=f"UNLISTED{token}", member=member, classes=2,
+                title=f"Class {token} ordinary shares", adsh=adsh)
+    count(db, adsh=adsh, member=A, shares=1_000_000)
+    count(db, adsh=adsh, member=B, shares=200_000)
+    listing(db, class_token="class_a", until="2025-06-01")
+    for source in ("f6", "item_12d"):
+        listing(db, kind="ads_ratio", source=source, ratio=(5, 1),
+                effective="2020-01-02", until="2025-06-01")
+    for program in programs:
+        listing(db, kind="ads_ratio", source="ratio_change_6k", ratio=(5, 1),
+                filed="2020-06-01", effective="2020-07-01",
+                until="2025-06-01", program=program)
+    listing(db, class_token="class_a", filed="2025-05-31")
+    for source in ("f6", "item_12d"):
+        listing(db, kind="ads_ratio", source=source, ratio=(5, 1),
+                filed="2025-05-01", effective="2025-06-01")
+
+    row = resolve(db, members=[ADS])
+    audit = row["evidence"]
+    assert row["status"] == "resolved" and row["refusal"] is None
+    assert row["ordinary_shares"] == 1_000_000 and row["count_class_key"] == A
+    assert row["class_binding"] == "explicit" and row["program_key"] is None
+    assert (row["ratio_numerator"], row["ratio_denominator"]) == (5, 1)
+    assert row["listing_status"] == row["ratio_status"] == "resolved"
+    assert audit["count_listing_status"] == audit["count_ratio_status"] == "resolved"
+    assert audit["count_listing_class"] == "class_a" and audit["count_ratio_class"] is None
+    assert audit["count_program_key"] == (programs[0] if len(programs) == 1 else None)
+    assert audit["count_program_ambiguous"] is (len(programs) > 1)
+    assert audit["count_class_binding_status"] == "ambiguous"
+    assert audit["count_class_binding_valid"] is False
+    assert (audit["count_ratio_numerator"], audit["count_ratio_denominator"]) == (5, 1)
+    assert row["count_ratio_numerator"] is row["count_ratio_denominator"] is None
+    assert audit["count_ratio_refusal"].startswith("foreign_listing_class_ambiguous: TSM ")
+    assert {
+        fact["program_key"] for fact in audit["count_ratio_evidence_facts"]
+        if fact["source_kind"] == "ratio_change_6k"
+    } == set(programs)

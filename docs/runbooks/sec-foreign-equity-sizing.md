@@ -42,7 +42,7 @@ max_age_days DEFAULT 400)` returns exactly one row with:
 | `canonical_underlying_class_id`, `share_unit`, `basis` | Economic ordinary-class identity and units; phase 1 admits only `class` scope. `sole_class_total` remains a refused audit classification |
 | `class_binding` | `explicit` on phase 1 success; `sole_ordinary_class_proven` is reserved for future positive census evidence |
 | `listed_type`, `ratio_numerator`, `ratio_denominator` | Listed units and ordinary shares per ADS in force at D |
-| `count_ratio_numerator`, `count_ratio_denominator` | W1c at economic count date S with knowledge cutoff D, usable only after historical class binding passes |
+| `count_ratio_numerator`, `count_ratio_denominator` | W1c at economic count date S with knowledge cutoff D; both statuses must resolve, with valid historical class binding and an unambiguous program |
 | `listing_status`, `ratio_status`, `program_key` | W1c diagnostics and elected program token |
 | `exchange_name` | The latest visible W1 line observation's `dei:SecurityExchangeName` at D; conflicting or missing values return NULL |
 | `evidence` | Audit diagnostics; not an alternate source of usable counts |
@@ -99,6 +99,23 @@ numerals are preserved by the shared class-token normalizer.
 
 ## Refusals and Light's remaining gates
 
+The elected ADS ratio may omit its class while the elected listing names the
+underlying class. Sizing can use that listing label in both count selection and
+class binding only within the same resolved, unambiguous program. Existing
+listing facts have no program key under the evidence CHECK, so this fallback
+requires an unkeyed ratio (`program_key IS NULL`) and no competing elected
+program. A keyed ratio cannot borrow the listing label. A conflicting non-NULL
+ratio class remains a mismatch. This rule never binds an undimensioned total:
+the separate explicit-count scope gate still refuses it.
+
+Both count-date listing and ratio statuses must be `resolved` before usable
+`count_ratio_*` values are exposed. These predicates are cumulative with
+historical class binding and program checks. `evidence.count_ratio_refusal`
+names a historical refusal while preserving the current ordinary-count basis
+contract. `count_ratio_evidence_facts` retains raw source values and roles for
+audit only; it does not elect a class or entitlement. Light must reject a size
+when these historical factors are unusable.
+
 Source/count validity precedes scope and unit proof; W1c ambiguity, missing
 listing, missing or invalid ratio, class mismatch/ambiguity and staleness follow.
 Missing proof uses explicit NULL-safe predicates. Independent diagnostics remain
@@ -114,7 +131,7 @@ in `evidence` even when an earlier refusal takes precedence.
 | `depositary_ratio_unsourced` | An ADS line has no resolved ordinary-shares-per-ADS ratio |
 | `depositary_ratio_invalid` | A resolved ratio is missing, nonpositive or nonfinite |
 | `foreign_listing_class_mismatch` | A known W1c class differs from the selected count's class |
-| `foreign_listing_class_ambiguous` | Class/program binding has no unique proof; NULL class requires positive same-filing scope proof, unavailable for totals in phase 1 |
+| `foreign_listing_class_ambiguous` | Class/program binding has no unique proof; a NULL ratio class can use a resolved listing label only under the same-program conditions above; a NULL underlying class needs positive scope proof, unavailable for totals in phase 1 |
 | `stale` | The elected count exceeds `max_age_days`; 400 days is admitted, 401 is stale |
 
 Existing missing, ambiguous, nonpositive, line and source refusals remain
@@ -123,7 +140,9 @@ the selected accession/date and audit diagnostics.
 
 The `(S,D)` historical W1c lookup repeats the current class-binding checks.
 A known historical listing or ratio class mismatch makes `count_ratio_*` NULL;
-a NULL historical class needs the same positive scope proof. Phase 1 does not
+a NULL historical ratio class can use the elected listing class only under the
+same resolved, unkeyed-program conditions. If both labels are NULL, positive
+scope proof is required and remains unavailable for totals in phase 1. Phase 1 does not
 infer that proof from an incomplete tagged census. Raw historical classes,
 ratios, statuses, program and binding diagnostics remain in `evidence`; audit
 facts must never substitute for NULL usable factors.
