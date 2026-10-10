@@ -19,6 +19,7 @@ budget abort and resume.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import uuid
 from pathlib import Path
@@ -184,8 +185,9 @@ class FakeTiingo:
     A listing's ``adj_factor`` is Tiingo's CURRENT adjustment of every bar
     (adjClose = raw × factor); stored rows written with another factor model
     rows fetched before a corporate action. ``bad`` overrides fields of single
-    bars; ``omit`` drops single bars from responses; ``price_start`` makes price
-    data start later than meta's startDate."""
+    bars; ``omit`` drops single bars from responses; ``price_start`` /
+    ``price_end`` make price data start later or end earlier than meta says;
+    ``raw_prices`` replaces a ticker's price body verbatim."""
 
     def __init__(self):
         self.listings: dict[str, dict] = {}
@@ -194,6 +196,8 @@ class FakeTiingo:
         self.price_status: dict[str, int] = {}
         self.bad: dict[tuple[str, dt.date], dict] = {}
         self.omit: set[tuple[str, dt.date]] = set()
+        self.raw_prices: dict[str, object] = {}
+        self.no_key = False
         self.requests: list[tuple] = []
 
     def listing(self, ticker):
@@ -236,11 +240,16 @@ class FakeTiingo:
             return httpx.Response(status, json={"detail": "status"})
         if ticker in self.unknown:
             return httpx.Response(404, json={"detail": "Not found."})
+        if ticker in self.raw_prices:
+            return httpx.Response(200, json=self.raw_prices[ticker])
         lst = self.listing(ticker)
         first = max(start, lst.get("price_start", lst["start"]))
-        return httpx.Response(200, json=[
-            self.bar(ticker, d) for d in bdays(first, min(end, lst["end"]))
-            if (ticker, d) not in self.omit])
+        end = min(end, lst.get("price_end", end))
+        bars = [self.bar(ticker, d) for d in bdays(first, min(end, lst["end"]))
+                if (ticker, d) not in self.omit]
+        # Raw JSON text, as a server could send it: NaN / Infinity tokens included.
+        return httpx.Response(200, content=json.dumps(bars).encode(),
+                              headers={"content-type": "application/json"})
 
     def of(self, kind, ticker=None):
         return [r for r in self.requests
@@ -260,6 +269,8 @@ def tiingo(monkeypatch):
         client = _tiingo.TiingoClient(key="test", bucket=bucket)
         client._client.close()
         client._client = httpx.Client(transport=httpx.MockTransport(fake.handler))
+        if fake.no_key:
+            client._key = ""
         return client
 
     monkeypatch.setattr(w, "TiingoClient", factory)
@@ -345,6 +356,7 @@ def test_source_set_is_listing_resolved_at_run_date_or_any_year_end(db):
     add_evidence(db, 6, "GONE", "2014-01-01", retired=D(2019, 6, 1))  # visible at 2015, not active
     add_evidence(db, 7, "RTIO", "2018-01-01", kind="ads_ratio")
     add_evidence(db, 8, "RCNT", "2026-02-01")                 # resolved only at the run date
+    add_evidence(db, 9, "LATE", "2024-01-01")                 # public only from 2024
 
     # TSM proves listing_status, not the combined status, selects the line.
     assert db.one("SELECT status, listing_status FROM public.sec_foreign_listing_at("
@@ -357,8 +369,12 @@ def test_source_set_is_listing_resolved_at_run_date_or_any_year_end(db):
         jit_before = conn.execute("SHOW jit").fetchone()[0]
         conn.commit()
         assert w.foreign_listing_tickers(conn, AS_OF) == [
-            "ABCD-B", "NEWB", "OLDA", "OTHR", "RCNT", "TSM"]
+            "ABCD-B", "LATE", "NEWB", "OLDA", "OTHR", "RCNT", "TSM"]
         assert w.foreign_listing_tickers(conn, D(2026, 1, 15)) == [
+            "ABCD-B", "LATE", "NEWB", "OLDA", "OTHR", "TSM"]
+        # Codex 4237494731: a historical run probes no year-end after as_of, so
+        # LATE (resolved at 2025-12-31) is not pulled into a 2020 run.
+        assert w.foreign_listing_tickers(conn, D(2020, 6, 30)) == [
             "ABCD-B", "NEWB", "OLDA", "OTHR", "TSM"]
         # JIT is off only inside the selection transaction.
         assert conn.execute("SHOW jit").fetchone()[0] == jit_before
@@ -531,12 +547,13 @@ def test_interrupted_load_commits_nothing_and_resume_refetches_everything(db, ti
     poison = prefix_days[700]                     # inside the second batch
     tiingo.bad[("TRNC", poison)] = {"volume": 10**20}   # bigint overflow: the load dies
 
-    with pytest.raises(errors.NumericValueOutOfRange):
-        run(db)
+    stats = run(db)["foreign_history"]          # the phase survives the failure
     assert history_of(db, "TRNC")[0] == D(2024, 1, 2)       # batch one rolled back too
-    assert status_of(db, "TRNC") is None
+    assert status_of(db, "TRNC")[:2] == ("history_incomplete", "unexpected:NumericValueOutOfRange")
+    assert stats["error_tickers"] == {"TRNC": "unexpected:NumericValueOutOfRange"}
 
     del tiingo.bad[("TRNC", poison)]
+    db.conn.execute("UPDATE eod_warmer_ticker_status SET retry_after = now() - interval '1 second'")
     tiingo.requests.clear()
     stats = run(db)["foreign_history"]
     assert ("prices", "TRNC", D(2000, 1, 3), AS_OF) in tiingo.requests   # refetched in full
@@ -594,6 +611,92 @@ def test_a_response_omitting_stored_boundary_sessions_inserts_nothing(db, tiingo
         # Sep 21-Oct 2 still at 1.0; the ring's overlap has re-based Oct 5-9.
         "adjustment_rebase_required", "adjusted_moved: ratio=0.500000 on 10/15 sessions")
     assert history_of(db, "SEAM")[0] == D(2026, 9, 21)
+
+
+def test_a_truncated_response_cannot_insert_a_seam_before_the_stored_tail(db, tiingo):
+    """Re-gate 2, P1 (i): meta starts Aug 3; the response holds only Aug 3-Sep 18
+    at factor 0.5; stored Sep 21-Oct 9 keeps factor 1.0. No shared session: the
+    old check passed vacuously, inserted 35 rows and a +103% seam."""
+    resolved_lines(db, "TRUN")
+    instruments_row(db, "TRUN", name="Trunc Response Co")
+    store_rows(db, "TRUN", D(2026, 9, 21), AS_OF, adj_factor=1.0)
+    tiingo.listings["TRUN"] = {"start": D(2026, 8, 3), "end": AS_OF, "adj_factor": 0.5,
+                               "price_end": D(2026, 9, 18)}
+    before = snapshot(db, "TRUN", D(2026, 1, 1), AS_OF)
+
+    stats = run(db, history_limit=250)["foreign_history"]
+    assert ("prices", "TRUN", D(2026, 8, 3), AS_OF) in tiingo.requests   # the request's interval
+    assert status_of(db, "TRUN")[:2] == ("history_incomplete", "no_shared_sessions")
+    assert stats["completed"] == 0 and stats["history_rows"] == 0
+    assert history_of(db, "TRUN")[0] == D(2026, 9, 21)
+    assert snapshot(db, "TRUN", D(2026, 1, 1), AS_OF) == before
+
+
+def test_a_truncated_response_never_verifies_a_stored_series(db, tiingo):
+    """Re-gate 2, P1 (ii): the full Aug 3-Oct 9 series is stored and the
+    response stops at Sep 18. It must not report 'verified: 35 sessions'."""
+    resolved_lines(db, "TAIL")
+    instruments_row(db, "TAIL", name="Tail Co")
+    store_rows(db, "TAIL", D(2026, 8, 3), AS_OF)
+    tiingo.listings["TAIL"] = {"start": D(2026, 8, 3), "end": AS_OF, "price_end": D(2026, 9, 18)}
+
+    stats = run(db, history_limit=250)["foreign_history"]
+    status, detail, _ = status_of(db, "TAIL")
+    assert status == "history_incomplete"
+    assert detail.startswith("ends_before_interval_end: last=2026-09-18")
+    assert stats["completed"] == 0 and stats["verified_without_insert"] == 0
+
+
+def test_stored_rows_before_an_advanced_start_date_fail_closed(db, tiingo):
+    resolved_lines(db, "ADVS")
+    instruments_row(db, "ADVS", name="Advanced Start Co")
+    store_rows(db, "ADVS", D(2026, 7, 1), AS_OF)
+    tiingo.listings["ADVS"] = {"start": D(2026, 8, 3), "end": AS_OF}
+
+    stats = run(db, history_limit=250)["foreign_history"]
+    status, detail, _ = status_of(db, "ADVS")
+    assert status == "history_conflict"
+    assert detail.startswith("stored_outside_provider_range: 23 stored sessions")
+    assert stats["fail_closed"] == 1
+
+
+def test_malformed_bodies_back_off_and_never_stop_the_phase(db, tiingo):
+    """Re-gate 2, P2: [null], ["bad"], a string body and a dict body each get a
+    status row, growing backoff and an error entry; the healthy ticker behind
+    them completes on the first run."""
+    bodies = {"MNUL": [None], "MBAD": ["bad"], "MSTR": "oops", "MDIC": {"detail": "no"}}
+    resolved_lines(db, *bodies, "MZOK")
+    tiingo.raw_prices.update(bodies)
+
+    for attempt, hours in ((1, 12), (2, 24), (3, 48)):
+        stats = run(db, history_limit=250)["foreign_history"]
+        assert set(stats["error_tickers"]) == set(bodies)
+        assert all(v == "prices:invalid_payload" for v in stats["error_tickers"].values())
+        for t in bodies:
+            got = db.one("SELECT status, attempts, retry_after - checked_at"
+                         " FROM eod_warmer_ticker_status WHERE ticker = %s", (t,))
+            assert (got[0], got[1], round(got[2] / dt.timedelta(hours=1))) == (
+                "history_incomplete", attempt, hours)
+        assert status_of(db, "MZOK")[0] == "history_complete"
+        db.conn.execute("UPDATE eod_warmer_ticker_status SET retry_after = now() - interval '1 second'"
+                        " WHERE status = 'history_incomplete'")
+    assert history_of(db, "MNUL") == (None, None, 0)
+
+
+def test_an_unexpected_exception_is_contained_to_its_ticker(db, tiingo, monkeypatch):
+    resolved_lines(db, "BOOM", "CALM")
+    real = w.verify_history
+
+    def flaky(fetched, stored, *, start, end):
+        if fetched and fetched[0][0] == "BOOM":
+            raise ValueError("surprise")
+        return real(fetched, stored, start=start, end=end)
+
+    monkeypatch.setattr(w, "verify_history", flaky)
+    stats = run(db, history_limit=250)["foreign_history"]
+    assert status_of(db, "BOOM")[:2] == ("history_incomplete", "unexpected:ValueError")
+    assert stats["error_tickers"] == {"BOOM": "unexpected:ValueError"}
+    assert status_of(db, "CALM")[0] == "history_complete"
 
 
 def test_split_after_the_stored_rows_fails_closed_without_a_seam(db, tiingo):
@@ -673,8 +776,9 @@ def test_a_response_starting_after_meta_start_is_incomplete(db, tiingo):
                                "price_start": D(2024, 6, 11)}
 
     stats = run(db)["foreign_history"]
-    assert status_of(db, "EMPT")[:2] == (
-        "history_incomplete", "starts_after_start_date: first=2024-06-11")
+    status, detail, _ = status_of(db, "EMPT")
+    assert status == "history_incomplete"
+    assert detail.startswith("starts_after_start_date: first=2024-06-11 sessions_skipped=")
     assert stats["errors"] == 1
     assert stats["completed"] == 0
 
@@ -693,7 +797,8 @@ def test_failing_tickers_rotate_so_a_healthy_one_completes(db, tiingo):
         tiingo.meta_status[t] = 503
 
     first = run(db, history_limit=25)["foreign_history"]
-    assert first["errors"] == 25 and first["deferred"] == 1
+    # Retries are not settled: all 26 stay deferred after the first run.
+    assert first["errors"] == 25 and first["deferred"] == 26
     second = run(db, history_limit=25)["foreign_history"]
     assert second["waiting"] == {"history_incomplete": 25}
     assert status_of(db, "ZHEAL")[0] == "history_complete"
@@ -732,6 +837,66 @@ def test_cap_zero_keeps_existing_covered_tickers_in_the_ring(db, tiingo):
     assert stats["foreign_history"] == {"source_tickers": 3, "skipped": "cap_zero"}
 
 
+def test_cap_zero_warms_a_zero_row_screener_line_through_the_ring(db, tiingo):
+    """Codex 4237394675: with the history phase off, a W1c-covered screener
+    constituent without rows must still get the ring's 745-day cold start."""
+    resolved_lines(db, "SCOV")
+    db.conn.execute("INSERT INTO universe_constituents VALUES ('SCOV', 'Screener Covered', 'active')")
+    screener_start = AS_OF - dt.timedelta(days=w.NEW_TICKER_LOOKBACK_DAYS)
+
+    run(db, history_limit=0)
+    assert tiingo.of("prices", "SCOV") == [("prices", "SCOV", screener_start, AS_OF)]
+    assert history_of(db, "SCOV")[0] >= screener_start
+    assert tiingo.of("meta") == []
+
+
+def test_only_this_runs_history_batch_is_kept_out_of_the_ring(db, tiingo):
+    resolved_lines(db, "SCVA", "SCVB")
+    db.conn.execute("INSERT INTO universe_constituents VALUES"
+                    " ('SCVA', 'A', 'active'), ('SCVB', 'B', 'active')")
+    screener_start = AS_OF - dt.timedelta(days=w.NEW_TICKER_LOOKBACK_DAYS)
+
+    run(db, history_limit=1)
+    # SCVA is this run's history batch: whole series, never 745 days.
+    assert tiingo.of("prices", "SCVA") == [("prices", "SCVA", D(1993, 1, 29), AS_OF)]
+    assert history_of(db, "SCVA")[0] == D(1993, 1, 29)
+    # SCVB is beyond the cap: normal ring warming now, history on a later run.
+    assert tiingo.of("prices", "SCVB") == [("prices", "SCVB", screener_start, AS_OF)]
+
+
+def test_unsettled_tickers_stay_deferred_and_a_missing_key_records_nothing(db, tiingo):
+    """Codex 4237394678: deferred counts tickers that did not reach a settled
+    status; with no Tiingo key nothing is recorded and every ticker stays."""
+    resolved_lines(db, "NKYA", "NKYB", "NKYC")
+    tiingo.no_key = True
+    stats = run(db, history_limit=2)["foreign_history"]
+    assert stats["processed"] == 2 and stats["completed"] == 0
+    assert stats["deferred"] == 3
+    assert stats["error_tickers"] == {"NKYA": "meta:not_configured", "NKYB": "meta:not_configured"}
+    assert db.one("SELECT count(*) FROM eod_warmer_ticker_status")[0] == 0
+    assert tiingo.requests == []
+
+
+def test_out_of_range_field_values_are_unusable_not_a_crash(db, tiingo):
+    """Codex 4237556581: "N/A", NaN, inf, a numeric string, a bool or a
+    negative price in a required field makes the response unusable: a status
+    row with backoff and an error entry, never an exception."""
+    bad = {"VNAS": {"close": "N/A"}, "VNAN": {"adjClose": float("nan")},
+           "VINF": {"high": float("inf")}, "VSTR": {"open": "12.5"},
+           "VBOO": {"volume": True}, "VNEG": {"low": -1.0}}
+    resolved_lines(db, *bad, "VZOK")
+    for t, fields in bad.items():
+        tiingo.bad[(t, D(2000, 1, 4))] = fields
+        tiingo.listings[t] = {"start": D(2000, 1, 3), "end": AS_OF}
+
+    stats = run(db, history_limit=250)["foreign_history"]
+    assert stats["error_tickers"] == {t: "unusable_bars=1" for t in bad}
+    for t in bad:
+        assert status_of(db, t)[:2] == ("history_incomplete", "unusable_bars=1")
+        assert history_of(db, t) == (None, None, 0)
+    assert status_of(db, "VZOK")[0] == "history_complete"
+
+
 def test_status_table_schema_is_migrated_and_verified(db):
     # The shape from the PR's first revision: two statuses, no retry columns.
     db.conn.execute(
@@ -753,6 +918,21 @@ def test_status_table_schema_is_migrated_and_verified(db):
     with pytest.raises(errors.CheckViolation):
         db.conn.execute("INSERT INTO eod_warmer_ticker_status (ticker, source, status)"
                         " VALUES ('BADX', 's', 'not_a_status')")
+
+    # A correctly named CHECK that also allows 'bogus' is replaced exactly.
+    db.conn.execute("ALTER TABLE eod_warmer_ticker_status"
+                    " DROP CONSTRAINT eod_warmer_ticker_status_status_check")
+    db.conn.execute(
+        "ALTER TABLE eod_warmer_ticker_status ADD CONSTRAINT eod_warmer_ticker_status_status_check"
+        " CHECK (status IN ('history_complete', 'tiingo_unknown', 'history_incomplete',"
+        " 'adjustment_rebase_required', 'history_conflict', 'bogus'))")
+    with psycopg.connect(db.dsn) as conn:
+        w.ensure_status_table(conn)
+    with pytest.raises(errors.CheckViolation):
+        db.conn.execute("INSERT INTO eod_warmer_ticker_status (ticker, source, status)"
+                        " VALUES ('BOGX', 's', 'bogus')")
+    assert db.one("SELECT count(*) FROM eod_warmer_ticker_status"
+                  " WHERE ticker = '__status_probe__'")[0] == 0
 
     # A column of another type cannot be migrated in place: fail loud.
     db.conn.execute("DROP TABLE eod_warmer_ticker_status")

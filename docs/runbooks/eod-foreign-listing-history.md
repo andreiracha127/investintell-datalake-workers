@@ -17,8 +17,10 @@ Each run, in one query with `SET LOCAL jit = off`:
   (SANB11, VIVT3), note lines (AMX22) and preferred or warrant suffixes (NM-PG).
 - a symbol is covered when `sec_foreign_listing_at(cik, symbol, d)` returns
   `listing_status = 'resolved'` for the run date or any of 2010-12-31,
-  2015-12-31, 2020-12-31 and 2025-12-31. The ratio status does not matter:
-  prices are needed whether or not the ADS ratio is evidenced.
+  2015-12-31, 2020-12-31 and 2025-12-31 that is not after the run date (a
+  historical `WORKER_CALC_DATE` run probes no later year-end, so it has no
+  look-ahead). The ratio status does not matter: prices are needed whether or
+  not the ADS ratio is evidenced.
 
 Tiingo decides existence. Without the W1c resolver (a fresh environment) the
 source reports `absent` and the ring runs unchanged. The worker asserts symbol
@@ -35,19 +37,30 @@ Every covered ticker gets exactly one verification pass before it is
    NULL `name`, `exchange_code` and Tiingo dates in `instruments`, or inserts
    the row with `asset_type = 'stock'`; non-null fields and an existing
    `asset_type` are never changed.
-2. One price request for the full range, `startDate` → run date, compared with
-   every stored row of the ticker:
-   - an empty response, or one whose first bar is more than 7 days after
-     `startDate`, is `history_incomplete`;
-   - every stored date between `startDate` and the last fetched date must be in
-     the response. A response that omits stored sessions cannot vouch for the
-     boundary: `history_incomplete`;
-   - every common date must match on raw close (relative 1e-6). Any difference
-     is `history_conflict`;
-   - missing dates are fetched dates that are not stored: the prefix and any
-     interior gap. None missing → `history_complete`, raw-verified, nothing
-     inserted;
-   - otherwise the adjusted open/high/low/close must also match on ALL common
+2. The verification interval is fixed BEFORE the fetch:
+   `[startDate, max(meta endDate, last stored date)]`. The request asks for
+   exactly that interval, and the response is held to it; it can never shrink
+   its own obligations. In order:
+   - an empty response is `history_incomplete`;
+   - every shared (stored and returned) date must match on raw close
+     (relative 1e-6). Any difference is `history_conflict`, even if the
+     response is also short;
+   - a stored date outside the interval (for example before a `startDate`
+     Tiingo has since advanced) is `history_conflict`
+     (`stored_outside_provider_range`), never silently exempted;
+   - stored rows with no shared date while dates would be inserted is
+     `history_incomplete` (`no_shared_sessions`): there is no vacuous pass;
+   - coverage, in NYSE sessions (`exchange_calendars` XNYS, already a pinned
+     dependency): a bar outside the request, any session between `startDate`
+     and the first bar, or a last bar before the last stored date or with any
+     session between it and the interval end is `history_incomplete`. Only
+     weekends and exchange holidays may separate the ends from the bars;
+   - every stored date in the interval must be in the response, else
+     `history_incomplete` (`stored_sessions_missing`);
+   - missing dates are returned dates that are not stored: the prefix, interior
+     gaps and the tail. None missing → `history_complete`, raw-verified,
+     nothing inserted;
+   - otherwise the adjusted open/high/low/close must also match on ALL shared
      dates. Any difference (a split or dividend re-based Tiingo's history since
      the rows were stored) is `adjustment_rebase_required` with the observed
      ratio, and nothing is inserted. If they match, every missing date is
@@ -56,8 +69,14 @@ Every covered ticker gets exactly one verification pass before it is
 Inserts use `INSERT … ON CONFLICT (ticker, date) DO NOTHING` in 500-row
 statements inside ONE transaction per ticker (about 7.5k rows for a 30-year
 ticker), so an interrupted load leaves neither rows nor status and the next
-pass starts over. Existing rows are never rewritten. A bar with a missing field
-makes the response `history_incomplete`.
+pass starts over. Existing rows are never rewritten. A response with any
+non-conforming element or a non-list body is `history_incomplete`: an element
+that is not an object (`[null]`, `["bad"]`), has no parseable date, misses a
+field, or has a value that is not a finite number (`"N/A"`, a numeric string,
+a bool, NaN, infinity), a price or split factor that is not positive, or a
+negative volume or dividend. Meta without an `endDate` is also retried. Any other unexpected exception while handling one ticker
+records `history_incomplete` with `unexpected:<ExceptionType>` and backoff, and
+the phase moves on to the next ticker; only the 429 breaker stops the phase.
 
 ## Status, scheduling and the ring
 
@@ -66,34 +85,42 @@ makes the response `history_incomplete`.
 | Status | Meaning | Next attempt |
 |---|---|---|
 | `history_complete` | verified; missing dates inserted if any | never |
-| `history_incomplete` | transient HTTP (5xx, timeout, invalid body), unusable bar, empty or late-starting response, omitted stored sessions | 12 h, doubling per consecutive failure, up to 7 days |
+| `history_incomplete` | transient HTTP (5xx, timeout, invalid body or element), response not covering the interval, omitted stored sessions, no shared sessions, unexpected exception | 12 h, doubling per consecutive failure, up to 7 days |
 | `adjustment_rebase_required` | adjusted basis moved; detail has the ratio | after 30 days |
-| `history_conflict` | raw closes differ | after 30 days |
+| `history_conflict` | raw closes differ, or stored rows outside Tiingo's range | after 30 days |
 | `tiingo_unknown` | meta 404, no `startDate`, prices 404 | after 30 days |
 
 Pending tickers are processed in order of their next attempt (never tried
 first), then ticker. A ticker that keeps failing backs off behind the others,
-so it cannot hold a cap slot. A 429 is an account-wide budget signal: it counts
-as an error without a backoff, and the client's 30×429 breaker aborts the phase.
+so it cannot hold a cap slot. A 429 is an account-wide budget signal and a
+missing API key is a configuration fault: both count as errors with nothing
+recorded for the ticker, and the client's 30×429 breaker aborts the phase.
 
-The ring skips only covered tickers with no rows, so none takes the 745-day
-cold start. Every ticker with rows keeps its daily ring refresh whatever its
-history status or the cap. `EOD_HISTORY_TICKERS_PER_RUN=0` therefore leaves
-the ring exactly as before this change. A cold covered ticker has no rows until
-its whole history commits.
+The ring skips only covered tickers with no rows that this run's history phase
+will load (the first `cap` pending tickers); those get their whole series in
+one transaction instead of the 745-day cold start, and have no rows until it
+commits. Every ticker with rows keeps its daily ring refresh whatever its
+history status, and a zero-row screener constituent the phase will not reach
+this run gets normal ring warming. `EOD_HISTORY_TICKERS_PER_RUN=0` therefore
+leaves the ring exactly as before this change.
 
 Run stats report `completed`, `verified_without_insert`, `deferred`,
 `history_rows`, `errors` / `error_tickers`, `fail_closed` /
-`fail_closed_tickers`, `tiingo_unknown` and `waiting` per status. `deferred = 0`
-means the queue is drained, not that every ticker is complete.
+`fail_closed_tickers`, `tiingo_unknown` and `waiting` per status. `deferred` is
+the pending tickers that did not settle this run: not attempted, retrying with
+backoff, or blocked by 429s or a missing key. Only `history_complete`, a
+fail-closed status or `tiingo_unknown` settles a ticker, so `deferred = 0`
+means every pending ticker reached a recorded outcome — not that every one is
+complete.
 
 ## Status table schema and readers
 
 `CREATE TABLE IF NOT EXISTS` does not migrate an older shape, so every run (under
-the warmer's advisory lock) adds any missing column, replaces the status CHECK
-when it lacks a status, and then verifies the column types and the CHECK. A
-column of another type fails the run loudly (`RuntimeError`). The table has never
-existed in production.
+the warmer's advisory lock) adds any missing column, drops every CHECK that
+mentions `status` and adds exactly the expected one, then verifies the column
+types and probes the CHECK: each of the five statuses must insert and `'bogus'`
+must be rejected (probe rows are rolled back). Anything else fails the run
+loudly (`RuntimeError`).
 
 The warmer connects as `worker_writer`. Its default ACL in `public` grants only
 `app_analytics_ro` SELECT, so a table it creates is not readable by
@@ -114,6 +141,11 @@ never above `WORKER_LIMIT`, `0` turns the phase off):
 |---:|---:|---:|
 | 25 | ≤ 50 | ≤ 150 |
 | 250 | ≤ 500 | ≤ 1,500 |
+
+With the ring at `WORKER_LIMIT=2300` (up to 6,900 HTTP attempts), a run's worst
+case is 7,050, 7,500 and 8,400 attempts at caps 25, 100 and 250, before other
+consumers of the shared key. Check fleet headroom and observed attempts and
+429s before raising the cap.
 
 A budget abort inside the phase sets `aborted`, so the run exits non-zero like
 a ring abort.
@@ -149,8 +181,8 @@ interior-gap bound.
 - Covered symbols: 1,676. Listing-resolved lines: 17, 156, 760 and 1,474 at the
   2010, 2015, 2020 and 2025 year-ends, and 1,565 at the run date. With both
   listing and ratio resolved, the counts are 2, 83, 520, 1,150 and 1,226.
-- 1,477 have no rows: one full load each, kept out of the ring until loaded.
-  199 have rows and stay in the ring: 85 from 2024-06-11 (the screener's 745-day
+- 1,477 have no rows: one full load each, kept out of the ring while in the
+  run's history batch. 199 have rows and stay in the ring: 85 from 2024-06-11 (the screener's 745-day
   cohort) and 114 whose rows reach their stored start. Each gets the
   verification pass. Expect part of the 85 to fail closed as
   `adjustment_rebase_required`: any dividend or split since their cold start
@@ -204,6 +236,15 @@ print(len(symbols), len(plan["complete"]), {k: len(v) for k, v in plan["waiting"
 
 ## Staged rollout
 
+No earlier revision of this PR may run after activation: only the final merged
+image. A read-only check on 2026-10-10 (`app_runtime`,
+`default_transaction_read_only=on`) found no `eod_warmer_ticker_status` relation
+or constraint in any schema; only `eod_warmer_cursor` exists. Every
+`eod-prices-warmer` deployment so far came from a `main` merge (latest
+`beb631f5`, 2026-10-01), so no PR image has run. No `history_complete` record
+can exist before activation; the merged image creates the table on the first
+run with a positive cap.
+
 1. Set `EOD_HISTORY_TICKERS_PER_RUN=0` on `eod-prices-warmer`, then merge and
    deploy the merged `main` SHA (`railway redeploy --service eod-prices-warmer
    --from-source --yes` builds; on this project a cron deployment does not
@@ -222,7 +263,8 @@ print(len(symbols), len(plan["complete"]), {k: len(v) for k, v in plan["waiting"
    - ring freshness: the oldest `max(date)` among ring tickers;
    - compression recovery: partial chunks fall back after the next policy run:
      `SELECT count(*) FROM _timescaledb_catalog.chunk ch JOIN _timescaledb_catalog.hypertable h ON h.id = ch.hypertable_id WHERE h.table_name = 'eod_prices' AND (ch.status & 8) = 8;`
-4. Raise the cap to 100, then 250, after the same checks. Expected first dates
+4. Raise the cap to 100, then 250, after the same checks (worst-case HTTP
+   attempts per run at `WORKER_LIMIT=2300`: 7,500 and 8,400). Expected first dates
    once loaded: TSM 1997-10-09, ASML 1995-03-16, NVO 1982-01-04, SAP
    1995-09-18, NTES 2000-06-30; QGEN 1996-06-28 if its pass finds one basis.
 

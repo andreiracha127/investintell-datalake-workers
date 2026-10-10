@@ -342,6 +342,8 @@ class TiingoClient:
                 return "invalid_payload", []
             if not isinstance(payload, list):  # error body, e.g. unknown ticker
                 return "invalid_payload", []
+            if not all(isinstance(bar, dict) for bar in payload):  # e.g. [null], ["x"]
+                return "invalid_payload", []
             return ("empty" if not payload else "success_new"), payload
         return failure, []
 
@@ -397,11 +399,14 @@ class TiingoClient:
 
         ``found`` (a JSON object), ``not_found`` (404: Tiingo does not know the
         ticker), ``invalid_payload`` (another 4xx, an unparseable body, or a
-        non-object body), ``rate_limited`` (429 on the last attempt: an
+        non-object body), ``not_configured`` (no API key; nothing is sent),
+        ``rate_limited`` (429 on the last attempt: an
         account-wide budget signal, not a property of the ticker) or
         ``transient_error`` (transport errors or 5xx after every retry). Only
         ``not_found`` says the ticker does not exist; the failures are worth
         retrying later. Same pacing and 30×429 breaker as ``fetch_meta``."""
+        if not self._key:
+            return "not_configured", None
         url = f"{TIINGO_BASE_URL}/tiingo/daily/{ticker}"
         failure = "transient_error"
         for sleep_s in _RETRY_SLEEPS:

@@ -30,24 +30,27 @@ US-exchange ticker shapes (one bounded query, JIT off). The screener universe
 Every covered ticker gets exactly one verification pass before it is
 ``history_complete``: a fresh meta call (Tiingo ``startDate``; it also fills
 NULL ``instruments`` metadata without overwriting non-null fields), then ONE
-price request for the full range ``startDate → as_of``, checked against every
-stored row (``verify_history``). A response that omits stored sessions is
-incomplete; any raw-close difference fails closed as ``history_conflict``. With
-nothing missing the ticker is complete without an insert. Otherwise the missing
-dates — the prefix and any interior gap — are inserted only if the adjusted OHLC
-matches on all common dates; a moved basis (a split or dividend since the stored
-rows were fetched) fails closed as ``adjustment_rebase_required``. Existing rows
-are never rewritten, and there is no completion shortcut from ``min(date)``.
+price request for the interval ``[startDate, max(meta endDate, last stored
+date)]``. The interval is fixed before the fetch, so the response can never
+shrink its own obligations (``verify_history``): it must cover both ends and
+contain every stored date inside it; a stored date outside it, or any raw-close
+difference, fails closed as ``history_conflict``. With nothing missing the
+ticker is complete without an insert. Otherwise the missing dates — prefix,
+interior gaps, tail — are inserted only if there are shared sessions and the
+adjusted OHLC matches on all of them; a moved basis (a split or dividend since
+the stored rows were fetched) fails closed as ``adjustment_rebase_required``.
+Existing rows are never rewritten, and there is no shortcut from ``min(date)``.
 
 Inserted rows and the ``history_complete`` status in ``eod_warmer_ticker_status``
 are written in ONE transaction, so an interrupted load leaves neither.
-Retryable failures (transient HTTP, unusable bars, incomplete responses) are
-``history_incomplete`` with backoff (12 h doubling, up to 7 days) and count as
-errors; the queue orders by next attempt, so a failing ticker cannot hold a cap
-slot. Tickers Tiingo does not know are recorded, reported and re-checked after
-``UNKNOWN_RECHECK_DAYS``. The ring skips only covered tickers with no rows
-(``ring_excluded``), so none takes the 745-day cold start, and every ticker with
-rows keeps its daily refresh whatever its history status or the cap.
+Retryable failures (transient HTTP, malformed or unusable bars, incomplete
+responses, any unexpected per-ticker exception) are ``history_incomplete`` with
+backoff (12 h doubling, up to 7 days) and count as errors; the queue orders by
+next attempt, so a failing ticker cannot hold a cap slot. Tickers Tiingo does not know are recorded, reported and re-checked after
+``UNKNOWN_RECHECK_DAYS``. The ring skips only covered tickers with no rows that
+this run's history phase will load (``ring_excluded``), so none of those takes
+the 745-day cold start; every ticker with rows keeps its daily refresh whatever
+its history status, and with the cap at 0 the ring is exactly as before.
 
 History rows go through ``INSERT … ON CONFLICT DO NOTHING`` for dates the ticker
 does not have, mostly into old, compressed chunks of the ``eod_prices``
@@ -74,10 +77,16 @@ Contract:  run(dsn, *, calc_date=None, limit=None, history_limit=None)
 from __future__ import annotations
 
 import datetime as _dt
+import functools
+import math
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+import psycopg
+import psycopg.sql
 
 from src.db import LOCK_EOD_PRICES_WARMER, advisory_lock, connect
 from src.workers._tiingo import (
@@ -207,9 +216,11 @@ UNKNOWN_RECHECK_DAYS = 30
 # RETRY_MAX_HOURS, so a persistently failing ticker cannot hold a cap slot.
 RETRY_BASE_HOURS = 12
 RETRY_MAX_HOURS = 7 * 24
-# Tiingo's startDate may fall on a non-trading day: a response whose first bar
-# is more than this many days later is incomplete, not a shorter history.
-HISTORY_START_TOLERANCE_DAYS = 7
+# Coverage is judged in NYSE sessions (exchange_calendars XNYS, already pinned
+# in requirements.txt): a response covers its interval only if no XNYS session
+# lies between the interval start and its first bar, or between its last bar
+# and the interval end. Weekends and exchange holidays are the only gaps allowed.
+COVERAGE_CALENDAR = "XNYS"
 BASIS_REL_TOL = 1e-6
 _W1C_RESOLVER = "public.sec_foreign_listing_at(bigint,text,date)"
 
@@ -373,58 +384,114 @@ def _median(values: list[float]) -> float | None:
     return values[len(values) // 2] if values else None
 
 
+@functools.lru_cache(maxsize=1)
+def _xnys():
+    import exchange_calendars as xcals
+
+    return xcals.get_calendar(COVERAGE_CALENDAR, start="1900-01-01")
+
+
+def sessions_between(first: _dt.date, last: _dt.date) -> int:
+    """NYSE sessions in ``[first, last]`` (0 when ``first > last``)."""
+    cal = _xnys()
+    lo = max(first, cal.first_session.date())
+    hi = min(last, cal.last_session.date())
+    if lo > hi:
+        return 0
+    return len(cal.sessions_in_range(lo.isoformat(), hi.isoformat()))
+
+
+def verification_interval(
+    start: _dt.date, meta_end: _dt.date | None, stored: dict[_dt.date, Any],
+    as_of: _dt.date,
+) -> tuple[_dt.date, _dt.date]:
+    """The interval a verification pass must cover, fixed BEFORE the fetch:
+    ``[startDate, max(meta endDate, last stored date)]`` (``as_of`` when
+    neither exists). The request asks for exactly this interval, and the
+    response is held to it — it can never shrink its own obligations."""
+    ends = [d for d in (meta_end, max(stored) if stored else None) if d is not None]
+    return start, (max(ends) if ends else as_of)
+
+
 def verify_history(
     fetched: list[tuple[Any, ...]],
     stored: dict[_dt.date, dict[str, float]],
     *,
     start: _dt.date,
+    end: _dt.date,
 ) -> Verification:
-    """Compare Tiingo's full series (``start`` → today) with what is stored.
+    """Hold Tiingo's response for ``[start, end]`` to that interval and to
+    every stored row of the ticker.
 
-    ``fetched`` are ``build_eod_rows`` tuples; ``stored`` maps every stored date
-    of the ticker to its ``_BASIS_COLUMNS``. In order:
+    ``fetched`` are ``build_eod_rows`` tuples for the requested interval;
+    ``stored`` maps every stored date of the ticker to its ``_BASIS_COLUMNS``.
+    The obligations come from the request and the store, never from the
+    response. In order:
 
-    1. an empty response, or one that starts more than
-       ``HISTORY_START_TOLERANCE_DAYS`` after ``start``, is incomplete;
-    2. every stored date between ``start`` and the last fetched date must be in
-       the response — a response that omits stored sessions cannot vouch for
-       the boundary, so it is incomplete (retryable);
-    3. every common date must match on raw close, else ``conflict``;
-    4. nothing missing (no fetched date absent from storage) → ``complete``:
-       raw-verified, nothing inserted, no adjusted check needed;
-    5. otherwise the adjusted OHLC must match on ALL common dates, else
-       ``rebase`` (a split or dividend moved Tiingo's basis since the stored
-       rows were written; inserting would create a seam). If it matches, the
-       missing dates — prefix and interior gaps alike — are ``load``ed."""
+    1. empty → incomplete;
+    2. a raw-close difference on any shared date → ``conflict`` (a known
+       conflict is reported as such even if the response is also short);
+    3. a stored date outside ``[start, end]`` (e.g. before a startDate the
+       provider has since advanced) → ``conflict``
+       (``stored_outside_provider_range``);
+    4. stored rows but no shared date while dates would be inserted →
+       incomplete (``no_shared_sessions``): never a vacuous pass;
+    5. coverage: a bar outside the request, an NYSE session between ``start``
+       and the first bar, or a last bar before the last stored date or with an
+       NYSE session between it and ``end`` → incomplete;
+    6. every stored date in ``[start, end]`` must be in the response, else
+       incomplete (``stored_sessions_missing``);
+    7. nothing missing → ``complete`` (raw-verified, nothing inserted);
+    8. otherwise the adjusted OHLC must match on ALL shared dates, else
+       ``rebase``; if it does, the missing dates (prefix, gaps, tail) are
+       ``load``ed."""
     if not fetched:
         return Verification("incomplete", "empty_window")
     dates = {r[1] for r in fetched}
-    first, last = min(dates), max(dates)
-    if first > start + _dt.timedelta(days=HISTORY_START_TOLERANCE_DAYS):
-        return Verification("incomplete", f"starts_after_start_date: first={first}")
-    omitted = sorted(d for d in stored if start <= d <= last and d not in dates)
-    if omitted:
-        return Verification(
-            "incomplete", f"stored_sessions_missing={len(omitted)} first={omitted[0]}")
-    common = [r for r in fetched if r[1] in stored]
-    raw_bad = [r for r in common
+    shared = [r for r in fetched if r[1] in stored]
+    raw_bad = [r for r in shared
                if not _close_enough(r[_ROW_INDEX["close"]], stored[r[1]]["close"])]
     if raw_bad:
         ratio = _median([r[_ROW_INDEX["close"]] / stored[r[1]]["close"]
                          for r in raw_bad if stored[r[1]]["close"]])
         return Verification(
-            "conflict", f"raw_differs: ratio={_fmt(ratio)} on {len(raw_bad)}/{len(common)} sessions")
+            "conflict", f"raw_differs: ratio={_fmt(ratio)} on {len(raw_bad)}/{len(shared)} sessions")
+    outside = sorted(d for d in stored if d < start or d > end)
+    if outside:
+        return Verification(
+            "conflict",
+            f"stored_outside_provider_range: {len(outside)} stored sessions outside "
+            f"{start}..{end}, first={outside[0]}")
     missing = tuple(sorted((r for r in fetched if r[1] not in stored), key=lambda r: r[1]))
+    if stored and not shared and missing:
+        return Verification("incomplete", "no_shared_sessions")
+    first, last = min(dates), max(dates)
+    day = _dt.timedelta(days=1)
+    if first < start or last > end:
+        return Verification("incomplete", f"bars_outside_request: {first}..{last}")
+    skipped = sessions_between(start, first - day)
+    if skipped:
+        return Verification(
+            "incomplete", f"starts_after_start_date: first={first} sessions_skipped={skipped}")
+    if (stored and last < max(stored)) or sessions_between(last + day, end):
+        return Verification(
+            "incomplete",
+            f"ends_before_interval_end: last={last} end={end}"
+            + (f" stored_max={max(stored)}" if stored else ""))
+    omitted = sorted(d for d in stored if d not in dates)
+    if omitted:
+        return Verification(
+            "incomplete", f"stored_sessions_missing={len(omitted)} first={omitted[0]}")
     if not missing:
-        return Verification("complete", f"verified: {len(common)} sessions, 0 missing")
-    adj_bad = [r for r in common
+        return Verification("complete", f"verified: {len(shared)} sessions, 0 missing")
+    adj_bad = [r for r in shared
                if not all(_close_enough(r[_ROW_INDEX[c]], stored[r[1]][c])
                           for c in _BASIS_COLUMNS[1:])]
     if adj_bad:
         ratio = _median([r[_ROW_INDEX["adj_close"]] / stored[r[1]]["adj_close"]
                          for r in adj_bad if stored[r[1]]["adj_close"]])
         return Verification(
-            "rebase", f"adjusted_moved: ratio={_fmt(ratio)} on {len(adj_bad)}/{len(common)} sessions")
+            "rebase", f"adjusted_moved: ratio={_fmt(ratio)} on {len(adj_bad)}/{len(shared)} sessions")
     return Verification("load", f"inserted {len(missing)} missing sessions", missing)
 
 
@@ -432,15 +499,19 @@ def _fmt(ratio: float | None) -> str:
     return "n/a" if ratio is None else f"{ratio:.6f}"
 
 
-def ring_excluded(foreign: list[str], watermarks: dict[str, _dt.date]) -> frozenset[str]:
-    """Covered tickers the ring must not touch: only those with ZERO rows.
+def ring_excluded(
+    foreign: list[str], watermarks: dict[str, _dt.date], history_batch: frozenset[str],
+) -> frozenset[str]:
+    """Covered tickers the ring must not touch this run.
 
-    A covered ticker without rows is cold-started by the history phase with its
-    whole series (one transaction), never by the ring's 745-day window. Any
-    ticker that already has rows keeps the ring's daily refresh whatever its
-    history status or the history cap — so ``EOD_HISTORY_TICKERS_PER_RUN=0``
-    leaves the ring exactly as it was."""
-    return frozenset(t for t in foreign if t not in watermarks)
+    Only a covered ticker with ZERO rows that this run's history phase will
+    load (``history_batch``: the first ``cap`` pending tickers) — it gets its
+    whole series in one transaction instead of the ring's 745-day window. Any
+    ticker with rows keeps the ring's daily refresh whatever its history status,
+    and a zero-row ticker the phase will not reach this run (cap 0, or beyond
+    the cap) falls back to normal ring warming. So
+    ``EOD_HISTORY_TICKERS_PER_RUN=0`` leaves the ring exactly as it was."""
+    return frozenset(t for t in foreign if t not in watermarks and t in history_batch)
 
 
 def classify_history_task(task: HistoryTask) -> str:
@@ -483,19 +554,43 @@ def _parse_meta_date(value: Any) -> _dt.date | None:
 def build_eod_rows(ticker: str, bars: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
     """Tiingo daily bars → eod_prices tuples ``(ticker, date, …12 price cols)``.
 
-    Every ``eod_prices`` column is NOT NULL, so a bar missing any field (or with
-    a None value) is dropped rather than violating the schema."""
+    Every ``eod_prices`` column is NOT NULL and numeric, so an element that is
+    not a mapping, has no parseable date, misses a field, or carries a value
+    that is not a finite number in range (``_valid_values``) is dropped rather
+    than stored. The history phase treats any dropped element as an unusable
+    response."""
     rows: list[tuple[Any, ...]] = []
     for bar in bars:
+        if not isinstance(bar, Mapping):
+            continue
         try:
             day = _dt.date.fromisoformat(str(bar["date"])[:10])
             values = [bar[_BAR_KEYS[col]] for col in _EOD_COLUMNS]
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
             continue
-        if any(v is None for v in values):
+        if not _valid_values(dict(zip(_EOD_COLUMNS, values))):
             continue
         rows.append((ticker, day, *values))
     return rows
+
+
+_PRICE_COLUMNS = ("open", "high", "low", "close", "adj_open", "adj_high", "adj_low", "adj_close")
+_NON_NEGATIVE_COLUMNS = ("volume", "adj_volume", "div_cash")
+
+
+def _is_number(value: Any) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
+def _valid_values(values: dict[str, Any]) -> bool:
+    """Numeric (not bool, not a numeric string), finite, prices and the split
+    factor positive, volumes and dividends non-negative."""
+    if not all(_is_number(v) for v in values.values()):
+        return False
+    return (all(values[c] > 0 for c in _PRICE_COLUMNS)
+            and all(values[c] >= 0 for c in _NON_NEGATIVE_COLUMNS)
+            and values["split_factor"] > 0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -505,8 +600,8 @@ def warming_universe(conn, *, extra: tuple[str, ...] = INDEX_TICKERS) -> list[st
     """Active screener tickers + already-known EOD tickers + benchmark ETFs.
 
     W1c-covered foreign lines join through the ``eod_prices`` term once they
-    have rows; ``run()`` drops covered lines with no rows (``ring_excluded``),
-    so none takes the 745-day cold start."""
+    have rows; ``run()`` drops covered lines with no rows that this run's
+    history phase will load (``ring_excluded``)."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -611,7 +706,8 @@ def foreign_listing_tickers(conn, as_of: _dt.date) -> list[str] | None:
 
     ``None`` when the W1c resolver is not installed (the ring still runs). JIT
     is off for this transaction only."""
-    dates = sorted({as_of, *FOREIGN_LISTING_YEAR_ENDS})
+    # No look-ahead: a historical run probes only year-ends on or before as_of.
+    dates = sorted({as_of, *(d for d in FOREIGN_LISTING_YEAR_ENDS if d <= as_of)})
     with conn.transaction(), conn.cursor() as cur:
         cur.execute("SELECT to_regprocedure(%s) IS NOT NULL", (_W1C_RESOLVER,))
         if not cur.fetchone()[0]:
@@ -629,29 +725,27 @@ def foreign_listing_tickers(conn, as_of: _dt.date) -> list[str] | None:
 def ensure_status_table(conn) -> None:
     """Create or migrate ``eod_warmer_ticker_status``, then verify its shape.
 
-    Adds any missing column, replaces the status CHECK when it lacks a status,
-    grants SELECT to the readers, and raises ``RuntimeError`` (fail loud) if a
-    column still has another type or the CHECK is still not the expected one."""
+    Adds any missing column and replaces the status CHECK on every run (drop
+    every CHECK that mentions ``status``, add exactly the expected one), grants
+    SELECT to the readers, then verifies the column types and probes the CHECK:
+    each expected status must insert and ``'bogus'`` must be rejected (probe
+    rows are rolled back). Anything else raises ``RuntimeError`` (fail loud)."""
     with conn.cursor() as cur:
         cur.execute(_STATUS_SCHEMA_SQL)
         cur.execute(
-            """SELECT pg_get_constraintdef(oid) FROM pg_constraint
+            """SELECT conname FROM pg_constraint
                WHERE conrelid = 'eod_warmer_ticker_status'::regclass AND contype = 'c'
                  AND pg_get_constraintdef(oid) LIKE '%%status%%'"""
         )
-        checks = [r[0] for r in cur.fetchall()]
-        if len(checks) != 1 or not all(f"'{s}'" in checks[0] for s in _STATUSES):
+        for (name,) in cur.fetchall():
             cur.execute(
-                """SELECT conname FROM pg_constraint
-                   WHERE conrelid = 'eod_warmer_ticker_status'::regclass AND contype = 'c'
-                     AND pg_get_constraintdef(oid) LIKE '%%status%%'"""
+                psycopg.sql.SQL("ALTER TABLE eod_warmer_ticker_status DROP CONSTRAINT {}")
+                .format(psycopg.sql.Identifier(name))
             )
-            for (name,) in cur.fetchall():
-                cur.execute(f'ALTER TABLE eod_warmer_ticker_status DROP CONSTRAINT "{name}"')
-            cur.execute(
-                f"ALTER TABLE eod_warmer_ticker_status ADD CONSTRAINT {_STATUS_CHECK} "
-                f"{_STATUS_CHECK_SQL}"
-            )
+        cur.execute(
+            f"ALTER TABLE eod_warmer_ticker_status ADD CONSTRAINT {_STATUS_CHECK} "
+            f"{_STATUS_CHECK_SQL}"
+        )
         cur.execute(_STATUS_GRANTS_SQL)
         cur.execute(
             """SELECT a.attname, format_type(a.atttypid, a.atttypmod)
@@ -660,20 +754,30 @@ def ensure_status_table(conn) -> None:
                  AND a.attnum > 0 AND NOT a.attisdropped"""
         )
         columns = dict(cur.fetchall())
-        cur.execute(
-            """SELECT pg_get_constraintdef(oid) FROM pg_constraint
-               WHERE conrelid = 'eod_warmer_ticker_status'::regclass AND conname = %s""",
-            (_STATUS_CHECK,),
-        )
-        check = cur.fetchone()
     wrong = {c: columns.get(c) for c, t in _STATUS_COLUMNS.items() if columns.get(c) != t}
-    if wrong or check is None or not all(f"'{s}'" in check[0] for s in _STATUSES):
+    accepted = {s for s in (*_STATUSES, "bogus") if _status_accepted(conn, s)}
+    if wrong or accepted != set(_STATUSES):
         conn.rollback()
         raise RuntimeError(
             f"eod_warmer_ticker_status has an unexpected shape: columns {wrong or 'ok'}, "
-            f"status check {check[0] if check else 'missing'}"
+            f"accepted statuses {sorted(accepted)}"
         )
     conn.commit()
+
+
+def _status_accepted(conn, status: str) -> bool:
+    """Does the table accept ``status``? Probed in a savepoint, always rolled back."""
+    try:
+        with conn.transaction(), conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO eod_warmer_ticker_status (ticker, source, status)"
+                " VALUES ('__status_probe__', 'probe', %s)",
+                (status,),
+            )
+            raise psycopg.Rollback()
+    except psycopg.errors.CheckViolation:
+        return False
+    return True
 
 
 def read_ticker_status(conn, tickers: list[str]) -> dict[str, dict[str, Any]]:
@@ -832,12 +936,13 @@ def cover_foreign_history(
     """Give up to ``cap`` covered tickers their one verification pass.
 
     Per ticker: a meta call (fresh Tiingo startDate; fills NULL instruments
-    metadata), then ONE price request for the full range ``startDate → as_of``,
-    checked against every stored row by ``verify_history``. ``complete`` and
+    metadata), then ONE price request for ``verification_interval`` (fixed
+    before the fetch), checked against every stored row by ``verify_history``. ``complete`` and
     ``load`` end in ``history_complete`` (``load`` inserts the missing dates
     and writes the status in one transaction). ``incomplete`` and transient
-    Tiingo failures (5xx, timeouts, invalid bodies) are ``history_incomplete``
-    with backoff (12 h, doubling, capped at 7 days) and count as errors; 429s
+    Tiingo failures (5xx, timeouts, invalid bodies or elements) and any
+    unexpected exception for the ticker are ``history_incomplete`` with backoff
+    (12 h, doubling, capped at 7 days) and count as errors; 429s
     are account-wide, so they count as errors without a backoff and the 30×429
     breaker aborts the phase. ``conflict`` / ``rebase`` fail closed: nothing
     inserted, reported, rechecked after 30 days."""
@@ -879,10 +984,11 @@ def cover_foreign_history(
                                      retry_after=recheck)
                 unknown_now.append(ticker)
                 continue
-            if status == "rate_limited":
-                # Account-wide 429s, not this ticker: no backoff; the breaker
-                # aborts the phase if they persist.
-                errors[ticker] = "meta:rate_limited"
+            if status in ("rate_limited", "not_configured"):
+                # Account-wide 429s or no API key: not this ticker's fault, so
+                # nothing is recorded and it stays pending (the 429 breaker
+                # aborts the phase if they persist).
+                errors[ticker] = f"meta:{status}"
                 continue
             if status != "found" or meta is None:
                 retry_later(task, None, f"meta:{status}")
@@ -896,18 +1002,25 @@ def cover_foreign_history(
             seeded = seed_listing_instrument(conn, ticker, meta)
             if seeded:
                 stats[f"instruments_{seeded}"] += 1
-            if start > as_of:
-                retry_later(task, start, f"start_date_after_as_of: {start}")
+            meta_end = _parse_meta_date(meta.get("endDate"))
+            if meta_end is None:
+                retry_later(task, start, "meta_without_end_date")
+                continue
+            # The interval, and so every obligation, is fixed before the fetch.
+            stored = _stored_rows(conn, ticker)
+            start, end = verification_interval(start, meta_end, stored, as_of)
+            if start > end:
+                retry_later(task, start, f"start_date_after_interval_end: {start} > {end}")
                 continue
             stats["history_fetches"] += 1
-            status, bars = tiingo.fetch_daily_bars_result(ticker, start, as_of)
+            status, bars = tiingo.fetch_daily_bars_result(ticker, start, end)
             if status == "not_found":
                 record_ticker_status(conn, ticker, STATUS_UNKNOWN, detail="prices_not_found",
                                      retry_after=recheck)
                 unknown_now.append(ticker)
                 continue
-            if status == "rate_limited":
-                errors[ticker] = "prices:rate_limited"
+            if status in ("rate_limited", "not_configured"):
+                errors[ticker] = f"prices:{status}"
                 continue
             if status not in ("success_new", "empty"):
                 retry_later(task, start, f"prices:{status}")
@@ -916,7 +1029,7 @@ def cover_foreign_history(
             if len(rows) != len(bars):
                 retry_later(task, start, f"unusable_bars={len(bars) - len(rows)}")
                 continue
-            check = verify_history(rows, _stored_rows(conn, ticker), start=start)
+            check = verify_history(rows, stored, start=start, end=end)
             if check.verdict == "incomplete":
                 retry_later(task, start, check.detail)
                 continue
@@ -940,6 +1053,12 @@ def cover_foreign_history(
             # No price row was written for this ticker; it stays pending.
             stats["aborted"] = str(exc)
             break
+        except Exception as exc:  # noqa: BLE001 — one ticker never stops the phase
+            # Anything unforeseen (a malformed value the database rejects, a
+            # parsing surprise) leaves this ticker retryable with backoff and
+            # moves on; load_ticker_history already rolled its rows back.
+            conn.rollback()
+            retry_later(task, start, f"unexpected:{type(exc).__name__}")
         finally:
             if "aborted" not in stats:
                 stats["processed"] += 1
@@ -952,7 +1071,10 @@ def cover_foreign_history(
     stats["fail_closed"] = len(fail_closed)
     if fail_closed:
         stats["fail_closed_tickers"] = dict(sorted(fail_closed.items())[:100])
-    stats["deferred"] = len(queue) - stats["processed"]
+    # Deferred = pending tickers that did not settle this run: never attempted,
+    # retrying with backoff, or blocked by 429s / a missing key. Only a recorded
+    # history_complete, fail-closed or tiingo_unknown status settles a ticker.
+    stats["deferred"] = len(queue) - (stats["completed"] + len(fail_closed) + len(unknown_now))
     return stats
 
 
@@ -965,6 +1087,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
     then bring W1c-covered foreign listings to full history (capped per run)."""
     as_of = _dt.date.fromisoformat(calc_date) if calc_date else _dt.date.today()
     cap = history_cap(history_limit, limit)
+    now = _dt.datetime.now(_dt.UTC)
     fetched = upserted = skipped_rows = 0
     aborted: str | None = None
     last_done: str | None = None
@@ -981,10 +1104,14 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
             universe = warming_universe(conn)
             tickers = order_sweep(universe, resume_after=resume_after)
             watermarks = _ticker_watermarks(conn)
-            # A covered line without rows is cold-started by the history phase
-            # with its whole series, never with the 745-day window; any ticker
-            # that has rows keeps its ring refresh (ring_excluded).
-            excluded = ring_excluded(foreign or [], watermarks)
+            # A covered line without rows that this run's history phase will
+            # load is cold-started there with its whole series, never with the
+            # 745-day window; every other ticker keeps normal ring service.
+            history_batch: frozenset[str] = frozenset()
+            if foreign and cap > 0:
+                pending = plan_foreign_history(conn, foreign, now=now)["pending"]
+                history_batch = frozenset(t.ticker for t in pending[:cap])
+            excluded = ring_excluded(foreign or [], watermarks, history_batch)
             tickers = [t for t in tickers if t not in excluded]
             if limit:
                 tickers = tickers[:limit]
@@ -1031,7 +1158,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
                 # the priority head. A ring that died on budget skips it.
                 if foreign and cap > 0 and aborted is None:
                     history = cover_foreign_history(
-                        conn, tiingo, foreign, as_of=as_of, cap=cap,
+                        conn, tiingo, foreign, as_of=as_of, cap=cap, now=now,
                     )
                     aborted = history.get("aborted")
             conn.commit()
