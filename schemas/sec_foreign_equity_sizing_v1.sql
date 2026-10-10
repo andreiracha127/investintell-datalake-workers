@@ -700,33 +700,115 @@ RETURNS TABLE (
 )
 LANGUAGE sql STABLE PARALLEL SAFE
 AS $fn$
-WITH election AS (
+WITH unit_grammar AS (
+    -- Keep explicit ADS/ADR digit/member forms recognized by the W1 parser,
+    -- as well as full depositary wording. Check raw and normalized members.
+    SELECT '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$)|\madrs?\M|\mgdss?([0-9]|member|;|$)|\mgdss?\M|\mgdrs?([0-9]|member|;|$)|\mgdrs?\M)' AS ads_re
+), election AS (
     SELECT e.* FROM public.sec_cover_share_election_at(
         p_cik, p_ticker, NULL, p_line_members, p_as_of, 'sizing', p_underlying_label
     ) e
 ), elected AS (
-    SELECT c.*, labels.count_label, labels.label_ambiguous,
-           labels.ordinary_unit, labels.preferred_unit
-    FROM election e
+    SELECT c.*, labels.count_label, labels.label_ambiguous, labels.all_labels, labels.scope_unverified,
+           units.ordinary_unit, units.preferred_unit, units.ads_unit,
+           CASE WHEN (units.ordinary_unit::integer + units.preferred_unit::integer
+                         + units.ads_unit::integer) > 1 THEN 'unknown'
+                WHEN units.ads_unit THEN 'ads'
+                WHEN units.preferred_unit THEN 'preferred'
+                WHEN units.ordinary_unit THEN 'ordinary' ELSE 'unknown' END AS count_unit,
+           (units.ordinary_unit::integer + units.preferred_unit::integer
+                         + units.ads_unit::integer) > 1 AS unit_conflict
+    FROM election e CROSS JOIN unit_grammar unit_rules
     CROSS JOIN LATERAL public.sec_share_counts_at(p_as_of, false) c
+    -- Every supporting or conflicting title belongs to the count's own source
+    -- context. An equal class_key in another dimh cannot supply proof.
     CROSS JOIN LATERAL (
-        SELECT CASE WHEN count(DISTINCT x.label) = 1 THEN min(x.label COLLATE "C") END AS count_label,
-               count(DISTINCT x.label) > 1 AS label_ambiguous,
-               c.class_key ~* '(common|ordinary)'
-                   OR COALESCE(bool_or(x.ordinary_unit), false) AS ordinary_unit,
-               c.class_key ~* '(preferred|preference)'
-                   OR COALESCE(bool_or(x.preferred_unit), false) AS preferred_unit
-        FROM (
-            SELECT public.sec_class_label(NULL, c.class_key) AS label,
-                   false AS ordinary_unit, false AS preferred_unit
-            UNION ALL
-            SELECT public.sec_class_label(o.security_title, o.class_key),
-                   o.security_kind = 'equity' AND o.security_title ~* '(common|ordinary)',
-                   o.security_kind = 'preferred' OR o.security_title ~* '(preferred|preference)'
-            FROM public.sec_observations_at(p_as_of, false) o
-            WHERE o.adsh = c.adsh AND o.cik = c.cik AND o.class_key = c.class_key
-        ) x
+        WITH own_observations AS MATERIALIZED (
+            SELECT o.* FROM public.sec_observations_at(p_as_of, false) o
+            WHERE o.adsh = c.adsh AND o.cik = c.cik
+              AND o.class_key = c.class_key AND o.dimh = c.dimh
+        ), source_texts AS (
+            SELECT regexp_replace(public.sec_label_text(v.text), '["''“”‘’«»]', '', 'g') AS text, v.is_member
+            FROM (SELECT c.class_key AS text, true AS is_member
+                  UNION ALL SELECT o.security_title, false FROM own_observations o) v
+        ), identifier_grammar AS (
+            -- Retain W1 canonical normalization, but never silently discard a
+            -- longer explicit identity such as Series AAA. Keywords cannot
+            -- consume the next Class/Series prefix as a coordinated ID.
+            SELECT '(?!(?:class(?:es)?|series|common|ordinary|capital|preferred|preference|shares?|stocks?|and|or|of|the|to|in|on|as|by|no|is)\M)'
+                || '(?:' || public.sec_label_id_re()
+                || '|[[:alnum:]][[:alnum:]-]{0,63}(?![[:alnum:]-]))' AS id_re,
+                '\s*(?:,\s*(?:\mand\M|\mor\M)?|/|&|\mand\M|\mor\M)\s*' AS separator
+        ), grammar AS (
+            SELECT '(?:^|[^a-z])(class(?:es)?|series)\s+((?:' || g.id_re || ')'
+                || '(?:' || g.separator || '(?:' || g.id_re || '))*)' AS pattern, g.separator
+            FROM identifier_grammar g
+        ), mentions AS (
+            SELECT m.value[1] AS namespace, m.value[2] AS ids
+            FROM source_texts s CROSS JOIN grammar g
+            CROSS JOIN LATERAL pg_catalog.regexp_matches(s.text, g.pattern, 'gi') m(value)
+        ), identity_tokens AS (
+            SELECT m.namespace, i.id, public.sec_label_norm(upper(i.id)) AS normalized
+            FROM mentions m CROSS JOIN grammar g
+            CROSS JOIN LATERAL pg_catalog.regexp_split_to_table(m.ids, '(?i)' || g.separator) i(id)
+        ), identities AS (
+            SELECT DISTINCT (CASE WHEN lower(i.namespace) = 'series' THEN 'series:' ELSE 'class:' END)
+                   || i.normalized AS label
+            FROM identity_tokens i WHERE i.normalized IS NOT NULL
+        ), label_set AS (
+            SELECT COALESCE(array_agg(i.label ORDER BY i.label COLLATE "C"), ARRAY[]::text[]) AS labels
+            FROM identities i
+        ), observed_units AS (
+            SELECT COALESCE(bool_or(o.security_kind = 'equity'
+                           AND o.security_title ~* '\m(common|ordinary)\M'), false) AS ordinary,
+                   COALESCE(bool_or(o.security_kind = 'preferred'
+                           OR o.security_title ~* '\m(preferred|preference)\M'), false) AS preferred,
+                   COALESCE(bool_or(o.security_kind = 'depositary'
+                           OR o.security_title ~* unit_rules.ads_re
+                           OR (o.class_key ~* unit_rules.ads_re OR public.sec_label_text(o.class_key) ~* unit_rules.ads_re)), false) AS ads
+            FROM own_observations o
+        )
+        SELECT CASE WHEN cardinality(l.labels) = 1 THEN l.labels[1] END AS count_label,
+               cardinality(l.labels) > 1 AS label_ambiguous, l.labels AS all_labels,
+               -- Each explicit prefix must yield an identity. Unrecognized or
+               -- dangling labels cannot disappear behind another valid label.
+               (SELECT count(*) FROM source_texts s CROSS JOIN LATERAL
+                   pg_catalog.regexp_matches(s.text,
+                       CASE WHEN s.is_member THEN
+                         -- A generic member descriptor like Class Ordinary
+                         -- names no identity; its own title must supply proof.
+                         '\m(?:class(?:es)?\M(?!\s+(?:common|ordinary|capital|preferred|preference|shares?|stocks?)\M)|series\M)'
+                       ELSE '\m(class(?:es)?|series)\M' END, 'gi') marker)
+                   > (SELECT count(*) FROM mentions)
+                   OR EXISTS (SELECT 1 FROM identity_tokens i WHERE i.normalized IS NULL) AS scope_unverified,
+               u.ordinary AS observed_ordinary, u.preferred AS observed_preferred, u.ads AS observed_ads
+        FROM label_set l CROSS JOIN observed_units u
     ) labels
+    CROSS JOIN LATERAL (
+        -- Member wording can support an uncontested count context. In a filing
+        -- carrying explicit depositary units, wording alone proves no ordinary
+        -- supply; that count needs its own positive ordinary observation.
+        SELECT EXISTS (
+            SELECT 1 FROM public.sec_observations_at(p_as_of, false) o
+            WHERE o.adsh = c.adsh AND o.cik = c.cik
+              AND (o.security_kind = 'depositary'
+                   OR o.security_title ~* unit_rules.ads_re
+                   OR (o.class_key ~* unit_rules.ads_re OR public.sec_label_text(o.class_key) ~* unit_rules.ads_re))
+        ) OR EXISTS (
+            SELECT 1 FROM public.sec_share_counts_at(p_as_of, false) sibling
+            WHERE sibling.adsh = c.adsh AND sibling.cik = c.cik
+              AND (sibling.class_key ~* unit_rules.ads_re OR public.sec_label_text(sibling.class_key) ~* unit_rules.ads_re)
+        ) AS filing_has_depositary
+    ) filing_units
+    CROSS JOIN LATERAL (
+        SELECT labels.observed_ordinary
+                   OR ((c.class_key ~* '\m(common|ordinary)\M' OR public.sec_label_text(c.class_key) ~* '\m(common|ordinary)\M')
+                       AND NOT filing_units.filing_has_depositary) AS ordinary_unit,
+               labels.observed_preferred
+                   OR (c.class_key ~* '\m(preferred|preference)\M' OR public.sec_label_text(c.class_key) ~* '\m(preferred|preference)\M') AS preferred_unit,
+               labels.observed_ads
+                   OR (c.class_key ~* unit_rules.ads_re OR public.sec_label_text(c.class_key) ~* unit_rules.ads_re) AS ads_unit
+    ) units
     WHERE c.cik = p_cik AND c.adsh = e.adsh AND c.stated_on = e.shares_as_of
       AND e.evidence -> 'count_fact_hashes' ? c.fact_hash
 ), count_census AS (
@@ -737,18 +819,23 @@ WITH election AS (
     SELECT c.* FROM elected c, election e
     WHERE c.fact_hash = e.evidence ->> 'chosen_fact_hash'
     LIMIT 1
+), unit_result AS (
+    -- Every elected count must agree. Choosing one positive context cannot
+    -- discard a conflicting or unsupported same-filing count fact.
+    SELECT CASE WHEN count(DISTINCT c.count_unit) = 1 THEN min(c.count_unit COLLATE "C")
+                ELSE 'unknown' END AS share_unit,
+           COALESCE(bool_or(c.unit_conflict), false) OR count(DISTINCT c.count_unit) > 1 AS unit_conflict
+    FROM elected c
 ), detail AS (
-    SELECT e.*, c.form,
-           c.count_label AS label,
-           e.count_class_key <> ''
-               AND e.count_class_key ~* '(deposit[ao]ry|\mads|\madrs?([0-9]|member|;|$))' AS ads_unit,
-           c.preferred_unit, c.ordinary_unit,
+    SELECT e.*, c.form, c.count_label AS label, u.share_unit AS unit, u.unit_conflict,
            e.identity_ambiguous
-               OR COALESCE((SELECT bool_or(x.label_ambiguous) FROM elected x), false)
+               OR COALESCE((SELECT bool_or(x.label_ambiguous OR x.scope_unverified
+                                     OR cardinality(x.all_labels) IS DISTINCT FROM 1)
+                            FROM elected x), false)
                OR (SELECT count(DISTINCT x.count_label) FROM elected x) > 1 AS different_classes,
            k.count_classes
     FROM election e LEFT JOIN chosen_detail c ON true
-    CROSS JOIN count_census k
+    CROSS JOIN count_census k CROSS JOIN unit_result u
 ), exchange_fact AS (
     SELECT CASE WHEN count(DISTINCT o.exchange) = 1 THEN min(o.exchange COLLATE "C") END AS exchange_name
     FROM public.sec_observations_at(p_as_of, false) o, election e
@@ -758,16 +845,23 @@ WITH election AS (
 )
 SELECT d.source_status, d.shares, d.shares_as_of, d.adsh, d.basis,
        d.legacy_refusal, d.count_class_key, d.label,
-       CASE WHEN d.ads_unit THEN 'ads' WHEN d.preferred_unit THEN 'preferred'
-            WHEN d.ordinary_unit THEN 'ordinary'
-            WHEN d.adsh IS NOT NULL THEN 'unknown' END,
+       CASE WHEN d.adsh IS NOT NULL THEN d.unit END,
        -- Reserved for a later positive same-filing census contract. A tagged
        -- class count or an EFM tagging obligation cannot prove total scope.
        false, x.exchange_name, COALESCE(d.different_classes, false),
        d.evidence || jsonb_build_object(
-           'count_labels', COALESCE((SELECT jsonb_agg(DISTINCT e.count_label ORDER BY e.count_label)
-                                    FILTER (WHERE e.count_label IS NOT NULL) FROM elected e), '[]'::jsonb),
+           'count_labels', COALESCE((SELECT jsonb_agg(DISTINCT l.label ORDER BY l.label)
+                                    FROM elected e CROSS JOIN LATERAL unnest(e.all_labels) l(label)), '[]'::jsonb),
            'count_labels_ambiguous', COALESCE(d.different_classes, false),
+           'count_scope_unverified', COALESCE((SELECT bool_or(e.scope_unverified OR cardinality(e.all_labels) IS DISTINCT FROM 1) FROM elected e), false),
+           'count_unit_evidence_conflict', d.unit_conflict,
+           'count_unit_contexts', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+               'fact_hash', e.fact_hash, 'class_key', e.class_key, 'dimh', e.dimh,
+               'labels', e.all_labels, 'scope_unverified', e.scope_unverified OR cardinality(e.all_labels) IS DISTINCT FROM 1, 'unit', e.count_unit,
+               'ordinary_unit_proven', e.ordinary_unit, 'depositary_unit_evidenced', e.ads_unit,
+               'preferred_unit_evidenced', e.preferred_unit, 'unit_conflict', e.unit_conflict)
+               ORDER BY e.fact_hash) FROM elected e), '[]'::jsonb),
+           'unit_rule', 'own_count_context_no_conflicting_units',
            'filing_count_classes', d.count_classes,
            'count_form', d.form,
            'scope_rule', 'explicit_class_dimension_only')

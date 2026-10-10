@@ -958,3 +958,255 @@ def test_historical_null_ratio_class_cannot_borrow_listing_from_keyed_program(db
         fact["program_key"] for fact in audit["count_ratio_evidence_facts"]
         if fact["source_kind"] == "ratio_change_6k"
     } == set(programs)
+
+
+def _round4_set_observation_context(db, *, adsh, member, title, dimh):
+    db.execute(
+        "UPDATE public.sec_ticker_cik_observations SET dimh=%s "
+        "WHERE adsh=%s AND cik=1 AND class_key=%s AND security_title=%s",
+        (dimh, adsh, member, title),
+    )
+
+
+def _round4_set_count_context(db, *, adsh, member, dimh):
+    db.execute(
+        "UPDATE public.sec_cover_share_counts SET dimh=%s "
+        "WHERE adsh=%s AND cik=1 AND class_key=%s",
+        (dimh, adsh, member),
+    )
+
+
+def _round4_depositary_context_count(db, *, ordinary_spelling):
+    member = "ClassOfStock=ClassACommonShares;" if ordinary_spelling else "ClassOfStock=ClassA;"
+    depositary_title = "Class A American Depositary Shares"
+    adsh = observe(db, member=member, kind="depositary", title=depositary_title)
+    _round4_set_observation_context(
+        db, adsh=adsh, member=member, title=depositary_title, dimh="ads-count-context",
+    )
+    count(db, adsh=adsh, member=member, shares=100_000)
+    _round4_set_count_context(db, adsh=adsh, member=member, dimh="ads-count-context")
+    if not ordinary_spelling:
+        # Same accession and raw member, but a different source context. Its
+        # ordinary title must not supply units to the ADS-context count.
+        ordinary_title = "Class A ordinary shares"
+        observe(db, ticker="UNLISTED", member=member, kind="equity",
+                title=ordinary_title, adsh=adsh)
+        _round4_set_observation_context(
+            db, adsh=adsh, member=member, title=ordinary_title, dimh="ordinary-other-context",
+        )
+    ads_contract(db, class_token="class_a")
+    return resolve(db, members=[member])
+
+
+@pytest.mark.parametrize("ordinary_spelling", [True, False], ids=[
+    "common-member-cannot-override-own-depositary-title",
+    "opaque-member-cannot-borrow-ordinary-units-from-other-dimh",
+])
+def test_count_specific_depositary_evidence_blocks_ordinary_admission(db, ordinary_spelling):
+    row = _round4_depositary_context_count(db, ordinary_spelling=ordinary_spelling)
+    assert row["status"] != "resolved"
+    assert row["ordinary_shares"] is None
+    assert row["refusal"].split(":", 1)[0] in {
+        "ordinary_class_shares_unavailable", "share_count_unit_unverified",
+    }
+    assert row["share_unit"] != "ordinary"
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert row["evidence"]["count_labels_ambiguous"] is False
+
+
+def test_underlying_ordinary_count_keeps_its_own_context_below_ads_line(db):
+    member = "ClassOfStock=ClassACommonShares;"
+    ads_title, ordinary_title = "Class A American Depositary Shares", "Class A ordinary shares"
+    adsh = observe(db, member=ADS, kind="depositary", title=ads_title, classes=2)
+    _round4_set_observation_context(db, adsh=adsh, member=ADS, title=ads_title, dimh="ads-line-context")
+    observe(db, ticker="UNLISTED", member=member, kind="equity", title=ordinary_title,
+            classes=2, adsh=adsh)
+    _round4_set_observation_context(
+        db, adsh=adsh, member=member, title=ordinary_title, dimh="underlying-ordinary-context",
+    )
+    count(db, adsh=adsh, member=member, shares=1_000_000)
+    _round4_set_count_context(db, adsh=adsh, member=member, dimh="underlying-ordinary-context")
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[ADS])
+    assert row["status"] == "resolved" and row["refusal"] is None
+    assert row["ordinary_shares"] == 1_000_000
+    assert row["count_class_key"] == member and row["share_unit"] == "ordinary"
+    assert row["canonical_underlying_class_id"] == "class:a"
+    assert row["class_binding"] == "explicit"
+    assert (row["ratio_numerator"], row["ratio_denominator"]) == (5, 1)
+    assert (row["count_ratio_numerator"], row["count_ratio_denominator"]) == (5, 1)
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert row["evidence"]["count_labels_ambiguous"] is False
+
+
+def _round4_titled_count(db, *, title, listing_class):
+    member = "ClassOfStock=CommonShares;"
+    adsh = observe(db, member=member, kind="equity", title=title)
+    count(db, adsh=adsh, member=member, shares=1_500_000)
+    listing(db, class_token=listing_class)
+    for source in ("f6", "item_12d"):
+        listing(db, kind="ads_ratio", source=source, ratio=(5, 1), class_token=None)
+    return resolve(db, members=[member])
+
+
+@pytest.mark.parametrize("title,listing_class,labels", [
+    ("Class A and Series A ordinary shares", "class_a", ["class:a", "series:a"]),
+    ("Class A and B ordinary shares", "class_a", ["class:a", "class:b"]),
+    ("Series A and Series B ordinary shares", "series_a", ["series:a", "series:b"]),
+    ("Classes A, B, and C ordinary shares", "class_a", ["class:a", "class:b", "class:c"]),
+    ("Class II and III ordinary shares", "class_ii", ["class:2", "class:3"]),
+    ("Series II and III ordinary shares", "series_ii", ["series:2", "series:3"]),
+    ('Class A and Series "AAA" ordinary shares', "class_a", ["class:a", "series:aaa"]),
+    ("Class A and Series «B» ordinary shares", "class_a", ["class:a", "series:b"]),
+    ("Class A and Series ab ordinary shares", "class_a", ["class:a", "series:ab"]),
+])
+def test_every_class_and_series_identity_in_count_title_blocks_combined_scope(db, title, listing_class, labels):
+    row = _round4_titled_count(db, title=title, listing_class=listing_class)
+    refused(row, "foreign_listing_class_ambiguous")
+    assert row["evidence"]["count_labels"] == labels
+    assert row["evidence"]["count_labels_ambiguous"] is True
+    assert row["canonical_underlying_class_id"] is None
+    assert row["class_binding"] is None
+
+
+def test_single_class_title_still_proves_the_explicit_count_identity(db):
+    row = _round4_titled_count(db, title="Class A ordinary shares", listing_class="class_a")
+    assert row["status"] == "resolved" and row["ordinary_shares"] == 1_500_000
+    assert row["refusal"] is None and row["share_unit"] == "ordinary"
+    assert row["canonical_underlying_class_id"] == "class:a" and row["class_binding"] == "explicit"
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert row["evidence"]["count_labels_ambiguous"] is False
+
+
+def test_every_identity_in_count_member_blocks_combined_scope_even_with_plain_title(db):
+    member = "ClassOfStock=ClassAAndClassBCommonShares;"
+    adsh = observe(db, member=member, kind="equity", title="Common shares")
+    count(db, adsh=adsh, member=member, shares=1_500_000)
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[member])
+    refused(row, "foreign_listing_class_ambiguous")
+    assert row["evidence"]["count_labels"] == ["class:a", "class:b"]
+    assert row["evidence"]["count_labels_ambiguous"] is True
+
+
+def _round4_conflicting_own_context_units(db):
+    member = "ClassOfStock=ClassACommonShares;"
+    ordinary_title, ads_title = "Class A ordinary shares", "Class A American Depositary Shares"
+    adsh = observe(db, member=member, kind="equity", title=ordinary_title)
+    observe(db, member=member, kind="depositary", title=ads_title, adsh=adsh)
+    for title in (ordinary_title, ads_title):
+        _round4_set_observation_context(
+            db, adsh=adsh, member=member, title=title, dimh="conflicting-count-context",
+        )
+    count(db, adsh=adsh, member=member, shares=100_000)
+    _round4_set_count_context(db, adsh=adsh, member=member, dimh="conflicting-count-context")
+    ads_contract(db, class_token="class_a")
+    return resolve(db, members=[member])
+
+
+def test_conflicting_ordinary_and_depositary_units_in_own_context_refuse(db):
+    row = _round4_conflicting_own_context_units(db)
+    refused(row, "share_count_unit_unverified")
+    assert row["share_unit"] != "ordinary"
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert row["evidence"]["count_labels_ambiguous"] is False
+
+
+def _round4_common_member_without_own_ordinary_proof(db):
+    member = "ClassOfStock=ClassACommonShares;"
+    ads_title = "Class A American Depositary Shares"
+    adsh = observe(db, member=ADS, kind="depositary", title=ads_title, classes=2)
+    _round4_set_observation_context(db, adsh=adsh, member=ADS, title=ads_title, dimh="ads-line-context")
+    # There is no observation on this count's member/context. Its spelling
+    # cannot prove ordinary units in a filing that explicitly contains ADSs.
+    count(db, adsh=adsh, member=member, shares=100_000)
+    _round4_set_count_context(db, adsh=adsh, member=member, dimh="unproven-count-context")
+    ads_contract(db, class_token="class_a")
+    return resolve(db, members=[ADS])
+
+
+def test_common_member_spelling_without_own_ordinary_proof_under_ads_filing_refuses(db):
+    row = _round4_common_member_without_own_ordinary_proof(db)
+    refused(row, "share_count_unit_unverified")
+    assert row["share_unit"] != "ordinary"
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert row["evidence"]["count_labels_ambiguous"] is False
+
+
+def test_every_elected_count_context_must_prove_its_own_class_identity(db):
+    member = "ClassOfStock=CommonShares;"
+    adsh = observe(db, member=ADS, kind="depositary", title="Class A American Depositary Shares", classes=2)
+    for dimh, title in [
+        ("known-class-context", "Class A ordinary shares"),
+        ("unknown-class-context", "Ordinary shares"),
+    ]:
+        observe(db, ticker="UNLISTED", member=member, kind="equity", title=title, classes=2, adsh=adsh)
+        _round4_set_observation_context(db, adsh=adsh, member=member, title=title, dimh=dimh)
+        count(db, adsh=adsh, member=member, shares=100_000)
+        db.execute(
+            "UPDATE public.sec_cover_share_counts SET dimh=%s "
+            "WHERE adsh=%s AND class_key=%s AND dimh='test'",
+            (dimh, adsh, member),
+        )
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[ADS])
+    refused(row, "foreign_listing_class_ambiguous")
+    assert row["ordinary_shares"] is None
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert len(row["evidence"]["count_unit_contexts"]) == 2
+    assert sorted(len(c["labels"]) for c in row["evidence"]["count_unit_contexts"]) == [0, 1]
+
+
+def test_explicit_identity_outside_legacy_short_label_grammar_never_disappears(db):
+    row = _round4_titled_count(db, title="Class A and Series AAA ordinary shares", listing_class="class_a")
+    refused(row, "foreign_listing_class_ambiguous")
+    assert row["ordinary_shares"] is None
+    assert row["class_binding"] is None
+
+
+@pytest.mark.parametrize("member", [
+    "ClassOfStock=ADS1ClassACommonShares;",
+    "ClassOfStock=ADR1CommonClassA;",
+])
+def test_explicit_numbered_depositary_member_conflicts_with_ordinary_title(db, member):
+    adsh = observe(db, member=member, kind="equity", title="Class A ordinary shares")
+    count(db, adsh=adsh, member=member, shares=100_000)
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[member])
+    refused(row, "share_count_unit_unverified")
+    assert row["ordinary_shares"] is None
+    assert row["evidence"]["count_unit_evidence_conflict"] is True
+
+
+@pytest.mark.parametrize("title", ["Class A and Series ? ordinary shares", "Class A and Series ordinary shares"])
+def test_unrecognized_or_dangling_class_identity_cannot_disappear(db, title):
+    row = _round4_titled_count(db, title=title, listing_class="class_a")
+    refused(row, "foreign_listing_class_ambiguous")
+    assert row["evidence"]["count_scope_unverified"] is True
+    assert row["evidence"]["count_labels_ambiguous"] is True
+    assert row["evidence"]["count_labels"] == ["class:a"]
+
+
+@pytest.mark.parametrize("same_context", [True, False])
+def test_generic_member_class_descriptor_requires_its_positive_own_class_title(db, same_context):
+    # Real PERF source shape: the member names ordinary class units but no
+    # identity. Only the exact-context Class A title supplies positive proof.
+    member = "ClassesOfShareCapital=IssuerClassOrdinaryShares;"
+    adsh = observe(db, ticker="UNLISTED", member=member, title="Class A Ordinary Shares")
+    if not same_context:
+        _round4_set_observation_context(db, adsh=adsh, member=member,
+                                        title="Class A Ordinary Shares", dimh="other-context")
+    observe(db, member=ADS, kind="depositary", title="Class A American Depositary Shares", adsh=adsh)
+    count(db, adsh=adsh, member=member)
+    ads_contract(db, class_token="class_a")
+    row = resolve(db, members=[ADS])
+    if not same_context:
+        refused(row, "share_count_unit_unverified")
+        assert row["evidence"]["count_labels"] == []
+        assert row["evidence"]["count_scope_unverified"] is True
+        return
+    assert row["status"] == "resolved" and row["refusal"] is None
+    assert row["ordinary_shares"] == 1_000_000
+    assert row["class_binding"] == "explicit" and row["canonical_underlying_class_id"] == "class:a"
+    assert row["evidence"]["count_labels"] == ["class:a"]
+    assert row["evidence"]["count_scope_unverified"] is False

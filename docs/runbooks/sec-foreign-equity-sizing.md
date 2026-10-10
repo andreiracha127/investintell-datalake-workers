@@ -91,11 +91,30 @@ extend with positive same-filing census evidence from the 20-F cover's statement
 of outstanding shares for each issuer class. No census source, parser or new
 evidence relation is added here. `sole_class_proven` remains false in phase 1.
 
-Explicit depositary-member counts count ADS units and always return
-`ordinary_class_shares_unavailable`. They do not establish the full outstanding
-ordinary class even when the ADS ratio is known. Preferred and unknown count
-units also fail closed. Class and Series namespaces remain distinct, and Roman
-numerals are preserved by the shared class-token normalizer.
+Unit and class proof belong to each elected count's own accession, CIK, member
+and `dimh`. Observation titles from another context supply neither units nor
+class identity. Every elected count must have its own unique identity and agree
+on ordinary units; equal numerical values cannot lend one count's proof to
+another. Audit `count_unit_contexts` retains each count's context, labels, unit
+and conflicting evidence flags.
+
+Explicit depositary evidence includes observation kind/title and raw or
+normalized ADS/ADR member wording, including numbered member forms. An ADS-only
+context returns `ordinary_class_shares_unavailable`. Conflicting ordinary,
+depositary or preferred evidence returns `share_count_unit_unverified`. A Common
+or Ordinary spelling hint cannot prove ordinary units in a filing with explicit
+depositary evidence: that count needs a positive ordinary observation on its own
+context. A separately evidenced ordinary count below an ADS line remains
+admissible. Preferred and unknown units also fail closed.
+
+Sizing collects every Class and Series identity from each count member and its
+own context's source titles, including coordinated names such as Class A and B.
+Two distinct identities, an unrecognized explicit identity, or an elected count
+without its own identity proof refuses `foreign_listing_class_ambiguous`.
+`count_labels` retains the complete recognized set, and `count_scope_unverified`
+and `count_labels_ambiguous` expose insufficient proof. Class and Series remain
+distinct namespaces; Roman numerals use the existing canonical normalization.
+The legacy W1 label and share functions retain their bodies and outputs.
 
 ## Refusals and Light's remaining gates
 
