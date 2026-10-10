@@ -69,5 +69,7 @@ jobs:
           python -m pytest tests/test_sec_foreign_listing_throughput.py -q
           python -m pytest tests/test_sec_foreign_listing_shard_plans.py -q
           python -m pytest tests/test_sec_foreign_share_census_parser.py -q
+          python -m pytest tests/test_sec_foreign_share_census_reading.py -q
+          python -m pytest tests/test_sec_foreign_share_census_validation.py -q
           python -m pytest tests/test_sec_foreign_share_census.py -q
           python -m pytest tests/test_sec_foreign_share_census_loader.py -q

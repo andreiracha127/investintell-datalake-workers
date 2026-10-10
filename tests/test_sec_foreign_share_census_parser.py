@@ -17,7 +17,8 @@ PROMPT = ("Indicate the number of outstanding shares of each of the issuer’s "
 
 
 def cover(response, header="For the fiscal year ended December 31, 2024"):
-    return "<p>" + header + "</p><p>" + PROMPT + response + "</p><p>Indicate by check mark whether the registrant...</p>"
+    return ("<p>" + header + "</p><p>" + PROMPT + response +
+            "</p><p>Indicate by check mark whether the registrant...</p><p>PART I</p><p>ITEM 1. Identity of Directors</p>")
 
 
 @pytest.mark.parametrize("name,key", [
@@ -54,7 +55,6 @@ def test_all_w1_roman_class_and_series_keys(number):
     ("393,283,720 Ordinary Shares (nominal value €0.09 per share)", [393283720], ["Ordinary Shares"]),
     ("A shares, nominal value DKK 0.10 each: 1,074,872,000 B shares, nominal value DKK 0.10 each: 3,390,128,000",
      [1074872000, 3390128000], ["A shares", "B shares"]),
-    ("Ordinary Shares, without nominal value: 1,228,504,232 (as of December 31, 2024)**", [1228504232], ["Ordinary Shares"]),
     ("3,167,959,016 ordinary shares, par value US$0.0001 per share.", [3167959016], ["ordinary shares"]),
     ("2,102,996,000 Common Shares outstanding as of December 31, 2024", [2102996000], ["Common Shares"]),
     ("Class 1 ordinary shares: 400 Class 2 ordinary shares: 100 Total: 500", [400, 100], ["Class 1 ordinary shares", "Class 2 ordinary shares"]),
@@ -70,7 +70,8 @@ def test_observed_named_and_numbered_cover_grammars(response, counts, names):
 
 
 def test_qgen_custom_cover_response():
-    text = "<p>The number of outstanding Common Shares as of December 31, 2024 was 222,290,848.</p><p>Indicate by check mark ...</p>"
+    text = ("<p>The number of outstanding Common Shares as of December 31, 2024 was 222,290,848.</p>"
+            "<p>Indicate by check mark ...</p><p>PART I</p><p>ITEM 1. Identity of Directors</p>")
     census = parse_share_census(text)
     assert census["complete"]
     assert census["classes"] == [{"class_name": "Common Shares", "class_key": "common", "class_kind": "ordinary", "shares": 222290848}]
@@ -185,11 +186,12 @@ def test_multiline_html_table_joins_class_name_and_keeps_all_rows():
 
 def test_pdf_extracted_cover_uses_same_document_text():
     from scripts.load_sec_foreign_listing_evidence import pdf_parser_input
-    html, normalized, ranges = pdf_parser_input([
+    pages = [
         "For the fiscal year ended December 31, 2024\n" + PROMPT + "\nClass A ordinary shares   1,200\nClass B ordinary shares   nil\nTotal 1,200\nIndicate by check mark ...",
-        "Annual report financial statements 2024",
-    ])
-    census = parse_share_census(_Document(html))
+        "PART I\nITEM 1. Identity of Directors\nAnnual report financial statements 2024",
+    ]
+    html, normalized, ranges = pdf_parser_input(pages)
+    census = parse_share_census(_Document(html), source_lines=[line for page in pages for line in page.splitlines()])
     assert census["complete"], census
     assert [row["shares"] for row in census["classes"]] == [1200, 0]
     assert census["source_text"] in normalized
@@ -221,16 +223,34 @@ def test_named_source_excerpt_fixtures_preserve_provenance_and_expected_scope():
     fixtures = json.loads((Path(__file__).parent / "fixtures" / "sec_foreign_share_census" / "named_cover_statements.json").read_text(encoding="utf-8"))
     expected = {"BIDU": [2239234372, 524340320], "NVO": [1074872000, 3390128000],
                 "TSM": [25932733242], "ASML": [393283720], "QGEN": [222290848],
-                "NTES": [3167959016], "SAP": [1228504232], "CNQ": [2102996000]}
-    assert {f["symbol"] for f in fixtures} == set(expected) | {"DLO", "ZIM"}
+                "NTES": [3167959016], "CNQ": [2102996000],
+                "AKO-A": [473289301, 473281303], "CGG": [151861932], "BUR": [218581877],
+                "AQN": [767343863], "RCI": [112467648, 523231804], "DBVT": [24648828], "CIFS": [22114188],
+                "APWC": [13819669], "JOBS": [66784688], "BSBR": [3850970714, 3712111703], "DIV": [11043027],
+                "IMOS": [727240126], "SHELL-2009": [3454731900, 2667562105], "SEK": [2579394, 1410606],
+                "BORR": [252582036], "AKAN": [1983546]}
+    assert {f["symbol"] for f in fixtures} == set(expected) | {"DLO", "ZIM", "SAP", "ASX", "AHI", "REPCF", "GIL", "STN", "CIFS-HEREIN", "BNS"}
     for fixture in fixtures:
         assert hashlib.sha256(fixture["source_text"].encode()).hexdigest() == fixture["excerpt_sha256"]
         assert fixture["source_url"].startswith("https://www.sec.gov/Archives/edgar/")
-        census = parse_share_census("<p>" + escape(fixture["source_text"]) + "</p>", period_end=fixture["period_end"])
+        region = fixture.get("cover_region_text", fixture["source_text"])
+        if "cover_region_text" in fixture:
+            assert hashlib.sha256(region.encode()).hexdigest() == fixture["cover_region_sha256"]
+            if "footnote_quote" in fixture:
+                assert fixture["footnote_quote"] in region
+        suffix = "" if "cover_section_header" in fixture else "<p>PART I</p><p>ITEM 1. Identity of Directors</p>"
+        header = "<p>For the fiscal year ended " + fixture["period_end"] + "</p>" if fixture["period_end"] else ""
+        html = fixture.get("cover_html", header + "<p>" + escape(region) + "</p>" + suffix)
+        if "cover_html" in fixture:
+            assert hashlib.sha256(html.encode()).hexdigest() == fixture["cover_html_sha256"]
+        census = parse_share_census(html, period_end=fixture["period_end"])
         if fixture["symbol"] in expected:
             assert census["complete"], census
             assert [c["shares"] for c in census["classes"]] == expected[fixture["symbol"]]
         else:
             assert not census["complete"]
+            if fixture["symbol"] in {"SAP", "ASX", "AHI", "REPCF", "GIL", "STN", "CIFS-HEREIN", "BNS"}:
+                assert census["status"] == fixture["expected_status"]
+                assert fixture["expected_reason"] in census["reasons"]
         if fixture["symbol"] == "NVO":
             assert [c["class_kind"] for c in census["classes"]] == ["other", "other"]

@@ -117,13 +117,15 @@ def _parse(document: dict) -> tuple[dict, dict]:
     document = w1c.canonical_document(document)
     raw, sha = _CLIENT.document(document["source_url"], expected_sha256=document.get("source_sha256"))
     pdf_ranges = None
+    source_lines = None
     if raw.lstrip().startswith(b"%PDF-"):
         pages, method = w1c.extract_pdf_pages(raw, cache_dir=_CLIENT.cache)
         html, pdf_text, pdf_ranges = w1c.pdf_parser_input(pages)
+        source_lines = [line for page in pages for line in page.splitlines()]
         document = {**document, "content_format": "pdf", "pdf_text_extractor": method}
     else:
         html = raw.decode("utf-8-sig", errors="replace")
-    result = parse_share_census(html, period_end=document.get("period"))
+    result = parse_share_census(html, period_end=document.get("period"), source_lines=source_lines)
     source_available = max(date.fromisoformat(document["filed"]) + timedelta(days=1),
                            date.fromisoformat(document["publication_floor_on"]))
     row = {**result, "cik": int(document["cik"]), "adsh": document["adsh"],
@@ -134,9 +136,13 @@ def _parse(document: dict) -> tuple[dict, dict]:
            "publication_floor_on": document["publication_floor_on"],
            "source_available_on": source_available.isoformat(),
            "available_on": source_available.isoformat(),
-           "evidence_text": result.get("source_text", ""),
+           "evidence_text": (result.get("cover_region_text") or result.get("source_text", "")),
            "evidence_location": result.get("source_location", ""),
            "conflicting": result.get("status") == "conflicting"}
+    if result.get("cover_region_location"):
+        row["evidence_location"] += ";" + result["cover_region_location"]
+        # The refusal marker is diagnostic, not a quotation of SEC source text.
+        row["evidence_text"] = row["evidence_text"].removesuffix(" [COVER REGION TRUNCATED]").strip()
     if pdf_ranges is not None and row["evidence_text"]:
         # The existing W1c mapper appends the verified page and text offsets.
         w1c.locate_pdf_evidence(row, pdf_text, pdf_ranges)

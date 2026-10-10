@@ -36,13 +36,45 @@ as of December 31, 2024 was 222,290,848." A nearby section 12(b) title cannot
 supply a class name omitted by the capital-stock statement.
 
 Supported responses include count-before-name prose, name-before-count prose,
-separate class rows and multi-line cover tables. Counts are exact decimal
-values; `nil` is zero. Supported par-value and date clauses are recognized
+separate class rows and multi-line cover tables. Counts are exact nonnegative
+integers; `nil` is zero. Thousands/millions/billions expressions, negative
+notation including Unicode dashes and parenthesized quantities, and unsupported
+signs remain incomplete. Supported par-value and date clauses are recognized
 as separate grammar, not converted into share counts. Footnote numbers and
 other unsupported numeric residue refuse completeness. An explicit date wins;
 otherwise the cover's unambiguous fiscal period end supplies the measurement
 date. The output retains the original class name, normalized class key,
 class kind, count, date, stated total, computed sum, source quote and location.
+
+The parser checks the whole cover, including notes below checkmark questions.
+A footnote marker or count qualification leaves the statement incomplete;
+the evidence retains the later note rather than silently truncating it at the
+first checkmark. SAP's 2024 cover amount includes treasury shares according
+to its later note. The census does not subtract those treasury shares to
+manufacture an outstanding count. ASX's later option-count/date note likewise
+prevents unqualified completeness under this contract.
+
+Report-wide declarations that all share numbers or all share and per-share
+amounts were adjusted also qualify a count. A declaration expressly limited
+to financial statements, or to named management discussion and financial
+statement sections, does not qualify an unmarked cover count. The validator
+checks the quoted scope instead of treating every later use of "adjusted"
+as cover evidence. Share-price or per-share earnings adjustments alone do
+not establish an outstanding-share quantity adjustment.
+
+Table cells and row relationships are source evidence. Two numeric cells or
+lines `100` and `200` cannot become `100,200`; a blank Class A row cannot borrow
+the following Class B row's leading amount. Unexplained numeric cells,
+unresolved bare class tokens such as `A`, and ambiguous row/count associations
+refuse completeness. Bare `A and B` or `A & B` combined amounts retain both
+named classes without allocating the total. Accepted custom cover declarations
+participate in repeat/disagreement checks together with standard prompts.
+Hierarchical tables whose class heading has a blank count and whose series
+counts occur in later rows remain unsupported. For example, a blank
+"Preferred Shares" row above separate "Series 11" and "Series 12" rows
+cannot supply a class name or kind to those quantities under the hard-row
+rule. This limitation concerns association and class scope; it does not
+assert that the source arithmetic is wrong.
 
 Class keys preserve Class versus Series. Letters and Roman numerals follow
 the sizing contract's `sec_foreign_class_key` semantics, including numeric
@@ -126,7 +158,7 @@ and unchanged; census application does not reparse or replace listing facts.
 
 ## Offline validation
 
-All new artifacts for this run belong under `C:/investintell-data/w1c-census/`.
+All new artifacts for this run belong under `C:/investintell-data/w1c-census-r2/`.
 The raw final5 cache is read-only. Use no more than 12 parse workers on the
 shared machine. Preserve the pinned input manifest, census JSONL, run metrics
 and `SHA256SUMS`. Missing documents are reported without downloading them.
@@ -134,10 +166,10 @@ and `SHA256SUMS`. Missing documents are reported without downloading them.
 ```powershell
 python scripts/load_sec_foreign_share_census.py `
   --manifest E:/investintell-data/w1c-20261009-run2/final5/manifest.json `
-  --cache-dir C:/investintell-data/w1c-census `
+  --cache-dir C:/investintell-data/w1c-census-r2 `
   --raw-cache-dir E:/investintell-data/w1c-20261009-run2/final5 `
-  --output C:/investintell-data/w1c-census/census.jsonl `
-  --w1-counts C:/investintell-data/w1c-census/w1-counts.json `
+  --output C:/investintell-data/w1c-census-r2/census.jsonl `
+  --w1-counts C:/investintell-data/w1c-census-r2/w1-counts.json `
   --offline --workers 12
 ```
 
@@ -145,21 +177,38 @@ After replay and local W1 cross-check export, run:
 
 ```powershell
 python scripts/validate_sec_foreign_share_census.py `
-  --census C:/investintell-data/w1c-census/census.jsonl `
+  --census C:/investintell-data/w1c-census-r2/census.jsonl `
   --corpus-manifest E:/investintell-data/w1c-20261009-run2/final5/manifest.json `
   --raw-cache-dir E:/investintell-data/w1c-20261009-run2/final5 `
-  --sizing-rows C:/investintell-data/w1c-census/sizing-2025.json `
-  --output-dir C:/investintell-data/w1c-census/validation
+  --sizing-rows C:/investintell-data/w1c-census-r2/sizing-2025.json `
+  --sample-seed workers-pr188-r2-independent-source-v1 `
+  --exclude-review C:/investintell-data/w1c-census/validation/precision-reviewed.json `
+  --exclude-review C:/investintell-data/w1c-census-r2/prior-gate-reviewed-accessions.json `
+  --compare-census C:/investintell-data/w1c-census/census.jsonl `
+  --output-dir C:/investintell-data/w1c-census-r2/validation
 ```
 
 The optional raw-cache argument verifies all 40 original source hashes and
-quotes and includes neighboring cover text in the review packet. Review the
+quotes and includes the whole cover window, source table cells, a separately
+identified post-statement cover boundary, and notes after checkmark questions.
+The Round 2 precision seed selects distinct CIKs across four forms and five
+filing-year bands and excludes previously reviewed accessions. Review the
 deterministic `precision-sample.json` against the original cached
 documents, then save a separate reviewed packet with the exact census hash,
 sample IDs, `correct`/`incorrect` judgments and source notes. Re-run validation
 with `--precision-review` pointing to that packet. Preserve all incorrect
 judgments; a parser fix requires regenerating the census, reselecting its
 deterministic complete sample and reviewing the new packet.
+
+The old Round 1 artifact directory is read-only. `--compare-census` produces
+the full old/new status flip matrix, overlapping COMPLETE-to-INCOMPLETE reason
+counts, and a deterministic review packet with a representative of every new
+reason plus at least 30 filings when available. Review those sources against
+the whole cover, including table row/count association and later footnotes.
+Record both necessary refusals and conservative coverage losses; a status
+change alone does not prove that the original source census was invalid.
+Keep unreviewed packets pending and report any false completeness before
+certifying precision or recalculating accepted impact.
 
 Named review includes DLO, BIDU, NVO, TSM, ASML, QGEN, ZIM, NTES, SAP and CNQ.
 Quotes must come from their actual capital-stock statements, and a source that
@@ -179,6 +228,9 @@ preferred/preference, deferred or founder. An untyped `other` class cannot
 prove that no second ordinary class exists. NVO's bare A/B share counts remain
 useful explicit census evidence, but their ordinary/common kind is not proved
 by that cover statement alone.
+`Founder` and `Founders` use the same nonordinary proof predicate; plural
+wording does not reduce coverage. A zero/nil untyped second class still blocks
+sole-ordinary proof, and a zero ordinary count cannot qualify.
 
 ## Production procedure (deferred; not executed by this PR)
 
@@ -198,9 +250,9 @@ by that cover statement alone.
 
    ```powershell
    python scripts/load_sec_foreign_share_census.py `
-     --manifest C:/investintell-data/w1c-census/manifest.json `
-     --cache-dir C:/investintell-data/w1c-census `
-     --output C:/investintell-data/w1c-census/census.jsonl `
+     --manifest C:/investintell-data/w1c-census-r2/manifest.json `
+     --cache-dir C:/investintell-data/w1c-census-r2 `
+     --output C:/investintell-data/w1c-census-r2/census.jsonl `
      --apply --observed-on YYYY-MM-DD
    ```
 

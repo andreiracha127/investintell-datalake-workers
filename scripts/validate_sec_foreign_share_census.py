@@ -22,7 +22,7 @@ else:
     from sec_foreign_share_census_parser import normalize_class_key
 
 ANNUAL_FORMS = {"20-F", "20-F/A", "40-F", "40-F/A"}
-SAMPLE_SEED = "foreign-share-census-precision-v1-20261010"
+SAMPLE_SEED = "workers-pr188-r2-independent-source-v1"
 NAMED_ISSUERS = {
     "DLO": (1846832, "0000950170-25-058197"),
     "BIDU": (1329099, "0001193125-25-066199"),
@@ -194,7 +194,7 @@ def impact(sizing: dict | list, rows: list[dict]) -> dict:
                 other_classes_nonordinary = all(entry in ordinary
                     or entry["class_kind"] in {"preferred", "preference"}
                     or (entry["class_kind"] == "other" and re.search(
-                        r"\b(?:deferred|founder)\b", entry["class_name"], re.I))
+                        r"\b(?:deferred|founders?)\b", entry["class_name"], re.I))
                     for entry in selected["classes"])
                 evidence = line.get("evidence") or {}
                 labels = [line.get("canonical_underlying_class_id"),
@@ -241,48 +241,132 @@ def impact(sizing: dict | list, rows: list[dict]) -> dict:
             "lines": detail}
 
 
+def year_band(row: dict) -> str:
+    year = int(row["filed"][:4])
+    if year <= 2005:
+        return "through_2005"
+    if year <= 2010:
+        return "2006_2010"
+    if year <= 2015:
+        return "2011_2015"
+    if year <= 2020:
+        return "2016_2020"
+    return "2021_onward"
+
+
+def sample_rank(row: dict, seed: str) -> str:
+    return hashlib.sha256((seed + "|" + sample_identity(row)).encode()).hexdigest()
+
+
+def select_precision_sample(rows: list[dict], seed: str,
+                            excluded_accessions: set[str] | None = None,
+                            count: int = 40) -> list[dict]:
+    """Round-robin form/year strata; one source per issuer, deterministic ranks."""
+    excluded_accessions = excluded_accessions or set()
+    strata: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        if row_status(row) == "complete" and row["adsh"] not in excluded_accessions:
+            strata[(row["form"], year_band(row))].append(row)
+    for bucket in strata.values():
+        bucket.sort(key=lambda row: sample_rank(row, seed), reverse=True)
+    stratum_order = sorted(strata, key=lambda key: hashlib.sha256(
+        (seed + "|stratum|" + "|".join(key)).encode()).hexdigest())
+    sample = []
+    seen_ciks = set()
+    while len(sample) < count and any(strata.values()):
+        for key in stratum_order:
+            bucket = strata[key]
+            while bucket and int(bucket[-1]["cik"]) in seen_ciks:
+                bucket.pop()
+            if bucket:
+                row = bucket.pop()
+                sample.append(row)
+                seen_ciks.add(int(row["cik"]))
+            if len(sample) == count:
+                break
+    return sample
+
+
+def verified_source_context(records: list[dict], raw_cache_dir: Path,
+                            stage_dir: Path) -> None:
+    """Original hash + normalized whole-cover context, including later notes."""
+    if __package__:
+        from . import load_sec_foreign_listing_evidence as w1c
+        from .sec_foreign_listing_parser import _Document
+    else:
+        import load_sec_foreign_listing_evidence as w1c
+        from sec_foreign_listing_parser import _Document
+    client = w1c.SecClient(stage_dir, offline=True, raw_cache_dir=raw_cache_dir)
+    for entry in records:
+        raw, actual = client.document(entry["source_url"], expected_sha256=entry["source_sha256"])
+        if raw.lstrip().startswith(b"%PDF-"):
+            pages, method = w1c.extract_pdf_pages(raw, cache_dir=stage_dir)
+            html, _, _ = w1c.pdf_parser_input(pages)
+            entry["pdf_text_extractor"] = method
+        else:
+            html = raw.decode("utf-8-sig", errors="replace")
+        document = _Document(html)
+        text = document.text
+        offset = text.find(entry["source_text"])
+        if offset < 0 or not entry["source_text"]:
+            raise ValueError("Review statement quote does not match verified source text")
+        # Preserve a generous independent window through the first 45k visible
+        # characters, rather than cutting evidence at the first checkmark.
+        # The reviewer checks this whole cover for later referenced qualifiers.
+        cover_end = min(len(text), max(45000, offset + len(entry["source_text"]) + 5000))
+        entry["source_verified_sha256"] = actual
+        entry["source_context"] = text[max(0, offset - 500):min(len(text), offset + len(entry["source_text"]) + 700)]
+        entry["whole_cover_text"] = text[:cover_end]
+        entry["whole_cover_location"] = f"normalized-visible-text:0:{cover_end}"
+        entry["whole_cover_sha256"] = hashlib.sha256(text[:cover_end].encode()).hexdigest()
+        entry["section_candidates_before_statement"] = [{"offset": match.start(),
+            "quote": text[max(0, match.start() - 120):match.end() + 180]}
+            for match in re.finditer(r"\b(?:PART\s+(?:I|1)\b|ITEM\s+1(?:[.:]|\s+IDENTITY))",
+                                     text[:offset], re.I)]
+        response_end = offset + len(entry["source_text"])
+        boundaries = list(re.finditer(r"\b(?:PART\s+(?:I|1)\b|ITEM\s+1(?:[.:]|\s+IDENTITY))",
+                                      text[response_end:cover_end], re.I))
+        independent_end = response_end + boundaries[0].start() if boundaries else cover_end
+        entry["independent_cover_end"] = independent_end
+        entry["cover_boundary_quote"] = text[max(response_end, independent_end - 150):independent_end + 250]
+        entry["after_statement_cover_text"] = text[response_end:independent_end]
+        entry["cover_tables"] = [{"offset": table.offset, "line": table.line, "rows": table.rows}
+            for table in document.tables if table.offset <= offset + len(entry["source_text"]) + 1500]
+        entry["later_cover_notes"] = [match.group().strip() for match in re.finditer(
+            r".{0,100}(?:treasury|employee.option|\*\*|including|excluding|combin(?:e|ed|ing)|footnote|\(1\)).{0,250}",
+            text[response_end:independent_end], re.I)]
+
+
 def precision_packet(rows: list[dict], census_sha: str, review_path: Path | None,
-                     raw_cache_dir: Path | None = None, stage_dir: Path | None = None) -> dict:
+                     raw_cache_dir: Path | None = None, stage_dir: Path | None = None,
+                     seed: str = SAMPLE_SEED,
+                     excluded_accessions: set[str] | None = None) -> dict:
     complete = [row for row in rows if row_status(row) == "complete"]
-    sample = sorted(complete, key=lambda row: hashlib.sha256((SAMPLE_SEED + "|" +
-        sample_identity(row)).encode()).hexdigest())[:40]
+    sample = select_precision_sample(rows, seed, excluded_accessions)
     records = [{"sample_id": sample_identity(row), "cik": row["cik"], "adsh": row["adsh"],
                 "source_url": row["source_url"], "source_sha256": row["source_sha256"],
                 "classes": row["classes"], "shares_as_of": row["shares_as_of"],
+                "form": row["form"], "filed": row["filed"], "year_band": year_band(row),
+                "date_explicit": row.get("date_explicit"), "period_end": row.get("period_end"),
                 "stated_total": row.get("stated_total"), "computed_total": row.get("computed_total"),
                 "source_text": row.get("source_text", ""), "source_location": row.get("source_location"),
                 "review_status": "pending"} for row in sample]
     if raw_cache_dir is not None:
         if stage_dir is None:
             raise ValueError("Source verification needs a separate staging directory")
-        if __package__:
-            from . import load_sec_foreign_listing_evidence as w1c
-            from .sec_foreign_listing_parser import _Document
-        else:
-            import load_sec_foreign_listing_evidence as w1c
-            from sec_foreign_listing_parser import _Document
-        client = w1c.SecClient(stage_dir, offline=True, raw_cache_dir=raw_cache_dir)
-        for entry in records:
-            raw, actual = client.document(entry["source_url"], expected_sha256=entry["source_sha256"])
-            if raw.lstrip().startswith(b"%PDF-"):
-                pages, _ = w1c.extract_pdf_pages(raw, cache_dir=stage_dir)
-                html, _, _ = w1c.pdf_parser_input(pages)
-            else:
-                html = raw.decode("utf-8-sig", errors="replace")
-            text = _Document(html).text
-            offset = text.find(entry["source_text"])
-            if offset < 0 or not entry["source_text"]:
-                raise ValueError("Precision statement quote does not match verified source text")
-            entry["source_verified_sha256"] = actual
-            entry["source_context"] = text[max(0, offset - 500):offset + len(entry["source_text"]) + 700]
-    report = {"seed": SAMPLE_SEED, "selection": "Lowest SHA256(seed|CIK|accession|source URL) over complete nonconflicting censuses",
+        verified_source_context(records, raw_cache_dir, stage_dir)
+    report = {"seed": seed, "selection": "Round-robin exact form/five filing-year bands, lowest SHA256(seed|CIK|accession|URL) in each stratum, distinct CIKs, excluded previously reviewed accessions",
               "census_sha256": census_sha, "eligible": len(complete), "sample_size": len(sample),
+              "excluded_accessions": sorted(excluded_accessions or set()),
+              "strata": dict(sorted(Counter(row["form"] + "/" + year_band(row) for row in sample).items())),
               "reviewed": 0, "correct": 0, "incorrect": 0, "precision": None,
               "review_status": "pending", "records": records}
     if review_path:
         review = json.loads(review_path.read_text(encoding="utf-8"))
         if review["census_sha256"] != census_sha:
             raise ValueError("Precision review is for a different census artifact")
+        if review.get("seed") != seed:
+            raise ValueError("Precision review is for a different sample seed")
         review_rows = {entry["sample_id"]: entry for entry in review["records"]}
         if set(review_rows) != {entry["sample_id"] for entry in records}:
             raise ValueError("Precision review does not cover the exact deterministic sample")
@@ -300,6 +384,79 @@ def precision_packet(rows: list[dict], census_sha: str, review_path: Path | None
     return report
 
 
+def compare_censuses(old_rows: list[dict], new_rows: list[dict],
+                     seed: str = "workers-pr188-r2-flipped-source-v1",
+                     review_count: int = 30) -> dict:
+    old = {identity(row): row for row in old_rows}
+    new = {identity(row): row for row in new_rows}
+    if len(old) != len(old_rows) or len(new) != len(new_rows):
+        raise ValueError("Comparison contains duplicate census source identities")
+    matrix = Counter()
+    changed = []
+    for key in sorted(set(old) | set(new)):
+        before, after = old.get(key), new.get(key)
+        old_status = row_status(before) if before is not None else "missing"
+        new_status = row_status(after) if after is not None else "missing"
+        matrix[(old_status, new_status)] += 1
+        if old_status != new_status:
+            changed.append({"sample_id": sample_identity(after or before),
+                "cik": key[0], "adsh": key[1], "source_url": key[2],
+                "old_status": old_status, "new_status": new_status,
+                "old_reasons": before.get("reasons", []) if before else [],
+                "new_reasons": after.get("reasons", []) if after else []})
+    flips = [entry for entry in changed if entry["old_status"] == "complete"
+             and entry["new_status"] == "incomplete"]
+    flipped_by_id = {entry["sample_id"]: entry for entry in flips}
+    reasons = Counter(reason for entry in flips for reason in entry["new_reasons"])
+    ordered = sorted(flips, key=lambda entry: hashlib.sha256(
+        (seed + "|" + entry["sample_id"]).encode()).hexdigest())
+    selected: dict[str, dict] = {}
+    # First include a deterministic representative of every refusal reason,
+    # then add independent issuer sources to reach at least 30.
+    for reason in sorted(reasons):
+        representative = next(entry for entry in ordered if reason in entry["new_reasons"])
+        selected[representative["sample_id"]] = representative
+    seen_ciks = {entry["cik"] for entry in selected.values()}
+    for entry in ordered:
+        if len(selected) >= review_count:
+            break
+        if entry["cik"] not in seen_ciks:
+            selected[entry["sample_id"]] = entry
+            seen_ciks.add(entry["cik"])
+    # Known gate cases are controls, not substitutes for the deterministic sample.
+    for entry in flips:
+        if (entry["cik"], entry["adsh"]) in {
+                (1000184, "0001104659-25-017815"),
+                (1122411, "0001193125-25-064603")}:
+            selected[entry["sample_id"]] = entry
+    def review_record(change: dict) -> dict:
+        row_key = next(key for key in new if sample_identity(new[key]) == change["sample_id"])
+        before, after = old[row_key], new[row_key]
+        return {**change, "source_sha256": after["source_sha256"],
+            "source_text": after.get("source_text") or before.get("source_text", ""),
+            "source_location": after.get("source_location"),
+            "classes": after.get("classes"), "shares_as_of": after.get("shares_as_of"),
+            "old_classes": before.get("classes"), "old_shares_as_of": before.get("shares_as_of"),
+            "form": after["form"], "filed": after["filed"],
+            "review_status": "pending"}
+    records = [review_record(change) for change in selected.values()]
+    newly_complete = [review_record(change) for change in changed if change["new_status"] == "complete"]
+    statuses = ("complete", "incomplete", "conflicting", "none", "missing")
+    return {"old_records": len(old_rows), "new_records": len(new_rows),
+            "status_flip_matrix": {status: {target: matrix[(status, target)] for target in statuses}
+                                   for status in statuses},
+            "status_changes": changed,
+            "complete_to_incomplete_filings": len(flips),
+            "complete_to_incomplete_reason_counts": dict(reasons.most_common()),
+            "flip_review": {"seed": seed, "selection": "One minimum-hash source for every new COMPLETE-to-INCOMPLETE reason, then minimum-hash distinct-issuer sources to at least 30; SAP/ASX known controls added when applicable",
+                            "population": len(flipped_by_id), "sample_size": len(records),
+                            "represented_reasons": sorted({reason for record in records for reason in record["new_reasons"]}),
+                            "review_status": "pending", "records": records},
+            "new_complete_review": {"selection": "Every non-complete-to-complete transition; verify declaration precedes actual body sections",
+                                    "sample_size": len(newly_complete),
+                                    "review_status": "pending", "records": newly_complete}}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--census", type=Path, required=True)
@@ -307,8 +464,13 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sizing-rows", type=Path)
     parser.add_argument("--precision-review", type=Path)
+    parser.add_argument("--sample-seed", default=SAMPLE_SEED)
+    parser.add_argument("--exclude-review", action="append", type=Path, default=[],
+                        help="Exclude accessions in earlier review packets from the new precision sample")
+    parser.add_argument("--compare-census", type=Path,
+                        help="Read-only old census for full status matrix and at least 30 flip-review sources")
     parser.add_argument("--raw-cache-dir", type=Path,
-                        help="Verify the 40 source hashes/quotes and include nearby text; offline only")
+                        help="Verify sampled original hashes/quotes and include whole-cover text and later notes; offline only")
     args = parser.parse_args()
     raw_root = args.corpus_manifest.resolve().parent
     if args.output_dir.resolve().is_relative_to(raw_root):
@@ -324,11 +486,16 @@ def main() -> None:
             raise ValueError("Duplicate census source identity")
         rows[key] = row
     census_hash = sha256(args.census)
+    excluded_accessions = set()
+    for path in args.exclude_review:
+        prior = json.loads(path.read_text(encoding="utf-8"))
+        excluded_accessions.update(entry["adsh"] for entry in prior["records"])
     result = {"census_sha256": census_hash, "corpus_manifest_sha256": sha256(args.corpus_manifest),
               "coverage": coverage(manifest["documents"], rows),
               "cross_checks": cross_check_statistics(parsed),
               "precision": precision_packet(parsed, census_hash, args.precision_review,
-                  args.raw_cache_dir, args.output_dir / "source-stage")}
+                  args.raw_cache_dir, args.output_dir / "source-stage", args.sample_seed,
+                  excluded_accessions)}
     named = []
     for symbol, (cik, adsh) in NAMED_ISSUERS.items():
         selected = [row for row in parsed if int(row["cik"]) == cik and row["adsh"] == adsh]
@@ -336,6 +503,21 @@ def main() -> None:
                       "review_status": "pending"})
     write_json(args.output_dir / "named-censuses.json", named)
     write_json(args.output_dir / "precision-sample.json", result["precision"])
+    if args.compare_census:
+        old_rows = [json.loads(line) for line in args.compare_census.read_text(encoding="utf-8").splitlines() if line]
+        comparison = compare_censuses(old_rows, parsed)
+        comparison["old_census_sha256"] = sha256(args.compare_census)
+        comparison["new_census_sha256"] = census_hash
+        if args.raw_cache_dir:
+            verified_source_context(comparison["flip_review"]["records"], args.raw_cache_dir,
+                                    args.output_dir / "source-stage")
+            verified_source_context(comparison["new_complete_review"]["records"], args.raw_cache_dir,
+                                    args.output_dir / "source-stage")
+        write_json(args.output_dir / "status-comparison.json", comparison)
+        write_json(args.output_dir / "flipped-review-packet.json", comparison["flip_review"])
+        write_json(args.output_dir / "new-complete-review-packet.json", comparison["new_complete_review"])
+        result["comparison"] = {key: value for key, value in comparison.items()
+                                if key not in {"status_changes", "flip_review", "new_complete_review"}}
     if args.sizing_rows:
         sizing = json.loads(args.sizing_rows.read_text(encoding="utf-8"))
         result["sizing_rows_sha256"] = sha256(args.sizing_rows)
