@@ -478,10 +478,20 @@ of today's symbols.
    the operator's `mcp_ro` connection and retain these query results:
 
    ```sql
-   SELECT md5(prosrc) AS resolver_body_md5, pg_get_userbyid(proowner) AS owner
-   FROM pg_proc WHERE oid = 'public.sec_foreign_listing_at(bigint,text,date)'::regprocedure;
-   -- v1 before migration: 111f988c5bede3442fa60a7d6e983172
-   -- v2 after migration:  60f5d1bf86a645a41fb7e23328c7ab8a
+   SELECT proname, md5(prosrc) AS resolver_body_md5,
+          pg_get_userbyid(proowner) AS owner, proconfig
+   FROM pg_proc WHERE oid IN (
+       to_regprocedure('public.sec_foreign_listing_at(bigint,text,date)'),
+       to_regprocedure('public.sec_foreign_listing_context_at(bigint,text,date,date)'),
+       to_regprocedure('public.sec_foreign_listing_election_at(bigint,text,date,date)'))
+   ORDER BY proname;
+   -- v1 before migration:      111f988c5bede3442fa60a7d6e983172
+   -- v2 resolver alone:        60f5d1bf86a645a41fb7e23328c7ab8a
+   -- sizing v1 legacy wrapper: fe9e9f1e13d882d5215f22f13e02d7f5
+   -- sizing v1 context:        e1c0a72d43fb036c80cdb153f4150bd5
+   -- sizing v1 election:       0d53b7999be2799647a422997a04bcdc
+   -- v2 alone keeps SET search_path; all three sizing functions have NULL proconfig.
+   -- Sizing v1 rollback restores exact v2 and removes context/election helpers.
    SELECT count(*) AS sources FROM public.sec_foreign_listing_sources;
    SELECT count(*) AS total,
           count(*) FILTER (WHERE retired_on IS NULL) AS active,
@@ -513,17 +523,21 @@ of today's symbols.
    ORDER BY p.as_of, p.symbol;
    ```
 
-   This read-only PowerShell check verifies the final7 artifact pins, v2 body,
-   counts, all saved semantic answers and seven later probes without reparsing
-   or writing the pinned artifacts:
+   This read-only PowerShell check verifies the final7 artifact pins, the approved
+   v2 or sizing v1 resolver composition (including ABI, non-STRICT behavior,
+   SQL/STABLE/PARALLEL SAFE/SECURITY INVOKER flags, settings and ACLs), counts,
+   all saved semantic answers and seven later probes without reparsing
+   or writing the pinned artifacts. It uses one repeatable-read read-only
+   snapshot with JIT off and bounded statement, lock and idle timeouts:
 
    ```powershell
    @'
    import hashlib, json, os
    from pathlib import Path
    import psycopg
-   from psycopg.rows import dict_row
+   from psycopg.rows import dict_row, tuple_row
    from scripts.validate_sec_foreign_listing_final6 import semantic_answer
+   from scripts.load_sec_foreign_listing_evidence import require_schema
    artifact = Path('C:/investintell-data/w1c-final7')
    for relative, pin in (
        ('manifest.json', '3ebbe15ed8339f59abe3bd0b85f74445b25b391c8eba8f74e9d5e790b9458aa4'),
@@ -545,10 +559,24 @@ of today's symbols.
        (1894693, 'SVRE', 'none', 'ads', 'resolved', 'none'),
        (1935172, 'AIXI', 'ambiguous', 'ads', 'resolved', 'ambiguous'),
    )
-   with psycopg.connect(os.environ['W1C_READBACK_DATABASE_URL'], row_factory=dict_row,
-                         options='-c default_transaction_read_only=on -c statement_timeout=30000') as conn:
+   with psycopg.connect(os.environ['W1C_READBACK_DATABASE_URL'], row_factory=dict_row, autocommit=True,
+                         options='-c default_transaction_read_only=on -c jit=off -c statement_timeout=30000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=60000') as conn:
+       conn.execute('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+       snapshot_settings = conn.execute("SELECT current_setting('transaction_isolation') AS isolation, current_setting('transaction_read_only') AS read_only, current_setting('jit') AS jit, current_setting('statement_timeout') AS statement_timeout, current_setting('lock_timeout') AS lock_timeout, current_setting('idle_in_transaction_session_timeout') AS idle_timeout").fetchone()
+       assert snapshot_settings == {'isolation': 'repeatable read', 'read_only': 'on', 'jit': 'off', 'statement_timeout': '30s', 'lock_timeout': '5s', 'idle_timeout': '1min'}, snapshot_settings
        body = conn.execute("SELECT md5(prosrc) AS md5, pg_get_userbyid(proowner) AS owner FROM pg_proc WHERE oid='public.sec_foreign_listing_at(bigint,text,date)'::regprocedure").fetchone()
-       assert body == {'md5': '60f5d1bf86a645a41fb7e23328c7ab8a', 'owner': 'worker_writer'}, body
+       assert body['owner'] == 'worker_writer', body
+       assert body['md5'] in ('60f5d1bf86a645a41fb7e23328c7ab8a',
+                              'fe9e9f1e13d882d5215f22f13e02d7f5'), body
+       with conn.cursor(row_factory=tuple_row) as cursor:
+           require_schema(cursor)
+       if body['md5'] == 'fe9e9f1e13d882d5215f22f13e02d7f5':
+           core = conn.execute("SELECT md5(prosrc) AS md5, pg_get_userbyid(proowner) AS owner, proconfig FROM pg_proc WHERE oid='public.sec_foreign_listing_context_at(bigint,text,date,date)'::regprocedure").fetchone()
+           assert core == {'md5': 'e1c0a72d43fb036c80cdb153f4150bd5',
+                           'owner': 'worker_writer', 'proconfig': None}, core
+           election = conn.execute("SELECT md5(prosrc) AS md5, pg_get_userbyid(proowner) AS owner, proconfig FROM pg_proc WHERE oid='public.sec_foreign_listing_election_at(bigint,text,date,date)'::regprocedure").fetchone()
+           assert election == {'md5': '0d53b7999be2799647a422997a04bcdc',
+                               'owner': 'worker_writer', 'proconfig': None}, election
        counts = conn.execute('SELECT (SELECT count(*) FROM public.sec_foreign_listing_sources) AS sources, count(*) AS total, count(*) FILTER (WHERE retired_on IS NULL) AS active, count(*) FILTER (WHERE retired_on IS NOT NULL) AS retired, count(*) FILTER (WHERE retired_on IS NULL AND available_on=source_available_on) AS active_at_source_date FROM public.sec_foreign_listing_evidence').fetchone()
        assert counts == {'sources': 47329, 'total': 59345, 'active': 29636, 'retired': 29709, 'active_at_source_date': 29636}, counts
        reasons = conn.execute("SELECT coalesce(retired_reason,'NULL') AS reason, count(*) AS n FROM public.sec_foreign_listing_evidence WHERE retired_on IS NOT NULL GROUP BY retired_reason").fetchall()
@@ -567,7 +595,7 @@ of today's symbols.
            wanted = dict(status=status, listed_type=kind, listing_status=listing_status, ratio_status=ratio_status, ratio=None)
            if semantic_answer(row) != wanted:
                later_mismatches.append({'key': [cik, symbol, '2026-10-11'], 'expected': wanted, 'actual': semantic_answer(row)})
-   print(json.dumps({'counts': counts, 'retired_by_reason': reasons, 'queries': len(queries), 'matches': len(queries)-len(mismatches), 'mismatches': mismatches, 'later_queries': len(later), 'later_matches': len(later)-len(later_mismatches), 'later_mismatches': later_mismatches}, indent=2))
+   print(json.dumps({'snapshot_settings': snapshot_settings, 'counts': counts, 'retired_by_reason': reasons, 'queries': len(queries), 'matches': len(queries)-len(mismatches), 'mismatches': mismatches, 'later_queries': len(later), 'later_matches': len(later)-len(later_mismatches), 'later_mismatches': later_mismatches}, indent=2))
    raise SystemExit(bool(mismatches or later_mismatches))
    '@ | python -
    ```
@@ -593,3 +621,13 @@ apply `schemas/sec_foreign_listing_evidence.rollback.sql` with
 `psql -X -v ON_ERROR_STOP=1`. It removes only the new function and two tables;
 it does not modify any W1 table or function. Retain the immutable external
 source artifacts and validation report before removing database history.
+
+## B2 phase 1 sizing basis
+
+The additive inlinable core and ordinary-count sizing contract are documented in
+[Foreign equity sizing basis](sec-foreign-equity-sizing.md). Install sizing DDL,
+then the matching loader guard, then run this composite readback. The sizing
+rollback restores the exact v2 resolver and remains compatible with that guard.
+Only explicit class-dimensioned ordinary counts bound to the listing's class
+resolve in phase 1. Undimensioned foreign totals remain refused; tagged class
+counts and titles do not prove that an unlisted class is absent.

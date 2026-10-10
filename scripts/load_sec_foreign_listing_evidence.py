@@ -1144,33 +1144,101 @@ APPLY_BATCH_SIZE = 1000
 
 
 def require_schema(cursor: Any) -> None:
-    """Require both the v2 retirement audit and its exact public resolver.
+    """Require v2 retirement audit and an exact approved resolver composition.
 
-    The v2 rollback deliberately keeps audit rows and their reason column. A
-    column-only check would therefore accept the restored v1 visibility rule.
-    Schema installation remains an explicit operation by the database owner.
+    Accept either the original v2 resolver or sizing v1's legacy projection
+    together with its context projection and one authoritative W1c election. The v2 rollback deliberately
+    retains the audit column, so column presence alone cannot prove semantics.
+    Check each component's NULL behavior, security, volatility, parallel safety
+    and settings too: an altered core or a second copied resolver is not an
+    approved sizing state. Installation remains an explicit owner operation,
+    serialized by the caller's reconciliation lock.
     """
-    schema = (Path(__file__).resolve().parents[1] / "schemas" / "sec_foreign_listing_evidence_v2.sql").read_text(
-        encoding="utf-8"
+    schema_dir = Path(__file__).resolve().parents[1] / "schemas"
+    v2_schema = (schema_dir / "sec_foreign_listing_evidence_v2.sql").read_text(encoding="utf-8")
+    sizing_schema = (schema_dir / "sec_foreign_equity_sizing_v1.sql").read_text(encoding="utf-8")
+
+    def body(schema: str, name: str) -> str:
+        match = re.search(
+            rf"CREATE OR REPLACE FUNCTION public\.{re.escape(name)}\(.*?AS \$fn\$(.*?)\$fn\$;",
+            schema, re.DOTALL,
+        )
+        if match is None:
+            raise RuntimeError(f"The checked-in foreign-listing schema has no {name} body")
+        return match.group(1)
+
+    def contract(signature: str, arguments: tuple[str, ...], result: str) -> str:
+        # Existing-role predicates also let the governed schema be exercised
+        # on disposable databases that do not define the production readers.
+        return (
+            "p.proargnames = " + "ARRAY[" + ",".join("'" + name + "'" for name in arguments) + "] "
+            "AND pg_catalog.pg_get_function_result(p.oid) = '" + result + "' "
+            "AND NOT p.proisstrict AND NOT p.prosecdef "
+            "AND p.provolatile = 's' AND p.proparallel = 's' "
+            "AND l.lanname = 'sql' "
+            "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles owner_role "
+            "WHERE owner_role.rolname = 'worker_writer' AND owner_role.oid <> p.proowner) "
+            "AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode("
+            "COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))) a "
+            "WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE') "
+            "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles reader "
+            "WHERE reader.rolname IN ('app_runtime','app_analytics_ro','mcp_ro') "
+            "AND NOT pg_catalog.has_function_privilege(reader.oid,p.oid,'EXECUTE')) "
+            "AND p.oid = pg_catalog.to_regprocedure('public." + signature + "')"
+        )
+
+    legacy_outputs = ("status", "listed_type", "ratio_numerator", "ratio_denominator",
+                      "listing_status", "ratio_status", "evidence_ids")
+    legacy_result = ("TABLE(status text, listed_type text, ratio_numerator numeric, "
+                     "ratio_denominator numeric, listing_status text, ratio_status text, evidence_ids bigint[])")
+    legacy_contract = contract(
+        "sec_foreign_listing_at(bigint,text,date)",
+        ("p_cik", "p_symbol", "p_as_of", *legacy_outputs), legacy_result,
     )
-    body = re.search(r"AS \$fn\$(.*?)\$fn\$;", schema, re.DOTALL)
-    if body is None:
-        raise RuntimeError("The checked-in foreign-listing schema v2 has no resolver body")
+    core_outputs = (*legacy_outputs, "listing_class", "ratio_class", "program_key",
+                    "ratio_effective_from", "ratio_effective_to")
+    core_result = legacy_result[:-1] + (
+        ", listing_class text, ratio_class text, program_key text, "
+        "ratio_effective_from date, ratio_effective_to date)"
+    )
+    core_contract = contract(
+        "sec_foreign_listing_context_at(bigint,text,date,date)",
+        ("p_cik", "p_symbol", "p_effective_on", "p_known_on", *core_outputs), core_result,
+    )
+    election_contract = contract(
+        "sec_foreign_listing_election_at(bigint,text,date,date)",
+        ("p_cik", "p_symbol", "p_effective_on", "p_known_on", *core_outputs, "program_ambiguous"),
+        core_result[:-1] + ", program_ambiguous boolean)",
+    )
     cursor.execute(
         "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a "
-        "WHERE a.attrelid = to_regclass('public.sec_foreign_listing_evidence') "
+        "WHERE a.attrelid = pg_catalog.to_regclass('public.sec_foreign_listing_evidence') "
         "AND a.attname = 'retired_reason' AND NOT a.attisdropped) "
         "AND EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c "
-        "WHERE c.conrelid = to_regclass('public.sec_foreign_listing_evidence') "
+        "WHERE c.conrelid = pg_catalog.to_regclass('public.sec_foreign_listing_evidence') "
         "AND c.conname = 'sec_foreign_listing_evidence_retired_reason_check' AND c.contype = 'c') "
-        "AND COALESCE((SELECT p.prosrc = %s FROM pg_catalog.pg_proc p "
-        "WHERE p.oid = to_regprocedure('public.sec_foreign_listing_at(bigint,text,date)')), false)",
-        (body.group(1),),
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc p "
+        "JOIN pg_catalog.pg_language l ON l.oid = p.prolang WHERE " + legacy_contract + " "
+        "AND ((p.prosrc = %s AND p.proconfig = ARRAY['search_path=pg_catalog, public']) "
+        "OR (p.prosrc = %s AND p.proconfig IS NULL "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc p "
+        "JOIN pg_catalog.pg_language l ON l.oid = p.prolang WHERE " + core_contract + " "
+        "AND p.prosrc = %s AND p.proconfig IS NULL "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc p "
+        "JOIN pg_catalog.pg_language l ON l.oid = p.prolang WHERE " + election_contract + " "
+        "AND p.prosrc = %s AND p.proconfig IS NULL)))))",
+        (
+            body(v2_schema, "sec_foreign_listing_at"),
+            body(sizing_schema, "sec_foreign_listing_at"),
+            body(sizing_schema, "sec_foreign_listing_context_at"),
+            body(sizing_schema, "sec_foreign_listing_election_at"),
+        ),
     )
     if cursor.fetchone() != (True,):
-        raise RuntimeError("The foreign-listing schema is not v2: apply "
+        raise RuntimeError("The foreign-listing schema is not v2 or approved sizing v1: apply "
                            "schemas/sec_foreign_listing_evidence.sql, then "
-                           "schemas/sec_foreign_listing_evidence_v2.sql as the database owner first")
+                           "schemas/sec_foreign_listing_evidence_v2.sql as the database owner first; "
+                           "sizing v1 must install its exact election, context and legacy projections together")
 
 
 def apply_evidence(connection: Any, manifest: dict, rows: Iterable[dict], observed_on: date) -> dict:
