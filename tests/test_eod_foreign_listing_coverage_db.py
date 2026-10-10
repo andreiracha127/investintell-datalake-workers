@@ -229,7 +229,7 @@ class FakeTiingo:
                 "ticker": ticker.lower(), "name": lst.get("name", f"{ticker} Holdings"),
                 "exchangeCode": lst.get("exchange", "NYSE"), "description": "",
                 "startDate": None if lst.get("no_start") else lst["start"].isoformat(),
-                "endDate": lst["end"].isoformat(),
+                "endDate": None if lst.get("no_end") else lst["end"].isoformat(),
             })
         params = parse_qs(urlsplit(str(request.url)).query)
         start = D.fromisoformat(params["startDate"][0])
@@ -1123,3 +1123,142 @@ def test_ring_budget_abort_skips_the_history_phase(db, tiingo):
     assert stats["aborted"].startswith("30 consecutive 429s")
     assert stats["foreign_history"] == {"source_tickers": 1, "skipped": "aborted"}
     assert [r for r in tiingo.requests if r[1] == "HIST"] == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Robustness battery: provider responses and state, through run()
+# ──────────────────────────────────────────────────────────────────────────────
+REPLAY = D(2020, 6, 30)
+
+
+def completion_of(db, ticker):
+    return db.one("SELECT status, complete_through FROM eod_warmer_ticker_status"
+                  " WHERE ticker = %s", (ticker,))
+
+
+def test_battery_historical_run_is_capped_at_as_of_and_reverified_later(db, tiingo):
+    """Codex 4237640082: a 2020-06-30 replay whose metadata ends in 2026 inserts
+    nothing after 2020-06-30 and completes only through it; a real-date run
+    re-verifies the tail."""
+    resolved_lines(db, "HREP")
+    stats = w.run(db.dsn, calc_date=REPLAY.isoformat(), history_limit=250)
+    assert ("prices", "HREP", D(1993, 1, 29), REPLAY) in tiingo.requests
+    assert history_of(db, "HREP")[:2] == (D(1993, 1, 29), REPLAY)
+    assert completion_of(db, "HREP") == ("history_complete", REPLAY)
+    assert stats["foreign_history"]["completed"] == 1
+
+    tiingo.requests.clear()
+    stats = run(db)["foreign_history"]
+    assert ("prices", "HREP", D(1993, 1, 29), AS_OF) in tiingo.requests
+    assert completion_of(db, "HREP") == ("history_complete", None)
+    assert missing_dates(db, "HREP", D(1993, 1, 29), AS_OF) == []
+
+
+def test_battery_stored_rows_after_as_of_are_out_of_scope_and_untouched(db, tiingo):
+    resolved_lines(db, "HPOS")
+    instruments_row(db, "HPOS", name="Post As-of Co")
+    store_rows(db, "HPOS", D(2010, 1, 4), D(2026, 10, 2))
+    tiingo.listings["HPOS"] = {"start": D(2005, 1, 3), "end": AS_OF}
+    after = snapshot(db, "HPOS", REPLAY + dt.timedelta(days=1), AS_OF)
+
+    stats = w.run(db.dsn, calc_date=REPLAY.isoformat(), history_limit=250)
+    assert "aborted" not in stats
+    assert completion_of(db, "HPOS") == ("history_complete", REPLAY)
+    assert missing_dates(db, "HPOS", D(2005, 1, 3), REPLAY) == []
+    assert snapshot(db, "HPOS", REPLAY + dt.timedelta(days=1), AS_OF) == after
+
+
+def test_battery_c_an_empty_list_while_meta_has_history(db, tiingo):
+    resolved_lines(db, "EMLS")
+    instruments_row(db, "EMLS", name="Empty List Co")
+    store_rows(db, "EMLS", D(2026, 9, 1), D(2026, 10, 2))
+    tiingo.raw_prices["EMLS"] = []
+    before = snapshot(db, "EMLS", D(2000, 1, 1), AS_OF)
+
+    run(db)
+    assert status_of(db, "EMLS")[:2] == ("history_incomplete", "empty_window")
+    assert snapshot(db, "EMLS", D(2000, 1, 1), AS_OF) == before
+
+
+def test_battery_f_a_stored_row_tiingo_no_longer_serves(db, tiingo):
+    resolved_lines(db, "GONE")
+    instruments_row(db, "GONE", name="Gone Row Co")
+    store_rows(db, "GONE", D(2026, 9, 1), D(2026, 10, 2))
+    tiingo.listings["GONE"] = {"start": D(2026, 1, 2), "end": AS_OF}
+    tiingo.omit.add(("GONE", D(2026, 9, 23)))
+
+    run(db)
+    assert status_of(db, "GONE")[:2] == (
+        "history_incomplete", "stored_sessions_missing=1 first=2026-09-23")
+    assert history_of(db, "GONE")[0] == D(2026, 9, 1)
+
+
+def test_battery_h_stale_instruments_dates_do_not_bound_the_interval(db, tiingo):
+    resolved_lines(db, "STAL")
+    # Non-null but stale: the worker never overwrites it, and never trusts it.
+    instruments_row(db, "STAL", name="Stale Co", exchange="NYSE", start=D(2015, 6, 1),
+                    end=D(2020, 1, 2))
+    tiingo.listings["STAL"] = {"start": D(2005, 1, 3), "end": AS_OF}
+    run(db)
+    assert ("prices", "STAL", D(2005, 1, 3), AS_OF) in tiingo.requests
+    assert history_of(db, "STAL")[:2] == (D(2005, 1, 3), AS_OF)
+    assert db.one("SELECT tiingo_start_date, tiingo_end_date FROM instruments"
+                  " WHERE ticker = 'STAL'") == (D(2015, 6, 1), D(2020, 1, 2))
+
+
+def test_battery_h_meta_without_an_end_date_is_retried(db, tiingo):
+    resolved_lines(db, "NOEN")
+    tiingo.listings["NOEN"] = {"start": D(2005, 1, 3), "end": AS_OF, "no_end": True}
+    stats = run(db)["foreign_history"]
+    assert status_of(db, "NOEN")[:2] == ("history_incomplete", "meta_without_end_date")
+    assert stats["error_tickers"] == {"NOEN": "meta_without_end_date"}
+    assert tiingo.of("prices", "NOEN") == []
+
+
+def test_battery_i_a_concurrent_insert_between_verification_and_load(db, tiingo, monkeypatch):
+    """Another writer adds a row after the verification read: the verdict no
+    longer holds, so the load (rows and status) is not written; the next pass
+    verifies the new state."""
+    resolved_lines(db, "RACE")
+    instruments_row(db, "RACE", name="Race Co")
+    store_rows(db, "RACE", D(2026, 9, 1), D(2026, 10, 2))
+    tiingo.listings["RACE"] = {"start": D(2026, 1, 2), "end": AS_OF}
+    real = w.verify_history
+
+    def racing(fetched, stored, *, start, end):
+        verdict = real(fetched, stored, start=start, end=end)
+        if fetched and fetched[0][0] == "RACE":
+            store_rows(db, "RACE", D(2026, 1, 2), D(2026, 1, 2))   # the other writer
+        return verdict
+
+    monkeypatch.setattr(w, "verify_history", racing)
+    run(db)
+    assert status_of(db, "RACE")[:2] == ("history_incomplete", "stored_rows_changed_during_pass")
+    assert history_of(db, "RACE")[0] == D(2026, 1, 2)
+    assert len(missing_dates(db, "RACE", D(2026, 1, 2), D(2026, 8, 31))) > 100  # ours rolled back
+
+    monkeypatch.setattr(w, "verify_history", real)
+    db.conn.execute("UPDATE eod_warmer_ticker_status SET retry_after = now() - interval '1 second'")
+    run(db)
+    assert status_of(db, "RACE")[0] == "history_complete"
+    assert missing_dates(db, "RACE", D(2026, 1, 2), AS_OF) == []
+
+
+def test_battery_j_an_aged_completion_is_reverified_against_a_moved_start(db, tiingo):
+    resolved_lines(db, "AGED")
+    tiingo.listings["AGED"] = {"start": D(2010, 1, 4), "end": AS_OF}
+    run(db)
+    assert completion_of(db, "AGED") == ("history_complete", None)
+
+    # Tiingo now serves five more years; within REVERIFY_DAYS nothing happens...
+    tiingo.listings["AGED"] = {"start": D(2005, 1, 3), "end": AS_OF}
+    tiingo.requests.clear()
+    run(db)
+    assert tiingo.of("meta", "AGED") == []
+    # ...after it, the pass re-verifies and loads the earlier, coherent prefix.
+    db.conn.execute("UPDATE eod_warmer_ticker_status SET checked_at = now() - %s",
+                    (dt.timedelta(days=w.REVERIFY_DAYS + 1),))
+    run(db)
+    assert completion_of(db, "AGED") == ("history_complete", None)
+    assert history_of(db, "AGED")[0] == D(2005, 1, 3)
+    assert missing_dates(db, "AGED", D(2005, 1, 3), AS_OF) == []

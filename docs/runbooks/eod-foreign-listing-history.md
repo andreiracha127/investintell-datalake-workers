@@ -38,10 +38,13 @@ Every covered ticker gets exactly one verification pass before it is
    the row with `asset_type = 'stock'`; non-null fields and an existing
    `asset_type` are never changed.
 2. The verification interval is fixed BEFORE the fetch:
-   `[startDate, max(meta endDate, last stored date)]`. The request asks for
-   exactly that interval, and the response is held to it; it can never shrink
-   its own obligations. In order:
-   - an empty response is `history_incomplete`;
+   `[startDate, min(as_of, max(meta endDate, last stored date on or before
+   as_of))]`. The request asks for exactly that interval, and the response is
+   held to it; it can never shrink its own obligations. Nothing after the run's
+   `as_of` is in scope: stored rows after it are neither compared nor touched.
+   In order:
+   - an empty response, or one that returns a date twice, is
+     `history_incomplete`;
    - every shared (stored and returned) date must match on raw close
      (relative 1e-6). Any difference is `history_conflict`, even if the
      response is also short;
@@ -51,10 +54,12 @@ Every covered ticker gets exactly one verification pass before it is
    - stored rows with no shared date while dates would be inserted is
      `history_incomplete` (`no_shared_sessions`): there is no vacuous pass;
    - coverage, in NYSE sessions (`exchange_calendars` XNYS, already a pinned
-     dependency): a bar outside the request, any session between `startDate`
-     and the first bar, or a last bar before the last stored date or with any
-     session between it and the interval end is `history_incomplete`. Only
-     weekends and exchange holidays may separate the ends from the bars;
+     dependency, built from 1900 so it covers SONY from 1974 and NVO from
+     1982; a date outside the calendar raises instead of being clamped): a bar
+     outside the request, any session between `startDate` and the first bar,
+     or a last bar before the last stored date or with any session between it
+     and the interval end is `history_incomplete`. Only weekends and exchange
+     holidays may separate the ends from the bars;
    - every stored date in the interval must be in the response, else
      `history_incomplete` (`stored_sessions_missing`);
    - missing dates are returned dates that are not stored: the prefix, interior
@@ -69,7 +74,13 @@ Every covered ticker gets exactly one verification pass before it is
 Inserts use `INSERT … ON CONFLICT (ticker, date) DO NOTHING` in 500-row
 statements inside ONE transaction per ticker (about 7.5k rows for a 30-year
 ticker), so an interrupted load leaves neither rows nor status and the next
-pass starts over. Existing rows are never rewritten. A response with any
+pass starts over. That transaction first locks the ticker's `instruments` row
+`FOR UPDATE` and re-reads its stored rows; if another writer changed them since
+the verification read, nothing is written and the ticker is retried
+(`stored_rows_changed_during_pass`). The lock blocks other writers' inserts for
+the ticker (their foreign-key check) and the Light API's metadata upsert until
+the load commits. It does not block an API upsert that rewrites existing rows,
+but those writes carry the same day's Tiingo values. Existing rows are never rewritten. A response with any
 non-conforming element or a non-list body is `history_incomplete`: an element
 that is not an object (`[null]`, `["bad"]`), has no parseable date, misses a
 field, or has a value that is not a finite number (`"N/A"`, a numeric string,
@@ -84,11 +95,20 @@ the phase moves on to the next ticker; only the 429 breaker stops the phase.
 
 | Status | Meaning | Next attempt |
 |---|---|---|
-| `history_complete` | verified; missing dates inserted if any | never |
+| `history_complete` | verified; missing dates inserted if any | after 90 days (re-verification), or at once for a later as-of when `complete_through` is set |
 | `history_incomplete` | transient HTTP (5xx, timeout, invalid body or element), response not covering the interval, omitted stored sessions, no shared sessions, unexpected exception | 12 h, doubling per consecutive failure, up to 7 days |
 | `adjustment_rebase_required` | adjusted basis moved; detail has the ratio | after 30 days |
 | `history_conflict` | raw closes differ, or stored rows outside Tiingo's range | after 30 days |
 | `tiingo_unknown` | meta 404, no `startDate`, prices 404 | after 30 days |
+
+`history_complete` means the series matched Tiingo at `checked_at` for
+`[history_start, end]`. When a historical run (`WORKER_CALC_DATE` before
+Tiingo's end) verified it, `complete_through` records the as-of it covered; it
+counts as complete only for runs at or before that date, so the next real-date
+run re-verifies the tail. Every completion is verified again after 90 days, so
+a later change on Tiingo's side (an earlier `startDate`, a revised close, a new
+gap) is found; a re-verification inserts nothing unless the series is still
+coherent.
 
 Pending tickers are processed in order of their next attempt (never tried
 first), then ticker. A ticker that keeps failing backs off behind the others,
@@ -228,7 +248,7 @@ u = urlsplit(os.environ["DATABASE_URL"])
 dsn = urlunsplit((u.scheme.replace("+asyncpg", ""), u.netloc.rsplit("@", 1)[0] + "@centerbeam.proxy.rlwy.net:36616", u.path, u.query, ""))
 with psycopg.connect(dsn, options="-c default_transaction_read_only=on -c statement_timeout=300000") as conn:
     symbols = w.foreign_listing_tickers(conn, dt.date.today())
-    plan = w.plan_foreign_history(conn, symbols, now=dt.datetime.now(dt.UTC))
+    plan = w.plan_foreign_history(conn, symbols, now=dt.datetime.now(dt.UTC), as_of=dt.date.today())
 print(len(symbols), len(plan["complete"]), {k: len(v) for k, v in plan["waiting"].items()},
       dict(collections.Counter(w.classify_history_task(t) for t in plan["pending"])))
 '@ | railway run --service api -- uv run --no-project --with "psycopg[binary]" --with httpx python -

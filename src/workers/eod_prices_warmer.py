@@ -42,7 +42,12 @@ the stored rows were fetched) fails closed as ``adjustment_rebase_required``.
 Existing rows are never rewritten, and there is no shortcut from ``min(date)``.
 
 Inserted rows and the ``history_complete`` status in ``eod_warmer_ticker_status``
-are written in ONE transaction, so an interrupted load leaves neither.
+are written in ONE transaction, under a lock on the ticker's ``instruments`` row
+and after re-checking the stored rows, so an interrupted load leaves neither and
+a concurrent writer cannot slip a row in between verification and load. A run
+never looks past its ``as_of``: a historical run completes only through it
+(``complete_through``), and every completion is re-verified after
+``REVERIFY_DAYS``.
 Retryable failures (transient HTTP, malformed or unusable bars, incomplete
 responses, any unexpected per-ticker exception) are ``history_incomplete`` with
 backoff (12 h doubling, up to 7 days) and count as errors; the queue orders by
@@ -211,6 +216,10 @@ _US_LISTING_TICKER = re.compile(US_LISTING_TICKER_PATTERN)
 HISTORY_TICKERS_PER_RUN = 25
 HISTORY_LIMIT_ENV = "EOD_HISTORY_TICKERS_PER_RUN"
 UNKNOWN_RECHECK_DAYS = 30
+# A completed ticker is verified again after this many days, so a later change
+# on Tiingo's side (an earlier startDate, a revised raw close, a stored gap) is
+# found; the pass inserts nothing unless the series is still coherent.
+REVERIFY_DAYS = 90
 # A retryable failure (transient HTTP, unusable bars, an incomplete response)
 # waits RETRY_BASE_HOURS, doubling with each consecutive failure up to
 # RETRY_MAX_HOURS, so a persistently failing ticker cannot hold a cap slot.
@@ -260,7 +269,8 @@ FOREIGN_LISTING_SQL = """
 # when it lacks a status, and the result is verified (ensure_status_table).
 _STATUS_COLUMNS: dict[str, str] = {
     "ticker": "text", "source": "text", "status": "text", "detail": "text",
-    "history_start": "date", "retry_after": "timestamp with time zone",
+    "history_start": "date", "complete_through": "date",
+    "retry_after": "timestamp with time zone",
     "attempts": "integer", "checked_at": "timestamp with time zone",
 }
 _STATUS_CHECK = "eod_warmer_ticker_status_status_check"
@@ -272,6 +282,9 @@ CREATE TABLE IF NOT EXISTS eod_warmer_ticker_status (
     status         text        NOT NULL,
     detail         text,
     history_start  date,
+    -- NULL: verified to Tiingo's end at checked_at (the ring keeps the tail).
+    -- A date: a historical (as-of) run verified only through it.
+    complete_through date,
     retry_after    timestamptz,
     attempts       integer     NOT NULL DEFAULT 0,
     checked_at     timestamptz NOT NULL DEFAULT now(),
@@ -280,6 +293,7 @@ CREATE TABLE IF NOT EXISTS eod_warmer_ticker_status (
 ALTER TABLE eod_warmer_ticker_status
     ADD COLUMN IF NOT EXISTS detail        text,
     ADD COLUMN IF NOT EXISTS history_start date,
+    ADD COLUMN IF NOT EXISTS complete_through date,
     ADD COLUMN IF NOT EXISTS retry_after   timestamptz,
     ADD COLUMN IF NOT EXISTS attempts      integer NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS checked_at    timestamptz NOT NULL DEFAULT now();
@@ -298,13 +312,15 @@ END $$;
 
 RECORD_STATUS_SQL = """
     INSERT INTO eod_warmer_ticker_status
-        (ticker, source, status, detail, history_start, retry_after, attempts, checked_at)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+        (ticker, source, status, detail, history_start, complete_through, retry_after,
+         attempts, checked_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
     ON CONFLICT (ticker) DO UPDATE SET
         source = EXCLUDED.source,
         status = EXCLUDED.status,
         detail = EXCLUDED.detail,
         history_start = EXCLUDED.history_start,
+        complete_through = EXCLUDED.complete_through,
         retry_after = EXCLUDED.retry_after,
         attempts = EXCLUDED.attempts,
         checked_at = EXCLUDED.checked_at
@@ -392,13 +408,19 @@ def _xnys():
 
 
 def sessions_between(first: _dt.date, last: _dt.date) -> int:
-    """NYSE sessions in ``[first, last]`` (0 when ``first > last``)."""
-    cal = _xnys()
-    lo = max(first, cal.first_session.date())
-    hi = min(last, cal.last_session.date())
-    if lo > hi:
+    """NYSE sessions in ``[first, last]`` (0 when ``first > last``).
+
+    The calendar spans 1900 to a year ahead, which covers every Tiingo history
+    (SONY from 1974, NVO from 1982). A date outside it raises rather than being
+    clamped: a silent clamp could hide a skipped session."""
+    if first > last:
         return 0
-    return len(cal.sessions_in_range(lo.isoformat(), hi.isoformat()))
+    cal = _xnys()
+    if first < cal.first_session.date() or last > cal.last_session.date():
+        raise ValueError(
+            f"{first}..{last} is outside the {COVERAGE_CALENDAR} calendar "
+            f"({cal.first_session.date()}..{cal.last_session.date()})")
+    return len(cal.sessions_in_range(first.isoformat(), last.isoformat()))
 
 
 def verification_interval(
@@ -406,11 +428,14 @@ def verification_interval(
     as_of: _dt.date,
 ) -> tuple[_dt.date, _dt.date]:
     """The interval a verification pass must cover, fixed BEFORE the fetch:
-    ``[startDate, max(meta endDate, last stored date)]`` (``as_of`` when
-    neither exists). The request asks for exactly this interval, and the
-    response is held to it — it can never shrink its own obligations."""
-    ends = [d for d in (meta_end, max(stored) if stored else None) if d is not None]
-    return start, (max(ends) if ends else as_of)
+    ``[startDate, min(as_of, max(meta endDate, last stored date <= as_of))]``
+    (``as_of`` when neither exists). The request asks for exactly this
+    interval, and the response is held to it — it can never shrink its own
+    obligations. Nothing after ``as_of`` is in scope: a historical run never
+    requests, compares or inserts a later date."""
+    in_scope = [d for d in stored if d <= as_of]
+    ends = [d for d in (meta_end, max(in_scope) if in_scope else None) if d is not None]
+    return start, min(as_of, max(ends)) if ends else as_of
 
 
 def verify_history(
@@ -428,7 +453,7 @@ def verify_history(
     The obligations come from the request and the store, never from the
     response. In order:
 
-    1. empty → incomplete;
+    1. empty, or a date returned twice → incomplete;
     2. a raw-close difference on any shared date → ``conflict`` (a known
        conflict is reported as such even if the response is also short);
     3. a stored date outside ``[start, end]`` (e.g. before a startDate the
@@ -448,6 +473,8 @@ def verify_history(
     if not fetched:
         return Verification("incomplete", "empty_window")
     dates = {r[1] for r in fetched}
+    if len(dates) != len(fetched):
+        return Verification("incomplete", f"duplicate_dates={len(fetched) - len(dates)}")
     shared = [r for r in fetched if r[1] in stored]
     raw_bad = [r for r in shared
                if not _close_enough(r[_ROW_INDEX["close"]], stored[r[1]]["close"])]
@@ -788,13 +815,15 @@ def read_ticker_status(conn, tickers: list[str]) -> dict[str, dict[str, Any]]:
         if not cur.fetchone()[0]:
             return {}
         cur.execute(
-            """SELECT ticker, status, detail, history_start, retry_after, attempts, checked_at
+            """SELECT ticker, status, detail, history_start, retry_after, attempts,
+                      checked_at, complete_through
                FROM eod_warmer_ticker_status WHERE ticker = ANY(%s)""",
             (list(tickers),),
         )
         return {
             r[0]: {"status": r[1], "detail": r[2], "history_start": r[3],
-                   "retry_after": r[4], "attempts": r[5], "checked_at": r[6]}
+                   "retry_after": r[4], "attempts": r[5], "checked_at": r[6],
+                   "complete_through": r[7]}
             for r in cur.fetchall()
         }
 
@@ -803,16 +832,19 @@ _NEVER = _dt.datetime.min.replace(tzinfo=_dt.UTC)
 
 
 def plan_foreign_history(
-    conn, tickers: list[str], *, now: _dt.datetime
+    conn, tickers: list[str], *, now: _dt.datetime, as_of: _dt.date,
 ) -> dict[str, Any]:
     """Split the covered tickers into complete / waiting / pending (read-only).
 
-    ``complete``: recorded ``history_complete`` and still has rows.
+    ``complete``: recorded ``history_complete``, still has rows, verified within
+    ``REVERIFY_DAYS``, and — if a historical run verified it only through
+    ``complete_through`` — through at least this run's ``as_of``.
     ``waiting``: a non-complete status whose ``retry_after`` is still ahead.
     ``pending``: everything else, as ``HistoryTask``s ordered by (next attempt,
-    ticker) — never-tried tickers first, then the longest-waiting retries — so
-    a ticker that keeps failing rotates behind the others instead of holding a
-    cap slot. Completion is only ever the recorded status."""
+    ticker) — never-tried tickers first, then the longest-waiting retries and
+    due re-verifications — so a ticker that keeps failing rotates behind the
+    others instead of holding a cap slot. Completion is only ever the recorded
+    status."""
     status = read_ticker_status(conn, tickers)
     with conn.cursor() as cur:
         cur.execute(
@@ -833,20 +865,28 @@ def plan_foreign_history(
     complete: list[str] = []
     waiting: dict[str, list[str]] = {}
     pending: list[HistoryTask] = []
+    reverify_after = _dt.timedelta(days=REVERIFY_DAYS)
     for ticker in sorted(set(tickers)):
         state = status.get(ticker)
-        if state and state["status"] == STATUS_COMPLETE and ticker in mins:
-            complete.append(ticker)
-        elif (state and state["status"] != STATUS_COMPLETE
-              and state["retry_after"] is not None and state["retry_after"] > now):
+        next_attempt = state["retry_after"] if state else None
+        if state and state["status"] == STATUS_COMPLETE:
+            through = state["complete_through"]
+            if (ticker in mins and state["checked_at"] + reverify_after > now
+                    and (through is None or through >= as_of)):
+                complete.append(ticker)
+                continue
+            # Due again: rows gone, verification aged, or only verified through
+            # an earlier historical as-of. Queued behind never-tried tickers.
+            next_attempt = state["checked_at"]
+        elif (state and state["retry_after"] is not None and state["retry_after"] > now):
             waiting.setdefault(state["status"], []).append(ticker)
-        else:
-            pending.append(HistoryTask(
-                ticker, instruments.get(ticker), mins.get(ticker),
-                status=state["status"] if state else None,
-                attempts=(state["attempts"] or 0) if state else 0,
-                next_attempt=state["retry_after"] if state else None,
-            ))
+            continue
+        pending.append(HistoryTask(
+            ticker, instruments.get(ticker), mins.get(ticker),
+            status=state["status"] if state else None,
+            attempts=(state["attempts"] or 0) if state else 0,
+            next_attempt=next_attempt,
+        ))
     pending.sort(key=lambda t: (t.next_attempt or _NEVER, t.ticker))
     return {"complete": complete, "waiting": waiting, "pending": pending}
 
@@ -854,15 +894,20 @@ def plan_foreign_history(
 def record_ticker_status(
     conn, ticker: str, status: str, *, detail: str | None = None,
     history_start: _dt.date | None = None, retry_after: _dt.datetime | None = None,
-    attempts: int = 0,
+    attempts: int = 0, complete_through: _dt.date | None = None,
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
             RECORD_STATUS_SQL,
-            (ticker, FOREIGN_LISTING_SOURCE, status, detail, history_start, retry_after,
-             attempts),
+            (ticker, FOREIGN_LISTING_SOURCE, status, detail, history_start,
+             complete_through, retry_after, attempts),
         )
     conn.commit()
+
+
+class StoredRowsChanged(RuntimeError):
+    """The ticker's stored rows changed between the verification read and the
+    load; the verdict no longer holds, so nothing is written."""
 
 
 def seed_listing_instrument(conn, ticker: str, meta: dict[str, Any]) -> str | None:
@@ -888,24 +933,38 @@ def seed_listing_instrument(conn, ticker: str, meta: dict[str, Any]) -> str | No
 def load_ticker_history(
     conn, ticker: str, rows: list[tuple[Any, ...]] | tuple[tuple[Any, ...], ...], *,
     history_start: _dt.date, detail: str | None = None,
+    complete_through: _dt.date | None = None,
+    verified_stored: dict[_dt.date, dict[str, float]] | None = None,
+    through: _dt.date | None = None,
 ) -> int:
     """A ticker's missing rows and its ``history_complete`` status, atomically.
 
     Every row (``INSERT … DO NOTHING``, sent in ``UPSERT_CHUNK`` batches) and
     the status write share ONE transaction: a crash or error at any batch
     leaves neither rows nor status, so the next run verifies and refetches the
-    whole range. ~7.5k rows for a 30-year ticker. Returns rows inserted."""
+    whole range. ~7.5k rows for a 30-year ticker. Returns rows inserted.
+
+    With ``verified_stored`` (the snapshot the verdict was computed on), the
+    transaction first locks the ticker's ``instruments`` row ``FOR UPDATE`` —
+    which blocks other writers' FK inserts into ``eod_prices`` for the ticker —
+    and re-reads the stored rows through ``through``; if they differ from the
+    snapshot it raises ``StoredRowsChanged`` and writes nothing."""
     conn.commit()  # close any read transaction; this one holds only the load
     inserted = 0
     try:
         with conn.cursor() as cur:
+            if verified_stored is not None:
+                cur.execute("SELECT 1 FROM instruments WHERE ticker = %s FOR UPDATE", (ticker,))
+                now_stored = _stored_rows(conn, ticker, through=through)
+                if now_stored != verified_stored:
+                    raise StoredRowsChanged(ticker)
             for i in range(0, len(rows), UPSERT_CHUNK):
                 cur.executemany(EOD_HISTORY_INSERT_SQL, list(rows[i:i + UPSERT_CHUNK]))
                 inserted += max(cur.rowcount, 0)
             cur.execute(
                 RECORD_STATUS_SQL,
                 (ticker, FOREIGN_LISTING_SOURCE, STATUS_COMPLETE, detail, history_start,
-                 None, 0),
+                 complete_through, None, 0),
             )
         conn.commit()
     except BaseException:
@@ -914,12 +973,14 @@ def load_ticker_history(
     return inserted
 
 
-def _stored_rows(conn, ticker: str) -> dict[_dt.date, dict[str, float]]:
+def _stored_rows(
+    conn, ticker: str, *, through: _dt.date | None = None,
+) -> dict[_dt.date, dict[str, float]]:
     with conn.cursor() as cur:
         cur.execute(
             """SELECT date, close, adj_open, adj_high, adj_low, adj_close
-               FROM eod_prices WHERE ticker = %s""",
-            (ticker,),
+               FROM eod_prices WHERE ticker = %s AND (%s::date IS NULL OR date <= %s::date)""",
+            (ticker, through, through),
         )
         return {r[0]: dict(zip(_BASIS_COLUMNS, r[1:])) for r in cur.fetchall()}
 
@@ -948,7 +1009,7 @@ def cover_foreign_history(
     inserted, reported, rechecked after 30 days."""
     now = now or _dt.datetime.now(_dt.UTC)
     ensure_status_table(conn)
-    plan = plan_foreign_history(conn, tickers, now=now)
+    plan = plan_foreign_history(conn, tickers, now=now, as_of=as_of)
     queue = plan["pending"]
     stats: dict[str, Any] = {
         "source_tickers": len(set(tickers)),
@@ -1007,8 +1068,12 @@ def cover_foreign_history(
                 retry_later(task, start, "meta_without_end_date")
                 continue
             # The interval, and so every obligation, is fixed before the fetch.
-            stored = _stored_rows(conn, ticker)
+            # Rows after as_of are outside this run: never compared or touched.
+            stored = _stored_rows(conn, ticker, through=as_of)
             start, end = verification_interval(start, meta_end, stored, as_of)
+            # A historical run that stops before Tiingo's end completes only
+            # through its interval end; a later run re-verifies the tail.
+            complete_through = end if meta_end > end else None
             if start > end:
                 retry_later(task, start, f"start_date_after_interval_end: {start} > {end}")
                 continue
@@ -1043,11 +1108,17 @@ def cover_foreign_history(
                 continue
             if check.verdict == "complete":
                 record_ticker_status(conn, ticker, STATUS_COMPLETE, detail=check.detail,
-                                     history_start=start)
+                                     history_start=start, complete_through=complete_through)
                 stats["verified_without_insert"] += 1
             else:
-                stats["history_rows"] += load_ticker_history(
-                    conn, ticker, check.missing, history_start=start, detail=check.detail)
+                try:
+                    stats["history_rows"] += load_ticker_history(
+                        conn, ticker, check.missing, history_start=start,
+                        detail=check.detail, complete_through=complete_through,
+                        verified_stored=stored, through=as_of)
+                except StoredRowsChanged:
+                    retry_later(task, start, "stored_rows_changed_during_pass")
+                    continue
             stats["completed"] += 1
         except TiingoBudgetExceeded as exc:
             # No price row was written for this ticker; it stays pending.
@@ -1109,7 +1180,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
             # 745-day window; every other ticker keeps normal ring service.
             history_batch: frozenset[str] = frozenset()
             if foreign and cap > 0:
-                pending = plan_foreign_history(conn, foreign, now=now)["pending"]
+                pending = plan_foreign_history(conn, foreign, now=now, as_of=as_of)["pending"]
                 history_batch = frozenset(t.ticker for t in pending[:cap])
             excluded = ring_excluded(foreign or [], watermarks, history_batch)
             tickers = [t for t in tickers if t not in excluded]

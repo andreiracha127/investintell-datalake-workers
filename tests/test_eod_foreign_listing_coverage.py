@@ -383,3 +383,144 @@ def test_fetch_daily_bars_result_tells_empty_from_failure(client):
     bar = {"date": "1997-10-09T00:00:00.000Z"}
     client._client.get = lambda *a, **k: _Resp(200, [bar])  # type: ignore[assignment]
     assert client.fetch_daily_bars_result("TSM", D(1997, 10, 9), AS_OF) == ("success_new", [bar])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Robustness battery: provider responses (pure verification)
+# Invariant: rows are inserted (verdict "load") and history_complete is written
+# (verdicts "load"/"complete") only for a complete, coherent, correctly bounded
+# series for the fixed interval.
+# ──────────────────────────────────────────────────────────────────────────────
+STORED_MID = (D(2026, 8, 17), D(2026, 9, 25))
+
+
+def _assert_nothing_written(check, verdict="incomplete"):
+    assert check.verdict == verdict
+    assert check.missing == ()
+
+
+@pytest.mark.parametrize(("first", "last"), [
+    (START, D(2026, 9, 18)),            # (a) prefix of the interval
+    (D(2026, 9, 1), AS_OF),             # (a) suffix
+    (D(2026, 8, 17), D(2026, 9, 25)),   # (a) middle slice
+])
+def test_battery_a_a_partial_slice_of_the_interval_writes_nothing(first, last):
+    for stored in ({}, _stored(*STORED_MID)):
+        _assert_nothing_written(_verify(_fetched(first, last), stored))
+
+
+def test_battery_b_duplicated_dates_write_nothing():
+    fetched = _fetched()
+    dup = list(fetched) + [_row(fetched[5][1], 99.0, 99.0)]
+    check = _verify(dup, {})
+    _assert_nothing_written(check)
+    assert check.detail == "duplicate_dates=1"
+
+
+def test_battery_b_unsorted_dates_are_judged_like_sorted_ones():
+    fetched = _fetched()
+    shuffled = fetched[1::2] + fetched[::2]
+    stored = _stored(D(2026, 9, 1), AS_OF)
+    assert _verify(shuffled, stored) == _verify(fetched, stored)
+    assert _verify(shuffled, stored).verdict == "load"
+
+
+@pytest.mark.parametrize(("first", "last"), [
+    (D(2026, 7, 27), AS_OF),                          # before the interval
+    (START, AS_OF + dt.timedelta(days=3)),            # after it
+])
+def test_battery_b_dates_outside_the_interval_write_nothing(first, last):
+    check = _verify(_fetched(first, last), {})
+    _assert_nothing_written(check)
+    assert check.detail.startswith("bars_outside_request")
+
+
+def test_battery_c_an_empty_list_writes_nothing():
+    _assert_nothing_written(_verify([], {}))
+    _assert_nothing_written(_verify([], _stored(*STORED_MID)))
+
+
+def test_battery_d_raw_rebased_with_coherent_adjusted_is_a_conflict():
+    stored = _stored(D(2026, 9, 1), AS_OF)
+    fetched = [_row(d, _px(d) * 2, _px(d)) for d in _bdays(START, AS_OF)]
+    check = _verify(fetched, stored)
+    _assert_nothing_written(check, "conflict")
+    assert check.detail.startswith("raw_differs: ratio=2.000000")
+
+
+def test_battery_d_adjusted_rebased_with_coherent_raw():
+    stored = _stored(D(2026, 9, 1), AS_OF)
+    # Dates to insert: the moved basis blocks them.
+    _assert_nothing_written(_verify(_fetched(factor=0.98), stored), "rebase")
+    # Nothing to insert: raw-verified complete, no seam can be created.
+    full = _stored(START, AS_OF)
+    check = _verify(_fetched(factor=0.98), full)
+    assert (check.verdict, check.missing) == ("complete", ())
+
+
+@pytest.mark.parametrize(("field", "rel", "verdict"), [
+    ("close", 0.9e-6, "load"), ("close", 1.1e-6, "conflict"),
+    ("adj_close", 0.9e-6, "load"), ("adj_close", 1.1e-6, "rebase"),
+    ("adj_open", 1.1e-6, "rebase"),
+])
+def test_battery_e_tolerance_boundary(field, rel, verdict):
+    stored = _stored(D(2026, 9, 1), AS_OF)
+    day = D(2026, 9, 15)
+    stored[day][field] *= 1 + rel
+    assert _verify(_fetched(), stored).verdict == verdict
+
+
+def test_battery_f_a_stored_row_tiingo_no_longer_serves_writes_nothing():
+    stored = _stored(D(2026, 9, 1), AS_OF)
+    check = _verify(_fetched(skip={D(2026, 9, 23)}), stored)
+    _assert_nothing_written(check)
+    assert check.detail == "stored_sessions_missing=1 first=2026-09-23"
+
+
+def test_battery_f_two_separate_stored_gaps_are_both_loaded():
+    gaps = {D(2026, 8, 12), D(2026, 8, 13), D(2026, 9, 29)}
+    check = _verify(_fetched(), _stored(START, AS_OF, skip=gaps))
+    assert check.verdict == "load"
+    assert {r[1] for r in check.missing} == gaps
+
+
+def test_battery_g_weekends_and_holidays_at_both_ends():
+    good_friday, labor_day = D(2026, 4, 3), D(2026, 9, 7)
+    # Start on a Saturday, a holiday and a Good Friday: first bar the next session.
+    assert _verify(_fetched(D(2026, 8, 3)), {}, start=D(2026, 8, 1)).verdict == "load"
+    assert _verify(_fetched(D(2026, 9, 8)), {}, start=labor_day).verdict == "load"
+    assert _verify(_fetched(D(2026, 4, 6), D(2026, 4, 30)), {},
+                   start=good_friday, end=D(2026, 4, 30)).verdict == "load"
+    # End on a Sunday, a holiday and a Good Friday: last bar the prior session.
+    assert _verify(_fetched(START, D(2026, 10, 9)), {}, end=D(2026, 10, 11)).verdict == "load"
+    assert _verify(_fetched(START, D(2026, 9, 4)), {}, end=labor_day).verdict == "load"
+    assert _verify(_fetched(D(2026, 3, 2), D(2026, 4, 2)), {},
+                   start=D(2026, 3, 2), end=good_friday).verdict == "load"
+    # A real session missing at either end is never forgiven.
+    assert _verify(_fetched(D(2026, 8, 4)), {}, start=D(2026, 8, 3)).verdict == "incomplete"
+    assert _verify(_fetched(START, D(2026, 10, 8)), {}).verdict == "incomplete"
+
+
+def test_battery_g_calendar_reaches_the_oldest_histories_and_never_clamps():
+    # SONY from 1974-07-26 (a Friday), NVO from 1982-01-04 (a Monday).
+    assert w.sessions_between(D(1974, 7, 26), D(1974, 7, 26)) == 1
+    assert w.sessions_between(D(1974, 7, 27), D(1974, 7, 28)) == 0
+    assert w.sessions_between(D(1982, 1, 4), D(1982, 1, 8)) == 5
+    # Historical closures are not sessions (Hurricane Gloria, 1985-09-27).
+    assert w.sessions_between(D(1985, 9, 27), D(1985, 9, 27)) == 0
+    first = [_row(d, 10.0, 10.0) for d in _bdays(D(1974, 7, 26), D(1974, 8, 30))]
+    assert _verify(first, {}, start=D(1974, 7, 26), end=D(1974, 8, 30)).verdict == "load"
+    with pytest.raises(ValueError, match="outside the XNYS calendar"):
+        w.sessions_between(D(1899, 12, 1), D(1900, 1, 5))
+
+
+def test_battery_historical_interval_is_capped_at_as_of():
+    """Codex 4237640082: a 2020 replay never reaches past its as-of, whatever
+    Tiingo's current endDate; stored rows after as-of are outside its scope."""
+    as_of = D(2020, 6, 30)
+    stored = {**_stored(D(2020, 6, 1), D(2020, 6, 30)), **_stored(D(2026, 9, 1), AS_OF)}
+    assert w.verification_interval(D(1997, 10, 9), AS_OF, stored, as_of) == (
+        D(1997, 10, 9), as_of)
+    # Delisted before as-of: the meta end (or the last stored row) still bounds it.
+    assert w.verification_interval(D(1997, 10, 9), D(2018, 3, 1), {}, as_of) == (
+        D(1997, 10, 9), D(2018, 3, 1))
