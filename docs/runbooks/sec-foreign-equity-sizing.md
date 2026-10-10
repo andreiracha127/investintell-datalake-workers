@@ -134,6 +134,10 @@ Tokenization lowercases raw titles and normalizes whitespace; it does not use
 the legacy camel-case normalizer. Quotes may enclose the identifier. The grammar
 accepts compact ClassA spelling and a closed par/nominal/no-par value suffix,
 including a numeric value, currency marker, per-share wording and footnote stars.
+The finite suffix also accepts `par value of $0.01 per share`,
+`without par value`, `no-par value`, and equivalent nominal-value or
+currency-before-value forms. A second class identity or other residue still
+rejects the entire title.
 These SEC cover qualifiers do not name another class. A generic common/ordinary
 title is allowed only when the count's own member supplies one class identity.
 Missing own-context titles do not invalidate that explicit member identity.
@@ -153,6 +157,23 @@ class; it is not a filing-wide class census.
 array for compatibility. `count_scope_unverified` and `count_labels_ambiguous`
 expose contradictory or absent count-owned scope proof, which
 refuses `foreign_listing_class_ambiguous`. Frozen legacy W1 bodies are unchanged.
+
+Explicit binding also requires a unique canonical stock line for the elected
+normalized label. The sizing detail helper uses W1's canonical issuer-line
+engine at the count filing's source date, retaining the latest complete cover
+and subsequent incomplete filings. Two distinct stock lines both named Series A
+refuse even when only one supplies the latest count. Dated raw-member aliases
+of one canonical line, count tags accompanying one registration, and a separately
+evidenced underlying ordinary count beneath an ADS wrapper remain admissible.
+The audit records the source horizon, cohort, canonical lines and collision
+evidence. This check does not change count-owned positive unit proof or the
+same-filing member/class unit veto.
+
+Observation subject extraction accepts an explicit coupon prefix such as
+`8.250% Series B`, `8.25 percent Series B`, or a named fixed-to-floating rate
+prefix. A preferred caption can therefore link a veto to Series B even when its
+raw member is opaque. Unmarked years or numbers cannot supply that prefix, and
+evidence about Series C cannot veto Series B.
 
 The small public SEC fixtures in `tests/fixtures/sec_foreign_equity_sizing/`
 preserve twelve issuer configurations and quoted Round 4 outcomes. The real-data

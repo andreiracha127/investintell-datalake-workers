@@ -704,6 +704,17 @@ WITH unit_vocabulary AS (
     -- One nonordinary vocabulary governs member tokens, unit vetoes and the
     -- identifier exclusions. Debt wording still vetoes a mistagged equity row.
     SELECT 'preferred|preference|deferred|founders?|debt|notes?|debentures?|bonds?|warrants?|options?|units?|rights?|unknown|conflicting' AS other_words
+), metadata_atoms AS (
+    SELECT v.*,
+           -- A finite monetary tail cannot consume a second class identity.
+           '(?:(?:(?:us|hk|nt|a|c)\$|\$|usd|eur|gbp|cad|aud|hkd|jpy|chf|€|£|¥)\s*)?'
+               || '(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)' AS amount_re,
+           -- Caption subjects may start with a coupon, never an unmarked year.
+           -- Only named rate modifiers may precede the Class/Series subject.
+           '(?:(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)\s*(?:%|percent|per\s+cent)\s+'
+               || '(?:(?:fixed[-\s]+to[-\s]+floating(?:[-\s]+rate)?|(?:fixed|floating)[-\s]+rate)\s+)?'
+               || ')?' AS coupon_prefix_re
+    FROM unit_vocabulary v
 ), grammar AS (
     -- Member values have a finite case-insensitive lexer. Titles deliberately
     -- do not use this lexer or W1's camel-case normalizer.
@@ -714,9 +725,11 @@ WITH unit_vocabulary AS (
            '(?!(?:class(?:es)?|series|common|ordinary|capital|' || v.other_words
                || '|voting|non-voting|nonvoting|subordinate|multiple|shares?|stocks?|member|and|or|of|the|to|in|on|as|by|no|is)\M)[[:alnum:]]+(?:-[[:alnum:]]+)*' AS id_re,
            '\s*(?:,\s*(?:\mand\M|\mor\M)?|/|&|;|\mand\M|\mor\M)\s*' AS separator,
-           '(?:,\s*(?:(?:par|nominal)\s+value\s+(?:(?:us)?\$)?\s*[0-9]+(?:\.[0-9]+)?'
-               || '(?:\s+per\s*share)?|no\s+par\s+value))?\*{0,4}$' AS metadata_tail
-    FROM unit_vocabulary v
+           '(?:,\s*(?:(?:(?:par|nominal)\s+value(?:\s+of)?\s+' || v.amount_re
+               || '|' || v.amount_re || '\s+(?:par|nominal)\s+value)'
+               || '(?:\s+per\s*share)?|(?:no[-\s]+par|without\s+par)\s+value))?\*{0,4}$' AS metadata_tail,
+           v.coupon_prefix_re
+    FROM metadata_atoms v
 ), subject_identifiers AS (
     SELECT g.*,
            -- Subject association cannot truncate an invalid token such as A"
@@ -737,17 +750,20 @@ WITH unit_vocabulary AS (
            '^\s*(?:(?:ordinary|common|capital|preferred|preference|deferred|founders?|voting|non-voting|nonvoting|'
                || 'subordinate|multiple|shares?|stocks?|issuer)\s+)*((?:class(?:es)?|series)\M\s+(?:' || g.id_re || ')'
                || '(?:' || g.separator || '(?:(?:class(?:es)?|series)\M\s+)?(?:' || g.id_re || '))*)' AS member_subject_re,
-           '^(?:(?:ordinary|common|preferred|preference|deferred|founders?|unknown|conflicting)\s+)*(?:class|series)\s*'
+           '^' || g.coupon_prefix_re
+               || '(?:(?:ordinary|common|preferred|preference|deferred|founders?|unknown|conflicting)\s+)*(?:class|series)\s*'
                || g.subject_id_re AS subject_title_re,
            '\m(?:' || g.id_re || ')' || g.separator || '(?:' || g.id_re || ')' AS member_coordinated_re
     FROM subject_identifiers g
 ), caption_patterns AS (
     SELECT g.*,
-           '^((?:(?:ordinary|common|preferred|preference|deferred|founders?|unknown|conflicting)\s+)*'
+           '^(' || g.coupon_prefix_re
+               || '(?:(?:ordinary|common|preferred|preference|deferred|founders?|unknown|conflicting)\s+)*'
                || '((?:class|series)\s*' || g.subject_id_re
                || '(?:' || g.separator || '(?:(?:class|series)\s*)?' || g.subject_id_re || ')*))'
                AS subject_prefix_re,
            '(?:[,;]|\mand\M|\mor\M|&)\s*(?='
+               || g.coupon_prefix_re
                || '(?:(?:ordinary|common|preferred|preference|deferred|founders?|unknown|conflicting)\s+)*'
                || '(?:class|series)\s*' || g.subject_id_re || ')' AS caption_boundary_re
     FROM patterns g
@@ -763,9 +779,36 @@ WITH unit_vocabulary AS (
 ), filing_observations AS MATERIALIZED (
     SELECT o.* FROM public.sec_observations_at(p_as_of, false) o, election e
     WHERE o.adsh = e.adsh AND o.cik = p_cik
+), identity_source AS (
+    -- Source ordering belongs to the elected count's filing; p_as_of remains
+    -- the knowledge cutoff for all visible versions, including restatements.
+    SELECT max(c.source_available_on) AS source_on FROM selected_counts c
+), identity_observations AS MATERIALIZED (
+    SELECT o.* FROM public.sec_observations_at(p_as_of, false) o CROSS JOIN identity_source h
+    WHERE o.cik = p_cik AND o.source_available_on <= h.source_on
+), identity_filings AS (
+    SELECT o.adsh, max(o.source_available_on) AS source_on, max(o.accepted) AS accepted,
+           bool_or(o.filing_complete) AS complete
+    FROM identity_observations o WHERE o.security_kind IN ('equity', 'depositary', 'unknown')
+    GROUP BY o.adsh
+), identity_complete AS (
+    SELECT f.* FROM identity_filings f WHERE f.complete
+    ORDER BY f.source_on DESC, f.accepted DESC NULLS LAST, f.adsh COLLATE "C" DESC
+    LIMIT 1
+), identity_cohort AS MATERIALIZED (
+    -- W1's latest complete cover and subsequent incomplete covers establish
+    -- the issuer's class cohort. A partial 6-K cannot drop its other classes.
+    SELECT o.* FROM identity_observations o JOIN identity_filings f ON f.adsh = o.adsh
+    LEFT JOIN identity_complete b ON true
+    WHERE b.adsh IS NULL OR f.adsh = b.adsh OR f.source_on > b.source_on
+       OR (f.source_on = b.source_on AND
+           (COALESCE(f.accepted, '-infinity'::timestamp), f.adsh COLLATE "C")
+             > (COALESCE(b.accepted, '-infinity'::timestamp), b.adsh COLLATE "C"))
+       OR EXISTS (SELECT 1 FROM election e WHERE e.adsh = f.adsh)
 ), member_keys AS (
     SELECT class_key FROM selected_counts
     UNION SELECT class_key FROM filing_observations
+    UNION SELECT class_key FROM identity_cohort
 ), member_texts AS MATERIALIZED (
     SELECT k.class_key,
            regexp_replace(lower(regexp_replace(k.class_key, '[^;=]*=', ' ', 'g')),
@@ -840,6 +883,54 @@ WITH unit_vocabulary AS (
                OR regexp_replace(lower(regexp_replace(sibling.class_key, '[^;=]*=', ' ', 'g')),
                                  g.member_lex_re, ' \1 ', 'g') ~* g.ads_re)
     ) AS filing_has_depositary
+), stock_carrier_sources AS (
+    -- A count tag plus its differently tagged registration is one carrier,
+    -- not two. Only stock observations establish a competing legal identity.
+    SELECT o.*,
+           CASE WHEN cardinality(title_labels.labels) = 1 THEN title_labels.labels[1]
+                WHEN cardinality(m.labels) = 1 THEN m.labels[1] END AS legal_label
+    FROM identity_cohort o JOIN member_details m ON m.class_key = o.class_key
+    CROSS JOIN patterns g
+    CROSS JOIN LATERAL (
+        SELECT regexp_replace(lower(btrim(regexp_replace(o.security_title, '\s+', ' ', 'g'))),
+                              '\m(class|series)(?=[[:alnum:]])', '\1 ', 'g') AS text
+    ) caption
+    CROSS JOIN LATERAL (
+        SELECT COALESCE(array_agg(DISTINCT k.label ORDER BY k.label), ARRAY[]::text[]) AS labels
+        FROM (
+            SELECT (CASE WHEN n.value[1] = 'series' THEN 'series:' ELSE 'class:' END)
+                       || public.sec_label_norm(upper(i.id)) AS label
+            FROM pg_catalog.regexp_matches(caption.text, g.mentions_re, 'g') n(value)
+            CROSS JOIN LATERAL pg_catalog.regexp_split_to_table(n.value[2], g.separator) i(id)
+        ) k WHERE k.label IS NOT NULL
+    ) title_labels
+    WHERE o.class_key <> '' AND o.security_kind IN ('equity', 'unknown')
+      AND NULLIF(caption.text, '') IS NOT NULL
+      AND NOT m.depositary AND NOT m.other_unit
+      AND NOT (caption.text ~ g.ads_re OR caption.text ~ g.other_re)
+      AND cardinality(m.labels) <= 1 AND NOT m.scope_unverified
+      AND (caption.text ~ '\m(shares?|stock)\M'
+           OR caption.text ~ '\m(common|ordinary)(?:stocks?|shares?)\M')
+      AND (cardinality(title_labels.labels) = 1
+           OR (cardinality(title_labels.labels) = 0 AND cardinality(m.labels) = 1
+               AND caption.text ~ g.generic_title_re))
+), identity_listing AS (
+    -- Reuse the elected W1c contract: an ADS wrapper may be called ordinary on
+    -- a cover. Its separate underlying count remains a stock source.
+    SELECT l.status, l.listed_type
+    FROM public.sec_foreign_listing_context_at(p_cik, p_ticker, p_as_of, p_as_of) l
+    WHERE EXISTS (
+        SELECT 1 FROM stock_carrier_sources s
+        WHERE s.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g')
+          AND s.class_key = ANY(p_line_members)
+          AND NOT EXISTS (SELECT 1 FROM selected_counts c WHERE c.class_key = s.class_key))
+), stock_carriers AS (
+    SELECT s.* FROM stock_carrier_sources s
+    WHERE NOT (
+        COALESCE(s.ticker_key = regexp_replace(upper(p_ticker), '[^A-Z0-9]', '', 'g'), false)
+        AND COALESCE(s.class_key = ANY(p_line_members), false)
+        AND NOT EXISTS (SELECT 1 FROM selected_counts c WHERE c.class_key = s.class_key)
+        AND EXISTS (SELECT 1 FROM identity_listing l WHERE l.status = 'resolved' AND l.listed_type = 'ads'))
 ), elected AS (
     SELECT c.*, labels.count_label, labels.label_ambiguous, labels.all_labels, labels.title_evidence,
            labels.scope_unverified,
@@ -1007,6 +1098,31 @@ WITH unit_vocabulary AS (
     SELECT c.* FROM elected c, election e
     WHERE c.fact_hash = e.evidence ->> 'chosen_fact_hash'
     LIMIT 1
+), identity_lines AS MATERIALIZED (
+    -- Reuse W1's canonical alias/co-presence engine without copying it. The
+    -- target-list set-returning call is a ProjectSet in the inlined SQL plan.
+    SELECT (m.mapping).class_key, (m.mapping).line_key
+    FROM (
+        SELECT public.sec_issuer_lines_at(p_cik, p_as_of, false, h.source_on) AS mapping
+        FROM identity_source h CROSS JOIN chosen_detail c
+        WHERE c.count_label IS NOT NULL
+          AND EXISTS (SELECT 1 FROM stock_carriers s WHERE s.legal_label = c.count_label)
+    ) m
+), count_identity_line AS (
+    SELECT min(l.line_key COLLATE "C") AS line_key
+    FROM identity_lines l CROSS JOIN chosen_detail c WHERE l.class_key = c.class_key
+), stock_binding AS (
+    SELECT count(DISTINCT COALESCE(l.line_key, s.class_key)) AS stock_lines,
+           COALESCE(bool_or(COALESCE(l.line_key, s.class_key) = t.line_key), false) AS includes_count_line,
+           COALESCE(jsonb_agg(jsonb_build_object(
+               'fact_hash', s.fact_hash, 'adsh', s.adsh, 'class_key', s.class_key,
+               'ticker', s.ticker, 'dimh', s.dimh, 'security_kind', s.security_kind,
+               'security_title', s.security_title, 'label', s.legal_label,
+               'source_on', s.source_available_on, 'available_on', s.available_on,
+               'line_key', COALESCE(l.line_key, s.class_key)) ORDER BY s.fact_hash), '[]'::jsonb) AS evidence
+    FROM stock_carriers s CROSS JOIN chosen_detail c CROSS JOIN count_identity_line t
+    LEFT JOIN identity_lines l ON l.class_key = s.class_key
+    WHERE s.legal_label = c.count_label
 ), unit_result AS (
     -- Every elected count must agree. Choosing one positive context cannot
     -- discard a conflicting or unsupported same-filing count fact.
@@ -1016,7 +1132,12 @@ WITH unit_vocabulary AS (
     FROM elected c
 ), detail AS (
     SELECT e.*, c.form, c.count_label AS label, u.share_unit AS unit, u.unit_conflict,
+           b.stock_lines, b.evidence AS stock_carrier_evidence, t.line_key AS count_line_key,
+           b.stock_lines > 1 OR (b.stock_lines > 0 AND t.line_key IS NOT NULL
+                                AND NOT b.includes_count_line) AS label_collision,
            e.identity_ambiguous
+               OR b.stock_lines > 1
+               OR (b.stock_lines > 0 AND t.line_key IS NOT NULL AND NOT b.includes_count_line)
                OR COALESCE((SELECT bool_or(x.label_ambiguous OR x.scope_unverified
                                      OR cardinality(x.all_labels) IS DISTINCT FROM 1)
                             FROM elected x), false)
@@ -1024,6 +1145,7 @@ WITH unit_vocabulary AS (
            k.count_classes
     FROM election e LEFT JOIN chosen_detail c ON true
     CROSS JOIN count_census k CROSS JOIN unit_result u
+    CROSS JOIN stock_binding b CROSS JOIN count_identity_line t
 ), exchange_fact AS (
     SELECT CASE WHEN count(DISTINCT o.exchange) = 1 THEN min(o.exchange COLLATE "C") END AS exchange_name
     FROM public.sec_observations_at(p_as_of, false) o, election e
@@ -1041,6 +1163,15 @@ SELECT d.source_status, d.shares, d.shares_as_of, d.adsh, d.basis,
            'count_labels', COALESCE((SELECT jsonb_agg(DISTINCT l.label ORDER BY l.label)
                                     FROM elected e CROSS JOIN LATERAL unnest(e.all_labels) l(label)), '[]'::jsonb),
            'count_labels_ambiguous', COALESCE(d.different_classes, false),
+           'count_label_stock_carriers', d.stock_carrier_evidence,
+           'count_label_stock_lines', d.stock_lines,
+           'count_label_count_line', d.count_line_key,
+           'count_label_source_horizon', (SELECT h.source_on FROM identity_source h),
+           'count_label_complete_cover', (SELECT to_jsonb(b) FROM identity_complete b),
+           'count_label_source_filings', COALESCE((SELECT jsonb_agg(to_jsonb(f) ORDER BY f.source_on, f.adsh)
+               FROM identity_filings f WHERE EXISTS (SELECT 1 FROM identity_cohort o WHERE o.adsh = f.adsh)), '[]'::jsonb),
+           'count_label_collision', d.label_collision,
+           'count_label_collision_evidence', CASE WHEN d.label_collision THEN d.stock_carrier_evidence ELSE '[]'::jsonb END,
            'count_scope_unverified', COALESCE((SELECT bool_or(e.scope_unverified OR cardinality(e.all_labels) IS DISTINCT FROM 1) FROM elected e), false),
            'count_unit_evidence_conflict', d.unit_conflict,
            'count_title_evidence', COALESCE((SELECT jsonb_agg(t.fact || jsonb_build_object(
