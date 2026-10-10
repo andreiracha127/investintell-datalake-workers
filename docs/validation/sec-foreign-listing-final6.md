@@ -1,3 +1,4 @@
+Historical report; superseded by [final7](sec-foreign-listing-final7.md).
 # W1c B1: final6 confirmation detector validation
 
 This report supersedes final5 for the next reviewed artifact load. The detector

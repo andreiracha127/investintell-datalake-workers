@@ -1,8 +1,8 @@
-"""Capture and compare W1c final5/final6 answers using disposable local PG18.
+"""Capture and compare W1c final5/final6/final7 answers using disposable local PG18.
 
 This helper performs read-only database work and never loads an artifact. Load
 each artifact into a fresh database in the same disposable container first:
-the B1 isolated comparison is preserved independently of B1b's applied-over-final5
+the B1 isolated comparisons are preserved independently of B1b's applied-over-final5
 restatement acceptance.
 The saved final5 cohorts are the query and reviewed-answer oracle. All generated
 reports must be written to C:, outside the repository and original raw cache.
@@ -294,6 +294,9 @@ def compare(args: argparse.Namespace) -> int:
             old["answer"]["status"] == "resolved" and new["answer"]["status"] in {"ambiguous", "none"}
         ) or (
             old["answer"]["status"] == "none" and new["answer"]["status"] == "ambiguous"
+        ) or (
+            old["answer"]["ratio_status"] == "resolved" and
+            new["answer"]["ratio_status"] in {"ambiguous", "none"}
         )
         changes.append({"cik": key[0], "symbol": key[1], "as_of": key[2], "groups": old["groups"],
                         "before": old["answer"], "after": new["answer"],
@@ -345,9 +348,13 @@ def compare(args: argparse.Namespace) -> int:
     write_json(output / "changed-answers.json", report)
     write_json(output / "confirmation-diff.json", confirmation_report)
     write_json(output / "source-review-packet.json", {"manual_review_status": "required", "cases": changes})
-    lines = ["| CIK | Line | Date | Final5 | Final6 | Direction |", "|---|---|---|---|---|---|"]
+    lines = [f"| CIK | Line | Date | {baseline['label']} | {candidate['label']} | Direction |",
+             "|---|---|---|---|---|---|"]
     def describe(answer: dict) -> str:
-        return f"{answer['status']} {answer['listed_type'] or ''} {answer['ratio'] or ''}".strip()
+        description = f"{answer['status']} {answer['listed_type'] or ''} {answer['ratio'] or ''}".strip()
+        if answer["ratio_status"] != answer["status"]:
+            description += f" (ratio_status={answer['ratio_status']})"
+        return description
 
     for row in changes:
         lines.append(f"| {row['cik']} | {row['symbol']} | {row['as_of']} | {describe(row['before'])} | "
@@ -361,7 +368,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     capture_parser = commands.add_parser("capture", help="Read-only snapshot of a freshly loaded artifact")
-    capture_parser.add_argument("--label", choices=("final5", "final6"), required=True)
+    capture_parser.add_argument("--label", choices=("final5", "final6", "final7"), required=True)
     for name in ("universe", "observations", "manifest", "evidence", "output-dir"):
         capture_parser.add_argument(f"--{name}", type=Path, required=True)
     capture_parser.add_argument("--current-statuses", type=Path)
